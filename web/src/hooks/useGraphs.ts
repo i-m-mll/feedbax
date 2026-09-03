@@ -1,15 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createGraph, fetchGraph, fetchGraphs, updateGraph } from '@/api/client';
-import { isHttpConflict } from '@/api/request';
-import type { GraphSpec, GraphUIState } from '@/types/graph';
-import { useAnalysisStore } from '@/stores/analysisStore';
-import { useGraphStore } from '@/stores/graphStore';
-import { useTrainingStore } from '@/stores/trainingStore';
-import {
-  buildWorkspaceDocumentSnapshot,
-  buildWorkspaceSnapshot,
-  useWorkspaceStore,
-} from '@/stores/workspaceStore';
+import { useQuery } from '@tanstack/react-query';
+import { fetchGraph, fetchGraphs } from '@/api/client';
 
 export function useGraphsList() {
   return useQuery({
@@ -29,64 +19,5 @@ export function useGraph(graphId: string | null) {
       return fetchGraph(graphId);
     },
     enabled: Boolean(graphId),
-  });
-}
-
-export function useSaveGraph() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: async ({
-      graphId,
-    }: {
-      graphId: string | null;
-      graph: GraphSpec;
-      uiState: GraphUIState | null;
-    }) => {
-      const graphStore = useGraphStore.getState();
-      const persistedGraph = graphStore.capturePersistedGraph();
-      const workspace = buildWorkspaceSnapshot({
-        workspace: useWorkspaceStore.getState().workspace,
-        graph: persistedGraph.graph,
-        uiState: persistedGraph.uiState,
-        trainingSpec: useTrainingStore.getState().trainingSpec,
-        taskSpec: useTrainingStore.getState().taskSpec,
-        analysisSnapshot: useAnalysisStore.getState().captureSnapshot(),
-        graphStackPath: persistedGraph.graphStackPath,
-      });
-      useWorkspaceStore.getState().setWorkspace(workspace);
-      if (graphId) {
-        const workspaceDocument = buildWorkspaceDocumentSnapshot(
-          useWorkspaceStore.getState().workspaceDocument,
-          persistedGraph.uiState,
-          useAnalysisStore.getState().captureSnapshot(),
-          workspace,
-        );
-        try {
-          return await updateGraph(
-            graphId,
-            persistedGraph.graph,
-            workspaceDocument,
-            workspace,
-            graphStore.saveRevision,
-          );
-        } catch (error) {
-          if (isHttpConflict(error)) {
-            await queryClient.fetchQuery({
-              queryKey: ['graph', graphId],
-              queryFn: () => fetchGraph(graphId),
-            }).catch(() => undefined);
-          }
-          throw error;
-        }
-      }
-      const created = await createGraph(persistedGraph.graph, undefined, workspace);
-      const loaded = await fetchGraph(created.id);
-      useWorkspaceStore.getState().setWorkspaceDocument(loaded.workspace_document);
-      return created;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['graphs'] });
-    },
   });
 }

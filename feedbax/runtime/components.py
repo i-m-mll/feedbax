@@ -35,7 +35,13 @@ def _callable_name(activation: Callable) -> str:
 
 def resolve_activation(activation: str | Callable) -> tuple[str, Callable]:
     if isinstance(activation, str):
-        return activation, NAMED_ACTIVATIONS.get(activation, jax.nn.relu)
+        try:
+            return activation, NAMED_ACTIVATIONS[activation]
+        except KeyError as exc:
+            vocabulary = ", ".join(NAMED_ACTIVATIONS)
+            raise ValueError(
+                f"Unknown activation {activation!r}. Supported values: {vocabulary}"
+            ) from exc
     if callable(activation):
         return _callable_name(activation), activation
     raise TypeError("activation must be a string name or callable")
@@ -166,6 +172,28 @@ class Sigmoid(Component):
         return {"output": jt.map(jax.nn.sigmoid, inputs["input"])}, state
 
 
+class Activation(Component):
+    """Apply one named activation elementwise without introducing parameters."""
+
+    input_ports = ("input",)
+    output_ports = ("output",)
+
+    activation_name: str = field(static=True)
+    activation: Callable = field(static=True)
+
+    def __init__(self, activation_name: str, activation: Callable | None = None):
+        if activation is None:
+            try:
+                activation = NAMED_ACTIVATIONS[activation_name]
+            except KeyError as exc:
+                raise ValueError(f"Unknown activation {activation_name!r}") from exc
+        self.activation_name = activation_name
+        self.activation = activation
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        return {"output": jt.map(self.activation, inputs["input"])}, state
+
+
 def _affine_param(value: PyTree, shape: tuple[int, ...], name: str) -> PyTree:
     array = jnp.asarray(value)
     try:
@@ -194,6 +222,7 @@ class ElementwiseAffineModulator(Component):
     gain: Array
     bias: Array
     signal_shape: tuple[int, ...] = field(static=True)
+    trainable: bool = field(static=True)
 
     def __init__(
         self,
@@ -201,6 +230,7 @@ class ElementwiseAffineModulator(Component):
         baseline: PyTree = 1.0,
         gain_init: PyTree = 0.0,
         bias_init: PyTree = 0.0,
+        trainable: bool = True,
     ):
         shape = tuple(int(dim) for dim in signal_shape)
         if not shape:
@@ -211,6 +241,7 @@ class ElementwiseAffineModulator(Component):
         self.baseline = _affine_param(baseline, shape, "baseline")
         self.gain = _affine_param(gain_init, shape, "gain_init")
         self.bias = _affine_param(bias_init, shape, "bias_init")
+        self.trainable = bool(trainable)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         signal = jnp.asarray(inputs["signal"])

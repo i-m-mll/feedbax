@@ -42,16 +42,16 @@ from feedbax.analysis.fulfillment_custody import (
     require_no_drift,
     shadow_custody,
 )
+from feedbax.contracts.base import Provenance
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     EvaluationRunManifest,
     EvaluationRunSpec,
-    Provenance,
     ReportSpec,
     evaluation_run_manifest_id,
     load_manifest,
     spec_payload,
-    store_bytes_artifact,
 )
 from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
 from feedbax.analysis.specs import AnalysisRecipeResult

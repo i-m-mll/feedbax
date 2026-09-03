@@ -34,13 +34,15 @@ from feedbax.analysis.exact_parents import (
 )
 from feedbax.analysis.fulfillment import artifact_bytes_path
 from feedbax.analysis.manifest_inputs import resolve_manifest_input
+from feedbax.contracts.base import (
+    ParentRef,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
-    ParentRef,
     TrainingRunManifest,
     load_manifest,
-    sha256_bytes,
     spec_payload,
     write_manifest,
 )

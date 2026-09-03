@@ -241,7 +241,7 @@ function DelayedReachTimelineEditor({
                   >
                     <ValueSpecField
                       descriptor={signalEpochDescriptor(signal, epoch)}
-                      value={signalEpochValueSpec(signal, epoch.id)}
+                      value={signalEpochValueSpec(timeline, signal.id, epoch.id)}
                       forceValueSpec
                       compact
                       onChange={(nextValue) => {

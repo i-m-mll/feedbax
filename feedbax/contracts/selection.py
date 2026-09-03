@@ -17,7 +17,11 @@ from feedbax.contracts.expressions import (
     ExpressionEvaluationError,
     evaluate_expr,
 )
-from feedbax.contracts.manifest import ParentRef, StrictModel, utc_now
+from feedbax.contracts.base import (
+    ParentRef,
+    StrictModel,
+    utc_now,
+)
 from feedbax.contracts.strict_json import strict_json_loads
 
 

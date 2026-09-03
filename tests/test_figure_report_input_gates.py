@@ -27,10 +27,12 @@ from feedbax.analysis.figures import (
 from feedbax.analysis.reports import resolve_report_inputs
 from feedbax.analysis.specs import ManifestKindMismatch
 from feedbax.contracts.figures import FigurePiece, FigureSpec
-from feedbax.contracts.manifest import (
-    AnalysisRunManifest,
+from feedbax.contracts.base import (
     ArtifactRef,
     ParentRef,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
     ReportSpec,
     spec_payload,
     write_manifest,

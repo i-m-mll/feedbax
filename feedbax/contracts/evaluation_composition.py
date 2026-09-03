@@ -18,19 +18,22 @@ from typing import Any
 
 from pydantic import Field, model_validator
 
+from feedbax.contracts._parent_delta import _flatten_content_pinned_parent_deltas
+from feedbax.contracts.base import (
+    StrictModel,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_ID,
     EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
-    StrictModel,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase, load_content_pinned_json_base
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.contracts.run_matrix import MatrixCompositionDelta, apply_composition_deltas
+from feedbax.contracts.run_matrix import MatrixCompositionDelta
 
 
 class EvaluationRunMatrixDeltaSpec(StrictModel):
@@ -126,53 +129,38 @@ def flatten_evaluation_run_matrix_delta(
     repo_root: Path | str | None = None,
 ) -> FlattenedEvaluationMatrix:
     """Resolve pinned parents root-to-child into one flattened matrix document."""
-    chain: list[tuple[str, EvaluationRunMatrixDeltaSpec]] = []
-    seen: set[str] = set()
-    current = spec
-    while True:
-        digest = evaluation_matrix_delta_envelope_hash(current)
-        if digest in seen:
-            raise ValueError("evaluation matrix delta parent composition cycle detected")
-        seen.add(digest)
-        chain.append((digest, current))
-        parent_payload = load_content_pinned_json_base(current.parent, repo_root=repo_root)
-        parent_schema_id = parent_payload.get("schema_id")
-        if parent_schema_id == EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID:
-            current = EvaluationRunMatrixDeltaSpec.model_validate(parent_payload)
-            continue
-        if parent_schema_id != EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID:
-            raise ValueError(
-                "evaluation matrix delta parent must declare schema_id "
-                f"{EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID!r} or "
-                f"{EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID!r}, got {parent_schema_id!r}"
-            )
-        payload = default_spec_registry.migrate(
-            "EvaluationRunMatrixSpec", parent_payload
-        ).payload
-        break
-
-    attribution: dict[str, str] = {}
-    written: set[str] = set()
-    layers: list[EvaluationMatrixCompositionLayer] = []
-    for digest, node in reversed(chain):
-        payload, local_attribution, written = apply_composition_deltas(
-            payload, node.deltas, ancestor_written_paths=written
-        )
-        attribution.update(local_attribution)
-        layers.append(
-            EvaluationMatrixCompositionLayer(
-                envelope_sha256=digest,
-                parent_ref=node.parent.ref,
-                parent_sha256=node.parent.sha256,
-                layer_ids=[delta.layer_id for delta in node.deltas],
-                parent_payload_path=node.parent.payload_path,
-            )
-        )
+    flattened = _flatten_content_pinned_parent_deltas(
+        spec,
+        repo_root=repo_root,
+        envelope_hash=evaluation_matrix_delta_envelope_hash,
+        parent_of=lambda node: node.parent,
+        load_parent=load_content_pinned_json_base,
+        deltas_of=lambda node: node.deltas,
+        parse_delta_parent=EvaluationRunMatrixDeltaSpec.model_validate,
+        terminal_payload=lambda payload: default_spec_registry.migrate(
+            "EvaluationRunMatrixSpec", payload
+        ).payload,
+        layer_from_node=lambda digest, node: EvaluationMatrixCompositionLayer(
+            envelope_sha256=digest,
+            parent_ref=node.parent.ref,
+            parent_sha256=node.parent.sha256,
+            layer_ids=[delta.layer_id for delta in node.deltas],
+            parent_payload_path=node.parent.payload_path,
+        ),
+        delta_schema_id=EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+        terminal_schema_id=EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+        cycle_error="evaluation matrix delta parent composition cycle detected",
+        invalid_parent_error=lambda schema_id: (
+            "evaluation matrix delta parent must declare schema_id "
+            f"{EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID!r} or "
+            f"{EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID!r}, got {schema_id!r}"
+        ),
+    )
     return FlattenedEvaluationMatrix(
         authored=spec.model_dump(mode="json", exclude_none=True),
-        payload=payload,
-        attribution=attribution,
-        layers=layers,
+        payload=flattened.payload,
+        attribution=flattened.attribution,
+        layers=flattened.layers,
     )
 
 
@@ -192,9 +180,7 @@ def evaluation_matrix_composition_provenance(
             "ref": flattened.root_matrix.parent_ref,
             "sha256": flattened.root_matrix.parent_sha256,
         },
-        "layers": [
-            layer.model_dump(mode="json", exclude_none=True) for layer in flattened.layers
-        ],
+        "layers": [layer.model_dump(mode="json", exclude_none=True) for layer in flattened.layers],
         "attribution": dict(flattened.attribution),
         "flattened_matrix_sha256": sha256_bytes(canonical_json_bytes(dict(flattened_matrix))),
         "canonical_row_order": list(canonical_row_order),

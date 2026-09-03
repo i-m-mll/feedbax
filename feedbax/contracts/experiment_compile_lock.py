@@ -51,11 +51,14 @@ Everything one compile resolved about a *different* document is recorded in
 ``references``, and every entry is one member of :data:`CompileLockReference`.
 The union is closed because the downstream plan is derived from it mechanically:
 a free-form mapping would make "is this an edge?" a question about string keys
-rather than about the record's own kind. The five kinds answer five genuinely
+rather than about the record's own kind. The six kinds answer six genuinely
 different questions:
 
 * :class:`ContentPinReference` — bytes this compile *read*. It is a compile-time
   input and is never a plan edge; nothing runs because of it.
+* :class:`GovernedParentReference` — immutable external parent bytes this
+  compile authenticated, with their complete semantic and artifact identity.
+  It is compile-time input and never a plan edge.
 * :class:`PlannedProductReference` — a product another envelope will compile to,
   pinned by the upstream envelope and by the content hash of what it compiles
   into. This is the ordinary pre-run edge.
@@ -107,14 +110,19 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
 )
+from feedbax.contracts.experiment_envelope_dialect import (
+    EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
+)
 from feedbax.contracts.figure_roles import FigureRoleBindingContract
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.run_composition import AuthoredIntentParent, ResolvedOutputParent
 
 EXPERIMENT_COMPILE_LOCK_SCHEMA_ID = "feedbax.spec.experiment_compile_lock"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v1"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v2"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v3"
-EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v4"
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
 
 #: The only lock versions read. Enumerated, never inferred. v1 remains readable
 #: as exactly the grammar it names: a lock recorded before figure runtime input
@@ -124,17 +132,16 @@ EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_
 EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
-    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
 )
 
-#: Versions this loader accepts, mapped to the version they migrate to. Empty:
-#: v1 is read as v1 rather than restated as v2, because the only thing v2 adds is
-#: a contract v1 does not carry, and stamping a v2 version onto a document that
-#: still lacks it would rename the absence instead of filling it. A project-owned
-#: lock family that migrates into this one registers its edge here and in
-#: ``default_spec_registry`` in one change, which is the slot the downstream
-#: conversion lane fills.
-EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE: dict[str, str] = {}
+#: Versions this loader migrates, mapped to their explicit target. v1 and v2
+#: remain readable as exactly their own grammars. Only v3 was emitted by the
+#: current Feedbax encoder without an execution-identity algorithm pin, so only
+#: provenance-attributable v3 locks have a migration edge.
+EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE: dict[str, str] = {
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3: EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+}
 
 #: Facts that only exist after a run is allocated. They belong to the run
 #: receipt; a lock must never grow a key from this set, at the top level or
@@ -357,6 +364,32 @@ class ContentPinReference(StrictModel):
         return self
 
 
+class GovernedParentReference(StrictModel):
+    """Exact governed parent artifact bytes consumed during compilation."""
+
+    kind: Literal["governed_parent"] = "governed_parent"
+    parent: AuthoredIntentParent | ResolvedOutputParent
+    role: str
+    artifact_id: str
+    artifact_sha256: str
+    schema_id: str
+    schema_version: str
+
+    @model_validator(mode="after")
+    def _validate(self) -> "GovernedParentReference":
+        _require_nonempty(self.role, "governed_parent role")
+        _require_nonempty(self.artifact_id, "governed_parent artifact_id")
+        _require_digest(self.artifact_sha256, "governed_parent artifact_sha256")
+        _require_nonempty(self.schema_id, "governed_parent schema_id")
+        _require_nonempty(self.schema_version, "governed_parent schema_version")
+        if not self.schema_version.startswith(f"{self.schema_id}."):
+            raise ValueError(
+                f"governed_parent schema_version {self.schema_version!r} does not extend "
+                f"schema id {self.schema_id!r}"
+            )
+        return self
+
+
 class PlannedProductReference(StrictModel):
     """A product another envelope compiles to, pinned before anything runs.
 
@@ -477,6 +510,7 @@ class NotApplicableReference(StrictModel):
 #: The only reference records a compile lock stores. Closed by construction.
 CompileLockReference: TypeAlias = Annotated[
     ContentPinReference
+    | GovernedParentReference
     | PlannedProductReference
     | ReceiptLocatorReference
     | AuthenticatedReceiptReference
@@ -488,6 +522,7 @@ _REFERENCE_ADAPTER: TypeAdapter[Any] = TypeAdapter(CompileLockReference)
 
 _REFERENCE_MEMBERS = (
     ContentPinReference,
+    GovernedParentReference,
     PlannedProductReference,
     ReceiptLocatorReference,
     AuthenticatedReceiptReference,
@@ -497,15 +532,16 @@ _REFERENCE_MEMBERS = (
 #: Every reference kind, in the order the union declares them.
 COMPILE_LOCK_REFERENCE_KINDS: tuple[str, ...] = (
     "content_pin",
+    "governed_parent",
     "planned_product",
     "receipt_locator",
     "authenticated_receipt",
     "not_applicable",
 )
 
-#: Reference kinds that are plan edges. A content pin is an input, not an edge.
+#: Reference kinds that are plan edges. Compile-time inputs are not edges.
 COMPILE_LOCK_PLAN_EDGE_KINDS: frozenset[str] = frozenset(
-    kind for kind in COMPILE_LOCK_REFERENCE_KINDS if kind != "content_pin"
+    {"planned_product", "receipt_locator", "authenticated_receipt", "not_applicable"}
 )
 
 
@@ -754,6 +790,7 @@ def build_compile_lock(inputs: CompileLockInputs) -> dict[str, Any]:
         "execution_identity": {
             "sha256": canonical_sha256(preimage),
             "inputs": identity_inputs,
+            "pin_algorithm": CANONICAL_PIN_ALGORITHM,
         },
     }
     if inputs.issue is not None:
@@ -1041,7 +1078,12 @@ def _validate_lock_provenance(lock: Mapping[str, Any], field: str) -> None:
             _lock_text(installed, locator, "a compiler package version")
 
 
-def _validate_lock_execution_identity(lock: Mapping[str, Any], field: str) -> None:
+def _validate_lock_execution_identity(
+    lock: Mapping[str, Any],
+    field: str,
+    *,
+    pin_required: bool,
+) -> None:
     """Re-derive execution identity from the lock's own facts.
 
     Everything the writer hashed is in the document the reader is holding, so an
@@ -1051,8 +1093,15 @@ def _validate_lock_execution_identity(lock: Mapping[str, Any], field: str) -> No
     """
     what = "a compile lock's execution identity"
     identity = _lock_mapping(lock["execution_identity"], f"{field}#execution_identity", what)
-    _lock_keys(identity, ("sha256", "inputs"), f"{field}#execution_identity", what)
+    keys = ("sha256", "inputs", "pin_algorithm") if pin_required else ("sha256", "inputs")
+    _lock_keys(identity, keys, f"{field}#execution_identity", what)
     _lock_digest(identity["sha256"], f"{field}#execution_identity.sha256", f"{what} sha256")
+    if pin_required and identity["pin_algorithm"] != CANONICAL_PIN_ALGORITHM:
+        _lock_reject(
+            f"{field}#execution_identity.pin_algorithm",
+            f"{what} pin_algorithm is {CANONICAL_PIN_ALGORITHM!r}; found "
+            f"{identity['pin_algorithm']!r}",
+        )
     inputs = _lock_sequence(
         identity["inputs"], f"{field}#execution_identity.inputs", f"{what} inputs"
     )
@@ -1079,7 +1128,12 @@ def _validate_lock_execution_identity(lock: Mapping[str, Any], field: str) -> No
         )
 
 
-def _validate_compile_lock_body(lock: Mapping[str, Any], field: str) -> None:
+def _validate_compile_lock_body(
+    lock: Mapping[str, Any],
+    field: str,
+    *,
+    pin_required: bool,
+) -> None:
     """Validate the whole document, not only the blocks a reader happens to use.
 
     A lock is the compile-side half of the custody boundary: every consumer that
@@ -1129,7 +1183,7 @@ def _validate_compile_lock_body(lock: Mapping[str, Any], field: str) -> None:
     _validate_lock_resolved_deltas(lock, field)
     _validate_lock_assertions(lock, field)
     _validate_lock_provenance(lock, field)
-    _validate_lock_execution_identity(lock, field)
+    _validate_lock_execution_identity(lock, field, pin_required=pin_required)
 
 
 def _refuse_v1_figure_input_contract(references: Sequence[Any], *, field: str) -> None:
@@ -1177,6 +1231,121 @@ def _refuse_pre_v3_analysis_receipt_set(references: Sequence[Any], *, field: str
             )
 
 
+def _refuse_pre_v4_governed_parent(references: Sequence[Any], *, field: str) -> None:
+    """Refuse an older lock edited to carry the v4 governed-parent input."""
+    for index, reference in enumerate(references):
+        if isinstance(reference, Mapping) and reference.get("kind") == "governed_parent":
+            raise ExperimentEnvelopeRejection(
+                ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+                "a governed compile-time parent reference is "
+                f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4!r} grammar, but this lock "
+                "declares an earlier version; a version names exactly one grammar",
+                field=f"{field}#references[{index}]#kind",
+            )
+
+
+def _validate_compile_lock_payload(
+    lock: Mapping[str, Any],
+    *,
+    field: str,
+    version: str,
+) -> None:
+    check_plan_receipt_boundary(lock)
+    references = lock.get("references", [])
+    if not isinstance(references, Sequence) or isinstance(references, (str, bytes)):
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "a compile lock's references are a list of typed reference records",
+            field=f"{field}#references",
+        )
+    for index, reference in enumerate(references):
+        parse_compile_lock_reference(reference, field=f"{field}#references[{index}]")
+    if version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1:
+        _refuse_v1_figure_input_contract(references, field=field)
+    if version in (
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    ):
+        _refuse_pre_v3_analysis_receipt_set(references, field=field)
+    if version in (
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+    ):
+        _refuse_pre_v4_governed_parent(references, field=field)
+    provenance = lock.get("row_provenance", [])
+    if not isinstance(provenance, Sequence) or isinstance(provenance, (str, bytes)):
+        raise ExperimentEnvelopeRejection(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            "a compile lock's row provenance is a list of typed row records",
+            field=f"{field}#row_provenance",
+        )
+    for index, record in enumerate(provenance):
+        parse_row_provenance_reference(record, field=f"{field}#row_provenance[{index}]")
+    _validate_compile_lock_body(
+        lock,
+        field,
+        pin_required=version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+    )
+
+
+def migrate_compile_lock_v3_to_v4(
+    document: Mapping[str, Any],
+    *,
+    field: str = "ExperimentCompileLock migration input",
+) -> dict[str, Any]:
+    """Pin a validated v3 lock attributed to the built-in Feedbax compiler.
+
+    The migration never searches for digest-shaped objects. Its input must be one
+    exact v3 compile lock whose own producer record names the built-in Feedbax
+    entrypoint and a concrete Feedbax package version.
+    """
+    lock = dict(document)
+    if lock.get("schema_id") != EXPERIMENT_COMPILE_LOCK_SCHEMA_ID:
+        _lock_reject(
+            f"{field}#schema_id",
+            "only a Feedbax experiment compile lock can receive an execution-identity pin",
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+        )
+    if lock.get("schema_version") != EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3:
+        _lock_reject(
+            f"{field}#schema_version",
+            "the execution-identity pin migration accepts exactly "
+            f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3!r}; found "
+            f"{lock.get('schema_version')!r}",
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+        )
+    _validate_compile_lock_payload(
+        lock,
+        field=field,
+        version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+    )
+    contract = lock["compiler_contract"]
+    implementation = lock["compiler_implementation"]
+    package_versions = implementation["package_versions"]
+    feedbax_version = package_versions.get("feedbax")
+    if (
+        contract["contract_id"] != EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID
+        or implementation["code_unit"] != "feedbax.envelope.entrypoint"
+        or set(package_versions) != {"feedbax"}
+        or not isinstance(feedbax_version, str)
+        or not feedbax_version.strip()
+    ):
+        _lock_reject(
+            f"{field}#compiler_implementation",
+            "the v3 execution-identity pin can be asserted only for a lock with "
+            "attributable built-in Feedbax compiler provenance; downstream-authored "
+            "or unattributed documents must remain unpinned",
+        )
+    migrated = dict(lock)
+    migrated["schema_version"] = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
+    migrated["execution_identity"] = {
+        **lock["execution_identity"],
+        "pin_algorithm": CANONICAL_PIN_ALGORITHM,
+    }
+    return migrated
+
+
 def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
     """Read one compile lock, failing closed on an unsupported version.
 
@@ -1208,7 +1377,10 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
             field=f"{field}#schema_id",
         )
     version = document.get("schema_version")
-    if version not in EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS:
+    if (
+        version not in EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS
+        and version not in EXPERIMENT_COMPILE_LOCK_MIGRATION_TABLE
+    ):
         raise ExperimentEnvelopeRejection(
             ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
             f"unsupported schema_version {version!r}; "
@@ -1218,40 +1390,17 @@ def load_compile_lock(document: Any, *, field: str) -> dict[str, Any]:
             field=f"{field}#schema_version",
         )
     lock = dict(document)
-    check_plan_receipt_boundary(lock)
-    references = lock.get("references", [])
-    if not isinstance(references, Sequence) or isinstance(references, (str, bytes)):
-        raise ExperimentEnvelopeRejection(
-            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
-            "a compile lock's references are a list of typed reference records",
-            field=f"{field}#references",
-        )
-    for index, reference in enumerate(references):
-        parse_compile_lock_reference(reference, field=f"{field}#references[{index}]")
-    if version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1:
-        _refuse_v1_figure_input_contract(references, field=field)
-    if version in (
-        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
-        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
-    ):
-        _refuse_pre_v3_analysis_receipt_set(references, field=field)
-    provenance = lock.get("row_provenance", [])
-    if not isinstance(provenance, Sequence) or isinstance(provenance, (str, bytes)):
-        raise ExperimentEnvelopeRejection(
-            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
-            "a compile lock's row provenance is a list of typed row records",
-            field=f"{field}#row_provenance",
-        )
-    for index, record in enumerate(provenance):
-        parse_row_provenance_reference(record, field=f"{field}#row_provenance[{index}]")
-    _validate_compile_lock_body(lock, field)
+    if version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3:
+        lock = migrate_compile_lock_v3_to_v4(lock, field=field)
+        version = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
+    _validate_compile_lock_payload(lock, field=field, version=version)
     return lock
 
 
 def compile_lock_plan_edges(lock: Mapping[str, Any], *, field: str) -> tuple[Any, ...]:
     """Return the lock's references that are plan edges, typed and in order.
 
-    Content pins are compile-time inputs and are filtered out by kind, so the
+    Compile-time inputs are filtered out by kind, so the
     plan lane never has to decide what an edge is by looking at fields.
     """
     return tuple(
@@ -1275,6 +1424,8 @@ __all__ = [
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3",
+    "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4",
+    "GovernedParentReference",
     "EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS",
     "RUN_RECEIPT_ONLY_FACTS",
     "AnalysisInputBinding",
@@ -1301,6 +1452,7 @@ __all__ = [
     "compile_lock_plan_edges",
     "compile_lock_reference_record",
     "load_compile_lock",
+    "migrate_compile_lock_v3_to_v4",
     "parse_compile_lock_reference",
     "parse_row_provenance_reference",
     "row_provenance_record",

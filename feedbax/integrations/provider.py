@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pkgutil
 from datetime import datetime
 from typing import Any, Literal, Optional
 
@@ -26,14 +25,18 @@ from feedbax.contracts.descriptors import (
     SelectorRoleIdentity,
     VariableDescriptor,
 )
-from feedbax.contracts.manifest import (
-    AnalysisDataProduct,
-    AnalysisRunManifest,
-    AnalysisRunSpec,
+from feedbax.contracts.base import (
     ArrayStoreRef,
     ArtifactRef,
     ArtifactMigrationRecord,
     ArtifactValidationRecord,
+    feedbax_version,
+    utc_now,
+)
+from feedbax.contracts.manifest import (
+    AnalysisDataProduct,
+    AnalysisRunManifest,
+    AnalysisRunSpec,
     CheckpointCandidateRef,
     CheckpointScoreSummary,
     CheckpointScorerIdentity,
@@ -53,9 +56,13 @@ from feedbax.contracts.manifest import (
     SCHEMA_VERSION,
     TrainingRunManifest,
     TrainingRunSetManifest,
-    feedbax_version,
     load_graph_spec_from_manifest,
-    utc_now,
+)
+from feedbax.contracts.parameter_contracts import (
+    AnalysisBundleParams,
+    AnalysisParams,
+    FigureAssemblerParams,
+    FigureTraceParams,
 )
 from feedbax.contracts.selection import SelectionSpec
 from feedbax.contracts.training_matrix_composition import TrainingRunMatrixDeltaSpec
@@ -276,6 +283,10 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "LossTermSpec": LossTermSpec,
         "EvaluationRunSpec": EvaluationRunSpec,
         "AnalysisRunSpec": AnalysisRunSpec,
+        "AnalysisParams": AnalysisParams,
+        "AnalysisBundleParams": AnalysisBundleParams,
+        "FigureAssemblerParams": FigureAssemblerParams,
+        "FigureTraceParams": FigureTraceParams,
         "ReportSpec": ReportSpec,
         "RegenerationSpec": RegenerationSpec,
         "AnalysisDataProduct": AnalysisDataProduct,
@@ -962,8 +973,7 @@ def loss_registry_snapshot() -> RegistrySnapshot:
 
 
 def analysis_registry_snapshot(registry: Any) -> RegistrySnapshot:
-    entries: list[RegistryEntry] = []
-    entries.extend(
+    entries = [
         RegistryEntry(
             type_id=analysis_type,
             name=analysis_type,
@@ -971,19 +981,7 @@ def analysis_registry_snapshot(registry: Any) -> RegistrySnapshot:
             description="Registered executable AnalysisRunSpec recipe.",
         )
         for analysis_type in registry.keys()
-    )
-    for module_info in pkgutil.iter_modules(analysis_pkg.__path__):
-        if module_info.name.startswith("_"):
-            continue
-        entries.append(
-            RegistryEntry(
-                type_id=f"feedbax.analysis.{module_info.name}",
-                name=module_info.name,
-                category="Analysis module",
-                import_path=f"feedbax.analysis.{module_info.name}",
-                description="Importable Feedbax analysis module.",
-            )
-        )
+    ]
     return RegistrySnapshot(kind="analyses", entries=entries)
 
 
@@ -1062,7 +1060,7 @@ def _schema_issues_to_provider(
 def validate_graph_spec(
     payload: dict[str, Any] | GraphSpec, *, component_registry: Any
 ) -> ProviderValidationResult:
-    from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
+    from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 
     migration_records: list[ArtifactMigrationRecord] = []
     try:

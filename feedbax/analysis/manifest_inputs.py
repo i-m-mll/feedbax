@@ -6,15 +6,24 @@ from dataclasses import dataclass
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
-import stat
 from urllib.parse import unquote, urlsplit
 
-from feedbax.contracts.manifest import (
+from feedbax._secure_fs import (
+    SecurePathRigor,
+    close_descriptors,
+    open_directory_chain,
+    open_existing_directory,
+    open_existing_file,
+    validate_opened_path,
+)
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-    AnyManifest,
     ParentRef,
     authenticated_manifest_ref_profile,
+)
+from feedbax.contracts.manifest import (
+    AnyManifest,
     canonical_manifest_relative_path,
     load_manifest_bytes,
 )
@@ -241,22 +250,32 @@ def _locator_parts(locator: Path | str) -> tuple[str, ...]:
 
 
 def _read_regular_file(root: Path, parts: tuple[str, ...]) -> bytes:
-    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     descriptors: list[int] = []
     try:
-        current = os.open(root, directory_flags)
-        descriptors.append(current)
+        records = open_directory_chain(
+            root,
+            create=False,
+            error_factory=ValueError,
+            context="authenticated manifest root",
+        )
+        descriptors.extend(descriptor for _, descriptor, _ in records)
+        current = descriptors[-1]
         for component in parts[:-1]:
-            current = os.open(component, directory_flags, dir_fd=current)
+            current = open_existing_directory(
+                component,
+                error_factory=ValueError,
+                context="authenticated manifest directory",
+                dir_fd=current,
+            )
             descriptors.append(current)
-        file_descriptor = os.open(parts[-1], file_flags, dir_fd=current)
+        file_descriptor, file_stat = open_existing_file(
+            parts[-1],
+            rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+            error_factory=ValueError,
+            context="authenticated manifest",
+            dir_fd=current,
+        )
         descriptors.append(file_descriptor)
-        file_stat = os.fstat(file_descriptor)
-        if not stat.S_ISREG(file_stat.st_mode):
-            raise ValueError("Authenticated manifest locator does not name a regular file")
-        if file_stat.st_nlink != 1:
-            raise ValueError("Authenticated manifest locator must have exactly one hard link")
         chunks: list[bytes] = []
         while True:
             chunk = os.read(file_descriptor, 1024 * 1024)
@@ -264,8 +283,15 @@ def _read_regular_file(root: Path, parts: tuple[str, ...]) -> bytes:
                 break
             chunks.append(chunk)
         final_stat = os.fstat(file_descriptor)
-        if final_stat.st_nlink != 1:
-            raise ValueError("Authenticated manifest locator hard-link count changed during read")
+        validate_opened_path(
+            parts[-1],
+            file_descriptor,
+            rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+            error_factory=ValueError,
+            context="authenticated manifest",
+            dir_fd=current,
+            expected_identity=(file_stat.st_dev, file_stat.st_ino),
+        )
         if (
             final_stat.st_dev,
             final_stat.st_ino,
@@ -288,8 +314,7 @@ def _read_regular_file(root: Path, parts: tuple[str, ...]) -> bytes:
     except OSError as exc:
         raise ValueError(f"Authenticated manifest locator is unsafe: {'/'.join(parts)}") from exc
     finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
+        close_descriptors(reversed(descriptors))
 
 
 def resolve_manifest_input(

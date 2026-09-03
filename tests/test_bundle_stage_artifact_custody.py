@@ -22,11 +22,13 @@ from feedbax.analysis.fulfillment import (
     admit_manifest_artifact_custody,
 )
 from feedbax.analysis.fulfillment_adapters import _bundle_stage_receipt
+from feedbax.contracts.base import (
+    ArtifactRef,
+    Provenance,
+)
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
-    ArtifactRef,
-    Provenance,
     spec_payload,
 )
 

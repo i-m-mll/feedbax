@@ -9,14 +9,16 @@ from feedbax.contracts import (
     EvaluationManifestProvenanceEnvelope,
     verify_evaluation_manifest_provenance,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
     EntrypointRef,
-    EvaluationRunManifest,
-    EvaluationRunSpec,
     ParentRef,
     Provenance,
+)
+from feedbax.contracts.manifest import (
+    EvaluationRunManifest,
+    EvaluationRunSpec,
     SpecPayload,
 )
 

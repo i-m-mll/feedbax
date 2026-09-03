@@ -63,7 +63,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import quote, unquote
 
-from feedbax.contracts.manifest import canonical_json_bytes
+from feedbax.contracts.base import canonical_json_bytes
 
 
 WORKFLOW_PLAN_SCHEMA_ID = "feedbax.workflow.plan"

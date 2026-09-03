@@ -18,8 +18,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from feedbax.contracts.base import ParentRef
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
+from feedbax.contracts.strict_json import (
+    StrictJsonError,
+    strict_json_loads,
+    strict_model_validate_json,
+)
 from feedbax.contracts.manifest import (
-    ParentRef,
     TrainingRunManifest,
     load_manifest_bytes,
 )
@@ -101,6 +107,7 @@ from feedbax.orchestration.state import (
     EmergencyProviderIdentity,
     EmergencyRunSetRecord,
     PreflightCheckEntry,
+    ProcessIdentity,
     PrimaryStatePersistenceError,
     RegistrationHistory,
     RegistrationHistoryEntry,
@@ -191,7 +198,7 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _canonical_json_sha256(payload: Mapping[str, Any]) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = canonical_json_v1_bytes(payload)
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -624,8 +631,8 @@ class StageEngine:
         registration_bytes = register_path.read_bytes()
         certificate_bytes = certificate_path.read_bytes()
         try:
-            persisted_registration = json.loads(registration_bytes.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            persisted_registration = strict_json_loads(registration_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, StrictJsonError) as exc:
             raise OrchestrationStageError(
                 "failed CERTIFY retry requires valid prior registration JSON"
             ) from exc
@@ -734,8 +741,8 @@ class StageEngine:
             )
         registration_bytes = register_path.read_bytes()
         try:
-            persisted = json.loads(registration_bytes.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            persisted = strict_json_loads(registration_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, StrictJsonError) as exc:
             raise OrchestrationStageError(
                 "post-pass registration recovery requires valid failed registration JSON"
             ) from exc
@@ -789,8 +796,8 @@ class StageEngine:
         history_path = self.bundle.run_set_dir / "registration-history.json"
         if history_path.exists():
             try:
-                existing = RegistrationHistory.model_validate_json(
-                    history_path.read_text(encoding="utf-8")
+                existing = strict_model_validate_json(
+                    RegistrationHistory, history_path.read_text(encoding="utf-8")
                 )
             except Exception as exc:
                 raise OrchestrationStageError(
@@ -962,12 +969,12 @@ class StageEngine:
         bundle_path = self.store.path.parent / "bundle.json"
         data = bundle_path.read_bytes()
         expected = state.stage(STAGE_ASSEMBLE).outputs.get("bundle_sha256")
-        actual = canonical_run_bundle_sha256(RunBundle.model_validate_json(data))
+        actual = canonical_run_bundle_sha256(strict_model_validate_json(RunBundle, data))
         if expected != actual:
             raise OrchestrationStageError(
                 f"persisted ASSEMBLE bundle hash mismatch: expected={expected!r} actual={actual!r}"
             )
-        self.bundle = RunBundle.model_validate_json(data)
+        self.bundle = strict_model_validate_json(RunBundle, data)
         self.driver = self._construct_driver(self.bundle)
         return state
 
@@ -1813,10 +1820,11 @@ class StageEngine:
         stage_outputs: dict[str, Any] = {"rows": collected}
         if self.bundle.execution_family == "evaluation-matrix" and not executor_failures:
             lifecycles = [
-                EvaluationLifecycleEvidence.model_validate_json(
+                strict_model_validate_json(
+                    EvaluationLifecycleEvidence,
                     Path(collected[row.row_id]["evaluation-matrix-result.json"]).read_text(
                         encoding="utf-8"
-                    )
+                    ),
                 )
                 for row in self.bundle.rows
             ]
@@ -2139,11 +2147,11 @@ class StageEngine:
             return evidence
 
         try:
-            realized = json.loads(fingerprint or "")
+            realized = strict_json_loads(fingerprint or "")
             runtime = realized.get("runtime", {})
             evidence["gpu_model"] = runtime.get("device_kind")
             evidence["gpu_count"] = runtime.get("device_count")
-        except (json.JSONDecodeError, AttributeError):
+        except (json.JSONDecodeError, StrictJsonError, AttributeError):
             pass
         for name in ("provider", "gpu_model", "gpu_count", "region", "immutable_image_id"):
             if evidence[name] is None:
@@ -2221,7 +2229,7 @@ class StageEngine:
             raise OrchestrationStageError(
                 "REGISTER certificate digest does not match the completed CERTIFY stage"
             )
-        certificate_payload = json.loads(certificate_bytes.decode("utf-8"))
+        certificate_payload = strict_json_loads(certificate_bytes.decode("utf-8"))
         certificate = RunConformanceCertificate.model_validate(certificate_payload)
         if certificate.run_set_id != self.bundle.run_set_id:
             raise OrchestrationStageError(
@@ -2339,7 +2347,7 @@ class StageEngine:
     ) -> None:
         if register_path.exists():
             existing_bytes = register_path.read_bytes()
-            existing = json.loads(existing_bytes.decode("utf-8"))
+            existing = strict_json_loads(existing_bytes.decode("utf-8"))
             if existing == dict(payload):
                 return
             if self._allows_failed_to_pass_registration_transition(
@@ -2371,8 +2379,8 @@ class StageEngine:
         if not history_path.exists():
             return False
         try:
-            history = RegistrationHistory.model_validate_json(
-                history_path.read_text(encoding="utf-8")
+            history = strict_model_validate_json(
+                RegistrationHistory, history_path.read_text(encoding="utf-8")
             )
         except Exception as exc:
             raise OrchestrationStageError("registration history is invalid") from exc
@@ -2676,10 +2684,17 @@ class StageEngine:
         outputs = self.driver.launch_row(self.bundle, row, state)
         output_status = outputs.get("status")
         status = "failed" if output_status == "failed" else "launched"
+        identity_payload = outputs.get("process_identity")
+        process_identity = (
+            ProcessIdentity.model_validate(identity_payload)
+            if isinstance(identity_payload, Mapping)
+            else None
+        )
         row_state = state.rows[row.row_id].model_copy(
             update={
                 "status": status,
                 "pid": outputs.get("pid"),
+                "process_identity": process_identity,
                 "started_at": utc_now(),
                 "completed_at": utc_now() if status == "failed" else None,
                 "error": outputs.get("detail") if status == "failed" else None,
@@ -2777,6 +2792,7 @@ class StageEngine:
                 update={
                     "status": status,
                     "pid": probe.pid or row_state.pid,
+                    "process_identity": probe.process_identity or row_state.process_identity,
                     "event_seq_high_water_mark": high_water,
                     "last_event_type": last_type,
                     "event_discrepancies": [dict(item) for item in reconciled.discrepancies],
@@ -3238,7 +3254,7 @@ def _row_payload(row: RunRowSpec) -> dict[str, Any] | None:
             f"row {row.row_id!r} executable payload digest mismatch: "
             f"expected={ref.sha256} actual={actual}"
         )
-    payload = json.loads(data)
+    payload = strict_json_loads(data)
     if not isinstance(payload, dict):
         raise ValueError(f"row {row.row_id!r} executable payload must be a JSON object")
     if (
@@ -3482,8 +3498,8 @@ def _discover_conformance_artifacts(outputs: Mapping[str, str]) -> dict[str, Any
     legacy_diagnostics: list[Mapping[str, Any]] = []
     for path in sorted(set(candidates)):
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            payload = strict_json_loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, StrictJsonError):
             continue
         if not isinstance(payload, Mapping):
             continue

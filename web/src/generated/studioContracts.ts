@@ -331,9 +331,34 @@ export interface AnalysisPageSpec {
   graph_spec?: Record<string, unknown>;
   eval_params?: Record<string, unknown>;
   input_requirements?: AnalysisInputRequirement[];
-  viewport?: Record<string, number>;
   eval_run_id?: string | null;
   expanded_field_paths?: string[];
+}
+
+export interface AnalysisCanvasPosition {
+  x: number;
+  y: number;
+}
+
+export interface AnalysisCanvasViewport {
+  x?: number;
+  y?: number;
+  zoom?: number;
+}
+
+export interface AnalysisCanvasPageLayout {
+  node_positions?: Record<string, AnalysisCanvasPosition>;
+  viewport?: AnalysisCanvasViewport;
+}
+
+export interface AnalysisCanvasStageLayout {
+  pages?: Record<string, AnalysisCanvasPageLayout>;
+}
+
+export interface AnalysisCanvasLayoutDocument {
+  schema_id: "feedbax.spec.studio.analysis_canvas_layout";
+  schema_version: "feedbax.spec.studio.analysis_canvas_layout.v1";
+  stages?: Record<string, AnalysisCanvasStageLayout>;
 }
 
 export interface StudioValidationIssue {
@@ -467,13 +492,20 @@ export interface StudioTaskEpochSpec {
   metadata?: Record<string, unknown>;
 }
 
+export interface StudioEpochValueSpec {
+  schema_id?: "feedbax.spec.studio.epoch_value";
+  schema_version?: "feedbax.spec.studio.epoch_value.v1";
+  target_id: string;
+  epoch_id: string;
+  value_spec: StudioValueSpec;
+}
+
 export interface StudioTaskTimelineSignalSpec {
   id: string;
   label: string;
   kind: string;
   task_data_id?: string | null;
   path: string;
-  epoch_ids?: string[];
   value_spec?: StudioValueSpec | null;
   value_schema?: Record<string, unknown> | null;
   task_data_schema?: Record<string, unknown> | null;
@@ -488,9 +520,11 @@ export interface StudioTaskTimelineSegmentSpec {
 }
 
 export interface StudioTaskTimelineSpec {
-  schema_version?: string;
+  schema_id?: "feedbax.spec.studio.task_timeline";
+  schema_version?: "feedbax.spec.studio.task_timeline.v2";
   epochs?: StudioTaskEpochSpec[];
   signals?: StudioTaskTimelineSignalSpec[];
+  epoch_value_specs?: StudioEpochValueSpec[];
   segments?: StudioTaskTimelineSegmentSpec[];
   metadata?: Record<string, unknown>;
 }
@@ -520,7 +554,7 @@ export interface StudioTaskBinding {
 }
 
 export interface StudioTaskBindingSpec {
-  schema_version?: string;
+  schema_version?: "feedbax.spec.studio.task_bindings.v2";
   exposed_data?: StudioTaskDataSpec[];
   bindings?: StudioTaskBinding[];
   metadata?: Record<string, unknown>;
@@ -553,7 +587,8 @@ export interface StudioScenarioSpec {
 
 export interface StudioStageSpec {
   id: string;
-  schema_version?: string;
+  schema_id?: "feedbax.spec.studio.stage";
+  schema_version?: "feedbax.spec.studio.stage.v2";
   kind: "train" | "eval" | "analysis" | "report" | "import" | "compare" | "export" | "protocol";
   label: string;
   status?: "draft" | "invalid" | "ready" | "running" | "completed" | "failed" | "cancelled";
@@ -570,7 +605,8 @@ export interface StudioStageSpec {
 
 export interface StudioWorkspaceSpec {
   id: string;
-  schema_version?: string;
+  schema_id?: "feedbax.spec.studio.workspace";
+  schema_version?: "feedbax.spec.studio.workspace.v2";
   label: string;
   active_stage_id?: string | null;
   stages?: StudioStageSpec[];
@@ -597,10 +633,22 @@ export interface WorkspaceDocument {
   scenario_ui_state?: Record<string, Record<string, unknown>>;
   analysis_pages?: AnalysisPageSpec[];
   active_analysis_page_id?: string | null;
+  analysis_canvas_layout?: AnalysisCanvasLayoutDocument;
   semantic_anchors?: Record<string, SemanticAnchor>;
 }
 
+export interface StudioPersistenceDocument {
+  schema_id: "feedbax.spec.studio.persistence_document";
+  schema_version: "feedbax.spec.studio.persistence_document.v1";
+  graph?: GraphSpec | null;
+  workspace_document?: WorkspaceDocument | null;
+  workspace?: StudioWorkspaceSpec | null;
+  expected_save_revision?: number | null;
+}
+
 export interface GraphProject {
+  schema_id?: "feedbax.spec.studio.graph_project";
+  schema_version?: "feedbax.spec.studio.graph_project.v1";
   metadata: GraphMetadata;
   graph: GraphSpec;
   workspace_document: WorkspaceDocument;
@@ -1070,7 +1118,7 @@ export interface TrainingSpec {
 export interface TaskSpec {
   type: string;
   params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
-  timeline?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>> | null;
+  timeline?: StudioTaskTimelineSpec | null;
 }
 
 export interface TrainingConfig {
@@ -1896,11 +1944,86 @@ export interface InspectionStatusResponse {
   treescope_version?: string | null;
 }
 
+function hasDuplicate(values: readonly unknown[]): boolean {
+  return new Set(values).size !== values.length;
+}
+
+function validDomainId(value: string): boolean {
+  if (!value.startsWith('feedbax.domain.')) return false;
+  const suffix = value.slice('feedbax.domain.'.length);
+  return suffix.length > 0 && suffix.split('.').every((part) => part.length > 0);
+}
+
+function validGeneratedPortTemplate(value: string): boolean {
+  return value.includes('{index}') && !/[{}]/.test(value.split('{index}').join(''));
+}
+
+function containsArrayValueEnvelope(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsArrayValueEnvelope);
+  if (value === null || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  if (
+    record.schema_id === 'feedbax.spec.component_param.array_value' ||
+    (typeof record.schema_version === 'string' &&
+      record.schema_version.startsWith('feedbax.spec.component_param.array_value.'))
+  ) return true;
+  return Object.values(record).some(containsArrayValueEnvelope);
+}
+
+function containsNonFiniteNumber(value: unknown): boolean {
+  if (typeof value === 'number') return !Number.isFinite(value);
+  if (Array.isArray(value)) return value.some(containsNonFiniteNumber);
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).some(containsNonFiniteNumber);
+}
+
+function invalidTypedParamEnvelope(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(invalidTypedParamEnvelope);
+  if (value === null || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  const claimsArray =
+    record.schema_id === 'feedbax.spec.component_param.array_value' ||
+    (typeof record.schema_version === 'string' &&
+      record.schema_version.startsWith('feedbax.spec.component_param.array_value.'));
+  if (claimsArray) {
+    return !SparseCooArrayValueSpecSchema.safeParse(record).success &&
+      !ConstantArrayValueSpecSchema.safeParse(record).success;
+  }
+  const claimsValue =
+    record.schema_id === 'feedbax.spec.studio.value' ||
+    (typeof record.schema_version === 'string' &&
+      (record.schema_version.startsWith('feedbax.spec.studio.value.') ||
+        record.schema_version.startsWith('feedbax.studio.value.')));
+  if (claimsValue) return !StudioValueSpecSchema.safeParse(record).success;
+  return Object.values(record).some(invalidTypedParamEnvelope);
+}
+
+function arrayScalarInvalid(value: unknown, dtype: string, nonfinite: string): boolean {
+  if (typeof value === 'string') return nonfinite !== 'allow' || !dtype.startsWith('float');
+  if (typeof value === 'boolean') return dtype !== 'bool';
+  if (dtype === 'bool') return true;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return true;
+  const integerRanges: Record<string, readonly [number, number]> = {
+    int8: [-128, 127], int16: [-32768, 32767], int32: [-2147483648, 2147483647],
+    int64: [Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER], uint8: [0, 255],
+    uint16: [0, 65535], uint32: [0, 4294967295],
+    uint64: [0, Number.MAX_SAFE_INTEGER],
+  };
+  const integerRange = integerRanges[dtype];
+  if (integerRange) {
+    return !Number.isInteger(value) || value < integerRange[0] || value > integerRange[1];
+  }
+  const floatMax: Record<string, number> = {
+    float16: 65504, float32: 3.4028234663852886e38, float64: Number.MAX_VALUE,
+  };
+  return dtype in floatMax && Math.abs(value) > floatMax[dtype];
+}
+
 export const SparseCooEntrySpecSchema: z.ZodType<SparseCooEntrySpec> = z.lazy(() =>
   z
     .object({
-      "coordinate": z.array(z.number().int()),
-      "value": z.union([z.boolean(), z.number().int(), z.number(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
+      "coordinate": z.array(z.number().int().safe().gte(0)).min(1),
+      "value": z.union([z.boolean(), z.number().int().safe(), z.number().finite(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
     })
     .strict()
 ) as unknown as z.ZodType<SparseCooEntrySpec>;
@@ -1910,14 +2033,22 @@ export const SparseCooArrayValueSpecSchema: z.ZodType<SparseCooArrayValueSpec> =
     .object({
       "schema_id": z.literal("feedbax.spec.component_param.array_value"),
       "schema_version": z.literal("feedbax.spec.component_param.array_value.v1"),
-      "shape": z.array(z.number().int()),
+      "shape": z.array(z.number().int().safe().gt(0)).min(1),
       "dtype": z.union([z.literal("bool"), z.literal("int8"), z.literal("int16"), z.literal("int32"), z.literal("int64"), z.literal("uint8"), z.literal("uint16"), z.literal("uint32"), z.literal("uint64"), z.literal("float16"), z.literal("float32"), z.literal("float64")]),
       "nonfinite": z.union([z.literal("forbid"), z.literal("allow")]),
       "encoding": z.literal("sparse_coo"),
-      "fill": z.union([z.boolean(), z.number().int(), z.number(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
+      "fill": z.union([z.boolean(), z.number().int().safe(), z.number().finite(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
       "entries": z.array(SparseCooEntrySpecSchema),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (arrayScalarInvalid(value.fill, value.dtype, value.nonfinite) || value.entries.some((entry) => entry.coordinate.length !== value.shape.length || entry.coordinate.some((coordinate, axis) => coordinate >= value.shape[axis]) || arrayScalarInvalid(entry.value, value.dtype, value.nonfinite)) || new Set(value.entries.map((entry) => JSON.stringify(entry.coordinate))).size !== value.entries.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "sparse COO entries must match shape, coordinates, and dtype",
+        });
+      }
+    })
 ) as unknown as z.ZodType<SparseCooArrayValueSpec>;
 
 export const ConstantArrayValueSpecSchema: z.ZodType<ConstantArrayValueSpec> = z.lazy(() =>
@@ -1925,13 +2056,21 @@ export const ConstantArrayValueSpecSchema: z.ZodType<ConstantArrayValueSpec> = z
     .object({
       "schema_id": z.literal("feedbax.spec.component_param.array_value"),
       "schema_version": z.literal("feedbax.spec.component_param.array_value.v1"),
-      "shape": z.array(z.number().int()),
+      "shape": z.array(z.number().int().safe().gt(0)).min(1),
       "dtype": z.union([z.literal("bool"), z.literal("int8"), z.literal("int16"), z.literal("int32"), z.literal("int64"), z.literal("uint8"), z.literal("uint16"), z.literal("uint32"), z.literal("uint64"), z.literal("float16"), z.literal("float32"), z.literal("float64")]),
       "nonfinite": z.union([z.literal("forbid"), z.literal("allow")]),
       "encoding": z.literal("constant"),
-      "value": z.union([z.boolean(), z.number().int(), z.number(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
+      "value": z.union([z.boolean(), z.number().int().safe(), z.number().finite(), z.union([z.literal("nan"), z.literal("+inf"), z.literal("-inf")])]),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (arrayScalarInvalid(value.value, value.dtype, value.nonfinite)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "constant array value must match dtype and non-finite policy",
+        });
+      }
+    })
 ) as unknown as z.ZodType<ConstantArrayValueSpec>;
 
 export const ParamSchemaSchema: z.ZodType<ParamSchema> = z.lazy(() =>
@@ -1939,10 +2078,10 @@ export const ParamSchemaSchema: z.ZodType<ParamSchema> = z.lazy(() =>
     .object({
       "name": z.string(),
       "type": z.union([z.literal("int"), z.literal("float"), z.literal("bool"), z.literal("str"), z.literal("enum"), z.literal("array"), z.literal("object"), z.literal("bounds2d")]),
-      "default": z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]).optional(),
-      "min": z.number().nullable().optional(),
-      "max": z.number().nullable().optional(),
-      "step": z.number().nullable().optional(),
+      "default": z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]).optional(),
+      "min": z.number().finite().nullable().optional(),
+      "max": z.number().finite().nullable().optional(),
+      "step": z.number().finite().nullable().optional(),
       "options": z.array(z.string()).nullable().optional(),
       "option_descriptions": z.record(z.string(), z.string()).nullable().optional(),
       "description": z.string().nullable().optional(),
@@ -1956,12 +2095,20 @@ export const ComponentSpecSchema: z.ZodType<ComponentSpec> = z.lazy(() =>
   z
     .object({
       "type": z.string(),
-      "params": z.record(z.string(), z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
+      "params": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
       "param_schema_version": z.string().nullable().optional(),
       "input_ports": z.array(z.string()).optional(),
       "output_ports": z.array(z.string()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (Object.values(value.params).some(invalidTypedParamEnvelope)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "typed component parameter envelopes must satisfy their declared schema",
+        });
+      }
+    })
 ) as unknown as z.ZodType<ComponentSpec>;
 
 export const AcausalConnectionSpecSchema: z.ZodType<AcausalConnectionSpec> = z.lazy(() =>
@@ -1971,15 +2118,23 @@ export const AcausalConnectionSpecSchema: z.ZodType<AcausalConnectionSpec> = z.l
       "b": z.tuple([z.string(), z.string()]),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.a[0] === value.b[0] && value.a[1] === value.b[1]) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "AcausalConnectionSpec endpoints must be distinct",
+        });
+      }
+    })
 ) as unknown as z.ZodType<AcausalConnectionSpec>;
 
 export const RootFinderSpecSchema: z.ZodType<RootFinderSpec> = z.lazy(() =>
   z
     .object({
       "method": z.literal("newton").optional(),
-      "rtol": z.number().optional(),
-      "atol": z.number().optional(),
-      "max_steps": z.number().int().optional(),
+      "rtol": z.number().finite().optional(),
+      "atol": z.number().finite().optional(),
+      "max_steps": z.number().int().safe().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<RootFinderSpec>;
@@ -1988,7 +2143,7 @@ export const SolverConfigSpecSchema: z.ZodType<SolverConfigSpec> = z.lazy(() =>
   z
     .object({
       "solver_type": z.union([z.literal("euler"), z.literal("implicit_euler"), z.literal("kvaerno5"), z.literal("tsit5")]),
-      "dt": z.number(),
+      "dt": z.number().finite(),
       "root_finder": RootFinderSpecSchema.nullable().optional(),
     })
     .strict()
@@ -2007,6 +2162,14 @@ export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
       "metadata": GraphMetadataSchema.nullable().optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (Object.values(value.nodes).some((node) => Object.values(node.params).some(containsArrayValueEnvelope))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "AcausalGraphSpec does not support component-param array value schemas",
+        });
+      }
+    })
 ) as unknown as z.ZodType<AcausalGraphSpec>;
 
 export const ParameterConstraintSpecSchema: z.ZodType<ParameterConstraintSpec> = z.lazy(() =>
@@ -2014,8 +2177,8 @@ export const ParameterConstraintSpecSchema: z.ZodType<ParameterConstraintSpec> =
     .object({
       "node": z.string(),
       "role": z.string(),
-      "mask": z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]),
-      "value": z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]).optional(),
+      "mask": z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]),
+      "value": z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ParameterConstraintSpec>;
@@ -2043,6 +2206,20 @@ export const AdditiveGraphChannelTargetSpecSchema: z.ZodType<AdditiveGraphChanne
       "source_port": z.string().nullable().optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.kind === 'edge' && (value.source_node == null || value.source_port == null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "edge additive channel adapters require source_node and source_port",
+        });
+      }
+      if (value.kind === 'input' && (value.source_node != null || value.source_port != null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "input additive channel adapters must not set source_node/source_port",
+        });
+      }
+    })
 ) as unknown as z.ZodType<AdditiveGraphChannelTargetSpec>;
 
 export const AdditiveGraphChannelAdapterSpecSchema: z.ZodType<AdditiveGraphChannelAdapterSpec> = z.lazy(() =>
@@ -2052,7 +2229,7 @@ export const AdditiveGraphChannelAdapterSpecSchema: z.ZodType<AdditiveGraphChann
       "input_key": z.string(),
       "target": AdditiveGraphChannelTargetSpecSchema,
       "adapter_node": z.string().nullable().optional(),
-      "payload_shape": z.array(z.number().int()).nullable().optional(),
+      "payload_shape": z.array(z.number().int().safe()).nullable().optional(),
       "payload_dtype": z.string().nullable().optional(),
       "provenance_role": z.string().nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
@@ -2067,7 +2244,7 @@ export const DerivedDimensionRuleSpecSchema: z.ZodType<DerivedDimensionRuleSpec>
       "param": z.string(),
       "source": z.literal("input_port").optional(),
       "port": z.string(),
-      "axis": z.number().int().optional(),
+      "axis": z.number().int().safe().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
@@ -2085,8 +2262,8 @@ export const UserPortSpecSchema: z.ZodType<UserPortSpec> = z.lazy(() =>
 export const CanvasPositionSpecSchema: z.ZodType<CanvasPositionSpec> = z.lazy(() =>
   z
     .object({
-      "x": z.number(),
-      "y": z.number(),
+      "x": z.number().finite(),
+      "y": z.number().finite(),
     })
     .strict()
 ) as unknown as z.ZodType<CanvasPositionSpec>;
@@ -2094,8 +2271,8 @@ export const CanvasPositionSpecSchema: z.ZodType<CanvasPositionSpec> = z.lazy(()
 export const CanvasSizeSpecSchema: z.ZodType<CanvasSizeSpec> = z.lazy(() =>
   z
     .object({
-      "width": z.number(),
-      "height": z.number(),
+      "width": z.number().finite(),
+      "height": z.number().finite(),
     })
     .strict()
 ) as unknown as z.ZodType<CanvasSizeSpec>;
@@ -2103,9 +2280,9 @@ export const CanvasSizeSpecSchema: z.ZodType<CanvasSizeSpec> = z.lazy(() =>
 export const CanvasViewportSpecSchema: z.ZodType<CanvasViewportSpec> = z.lazy(() =>
   z
     .object({
-      "x": z.number(),
-      "y": z.number(),
-      "zoom": z.number(),
+      "x": z.number().finite(),
+      "y": z.number().finite(),
+      "zoom": z.number().finite(),
     })
     .strict()
 ) as unknown as z.ZodType<CanvasViewportSpec>;
@@ -2123,7 +2300,7 @@ export const TapTransformSchema: z.ZodType<TapTransform> = z.lazy(() =>
   z
     .object({
       "type": z.string(),
-      "params": z.record(z.string(), z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
+      "params": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
       "intervention": StudioInterventionTransformSpecSchema.nullable().optional(),
     })
     .strict()
@@ -2159,8 +2336,8 @@ export const RetentionPolicySpecSchema: z.ZodType<RetentionPolicySpec> = z.lazy(
   z
     .object({
       "mode": z.union([z.literal("stream"), z.literal("window"), z.literal("trajectory")]).optional(),
-      "window_size": z.number().int().nullable().optional(),
-      "order": z.number().int().nullable().optional(),
+      "window_size": z.number().int().safe().nullable().optional(),
+      "order": z.number().int().safe().nullable().optional(),
       "reason": z.string().nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
@@ -2235,6 +2412,20 @@ export const AnalysisDataProductRequirementSchema: z.ZodType<AnalysisDataProduct
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.schema_id !== 'feedbax.spec.analysis_data_product_requirement' || value.schema_version !== 'feedbax.spec.analysis_data_product_requirement.v1') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "unsupported AnalysisDataProductRequirement schema identity",
+        });
+      }
+      if (value.role.trim().length === 0 || value.product_schema_id.trim().length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "AnalysisDataProductRequirement role and product_schema_id must not be empty",
+        });
+      }
+    })
 ) as unknown as z.ZodType<AnalysisDataProductRequirement>;
 
 export const AnalysisInputRequirementSchema: z.ZodType<AnalysisInputRequirement> = z.lazy(() =>
@@ -2261,7 +2452,7 @@ export const GraphMetadataSchema: z.ZodType<GraphMetadata> = z.lazy(() =>
       "created_at": z.string(),
       "updated_at": z.string(),
       "version": z.string().optional(),
-      "save_revision": z.number().int().optional(),
+      "save_revision": z.number().int().safe().gte(0).optional(),
       "author": z.string().nullable().optional(),
       "tags": z.array(z.string()).nullable().optional(),
     })
@@ -2290,13 +2481,21 @@ export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
       "metadata": GraphMetadataSchema.nullable().optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.subgraphs != null && Object.values(value.subgraphs).some((subgraph) => subgraph.schema_id !== 'feedbax.spec.graph' && subgraph.schema_id !== 'feedbax.spec.acausal_graph')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "GraphSpec subgraphs must use a supported graph schema identity",
+        });
+      }
+    })
 ) as unknown as z.ZodType<GraphSpec>;
 
 export const EdgeRoutingPointSchema: z.ZodType<EdgeRoutingPoint> = z.lazy(() =>
   z
     .object({
-      "x": z.number(),
-      "y": z.number(),
+      "x": z.number().finite(),
+      "y": z.number().finite(),
     })
     .strict()
 ) as unknown as z.ZodType<EdgeRoutingPoint>;
@@ -2345,7 +2544,7 @@ export const AssemblyViewUIStateSchema: z.ZodType<AssemblyViewUIState> = z.lazy(
       "active_view": z.union([z.literal("graph"), z.literal("assembly"), z.literal("split")]).optional(),
       "expanded_rows": z.array(z.string()).optional(),
       "selected_row": z.string().nullable().optional(),
-      "split_ratio": z.number().optional(),
+      "split_ratio": z.number().finite().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<AssemblyViewUIState>;
@@ -2371,12 +2570,57 @@ export const AnalysisPageSpecSchema: z.ZodType<AnalysisPageSpec> = z.lazy(() =>
       "graph_spec": z.record(z.string(), z.unknown()).optional(),
       "eval_params": z.record(z.string(), z.unknown()).optional(),
       "input_requirements": z.array(AnalysisInputRequirementSchema).optional(),
-      "viewport": z.record(z.string(), z.number()).optional(),
       "eval_run_id": z.string().nullable().optional(),
       "expanded_field_paths": z.array(z.string()).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<AnalysisPageSpec>;
+
+export const AnalysisCanvasPositionSchema: z.ZodType<AnalysisCanvasPosition> = z.lazy(() =>
+  z
+    .object({
+      "x": z.number().finite().gte(-10000000).lte(10000000),
+      "y": z.number().finite().gte(-10000000).lte(10000000),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisCanvasPosition>;
+
+export const AnalysisCanvasViewportSchema: z.ZodType<AnalysisCanvasViewport> = z.lazy(() =>
+  z
+    .object({
+      "x": z.number().finite().gte(-10000000).lte(10000000).optional(),
+      "y": z.number().finite().gte(-10000000).lte(10000000).optional(),
+      "zoom": z.number().finite().gte(0.1).lte(2.5).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisCanvasViewport>;
+
+export const AnalysisCanvasPageLayoutSchema: z.ZodType<AnalysisCanvasPageLayout> = z.lazy(() =>
+  z
+    .object({
+      "node_positions": z.record(z.string(), AnalysisCanvasPositionSchema).optional(),
+      "viewport": AnalysisCanvasViewportSchema.optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisCanvasPageLayout>;
+
+export const AnalysisCanvasStageLayoutSchema: z.ZodType<AnalysisCanvasStageLayout> = z.lazy(() =>
+  z
+    .object({
+      "pages": z.record(z.string(), AnalysisCanvasPageLayoutSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisCanvasStageLayout>;
+
+export const AnalysisCanvasLayoutDocumentSchema: z.ZodType<AnalysisCanvasLayoutDocument> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.analysis_canvas_layout"),
+      "schema_version": z.literal("feedbax.spec.studio.analysis_canvas_layout.v1"),
+      "stages": z.record(z.string(), AnalysisCanvasStageLayoutSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisCanvasLayoutDocument>;
 
 export const StudioValidationIssueSchema: z.ZodType<StudioValidationIssue> = z.lazy(() =>
   z
@@ -2451,7 +2695,7 @@ export const ValueSchemaSchema: z.ZodType<ValueSchema> = z.lazy(() =>
       "kind": z.string(),
       "dtype": z.string().nullable().optional(),
       "shape": z.array(z.unknown()).nullable().optional(),
-      "rank": z.number().int().nullable().optional(),
+      "rank": z.number().int().safe().nullable().optional(),
       "units": z.string().nullable().optional(),
       "frame": z.string().nullable().optional(),
       "origin": z.union([z.literal("declared"), z.literal("inferred_static"), z.literal("runtime_sample"), z.literal("curated_fallback"), z.literal("unknown")]).optional(),
@@ -2465,14 +2709,52 @@ export const StudioValueEnumerableSpecSchema: z.ZodType<StudioValueEnumerableSpe
     .object({
       "form": z.union([z.literal("list"), z.literal("range"), z.literal("sampler")]),
       "values": z.array(z.unknown()).nullable().optional(),
-      "start": z.number().nullable().optional(),
-      "stop": z.number().nullable().optional(),
-      "count": z.number().int().nullable().optional(),
+      "start": z.number().finite().nullable().optional(),
+      "stop": z.number().finite().nullable().optional(),
+      "count": z.number().int().safe().nullable().optional(),
       "scale": z.union([z.literal("linear"), z.literal("log")]).optional(),
       "sampler": z.record(z.string(), z.unknown()).nullable().optional(),
-      "n": z.number().int().nullable().optional(),
+      "n": z.number().int().safe().nullable().optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.form === 'list' && (!value.values || value.values.length === 0)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "sweep list enumerables require at least one value",
+        });
+      }
+      if (value.form === 'range' && (value.start == null || value.stop == null || value.count == null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "sweep range enumerables require start, stop, and count",
+        });
+      }
+      if (value.form === 'range' && value.count != null && value.count < 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "sweep range count must be positive",
+        });
+      }
+      if (value.form === 'range' && value.scale === 'log' && value.start != null && value.stop != null && (value.start <= 0 || value.stop <= 0)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "log sweep ranges require positive start and stop",
+        });
+      }
+      if (value.form === 'sampler' && (value.sampler == null || value.n == null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "sweep sampler enumerables require sampler and n",
+        });
+      }
+      if (value.form === 'sampler' && value.n != null && value.n < 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "sweep sampler n must be positive",
+        });
+      }
+    })
 ) as unknown as z.ZodType<StudioValueEnumerableSpec>;
 
 export const StudioValueVariationSpecSchema: z.ZodType<StudioValueVariationSpec> = z.lazy(() =>
@@ -2484,6 +2766,32 @@ export const StudioValueVariationSpecSchema: z.ZodType<StudioValueVariationSpec>
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.scope === 'sweep' && value.enumerable == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "sweep variation requires an enumerable list, range, or sampler+n",
+        });
+      }
+      if (value.scope !== 'sweep' && value.enumerable != null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "enumerable payloads are only valid for sweep variation",
+        });
+      }
+      if (value.scope === 'run' && value.stochastic_policy != null && value.stochastic_policy !== 'shared_per_run') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "run variation samples once and shares within the run",
+        });
+      }
+      if (value.scope === 'replicate' && value.stochastic_policy != null && value.stochastic_policy !== 'resample_per_replicate') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "replicate variation resamples per replicate",
+        });
+      }
+    })
 ) as unknown as z.ZodType<StudioValueVariationSpec>;
 
 export const StudioValueSpecSchema: z.ZodType<StudioValueSpec> = z.lazy(() =>
@@ -2508,6 +2816,38 @@ export const StudioValueSpecSchema: z.ZodType<StudioValueSpec> = z.lazy(() =>
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.schema_version !== 'feedbax.spec.studio.value.v2') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "unsupported StudioValueSpec schema version",
+        });
+      }
+      if (value.mode !== (value.value_form === 'literal' ? 'constant' : value.value_form)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "StudioValueSpec mode must match value_form compatibility alias",
+        });
+      }
+      if (value.value_form === 'literal' && value.variation.scope !== 'sweep' && value.sampling_scope != null && value.sampling_scope !== 'fixed') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "literal fixed values must not carry a sampling_scope",
+        });
+      }
+      if (value.value_form === 'distribution' && value.variation.scope === 'run' && value.variation.stochastic_policy != null && value.variation.stochastic_policy !== 'shared_per_run') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "run distribution specs sample once and share",
+        });
+      }
+      if (value.value_form === 'distribution' && value.variation.scope === 'replicate' && value.variation.stochastic_policy != null && value.variation.stochastic_policy !== 'resample_per_replicate') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "replicate distribution specs resample per replicate",
+        });
+      }
+    })
 ) as unknown as z.ZodType<StudioValueSpec>;
 
 export const StudioSelectorRefSchema: z.ZodType<StudioSelectorRef> = z.lazy(() =>
@@ -2554,12 +2894,50 @@ export const StudioTaskEpochSpecSchema: z.ZodType<StudioTaskEpochSpec> = z.lazy(
     .object({
       "id": z.string(),
       "label": z.string(),
-      "index": z.number().int(),
+      "index": z.number().int().safe(),
       "length": StudioValueSpecSchema,
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioTaskEpochSpec>;
+
+export const StudioEpochValueSpecSchema: z.ZodType<StudioEpochValueSpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.epoch_value").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.epoch_value.v1").optional(),
+      "target_id": z.string().min(1),
+      "epoch_id": z.string().min(1),
+      "value_spec": StudioValueSpecSchema,
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (containsNonFiniteNumber(value.value_spec)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epoch values must contain only finite numbers",
+        });
+      }
+      if (!['constant', 'function', 'distribution'].includes(value.value_spec.mode)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epoch values support constant, function, or distribution modes",
+        });
+      }
+      if ((value.value_spec.mode === 'constant' && value.value_spec.value == null) || (value.value_spec.mode === 'function' && !value.value_spec.function_id) || (value.value_spec.mode === 'distribution' && (value.value_spec.distribution == null || typeof value.value_spec.distribution !== 'object' || value.value_spec.distribution.parameters == null || typeof value.value_spec.distribution.parameters !== 'object'))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epoch value is missing its required mode payload",
+        });
+      }
+      if (value.value_spec.mode === 'distribution' && (() => { const distribution = value.value_spec.distribution as Record<string, unknown>; const parameters = distribution?.parameters as Record<string, unknown>; const first = parameters?.[distribution?.family === 'uniform' ? 'min' : 'mean']; const second = parameters?.[distribution?.family === 'uniform' ? 'max' : 'std']; if (distribution?.family !== 'uniform' && distribution?.family !== 'normal') return true; if (typeof first !== 'number' || !Number.isFinite(first) || typeof second !== 'number' || !Number.isFinite(second)) return true; return distribution.family === 'uniform' ? second < first : second < 0; })()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline distribution must be uniform min/max or normal mean/std with valid bounds",
+        });
+      }
+    })
+) as unknown as z.ZodType<StudioEpochValueSpec>;
 
 export const StudioTaskTimelineSignalSpecSchema: z.ZodType<StudioTaskTimelineSignalSpec> = z.lazy(() =>
   z
@@ -2569,7 +2947,6 @@ export const StudioTaskTimelineSignalSpecSchema: z.ZodType<StudioTaskTimelineSig
       "kind": z.string(),
       "task_data_id": z.string().nullable().optional(),
       "path": z.string(),
-      "epoch_ids": z.array(z.string()).optional(),
       "value_spec": StudioValueSpecSchema.nullable().optional(),
       "value_schema": z.record(z.string(), z.unknown()).nullable().optional(),
       "task_data_schema": z.record(z.string(), z.unknown()).nullable().optional(),
@@ -2592,13 +2969,47 @@ export const StudioTaskTimelineSegmentSpecSchema: z.ZodType<StudioTaskTimelineSe
 export const StudioTaskTimelineSpecSchema: z.ZodType<StudioTaskTimelineSpec> = z.lazy(() =>
   z
     .object({
-      "schema_version": z.string().optional(),
+      "schema_id": z.literal("feedbax.spec.studio.task_timeline").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.task_timeline.v2").optional(),
       "epochs": z.array(StudioTaskEpochSpecSchema).optional(),
       "signals": z.array(StudioTaskTimelineSignalSpecSchema).optional(),
+      "epoch_value_specs": z.array(StudioEpochValueSpecSchema).optional(),
       "segments": z.array(StudioTaskTimelineSegmentSpecSchema).optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.schema_id !== 'feedbax.spec.studio.task_timeline' || value.schema_version !== 'feedbax.spec.studio.task_timeline.v2') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "unsupported Studio task timeline schema identity",
+        });
+      }
+      if (hasDuplicate((value.epochs ?? []).map((epoch) => epoch.id)) || (value.epochs ?? []).map((epoch) => epoch.index).slice().sort((a, b) => a - b).some((index, position) => index !== position)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epochs must have unique ids and contiguous indexes",
+        });
+      }
+      if (hasDuplicate((value.signals ?? []).map((signal) => signal.task_data_id ?? signal.id))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline signal target ids must be unique",
+        });
+      }
+      if ((value.epoch_value_specs ?? []).some((entry) => !(value.signals ?? []).some((signal) => (signal.task_data_id ?? signal.id) === entry.target_id) || !(value.epochs ?? []).some((epoch) => epoch.id === entry.epoch_id)) || hasDuplicate((value.epoch_value_specs ?? []).map((entry) => `${entry.target_id}\u0000${entry.epoch_id}`))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epoch values must name known targets and epochs without overlap",
+        });
+      }
+      if ((value.epoch_value_specs ?? []).some((entry, index, entries) => index > 0 && (entries[index - 1].target_id > entry.target_id || (entries[index - 1].target_id === entry.target_id && (value.epochs ?? []).findIndex((epoch) => epoch.id === entries[index - 1].epoch_id) > (value.epochs ?? []).findIndex((epoch) => epoch.id === entry.epoch_id))))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epoch values must be ordered by target_id then epoch index",
+        });
+      }
+    })
 ) as unknown as z.ZodType<StudioTaskTimelineSpec>;
 
 export const StudioTaskDataSpecSchema: z.ZodType<StudioTaskDataSpec> = z.lazy(() =>
@@ -2636,7 +3047,7 @@ export const StudioTaskBindingSchema: z.ZodType<StudioTaskBinding> = z.lazy(() =
 export const StudioTaskBindingSpecSchema: z.ZodType<StudioTaskBindingSpec> = z.lazy(() =>
   z
     .object({
-      "schema_version": z.string().optional(),
+      "schema_version": z.literal("feedbax.spec.studio.task_bindings.v2").optional(),
       "exposed_data": z.array(StudioTaskDataSpecSchema).optional(),
       "bindings": z.array(StudioTaskBindingSchema).optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
@@ -2675,13 +3086,22 @@ export const StudioScenarioSpecSchema: z.ZodType<StudioScenarioSpec> = z.lazy(()
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.task_spec != null && !TaskSpecSchema.safeParse(value.task_spec).success) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Studio scenario task_spec must satisfy the generated TaskSpec contract",
+        });
+      }
+    })
 ) as unknown as z.ZodType<StudioScenarioSpec>;
 
 export const StudioStageSpecSchema: z.ZodType<StudioStageSpec> = z.lazy(() =>
   z
     .object({
       "id": z.string(),
-      "schema_version": z.string().optional(),
+      "schema_id": z.literal("feedbax.spec.studio.stage").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.stage.v2").optional(),
       "kind": z.union([z.literal("train"), z.literal("eval"), z.literal("analysis"), z.literal("report"), z.literal("import"), z.literal("compare"), z.literal("export"), z.literal("protocol")]),
       "label": z.string(),
       "status": z.union([z.literal("draft"), z.literal("invalid"), z.literal("ready"), z.literal("running"), z.literal("completed"), z.literal("failed"), z.literal("cancelled")]).optional(),
@@ -2702,7 +3122,8 @@ export const StudioWorkspaceSpecSchema: z.ZodType<StudioWorkspaceSpec> = z.lazy(
   z
     .object({
       "id": z.string(),
-      "schema_version": z.string().optional(),
+      "schema_id": z.literal("feedbax.spec.studio.workspace").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.workspace.v2").optional(),
       "label": z.string(),
       "active_stage_id": z.string().nullable().optional(),
       "stages": z.array(StudioStageSpecSchema).optional(),
@@ -2719,8 +3140,8 @@ export const StudioWorkspaceSpecSchema: z.ZodType<StudioWorkspaceSpec> = z.lazy(
 export const SemanticAnchorSchema: z.ZodType<SemanticAnchor> = z.lazy(() =>
   z
     .object({
-      "semantic_document_sha256": z.string(),
-      "authored_path": z.string(),
+      "semantic_document_sha256": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "authored_path": z.string().regex(new RegExp("^/")),
     })
     .strict()
 ) as unknown as z.ZodType<SemanticAnchor>;
@@ -2737,14 +3158,44 @@ export const WorkspaceDocumentSchema: z.ZodType<WorkspaceDocument> = z.lazy(() =
       "scenario_ui_state": z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
       "analysis_pages": z.array(AnalysisPageSpecSchema).optional(),
       "active_analysis_page_id": z.string().nullable().optional(),
+      "analysis_canvas_layout": AnalysisCanvasLayoutDocumentSchema.optional(),
       "semantic_anchors": z.record(z.string(), SemanticAnchorSchema).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.semantic_root.authored_path !== '/graph') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "WorkspaceDocument semantic_root must target /graph",
+        });
+      }
+      if (Object.values(value.semantic_anchors).some((anchor) => anchor.semantic_document_sha256 !== value.semantic_root.semantic_document_sha256)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "WorkspaceDocument semantic anchors must target the semantic root revision",
+        });
+      }
+    })
 ) as unknown as z.ZodType<WorkspaceDocument>;
+
+export const StudioPersistenceDocumentSchema: z.ZodType<StudioPersistenceDocument> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.persistence_document"),
+      "schema_version": z.literal("feedbax.spec.studio.persistence_document.v1"),
+      "graph": GraphSpecSchema.nullable().optional(),
+      "workspace_document": WorkspaceDocumentSchema.nullable().optional(),
+      "workspace": StudioWorkspaceSpecSchema.nullable().optional(),
+      "expected_save_revision": z.number().int().safe().gte(0).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioPersistenceDocument>;
 
 export const GraphProjectSchema: z.ZodType<GraphProject> = z.lazy(() =>
   z
     .object({
+      "schema_id": z.literal("feedbax.spec.studio.graph_project").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.graph_project.v1").optional(),
       "metadata": GraphMetadataSchema,
       "graph": GraphSpecSchema,
       "workspace_document": WorkspaceDocumentSchema,
@@ -2790,8 +3241,8 @@ export const PortTypeSchema: z.ZodType<PortType> = z.lazy(() =>
   z
     .object({
       "dtype": z.string().optional(),
-      "shape": z.array(z.number().int()).nullable().optional(),
-      "rank": z.number().int().nullable().optional(),
+      "shape": z.array(z.number().int().safe()).nullable().optional(),
+      "rank": z.number().int().safe().nullable().optional(),
       "kind": z.union([z.literal("signal"), z.literal("conserving")]).optional(),
       "physical_domain": z.string().nullable().optional(),
       "across_vars": z.array(z.string()).nullable().optional(),
@@ -2840,17 +3291,31 @@ export const ComponentMigrationInfoSchema: z.ZodType<ComponentMigrationInfo> = z
 export const DynamicPortPolicySchema: z.ZodType<DynamicPortPolicy> = z.lazy(() =>
   z
     .object({
-      "count_param": z.string(),
+      "count_param": z.string().min(1),
       "count_mode": z.union([z.literal("integer"), z.literal("sequence_length")]),
       "direction": z.union([z.literal("input"), z.literal("output")]),
       "fixed_input_ports": z.array(z.string()).optional(),
       "fixed_output_ports": z.array(z.string()).optional(),
-      "generated_name_template": z.string(),
-      "generated_index_origin": z.number().int().optional(),
-      "minimum_count": z.number().int().optional(),
+      "generated_name_template": z.string().min(1),
+      "generated_index_origin": z.number().int().safe().optional(),
+      "minimum_count": z.number().int().safe().gte(0).optional(),
       "dynamic_port_type": PortTypeSchema,
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (!validGeneratedPortTemplate(value.generated_name_template)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "generated_name_template must contain only the {index} replacement field",
+        });
+      }
+      if (hasDuplicate(value.fixed_input_ports) || hasDuplicate(value.fixed_output_ports) || value.fixed_input_ports.some((name) => name.length === 0) || value.fixed_output_ports.some((name) => name.length === 0)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "fixed dynamic port names must be unique and non-empty",
+        });
+      }
+    })
 ) as unknown as z.ZodType<DynamicPortPolicy>;
 
 export const RepresentationParamPathBindingSchema: z.ZodType<RepresentationParamPathBinding> = z.lazy(() =>
@@ -2859,7 +3324,7 @@ export const RepresentationParamPathBindingSchema: z.ZodType<RepresentationParam
       "kind": z.literal("param_path").optional(),
       "path": z.string(),
       "expected_type": z.string().nullable().optional(),
-      "dim": z.number().int().nullable().optional(),
+      "dim": z.number().int().safe().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<RepresentationParamPathBinding>;
@@ -2870,9 +3335,17 @@ export const RepresentationStateAnchorSelectorBindingSchema: z.ZodType<Represent
       "kind": z.literal("selector").optional(),
       "selector": StudioSelectorRefSchema,
       "anchor_subpath": z.union([z.literal("position"), z.literal("velocity"), z.literal("orientation"), z.literal("origin"), z.literal("insertion"), z.literal("center"), z.literal("endpoint"), z.literal("target"), z.literal("path")]).nullable().optional(),
-      "dim": z.number().int().nullable().optional(),
+      "dim": z.number().int().safe().nullable().optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.anchor_subpath != null && !['mechanics_object', 'biomechanics_object', 'task_object'].includes(value.selector.namespace)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "representation anchor_subpath requires an object selector namespace",
+        });
+      }
+    })
 ) as unknown as z.ZodType<RepresentationStateAnchorSelectorBinding>;
 
 export const RepresentationTrialSpecPathBindingSchema: z.ZodType<RepresentationTrialSpecPathBinding> = z.lazy(() =>
@@ -2881,7 +3354,7 @@ export const RepresentationTrialSpecPathBindingSchema: z.ZodType<RepresentationT
       "kind": z.literal("trial_spec_path").optional(),
       "path": z.string(),
       "expected_type": z.string().nullable().optional(),
-      "dim": z.number().int().nullable().optional(),
+      "dim": z.number().int().safe().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<RepresentationTrialSpecPathBinding>;
@@ -2890,8 +3363,8 @@ export const RepresentationLiteralBindingSchema: z.ZodType<RepresentationLiteral
   z
     .object({
       "kind": z.literal("literal").optional(),
-      "value": z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]),
-      "dim": z.number().int().nullable().optional(),
+      "value": z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]),
+      "dim": z.number().int().safe().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<RepresentationLiteralBinding>;
@@ -2900,7 +3373,7 @@ export const RepresentationReferencePoseSpecSchema: z.ZodType<RepresentationRefe
   z
     .object({
       "coordinate_space": z.literal("configuration").optional(),
-      "values": z.array(z.number()),
+      "values": z.array(z.number().finite()).min(1),
     })
     .strict()
 ) as unknown as z.ZodType<RepresentationReferencePoseSpec>;
@@ -2908,18 +3381,26 @@ export const RepresentationReferencePoseSpecSchema: z.ZodType<RepresentationRefe
 export const RepresentationPlanarChainSpecSchema: z.ZodType<RepresentationPlanarChainSpec> = z.lazy(() =>
   z
     .object({
-      "frame_ids": z.array(z.string()),
+      "frame_ids": z.array(z.string()).min(2),
       "pose_fallback": z.literal("zero").nullable().optional(),
       "reference_pose": RepresentationReferencePoseSpecSchema.nullable().optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (hasDuplicate(value.frame_ids) || value.frame_ids[0] !== 'world' || (value.reference_pose != null && value.reference_pose.values.length !== value.frame_ids.length - 1)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "planar-chain frame ids and reference pose must be coherent",
+        });
+      }
+    })
 ) as unknown as z.ZodType<RepresentationPlanarChainSpec>;
 
 export const RepresentationMusclePathPointSpecSchema: z.ZodType<RepresentationMusclePathPointSpec> = z.lazy(() =>
   z
     .object({
       "frame": z.string(),
-      "position": z.array(z.number()),
+      "position": z.array(z.number().finite()).min(2).max(2),
     })
     .strict()
 ) as unknown as z.ZodType<RepresentationMusclePathPointSpec>;
@@ -2928,7 +3409,7 @@ export const RepresentationMusclePathSpecSchema: z.ZodType<RepresentationMuscleP
   z
     .object({
       "id": z.string(),
-      "points": z.array(RepresentationMusclePathPointSpecSchema),
+      "points": z.array(RepresentationMusclePathPointSpecSchema).min(2),
     })
     .strict()
 ) as unknown as z.ZodType<RepresentationMusclePathSpec>;
@@ -2941,6 +3422,14 @@ export const RepresentationMusclePathGeometrySpecSchema: z.ZodType<Representatio
       "paths": z.array(RepresentationMusclePathSpecSchema).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (hasDuplicate(value.paths.map((path) => path.id))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "muscle path ids must be unique",
+        });
+      }
+    })
 ) as unknown as z.ZodType<RepresentationMusclePathGeometrySpec>;
 
 export const RepresentationFrameProviderSchema: z.ZodType<RepresentationFrameProvider> = z.lazy(() =>
@@ -2954,6 +3443,14 @@ export const RepresentationFrameProviderSchema: z.ZodType<RepresentationFramePro
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if ((value.kind === 'fixed' && !value.frame) || (value.kind === 'from_input_port' && !value.input_port) || (value.kind === 'from_representation_element' && !value.element_id) || (value.kind === 'registered_renderer' && !value.renderer_id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "frame provider kind requires its matching reference",
+        });
+      }
+    })
 ) as unknown as z.ZodType<RepresentationFrameProvider>;
 
 export const RepresentationAnchorSpecSchema: z.ZodType<RepresentationAnchorSpec> = z.lazy(() =>
@@ -2966,7 +3463,7 @@ export const RepresentationAnchorSpecSchema: z.ZodType<RepresentationAnchorSpec>
       "binding": z.union([RepresentationParamPathBindingSchema, RepresentationStateAnchorSelectorBindingSchema, RepresentationTrialSpecPathBindingSchema, RepresentationLiteralBindingSchema, z.null()]).optional(),
       "frame": z.string().nullable().optional(),
       "units": z.string().nullable().optional(),
-      "dim": z.number().int().nullable().optional(),
+      "dim": z.number().int().safe().nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
@@ -2976,11 +3473,19 @@ export const RepresentationStyleSpecSchema: z.ZodType<RepresentationStyleSpec> =
   z
     .object({
       "channel": z.union([z.literal("stroke"), z.literal("fill"), z.literal("radius"), z.literal("opacity"), z.literal("line_width"), z.literal("dash"), z.literal("label"), z.literal("glyph"), z.literal("colormap"), z.literal("z_index"), z.literal("visibility")]),
-      "value": z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]).optional(),
+      "value": z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())]).optional(),
       "binding": z.union([RepresentationParamPathBindingSchema, RepresentationStateAnchorSelectorBindingSchema, RepresentationTrialSpecPathBindingSchema, RepresentationLiteralBindingSchema, z.null()]).optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.value == null && value.binding == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "representation style channels require value or binding",
+        });
+      }
+    })
 ) as unknown as z.ZodType<RepresentationStyleSpec>;
 
 export const RepresentationElementSpecSchema: z.ZodType<RepresentationElementSpec> = z.lazy(() =>
@@ -2994,13 +3499,21 @@ export const RepresentationElementSpecSchema: z.ZodType<RepresentationElementSpe
       "frame": z.string().nullable().optional(),
       "frame_provider": RepresentationFrameProviderSchema.nullable().optional(),
       "units": z.string().nullable().optional(),
-      "dim": z.number().int().nullable().optional(),
+      "dim": z.number().int().safe().nullable().optional(),
       "scale_invariant": z.boolean().optional(),
       "renderer_id": z.string().nullable().optional(),
       "planar_chain": RepresentationPlanarChainSpecSchema.nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if ((value.archetype === 'registered_renderer' && !value.renderer_id) || (value.planar_chain != null && value.archetype !== 'planar_chain')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "representation element capabilities must match their archetype",
+        });
+      }
+    })
 ) as unknown as z.ZodType<RepresentationElementSpec>;
 
 export const RepresentationReachabilitySpecSchema: z.ZodType<RepresentationReachabilitySpec> = z.lazy(() =>
@@ -3028,13 +3541,21 @@ export const RepresentationSpecSchema: z.ZodType<RepresentationSpec> = z.lazy(()
       "frame": z.string().nullable().optional(),
       "frame_provider": RepresentationFrameProviderSchema.nullable().optional(),
       "units": z.string().nullable().optional(),
-      "dim": z.number().int().nullable().optional(),
+      "dim": z.number().int().safe().nullable().optional(),
       "scale_invariant": z.boolean().optional(),
       "reachability": RepresentationReachabilitySpecSchema.nullable().optional(),
       "muscle_path_geometry": RepresentationMusclePathGeometrySpecSchema.nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (hasDuplicate(value.anchors.map((anchor) => anchor.id)) || hasDuplicate(value.elements.map((element) => element.id)) || (value.reachability != null && !value.anchors.some((anchor) => anchor.id === value.reachability?.origin_anchor)) || value.elements.some((element) => element.anchors.some((anchor) => !value.anchors.some((candidate) => candidate.id === anchor)))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "representation ids and anchor references must be valid",
+        });
+      }
+    })
 ) as unknown as z.ZodType<RepresentationSpec>;
 
 export const RepresentationValidationIssueSchema: z.ZodType<RepresentationValidationIssue> = z.lazy(() =>
@@ -3080,6 +3601,14 @@ export const DomainMetaSchema: z.ZodType<DomainMeta> = z.lazy(() =>
       "compiler_id": z.string().nullable(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (!validDomainId(value.id) || value.nestable_domains.some((domainId) => !validDomainId(domainId))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "domain ids must use the feedbax.domain namespace with non-empty parts",
+        });
+      }
+    })
 ) as unknown as z.ZodType<DomainMeta>;
 
 export const DomainDiagnosticSchema: z.ZodType<DomainDiagnostic> = z.lazy(() =>
@@ -3093,7 +3622,7 @@ export const DomainDiagnosticSchema: z.ZodType<DomainDiagnostic> = z.lazy(() =>
       "node_ids": z.array(z.string()).optional(),
       "ports": z.array(z.tuple([z.string(), z.string()])).optional(),
       "variables": z.array(z.string()).optional(),
-      "counts": z.record(z.string(), z.number().int()).nullable().optional(),
+      "counts": z.record(z.string(), z.number().int().safe()).nullable().optional(),
       "location": z.record(z.string(), z.unknown()).nullable().optional(),
       "details": z.record(z.string(), z.unknown()).optional(),
     })
@@ -3119,9 +3648,17 @@ export const DomainCompileReportSchema: z.ZodType<DomainCompileReport> = z.lazy(
       "interior_content_hash": z.string(),
       "diagnostics": z.array(DomainDiagnosticSchema).optional(),
       "derived_interface": z.record(z.string(), z.unknown()).nullable().optional(),
-      "summary": z.record(z.string(), z.number().int()).optional(),
+      "summary": z.record(z.string(), z.number().int().safe()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if ((value.status === 'ok' && value.diagnostics.some((diagnostic) => diagnostic.severity === 'error' || diagnostic.severity === 'warning')) || (value.status === 'ok_with_warnings' && value.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) || (value.status === 'error' && !value.diagnostics.some((diagnostic) => diagnostic.severity === 'error'))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "domain report status must match diagnostic severities",
+        });
+      }
+    })
 ) as unknown as z.ZodType<DomainCompileReport>;
 
 export const WorkspaceReplayWarningSchema: z.ZodType<WorkspaceReplayWarning> = z.lazy(() =>
@@ -3138,25 +3675,41 @@ export const WorkspaceReplayWarningSchema: z.ZodType<WorkspaceReplayWarning> = z
 export const WorkspaceReplayTrialIdentitySchema: z.ZodType<WorkspaceReplayTrialIdentity> = z.lazy(() =>
   z
     .object({
-      "index": z.number().int(),
+      "index": z.number().int().safe().gte(0),
       "stable_id": z.string().nullable().optional(),
       "source": z.union([z.literal("stable_id"), z.literal("index_fallback")]).optional(),
       "label": z.string().nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (!value.stable_id && value.source !== 'index_fallback') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "trial identity source requires stable_id unless index_fallback",
+        });
+      }
+    })
 ) as unknown as z.ZodType<WorkspaceReplayTrialIdentity>;
 
 export const WorkspaceReplaySampleAxisSchema: z.ZodType<WorkspaceReplaySampleAxis> = z.lazy(() =>
   z
     .object({
-      "length": z.number().int(),
+      "length": z.number().int().safe().gte(0),
       "units": z.string().nullable().optional(),
-      "dt": z.number().nullable().optional(),
-      "values": z.array(z.number()).nullable().optional(),
+      "dt": z.number().finite().gt(0).nullable().optional(),
+      "values": z.array(z.number().finite()).nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.values != null && value.values.length !== value.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "time axis values length must equal length",
+        });
+      }
+    })
 ) as unknown as z.ZodType<WorkspaceReplaySampleAxis>;
 
 export const WorkspaceReplayTrackSchema: z.ZodType<WorkspaceReplayTrack> = z.lazy(() =>
@@ -3164,8 +3717,8 @@ export const WorkspaceReplayTrackSchema: z.ZodType<WorkspaceReplayTrack> = z.laz
     .object({
       "anchor_id": z.string(),
       "selector": StudioSelectorRefSchema,
-      "samples": z.array(z.array(z.number())),
-      "dim": z.number().int(),
+      "samples": z.array(z.array(z.number().finite())),
+      "dim": z.number().int().safe().gt(0),
       "dtype": z.string().optional(),
       "units": z.string().nullable().optional(),
       "frame": z.string().nullable().optional(),
@@ -3173,6 +3726,14 @@ export const WorkspaceReplayTrackSchema: z.ZodType<WorkspaceReplayTrack> = z.laz
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.samples.some((sample) => sample.length !== value.dim)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "track samples must match dim",
+        });
+      }
+    })
 ) as unknown as z.ZodType<WorkspaceReplayTrack>;
 
 export const WorkspaceReplayOverlayChannelSchema: z.ZodType<WorkspaceReplayOverlayChannel> = z.lazy(() =>
@@ -3212,7 +3773,7 @@ export const WorkspaceReplayManifestRefsSchema: z.ZodType<WorkspaceReplayManifes
       "spec_snapshot": StudioArtifactRefSchema.nullable().optional(),
       "checkpoint": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.null()]).optional(),
       "task_variant": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.null()]).optional(),
-      "seed": z.union([z.number().int(), z.string(), z.null()]).optional(),
+      "seed": z.union([z.number().int().safe(), z.string(), z.null()]).optional(),
       "environment": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.record(z.string(), z.unknown()), z.null()]).optional(),
       "producer_manifest": StudioManifestRefSchema.nullable().optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
@@ -3233,6 +3794,14 @@ export const WorkspaceReplayTrialSchema: z.ZodType<WorkspaceReplayTrial> = z.laz
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.tracks.some((track) => track.samples.length !== value.time.length) || value.overlays.some((overlay) => overlay.samples.length !== value.time.length)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "track and overlay sample counts must match the time axis",
+        });
+      }
+    })
 ) as unknown as z.ZodType<WorkspaceReplayTrial>;
 
 export const WorkspaceReplayImportedArtifactSchema: z.ZodType<WorkspaceReplayImportedArtifact> = z.lazy(() =>
@@ -3260,6 +3829,14 @@ export const WorkspaceReplayProductSchema: z.ZodType<WorkspaceReplayProduct> = z
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if ((value.source_mode === 'resolved_scene' && value.imported_artifact != null) || (value.source_mode === 'imported_artifact' && (value.imported_artifact == null || value.warnings.length === 0))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "workspace replay source mode must match imported artifact and warnings",
+        });
+      }
+    })
 ) as unknown as z.ZodType<WorkspaceReplayProduct>;
 
 export const WorkspaceReplayRequiredSelectorSchema: z.ZodType<WorkspaceReplayRequiredSelector> = z.lazy(() =>
@@ -3296,7 +3873,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "input_ports": z.array(z.string()).optional(),
       "output_ports": z.array(z.string()).optional(),
       "icon": z.string().optional(),
-      "default_params": z.record(z.string(), z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
+      "default_params": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
       "port_types": PortTypeSpecSchema.nullable().optional(),
       "dynamic_port_policy": DynamicPortPolicySchema.nullable().optional(),
       "domain": z.string().optional(),
@@ -3322,9 +3899,17 @@ export const BatchScheduleOriginSpecSchema: z.ZodType<BatchScheduleOriginSpec> =
   z
     .object({
       "kind": z.union([z.literal("segment_start"), z.literal("run_start"), z.literal("absolute")]),
-      "batch": z.number().int().nullable().optional(),
+      "batch": z.number().int().safe().gte(0).nullable().optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if ((value.kind === 'absolute' && value.batch == null) || (value.kind !== 'absolute' && value.batch != null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "batch is required only for an absolute schedule origin",
+        });
+      }
+    })
 ) as unknown as z.ZodType<BatchScheduleOriginSpec>;
 
 export const LrScheduleSpecSchema: z.ZodType<LrScheduleSpec> = z.lazy(() =>
@@ -3335,20 +3920,34 @@ export const LrScheduleSpecSchema: z.ZodType<LrScheduleSpec> = z.lazy(() =>
       "origin": BatchScheduleOriginSpecSchema,
       "allow_inert": z.boolean().optional(),
       "kind": z.union([z.literal("constant"), z.literal("warmup_cosine"), z.literal("delayed_cosine")]).optional(),
-      "learning_rate_0": z.number(),
-      "total_steps": z.number().int().nullable().optional(),
-      "constant_lr_iterations": z.number().int().optional(),
-      "warmup_init_fraction": z.number().optional(),
-      "cosine_annealing_alpha": z.number().optional(),
+      "learning_rate_0": z.number().finite().gt(0.0),
+      "total_steps": z.number().int().safe().gt(0).nullable().optional(),
+      "constant_lr_iterations": z.number().int().safe().gte(0).optional(),
+      "warmup_init_fraction": z.number().finite().gte(0.0).optional(),
+      "cosine_annealing_alpha": z.number().finite().gte(0.0).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.schema_id !== 'feedbax.spec.training.lr_schedule' || value.schema_version !== 'feedbax.spec.training.lr_schedule.v2') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "unsupported LrScheduleSpec schema identity",
+        });
+      }
+      if ((value.kind !== 'constant' && value.total_steps == null) || (value.kind === 'warmup_cosine' && (value.constant_lr_iterations < 1 || (value.total_steps != null && value.constant_lr_iterations >= value.total_steps))) || (value.kind === 'delayed_cosine' && value.total_steps != null && value.constant_lr_iterations >= value.total_steps)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "learning-rate schedule fields must match its kind",
+        });
+      }
+    })
 ) as unknown as z.ZodType<LrScheduleSpec>;
 
 export const OptimizerSpecSchema: z.ZodType<OptimizerSpec> = z.lazy(() =>
   z
     .object({
       "type": z.string(),
-      "params": z.record(z.string(), z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
+      "params": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
       "lr_schedule": LrScheduleSpecSchema.nullable().optional(),
     })
     .strict()
@@ -3358,12 +3957,12 @@ export const TimeAggregationSpecSchema: z.ZodType<TimeAggregationSpec> = z.lazy(
   z
     .object({
       "mode": z.union([z.literal("all"), z.literal("mean"), z.literal("sum"), z.literal("final"), z.literal("range"), z.literal("segment"), z.literal("custom")]).optional(),
-      "start": z.number().int().nullable().optional(),
-      "end": z.number().int().nullable().optional(),
+      "start": z.number().int().safe().nullable().optional(),
+      "end": z.number().int().safe().nullable().optional(),
       "segment_name": z.string().nullable().optional(),
-      "time_idxs": z.array(z.number().int()).nullable().optional(),
+      "time_idxs": z.array(z.number().int().safe()).nullable().optional(),
       "discount": z.union([z.literal("none"), z.literal("power"), z.literal("linear")]).nullable().optional(),
-      "discount_exp": z.number().nullable().optional(),
+      "discount_exp": z.number().finite().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TimeAggregationSpec>;
@@ -3375,7 +3974,7 @@ export const LossTermSpecSchema: z.ZodType<LossTermSpec> = z.lazy(() =>
       "schema_version": z.string().optional(),
       "type": z.string(),
       "label": z.string(),
-      "weight": z.number().optional(),
+      "weight": z.number().finite().optional(),
       "selector": z.string().nullable().optional(),
       "target_selector": z.string().nullable().optional(),
       "target_value": z.unknown().nullable().optional(),
@@ -3393,8 +3992,8 @@ export const EarlyStoppingSpecSchema: z.ZodType<EarlyStoppingSpec> = z.lazy(() =
   z
     .object({
       "metric": z.string(),
-      "patience": z.number().int(),
-      "min_delta": z.number(),
+      "patience": z.number().int().safe(),
+      "min_delta": z.number().finite(),
     })
     .strict()
 ) as unknown as z.ZodType<EarlyStoppingSpec>;
@@ -3404,10 +4003,10 @@ export const TrainingSpecSchema: z.ZodType<TrainingSpec> = z.lazy(() =>
     .object({
       "optimizer": OptimizerSpecSchema,
       "loss": LossTermSpecSchema,
-      "n_batches": z.number().int(),
-      "batch_size": z.number().int(),
-      "n_epochs": z.number().int().nullable().optional(),
-      "checkpoint_interval": z.number().int().nullable().optional(),
+      "n_batches": z.number().int().safe(),
+      "batch_size": z.number().int().safe(),
+      "n_epochs": z.number().int().safe().nullable().optional(),
+      "checkpoint_interval": z.number().int().safe().nullable().optional(),
       "early_stopping": EarlyStoppingSpecSchema.nullable().optional(),
     })
     .strict()
@@ -3417,8 +4016,8 @@ export const TaskSpecSchema: z.ZodType<TaskSpec> = z.lazy(() =>
   z
     .object({
       "type": z.string(),
-      "params": z.record(z.string(), z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
-      "timeline": z.record(z.string(), z.union([z.number().int(), z.number(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).nullable().optional(),
+      "params": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
+      "timeline": StudioTaskTimelineSpecSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TaskSpec>;
@@ -3426,15 +4025,15 @@ export const TaskSpecSchema: z.ZodType<TaskSpec> = z.lazy(() =>
 export const TrainingConfigSchema: z.ZodType<TrainingConfig> = z.lazy(() =>
   z
     .object({
-      "n_batches": z.number().int().optional(),
-      "batch_size": z.number().int().optional(),
-      "learning_rate": z.number().optional(),
-      "grad_clip": z.number().nullable().optional(),
-      "hidden_dim": z.number().int().optional(),
+      "n_batches": z.number().int().safe().optional(),
+      "batch_size": z.number().int().safe().optional(),
+      "learning_rate": z.number().finite().optional(),
+      "grad_clip": z.number().finite().nullable().optional(),
+      "hidden_dim": z.number().int().safe().optional(),
       "network_type": z.string().optional(),
-      "n_reach_steps": z.number().int().optional(),
-      "effort_weight": z.number().optional(),
-      "snapshot_interval": z.number().int().optional(),
+      "n_reach_steps": z.number().int().safe().optional(),
+      "effort_weight": z.number().finite().optional(),
+      "snapshot_interval": z.number().int().safe().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingConfig>;
@@ -3443,7 +4042,7 @@ export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
   z
     .object({
       "label": z.string(),
-      "step": z.number().int(),
+      "step": z.number().int().safe(),
       "kind": z.string(),
     })
     .strict()
@@ -3453,10 +4052,10 @@ export const SampledTaskTrialSchema: z.ZodType<SampledTaskTrial> = z.lazy(() =>
   z
     .object({
       "id": z.string(),
-      "index": z.number().int(),
-      "start": z.array(z.number()),
-      "goal": z.array(z.number()),
-      "n_steps": z.number().int(),
+      "index": z.number().int().safe(),
+      "start": z.array(z.number().finite()),
+      "goal": z.array(z.number().finite()),
+      "n_steps": z.number().int().safe(),
       "timeline": z.array(TaskTimelineCueSchema).optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
@@ -3467,8 +4066,8 @@ export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z
   z
     .object({
       "task_spec": TaskSpecSchema,
-      "seed": z.number().int().optional(),
-      "count": z.number().int().optional(),
+      "seed": z.number().int().safe().optional(),
+      "count": z.number().int().safe().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TaskTrialSampleRequest>;
@@ -3478,8 +4077,8 @@ export const TaskTrialSampleResponseSchema: z.ZodType<TaskTrialSampleResponse> =
     .object({
       "schema_version": z.string().optional(),
       "task_type": z.string(),
-      "seed": z.number().int(),
-      "count": z.number().int(),
+      "seed": z.number().int().safe(),
+      "count": z.number().int().safe(),
       "trials": z.array(SampledTaskTrialSchema),
     })
     .strict()
@@ -3502,7 +4101,7 @@ export const TopKByMetricPerGroupSchema: z.ZodType<TopKByMetricPerGroup> = z.laz
     .object({
       "metric_path": z.string(),
       "group_by_path": z.string(),
-      "k": z.number().int().optional(),
+      "k": z.number().int().safe().gte(1).optional(),
       "order": z.union([z.literal("asc"), z.literal("desc")]).optional(),
     })
     .strict()
@@ -3540,13 +4139,27 @@ export const SelectionSpecSchema: z.ZodType<SelectionSpec> = z.lazy(() =>
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.schema_id !== 'feedbax.spec.selection' || value.schema_version !== 'feedbax.spec.selection.v2') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "unsupported SelectionSpec schema identity",
+        });
+      }
+      if ((value.mode === 'explicit' && (value.query != null || value.frozen_refs.length > 0 || value.frozen_at != null)) || (value.mode === 'query' && (value.query == null || value.ids.length > 0 || value.frozen_refs.length > 0 || value.frozen_at != null)) || (value.mode === 'frozen' && (value.query == null || value.frozen_refs.length === 0 || value.ids.length > 0))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "selection fields must match selection mode",
+        });
+      }
+    })
 ) as unknown as z.ZodType<SelectionSpec>;
 
 export const SelectionPreviewSchema: z.ZodType<SelectionPreview> = z.lazy(() =>
   z
     .object({
       "selection_spec": SelectionSpecSchema,
-      "match_count": z.number().int(),
+      "match_count": z.number().int().safe(),
       "parent_refs": z.array(ParentRefSchema),
       "truncated": z.boolean().optional(),
     })
@@ -3561,7 +4174,7 @@ export const SelectionRefreshDiffSchema: z.ZodType<SelectionRefreshDiff> = z.laz
       "new_refs": z.array(ParentRefSchema),
       "gone_refs": z.array(ParentRefSchema),
       "unchanged_refs": z.array(ParentRefSchema),
-      "reprocess_counts": z.record(z.string(), z.number().int()),
+      "reprocess_counts": z.record(z.string(), z.number().int().safe()),
     })
     .strict()
 ) as unknown as z.ZodType<SelectionRefreshDiff>;
@@ -4043,7 +4656,7 @@ export const AnalysisBundleDryRunRequestSchema: z.ZodType<AnalysisBundleDryRunRe
       "bundle": z.record(z.string(), z.unknown()),
       "selection_spec": SelectionSpecSchema.nullable().optional(),
       "root": z.string().nullable().optional(),
-      "preview_limit": z.number().int().optional(),
+      "preview_limit": z.number().int().safe().gte(0).lte(500).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<AnalysisBundleDryRunRequest>;
@@ -4139,16 +4752,16 @@ export const TrainingProgressEventSchema: z.ZodType<TrainingProgressEvent> = z.l
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
       "type": z.literal("training_progress"),
       "job_id": z.string(),
-      "seq": z.number().int(),
-      "emitted_at_ms": z.number().int(),
-      "worker_seq": z.number().int().nullable().optional(),
-      "batch": z.number().int(),
-      "total_batches": z.number().int(),
-      "loss": z.number(),
-      "loss_terms": z.record(z.string(), z.number()).optional(),
-      "grad_norm": z.number().optional(),
-      "step_time_ms": z.number().optional(),
-      "metrics": z.record(z.string(), z.number()).optional(),
+      "seq": z.number().int().safe(),
+      "emitted_at_ms": z.number().int().safe(),
+      "worker_seq": z.number().int().safe().nullable().optional(),
+      "batch": z.number().int().safe(),
+      "total_batches": z.number().int().safe(),
+      "loss": z.number().finite(),
+      "loss_terms": z.record(z.string(), z.number().finite()).optional(),
+      "grad_norm": z.number().finite().optional(),
+      "step_time_ms": z.number().finite().optional(),
+      "metrics": z.record(z.string(), z.number().finite()).optional(),
       "status": z.string().optional(),
       "execution": z.string().nullable().optional(),
     })
@@ -4162,10 +4775,10 @@ export const TrainingLogEventSchema: z.ZodType<TrainingLogEvent> = z.lazy(() =>
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
       "type": z.literal("training_log"),
       "job_id": z.string(),
-      "seq": z.number().int(),
-      "emitted_at_ms": z.number().int(),
-      "worker_seq": z.number().int().nullable().optional(),
-      "batch": z.number().int(),
+      "seq": z.number().int().safe(),
+      "emitted_at_ms": z.number().int().safe(),
+      "worker_seq": z.number().int().safe().nullable().optional(),
+      "batch": z.number().int().safe(),
       "level": z.union([z.literal("info"), z.literal("warning"), z.literal("error")]).optional(),
       "message": z.string(),
       "manifest_path": z.string().nullable().optional(),
@@ -4182,7 +4795,7 @@ export const TrainingTrajectoryPayloadSchema: z.ZodType<TrainingTrajectoryPayloa
       "schema_version": z.literal("feedbax.event.studio.training_trajectory.v1").optional(),
       "source_kind": z.literal("live_snapshot").optional(),
       "fidelity": z.literal("lower_fidelity_live_snapshot").optional(),
-      "n_steps": z.number().int().nullable().optional(),
+      "n_steps": z.number().int().safe().nullable().optional(),
       "time": WorkspaceReplaySampleAxisSchema.nullable().optional(),
       "tracks": z.record(z.string(), WorkspaceReplayTrackSchema).optional(),
       "observables": z.record(z.string(), z.unknown()).optional(),
@@ -4201,10 +4814,10 @@ export const TrainingTrajectoryEventSchema: z.ZodType<TrainingTrajectoryEvent> =
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
       "type": z.literal("training_trajectory"),
       "job_id": z.string(),
-      "seq": z.number().int(),
-      "emitted_at_ms": z.number().int(),
-      "worker_seq": z.number().int().nullable().optional(),
-      "batch": z.number().int(),
+      "seq": z.number().int().safe(),
+      "emitted_at_ms": z.number().int().safe(),
+      "worker_seq": z.number().int().safe().nullable().optional(),
+      "batch": z.number().int().safe(),
       "trajectory": TrainingTrajectoryPayloadSchema,
       "execution": z.string().nullable().optional(),
     })
@@ -4218,11 +4831,11 @@ export const TrainingCompleteEventSchema: z.ZodType<TrainingCompleteEvent> = z.l
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
       "type": z.literal("training_complete"),
       "job_id": z.string(),
-      "seq": z.number().int(),
-      "emitted_at_ms": z.number().int(),
-      "worker_seq": z.number().int().nullable().optional(),
-      "batch": z.number().int(),
-      "loss": z.number().nullable().optional(),
+      "seq": z.number().int().safe(),
+      "emitted_at_ms": z.number().int().safe(),
+      "worker_seq": z.number().int().safe().nullable().optional(),
+      "batch": z.number().int().safe(),
+      "loss": z.number().finite().nullable().optional(),
       "manifest_path": z.string().nullable().optional(),
       "manifest_id": z.string().nullable().optional(),
       "execution": z.string().nullable().optional(),
@@ -4237,10 +4850,10 @@ export const TrainingErrorEventSchema: z.ZodType<TrainingErrorEvent> = z.lazy(()
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
       "type": z.literal("training_error"),
       "job_id": z.string(),
-      "seq": z.number().int(),
-      "emitted_at_ms": z.number().int(),
-      "worker_seq": z.number().int().nullable().optional(),
-      "batch": z.number().int().nullable().optional(),
+      "seq": z.number().int().safe(),
+      "emitted_at_ms": z.number().int().safe(),
+      "worker_seq": z.number().int().safe().nullable().optional(),
+      "batch": z.number().int().safe().nullable().optional(),
       "error": z.string(),
       "diagnostics": z.array(DomainDiagnosticSchema).optional(),
     })
@@ -4254,12 +4867,12 @@ export const TrainingResyncEventSchema: z.ZodType<TrainingResyncEvent> = z.lazy(
       "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
       "type": z.literal("training_resync"),
       "job_id": z.string(),
-      "seq": z.number().int(),
-      "emitted_at_ms": z.number().int(),
-      "worker_seq": z.number().int().nullable().optional(),
-      "expected_worker_seq": z.number().int().nullable().optional(),
-      "observed_worker_seq": z.number().int().nullable().optional(),
-      "missed_events": z.number().int().optional(),
+      "seq": z.number().int().safe(),
+      "emitted_at_ms": z.number().int().safe(),
+      "worker_seq": z.number().int().safe().nullable().optional(),
+      "expected_worker_seq": z.number().int().safe().nullable().optional(),
+      "observed_worker_seq": z.number().int().safe().nullable().optional(),
+      "missed_events": z.number().int().safe().optional(),
       "reason": z.union([z.literal("resumed"), z.literal("gap")]),
       "message": z.string(),
     })
@@ -4347,9 +4960,9 @@ export const CreateEvalRunRequestSchema: z.ZodType<CreateEvalRunRequest> = z.laz
 export const TrainingRunCompareRequestSchema: z.ZodType<TrainingRunCompareRequest> = z.lazy(() =>
   z
     .object({
-      "run_ids": z.array(z.string()),
-      "param_fields": z.array(z.string()).optional(),
-      "metric_fields": z.array(z.string()).optional(),
+      "run_ids": z.array(z.string()).min(2),
+      "param_fields": z.array(z.string()).max(64).optional(),
+      "metric_fields": z.array(z.string()).max(64).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingRunCompareRequest>;
@@ -4388,10 +5001,10 @@ export const ManifestImportResponseSchema: z.ZodType<ManifestImportResponse> = z
       "source_path": z.string(),
       "imported_manifest_ids": z.array(z.string()).optional(),
       "skipped_manifest_ids": z.array(z.string()).optional(),
-      "manifest_count": z.number().int().optional(),
-      "artifact_count": z.number().int().optional(),
-      "included_artifact_count": z.number().int().optional(),
-      "external_artifact_count": z.number().int().optional(),
+      "manifest_count": z.number().int().safe().optional(),
+      "artifact_count": z.number().int().safe().optional(),
+      "included_artifact_count": z.number().int().safe().optional(),
+      "external_artifact_count": z.number().int().safe().optional(),
       "index_path": z.string().nullable().optional(),
       "training_runs": z.array(TrainingRunInfoSchema).optional(),
       "eval_runs": z.array(EvalRunInfoSchema).optional(),
@@ -4403,7 +5016,7 @@ export const SelectionPreviewRequestSchema: z.ZodType<SelectionPreviewRequest> =
   z
     .object({
       "selection_spec": SelectionSpecSchema,
-      "limit": z.number().int().optional(),
+      "limit": z.number().int().safe().gte(0).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<SelectionPreviewRequest>;
@@ -4422,8 +5035,8 @@ export const DatasetInfoSchema: z.ZodType<DatasetInfo> = z.lazy(() =>
   z
     .object({
       "name": z.string(),
-      "file_size": z.number().int(),
-      "modified": z.number(),
+      "file_size": z.number().int().safe(),
+      "modified": z.number().finite(),
     })
     .strict()
 ) as unknown as z.ZodType<DatasetInfo>;
@@ -4431,14 +5044,14 @@ export const DatasetInfoSchema: z.ZodType<DatasetInfo> = z.lazy(() =>
 export const TrajectoryMetadataSchema: z.ZodType<TrajectoryMetadata> = z.lazy(() =>
   z
     .object({
-      "n_trajectories": z.number().int(),
-      "n_timesteps": z.number().int(),
-      "n_joints": z.number().int(),
-      "n_muscles": z.number().int(),
-      "n_bodies": z.number().int(),
-      "rollouts_per_body": z.number().int(),
-      "task_types": z.array(z.number().int()),
-      "body_indices": z.array(z.number().int()),
+      "n_trajectories": z.number().int().safe(),
+      "n_timesteps": z.number().int().safe(),
+      "n_joints": z.number().int().safe(),
+      "n_muscles": z.number().int().safe(),
+      "n_bodies": z.number().int().safe(),
+      "rollouts_per_body": z.number().int().safe(),
+      "task_types": z.array(z.number().int().safe()),
+      "body_indices": z.array(z.number().int().safe()),
       "angle_convention": z.string().optional(),
     })
     .strict()
@@ -4447,8 +5060,8 @@ export const TrajectoryMetadataSchema: z.ZodType<TrajectoryMetadata> = z.lazy(()
 export const FilterResultSchema: z.ZodType<FilterResult> = z.lazy(() =>
   z
     .object({
-      "indices": z.array(z.number().int()),
-      "count": z.number().int(),
+      "indices": z.array(z.number().int().safe()),
+      "count": z.number().int().safe(),
     })
     .strict()
 ) as unknown as z.ZodType<FilterResult>;
@@ -4456,14 +5069,14 @@ export const FilterResultSchema: z.ZodType<FilterResult> = z.lazy(() =>
 export const TrajectoryDataSchema: z.ZodType<TrajectoryData> = z.lazy(() =>
   z
     .object({
-      "timestamps": z.array(z.number()),
-      "joint_angles": z.array(z.array(z.number())),
-      "muscle_activations": z.array(z.array(z.number())),
-      "effector_pos": z.array(z.array(z.number())),
-      "task_target": z.array(z.array(z.number())),
-      "body_preset_flat": z.array(z.number()),
-      "task_type": z.number().int(),
-      "body_idx": z.number().int(),
+      "timestamps": z.array(z.number().finite()),
+      "joint_angles": z.array(z.array(z.number().finite())),
+      "muscle_activations": z.array(z.array(z.number().finite())),
+      "effector_pos": z.array(z.array(z.number().finite())),
+      "task_target": z.array(z.array(z.number().finite())),
+      "body_preset_flat": z.array(z.number().finite()),
+      "task_type": z.number().int().safe(),
+      "body_idx": z.number().int().safe(),
     })
     .strict()
 ) as unknown as z.ZodType<TrajectoryData>;
@@ -4471,14 +5084,14 @@ export const TrajectoryDataSchema: z.ZodType<TrajectoryData> = z.lazy(() =>
 export const MetricSummarySchema: z.ZodType<MetricSummary> = z.lazy(() =>
   z
     .object({
-      "mean": z.number(),
-      "std": z.number(),
-      "median": z.number(),
-      "q25": z.number(),
-      "q75": z.number(),
-      "min": z.number(),
-      "max": z.number(),
-      "count": z.number().int(),
+      "mean": z.number().finite(),
+      "std": z.number().finite(),
+      "median": z.number().finite(),
+      "q25": z.number().finite(),
+      "q75": z.number().finite(),
+      "min": z.number().finite(),
+      "max": z.number().finite(),
+      "count": z.number().int().safe(),
     })
     .strict()
 ) as unknown as z.ZodType<MetricSummary>;
@@ -4508,12 +5121,12 @@ export const TimeseriesPercentilesSchema: z.ZodType<TimeseriesPercentiles> = z.l
     .object({
       "group_key": z.string(),
       "group_label": z.string(),
-      "timesteps": z.array(z.number().int()),
-      "p50": z.array(z.number()),
-      "p25": z.array(z.number()),
-      "p75": z.array(z.number()),
-      "p05": z.array(z.number()),
-      "p95": z.array(z.number()),
+      "timesteps": z.array(z.number().int().safe()),
+      "p50": z.array(z.number().finite()),
+      "p25": z.array(z.number().finite()),
+      "p75": z.array(z.number().finite()),
+      "p05": z.array(z.number().finite()),
+      "p95": z.array(z.number().finite()),
     })
     .strict()
 ) as unknown as z.ZodType<TimeseriesPercentiles>;
@@ -4532,9 +5145,9 @@ export const TimeseriesResponseSchema: z.ZodType<TimeseriesResponse> = z.lazy(()
 export const HistogramBinSchema: z.ZodType<HistogramBin> = z.lazy(() =>
   z
     .object({
-      "lo": z.number(),
-      "hi": z.number(),
-      "count": z.number().int(),
+      "lo": z.number().finite(),
+      "hi": z.number().finite(),
+      "count": z.number().int().safe(),
     })
     .strict()
 ) as unknown as z.ZodType<HistogramBin>;
@@ -4563,10 +5176,10 @@ export const HistogramResponseSchema: z.ZodType<HistogramResponse> = z.lazy(() =
 export const ScatterPointSchema: z.ZodType<ScatterPoint> = z.lazy(() =>
   z
     .object({
-      "x": z.number(),
-      "y": z.number(),
-      "body_idx": z.number().int(),
-      "task_type": z.number().int(),
+      "x": z.number().finite(),
+      "y": z.number().finite(),
+      "body_idx": z.number().int().safe(),
+      "task_type": z.number().int().safe(),
     })
     .strict()
 ) as unknown as z.ZodType<ScatterPoint>;
@@ -4615,7 +5228,7 @@ export const CycleAnnotationModelSchema: z.ZodType<CycleAnnotationModel> = z.laz
 export const TreescopeRequestSchema: z.ZodType<TreescopeRequest> = z.lazy(() =>
   z
     .object({
-      "max_depth": z.number().int().optional(),
+      "max_depth": z.number().int().safe().gte(1).lte(50).optional(),
       "project_cycles": z.boolean().optional(),
       "roundtrip_mode": z.boolean().optional(),
     })
@@ -4626,7 +5239,7 @@ export const InlineTreescopeRequestSchema: z.ZodType<InlineTreescopeRequest> = z
   z
     .object({
       "graph": GraphSpecSchema,
-      "max_depth": z.number().int().optional(),
+      "max_depth": z.number().int().safe().gte(1).lte(50).optional(),
       "project_cycles": z.boolean().optional(),
     })
     .strict()
@@ -4637,7 +5250,7 @@ export const TreescopeResponseSchema: z.ZodType<TreescopeResponse> = z.lazy(() =
     .object({
       "html": z.string(),
       "has_cycles": z.boolean().optional(),
-      "cycle_count": z.number().int().optional(),
+      "cycle_count": z.number().int().safe().optional(),
       "cycles": z.array(CycleAnnotationModelSchema).optional(),
       "execution_order": z.array(z.string()).nullable().optional(),
     })

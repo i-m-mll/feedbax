@@ -1,16 +1,15 @@
-"""The single canonical hash domain and on-disk form for authored documents.
+"""The legacy v1 hash domain and on-disk form for authored documents.
 
 Every content pin the engine writes — envelope hashes, lineage pins, compiled
-document hashes, execution identity — is computed here and nowhere else. A
-second spelling of the projection would be a second, silently divergent identity
-domain, so this module is the only place the engine serializes for hashing.
+document hashes, execution identity — remains on ``canonical_json_v1`` until
+its owning durable schema explicitly migrates. Existing pins are permanent.
 
 The projection is Feedbax's existing stable-JSON encoding
 (:func:`~feedbax.contracts.manifest.canonical_json_bytes`: sorted keys, compact
 separators, UTF-8), reused rather than re-implemented. The name
 :data:`CANONICAL_PIN_ALGORITHM` is written into every pin record so a stored
-hash always says which domain produced it, and a future domain is a new name
-beside this one rather than a redefinition of it.
+hash always says which domain produced it. V2 exists beside this domain and
+never redefines it.
 
 The *emit* form is deliberately different from the *hash* form: hashing wants the
 tightest projection, while a tracked compiler output wants to be readable and to
@@ -23,12 +22,16 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from feedbax.contracts.manifest import canonical_json_bytes, sha256_bytes
+from feedbax.contracts.base import (
+    canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.canonical_json import CANONICAL_JSON_V1
 
 #: The name recorded beside every content hash the engine writes. A pin that does
 #: not name its algorithm cannot be re-verified; a pin naming an algorithm the
 #: reader does not know fails closed instead of being compared anyway.
-CANONICAL_PIN_ALGORITHM = "canonical_json_v1"
+CANONICAL_PIN_ALGORITHM = CANONICAL_JSON_V1
 
 
 def canonical_bytes(value: Any) -> bytes:

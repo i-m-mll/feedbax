@@ -20,7 +20,8 @@ from typing import Any, Literal, Protocol, get_args
 
 from pydantic import Field, field_validator, model_validator
 
-from feedbax.contracts.manifest import StrictModel, canonical_json_bytes
+from feedbax.contracts.base import StrictModel, canonical_json_bytes
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.execution.records import Invocation, invocation_from_document
 from feedbax.orchestration.realization import (
     Attempt,
@@ -480,7 +481,7 @@ class ControllerEventStore:
             if not line.strip():
                 continue
             try:
-                event = controller_event_from_document(json.loads(line))
+                event = controller_event_from_document(strict_json_loads(line))
             except Exception as exc:
                 raise ControllerProtocolError(
                     f"invalid controller event at {self.path}:{line_number}"

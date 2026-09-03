@@ -1,10 +1,14 @@
 """GCP instance orchestration via gcloud CLI subprocess."""
+
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 from feedbax.web.orchestration.startup_script import (
@@ -51,8 +55,8 @@ class InstanceConfig:
         image_project: GCP project owning the image family.
         preemptible: Whether to use a preemptible (spot) instance.
         worker_port: Port the Feedbax worker will bind to.
-        auth_token: Optional shared secret for the worker's auth middleware.
-        ts_auth_key: Optional Tailscale auth key for network provisioning.
+        auth_token: Required shared secret for the worker's auth middleware.
+        ts_auth_key: Unsupported legacy Tailscale auth key input.
         install_spec: Structured Feedbax install request for the startup script.
     """
 
@@ -63,9 +67,18 @@ class InstanceConfig:
     image_project: str = "debian-cloud"
     preemptible: bool = True
     worker_port: int = 8765
-    auth_token: Optional[str] = None
+    auth_token: str = ""
     ts_auth_key: Optional[str] = None
     install_spec: FeedbaxInstallSpec = field(default_factory=FeedbaxInstallSpec)
+
+    def __post_init__(self) -> None:
+        if not self.auth_token:
+            raise ValueError("GCP workers require an explicit worker credential")
+        if self.ts_auth_key:
+            raise ValueError(
+                "GCP Tailscale bootstrap is unsupported because it cannot keep credentials "
+                "out of process arguments"
+            )
 
 
 @dataclass
@@ -106,8 +119,8 @@ async def _run_gcloud(*args: str) -> dict | list:
         Parsed JSON object (dict or list) from gcloud stdout.
 
     Raises:
-        RuntimeError: If gcloud exits with a non-zero return code, with the
-            stderr output included in the message.
+        RuntimeError: If gcloud exits with a non-zero return code. Provider
+            output is kept out of the exception because it may contain secrets.
     """
     proc = await asyncio.create_subprocess_exec(
         "gcloud",
@@ -116,7 +129,7 @@ async def _run_gcloud(*args: str) -> dict | list:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await proc.communicate()
+        stdout, _stderr = await proc.communicate()
     except BaseException:
         cleanup_task = asyncio.create_task(_reap_gcloud_process(proc))
         while not cleanup_task.done():
@@ -133,10 +146,7 @@ async def _run_gcloud(*args: str) -> dict | list:
                 pass
         raise
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"gcloud {' '.join(args)} failed (exit {proc.returncode}):\n"
-            + stderr.decode(errors="replace")
-        )
+        raise RuntimeError(f"gcloud command failed (exit {proc.returncode}); inspect provider logs")
     return json.loads(stdout.decode())
 
 
@@ -200,7 +210,9 @@ def _parse_instance(raw: dict) -> InstanceInfo:
 
     # Extract short machine type and zone from their self-link paths.
     machine_type_url: str = raw.get("machineType", "")
-    machine_type = machine_type_url.rsplit("/", 1)[-1] if "/" in machine_type_url else machine_type_url
+    machine_type = (
+        machine_type_url.rsplit("/", 1)[-1] if "/" in machine_type_url else machine_type_url
+    )
 
     zone_url: str = raw.get("zone", "")
     zone = zone_url.rsplit("/", 1)[-1] if "/" in zone_url else zone_url
@@ -223,8 +235,9 @@ def _parse_instance(raw: dict) -> InstanceInfo:
 async def create_instance(config: InstanceConfig, instance_name: str) -> InstanceInfo:
     """Create a GCP compute instance and return its initial info.
 
-    The instance's startup script installs feedbax, optionally connects to
-    Tailscale, and starts the worker process.
+    The instance's startup script installs feedbax and starts the authenticated
+    worker process. This low-level helper does not establish a trusted HTTPS
+    origin; the Studio adapter therefore refuses to invoke it.
 
     Args:
         config: Instance configuration (project, zone, machine type, etc.).
@@ -236,28 +249,34 @@ async def create_instance(config: InstanceConfig, instance_name: str) -> Instanc
     Raises:
         RuntimeError: If ``gcloud`` fails.
     """
-    metadata_parts = [f"startup-script={make_startup_script(config.install_spec)}"]
-    if config.ts_auth_key:
-        metadata_parts.append(f"TS_AUTH_KEY={config.ts_auth_key}")
-    metadata_parts.append(f"WORKER_PORT={config.worker_port}")
-    if config.auth_token:
-        metadata_parts.append(f"AUTH_TOKEN={config.auth_token}")
-    metadata_str = ",".join(metadata_parts)
+    with tempfile.TemporaryDirectory(prefix="feedbax-gcp-metadata-") as directory:
+        metadata_dir = Path(directory)
+        os.chmod(metadata_dir, 0o700)
+        startup_path = metadata_dir / "startup.sh"
+        token_path = metadata_dir / "worker-token"
+        startup_path.write_text(make_startup_script(config.install_spec), encoding="utf-8")
+        token_path.write_text(config.auth_token, encoding="utf-8")
+        os.chmod(startup_path, 0o600)
+        os.chmod(token_path, 0o600)
 
-    args = [
-        "compute", "instances", "create", instance_name,
-        f"--project={config.project}",
-        f"--zone={config.zone}",
-        f"--machine-type={config.machine_type}",
-        f"--image-family={config.image_family}",
-        f"--image-project={config.image_project}",
-        f"--metadata={metadata_str}",
-        "--format=json",
-    ]
-    if config.preemptible:
-        args.append("--preemptible")
+        args = [
+            "compute",
+            "instances",
+            "create",
+            instance_name,
+            f"--project={config.project}",
+            f"--zone={config.zone}",
+            f"--machine-type={config.machine_type}",
+            f"--image-family={config.image_family}",
+            f"--image-project={config.image_project}",
+            f"--metadata=WORKER_PORT={config.worker_port}",
+            f"--metadata-from-file=startup-script={startup_path},AUTH_TOKEN={token_path}",
+            "--format=json",
+        ]
+        if config.preemptible:
+            args.append("--preemptible")
 
-    raw = await _run_gcloud(*args)
+        raw = await _run_gcloud(*args)
     # gcloud returns a list when creating an instance.
     instances: list = raw if isinstance(raw, list) else [raw]
     if not instances:
@@ -280,7 +299,10 @@ async def get_instance(project: str, zone: str, name: str) -> InstanceInfo:
         RuntimeError: If ``gcloud`` fails.
     """
     raw = await _run_gcloud(
-        "compute", "instances", "describe", name,
+        "compute",
+        "instances",
+        "describe",
+        name,
         f"--project={project}",
         f"--zone={zone}",
         "--format=json",
@@ -300,7 +322,10 @@ async def delete_instance(project: str, zone: str, name: str) -> None:
         RuntimeError: If ``gcloud`` fails.
     """
     await _run_gcloud(
-        "compute", "instances", "delete", name,
+        "compute",
+        "instances",
+        "delete",
+        name,
         f"--project={project}",
         f"--zone={zone}",
         "--quiet",
@@ -323,7 +348,9 @@ async def list_instances(project: str, zone: str) -> list[InstanceInfo]:
         RuntimeError: If ``gcloud`` fails.
     """
     raw = await _run_gcloud(
-        "compute", "instances", "list",
+        "compute",
+        "instances",
+        "list",
         f"--project={project}",
         f"--zones={zone}",
         "--format=json",

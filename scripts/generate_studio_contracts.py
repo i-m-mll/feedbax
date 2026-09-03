@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
+from pydantic.fields import FieldInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -63,6 +64,11 @@ from feedbax.contracts.graph import (
     AnalysisDataProductRequirement,
     AnalysisInputRequirement,
     AnalysisPageSpec,
+    AnalysisCanvasPosition,
+    AnalysisCanvasViewport,
+    AnalysisCanvasPageLayout,
+    AnalysisCanvasStageLayout,
+    AnalysisCanvasLayoutDocument,
     AssemblyViewUIState,
     BarnacleSpec,
     CanvasPositionSpec,
@@ -87,9 +93,11 @@ from feedbax.contracts.graph import (
     StudioBiomechanicsSpec,
     StudioArtifactRef,
     StudioCollectionRef,
+    StudioEpochValueSpec,
     StudioInterventionTransformSpec,
     StudioInterventionValueBounds,
     StudioManifestRef,
+    StudioPersistenceDocument,
     StudioScenarioSpec,
     StudioSelectorRef,
     StudioStageSpec,
@@ -192,7 +200,7 @@ from feedbax.contracts.training import (
     TrainingConfig,
     TrainingSpec,
 )
-from feedbax.contracts.manifest import ParentRef
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.selection import (
     ManifestPredicate,
     SelectionPreview,
@@ -214,6 +222,10 @@ from feedbax.contracts.workspace_replay import (
     WorkspaceReplayTrialIdentity,
     WorkspaceReplayTrialSpecSnapshot,
     WorkspaceReplayWarning,
+)
+from feedbax.contracts.studio_refinements import (
+    CROSS_FIELD_REFINEMENTS,
+    REGISTERED_CONSTRAINT_VALIDATORS,
 )
 from feedbax.web.api.training import (
     ProbeResponse,
@@ -308,6 +320,11 @@ MODEL_TYPES: list[type[BaseModel]] = [
     AssemblyViewUIState,
     GraphUIState,
     AnalysisPageSpec,
+    AnalysisCanvasPosition,
+    AnalysisCanvasViewport,
+    AnalysisCanvasPageLayout,
+    AnalysisCanvasStageLayout,
+    AnalysisCanvasLayoutDocument,
     StudioValidationIssue,
     StudioValidationState,
     StudioManifestRef,
@@ -321,6 +338,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     StudioInterventionValueBounds,
     StudioInterventionTransformSpec,
     StudioTaskEpochSpec,
+    StudioEpochValueSpec,
     StudioTaskTimelineSignalSpec,
     StudioTaskTimelineSegmentSpec,
     StudioTaskTimelineSpec,
@@ -333,6 +351,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     StudioWorkspaceSpec,
     SemanticAnchor,
     WorkspaceDocument,
+    StudioPersistenceDocument,
     GraphProject,
     ValidationError,
     ValidationWarning,
@@ -498,6 +517,82 @@ EVENT_MODEL_NAMES = [
     "TrainingResyncEvent",
 ]
 
+REFINEMENT_HELPERS = """function hasDuplicate(values: readonly unknown[]): boolean {
+  return new Set(values).size !== values.length;
+}
+
+function validDomainId(value: string): boolean {
+  if (!value.startsWith('feedbax.domain.')) return false;
+  const suffix = value.slice('feedbax.domain.'.length);
+  return suffix.length > 0 && suffix.split('.').every((part) => part.length > 0);
+}
+
+function validGeneratedPortTemplate(value: string): boolean {
+  return value.includes('{index}') && !/[{}]/.test(value.split('{index}').join(''));
+}
+
+function containsArrayValueEnvelope(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsArrayValueEnvelope);
+  if (value === null || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  if (
+    record.schema_id === 'feedbax.spec.component_param.array_value' ||
+    (typeof record.schema_version === 'string' &&
+      record.schema_version.startsWith('feedbax.spec.component_param.array_value.'))
+  ) return true;
+  return Object.values(record).some(containsArrayValueEnvelope);
+}
+
+function containsNonFiniteNumber(value: unknown): boolean {
+  if (typeof value === 'number') return !Number.isFinite(value);
+  if (Array.isArray(value)) return value.some(containsNonFiniteNumber);
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).some(containsNonFiniteNumber);
+}
+
+function invalidTypedParamEnvelope(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(invalidTypedParamEnvelope);
+  if (value === null || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  const claimsArray =
+    record.schema_id === 'feedbax.spec.component_param.array_value' ||
+    (typeof record.schema_version === 'string' &&
+      record.schema_version.startsWith('feedbax.spec.component_param.array_value.'));
+  if (claimsArray) {
+    return !SparseCooArrayValueSpecSchema.safeParse(record).success &&
+      !ConstantArrayValueSpecSchema.safeParse(record).success;
+  }
+  const claimsValue =
+    record.schema_id === 'feedbax.spec.studio.value' ||
+    (typeof record.schema_version === 'string' &&
+      (record.schema_version.startsWith('feedbax.spec.studio.value.') ||
+        record.schema_version.startsWith('feedbax.studio.value.')));
+  if (claimsValue) return !StudioValueSpecSchema.safeParse(record).success;
+  return Object.values(record).some(invalidTypedParamEnvelope);
+}
+
+function arrayScalarInvalid(value: unknown, dtype: string, nonfinite: string): boolean {
+  if (typeof value === 'string') return nonfinite !== 'allow' || !dtype.startsWith('float');
+  if (typeof value === 'boolean') return dtype !== 'bool';
+  if (dtype === 'bool') return true;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return true;
+  const integerRanges: Record<string, readonly [number, number]> = {
+    int8: [-128, 127], int16: [-32768, 32767], int32: [-2147483648, 2147483647],
+    int64: [Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER], uint8: [0, 255],
+    uint16: [0, 65535], uint32: [0, 4294967295],
+    uint64: [0, Number.MAX_SAFE_INTEGER],
+  };
+  const integerRange = integerRanges[dtype];
+  if (integerRange) {
+    return !Number.isInteger(value) || value < integerRange[0] || value > integerRange[1];
+  }
+  const floatMax: Record<string, number> = {
+    float16: 65504, float32: 3.4028234663852886e38, float64: Number.MAX_VALUE,
+  };
+  return dtype in floatMax && Math.abs(value) > floatMax[dtype];
+}
+"""
+
 CONTRACT_MODEL_NAMES = [
     "GraphListResponse",
     "GraphCreateResponse",
@@ -552,6 +647,19 @@ CONTRACT_MODEL_NAMES = [
     "TrainingWebSocketEvent",
 ]
 
+MIGRATION_OR_NORMALIZATION_VALIDATORS = {
+    ("ComponentSpec", "validate_value_spec_params"),
+    ("StudioValueSpec", "migrate_legacy_value_spec"),
+    ("StudioTaskTimelineSpec", "migrate_v1"),
+    ("StudioTaskBinding", "reject_legacy_task_binding_field_names"),
+    ("StudioTaskBindingSpec", "reject_legacy_task_binding_contract"),
+    ("GraphProject", "drop_unparseable_compile_reports"),
+    ("PortType", "migrate_legacy_signal_port"),
+    ("ComponentDefinition", "migrate_legacy_definition"),
+    ("LrScheduleSpec", "_migrate_v1_origin"),
+    ("SelectionSpec", "_normalize_mode_fields"),
+}
+
 
 def _is_union(annotation: Any) -> bool:
     return get_origin(annotation) in (Union, types.UnionType)
@@ -575,6 +683,30 @@ def _unwrap_annotated(annotation: Any) -> Any:
     while get_origin(annotation) is Annotated:
         annotation = get_args(annotation)[0]
     return annotation
+
+
+def _annotation_metadata(annotation: Any) -> tuple[Any, ...]:
+    metadata: list[Any] = []
+    while get_origin(annotation) is Annotated:
+        args = get_args(annotation)
+        annotation = args[0]
+        for item in args[1:]:
+            if isinstance(item, FieldInfo):
+                metadata.extend(item.metadata)
+            else:
+                metadata.append(item)
+    return tuple(metadata)
+
+
+def _unique_metadata(metadata: tuple[Any, ...]) -> tuple[Any, ...]:
+    result: list[Any] = []
+    seen: set[tuple[str, str]] = set()
+    for item in metadata:
+        key = (type(item).__name__, repr(item))
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return tuple(result)
 
 
 def ts_type(annotation: Any) -> str:
@@ -617,20 +749,78 @@ def ts_type(annotation: Any) -> str:
     return "unknown"
 
 
-def zod_schema(annotation: Any) -> str:
+def _apply_zod_constraints(
+    schema: str,
+    annotation: Any,
+    metadata: tuple[Any, ...],
+    *,
+    context: str,
+) -> str:
+    base = _unwrap_annotated(annotation)
+    for constraint in metadata:
+        name = type(constraint).__name__
+        if name == "Strict":
+            continue
+        if name == "Gt":
+            schema += f".gt({_literal_value(constraint.gt)})"
+        elif name == "Ge":
+            schema += f".gte({_literal_value(constraint.ge)})"
+        elif name == "Lt":
+            schema += f".lt({_literal_value(constraint.lt)})"
+        elif name == "Le":
+            schema += f".lte({_literal_value(constraint.le)})"
+        elif name == "MultipleOf":
+            schema += f".multipleOf({_literal_value(constraint.multiple_of)})"
+        elif name == "MinLen":
+            schema += f".min({constraint.min_length})"
+        elif name == "MaxLen":
+            schema += f".max({constraint.max_length})"
+        elif name == "_PydanticGeneralMetadata":
+            values = vars(constraint)
+            unsupported = sorted(set(values) - {"pattern"})
+            if unsupported:
+                raise ValueError(
+                    f"Unprojectable material Pydantic constraint at {context}: "
+                    f"{name} fields {unsupported}"
+                )
+            pattern = values.get("pattern")
+            if pattern is not None:
+                if base is not str:
+                    raise ValueError(
+                        f"Pattern constraint at {context} is only supported for strings"
+                    )
+                schema += f".regex(new RegExp({_literal_value(pattern)}))"
+        else:
+            raise ValueError(
+                f"Unprojectable material Pydantic constraint at {context}: {constraint!r}"
+            )
+    return schema
+
+
+def zod_schema(
+    annotation: Any,
+    *,
+    field: FieldInfo | None = None,
+    context: str = "annotation",
+) -> str:
     """Return a zod expression for a Python annotation."""
 
+    annotation_metadata = _annotation_metadata(annotation)
+    field_metadata = () if field is None else tuple(field.metadata)
+    metadata = _unique_metadata(annotation_metadata + field_metadata)
     annotation = _unwrap_annotated(annotation)
     if annotation is Any:
         return "z.unknown()"
     if annotation is NONE_TYPE:
         return "z.null()"
     if annotation is str:
-        return "z.string()"
+        return _apply_zod_constraints("z.string()", annotation, metadata, context=context)
     if annotation is int:
-        return "z.number().int()"
+        schema = "z.number().int().safe()"
+        return _apply_zod_constraints(schema, annotation, metadata, context=context)
     if annotation is float:
-        return "z.number()"
+        schema = "z.number().finite()"
+        return _apply_zod_constraints(schema, annotation, metadata, context=context)
     if annotation is bool:
         return "z.boolean()"
     if annotation is dict:
@@ -643,14 +833,23 @@ def zod_schema(annotation: Any) -> str:
 
     if origin is list:
         item = args[0] if args else Any
-        return f"z.array({zod_schema(item)})"
+        schema = f"z.array({zod_schema(item, context=f'{context}[]')})"
+        return _apply_zod_constraints(schema, annotation, metadata, context=context)
     if origin is dict:
         value = args[1] if len(args) == 2 else Any
-        return f"z.record(z.string(), {zod_schema(value)})"
+        return f"z.record(z.string(), {zod_schema(value, context=f'{context}.*')})"
     if origin is tuple:
         if len(args) == 2 and args[1] is Ellipsis:
-            return f"z.array({zod_schema(args[0])})"
-        return "z.tuple([" + ", ".join(zod_schema(arg) for arg in args) + "])"
+            schema = f"z.array({zod_schema(args[0], context=f'{context}[]')})"
+            return _apply_zod_constraints(schema, annotation, metadata, context=context)
+        schema = (
+            "z.tuple(["
+            + ", ".join(
+                zod_schema(arg, context=f"{context}[{index}]") for index, arg in enumerate(args)
+            )
+            + "])"
+        )
+        return _apply_zod_constraints(schema, annotation, metadata, context=context)
     if origin is Literal:
         schemas = [f"z.literal({_literal_value(arg)})" for arg in args]
         return schemas[0] if len(schemas) == 1 else f"z.union([{', '.join(schemas)}])"
@@ -658,8 +857,18 @@ def zod_schema(annotation: Any) -> str:
         non_null = [arg for arg in args if arg is not NONE_TYPE]
         has_null = len(non_null) != len(args)
         if has_null and len(non_null) == 1:
-            return f"{zod_schema(non_null[0])}.nullable()"
-        return f"z.union([{', '.join(zod_schema(arg) for arg in args)}])"
+            inner = zod_schema(non_null[0], context=context)
+            inner = _apply_zod_constraints(
+                inner,
+                non_null[0],
+                field_metadata,
+                context=context,
+            )
+            return f"{inner}.nullable()"
+        if field is not None and field.discriminator:
+            schemas = ", ".join(zod_schema(arg, context=context) for arg in args)
+            return f"z.discriminatedUnion({_literal_value(field.discriminator)}, [{schemas}])"
+        return f"z.union([{', '.join(zod_schema(arg, context=context) for arg in args)}])"
 
     return "z.unknown()"
 
@@ -676,6 +885,7 @@ def emit_interface(model: type[BaseModel]) -> str:
 
 
 def emit_schema(model: type[BaseModel]) -> str:
+    _validate_model_validator_projection(model)
     hints = model_type_hints(model)
     lines = [
         f"export const {model.__name__}Schema: z.ZodType<{model.__name__}> = z.lazy(() =>",
@@ -684,7 +894,11 @@ def emit_schema(model: type[BaseModel]) -> str:
     ]
     for name, field in model.model_fields.items():
         annotation = hints[name]
-        schema = zod_schema(annotation)
+        schema = zod_schema(
+            annotation,
+            field=field,
+            context=f"{model.__name__}.{name}",
+        )
         if not field.is_required():
             schema = f"{schema}.optional()"
         lines.append(f"      {json.dumps(name)}: {schema},")
@@ -692,10 +906,62 @@ def emit_schema(model: type[BaseModel]) -> str:
         [
             "    })",
             "    .strict()",
-            f") as unknown as z.ZodType<{model.__name__}>;",
         ]
     )
+    refinements = CROSS_FIELD_REFINEMENTS.get(model.__name__, ())
+    if refinements:
+        lines.append("    .superRefine((value, ctx) => {")
+        for refinement in refinements:
+            lines.extend(
+                [
+                    f"      if ({refinement.typescript_invalid}) {{",
+                    "        ctx.addIssue({",
+                    "          code: z.ZodIssueCode.custom,",
+                    f"          message: {json.dumps(refinement.message)},",
+                    "        });",
+                    "      }",
+                ]
+            )
+        lines.append("    })")
+    lines.append(f") as unknown as z.ZodType<{model.__name__}>;")
     return "\n".join(lines)
+
+
+def _validate_model_validator_projection(model: type[BaseModel]) -> None:
+    decorators = model.__pydantic_decorators__
+    constraint_validator_names = {
+        name
+        for name, decorator in decorators.model_validators.items()
+        if decorator.info.mode == "after"
+    }
+    constraint_validator_names.update(decorators.field_validators)
+    constraint_validator_names.update(
+        name
+        for name, decorator in decorators.model_validators.items()
+        if decorator.info.mode == "before"
+        and (model.__name__, name) not in MIGRATION_OR_NORMALIZATION_VALIDATORS
+    )
+    registered_names = REGISTERED_CONSTRAINT_VALIDATORS.get(model.__name__, frozenset())
+    unregistered_names = constraint_validator_names - registered_names
+    stale_names = registered_names - constraint_validator_names
+    if unregistered_names:
+        names = ", ".join(f"{model.__name__}.{name}" for name in sorted(unregistered_names))
+        raise ValueError(
+            "Unprojectable material Pydantic model constraint(s): "
+            f"{names}. Add equivalent Python and TypeScript predicates to "
+            "feedbax.contracts.studio_refinements.CROSS_FIELD_REFINEMENTS and register "
+            "the exact Python validator name."
+        )
+    if stale_names:
+        names = ", ".join(f"{model.__name__}.{name}" for name in sorted(stale_names))
+        raise ValueError(
+            f"Stale Studio constraint-validator registration(s): {names}. "
+            "Update the shared refinement registry before generation."
+        )
+    if constraint_validator_names and model.__name__ not in CROSS_FIELD_REFINEMENTS:
+        raise ValueError(
+            f"Registered Python validators for {model.__name__} have no TypeScript refinements"
+        )
 
 
 def model_type_hints(model: type[BaseModel]) -> dict[str, Any]:
@@ -738,9 +1004,7 @@ def generate() -> str:
         f"z.union([{', '.join(name + 'Schema' for name in EVENT_MODEL_NAMES)}]) "
         "as unknown as z.ZodType<TrainingWebSocketEvent>;"
     )
-    contract_entries = "\n".join(
-        f"  {name}: {name}Schema," for name in CONTRACT_MODEL_NAMES
-    )
+    contract_entries = "\n".join(f"  {name}: {name}Schema," for name in CONTRACT_MODEL_NAMES)
     type_entries = "\n".join(f"  {name}: {name};" for name in CONTRACT_MODEL_NAMES)
     return (
         "/* eslint-disable */\n"
@@ -749,6 +1013,7 @@ def generate() -> str:
         "export type JsonPrimitive = string | number | boolean | null;\n"
         "export type ParamValue = JsonPrimitive | unknown[] | Record<string, unknown>;\n\n"
         f"{interfaces}\n\n"
+        f"{REFINEMENT_HELPERS}\n"
         f"{schemas}\n\n"
         f"{event_schema}\n\n"
         "export const contractSchemas = {\n"

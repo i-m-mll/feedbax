@@ -56,7 +56,7 @@ from feedbax.training.run_matrix import (
 from tests.test_run_matrix_materialization import _matrix, _training_run_payload
 from tests.test_checkpoint_custody import _coordinate, _minimax_slots, _run_spec
 from feedbax.training.run_matrix import materialize_run_matrix
-from feedbax.contracts.manifest import canonical_json_bytes
+from feedbax.contracts.base import canonical_json_bytes
 from tests.checkpoint_minimax_plugin import (
     PLUGIN_REGISTRATION,
     checkpoint_minimax_method_program,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Callable, Mapping, Sequence, Set
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -16,6 +15,7 @@ import jax.tree_util as jtu
 import numpy as np
 from pydantic import BaseModel
 
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.checkpoint_history import BatchHistory
 from feedbax.contracts.training import TrainingRunSpec
 from feedbax.contracts.spec_storage import canonical_training_run_spec_sha256
@@ -413,9 +413,7 @@ def _identity_projection(identity: MaterializedPreparationIdentity) -> dict[str,
 
 
 def _identity_fingerprint(identity: MaterializedPreparationIdentity) -> str:
-    payload = json.dumps(
-        _identity_projection(identity), sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    payload = canonical_json_v1_bytes(_identity_projection(identity))
     return hashlib.sha256(payload).hexdigest()
 
 

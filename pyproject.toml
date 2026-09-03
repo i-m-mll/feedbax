@@ -43,6 +43,7 @@ dependencies = [
     "treescope>=0.1.1",
     "tqdm>=4.67.1",
     "jax-cookbook",
+    "rfc8785>=0.1.4",
 ]
 
 [project.optional-dependencies]
@@ -52,21 +53,17 @@ analysis = [
     "pyperclip>=1.9.0",
     "rich>=13.9.4",
     "scikit-learn>=1.6.1",
-    "sqlalchemy>=2.0",
 ]
 config = [
     "ruamel-yaml>=0.18.0",
 ]
 persistence = [
-    "alembic>=1.15.1",
     "matplotlib>=3.10.1",
     "plotly>=6.0.0",
     "pyexiv2>=2.15.3",
-    "sqlalchemy>=2.0",
 ]
 training = [
     "rich>=13.9.4",
-    "sqlalchemy>=2.0",
     "tensorboardx>=2.6.2.2",
 ]
 viz = [
@@ -83,7 +80,6 @@ viz = [
 web = [
     "fastapi>=0.110.0",
     "httpx>=0.27.0",
-    "sqlalchemy>=2.0",
     "uvicorn>=0.29.0",
 ]
 notebook = [
@@ -93,17 +89,11 @@ notebook = [
     "plotly>=6.0.0",
     "ruamel-yaml>=0.18.0",
 ]
-plotlyviewer = [
-    "pyqt5>=5.15.11",
-    "pyqtwebengine>=5.15.7",
-    "ruamel-yaml>=0.18.0",
-]
 mjx = [
     "mujoco>=3.0.0",
     "mujoco-mjx>=0.1.0",
 ]
 all = [
-    "alembic>=1.15.1",
     "dill>=0.3.9",
     "fastapi>=0.110.0",
     "httpx>=0.27.0",
@@ -119,13 +109,10 @@ all = [
     "polars>=1.24.0",
     "pyexiv2>=2.15.3",
     "pyperclip>=1.9.0",
-    "pyqt5>=5.15.11",
-    "pyqtwebengine>=5.15.7",
     "rich>=13.9.4",
     "ruamel-yaml>=0.18.0",
     "scikit-learn>=1.6.1",
     "seaborn>=0.13.2",
-    "sqlalchemy>=2.0",
     "tensorboardx>=2.6.2.2",
     "uvicorn>=0.29.0",
 ]

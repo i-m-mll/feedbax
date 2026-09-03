@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
 import uuid
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
 from feedbax.contracts.array_values import _parse_array_value_payload
@@ -19,9 +22,7 @@ GRAPH_SPEC_SCHEMA_VERSION_V3 = "feedbax.spec.graph.v3"
 GRAPH_SPEC_SCHEMA_VERSION_V4 = "feedbax.spec.graph.v4"
 GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v5"
 LEGACY_GRAPH_SPEC_SCHEMA_VERSION = "1.0.0"
-ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID = (
-    "feedbax.spec.analysis_data_product_requirement"
-)
+ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID = "feedbax.spec.analysis_data_product_requirement"
 ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION = (
     "feedbax.spec.analysis_data_product_requirement.v1"
 )
@@ -31,6 +32,13 @@ STUDIO_VALUE_SPEC_SCHEMA_VERSION = "feedbax.spec.studio.value.v2"
 LEGACY_STUDIO_VALUE_SPEC_SCHEMA_V1 = "feedbax.spec.studio.value.v1"
 LEGACY_STUDIO_VALUE_SPEC_FRONTEND_SCHEMA_V1 = "feedbax.studio.value.v1"
 STUDIO_VALUE_SPEC_SCHEMA_ID = "feedbax.spec.studio.value"
+STUDIO_EPOCH_VALUE_SPEC_SCHEMA_ID = "feedbax.spec.studio.epoch_value"
+STUDIO_EPOCH_VALUE_SPEC_SCHEMA_VERSION = "feedbax.spec.studio.epoch_value.v1"
+STUDIO_TASK_TIMELINE_SCHEMA_ID = "feedbax.spec.studio.task_timeline"
+STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1 = "feedbax.spec.studio.task_timeline.v1"
+STUDIO_TASK_TIMELINE_SCHEMA_VERSION = "feedbax.spec.studio.task_timeline.v2"
+STUDIO_SEMANTIC_DOCUMENT_SCHEMA_ID = "feedbax.spec.studio.semantic_document"
+STUDIO_SEMANTIC_DOCUMENT_SCHEMA_VERSION = "feedbax.spec.studio.semantic_document.v1"
 
 
 def _is_value_spec_like_payload(value: Any) -> bool:
@@ -40,10 +48,7 @@ def _is_value_spec_like_payload(value: Any) -> bool:
     schema_version = value.get("schema_version")
     return (
         schema_id == STUDIO_VALUE_SPEC_SCHEMA_ID
-        or (
-            isinstance(schema_version, str)
-            and schema_version.startswith("feedbax.studio.value.")
-        )
+        or (isinstance(schema_version, str) and schema_version.startswith("feedbax.studio.value."))
         or (
             isinstance(schema_version, str)
             and schema_version.startswith(f"{STUDIO_VALUE_SPEC_SCHEMA_ID}.")
@@ -150,10 +155,7 @@ class AdditiveGraphChannelTargetSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_target(self) -> "AdditiveGraphChannelTargetSpec":
-        if self.kind == "edge" and (self.source_node is None or self.source_port is None):
-            raise ValueError("edge additive channel adapters require source_node and source_port")
-        if self.kind == "input" and (self.source_node is not None or self.source_port is not None):
-            raise ValueError("input additive channel adapters must not set source_node/source_port")
+        validate_cross_field_refinements(type(self).__name__, self)
         return self
 
 
@@ -354,9 +356,7 @@ class AnalysisDataProductRequirement(BaseModel):
         if not self.role.strip():
             raise ValueError("AnalysisDataProductRequirement role must not be empty")
         if not self.product_schema_id.strip():
-            raise ValueError(
-                "AnalysisDataProductRequirement product_schema_id must not be empty"
-            )
+            raise ValueError("AnalysisDataProductRequirement product_schema_id must not be empty")
         return self
 
 
@@ -458,6 +458,7 @@ class GraphSpec(BaseModel):
                     f"expected one of {GRAPH_SPEC_SCHEMA_ID!r}, {ACAUSAL_GRAPH_SCHEMA_ID!r}"
                 )
         return subgraphs
+
 
 GraphSubgraphSpec = Union[GraphSpec, AcausalGraphSpec]
 
@@ -590,24 +591,34 @@ class GraphUIState(BaseModel):
 class AnalysisPageSpec(BaseModel):
     """Specification for a single analysis page within a project."""
 
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     name: str
     graph_spec: Dict[str, Any] = Field(default_factory=dict)
     eval_params: Dict[str, Any] = Field(default_factory=dict)
     input_requirements: List[AnalysisInputRequirement] = Field(default_factory=list)
-    viewport: Dict[str, float] = Field(default_factory=lambda: {"x": 0, "y": 0, "zoom": 1})
     eval_run_id: Optional[str] = None
     expanded_field_paths: List[str] = Field(default_factory=list)
 
 
+STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID = "feedbax.spec.studio.persistence_document"
+STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION = "feedbax.spec.studio.persistence_document.v1"
+STUDIO_GRAPH_PROJECT_SCHEMA_ID = "feedbax.spec.studio.graph_project"
+STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY = "feedbax.spec.studio.graph_project.unversioned"
+STUDIO_GRAPH_PROJECT_SCHEMA_VERSION = "feedbax.spec.studio.graph_project.v1"
+STUDIO_WORKSPACE_SCHEMA_ID = "feedbax.spec.studio.workspace"
 STUDIO_WORKSPACE_SCHEMA_VERSION_V1 = "feedbax.spec.studio.workspace.v1"
 STUDIO_WORKSPACE_SCHEMA_VERSION = "feedbax.spec.studio.workspace.v2"
 WORKSPACE_DOCUMENT_SCHEMA_ID = "feedbax.workspace_document"
 WORKSPACE_DOCUMENT_SCHEMA_VERSION = "1"
+ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID = "feedbax.spec.studio.analysis_canvas_layout"
+ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION = "feedbax.spec.studio.analysis_canvas_layout.v1"
 LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.studio.scenario.v1"
 STUDIO_SCENARIO_SCHEMA_VERSION_V1 = "feedbax.spec.studio.scenario.v1"
 STUDIO_SCENARIO_SCHEMA_VERSION_V2 = "feedbax.spec.studio.scenario.v2"
 STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.spec.studio.scenario.v3"
+STUDIO_STAGE_SCHEMA_ID = "feedbax.spec.studio.stage"
 STUDIO_STAGE_SCHEMA_VERSION_V1 = "feedbax.spec.studio.stage.v1"
 STUDIO_STAGE_SCHEMA_VERSION = "feedbax.spec.studio.stage.v2"
 STUDIO_BIOMECHANICS_SCHEMA_ID = "feedbax.spec.studio.biomechanics"
@@ -736,22 +747,7 @@ class StudioValueEnumerableSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_form_payload(self) -> "StudioValueEnumerableSpec":
-        if self.form == "list":
-            if not self.values:
-                raise ValueError("sweep list enumerables require at least one value")
-            return self
-        if self.form == "range":
-            if self.start is None or self.stop is None or self.count is None:
-                raise ValueError("sweep range enumerables require start, stop, and count")
-            if self.count < 1:
-                raise ValueError("sweep range count must be positive")
-            if self.scale == "log" and (self.start <= 0 or self.stop <= 0):
-                raise ValueError("log sweep ranges require positive start and stop")
-            return self
-        if self.sampler is None or self.n is None:
-            raise ValueError("sweep sampler enumerables require sampler and n")
-        if self.n < 1:
-            raise ValueError("sweep sampler n must be positive")
+        validate_cross_field_refinements(type(self).__name__, self)
         return self
 
 
@@ -767,17 +763,7 @@ class StudioValueVariationSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_scope_payload(self) -> "StudioValueVariationSpec":
-        if self.scope == "sweep" and self.enumerable is None:
-            raise ValueError("sweep variation requires an enumerable list, range, or sampler+n")
-        if self.scope != "sweep" and self.enumerable is not None:
-            raise ValueError("enumerable payloads are only valid for sweep variation")
-        if self.scope == "run" and self.stochastic_policy not in (None, "shared_per_run"):
-            raise ValueError("run variation samples once and shares within the run")
-        if self.scope == "replicate" and self.stochastic_policy not in (
-            None,
-            "resample_per_replicate",
-        ):
-            raise ValueError("replicate variation resamples per replicate")
+        validate_cross_field_refinements(type(self).__name__, self)
         return self
 
 
@@ -826,7 +812,9 @@ class StudioValueSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str = STUDIO_VALUE_SPEC_SCHEMA_VERSION
-    value_form: Literal["literal", "reference", "expression", "function", "schedule", "distribution"]
+    value_form: Literal[
+        "literal", "reference", "expression", "function", "schedule", "distribution"
+    ]
     variation: StudioValueVariationSpec = Field(
         default_factory=lambda: StudioValueVariationSpec(scope="fixed")
     )
@@ -875,19 +863,46 @@ class StudioValueSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_value_variation(self) -> "StudioValueSpec":
-        expected_mode = "constant" if self.value_form == "literal" else self.value_form
-        if self.mode != expected_mode:
-            raise ValueError("StudioValueSpec mode must match value_form compatibility alias")
-        if self.value_form == "literal" and self.variation.scope != "sweep":
-            if self.sampling_scope not in (None, "fixed"):
-                raise ValueError("literal fixed values must not carry a sampling_scope")
-        if self.value_form == "distribution" and self.variation.scope == "run":
-            if self.variation.stochastic_policy not in (None, "shared_per_run"):
-                raise ValueError("run distribution specs sample once and share")
-        if self.value_form == "distribution" and self.variation.scope == "replicate":
-            if self.variation.stochastic_policy not in (None, "resample_per_replicate"):
-                raise ValueError("replicate distribution specs resample per replicate")
+        validate_cross_field_refinements(type(self).__name__, self)
         return self
+
+
+def _validate_finite_authored_value(value: Any, *, path: str) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{path} contains a non-finite number")
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_finite_authored_value(item, path=f"{path}[{index}]")
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            _validate_finite_authored_value(item, path=f"{path}.{key}")
+
+
+def _legacy_epoch_value_spec(value: Mapping[str, Any], *, active: bool) -> dict[str, Any]:
+    base = StudioValueSpec.model_validate(value)
+    if active and base.mode != "constant":
+        return base.model_dump(mode="json", exclude_none=True)
+    authored = base.value
+    if isinstance(authored, Mapping):
+        literal = authored.get("active" if active else "inactive", 1 if active else 0)
+    elif active:
+        literal = authored if authored is not None else 1
+    elif isinstance(authored, list):
+        literal = [0 for _ in authored]
+    elif isinstance(authored, bool):
+        literal = False
+    else:
+        literal = 0
+    return StudioValueSpec(
+        value_form="literal",
+        mode="constant",
+        value=literal,
+        dtype=base.dtype,
+        shape=base.shape,
+        units=base.units,
+        frame=base.frame,
+        metadata=base.metadata,
+    ).model_dump(mode="json", exclude_none=True)
 
 
 class StudioInterventionValueBounds(BaseModel):
@@ -926,11 +941,60 @@ class StudioTaskTimelineSignalSpec(BaseModel):
     kind: str
     task_data_id: Optional[str] = None
     path: str
-    epoch_ids: List[str] = Field(default_factory=list)
     value_spec: Optional[StudioValueSpec] = None
     value_schema: Optional[Dict[str, Any]] = None
     task_data_schema: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioEpochValueSpec(BaseModel):
+    """One authored value over the complete interval of one named task epoch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[STUDIO_EPOCH_VALUE_SPEC_SCHEMA_ID] = STUDIO_EPOCH_VALUE_SPEC_SCHEMA_ID
+    schema_version: Literal[STUDIO_EPOCH_VALUE_SPEC_SCHEMA_VERSION] = (
+        STUDIO_EPOCH_VALUE_SPEC_SCHEMA_VERSION
+    )
+    target_id: str = Field(min_length=1)
+    epoch_id: str = Field(min_length=1)
+    value_spec: StudioValueSpec
+
+    @model_validator(mode="after")
+    def validate_safe_value(self) -> "StudioEpochValueSpec":
+        _validate_finite_authored_value(
+            self.value_spec.model_dump(mode="python", exclude_none=True),
+            path=f"epoch_value_specs[{self.target_id!r}, {self.epoch_id!r}]",
+        )
+        spec = self.value_spec
+        if spec.mode not in {"constant", "function", "distribution"}:
+            raise ValueError(f"unsupported timeline epoch-value mode {spec.mode!r}")
+        if spec.mode == "constant" and spec.value is None:
+            raise ValueError("timeline constant epoch values require value")
+        if spec.mode == "function" and not spec.function_id:
+            raise ValueError("timeline function epoch values require function_id")
+        if spec.mode == "distribution":
+            distribution = spec.distribution
+            if not isinstance(distribution, Mapping):
+                raise ValueError("timeline distribution epoch values require distribution")
+            parameters = distribution.get("parameters")
+            if not isinstance(parameters, Mapping):
+                raise ValueError("timeline distribution epoch values require parameters")
+            family = distribution.get("family")
+            names = ("min", "max") if family == "uniform" else ("mean", "std")
+            if family not in {"uniform", "normal"} or any(
+                isinstance(parameters.get(name), bool)
+                or not isinstance(parameters.get(name), (int, float))
+                for name in names
+            ):
+                raise ValueError(
+                    "timeline distributions support numeric uniform min/max or normal mean/std"
+                )
+            if family == "uniform" and parameters["max"] < parameters["min"]:
+                raise ValueError("timeline uniform distribution requires min <= max")
+            if family == "normal" and parameters["std"] < 0:
+                raise ValueError("timeline normal distribution requires std >= 0")
+        return self
 
 
 class StudioTaskTimelineSegmentSpec(BaseModel):
@@ -945,11 +1009,115 @@ class StudioTaskTimelineSegmentSpec(BaseModel):
 class StudioTaskTimelineSpec(BaseModel):
     """Structured task timeline stored under Studio task specs."""
 
-    schema_version: str = "feedbax.spec.studio.task_timeline.v1"
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[STUDIO_TASK_TIMELINE_SCHEMA_ID] = STUDIO_TASK_TIMELINE_SCHEMA_ID
+    schema_version: Literal[STUDIO_TASK_TIMELINE_SCHEMA_VERSION] = (
+        STUDIO_TASK_TIMELINE_SCHEMA_VERSION
+    )
     epochs: List[StudioTaskEpochSpec] = Field(default_factory=list)
     signals: List[StudioTaskTimelineSignalSpec] = Field(default_factory=list)
+    epoch_value_specs: List[StudioEpochValueSpec] = Field(default_factory=list)
     segments: List[StudioTaskTimelineSegmentSpec] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_v1(cls, data: Any) -> Any:
+        if not isinstance(data, Mapping):
+            return data
+        payload = dict(data)
+        version = payload.get("schema_version", STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1)
+        if version == STUDIO_TASK_TIMELINE_SCHEMA_VERSION:
+            return payload
+        if version not in {
+            STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1,
+            "feedbax.studio.task_timeline.v1",
+        }:
+            raise ValueError(
+                f"unsupported StudioTaskTimelineSpec schema_version {version!r}; "
+                f"expected {STUDIO_TASK_TIMELINE_SCHEMA_VERSION!r}"
+            )
+        entries: list[dict[str, Any]] = []
+        epoch_ids = [
+            str(epoch.get("id"))
+            for epoch in payload.get("epochs", [])
+            if isinstance(epoch, Mapping) and isinstance(epoch.get("id"), str)
+        ]
+        signals: list[Any] = []
+        for raw_signal in payload.get("signals", []):
+            if not isinstance(raw_signal, Mapping):
+                signals.append(raw_signal)
+                continue
+            signal = dict(raw_signal)
+            target_id = signal.get("task_data_id") or signal.get("id")
+            explicit = signal.pop("epoch_value_specs", None)
+            active_epochs = set(signal.pop("epoch_ids", []) or [])
+            base = signal.get("value_spec")
+            if isinstance(target_id, str) and isinstance(explicit, Mapping):
+                for epoch_id, value_spec in explicit.items():
+                    if value_spec is not None:
+                        entries.append(
+                            {
+                                "target_id": target_id,
+                                "epoch_id": str(epoch_id),
+                                "value_spec": value_spec,
+                            }
+                        )
+            elif isinstance(target_id, str) and isinstance(base, Mapping):
+                for epoch_id in epoch_ids:
+                    entries.append(
+                        {
+                            "target_id": target_id,
+                            "epoch_id": epoch_id,
+                            "value_spec": _legacy_epoch_value_spec(
+                                base,
+                                active=epoch_id in active_epochs,
+                            ),
+                        }
+                    )
+            signals.append(signal)
+        return {
+            **payload,
+            "schema_id": STUDIO_TASK_TIMELINE_SCHEMA_ID,
+            "schema_version": STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
+            "signals": signals,
+            "epoch_value_specs": entries,
+        }
+
+    @model_validator(mode="after")
+    def validate_epoch_values(self) -> "StudioTaskTimelineSpec":
+        epoch_ids = [epoch.id for epoch in self.epochs]
+        if len(epoch_ids) != len(set(epoch_ids)):
+            raise ValueError("timeline epoch ids must be unique")
+        if sorted(epoch.index for epoch in self.epochs) != list(range(len(self.epochs))):
+            raise ValueError("timeline epoch indexes must be contiguous from zero")
+        target_ids = [signal.task_data_id or signal.id for signal in self.signals]
+        if len(target_ids) != len(set(target_ids)):
+            raise ValueError("timeline signal target ids must be unique")
+        known_epochs = set(epoch_ids)
+        known_targets = set(target_ids)
+        occupied: set[tuple[str, str]] = set()
+        epoch_order = {epoch_id: index for index, epoch_id in enumerate(epoch_ids)}
+        for entry in self.epoch_value_specs:
+            if entry.target_id not in known_targets:
+                raise ValueError(f"unknown timeline epoch-value target {entry.target_id!r}")
+            if entry.epoch_id not in known_epochs:
+                raise ValueError(f"unknown timeline epoch-value epoch {entry.epoch_id!r}")
+            key = (entry.target_id, entry.epoch_id)
+            if key in occupied:
+                raise ValueError(
+                    "overlapping timeline epoch values are forbidden for "
+                    f"target {entry.target_id!r} in epoch {entry.epoch_id!r}"
+                )
+            occupied.add(key)
+        canonical = sorted(
+            self.epoch_value_specs,
+            key=lambda entry: (entry.target_id, epoch_order[entry.epoch_id]),
+        )
+        if self.epoch_value_specs != canonical:
+            raise ValueError("timeline epoch values must be ordered by target_id then epoch index")
+        return self
 
 
 class StudioTaskDataSpec(BaseModel):
@@ -999,7 +1167,9 @@ class StudioTaskBindingSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "feedbax.spec.studio.task_bindings.v2"
+    schema_version: Literal["feedbax.spec.studio.task_bindings.v2"] = (
+        "feedbax.spec.studio.task_bindings.v2"
+    )
     exposed_data: List[StudioTaskDataSpec] = Field(default_factory=list)
     bindings: List[StudioTaskBinding] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -1033,9 +1203,7 @@ class StudioBiomechanicsSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_id: Literal[STUDIO_BIOMECHANICS_SCHEMA_ID] = STUDIO_BIOMECHANICS_SCHEMA_ID
-    schema_version: Literal[STUDIO_BIOMECHANICS_SCHEMA_VERSION] = (
-        STUDIO_BIOMECHANICS_SCHEMA_VERSION
-    )
+    schema_version: Literal[STUDIO_BIOMECHANICS_SCHEMA_VERSION] = STUDIO_BIOMECHANICS_SCHEMA_VERSION
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1067,6 +1235,15 @@ class StudioScenarioSpec(BaseModel):
     validation: StudioValidationState = Field(default_factory=StudioValidationState)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("task_spec", mode="before")
+    @classmethod
+    def admit_task_spec(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        from feedbax.contracts.training import TaskSpec
+
+        return TaskSpec.model_validate(value).model_dump(mode="json", exclude_none=True)
+
 
 class StudioStageSpec(BaseModel):
     """Pipeline stage over scenario drafts, collections, and manifests."""
@@ -1074,7 +1251,8 @@ class StudioStageSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    schema_version: str = STUDIO_STAGE_SCHEMA_VERSION
+    schema_id: Literal[STUDIO_STAGE_SCHEMA_ID] = STUDIO_STAGE_SCHEMA_ID
+    schema_version: Literal[STUDIO_STAGE_SCHEMA_VERSION] = STUDIO_STAGE_SCHEMA_VERSION
     kind: StudioStageKind
     label: str
     status: StudioStageStatus = "draft"
@@ -1095,7 +1273,8 @@ class StudioWorkspaceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    schema_version: str = STUDIO_WORKSPACE_SCHEMA_VERSION
+    schema_id: Literal[STUDIO_WORKSPACE_SCHEMA_ID] = STUDIO_WORKSPACE_SCHEMA_ID
+    schema_version: Literal[STUDIO_WORKSPACE_SCHEMA_VERSION] = STUDIO_WORKSPACE_SCHEMA_VERSION
     label: str
     active_stage_id: Optional[str] = None
     stages: List[StudioStageSpec] = Field(default_factory=list)
@@ -1116,15 +1295,101 @@ class SemanticAnchor(BaseModel):
     authored_path: str = Field(pattern=r"^/")
 
 
+class AnalysisCanvasPosition(BaseModel):
+    """Finite position for one visible node in Analysis Canvas coordinates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=-10_000_000, le=10_000_000)
+    y: float = Field(ge=-10_000_000, le=10_000_000)
+
+
+class AnalysisCanvasViewport(BaseModel):
+    """Finite, bounded Analysis Canvas pan and zoom state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(default=0, ge=-10_000_000, le=10_000_000)
+    y: float = Field(default=0, ge=-10_000_000, le=10_000_000)
+    zoom: float = Field(default=1, ge=0.1, le=2.5)
+
+
+class AnalysisCanvasPageLayout(BaseModel):
+    """Presentation layout for one semantic analysis page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_positions: Dict[str, AnalysisCanvasPosition] = Field(default_factory=dict)
+    viewport: AnalysisCanvasViewport = Field(default_factory=AnalysisCanvasViewport)
+
+
+class AnalysisCanvasStageLayout(BaseModel):
+    """Page layouts owned by one semantic analysis stage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pages: Dict[str, AnalysisCanvasPageLayout] = Field(default_factory=dict)
+
+
+class AnalysisCanvasLayoutDocument(BaseModel):
+    """Versioned presentation authority for Analysis Canvas geometry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID]
+    schema_version: Literal[ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION]
+    stages: Dict[str, AnalysisCanvasStageLayout] = Field(default_factory=dict)
+
+
+def _analysis_canvas_semantic_node_ids(page: AnalysisPageSpec) -> set[str]:
+    graph_spec = page.graph_spec
+    node_ids = set(str(node_id) for node_id in (graph_spec.get("nodes") or {}))
+    data_source_id = graph_spec.get("dataSourceId", graph_spec.get("data_source_id"))
+    if isinstance(data_source_id, str):
+        node_ids.add(data_source_id)
+    for wire in graph_spec.get("wires") or []:
+        if not isinstance(wire, Mapping):
+            continue
+        transform = wire.get("transform")
+        if isinstance(transform, Mapping) and isinstance(transform.get("id"), str):
+            node_ids.add(transform["id"])
+    return node_ids
+
+
+def reconcile_analysis_canvas_layout(
+    layout: AnalysisCanvasLayoutDocument,
+    pages: List[AnalysisPageSpec],
+) -> AnalysisCanvasLayoutDocument:
+    """Prune layout entries that cannot name a current semantic analysis node."""
+    page_node_ids = {page.id: _analysis_canvas_semantic_node_ids(page) for page in pages}
+    stages: Dict[str, AnalysisCanvasStageLayout] = {}
+    for stage_id, stage_layout in layout.stages.items():
+        reconciled_pages: Dict[str, AnalysisCanvasPageLayout] = {}
+        for page_id, page_layout in stage_layout.pages.items():
+            valid_node_ids = page_node_ids.get(page_id)
+            if valid_node_ids is None:
+                continue
+            reconciled_pages[page_id] = page_layout.model_copy(
+                update={
+                    "node_positions": {
+                        node_id: position
+                        for node_id, position in page_layout.node_positions.items()
+                        if node_id in valid_node_ids
+                    }
+                }
+            )
+        if reconciled_pages:
+            stages[stage_id] = stage_layout.model_copy(update={"pages": reconciled_pages})
+    return layout.model_copy(update={"stages": stages})
+
+
 class WorkspaceDocument(BaseModel):
     """Durable Studio presentation state for one exact semantic graph revision."""
 
     model_config = ConfigDict(extra="forbid")
 
     schema_id: Literal[WORKSPACE_DOCUMENT_SCHEMA_ID] = WORKSPACE_DOCUMENT_SCHEMA_ID
-    schema_version: Literal[WORKSPACE_DOCUMENT_SCHEMA_VERSION] = (
-        WORKSPACE_DOCUMENT_SCHEMA_VERSION
-    )
+    schema_version: Literal[WORKSPACE_DOCUMENT_SCHEMA_VERSION] = WORKSPACE_DOCUMENT_SCHEMA_VERSION
     semantic_root: SemanticAnchor
     graph_ui_state: GraphUIState = Field(default_factory=GraphUIState)
     workspace_ui_state: Dict[str, Any] = Field(default_factory=dict)
@@ -1132,29 +1397,76 @@ class WorkspaceDocument(BaseModel):
     scenario_ui_state: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     analysis_pages: List[AnalysisPageSpec] = Field(default_factory=list)
     active_analysis_page_id: Optional[str] = None
+    analysis_canvas_layout: AnalysisCanvasLayoutDocument = Field(
+        default_factory=lambda: AnalysisCanvasLayoutDocument(
+            schema_id=ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+            schema_version=ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
+        )
+    )
     semantic_anchors: Dict[str, SemanticAnchor] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_semantic_anchors(self) -> "WorkspaceDocument":
-        if self.semantic_root.authored_path != "/graph":
-            raise ValueError("WorkspaceDocument semantic_root must target /graph")
-        revision = self.semantic_root.semantic_document_sha256
-        stale = [
-            name
-            for name, anchor in self.semantic_anchors.items()
-            if anchor.semantic_document_sha256 != revision
-        ]
-        if stale:
-            raise ValueError(
-                "WorkspaceDocument semantic anchors target a different semantic revision: "
-                + ", ".join(sorted(stale))
-            )
+        validate_cross_field_refinements(type(self).__name__, self)
+        self.analysis_canvas_layout = reconcile_analysis_canvas_layout(
+            self.analysis_canvas_layout,
+            self.analysis_pages,
+        )
         return self
+
+
+class StudioPersistenceDocument(BaseModel):
+    """One admitted Studio save transaction.
+
+    The envelope is intentionally independent of HTTP create/update semantics.
+    It binds the graph, semantic workspace, and presentation document to one
+    schema-version decision before any of those fields can reach storage.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID]
+    schema_version: Literal[STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION]
+    graph: Optional[GraphSpec] = None
+    workspace_document: Optional[WorkspaceDocument] = None
+    workspace: Optional[StudioWorkspaceSpec] = None
+    expected_save_revision: Optional[int] = Field(default=None, ge=0)
+
+
+def studio_semantic_document_bytes(
+    graph: GraphSpec,
+    workspace: StudioWorkspaceSpec | None,
+) -> bytes:
+    """Return canonical v2 bytes for every authored fact that changes Studio execution."""
+    from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+
+    return canonical_json_v2_bytes(
+        {
+            "schema_id": STUDIO_SEMANTIC_DOCUMENT_SCHEMA_ID,
+            "schema_version": STUDIO_SEMANTIC_DOCUMENT_SCHEMA_VERSION,
+            "graph": graph.model_dump(mode="json", exclude_none=True),
+            "workspace": None
+            if workspace is None
+            else workspace.model_dump(mode="json", exclude_none=True),
+        }
+    )
+
+
+def studio_semantic_document_sha256(
+    graph: GraphSpec,
+    workspace: StudioWorkspaceSpec | None,
+) -> str:
+    """Return the runnable Studio model identity, excluding presentation state."""
+    return hashlib.sha256(studio_semantic_document_bytes(graph, workspace)).hexdigest()
 
 
 class GraphProject(BaseModel):
     """Semantic graph and separately versioned Studio presentation authority."""
 
+    schema_id: Literal[STUDIO_GRAPH_PROJECT_SCHEMA_ID] = STUDIO_GRAPH_PROJECT_SCHEMA_ID
+    schema_version: Literal[STUDIO_GRAPH_PROJECT_SCHEMA_VERSION] = (
+        STUDIO_GRAPH_PROJECT_SCHEMA_VERSION
+    )
     metadata: GraphMetadata
     graph: GraphSpec
     workspace_document: WorkspaceDocument

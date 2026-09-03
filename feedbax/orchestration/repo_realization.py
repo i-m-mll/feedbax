@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import posixpath
 import stat
@@ -14,7 +13,8 @@ from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
+from feedbax.contracts.base import StrictModel
 from feedbax.orchestration.repo_snapshot import (
     RepoSnapshotError,
     RepoSnapshotManifest,
@@ -342,11 +342,7 @@ def repo_realization_plan_projection(plan: RepoRealizationPlan) -> dict[str, Any
 
 def repo_realization_plan_digest(plan: RepoRealizationPlan) -> str:
     """Return the SHA-256 digest of the canonical plan identity projection."""
-    encoded = json.dumps(
-        repo_realization_plan_projection(plan),
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    encoded = canonical_json_v1_bytes(repo_realization_plan_projection(plan))
     return hashlib.sha256(encoded).hexdigest()
 
 

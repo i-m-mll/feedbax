@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
+
 from feedbax.analysis.evaluation_compaction import EvaluationBatchFragment
 from feedbax.contracts.evaluation_lifecycle import (
     EvaluationBatchCompactionEvidence,
@@ -19,18 +21,20 @@ from feedbax.contracts.evaluation_product_union import (
     EvaluationCompactProductUnionSource,
     EvaluationCompactProductUnionSourceEvidence,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    ArtifactRef,
+    ParentRef,
+    canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import (
     AnalysisDataProduct,
     AnalysisRunManifest,
     AnalysisRunSpec,
-    ArtifactRef,
-    ParentRef,
     analysis_run_manifest_id,
-    canonical_json_bytes,
     safe_manifest_key,
-    sha256_bytes,
 )
 from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -139,8 +143,8 @@ def finalize_evaluation_compact_product_union(
     )
     checkpoint_path = custody_root / "union-checkpoints" / f"{union_sha256}.json"
     if checkpoint_path.is_file():
-        persisted = EvaluationCompactProductUnionEvidence.model_validate_json(
-            checkpoint_path.read_text(encoding="utf-8")
+        persisted = strict_model_validate_json(
+            EvaluationCompactProductUnionEvidence, checkpoint_path.read_text(encoding="utf-8")
         )
         _validate_persisted_union(declaration, persisted, verified, custody_root=custody_root)
         return persisted
@@ -267,7 +271,7 @@ def _recover_published_union(
     custody_root: Path,
 ) -> EvaluationCompactProductUnionEvidence:
     manifest_bytes = manifest_path.read_bytes()
-    manifest = AnalysisRunManifest.model_validate_json(manifest_bytes)
+    manifest = strict_model_validate_json(AnalysisRunManifest, manifest_bytes)
     if (
         manifest.id != analysis_run_manifest_id(spec)
         or manifest.inputs != spec.inputs
@@ -313,7 +317,7 @@ def _verify_source(
     compaction = EvaluationBatchCompactionEvidence.model_validate(
         migrate_structured_spec_payload(
             "EvaluationBatchCompactionEvidence",
-            json.loads(compaction_bytes),
+            strict_json_loads(compaction_bytes),
             path=str(binding.compaction_evidence_path),
         ).payload
     )
@@ -350,7 +354,7 @@ def _verify_source(
     )
     if sha256_bytes(checkpoint_bytes) != source.terminal_checkpoint_sha256:
         raise ValueError("compact product union terminal checkpoint was tampered")
-    checkpoint_payload = json.loads(checkpoint_bytes)
+    checkpoint_payload = strict_json_loads(checkpoint_bytes)
     if (
         checkpoint_payload.get("schema_id") != source.terminal_checkpoint_schema_id
         or checkpoint_payload.get("schema_version") != source.terminal_checkpoint_schema_version
@@ -390,7 +394,7 @@ def _verify_source(
         or sha256_bytes(manifest_bytes) != source.terminal_manifest_sha256
     ):
         raise ValueError("compact product union terminal manifest identity drifted")
-    manifest = AnalysisRunManifest.model_validate_json(manifest_bytes)
+    manifest = strict_model_validate_json(AnalysisRunManifest, manifest_bytes)
     terminal_analysis_type = checkpoint.declaration.terminal_analysis_type
     if (
         binding.terminal_manifest.metadata.get("analysis_type") != terminal_analysis_type
@@ -426,7 +430,7 @@ def _verify_source(
             cohort_key=source.cohort_key,
             matrix_intent_hash=source.matrix_intent_hash,
             ordered_row_ids=source.ordered_row_ids,
-            payload=json.loads(product_bytes),
+            payload=strict_json_loads(product_bytes),
         ),
         evidence=EvaluationCompactProductUnionSourceEvidence(
             cohort_key=source.cohort_key,
@@ -457,7 +461,7 @@ def _validate_persisted_union(
         evidence.terminal_manifest,
         "persisted terminal manifest",
     )
-    manifest = AnalysisRunManifest.model_validate_json(manifest_bytes)
+    manifest = strict_model_validate_json(AnalysisRunManifest, manifest_bytes)
     product = _union_product(declaration, manifest, union_sha256=expected_hash)
     if product.artifacts != [evidence.terminal_product]:
         raise ValueError("persisted compact product union publication drifted")

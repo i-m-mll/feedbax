@@ -22,7 +22,8 @@ from feedbax.contracts.graph import (
     StudioWorkspaceSpec,
     WorkspaceDocument,
 )
-from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy, ParentRef
+from feedbax.contracts.base import ParentRef
+from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy
 from feedbax.contracts.selection import SelectionPreview, SelectionSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplaySampleAxis, WorkspaceReplayTrack
 

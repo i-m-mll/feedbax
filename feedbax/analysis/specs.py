@@ -60,6 +60,13 @@ from feedbax.analysis.validation import (
     validate_evaluation_states_structure_provider,
     validate_namespaced_type_key,
 )
+from feedbax.contracts.base import (
+    ArtifactRef,
+    ParentRef,
+    Provenance,
+    canonical_json_bytes,
+    default_manifest_root,
+)
 from feedbax.contracts.manifest import (
     MANIFEST_KIND_DIRECTORIES,
     AnalysisEvaluationStateResolutionCode,
@@ -68,14 +75,9 @@ from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
     AnyManifest,
-    ArtifactRef,
     EvaluationRunManifest,
     EvaluationRunSpec,
-    ParentRef,
-    Provenance,
-    canonical_json_bytes,
     canonical_manifest_candidate_paths,
-    default_manifest_root,
     analysis_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
@@ -337,13 +339,9 @@ def resolve_analysis_run_authoring(
         resolved_payload = resolve_run_aliases(flattened.payload, run_alias_catalogs)
         flattened = flattened.model_copy(update={"payload": resolved_payload})
         return AnalysisRunSpec.model_validate(resolved_payload), flattened
-    # AnalysisRunSpec documents shipped before the family stamped a version, so a
-    # versionless document is admitted as current; every declared version still
-    # migrates or fails closed through the shared path.
     result = migrate_authored_document(
         "AnalysisRunSpec",
         raw,
-        versionless="accept_as_current",
         path="analysis_spec",
     )
     return AnalysisRunSpec.model_validate(

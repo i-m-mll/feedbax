@@ -20,32 +20,38 @@ import jax.tree as jt
 import numpy as np
 from pydantic import ValidationError
 
+from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
+
 from feedbax.contracts.publication import CheckpointSet
 from feedbax.contracts.checkpoints import (
     CheckpointSegmentLineage,
     CheckpointLineageRef,
     CheckpointTransactionManifest,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     EntrypointRef,
-    ManifestStatus,
     ParentRef,
     Provenance,
+    ArtifactRef,
+    canonical_json_bytes,
+    default_manifest_root,
+    sha256_bytes,
+    utc_now,
+)
+from feedbax.contracts.artifact_store import (
+    store_bytes_artifact,
+    store_json_artifact,
+)
+from feedbax.contracts.manifest import (
+    ManifestStatus,
     TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
     TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
     TrainingRunCertification,
     TrainingRunManifest,
     TrainingManifestMetadataProjectionCustody,
     TRAINING_MANIFEST_METADATA_PROJECTION_PROVENANCE_KEY,
-    ArtifactRef,
-    canonical_json_bytes,
-    default_manifest_root,
     safe_manifest_key,
-    sha256_bytes,
-    store_bytes_artifact,
-    store_json_artifact,
     training_run_manifest_id,
-    utc_now,
     write_manifest,
 )
 from feedbax.contracts.nan_attribution import (
@@ -1582,6 +1588,7 @@ def prepare_training_manifest_metadata_projection(
             )
         try:
             projected = projector.project(resolved_method.payload)
+            # Trusted internal round-trip of canonical bytes produced from the model.
             canonical_values = json.loads(
                 training_spec_canonical_bytes(projected.model_dump(mode="json", exclude_none=True))
             )
@@ -1662,6 +1669,7 @@ def prepare_training_manifest_metadata_projection(
             projection,
             path="/manifest_metadata_projection",
         )
+        # Trusted internal round-trip of canonical bytes produced from the admitted mapping.
         canonical_values = json.loads(training_spec_canonical_bytes(values))
     except (TypeError, ValueError, ValidationError) as exc:
         raise TrainingRunExecutorError(
@@ -1817,8 +1825,8 @@ def _validate_execution_payload_binding(
             f"expected={ref.sha256}, observed={custody_sha256}, uri={ref.uri!r}"
         )
     try:
-        custody_payload = json.loads(custody_bytes)
-    except json.JSONDecodeError as exc:
+        custody_payload = strict_json_loads(custody_bytes)
+    except (json.JSONDecodeError, StrictJsonError) as exc:
         raise TrainingRunExecutorError(
             "/execution_context/execution/payload custody bytes are not valid JSON"
         ) from exc
@@ -3518,4 +3526,4 @@ def _preflight_manifest_emission(
 
 def load_training_run_spec(path: Path | str) -> TrainingRunSpec:
     """Load a TrainingRunSpec JSON file."""
-    return TrainingRunSpec.model_validate(json.loads(Path(path).read_text(encoding="utf-8")))
+    return TrainingRunSpec.model_validate(strict_json_loads(Path(path).read_text(encoding="utf-8")))

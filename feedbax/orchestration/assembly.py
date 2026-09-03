@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Annotated, Any, Callable, Mapping, Protocol
 
 from pydantic import Field, JsonValue, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.strict_json import (
+    StrictJsonError,
+    strict_json_loads,
+    strict_model_validate_json,
+)
 from feedbax.contracts.evaluation_lifecycle import EvaluationMatrixBatchPlan
 from feedbax.contracts.evaluation_preflight import (
     EvaluationOutputPreflightEvidence,
@@ -363,7 +368,7 @@ def load_schema_artifact(
         raise ValueError(
             f"artifact byte digest mismatch for {ref.artifact_id!r}: expected={ref.sha256} actual={actual}"
         )
-    payload = json.loads(data)
+    payload = strict_json_loads(data)
     if not isinstance(payload, dict):
         raise ValueError("registered structured artifact must contain a JSON object")
     if (
@@ -796,8 +801,8 @@ def _load_training_row_parent_artifact(
             f"expected={ref.sha256} actual={actual_sha256}"
         )
     try:
-        payload = json.loads(data)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = strict_json_loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError, StrictJsonError) as exc:
         raise ValueError(
             f"training-row parent artifact {ref.artifact_id!r} is not valid JSON"
         ) from exc
@@ -817,8 +822,8 @@ def _resolve_input(
     context: AssemblyContext,
 ) -> ResolvedAssemblyInput:
     if context.input_resolver is None:
-        resolved = ResolvedAssemblyInput.model_validate_json(
-            Path(declaration.locator).read_text(encoding="utf-8")
+        resolved = strict_model_validate_json(
+            ResolvedAssemblyInput, Path(declaration.locator).read_text(encoding="utf-8")
         )
     else:
         resolved = context.input_resolver(declaration)

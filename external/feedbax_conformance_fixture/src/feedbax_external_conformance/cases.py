@@ -65,6 +65,10 @@ from feedbax.component_registry import (
     ComponentMigrationPack,
     ComponentRegistry,
 )
+from feedbax.contracts.manifest import (
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+    EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+)
 from feedbax.contracts import (
     ARRAY_VALUE_SCHEMA_ID,
     ARRAY_VALUE_SCHEMA_VERSION,
@@ -110,21 +114,23 @@ from feedbax.contracts.row_index import (
     expand_row_selector,
 )
 from feedbax.compiler import GraphDocument, compile_graph
-from feedbax.contracts.graphs.serialization import graph_to_spec
-from feedbax.contracts.graphs.normalization import normalize_graph_for_studio_authoring
-from feedbax.contracts.manifest import (
+from feedbax.compiler.serialization import graph_to_spec
+from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-    AnalysisRunSpec,
     EntrypointRef,
-    EvaluationRunManifest,
-    EvaluationRunSpec,
     ParentRef,
     Provenance,
-    SpecPayload,
     canonical_json_bytes,
-    load_manifest,
     sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunSpec,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
+    SpecPayload,
+    load_manifest,
     write_manifest,
     OverridePatch,
 )
@@ -400,6 +406,8 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
 
         authored_evaluation = compile_evaluation_run_matrix(
             {
+                "schema_id": EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
+                "schema_version": EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
                 "base": {
                     "ref": "fixture_evaluation_base.json",
                     "sha256": "f65f9ae128d0b8361e5064b729c9078dec516d5cf7ca47e2aa65eab9c71a7195",

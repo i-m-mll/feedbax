@@ -11,6 +11,11 @@ import {
   stageExecutionTarget,
   type ExecutionTargetChoice,
 } from '@/utils/stageProtocol';
+import {
+  admitStudioDraftHashes,
+  studioDraftHashes,
+  type StudioDraftHashes,
+} from '@/utils/studioDraftHash';
 
 export interface TrainingRunSummary {
   id: string;
@@ -65,7 +70,12 @@ export interface EvaluationRunSummary {
   staleReason: string | null;
 }
 
-export type SpecHashStatus = 'changed' | 'unchanged' | 'missing-current' | 'missing-snapshot';
+export type SpecHashStatus =
+  | 'changed'
+  | 'unchanged'
+  | 'missing-current'
+  | 'missing-snapshot'
+  | 'rehash-required';
 
 export interface SpecHashComparison {
   key: string;
@@ -76,7 +86,7 @@ export interface SpecHashComparison {
 }
 
 export interface RunSummaryOptions {
-  currentSpecHashes?: Record<string, string | null>;
+  currentSpecHashes?: StudioDraftHashes;
   includeSuperseded?: boolean;
 }
 
@@ -713,12 +723,19 @@ function trainingRunSummary(
   const baseStatus = stringValue(ref.metadata.status) ?? 'unknown';
   const specHashComparisons = compareSpecHashes(
     specHashesFromMetadata(ref.metadata),
-    options.currentSpecHashes ?? {}
+    options.currentSpecHashes
   );
   const draftChanged = specHashComparisons.some((comparison) => comparison.status === 'changed');
+  const draftNeedsRehash = specHashComparisons.some(
+    (comparison) => comparison.status === 'rehash-required'
+  );
   const staleReason =
     stringValue(ref.metadata.staleness_reason) ??
-    (isPendingLikeStatus(baseStatus) && draftChanged ? 'draft changed' : null);
+    (isPendingLikeStatus(baseStatus) && draftNeedsRehash
+      ? 'draft hash requires rehash'
+      : isPendingLikeStatus(baseStatus) && draftChanged
+        ? 'draft changed'
+        : null);
   const status = staleReason ? 'stale' : baseStatus;
   return {
     id: ref.id,
@@ -1049,34 +1066,42 @@ export function currentDraftSpecHashesForScenario(
     task_binding_spec?: unknown;
   } | null | undefined,
   graph?: unknown
-): Record<string, string | null> {
-  return {
-    graph_spec: graph ? stableHash(graph) : null,
-    training_spec: scenario?.training_spec ? stableHash(scenario.training_spec) : null,
-    task_spec: scenario?.task_spec ? stableHash(scenario.task_spec) : null,
-    task_binding_spec: scenario?.task_binding_spec ? stableHash(scenario.task_binding_spec) : null,
+): StudioDraftHashes {
+  return studioDraftHashes({
+    graph_spec: graph ?? null,
+    training_spec: scenario?.training_spec ?? null,
+    task_spec: scenario?.task_spec ?? null,
+    task_binding_spec: scenario?.task_binding_spec ?? null,
     evaluation_spec: null,
-  };
+  });
 }
 
 export function compareSpecHashes(
-  snapshotHashes: Partial<Record<string, string | null>>,
-  currentHashes: Record<string, string | null>
+  snapshotValue: unknown,
+  currentValue?: unknown
 ): SpecHashComparison[] {
+  const snapshot = snapshotValue === undefined
+    ? studioDraftHashes({})
+    : admitStudioDraftHashes(snapshotValue);
+  const current = currentValue === undefined
+    ? studioDraftHashes({})
+    : admitStudioDraftHashes(currentValue);
   const keys = Array.from(
     new Set([
-      ...Object.keys(snapshotHashes),
-      ...Object.entries(currentHashes)
+      ...Object.keys(snapshot.hashes),
+      ...Object.entries(current.hashes)
         .filter(([, hash]) => hash !== null)
         .map(([key]) => key),
     ])
   );
   return keys.map((key) => {
-    const snapshotHash = snapshotHashes[key] ?? null;
-    const currentHash = currentHashes[key] ?? null;
+    const snapshotHash = snapshot.hashes[key] ?? null;
+    const currentHash = current.hashes[key] ?? null;
     let status: SpecHashStatus;
     if (!snapshotHash) status = 'missing-snapshot';
     else if (!currentHash) status = 'missing-current';
+    else if ('rehash_required' in snapshot) status = 'rehash-required';
+    else if ('rehash_required' in current) status = 'rehash-required';
     else status = snapshotHash === currentHash ? 'unchanged' : 'changed';
     return {
       key,
@@ -1088,14 +1113,9 @@ export function compareSpecHashes(
   });
 }
 
-function specHashesFromMetadata(metadata: Record<string, unknown>): Record<string, string | null> {
-  const hashes = objectValue(metadata.spec_hashes) ?? objectValue(metadata.snapshot_spec_hashes);
-  if (!hashes) return {};
-  return Object.fromEntries(
-    Object.entries(hashes)
-      .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
-      .map(([key, value]) => [key, value])
-  );
+function specHashesFromMetadata(metadata: Record<string, unknown>): StudioDraftHashes | undefined {
+  const hashes = metadata.spec_hashes ?? metadata.snapshot_spec_hashes;
+  return hashes === undefined ? undefined : admitStudioDraftHashes(hashes);
 }
 
 function isPendingLikeStatus(status: string): boolean {
@@ -1115,7 +1135,7 @@ function supersessionValue(
   return value === id ? null : value;
 }
 
-export function stableHash(value: unknown): string {
+export function legacyManifestFallbackHash(value: unknown): string {
   const text = stableStringify(value);
   let hash = 2166136261;
   for (let index = 0; index < text.length; index += 1) {

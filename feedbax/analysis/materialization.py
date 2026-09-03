@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,9 +10,18 @@ from typing import Any, Literal, cast
 import equinox as eqx
 from pydantic import BaseModel
 
+from feedbax.contracts.strict_json import strict_json_loads
+
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisArtifactFile, AnalysisRunContext
-from feedbax.contracts.manifest import ArtifactRef, ParentRef, RegenerationSpec, SpecPayload
+from feedbax.contracts.base import (
+    ArtifactRef,
+    ParentRef,
+)
+from feedbax.contracts.manifest import (
+    RegenerationSpec,
+    SpecPayload,
+)
 from feedbax.analysis.types import AnalysisInputData
 
 
@@ -76,8 +84,7 @@ MaterializerInputMode = Literal["context", "context_and_data"]
 def _materializer_input_mode(value: str) -> MaterializerInputMode:
     if value not in {"context", "context_and_data"}:
         raise ValueError(
-            "materializer_input must be 'context' or 'context_and_data', "
-            f"got {value!r}"
+            f"materializer_input must be 'context' or 'context_and_data', got {value!r}"
         )
     return cast(MaterializerInputMode, value)
 
@@ -280,11 +287,7 @@ def directory_artifact_group(
     files = tuple(sorted(item for item in directory.rglob("*") if item.is_file()))
     if not files:
         return ()
-    name_root = (
-        directory
-        if logical_name_root is None
-        else Path(logical_name_root).expanduser()
-    )
+    name_root = directory if logical_name_root is None else Path(logical_name_root).expanduser()
     members = tuple(
         AnalysisArtifactFile(
             path=item,
@@ -383,7 +386,7 @@ def manifest_artifact_group(
 
 def read_json_payload(path: Path | str) -> Any:
     """Read one UTF-8 JSON payload from ``path``."""
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return strict_json_loads(Path(path).read_text(encoding="utf-8"))
 
 
 def _json_payload(value: Any) -> Any:

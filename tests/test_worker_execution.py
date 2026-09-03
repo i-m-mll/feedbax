@@ -15,8 +15,8 @@ import feedbax.web.worker.execution as worker_execution
 import feedbax.web.worker.checkpoint as worker_checkpoint
 from feedbax.component_registry import ComponentRegistry, register_cde_templates
 from feedbax.contracts.acausal import AcausalGraphSpec
-from feedbax.contracts.graphs.templates import network_template_graph
-from feedbax.contracts.graphs.normalization import normalize_task_binding_spec_for_studio_authoring
+from feedbax.compiler.templates import network_template_graph
+from feedbax.compiler.normalization import normalize_task_binding_spec_for_studio_authoring
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
@@ -34,6 +34,7 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.plugins.bootstrap import BootstrapState
 from feedbax.web.worker.app import _Job, _require_worker_specs
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
+from feedbax.web.worker.diagnostics import GraphCompilationError
 
 
 def _linear_graph_spec(component_type: str = "Linear", output_size: int = 1) -> dict:
@@ -45,7 +46,6 @@ def _linear_graph_spec(component_type: str = "Linear", output_size: int = 1) -> 
                     "input_size": 1,
                     "output_size": output_size,
                     "activation": "identity",
-                    "trainable": True,
                 },
                 input_ports=["input"],
                 output_ports=["output"],
@@ -945,7 +945,21 @@ def test_run_training_graph_projects_parameter_constraints_after_update(
 
 
 def test_compile_training_run_fails_unsupported_display_only_component() -> None:
-    graph_spec = _linear_graph_spec(component_type="MomentArmProjection")
+    graph_spec = GraphSpec(
+        nodes={
+            "readout": ComponentSpec(
+                type="MomentArmProjection",
+                params={"n_muscles": 1, "n_joints": 1},
+                input_ports=["forces", "angles", "angular_velocities"],
+                output_ports=["torques", "musculotendon_lengths", "musculotendon_velocities"],
+            )
+        },
+        output_ports=["output"],
+        output_bindings={"output": ("readout", "torques")},
+    ).model_dump(mode="json", exclude_none=True)
+    task_binding_spec = _task_binding_spec()
+    task_binding_spec["bindings"][0]["id"] = "task:model_input->readout:forces"
+    task_binding_spec["bindings"][0]["target_port"] = "forces"
 
     with pytest.raises(ValueError, match="unsupported executable component"):
         compile_training_run(
@@ -953,7 +967,7 @@ def test_compile_training_run_fails_unsupported_display_only_component() -> None
             graph_spec=graph_spec,
             training_spec=_training_spec(),
             task_spec={"type": "Generic", "params": {}},
-            task_binding_spec=_task_binding_spec(),
+            task_binding_spec=task_binding_spec,
             cfg=_cfg(),
         )
 
@@ -1288,17 +1302,18 @@ def test_compile_training_run_lowers_segment_aggregation_with_task_timeline() ->
     assert compiled.loss_terms[0].metadata["time_mask"]["epoch_ids"] == ["epoch:1"]
 
 
-def test_compile_training_run_allows_absent_optional_task_data_value_spec_default() -> None:
+def test_compile_training_run_rejects_bound_task_data_without_value_spec() -> None:
     task_binding_spec = deepcopy(_task_binding_spec())
     task_binding_spec["exposed_data"][0].pop("value_spec")
 
-    compiled = compile_training_run(
-        component_registry=ComponentRegistry(load_user_components=False),
-        graph_spec=_linear_graph_spec(),
-        training_spec=_training_spec(),
-        task_spec={"type": "Generic", "params": {}},
-        task_binding_spec=task_binding_spec,
-        cfg=_cfg(),
-    )
+    with pytest.raises(GraphCompilationError) as exc_info:
+        compile_training_run(
+            component_registry=ComponentRegistry(load_user_components=False),
+            graph_spec=_linear_graph_spec(),
+            training_spec=_training_spec(),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=task_binding_spec,
+            cfg=_cfg(),
+        )
 
-    assert jnp.allclose(compiled.task_data["model_input"], 0.0)
+    assert exc_info.value.diagnostics[0].code == "worker.missing_task_data_value_spec"

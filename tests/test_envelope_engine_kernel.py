@@ -10,6 +10,7 @@ project's vocabulary would be testing the wrong layer.
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
     RUN_RECEIPT_ONLY_FACTS,
     CompileLockInputs,
     CompilerContract,
@@ -35,8 +37,10 @@ from feedbax.contracts.experiment_compile_lock import (
     build_compile_lock,
     check_plan_receipt_boundary,
     load_compile_lock,
+    migrate_compile_lock_v3_to_v4,
 )
 from feedbax.contracts.experiment_envelope import (
+    ExperimentEnvelopeParentAuthority,
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
 )
@@ -61,11 +65,20 @@ from feedbax.contracts.experiment_envelope_dialect import (
     ExperimentEnvelopeLayer,
 )
 from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.run_composition import (
     CompositionNode,
     InlineIntentParent,
+    ResolvedOutputParent,
     authored_envelope_hash,
 )
+from feedbax.contracts.run_matrix import (
+    MatrixCompositionDelta,
+    TrainingRowParentProvenance,
+    apply_composition_deltas,
+    apply_override_patches,
+)
+from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
 from feedbax.contracts.training import (
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -556,6 +569,7 @@ def test_lock_pins_the_envelope_and_the_compiled_document() -> None:
     assert lock["compiled_document"]["content_hash"] == canonical_sha256(document)
     assert lock["envelope"]["pin_algorithm"] == CANONICAL_PIN_ALGORITHM
     assert lock["compiled_document"]["pin_algorithm"] == CANONICAL_PIN_ALGORITHM
+    assert lock["execution_identity"]["pin_algorithm"] == CANONICAL_PIN_ALGORITHM
 
 
 def test_execution_identity_moves_with_an_identity_contribution() -> None:
@@ -599,6 +613,67 @@ def test_lock_loader_accepts_the_current_version_and_rechecks_the_boundary() -> 
     assert loaded["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
 
 
+def test_lock_loader_migrates_attributable_feedbax_v3_execution_identity() -> None:
+    lock = _lock()
+    lock["schema_version"] = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+    del lock["execution_identity"]["pin_algorithm"]
+    lock["compiler_implementation"] = {
+        "code_unit": "feedbax.envelope.entrypoint",
+        "package_versions": {"feedbax": "0.2.0"},
+    }
+
+    migrated = default_spec_registry.migrate("ExperimentCompileLock", lock)
+    loaded = load_compile_lock(lock, field="generated/probe.compile-lock.json")
+
+    assert migrated.migrated
+    assert migrated.payload == loaded
+    assert loaded["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
+    assert loaded["execution_identity"]["pin_algorithm"] == CANONICAL_PIN_ALGORITHM
+
+
+@pytest.mark.parametrize(
+    "implementation",
+    [
+        {
+            "code_unit": "downstream.authored.compiler",
+            "package_versions": {"feedbax": "0.2.0"},
+        },
+        {
+            "code_unit": "feedbax.envelope.entrypoint",
+            "package_versions": {"feedbax": None},
+        },
+    ],
+)
+def test_v3_pin_migration_refuses_downstream_or_unattributed_producers(
+    implementation: dict[str, Any],
+) -> None:
+    lock = _lock()
+    lock["schema_version"] = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+    del lock["execution_identity"]["pin_algorithm"]
+    lock["compiler_implementation"] = implementation
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="must remain unpinned"):
+        load_compile_lock(lock, field="generated/probe.compile-lock.json")
+
+
+def test_v3_pin_migration_refuses_a_downstream_authored_digest_shape() -> None:
+    document = {
+        "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+        "sha256": "a" * 64,
+    }
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="only a Feedbax experiment"):
+        migrate_compile_lock_v3_to_v4(document, field="specs/authored.analysis.json")
+
+
+def test_current_lock_rejects_an_unknown_execution_identity_pin() -> None:
+    lock = _lock()
+    lock["execution_identity"]["pin_algorithm"] = "canonical_json_v99"
+
+    with pytest.raises(ExperimentEnvelopeRejection, match="canonical_json_v1"):
+        load_compile_lock(lock, field="generated/probe.compile-lock.json")
+
+
 def test_lock_loader_refuses_a_lock_edited_to_carry_a_receipt_fact() -> None:
     lock = _lock()
     lock["run_id"] = "run-1"
@@ -630,7 +705,7 @@ def test_lock_loader_rejects_a_foreign_family() -> None:
         load_compile_lock(lock, field="compiled/probe.compile-lock.json")
 
 
-# -- the whole v1 document is validated on read ---------------------------------
+# -- the whole compile-lock document is validated on read -----------------------
 
 
 def _compiled_lock(repo: Path, alias: str = "widened") -> dict[str, Any]:
@@ -726,6 +801,10 @@ def _identity_inputs(lock: dict[str, Any]) -> None:
     lock["execution_identity"]["inputs"] = []
 
 
+def _identity_pin(lock: dict[str, Any]) -> None:
+    del lock["execution_identity"]["pin_algorithm"]
+
+
 @pytest.mark.parametrize(
     ("damage", "category", "match"),
     [
@@ -802,9 +881,14 @@ def _identity_inputs(lock: dict[str, Any]) -> None:
             ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
             "names the facts it was built from",
         ),
+        (
+            _identity_pin,
+            ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            "pin_algorithm",
+        ),
     ],
 )
-def test_the_loader_refuses_a_lock_damaged_anywhere_in_the_v1_document(
+def test_the_loader_refuses_a_lock_damaged_anywhere_in_the_current_document(
     repo: Path, damage: Any, category: Any, match: str
 ) -> None:
     """A consumer that trusts a lock trusts all of it, so all of it is checked."""
@@ -857,7 +941,12 @@ def test_the_lock_migration_slot_exists_in_the_shared_spec_registry() -> None:
     assert family.identity == EXPERIMENT_COMPILE_LOCK_SCHEMA_ID
     assert family.current_version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
     assert family.policy is not None
-    assert default_spec_registry.available_migrations("ExperimentCompileLock") == ()
+    assert family.policy.stance == "migrate"
+    assert family.policy.supported_old_versions == (EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,)
+    migrations = default_spec_registry.available_migrations("ExperimentCompileLock")
+    assert len(migrations) == 1
+    assert migrations[0].source_version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+    assert migrations[0].target_version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
 
 
 # -- lineage resolution -----------------------------------------------------
@@ -1137,7 +1226,7 @@ def test_a_receipt_without_a_digest_is_a_locator_not_a_fabricated_authentication
     }
 
 
-def test_v6_complete_receipt_set_lowers_to_the_v3_lock_binding(repo: Path) -> None:
+def test_v6_complete_receipt_set_lowers_to_the_v4_lock_binding(repo: Path) -> None:
     path = envelope_path(repo, "set-summary")
     write_envelope(
         path,
@@ -1159,7 +1248,7 @@ def test_v6_complete_receipt_set_lowers_to_the_v3_lock_binding(repo: Path) -> No
         },
     )
     outcome = kernel().compile_envelope_file(path, repo_root=repo)
-    assert outcome.compile_lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
+    assert outcome.compile_lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
     assert outcome.compile_lock["references"][0]["consumer"] == {
         "consumer": "analysis_receipt_set",
         "alias": "evaluation",
@@ -1634,7 +1723,10 @@ def _lock_at_version_v1(lock: dict[str, Any]) -> dict[str, Any]:
     that, where re-signing the bases would only record whatever the code now
     emits.
     """
-    return {**lock, "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1}
+    legacy = json.loads(json.dumps(lock))
+    legacy["schema_version"] = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1
+    del legacy["execution_identity"]["pin_algorithm"]
+    return legacy
 
 
 def test_prior_and_authority_free_root_document_lock_bytes_match_signed_base(
@@ -1896,6 +1988,211 @@ def test_resolved_output_composition_root_is_not_materialized_at_compile_time(
     identity = outcome.compile_lock["identity_contributions"]["training_root"]["parent"]
     assert identity["row_id"] == "source-row"
     assert identity["checkpoint_transaction_id"] == "checkpoint-1"
+
+
+def _resolved_parent_authority(
+    payload: dict[str, Any],
+    parent: ResolvedOutputParent,
+    *,
+    declared_parent: ResolvedOutputParent | None = None,
+    semantic_hash: str | None = None,
+    artifact_sha256: str | None = None,
+    payload_bytes: bytes | None = None,
+) -> ExperimentEnvelopeParentAuthority:
+    canonical_bytes = training_spec_canonical_bytes(payload)
+    return ExperimentEnvelopeParentAuthority(
+        provenance=TrainingRowParentProvenance(
+            role="training.base",
+            parent_kind="resolved_output",
+            ref=(declared_parent or parent).ref,
+            semantic_hash=semantic_hash or (declared_parent or parent).resolved_root_hash,
+            artifact_id="artifact-version:resolved-training-parent",
+            artifact_sha256=artifact_sha256 or hashlib.sha256(canonical_bytes).hexdigest(),
+            schema_id=str(payload["schema_id"]),
+            schema_version=str(payload["schema_version"]),
+        ),
+        parent=declared_parent or parent,
+        payload_bytes=canonical_bytes if payload_bytes is None else payload_bytes,
+    )
+
+
+def _write_resolved_parent_alias_chain(
+    repo: Path,
+) -> tuple[Path, ResolvedOutputParent, dict[str, Any]]:
+    payload = _standard_run_spec_payload()
+    payload["training"] = {"n_batches": 1}
+    inherited_diagnostics = {
+        "trace_schema_id": "rlrmp2.adaptive_lambda.method_trace",
+        "trace_schema_version": "rlrmp2.adaptive_lambda.method_trace.v1",
+        "measurement_basis": "held_out_probe",
+        "metric_payload_slot": "adaptive_method_trace",
+        "replica_axis": "replica",
+    }
+    child_diagnostics = {
+        **inherited_diagnostics,
+        "trace_schema_version": "rlrmp2.adaptive_lambda.method_trace.v3",
+        "measurement_basis": "training_batch",
+    }
+    parent = ResolvedOutputParent(
+        ref="artifact-blob:resolved-training-parent",
+        resolved_root_hash=training_spec_sha256(payload),
+        row_id="source-row",
+        checkpoint_transaction_id="checkpoint-1",
+    )
+    _write(
+        repo,
+        "resolved-root",
+        {
+            **_root_envelope(
+                {
+                    "kind": "composition",
+                    "parent": parent.model_dump(mode="json", exclude_none=True),
+                    "deltas": [
+                        {
+                            "layer_id": "mapped-adaptive-continuation",
+                            "patches": [
+                                {
+                                    "path": "training.training_diagnostics",
+                                    "op": "add",
+                                    "value": inherited_diagnostics,
+                                }
+                            ],
+                        }
+                    ],
+                    "rows": [{"id": "condition-a", "label": "Condition A", "seed": 11}],
+                }
+            ),
+            "name": "resolved-root",
+        },
+    )
+    child_path = envelope_path(repo, "resolved-child")
+    write_envelope(
+        child_path,
+        {
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+            "name": "resolved-child",
+            "base": "resolved-root",
+            "training": {
+                "rows_mode": "authored_only",
+                "rows": [
+                    {
+                        "from": "condition-a",
+                        "id": "condition-b",
+                        "label": "Condition B",
+                        "delta": {
+                            "layer_id": "condition-b",
+                            "patches": [
+                                {
+                                    "path": "training.training_diagnostics",
+                                    "op": "replace",
+                                    "value": child_diagnostics,
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+        },
+    )
+    return child_path, parent, payload
+
+
+def test_alias_child_authenticates_resolved_parent_bytes_before_applying_row_delta(
+    repo: Path,
+) -> None:
+    child_path, parent, payload = _write_resolved_parent_alias_chain(repo)
+    authority = _resolved_parent_authority(payload, parent)
+
+    outcome = kernel_for(
+        PROJECT_DECLARATION, parent_authorities=(authority,)
+    ).compile_envelope_file(child_path, repo_root=repo)
+
+    assert [row["row_id"] for row in outcome.document["rows"]] == ["condition-b"]
+    resolved_parent, _attribution, _written = apply_composition_deltas(
+        payload,
+        [MatrixCompositionDelta.model_validate(delta) for delta in outcome.document["deltas"]],
+    )
+    resolved_child = apply_override_patches(
+        resolved_parent,
+        [OverridePatch.model_validate(patch) for patch in outcome.document["rows"][0]["overrides"]],
+    )
+    assert resolved_child["training"]["training_diagnostics"] == {
+        "trace_schema_id": "rlrmp2.adaptive_lambda.method_trace",
+        "trace_schema_version": "rlrmp2.adaptive_lambda.method_trace.v3",
+        "measurement_basis": "training_batch",
+        "metric_payload_slot": "adaptive_method_trace",
+        "replica_axis": "replica",
+    }
+    assert outcome.document["base"] == parent.model_dump(mode="json", exclude_none=True)
+    governed = next(
+        reference
+        for reference in outcome.compile_lock["references"]
+        if reference["kind"] == "governed_parent"
+    )
+    assert governed == {
+        "kind": "governed_parent",
+        "parent": parent.model_dump(mode="json", exclude_none=True),
+        "role": "training.base",
+        "artifact_id": "artifact-version:resolved-training-parent",
+        "artifact_sha256": hashlib.sha256(training_spec_canonical_bytes(payload)).hexdigest(),
+        "schema_id": payload["schema_id"],
+        "schema_version": payload["schema_version"],
+    }
+    assert outcome.compile_lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
+    assert load_compile_lock(outcome.compile_lock, field="resolved-child.lock")
+    with pytest.raises(ExperimentEnvelopeRejection) as prior:
+        load_compile_lock(
+            {
+                **outcome.compile_lock,
+                "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+            },
+            field="resolved-child.lock",
+        )
+    assert prior.value.category is ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize(
+    ("mutation", "category"),
+    [
+        ("missing", ExperimentEnvelopeRejectionCategory.MISSING_PARENT_AUTHORITY),
+        ("ambiguous", ExperimentEnvelopeRejectionCategory.AMBIGUOUS_PARENT_AUTHORITY),
+        ("undeclared", ExperimentEnvelopeRejectionCategory.UNDECLARED_PARENT_AUTHORITY),
+        ("semantic", ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT),
+        ("bytes", ExperimentEnvelopeRejectionCategory.PARENT_BYTE_DRIFT),
+    ],
+)
+def test_alias_child_refuses_untrusted_resolved_parent_authority(
+    repo: Path,
+    mutation: str,
+    category: ExperimentEnvelopeRejectionCategory,
+) -> None:
+    child_path, parent, payload = _write_resolved_parent_alias_chain(repo)
+    authority = _resolved_parent_authority(payload, parent)
+    if mutation == "missing":
+        authorities: tuple[ExperimentEnvelopeParentAuthority, ...] = ()
+    elif mutation == "ambiguous":
+        authorities = (authority, authority)
+    elif mutation == "undeclared":
+        other = parent.model_copy(update={"ref": "artifact-blob:other-parent"})
+        authorities = (_resolved_parent_authority(payload, parent, declared_parent=other),)
+    elif mutation == "semantic":
+        authorities = (_resolved_parent_authority(payload, parent, semantic_hash="f" * 64),)
+    else:
+        canonical_bytes = training_spec_canonical_bytes(payload)
+        authorities = (
+            _resolved_parent_authority(
+                payload,
+                parent,
+                payload_bytes=canonical_bytes + b"\n",
+            ),
+        )
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        kernel_for(PROJECT_DECLARATION, parent_authorities=authorities).compile_envelope_file(
+            child_path, repo_root=repo
+        )
+
+    assert caught.value.category is category
 
 
 def test_root_selected_checkpoint_lowers_exact_resolved_authority_and_barrier(

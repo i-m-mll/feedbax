@@ -374,6 +374,11 @@ def test_rejection_categories_are_a_closed_set() -> None:
         "retired-base-family",
         "unresolved-upstream-reference",
         "co-created-protected-document",
+        "missing-parent-authority",
+        "ambiguous-parent-authority",
+        "undeclared-parent-authority",
+        "parent-semantic-drift",
+        "parent-byte-drift",
     }
     with pytest.raises(ValueError):
         ExperimentEnvelopeRejection("invented-category", "no")

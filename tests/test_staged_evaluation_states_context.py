@@ -41,13 +41,15 @@ from feedbax.contracts.evaluation_states import (
     evaluation_states_container_bytes,
     store_evaluation_states_artifact,
 )
+from feedbax.contracts.base import (
+    ParentRef,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
-    ParentRef,
     SpecPayload,
     StagedEvaluationPrerequisite,
-    sha256_bytes,
     write_manifest,
 )
 from feedbax.contracts.staged_execution import (

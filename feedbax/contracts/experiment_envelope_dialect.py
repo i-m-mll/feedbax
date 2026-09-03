@@ -72,7 +72,7 @@ receipt does not exist yet.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, Literal, TypeAlias
 
@@ -106,8 +106,18 @@ from feedbax.contracts.figures import (
     TraceFamily,
 )
 from feedbax.contracts.graph import AnalysisInputRequirement
-from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy, StrictModel
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase, RowDerivation
+from feedbax.contracts.parameter_contracts import (
+    ANALYSIS_BUNDLE_PARAMS_SCHEMA,
+    ANALYSIS_PARAMS_SCHEMA,
+    FIGURE_ASSEMBLER_PARAMS_SCHEMA,
+    FIGURE_TRACE_PARAMS_SCHEMA,
+    ParameterBinding,
+    ParameterContractError,
+    ParameterSchema,
+)
 from feedbax.contracts.row_index import RowSetSelector
 from feedbax.contracts.run_composition import AuthoredIntentParent, ResolvedOutputParent
 from feedbax.contracts.run_matrix import (
@@ -167,12 +177,9 @@ EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID = f"{EXPERIMENT_ENVELOPE_FAMILY}.compil
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v1"
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v2"
 EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v3"
-EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4 = (
-    f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v4"
-)
-EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION = (
-    f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v5"
-)
+EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v4"
+EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V5 = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v5"
+EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION = f"{EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID}.v6"
 
 
 def compiler_contract_version_for_schema(schema: str) -> str:
@@ -1334,12 +1341,11 @@ class LayerOutputContract:
     ``model_ref`` is a ``module:attribute`` pair rather than the class itself so
     that importing the dialect does not drag in the analysis and figure stacks.
 
-    A family whose top-level document delegates its authored content to an inner
-    ``params`` block states ``params_discriminator`` — the top-level field naming
-    which content this is — and ``params_models``, the closed table of the models
-    Feedbax validates that content with. A discriminator value absent from the
-    table is content Feedbax does not own, and its ``params`` are left to whoever
-    does.
+    ``parameter_bindings`` are the sole authority for every embedded parameter
+    object this output owns. Each binding declares the object's stable schema,
+    its path or paths, and an optional document-level discriminator. An absent
+    discriminator entry means the external recipe owns that parameter contract;
+    it is not silently retried through another model.
     """
 
     layer: ExperimentEnvelopeLayer
@@ -1347,23 +1353,44 @@ class LayerOutputContract:
     schema_id: str
     schema_version: str
     model_ref: tuple[str, str]
-    params_discriminator: str | None = None
-    params_models: Mapping[str, tuple[str, str]] = field(default_factory=dict)
+    parameter_bindings: tuple[ParameterBinding, ...] = ()
 
     def model(self) -> Any:
         """Import and return the Feedbax output model this layer compiles into."""
         return _import_attribute(self.model_ref)
 
     def params_model(self, document: Mapping[str, Any]) -> Any | None:
-        """Return the model *document*'s declared content type validates against.
+        """Return the first parameter model declared for *document*.
 
-        ``None`` means this family takes no inner ``params`` block, or the
-        document declares a content type Feedbax does not own.
+        This compatibility accessor preserves the report-layer behavior used by
+        existing callers. ``None`` means the family has no Feedbax-owned
+        parameter schema for the document.
         """
-        if self.params_discriminator is None:
-            return None
-        ref = self.params_models.get(str(document.get(self.params_discriminator)))
-        return None if ref is None else _import_attribute(ref)
+        for binding in self.parameter_bindings:
+            schema = binding.schema_for(document)
+            if schema is not None:
+                return schema.model()
+        return None
+
+    def parameter_objects(
+        self, document: Mapping[str, Any]
+    ) -> tuple[tuple[str, Any, ParameterSchema], ...]:
+        """Return every addressed params object with its one declared schema."""
+        resolved: list[tuple[str, Any, ParameterSchema]] = []
+        for binding in self.parameter_bindings:
+            schema = binding.schema_for(document)
+            if schema is None:
+                continue
+            resolved.extend((path, value, schema) for path, value in binding.objects(document))
+        return tuple(resolved)
+
+    def validate_parameter_objects(self, document: Mapping[str, Any]) -> None:
+        """Validate all parameter objects through their declared schemas."""
+        for path, value, schema in self.parameter_objects(document):
+            try:
+                schema.model().model_validate(value)
+            except ValidationError as exc:
+                raise ParameterContractError(path, schema, exc) from exc
 
 
 def _import_attribute(ref: tuple[str, str]) -> Any:
@@ -1401,6 +1428,14 @@ ANALYSIS_RUN_OUTPUT = LayerOutputContract(
     "feedbax.spec.analysis_run",
     "feedbax.spec.analysis_run.v2",
     ("feedbax.contracts.manifest", "AnalysisRunSpec"),
+    parameter_bindings=(
+        ParameterBinding(
+            paths=("params",),
+            schemas={},
+            discriminator="analysis_type",
+            default_schema=ANALYSIS_PARAMS_SCHEMA,
+        ),
+    ),
 )
 ANALYSIS_BUNDLE_OUTPUT = LayerOutputContract(
     ExperimentEnvelopeLayer.ANALYSIS,
@@ -1408,6 +1443,13 @@ ANALYSIS_BUNDLE_OUTPUT = LayerOutputContract(
     "feedbax.spec.analysis_bundle",
     "feedbax.spec.analysis_bundle.v6",
     ("feedbax.analysis.bundles", "AnalysisBundleSpec"),
+    parameter_bindings=(
+        ParameterBinding(
+            paths=("params_base.params",),
+            schemas={},
+            default_schema=ANALYSIS_BUNDLE_PARAMS_SCHEMA,
+        ),
+    ),
 )
 FIGURE_OUTPUT = LayerOutputContract(
     ExperimentEnvelopeLayer.FIGURE,
@@ -1415,6 +1457,23 @@ FIGURE_OUTPUT = LayerOutputContract(
     "feedbax.spec.figure",
     "feedbax.spec.figure.v2",
     ("feedbax.contracts.figures", "FigureSpec"),
+    parameter_bindings=(
+        ParameterBinding(
+            paths=("assembler_params",),
+            schemas={},
+            default_schema=FIGURE_ASSEMBLER_PARAMS_SCHEMA,
+        ),
+        ParameterBinding(
+            paths=(
+                "traces.*.params",
+                "slot_bindings.*.params",
+                "trace_families.*.params",
+                "slot_families.*.params",
+            ),
+            schemas={},
+            default_schema=FIGURE_TRACE_PARAMS_SCHEMA,
+        ),
+    ),
 )
 FIGURE_COMPOSITION_OUTPUT = LayerOutputContract(
     ExperimentEnvelopeLayer.FIGURE,
@@ -1433,10 +1492,11 @@ COMPARISON_POLICY_OUTPUT = LayerOutputContract(
 #: Report ``report_type`` to the closed model validating that report's ``params``.
 #: Both sides are Feedbax-owned, so this is Feedbax code; a report type absent
 #: from it carries params whose owner is the recipe that registered the type.
-REPORT_PARAMS_MODELS: Mapping[str, tuple[str, str]] = {
-    "feedbax.ordered_figure_report": (
-        "feedbax.analysis.reports",
-        "OrderedFigureReportParams",
+REPORT_PARAMS_MODELS: Mapping[str, ParameterSchema] = {
+    "feedbax.ordered_figure_report": ParameterSchema(
+        "feedbax.spec.report.ordered_figure",
+        "feedbax.spec.report.ordered_figure.v3",
+        ("feedbax.analysis.reports", "OrderedFigureReportParams"),
     ),
 }
 
@@ -1446,8 +1506,13 @@ REPORT_OUTPUT = LayerOutputContract(
     "feedbax.spec.report",
     "feedbax.spec.report.v1",
     ("feedbax.contracts.manifest", "ReportSpec"),
-    params_discriminator="report_type",
-    params_models=REPORT_PARAMS_MODELS,
+    parameter_bindings=(
+        ParameterBinding(
+            paths=("params",),
+            schemas=REPORT_PARAMS_MODELS,
+            discriminator="report_type",
+        ),
+    ),
 )
 
 #: Every output a layer may compile into, keyed by the compiled document's own
@@ -1911,6 +1976,7 @@ __all__ = [
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V2",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V3",
     "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V4",
+    "EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V5",
     "EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_ID",
     "EXPERIMENT_LAYER_ROOT_AUTHORITY_SCHEMA_VERSION",
     "EXPERIMENT_ENVELOPE_FAMILY",

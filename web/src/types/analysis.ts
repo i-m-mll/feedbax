@@ -1,6 +1,7 @@
 /** Types for the analysis DAG system and figure generation. */
 
 import type { StudioSelectorRef, ValueSchema } from '@/types/workspace';
+import type { AnalysisCanvasPosition } from '@/generated/studioContracts';
 
 /** A scalar parameter value on an analysis or transform node. */
 export type AnalysisParamScalar = number | string | boolean | null;
@@ -289,6 +290,8 @@ export interface AnalysisPageSpec {
   evalParams: EvalParametrization;
   /** Viewport position/zoom for this page. */
   viewport: AnalysisViewport;
+  /** Presentation-only positions keyed by stable semantic analysis-node ID. */
+  nodePositions?: Record<string, AnalysisCanvasPosition>;
   /** Selected eval run ID for this page (null = none selected). */
   evalRunId: string | null;
   /** Expanded field paths in the DataSourceNode tree for this page. */

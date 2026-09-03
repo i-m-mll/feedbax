@@ -21,12 +21,14 @@ from feedbax.analysis import (
 )
 from feedbax.analysis.evaluation import EvaluationRecipeResult, execute_evaluation_run_spec
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE
+from feedbax.contracts.base import (
+    ParentRef,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
-    ParentRef,
     TrainingRunManifest,
-    sha256_bytes,
     evaluation_run_manifest_id,
     spec_payload,
     write_manifest,

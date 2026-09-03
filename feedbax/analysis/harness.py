@@ -15,21 +15,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from feedbax.contracts.strict_json import (
+    StrictJsonError,
+    strict_json_loads,
+    strict_model_validate_json,
+)
+
 from feedbax.plugins.bootstrap import BootstrapState
 
 if TYPE_CHECKING:
     from feedbax.plugins.application import ApplicationRegistryBundle
 
 from feedbax.analysis.rendering import render_markdown_note
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
     ParentRef,
-    RegenerationCommand,
-    RegenerationSpec,
     canonical_json_bytes,
     sha256_bytes,
+)
+from feedbax.contracts.artifact_store import (
     store_bytes_artifact,
     store_json_artifact,
+)
+from feedbax.contracts.manifest import (
+    RegenerationCommand,
+    RegenerationSpec,
     write_manifest,
 )
 
@@ -78,8 +88,8 @@ def _execute_evaluation_batch_partition(
         EvaluationLifecycleRowOutcome,
         EvaluationMatrixBatchUnit,
     )
-    from feedbax.contracts.manifest import ArtifactRef
-    from feedbax.contracts.manifest import (
+    from feedbax.contracts.base import ArtifactRef
+    from feedbax.contracts.base import (
         AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
         AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
         ParentRef,
@@ -95,7 +105,9 @@ def _execute_evaluation_batch_partition(
         staged_execution_bindings_for_bundle,
     )
 
-    bundle = RunBundle.model_validate_json(Path(task["bundle_path"]).read_text(encoding="utf-8"))
+    bundle = strict_model_validate_json(
+        RunBundle, Path(task["bundle_path"]).read_text(encoding="utf-8")
+    )
     projected = staged_execution_bindings_for_bundle(
         bundle,
         inputs_root=task["inputs_root"],
@@ -116,7 +128,7 @@ def _execute_evaluation_batch_partition(
     }
     checkpoint = Path(task["compaction_root"]) / "fragment-checkpoints" / f"{batch.batch_id}.json"
     if checkpoint.is_file():
-        cached = json.loads(checkpoint.read_text(encoding="utf-8"))
+        cached = strict_json_loads(checkpoint.read_text(encoding="utf-8"))
         if canonical_json_bytes(cached.get("checkpoint_identity")) != canonical_json_bytes(
             checkpoint_identity
         ):
@@ -222,6 +234,7 @@ def _execute_evaluation_batch_partition(
                     manifests=tuple(manifests),
                     states=tuple(states),
                     parent_authorities=tuple(parent_authorities),
+                    # Trusted internal deep copy of the in-memory declaration parameters.
                     parameters=json.loads(json.dumps(declaration.parameters)),
                     execution_context=execution_context,
                 ),
@@ -302,8 +315,8 @@ class _ExecutionPolicy:
 
 def _read_json_object(path: str, *, description: str) -> dict[str, Any]:
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = strict_json_loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, StrictJsonError) as exc:
         raise ValueError(f"could not load {description} {path!r}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{description} {path!r} must contain a JSON object")
@@ -316,8 +329,8 @@ def _load_execution_policy(path: str) -> _ExecutionPolicy:
     except OSError as exc:
         raise ValueError(f"could not load execution policy {path!r}: {exc}") from exc
     try:
-        payload = json.loads(content)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload = strict_json_loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError, StrictJsonError) as exc:
         raise ValueError(f"could not load execution policy {path!r}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"execution policy {path!r} must contain a JSON object")
@@ -691,7 +704,7 @@ def main(
         else None
     )
     execution_descriptor = (
-        json.loads(Path(args.execution_descriptor).read_text(encoding="utf-8"))
+        strict_json_loads(Path(args.execution_descriptor).read_text(encoding="utf-8"))
         if args.execution_descriptor is not None
         else None
     )
@@ -721,8 +734,8 @@ def main(
                 "orchestration lifecycle bindings cannot be combined with caller-supplied "
                 "staged execution options"
             )
-        bundle = RunBundle.model_validate_json(
-            Path(args.orchestration_bundle).read_text(encoding="utf-8")
+        bundle = strict_model_validate_json(
+            RunBundle, Path(args.orchestration_bundle).read_text(encoding="utf-8")
         )
         if bundle.execution_family != "evaluation-matrix":
             parser.error("orchestration bundle is not an evaluation-matrix family bundle")
@@ -790,7 +803,7 @@ def main(
                     publish_evaluation_compaction_products,
                     reclaim_evaluation_batch_caches,
                 )
-                from feedbax.contracts.manifest import ArtifactRef
+                from feedbax.contracts.base import ArtifactRef
 
                 prior_states: dict[str, ArtifactRef] = {}
                 reclamations = []

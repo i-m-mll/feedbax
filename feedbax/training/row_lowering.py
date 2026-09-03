@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from pydantic import ValidationError
 
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
     RowLowererIdentity,
@@ -63,6 +64,7 @@ class GovernedTrainingRowParent:
 
     def payload(self) -> dict[str, Any]:
         """Return a fresh JSON copy of the governed parent payload."""
+        # Trusted internal copy: __init__ produced these canonical bytes from payload.
         payload = json.loads(self._payload_json)
         if not isinstance(payload, dict):
             raise TrainingRowLowererRegistryError(
@@ -316,9 +318,7 @@ def training_row_lowerer_implementation_sha256(
             raise TrainingRowLowererRegistryError(
                 "training row lowerer implementation dependencies must not be empty"
             )
-        return hashlib.sha256(
-            json.dumps(identities, separators=(",", ":"), sort_keys=True).encode("utf-8")
-        ).hexdigest()
+        return hashlib.sha256(canonical_json_v1_bytes(identities)).hexdigest()
     dependencies = getattr(
         lower,
         "__feedbax_implementation_dependencies__",
@@ -374,12 +374,10 @@ def _bound_training_row_lowerer_implementation_sha256(
             "training row lowerer bound implementation identity must be non-empty"
         )
     return hashlib.sha256(
-        json.dumps(
+        canonical_json_v1_bytes(
             {
                 "identity": identity,
                 "dependencies_sha256": dependency_sha256,
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
+            }
+        )
     ).hexdigest()

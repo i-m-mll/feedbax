@@ -8,6 +8,7 @@ import importlib
 import importlib.util
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -29,13 +30,14 @@ from feedbax.plugins import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "external" / "feedbax_conformance_fixture" / "src"))
 POLICY_MANIFEST = (
     ROOT
     / "external"
     / "feedbax_conformance_fixture"
     / "src"
     / "feedbax_external_conformance"
-    / "policy_manifest.v1.json"
+    / "policy_manifest.v2.json"
 )
 _POLICY_PAYLOAD = json.loads(POLICY_MANIFEST.read_text(encoding="utf-8"))
 _PLUGIN_ROW = next(
@@ -49,166 +51,11 @@ _PLUGIN_PUBLIC_NAMES = tuple(
     )
 )
 
-GUARANTEED_IMPORTS = {
-    "feedbax.plugins": _PLUGIN_PUBLIC_NAMES,
-    "feedbax.orchestration.drivers": (
-        "DriverAuthority",
-        "DriverCapabilityEnvelope",
-        "DriverCapabilityFacts",
-        "DriverConstructionContext",
-        "DriverHook",
-        "DriverRegistration",
-        "DriverRegistry",
-        "DriverStage",
-        "DriverVenue",
-        "RealizedDriverCapabilities",
-    ),
-    "feedbax.orchestration.bundle": (
-        "DeploymentPolicy",
-        "RunBundle",
-    ),
-    "feedbax.orchestration.assembly": (
-        "RunAssemblyRequest",
-    ),
-    "feedbax.orchestration": (
-        "ControlFilesystemPreflight",
-        "ControlFilesystemPreflightError",
-        "CustodyPreservationRequired",
-        "EmergencyProviderIdentity",
-        "EmergencyRunSetRecord",
-        "PrimaryStatePersistenceError",
-        "RunSetState",
-        "RunSetStateStore",
-        "StageEngine",
-    ),
-    "feedbax.contracts.row_index": (
-        "AllRowsSelector",
-        "AuthenticatedRowIndex",
-        "ResolvedRowSet",
-        "RowCustodyBinding",
-        "RowIndexCustodyBindings",
-        "RowIndexEntry",
-        "RowSelectionError",
-        "RowSelectionErrorCode",
-        "RowSetSelector",
-        "TagRowsSelector",
-        "derive_row_label",
-        "expand_row_selector",
-        "normalize_row_tags",
-    ),
-    "feedbax.contracts.figure_roles": (
-        "FigureRoleBindingContract",
-        "FigureRoleReferenceError",
-        "FigureRowExpansionRequest",
-        "PerRowInputReference",
-        "ResolvedFigureInput",
-        "ResolvedFigureInputs",
-        "SharedInputReference",
-        "expand_figure_rows",
-        "resolve_figure_input_roles",
-        "row_namespace",
-    ),
-    "feedbax.contracts.experiment_envelope": (
-        "ExperimentEnvelopeCompileRequest",
-        "ExperimentEnvelopeCompileResult",
-        "ExperimentEnvelopeRejection",
-        "ExperimentEnvelopeRejectionCategory",
-        "dispatch_experiment_envelope",
-        "require_builtin_envelope_schema",
-    ),
-    "feedbax.lowering": (
-        "LowererRegistration",
-        "LoweredContribution",
-        "LowererExecutionError",
-        "OrderedLowererRegistry",
-    ),
-    "feedbax.component_registry": (
-        "ComponentBuilder",
-        "DeclaredComponent",
-        "declare_component",
-        "ComponentResolution",
-        "ComponentRegistry",
-        "ComponentMigration",
-        "ComponentMigrationPack",
-    ),
-    "feedbax.contracts.migrations": (
-        "SchemaMigration",
-        "SpecSchemaFamily",
-        "SpecFamilyMigrationPolicy",
-        "SpecMigrationResult",
-        "SpecSchemaRegistry",
-        "UnknownSpecFamily",
-        "UnsupportedMigrationPath",
-        "UnsupportedSpecVersion",
-        "MissingComponentOwner",
-        "UnsupportedComponentMigration",
-        "default_spec_registry",
-        "migrate_structured_spec_payload",
-        "migrate_graph_spec",
-    ),
-    "feedbax.contracts.graph": (
-        "ComponentSpec",
-        "GraphProject",
-        "GraphSpec",
-        "ParamSchema",
-        "ParamValue",
-        "StudioValueSpec",
-        "WireSpec",
-    ),
-    "feedbax.contracts.value_identity": (
-        "ValueIdentityRecord",
-        "authored_value_sha256",
-        "semantic_value_sha256",
-        "realization_value_sha256",
-        "value_identity_record",
-    ),
-    "feedbax.contracts.material_dependencies": (
-        "AdmissionWaiver",
-        "IncidentalAdmissionFailure",
-        "MaterialDependency",
-        "MaterialDependencyAdmission",
-        "MaterialDependencyObservation",
-        "MaterialDependencySet",
-        "MaterialDependencyValue",
-        "dependency_value_sha256",
-        "material_dependency_identity_sha256",
-        "validate_material_dependency_admission",
-    ),
-    "feedbax.contracts.manifest": (
-        "TRAINING_RUN_CERTIFICATION_MIGRATION_TABLE",
-        "TrainingRunCertification",
-        "training_run_certification",
-    ),
-    "feedbax.contracts.array_values": (
-        "ArrayValueSpec",
-        "ConstantArrayValueSpec",
-        "SparseCooArrayValueSpec",
-        "SparseCooEntrySpec",
-        "materialize_array_value",
-    ),
-    "feedbax.contracts.component": (
-        "ComponentDefinition",
-        "DynamicPortLayout",
-        "DynamicPortPolicy",
-        "DynamicPortPolicyError",
-        "derive_dynamic_port_count",
-        "derive_dynamic_port_layout",
-        "validate_dynamic_port_layout",
-        "migrate_component_definition_payload",
-        "migrate_component_definition_v1_to_v2_payload",
-        "migrate_component_definition_v2_to_v3_payload",
-    ),
-}
-
-GUARANTEED_ROOT_EXPORTS = {
-    "feedbax": GUARANTEED_IMPORTS["feedbax.lowering"],
-    "feedbax.contracts": (
-        *GUARANTEED_IMPORTS["feedbax.contracts.value_identity"],
-        *GUARANTEED_IMPORTS["feedbax.contracts.material_dependencies"],
-        *GUARANTEED_IMPORTS["feedbax.contracts.manifest"],
-        *GUARANTEED_IMPORTS["feedbax.contracts.array_values"],
-    ),
-}
+_GUARANTEED_APIS = tuple(
+    (row["row_id"], entry["namespace"], tuple(entry["public_names"]))
+    for row in _POLICY_PAYLOAD["guaranteed_rows"]
+    for entry in row["public_api"]["namespaces"]
+)
 
 
 def _bootstrap_protocol(version: int) -> None:
@@ -225,10 +72,10 @@ def _bootstrap_protocol(version: int) -> None:
 
 
 def test_guaranteed_imports_resolve_from_named_public_namespaces() -> None:
-    for module_name, symbols in {**GUARANTEED_IMPORTS, **GUARANTEED_ROOT_EXPORTS}.items():
+    for row_id, module_name, symbols in _GUARANTEED_APIS:
         module = importlib.import_module(module_name)
         missing = [symbol for symbol in symbols if not hasattr(module, symbol)]
-        assert not missing, f"{module_name} is missing guaranteed symbols {missing!r}"
+        assert not missing, f"{row_id}: {module_name} is missing {missing!r}"
 
 
 def test_policy_constants_bind_effective_release_and_numeric_window() -> None:
@@ -255,8 +102,9 @@ def test_driver_policy_schema_heads_match_reviewed_690_contract() -> None:
 def test_persistence_policy_schema_heads_match_reviewed_b85_contract() -> None:
     orchestration = importlib.import_module("feedbax.orchestration")
 
-    assert orchestration.RUN_SET_STATE_SCHEMA_VERSION == "feedbax.orchestration.run_set_state.v5"
+    assert orchestration.RUN_SET_STATE_SCHEMA_VERSION == "feedbax.orchestration.run_set_state.v6"
     assert orchestration.RUN_SET_STATE_SCHEMA_VERSION_V4 == "feedbax.orchestration.run_set_state.v4"
+    assert orchestration.RUN_SET_STATE_SCHEMA_VERSION_V5 == "feedbax.orchestration.run_set_state.v5"
     assert (
         orchestration.EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION
         == "feedbax.orchestration.emergency_run_set_record.v1"
@@ -400,7 +248,7 @@ def test_plugin_api_checker_rejects_facade_inventory_drift(
 def test_ratified_rows_bind_v14_and_have_no_pending_coverage() -> None:
     fixture = ROOT / "external" / "feedbax_conformance_fixture"
     manifest = json.loads(
-        (fixture / "src/feedbax_external_conformance/policy_manifest.v1.json").read_text(
+        (fixture / "src/feedbax_external_conformance/policy_manifest.v2.json").read_text(
             encoding="utf-8"
         )
     )
@@ -414,8 +262,14 @@ def test_ratified_rows_bind_v14_and_have_no_pending_coverage() -> None:
         "figure-role-references",
     ):
         assert rows[row_id]["coverage_status"] == "covered"
-    assert rows["terminal-certification"]["coverage_status"] == "not-external-covered"
-    assert rows["terminal-certification"]["case_ids"] == []
+    assert "terminal-certification" not in rows
+    assert "dynamic-component-definition" not in rows
+    assert "feedbax.manifest.training_run_certification.v1" in rows[
+        "orchestration-lifecycle"
+    ]["schemas"]["current"]
+    assert "feedbax.spec.component_definition.v3" in rows["component-registration"][
+        "schemas"
+    ]["current"]
     assert "pending-final-sync" not in json.dumps(manifest)
 
     result_source = (fixture / "src/feedbax_external_conformance/result.py").read_text(
@@ -438,11 +292,31 @@ def test_ratified_policy_checker_rejects_residual_pending_rows(
     spec.loader.exec_module(module)
     manifest = json.loads(module.POLICY_MANIFEST.read_text(encoding="utf-8"))
     manifest["guaranteed_rows"][0]["coverage_status"] = "pending-final-sync"
-    pending_manifest = tmp_path / "policy_manifest.v1.json"
+    pending_manifest = tmp_path / "policy_manifest.v2.json"
     pending_manifest.write_text(json.dumps(manifest), encoding="utf-8")
     monkeypatch.setattr(module, "POLICY_MANIFEST", pending_manifest)
 
     with pytest.raises(ValueError, match="retains a pending-final-sync row"):
+        module.check_policy()
+
+
+def test_policy_checker_rejects_v1_manifest_instead_of_inventing_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = ROOT / "scripts" / "check_downstream_interface_policy.py"
+    spec = importlib.util.spec_from_file_location(
+        "check_downstream_interface_policy_v1", script
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifest = json.loads(module.POLICY_MANIFEST.read_text(encoding="utf-8"))
+    manifest["schema_version"] = "feedbax.external_conformance.policy_manifest.v1"
+    v1_manifest = tmp_path / "policy_manifest.v1.json"
+    v1_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(module, "POLICY_MANIFEST", v1_manifest)
+
+    with pytest.raises(ValueError, match="fixture policy manifest schema drifted"):
         module.check_policy()
 
 

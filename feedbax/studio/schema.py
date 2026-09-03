@@ -13,7 +13,8 @@ from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.value_schema import SchemaOrigin, ValueSchema
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
 from feedbax.contracts.migrations import migrate_studio_workspace_spec
-from feedbax.contracts.manifest import SCHEMA_VERSION, utc_now
+from feedbax.contracts.base import utc_now
+from feedbax.contracts.manifest import SCHEMA_VERSION
 from feedbax.studio.protocol import (
     GRAPH_BINDABLE_TASK_DATA_ROLES,
     PROTOCOL_TASK_DATA_KINDS,
@@ -23,11 +24,11 @@ from feedbax.studio.protocol import (
     task_data_surface,
     task_data_uses_protocol_path,
 )
-from feedbax.contracts.graphs.normalization import (
+from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_task_binding_spec_for_studio_authoring,
 )
-from feedbax.contracts.graphs.prototypes import (
+from feedbax.compiler.prototypes import (
     DerivedDimensionConflict,
     DerivedDimensionError,
     normalize_derived_dimensions,

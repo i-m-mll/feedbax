@@ -35,13 +35,13 @@ from feedbax.analysis.reports import (
     ReportRecipeResult,
     execute_authored_report_spec,
 )
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     EvaluationRunSpec,
     ReportSpec,
     load_manifest,
     report_manifest_id,
-    store_bytes_artifact,
 )
 from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 

@@ -1759,6 +1759,10 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
         policy = family.policy
         assert policy is not None
         if policy.stance == "migrate":
+            if family.kind == "ExperimentCompileLock":
+                # Its migration requires a complete old lock with attributable producer
+                # provenance; the focused compile-lock tests exercise that fail-closed path.
+                continue
             for old_version in policy.supported_old_versions:
                 payload = {"schema_version": old_version}
                 if family.kind == "StudioValueSpec":
@@ -2225,7 +2229,11 @@ def test_fresh_studio_stage_can_opt_into_current_versionless_spec() -> None:
 
     result = migrate_studio_stage_spec(payload, assume_current=True)
 
-    assert result.payload == payload
+    assert result.payload == {
+        **payload,
+        "schema_id": "feedbax.spec.studio.stage",
+        "schema_version": "feedbax.spec.studio.stage.v2",
+    }
     assert result.source_version == default_spec_registry.resolve("StudioStageSpec").current_version
 
 

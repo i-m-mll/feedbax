@@ -13,7 +13,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 
 
 PUBLICATION_SCHEMA_ID = "feedbax.publication"

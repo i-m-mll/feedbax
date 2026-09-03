@@ -7,7 +7,8 @@ from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
 )
 from feedbax.contracts.figures import FigurePiece, FigureTemplate
-from feedbax.contracts.manifest import ArtifactRef, EvaluationRunSpec
+from feedbax.contracts.base import ArtifactRef
+from feedbax.contracts.manifest import EvaluationRunSpec
 from feedbax.plot.constructors import (
     FigureRegistry,
 )

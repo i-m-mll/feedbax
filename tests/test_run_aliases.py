@@ -20,14 +20,16 @@ from feedbax.contracts.analysis_composition import (
     AnalysisRunDeltaSpec,
     analysis_composition_provenance,
 )
+from feedbax.contracts.base import (
+    ParentRef,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_RUN_DELTA_SPEC_SCHEMA_ID,
     ANALYSIS_RUN_DELTA_SPEC_SCHEMA_VERSION,
     AnalysisRunSpec,
-    ParentRef,
-    canonical_json_bytes,
     load_manifest,
-    sha256_bytes,
 )
 from feedbax.contracts.run_aliases import (
     RUN_ALIAS_CATALOG_SCHEMA_ID,

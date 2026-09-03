@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from feedbax.contracts.graphs.penzai_compiler import (
+from feedbax.compiler.penzai_compiler import (
     compile_penzai_authoring_report,
     penzai_builder_options,
     render_penzai_treescope_html,

@@ -48,6 +48,7 @@ from feedbax.web.services.worker_driver import (
 from feedbax.web.worker.app import WorkerStatus
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
 from feedbax.web.worker.identity import require_worker_job_id
+from feedbax.web.worker.transport import WorkerEndpoint
 
 
 def test_studio_training_assembly_spec_governs_worker_payload() -> None:
@@ -301,7 +302,7 @@ def test_worker_start_preserves_outside_sentinel_for_absolute_job_id(
 def test_worker_http_driver_rejects_transport_id_before_started_sentinel(tmp_path: Path) -> None:
     bundle = SimpleNamespace(run_set_id="set-a", run_set_dir=tmp_path / "run-set")
     row = SimpleNamespace(row_id="..")
-    driver = WorkerHttpDriver(base_url="http://worker")
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765")
 
     with pytest.raises(ValueError, match="path-safe transport identifier"):
         driver.launch_row(bundle, row, RunSetState(run_set_id="set-a"))
@@ -320,7 +321,7 @@ def test_worker_http_driver_rejects_unsafe_resumed_paths_without_mutation(
     bundle = SimpleNamespace(run_set_id="set-a", run_set_dir=tmp_path / "run-set")
     row = SimpleNamespace(row_id=job_id)
     state = RunSetState(run_set_id="set-a")
-    driver = WorkerHttpDriver(base_url="http://worker")
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765")
 
     with pytest.raises(ValueError, match="path-safe transport identifier"):
         if operation == "launch":
@@ -344,6 +345,9 @@ def test_worker_http_driver_rejects_unsafe_resumed_paths_without_mutation(
 
 
 class _FakeWorkerStreamResponse:
+    status_code = 200
+    headers: dict[str, str] = {}
+
     def __init__(
         self,
         *,
@@ -379,7 +383,7 @@ class _FakeWorkerStreamResponse:
     def raise_for_status(self) -> None:
         return None
 
-    def iter_lines(self):
+    def iter_bytes(self):
         self.iterating.set()
         if self.blocked:
             self.closed.wait(timeout=2.0)
@@ -388,7 +392,8 @@ class _FakeWorkerStreamResponse:
             self.released.wait(timeout=2.0)
         if self.failure is not None:
             raise self.failure
-        yield from self.lines
+        for line in self.lines:
+            yield (line if line.endswith("\n") else line + "\n").encode()
 
     def close(self) -> None:
         self.close_calls += 1
@@ -410,7 +415,7 @@ def test_worker_http_driver_teardown_closes_blocked_stream_and_is_idempotent(
     response = _FakeWorkerStreamResponse(blocked=True)
     monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: response)
     bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-blocked")
-    driver = WorkerHttpDriver(base_url="http://worker")
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765")
 
     driver._ensure_stream_thread(bundle, row)
     assert response.iterating.wait(timeout=1.0)
@@ -445,7 +450,7 @@ def test_worker_http_driver_teardown_rejects_concurrent_stream_admission(
     monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: response)
     bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-before-teardown")
     later_row = SimpleNamespace(row_id="job-during-teardown")
-    driver = WorkerHttpDriver(base_url="http://worker")
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765")
 
     driver._ensure_stream_thread(bundle, row)
     assert response.iterating.wait(timeout=1.0)
@@ -477,7 +482,7 @@ def test_worker_http_driver_teardown_rejects_concurrent_stream_admission(
 
 def test_worker_http_driver_rejects_stream_admission_after_teardown(tmp_path: Path) -> None:
     bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-after-teardown")
-    driver = WorkerHttpDriver(base_url="http://worker")
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765")
 
     assert driver.teardown(bundle, state) == {"driver": "worker-http"}
 
@@ -500,7 +505,7 @@ def test_worker_http_driver_retains_pre_header_join_survivor_for_repeated_teardo
 
     monkeypatch.setattr(httpx, "stream", fake_stream)
     bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-header-stall")
-    driver = WorkerHttpDriver(base_url="http://worker", request_timeout=0.25)
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765", request_timeout=0.25)
     driver.stream_join_timeout_seconds = 0.01
 
     driver._ensure_stream_thread(bundle, row)
@@ -510,7 +515,8 @@ def test_worker_http_driver_retains_pre_header_join_survivor_for_repeated_teardo
     with pytest.raises(WorkerStreamTeardownError, match="did not terminate"):
         driver.teardown(bundle, state)
 
-    assert timeouts == [0.25]
+    assert len(timeouts) == 1
+    assert timeouts[0].read == 0.25
     assert driver._streams == {row.row_id: stream}
     assert stream.thread is not None and stream.thread.is_alive()
 
@@ -542,7 +548,7 @@ def test_worker_http_driver_concurrent_ensure_starts_one_stream(
     monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: response)
     monkeypatch.setattr(worker_driver_module.threading.Thread, "start", controlled_start)
     bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-concurrent")
-    driver = WorkerHttpDriver(base_url="http://worker")
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765")
 
     def ensure_second_stream() -> None:
         driver._ensure_stream_thread(bundle, row)
@@ -577,14 +583,14 @@ def test_worker_http_driver_close_failure_does_not_skip_later_stream_cleanup(
     monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: next(responses))
     bundle, first_row, state = _worker_stream_test_inputs(tmp_path, "job-close-failure")
     second_row = SimpleNamespace(row_id="job-close-later")
-    driver = WorkerHttpDriver(base_url="http://worker")
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765")
 
     driver._ensure_stream_thread(bundle, first_row)
     assert first_response.iterating.wait(timeout=1.0)
     driver._ensure_stream_thread(bundle, second_row)
     assert second_response.iterating.wait(timeout=1.0)
 
-    with pytest.raises(WorkerStreamTeardownError, match="close denied"):
+    with pytest.raises(WorkerStreamTeardownError, match="response close failed"):
         driver.teardown(bundle, state)
 
     assert first_response.closed.is_set()
@@ -608,7 +614,7 @@ def test_worker_http_driver_terminal_stream_unregisters_itself(monkeypatch, tmp_
     )
     monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: response)
     bundle, row, _state = _worker_stream_test_inputs(tmp_path, event.row_id)
-    driver = WorkerHttpDriver(base_url="http://worker")
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765")
 
     driver._ensure_stream_thread(bundle, row)
     assert response.iterating.wait(timeout=1.0)
@@ -629,7 +635,7 @@ def test_worker_http_driver_failed_stream_unregisters_and_teardown_clears_error(
     response = _FakeWorkerStreamResponse(failure=RuntimeError("stream failed"), paused=True)
     monkeypatch.setattr(httpx, "stream", lambda *_args, **_kwargs: response)
     bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-stream-failure")
-    driver = WorkerHttpDriver(base_url="http://worker")
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765")
 
     driver._ensure_stream_thread(bundle, row)
     assert response.iterating.wait(timeout=1.0)
@@ -640,7 +646,7 @@ def test_worker_http_driver_failed_stream_unregisters_and_teardown_clears_error(
 
     assert not thread.is_alive()
     assert driver._streams == {}
-    assert driver._stream_errors == {row.row_id: "stream failed"}
+    assert driver._stream_errors == {row.row_id: "worker event stream failed"}
 
     driver.teardown(bundle, state)
     assert driver._streams == {}
@@ -676,9 +682,9 @@ def test_worker_thread_start_failure_removes_only_new_registration(
             json={"job_id": "job-start", "run_set_id": "set-a", "total_batches": 1},
         )
         assert same_id.status_code == 200
-        assert _wait_for_worker_status(
-            client, "job-start", WorkerStatus.COMPLETED
-        ).status_code == 200
+        assert (
+            _wait_for_worker_status(client, "job-start", WorkerStatus.COMPLETED).status_code == 200
+        )
 
         other_id = client.post(
             "/start",
@@ -711,9 +717,9 @@ def test_worker_rejects_repeated_terminal_job_id_without_checkpoint_residue(
             json={"job_id": "job-repeat", "run_set_id": "set-a", "total_batches": 1},
         )
         assert first.status_code == 200
-        assert _wait_for_worker_status(
-            client, "job-repeat", WorkerStatus.COMPLETED
-        ).status_code == 200
+        assert (
+            _wait_for_worker_status(client, "job-repeat", WorkerStatus.COMPLETED).status_code == 200
+        )
 
         repeated = client.post(
             "/start",
@@ -850,9 +856,7 @@ def test_worker_eviction_cleanup_failure_retains_registry_pointer_for_retry(
             json={"job_id": "job-old", "run_set_id": "set-a", "total_batches": 1},
         )
         assert first.status_code == 200
-        assert _wait_for_worker_status(
-            client, "job-old", WorkerStatus.COMPLETED
-        ).status_code == 200
+        assert _wait_for_worker_status(client, "job-old", WorkerStatus.COMPLETED).status_code == 200
 
         monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 0)
         original_rmtree = worker_checkpoint.shutil.rmtree
@@ -918,13 +922,14 @@ def test_worker_checkpoint_download_lease_defers_eviction_until_response_finishe
     )
 
     with TestClient(worker_app.create_app()) as client:
-        assert client.post(
-            "/start",
-            json={"job_id": "job-old", "run_set_id": "set-a", "total_batches": 1},
-        ).status_code == 200
-        assert _wait_for_worker_status(
-            client, "job-old", WorkerStatus.COMPLETED
-        ).status_code == 200
+        assert (
+            client.post(
+                "/start",
+                json={"job_id": "job-old", "run_set_id": "set-a", "total_batches": 1},
+            ).status_code
+            == 200
+        )
+        assert _wait_for_worker_status(client, "job-old", WorkerStatus.COMPLETED).status_code == 200
 
         def download() -> None:
             response = client.get("/jobs/job-old/checkpoint/download")
@@ -935,10 +940,13 @@ def test_worker_checkpoint_download_lease_defers_eviction_until_response_finishe
         assert download_entered.wait(timeout=2)
 
         monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 0)
-        assert client.post(
-            "/start",
-            json={"job_id": "job-new", "run_set_id": "set-a", "total_batches": 1},
-        ).status_code == 200
+        assert (
+            client.post(
+                "/start",
+                json={"job_id": "job-new", "run_set_id": "set-a", "total_batches": 1},
+            ).status_code
+            == 200
+        )
         assert checkpoint_path.exists()
         assert client.get("/jobs/job-old/status").status_code == 200
 
@@ -988,17 +996,21 @@ def test_worker_checkpoint_request_releases_lease_when_send_fails(
     app = worker_app.create_app()
 
     with TestClient(app) as client:
-        assert client.post(
-            "/start",
-            json={
-                "job_id": "job-send-failure",
-                "run_set_id": "set-a",
-                "total_batches": 1,
-            },
-        ).status_code == 200
-        assert _wait_for_worker_status(
-            client, "job-send-failure", WorkerStatus.COMPLETED
-        ).status_code == 200
+        assert (
+            client.post(
+                "/start",
+                json={
+                    "job_id": "job-send-failure",
+                    "run_set_id": "set-a",
+                    "total_batches": 1,
+                },
+            ).status_code
+            == 200
+        )
+        assert (
+            _wait_for_worker_status(client, "job-send-failure", WorkerStatus.COMPLETED).status_code
+            == 200
+        )
         monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 0)
 
         async def request() -> None:
@@ -1010,9 +1022,7 @@ def test_worker_checkpoint_request_releases_lease_when_send_fails(
                     raise RuntimeError("client disconnected")
 
             with pytest.raises(RuntimeError, match="client disconnected"):
-                await app(
-                    _checkpoint_download_scope(app, "job-send-failure"), receive, send
-                )
+                await app(_checkpoint_download_scope(app, "job-send-failure"), receive, send)
 
         asyncio.run(request())
         assert not checkpoint_dir.exists()
@@ -1052,13 +1062,17 @@ def test_worker_checkpoint_request_cancellation_before_response_call_releases_le
     app = worker_app.create_app()
 
     with TestClient(app) as client:
-        assert client.post(
-            "/start",
-            json={"job_id": "job-cancelled", "run_set_id": "set-a", "total_batches": 1},
-        ).status_code == 200
-        assert _wait_for_worker_status(
-            client, "job-cancelled", WorkerStatus.COMPLETED
-        ).status_code == 200
+        assert (
+            client.post(
+                "/start",
+                json={"job_id": "job-cancelled", "run_set_id": "set-a", "total_batches": 1},
+            ).status_code
+            == 200
+        )
+        assert (
+            _wait_for_worker_status(client, "job-cancelled", WorkerStatus.COMPLETED).status_code
+            == 200
+        )
         monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 0)
         monkeypatch.setattr(worker_app, "FileResponse", CancelBeforeCallResponse)
 
@@ -1187,7 +1201,7 @@ def test_training_service_starts_state_backed_worker_run(
         poll_interval_seconds = WorkerHttpDriver.poll_interval_seconds
 
         def __init__(self, *, base_url: str, auth_token: str | None = None) -> None:
-            assert base_url == "http://worker"
+            assert base_url == "http://127.0.0.1:8765"
             assert auth_token is None
 
         def provision(self, bundle, state) -> Mapping[str, Any]:
@@ -1270,7 +1284,7 @@ def test_training_service_starts_state_backed_worker_run(
         )
 
         service = TrainingService()
-        service.connect_remote("http://worker")
+        service.connect_remote("http://127.0.0.1:8765")
 
         job_id = await service.start_training(
             3,
@@ -1396,8 +1410,8 @@ def test_training_service_rejects_legacy_v2_orphan_state_without_mutating(
 
 
 def test_training_service_preserves_worker_seq_in_ws_envelope(monkeypatch) -> None:
-    async def fake_stream_events(base_url: str, job_id: str, **kwargs: Any):
-        assert base_url == "http://worker"
+    async def fake_stream_events(endpoint, job_id: str, **kwargs: Any):
+        assert endpoint.origin == "http://127.0.0.1:8765"
         yield {
             "type": "training_progress",
             "job_id": job_id,
@@ -1414,7 +1428,7 @@ def test_training_service_preserves_worker_seq_in_ws_envelope(monkeypatch) -> No
             fake_stream_events,
         )
         service = TrainingService()
-        service.connect_remote("http://worker")
+        service.connect_remote("http://127.0.0.1:8765")
         [event] = [event async for event in service.stream_progress("job-ws")]
         assert event.raw["seq"] == 7
         assert event.raw["worker_seq"] == 7
@@ -1466,8 +1480,8 @@ def test_worker_emit_buffers_run_event_envelopes() -> None:
 
 
 def test_training_service_unwraps_run_event_worker_stream(monkeypatch) -> None:
-    async def fake_stream_events(base_url: str, job_id: str, **kwargs: Any):
-        assert base_url == "http://worker"
+    async def fake_stream_events(endpoint, job_id: str, **kwargs: Any):
+        assert endpoint.origin == "http://127.0.0.1:8765"
         yield RunEvent(
             run_set_id=job_id,
             row_id=job_id,
@@ -1491,7 +1505,7 @@ def test_training_service_unwraps_run_event_worker_stream(monkeypatch) -> None:
         )
 
         service = TrainingService()
-        service.connect_remote("http://worker")
+        service.connect_remote("http://127.0.0.1:8765")
         [event] = [event async for event in service.stream_progress("job-run-event")]
 
         assert event.raw["type"] == "training_progress"
@@ -1504,8 +1518,8 @@ def test_training_service_unwraps_run_event_worker_stream(monkeypatch) -> None:
 
 
 def test_training_service_preserves_error_diagnostics(monkeypatch) -> None:
-    async def fake_stream_events(base_url: str, job_id: str, **kwargs: Any):
-        assert base_url == "http://worker"
+    async def fake_stream_events(endpoint, job_id: str, **kwargs: Any):
+        assert endpoint.origin == "http://127.0.0.1:8765"
         yield {
             "type": "training_error",
             "job_id": job_id,
@@ -1530,7 +1544,7 @@ def test_training_service_preserves_error_diagnostics(monkeypatch) -> None:
         )
 
         service = TrainingService()
-        service.connect_remote("http://worker")
+        service.connect_remote("http://127.0.0.1:8765")
         [event] = [event async for event in service.stream_progress("job-diagnostics")]
 
         assert event.raw["type"] == "training_error"
@@ -1543,7 +1557,7 @@ def test_training_service_preserves_error_diagnostics(monkeypatch) -> None:
 
 
 def test_training_service_surfaces_reconnect_resync_marker(monkeypatch) -> None:
-    async def fake_stream_events(base_url: str, job_id: str, **kwargs: Any):
+    async def fake_stream_events(endpoint, job_id: str, **kwargs: Any):
         yield {
             "type": "training_resync",
             "job_id": job_id,
@@ -1562,7 +1576,7 @@ def test_training_service_surfaces_reconnect_resync_marker(monkeypatch) -> None:
         )
 
         service = TrainingService()
-        service.connect_remote("http://worker")
+        service.connect_remote("http://127.0.0.1:8765")
         [event] = [event async for event in service.stream_progress("job-gap")]
 
         assert event.raw == {
@@ -1600,12 +1614,12 @@ def test_worker_client_emits_gap_marker_after_reconnect(monkeypatch) -> None:
             self._lines = lines
             self._error = error
 
-        def raise_for_status(self) -> None:
-            return None
+        status_code = 200
+        headers: dict[str, str] = {}
 
-        async def aiter_lines(self):
+        async def aiter_bytes(self):
             for line in self._lines:
-                yield line
+                yield line.encode()
             if self._error is not None:
                 raise self._error
 
@@ -1644,7 +1658,8 @@ def test_worker_client_emits_gap_marker_after_reconnect(monkeypatch) -> None:
     async def run() -> list[dict]:
         monkeypatch.setattr(worker_client.httpx, "AsyncClient", FakeClient)
         monkeypatch.setattr(worker_client, "_RECONNECT_DELAY", 0)
-        return [event async for event in worker_client.stream_events("http://worker", "job-gap")]
+        endpoint = worker_client.WorkerEndpoint.create("http://127.0.0.1:8765")
+        return [event async for event in worker_client.stream_events(endpoint, "job-gap")]
 
     events = asyncio.run(run())
 
@@ -1712,7 +1727,7 @@ def test_ensure_worker_serializes_concurrent_spawns(monkeypatch) -> None:
     async def fake_wait_for_health(*args: Any, **kwargs: Any) -> None:
         await asyncio.sleep(0)
 
-    async def run() -> tuple[str, str]:
+    async def run() -> tuple[WorkerEndpoint, WorkerEndpoint]:
         service = TrainingService()
         return await asyncio.gather(service._ensure_worker(), service._ensure_worker())
 
@@ -1724,10 +1739,10 @@ def test_ensure_worker_serializes_concurrent_spawns(monkeypatch) -> None:
         fake_wait_for_health,
     )
 
-    first_url, second_url = asyncio.run(run())
+    first_endpoint, second_endpoint = asyncio.run(run())
 
-    assert first_url == "http://127.0.0.1:54321"
-    assert second_url == first_url
+    assert first_endpoint.origin == "http://127.0.0.1:54321"
+    assert second_endpoint is first_endpoint
     assert len(popen_calls) == 1
     assert popen_kwargs[0]["stderr"] is subprocess.PIPE
 

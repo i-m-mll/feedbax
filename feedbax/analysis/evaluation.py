@@ -32,22 +32,29 @@ from typing import Any, Sequence
 import dill as pickle
 from pydantic import BaseModel, Field, model_validator
 
+from feedbax.contracts.strict_json import strict_json_loads
+
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
     load_evaluation_states_artifact,
     store_evaluation_states_artifact,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
     EntrypointRef,
+    Provenance,
+    collect_git_provenance,
+    default_manifest_root,
+    StrictModel,
+    canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
     StagedEvaluationPrerequisite,
     ManifestStatus,
-    Provenance,
     canonical_manifest_path,
-    collect_git_provenance,
-    default_manifest_root,
     evaluation_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
@@ -57,9 +64,6 @@ from feedbax.contracts.manifest import (
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
     EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
-    StrictModel,
-    canonical_json_bytes,
-    sha256_bytes,
 )
 from feedbax.contracts.evaluation_composition import (
     EvaluationRunMatrixDeltaSpec,
@@ -439,13 +443,9 @@ def resolve_evaluation_matrix_authoring(
         )
         flattened = flatten_evaluation_run_matrix_delta(delta, repo_root=repo_root)
         return EvaluationRunMatrixSpec.model_validate(flattened.payload), flattened
-    # Matrix documents shipped before the family stamped a version, so a
-    # versionless document is admitted as current; every declared version still
-    # migrates or fails closed through the shared path.
     migrated = migrate_authored_document(
         "EvaluationRunMatrixSpec",
         spec,
-        versionless="accept_as_current",
         path="evaluation_matrix_spec",
     )
     return EvaluationRunMatrixSpec.model_validate(migrated.payload), None
@@ -1180,7 +1180,7 @@ def coerce_evaluation_run_spec(
     if isinstance(value, Mapping):
         payload: Mapping[str, Any] = value
     else:
-        payload = json.loads(Path(value).read_text(encoding="utf-8"))
+        payload = strict_json_loads(Path(value).read_text(encoding="utf-8"))
         if not isinstance(payload, Mapping):
             raise ValueError("EvaluationRunSpec document must be a JSON object")
     return EvaluationRunSpec.model_validate(migrate_evaluation_run_spec_payload(payload).payload)

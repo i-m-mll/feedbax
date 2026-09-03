@@ -47,7 +47,7 @@ from feedbax.contracts.experiment_compile_lock import (
     CheckpointInitializationBinding,
     ReceiptLocatorReference,
 )
-from feedbax.contracts.manifest import sha256_bytes
+from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.staged_execution import (
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_VERSION,

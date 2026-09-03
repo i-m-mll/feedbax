@@ -7,7 +7,10 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import ArtifactRef, StrictModel
+from feedbax.contracts.base import (
+    ArtifactRef,
+    StrictModel,
+)
 from feedbax.contracts.spec_storage import (
     store_canonical_json_artifact,
     training_spec_sha256,

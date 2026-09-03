@@ -44,7 +44,7 @@ authenticated reference a previous run produced, and it may never author one.
 
 from __future__ import annotations
 
-import json
+import hashlib
 import posixpath
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
@@ -75,6 +75,7 @@ from feedbax.contracts.experiment_compile_lock import (
     CompilerImplementation,
     EvaluationSubjectBinding,
     FigureRuntimeInputBinding,
+    GovernedParentReference,
     NotApplicableReference,
     PlannedProductReference,
     ContentPinReference,
@@ -84,6 +85,7 @@ from feedbax.contracts.experiment_compile_lock import (
     build_compile_lock,
 )
 from feedbax.contracts.experiment_envelope import (
+    ExperimentEnvelopeParentAuthority,
     ExperimentEnvelopeRejection,
     ExperimentEnvelopeRejectionCategory,
 )
@@ -128,6 +130,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
     output_contract_of_document,
     parse_experiment_envelope,
 )
+from feedbax.contracts.parameter_contracts import ParameterContractError
 from feedbax.contracts.figure_roles import (
     FigureRoleBindingContract,
     FigureRowCustodyLocator,
@@ -152,6 +155,8 @@ from feedbax.contracts.row_index import (
     RowSelectionErrorCode,
     expand_row_selector,
 )
+from feedbax.contracts.spec_storage import training_spec_sha256
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.project_experiment import (
     ProjectExperimentDeclaration,
     path_is_within,
@@ -301,7 +306,7 @@ def _authored_output_name(path: Path) -> str | None:
     failure here would report one broken envelope as a corpus-wide collision.
     """
     try:
-        document = json.loads(path.read_bytes())
+        document = strict_json_loads(path.read_bytes())
     except (OSError, ValueError):
         return None
     if not isinstance(document, Mapping):
@@ -521,6 +526,7 @@ class LayerCompileContext:
     layout: EnvelopeLayout
     declaration: ProjectExperimentDeclaration
     compile_upstream: Callable[[str, str], "EnvelopeCompileOutcome"]
+    parent_authorities: tuple[ExperimentEnvelopeParentAuthority, ...] = ()
 
     @property
     def lineage(self) -> Lineage:
@@ -805,9 +811,126 @@ def _tag_patches(
     return patches, sorted(rewritten)
 
 
+def _resolved_output_parent(base: Mapping[str, Any]) -> ResolvedOutputParent:
+    """Project a matrix base onto the shared governed-parent identity."""
+    return ResolvedOutputParent(
+        ref=str(base["ref"]),
+        resolved_root_hash=str(base["resolved_root_hash"]),
+        row_id=base.get("row_id"),
+        checkpoint_transaction_id=base.get("checkpoint_transaction_id"),
+        symbolic_name=base.get("symbolic_name"),
+    )
+
+
+def _resolve_governed_matrix_parent(
+    base: Mapping[str, Any],
+    authorities: Sequence[ExperimentEnvelopeParentAuthority],
+    *,
+    field: str,
+) -> tuple[dict[str, Any], GovernedParentReference]:
+    """Authenticate one declared resolved-output payload without ambient lookup."""
+    ref = base.get("ref")
+    matches = [
+        authority
+        for authority in authorities
+        if authority.provenance.parent_kind == "resolved_output" and authority.provenance.ref == ref
+    ]
+    if len(matches) > 1:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.AMBIGUOUS_PARENT_AUTHORITY,
+            field,
+            f"resolved_output:{ref!r} has {len(matches)} governed declarations",
+            correct_home="supply exactly one authority for each parent kind/ref",
+        )
+    if not matches:
+        category = (
+            ExperimentEnvelopeRejectionCategory.MISSING_PARENT_AUTHORITY
+            if not authorities
+            else ExperimentEnvelopeRejectionCategory.UNDECLARED_PARENT_AUTHORITY
+        )
+        _reject(
+            category,
+            field,
+            f"resolved_output:{ref!r} has no governed compile-time declaration",
+            correct_home=(
+                "the public compile request supplies the exact declared parent and immutable "
+                "artifact bytes"
+            ),
+        )
+    authority = matches[0]
+    expected_parent = _resolved_output_parent(base)
+    provenance = authority.provenance
+    if (
+        authority.parent != expected_parent
+        or provenance.semantic_hash != expected_parent.resolved_root_hash
+    ):
+        _reject(
+            ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT,
+            field,
+            f"resolved_output:{ref!r} was declared under different parent semantics",
+            correct_home="supply authority for the exact parent identity the envelope compiled",
+        )
+    observed_artifact_sha256 = hashlib.sha256(authority.payload_bytes).hexdigest()
+    if observed_artifact_sha256 != provenance.artifact_sha256:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.PARENT_BYTE_DRIFT,
+            field,
+            f"artifact {provenance.artifact_id!r} has byte hash {observed_artifact_sha256} "
+            f"but its declaration pins {provenance.artifact_sha256}",
+            correct_home="supply the immutable bytes named by the artifact declaration",
+        )
+    try:
+        payload = strict_json_loads(authority.payload_bytes, ref=provenance.artifact_id)
+    except ValueError as exc:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.PARENT_BYTE_DRIFT,
+            field,
+            f"artifact {provenance.artifact_id!r} is not strict JSON: {exc}",
+        )
+    if not isinstance(payload, Mapping):
+        _reject(
+            ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT,
+            field,
+            f"artifact {provenance.artifact_id!r} does not contain an object payload",
+        )
+    embedded_schema = payload.get("schema_id"), payload.get("schema_version")
+    if embedded_schema != (None, None) and embedded_schema != (
+        provenance.schema_id,
+        provenance.schema_version,
+    ):
+        _reject(
+            ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT,
+            field,
+            f"artifact {provenance.artifact_id!r} schema identity drifted from "
+            f"{provenance.schema_id!r} at {provenance.schema_version!r}",
+            correct_home="declare the schema identity carried by the authenticated payload",
+        )
+    observed_semantic_hash = training_spec_sha256(payload)
+    if observed_semantic_hash != expected_parent.resolved_root_hash:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT,
+            field,
+            f"resolved_output:{ref!r} semantic hash is {observed_semantic_hash}, but the "
+            f"parent pins {expected_parent.resolved_root_hash}",
+            correct_home="supply the artifact whose resolved semantics the parent pins",
+        )
+    return dict(payload), GovernedParentReference(
+        parent=expected_parent,
+        role=provenance.role,
+        artifact_id=provenance.artifact_id,
+        artifact_sha256=provenance.artifact_sha256,
+        schema_id=provenance.schema_id,
+        schema_version=provenance.schema_version,
+    )
+
+
 def _resolve_matrix_base_payload(
-    base: Any, repo_root: Path, *, field: str
-) -> tuple[dict[str, Any], ContentPinReference | None]:
+    base: Any,
+    repo_root: Path,
+    authorities: Sequence[ExperimentEnvelopeParentAuthority],
+    *,
+    field: str,
+) -> tuple[dict[str, Any], ContentPinReference | GovernedParentReference | None]:
     """Return the payload a matrix's ``base`` block names, and the bytes it read.
 
     This is the document a row's patches actually apply to, which is why the row
@@ -831,6 +954,8 @@ def _resolve_matrix_base_payload(
             )
         payload: Any = deepcopy(dict(inline))
         pin: ContentPinReference | None = None
+    elif base.get("kind") == "resolved_output":
+        payload, pin = _resolve_governed_matrix_parent(base, authorities, field=field)
     else:
         ref = base.get("ref")
         if not isinstance(ref, str):
@@ -868,6 +993,31 @@ def _resolve_matrix_base_payload(
             payload = payload[part]
         payload = deepcopy(dict(payload))
     return payload, pin
+
+
+def _materialize_parent_matrix_base_payload(
+    base_payload: Mapping[str, Any],
+    deltas: Sequence[Any],
+    *,
+    field: str,
+) -> dict[str, Any]:
+    """Apply the parent matrix's ordered deltas to its authenticated base bytes."""
+    try:
+        resolved, _attribution, _written = apply_composition_deltas(
+            dict(base_payload),
+            [MatrixCompositionDelta.model_validate(delta) for delta in deltas],
+        )
+    except (ValidationError, ValueError) as exc:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            field,
+            f"the parent matrix deltas do not apply to its exact base payload: {exc}",
+            correct_home=(
+                "the parent matrix's ordered deltas state its complete semantics relative "
+                "to the exact base bytes it authenticates"
+            ),
+        )
+    return resolved
 
 
 def _prove_patches_apply(
@@ -1441,7 +1591,15 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
     # through that earlier row.
     inherited_row_keys = frozenset(by_id)
     base_payload, base_pin = _resolve_matrix_base_payload(
-        parent.get("base"), context.repo_root, field=f"{context.parent.ref}#base"
+        parent.get("base"),
+        context.repo_root,
+        context.parent_authorities,
+        field=f"{context.parent.ref}#base",
+    )
+    base_payload = _materialize_parent_matrix_base_payload(
+        base_payload,
+        parent.get("deltas") or [],
+        field=f"{context.parent.ref}#deltas",
     )
     appending = authored.rows_mode is TrainingRowsMode.APPEND
 
@@ -2588,11 +2746,13 @@ class EnvelopeKernel:
         declaration: ProjectExperimentDeclaration,
         budgets: AuthoringBudgets,
         implementation: CompilerImplementation,
+        parent_authorities: Sequence[ExperimentEnvelopeParentAuthority] = (),
     ) -> None:
         self.declaration = declaration
         self.layout = EnvelopeLayout.of(declaration)
         self.budgets = budgets
         self.implementation = implementation
+        self.parent_authorities = tuple(parent_authorities)
 
     # -- envelope reading ------------------------------------------------
 
@@ -2806,6 +2966,7 @@ class EnvelopeKernel:
             layout=self.layout,
             declaration=self.declaration,
             compile_upstream=compile_upstream,
+            parent_authorities=self.parent_authorities,
         )
         lowered = _LAYER_LOWERERS[layer](context)
         assertion_records = verify_assertions(
@@ -2956,27 +3117,24 @@ class EnvelopeKernel:
         contract: LayerOutputContract,
         document: Mapping[str, Any],
     ) -> None:
-        """Validate an inner ``params`` block against the model its type names.
+        """Validate every parameter object owned by an output family.
 
-        A top-level document that delegates its authored content to ``params``
-        would otherwise be validated only as far as ``dict[str, Any]``, and the
-        family's real authored contract would never be checked at compile time at
-        all. The content type is read from the document's own discriminator.
+        Top-level output models deliberately keep parameter fields JSON-shaped.
+        This compile choke resolves their path and schema from the layer table so
+        extensible objects stay open deliberately while durable identities and
+        high-risk nested structures still fail closed.
         """
-        model = contract.params_model(document)
-        if model is None:
-            return
         try:
-            model.model_validate(document.get("params"))
-        except ValidationError as exc:
-            discriminator = str(contract.params_discriminator)
+            contract.validate_parameter_objects(document)
+        except ParameterContractError as exc:
             _reject(
                 ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
-                f"{context.envelope_ref}#params",
-                f"the compiled document's params are not valid for "
-                f"{discriminator}={document.get(discriminator)!r}: {exc}",
-                correct_home="the params block carries this content type's authored "
-                "contract; the base states it and the envelope's delta changes it",
+                f"{context.envelope_ref}#{exc.path}",
+                f"the compiled document's {exc.path} object does not satisfy declared "
+                f"parameter schema {exc.schema.schema_version!r}: {exc.cause}",
+                correct_home="the containing document declares this parameter "
+                "object's identity; its base owns the object and the envelope's "
+                "delta changes it",
             )
 
     def compile_envelope_file(

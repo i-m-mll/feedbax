@@ -24,14 +24,14 @@ from feedbax.analysis.exact_parents import (
 )
 from feedbax.bin import analysis as analysis_cli
 from feedbax.analysis.validation import RecipeValidationError
+from feedbax.contracts.base import ParentRef
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
-    ParentRef,
     ReportSpec,
     load_manifest,
     report_manifest_id,
     spec_payload,
-    store_bytes_artifact,
     write_manifest,
 )
 from feedbax.contracts.material_dependencies import (

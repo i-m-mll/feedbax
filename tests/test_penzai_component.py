@@ -30,8 +30,8 @@ from feedbax.components.penzai import (
     list_penzai_builders,
     build_penzai_subgraph,
 )
-from feedbax.contracts.graphs.builders import _build_penzai_adapter
-from feedbax.contracts.graphs.penzai_compiler import compile_penzai_authoring_report
+from feedbax.compiler.builders import _build_penzai_adapter
+from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report
 
 
 # =============================================================================
@@ -550,7 +550,7 @@ class TestFactoryRegistry:
 
     def test_authoring_report_for_stateless_builder_is_ok(self, monkeypatch):
         import feedbax.components.penzai as pc
-        import feedbax.contracts.graphs.penzai_compiler as compiler
+        import feedbax.compiler.penzai_compiler as compiler
 
         monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
         monkeypatch.setattr(compiler, "PENZAI_AVAILABLE", True)
@@ -579,7 +579,7 @@ class TestFactoryRegistry:
 
     def test_authoring_report_for_stateful_builder_names_state_variables(self, monkeypatch):
         import feedbax.components.penzai as pc
-        import feedbax.contracts.graphs.penzai_compiler as compiler
+        import feedbax.compiler.penzai_compiler as compiler
 
         class FakeStateVariable:
             def __init__(self, value):
@@ -611,7 +611,7 @@ class TestFactoryRegistry:
 
     def test_runtime_stateful_adapter_error_is_not_notimplemented(self, monkeypatch):
         import feedbax.components.penzai as pc
-        import feedbax.contracts.graphs.builders as builders
+        import feedbax.compiler.builders as builders
 
         class FakeStateVariable:
             def __init__(self, value):

@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.training import ScheduleProjection
 from feedbax.contracts.worker import ProgressCoordinate
 

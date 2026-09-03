@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import hmac
 import json
 import logging
 import os
@@ -26,7 +27,7 @@ from feedbax.plugins.composition import compose_application
 
 from feedbax.studio.schema import validate_task_binding_schema
 from feedbax.studio.protocol import infer_task_n_steps
-from feedbax.contracts.graphs.normalization import (
+from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_task_binding_spec_for_studio_authoring,
 )
@@ -254,7 +255,7 @@ class _TrainingCfg:
     grad_clip: float | None = 1.0
     hidden_dim: int = 128
     network_type: str = "gru"
-    n_reach_steps: int = 80
+    n_reach_steps: int | None = None
     effort_weight: float = 2.5
     snapshot_interval: int = 100
 
@@ -345,7 +346,7 @@ def _extract_training_cfg(
 ) -> _TrainingCfg:
     """Parse a raw config dict into a normalized _TrainingCfg.
 
-    Falls back to defaults for any missing or invalid field.
+    Parses optional worker controls while leaving authored model facts absent.
 
     Args:
         training_config: Optional dict from the ``/start`` request body.
@@ -353,7 +354,8 @@ def _extract_training_cfg(
             ``n_reach_steps`` and ``effort_weight`` when present.
 
     Returns:
-        A _TrainingCfg with all fields populated.
+        A normalized config. ``n_reach_steps`` remains absent unless the caller
+        or task authored a rollout length.
     """
     cfg = _TrainingCfg()
     if training_config is None and task_spec is None:
@@ -425,9 +427,7 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg", bootstrap_state: Bootstra
         emit=lambda event: _emit(job, event),
     )
     try:
-        terminal_status = (
-            WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
-        )
+        terminal_status = WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
         with job._state_lock:
             job.last_loss = result.final_loss
             job.batch = result.final_batch
@@ -613,7 +613,7 @@ def create_app(
         if auth_token is None:
             # Auth not configured — allow all requests.
             return
-        if credentials is None or credentials.credentials != auth_token:
+        if credentials is None or not hmac.compare_digest(credentials.credentials, auth_token):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     # All routes share this dependency.

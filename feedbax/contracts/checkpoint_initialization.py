@@ -39,7 +39,7 @@ from feedbax.contracts.checkpoints import (
     CheckpointTransactionManifest,
     SlotLeafFingerprint,
 )
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ParentRef,
     StrictModel,
     authenticated_manifest_ref_profile,

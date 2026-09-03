@@ -15,7 +15,7 @@ from feedbax.contracts.domain import (
     DomainTheme,
 )
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID
-from feedbax.contracts.graphs.penzai_compiler import PENZAI_COMPILER_ID
+from feedbax.compiler.penzai_compiler import PENZAI_COMPILER_ID
 
 
 class DomainRegistry:

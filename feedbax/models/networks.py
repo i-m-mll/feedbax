@@ -1082,6 +1082,28 @@ class SimpleStagedNetwork(Component):
             encoding=encoding,
         )
 
+    def to_params(self) -> dict[str, object]:
+        """Return the authored parameters represented by this staged network."""
+        hidden_type = type(self.hidden).__name__
+        if isinstance(self.hidden, LeakyRNNCell):
+            hidden_type = "LeakyRNNCell"
+        params: dict[str, object] = {
+            "input_size": int(self.input_size),
+            "hidden_size": int(self.hidden_size),
+            "out_size": int(self.out_size),
+            "encoding_size": self.encoding_size,
+            "hidden_type": hidden_type,
+            "hidden_nonlinearity": getattr(self.hidden_nonlinearity, "__name__", "identity"),
+            "out_nonlinearity": getattr(self.out_nonlinearity, "__name__", "identity"),
+            "hidden_noise_std": self.hidden_noise_std,
+            "population_mask_mode": self.population_mask_mode,
+            "sisu_gating": self.sisu_gating,
+            "dtype": jnp.dtype(self.dtype).name,
+        }
+        if self.population_structure is not None:
+            params["population_structure"] = self.population_structure.to_spec()
+        return params
+
 
 class LeakyRNNCell(Module):
     """Custom `RNNCell` with persistent, leaky state.
@@ -1224,12 +1246,28 @@ class VanillaRNN(Component):
         hidden_size: int,
         *,
         activation_name: str = "tanh",
-        nonlinearity: Callable = jnp.tanh,
+        nonlinearity: Callable | None = None,
         use_bias: bool = True,
+        use_noise: bool = False,
+        noise_strength: float = 0.01,
+        dt: float = 1.0,
+        tau: float = 1.0,
         dtype: object = jnp.float32,
-        key: PRNGKeyArray,
+        key: PRNGKeyArray | None = None,
     ):
         dtype = dtype or jnp.float32
+        if nonlinearity is None:
+            nonlinearities = {
+                "tanh": jnp.tanh,
+                "relu": jax.nn.relu,
+                "identity": identity_func,
+            }
+            try:
+                nonlinearity = nonlinearities[activation_name]
+            except KeyError as exc:
+                raise ValueError(f"Unknown VanillaRNN activation {activation_name!r}") from exc
+        if key is None:
+            key = jr.PRNGKey(0)
         self.input_size = int(input_size)
         self.hidden_size = int(hidden_size)
         self.activation_name = str(activation_name)
@@ -1238,6 +1276,10 @@ class VanillaRNN(Component):
             self.input_size,
             self.hidden_size,
             use_bias=use_bias,
+            use_noise=use_noise,
+            noise_strength=noise_strength,
+            dt=dt,
+            tau=tau,
             nonlinearity=nonlinearity,
             dtype=dtype,
             key=key,

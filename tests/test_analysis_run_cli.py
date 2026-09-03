@@ -30,15 +30,17 @@ from feedbax.contracts.analysis_composition import AnalysisRunDeltaSpec
 from feedbax.bin import analysis as analysis_cli
 from feedbax.config import PLOTLY_CONFIG
 from feedbax.config.yaml import get_yaml_loader
+from feedbax.contracts.base import (
+    ParentRef,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     ANALYSIS_RUN_DELTA_SPEC_SCHEMA_ID,
     ANALYSIS_RUN_DELTA_SPEC_SCHEMA_VERSION,
     AnalysisRunSpec,
-    ParentRef,
     TrainingRunManifest,
-    canonical_json_bytes,
     load_manifest,
-    sha256_bytes,
 )
 from feedbax.contracts.staged_execution import (
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
@@ -401,17 +403,13 @@ def test_run_subcommand_rejects_missing_spec_argument():
         analysis_cli.main(["run"])
 
 
-def test_existing_analysis_cli_arguments_are_unchanged():
+def test_manifest_bundle_cli_arguments_remain_available():
     parser = analysis_cli.build_arg_parser()
     assert not parser._subparsers
 
     bundle_args = parser.parse_args(["--bundle", "rlrmp/standard_matrix", "--manifest-root", "/m"])
     assert bundle_args.bundle == "rlrmp/standard_matrix"
     assert bundle_args.manifest_root == "/m"
-    assert bundle_args.single is None
-
-    single_args = parser.parse_args(["--single", "part2.plant_perts"])
-    assert single_args.single == "part2.plant_perts"
 
     with pytest.raises(SystemExit):
         parser.parse_args([])

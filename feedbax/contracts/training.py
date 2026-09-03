@@ -9,12 +9,17 @@ from typing import TYPE_CHECKING, Any, Dict, Generic, List, Literal, Optional, T
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from feedbax.contracts.graph import GraphSpec, ParamValue, RetentionPolicySpec
+from feedbax.contracts.graph import (
+    GraphSpec,
+    ParamValue,
+    RetentionPolicySpec,
+    StudioTaskTimelineSpec,
+)
 from feedbax.contracts.checkpoints import (
     CheckpointContinuationRequest,
     CheckpointSegmentLineage,
 )
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.worker import (
     AxisSpec,
     CheckpointBarrierSpec,
@@ -297,7 +302,7 @@ class TaskSpec(BaseModel):
 
     type: str
     params: Dict[str, ParamValue] = Field(default_factory=dict)
-    timeline: Optional[Dict[str, ParamValue]] = None
+    timeline: Optional[StudioTaskTimelineSpec] = None
 
 
 class TrainingConfig(BaseModel):

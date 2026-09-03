@@ -43,7 +43,12 @@ from feedbax.contracts.checkpoints import (
     structural_abi_content_projection,
     structural_abi_content_sha256,
 )
-from feedbax.contracts.manifest import ParentRef, TrainingRunManifest, load_manifest, spec_payload
+from feedbax.contracts.base import ParentRef
+from feedbax.contracts.manifest import (
+    TrainingRunManifest,
+    load_manifest,
+    spec_payload,
+)
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.contracts.training import (

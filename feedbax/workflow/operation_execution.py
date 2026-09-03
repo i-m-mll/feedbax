@@ -154,6 +154,7 @@ from feedbax.contracts.figures import (
     FigureInputAuthoritySpec,
     FigureInputRoleAuthority,
 )
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     ANALYSIS_RUN_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -161,7 +162,6 @@ from feedbax.contracts.manifest import (
     REPORT_SPEC_SCHEMA_ID,
     AnalysisRunSpec,
     EvaluationRunSpec,
-    ParentRef,
     ReportSpec,
     StagedEvaluationPrerequisite,
 )

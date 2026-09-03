@@ -33,6 +33,11 @@ from feedbax.contracts.evaluation_states import (
     store_evaluation_states_artifact,
 )
 from feedbax.contracts.expressions import ValueQuery
+from feedbax.contracts.base import (
+    ParentRef,
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.contracts.manifest import (
     EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
     EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
@@ -43,15 +48,12 @@ from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
     OverridePatch,
-    ParentRef,
     SpecPayload,
     StagedEvaluationPrerequisite,
     TrainingSweepAxisGroup,
     TrainingRunManifest,
-    canonical_json_bytes,
     load_manifest,
     migrate_spec_payload,
-    sha256_bytes,
     spec_payload,
     write_manifest,
 )
@@ -776,6 +778,24 @@ def test_axis_matrix_rejects_delta_to_missing_path(tmp_path: Path, evaluation_re
 
     with pytest.raises(ValueError, match="replace delta path is missing"):
         materialize_evaluation_run_matrix(payload, repo_root=tmp_path, registry=evaluation_registry)
+
+
+def test_axis_matrix_applies_rfc_6902_list_append(tmp_path: Path, evaluation_registry) -> None:
+    payload = _axis_matrix_payload(tmp_path)
+    payload["axes"][0]["values"][0]["deltas"] = [
+        {"path": "training_run_ids.-", "op": "add", "value": "train-b"}
+    ]
+
+    rows = materialize_evaluation_run_matrix(
+        payload,
+        repo_root=tmp_path,
+        registry=evaluation_registry,
+    )
+
+    assert rows[0].payload.training_run_ids == ["train-a", "train-b"]
+    assert rows[1].payload.training_run_ids == ["train-a", "train-b"]
+    assert rows[2].payload.training_run_ids == ["train-a"]
+    assert rows[3].payload.training_run_ids == ["train-a"]
 
 
 def test_training_cross_group_delegates_to_matrix_core_and_matches_axis_order(

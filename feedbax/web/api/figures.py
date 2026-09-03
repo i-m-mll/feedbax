@@ -11,11 +11,11 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from feedbax.analysis.figures import FIGURE_RENDER_ROLE
+from feedbax.contracts.base import default_manifest_root
+from feedbax.contracts.artifact_store import media_type_for_extension
 from feedbax.contracts.manifest import (
     FigureManifest,
-    default_manifest_root,
     load_manifest,
-    media_type_for_extension,
 )
 from feedbax.persistence.manifest_index import iter_manifest_files
 from feedbax.plot.constructors import (

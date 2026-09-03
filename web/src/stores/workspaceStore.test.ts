@@ -27,6 +27,7 @@ import type {
   StudioTopPaneState,
   StudioWorkspaceSpec,
 } from '@/types/workspace';
+import { studioDraftHashes } from '@/utils/studioDraftHash';
 
 const graph: GraphSpec = {
   nodes: {},
@@ -78,7 +79,7 @@ describe('workspace snapshot provenance hydration', () => {
       runStatus: 'completed',
       manifestId: 'manifest:42',
       manifestHash: 'sha256:42',
-      specHashes: { graph_spec: 'sha256:graph' },
+      specHashes: studioDraftHashes({ graph_spec: graph }),
       snapshot: { graph_spec: graph as unknown as Record<string, unknown> },
     };
     const workspace = buildWorkspaceSnapshot({
@@ -154,6 +155,12 @@ describe('workspace snapshot provenance hydration', () => {
       runId: 'run:legacy',
       runLabel: 'Legacy frozen run',
       snapshot: {},
+      specHashes: {
+        schema_version: 'feedbax.studio.draft_hashes.v1',
+        pin: 'fnv1a32-runtime_local_json_v1',
+        rehash_required: true,
+        hashes: { graph_spec: 'sha256:legacy-graph' },
+      },
     });
 
     const loadedWorkspace = useWorkspaceStore.getState().workspace;
@@ -426,6 +433,8 @@ describe('buildWorkspaceSnapshot', () => {
         ...existing.stages,
         {
           id: 'stage:future-objective-authoring',
+          schema_id: 'feedbax.spec.studio.stage',
+          schema_version: 'feedbax.spec.studio.stage.v2',
           kind: 'protocol',
           label: 'Future objective authoring',
           status: 'draft',

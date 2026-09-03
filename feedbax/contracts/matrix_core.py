@@ -15,12 +15,12 @@ from pydantic import Field, model_validator
 
 from feedbax.contracts.expressions import ContextItem, ExpressionContext, ValueExpr, evaluate_query
 from feedbax.contracts.extraction import SourceBinding, load_expression_context, set_dotted_path
-from feedbax.contracts.manifest import (
-    OverridePatch,
+from feedbax.contracts.base import (
     StrictModel,
     canonical_json_bytes,
     sha256_bytes,
 )
+from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.strict_json import strict_json_loads
 
 
@@ -593,7 +593,11 @@ def materialize_matrix_rows(
     )
     materialized: list[MaterializedMatrixRow[PayloadT]] = []
     for row in spec.rows:
-        payload = _apply_deltas(spec.base.model_dump(mode="python"), row.deltas)
+        payload = apply_override_patches(
+            spec.base.model_dump(mode="python"),
+            row.deltas,
+            error_context="delta",
+        )
         apply_row_derivations(
             payload,
             [*spec.derivations, *row.derivations],
@@ -639,37 +643,122 @@ def apply_row_derivations(
         set_dotted_path(payload, derivation.output_path, value)
 
 
-def _apply_deltas(payload: dict[str, Any], deltas: list[OverridePatch]) -> dict[str, Any]:
-    # Keep this core independent from the training matrix module while reusing
-    # the shared OverridePatch contract.
+def apply_override_patches(
+    payload: dict[str, Any],
+    patches: list[OverridePatch | dict[str, Any]],
+    *,
+    error_context: Literal["override", "delta"] = "override",
+) -> dict[str, Any]:
+    """Apply ordered ``OverridePatch`` records to a deep copy of ``payload``."""
     result = deepcopy(payload)
-    for delta in deltas:
-        parts = delta.path.split(".")
-        parent: Any = result
-        for part in parts[:-1]:
-            if isinstance(parent, dict) and part in parent:
-                parent = parent[part]
-            elif isinstance(parent, list) and part.isdigit() and int(part) < len(parent):
-                parent = parent[int(part)]
-            else:
-                raise ValueError(
-                    f"delta path cannot traverse missing segment {part!r}: {delta.path!r}"
-                )
-        leaf = parts[-1]
-        exists = (
-            leaf in parent
-            if isinstance(parent, dict)
-            else leaf.isdigit() and int(leaf) < len(parent)
+    for raw_patch in patches:
+        patch = (
+            raw_patch
+            if isinstance(raw_patch, OverridePatch)
+            else OverridePatch.model_validate(raw_patch)
         )
-        if delta.op == "add" and exists:
-            raise ValueError(f"add delta path already exists: {delta.path!r}")
-        if delta.op in {"replace", "remove"} and not exists:
-            raise ValueError(f"{delta.op} delta path is missing: {delta.path!r}")
-        if delta.op == "remove":
-            del parent[leaf if isinstance(parent, dict) else int(leaf)]
-        else:
-            parent[leaf if isinstance(parent, dict) else int(leaf)] = deepcopy(delta.value)
+        _apply_patch(result, patch, error_context=error_context)
     return result
+
+
+def _apply_patch(
+    root: dict[str, Any],
+    patch: OverridePatch,
+    *,
+    error_context: Literal["override", "delta"],
+) -> None:
+    parts = patch.path.split(".")
+    parent = _resolve_patch_parent(root, parts, path=patch.path, error_context=error_context)
+    leaf = parts[-1]
+    if patch.op == "add" and isinstance(parent, list) and _is_list_append(parent, leaf):
+        parent.append(deepcopy(patch.value))
+        return
+    exists = _patch_target_exists(parent, leaf)
+    if patch.op == "add":
+        if isinstance(parent, list) and exists:
+            parent.insert(int(leaf), deepcopy(patch.value))
+            return
+        if exists:
+            if error_context == "delta":
+                raise ValueError(f"add delta path already exists: {patch.path!r}")
+            raise ValueError(f"override add patch path already exists: {patch.path!r}")
+        _set_patch_target(parent, leaf, deepcopy(patch.value), path=patch.path)
+        return
+    if patch.op == "replace":
+        if not exists:
+            if error_context == "delta":
+                raise ValueError(f"replace delta path is missing: {patch.path!r}")
+            raise ValueError(
+                f"override replace patch targets a missing key/index: {patch.path!r}"
+            )
+        _set_patch_target(parent, leaf, deepcopy(patch.value), path=patch.path)
+        return
+    if not exists:
+        if error_context == "delta":
+            raise ValueError(f"remove delta path is missing: {patch.path!r}")
+        raise ValueError(f"override remove patch targets a missing key/index: {patch.path!r}")
+    _remove_patch_target(parent, leaf, path=patch.path)
+
+
+def _is_list_append(parent: list[Any], leaf: str) -> bool:
+    return leaf == "-" or leaf.isdigit() and int(leaf) == len(parent)
+
+
+def _resolve_patch_parent(
+    root: Any,
+    parts: list[str],
+    *,
+    path: str,
+    error_context: Literal["override", "delta"],
+) -> Any:
+    if not parts:
+        raise ValueError(f"patch path must be non-empty: {path!r}")
+    current = root
+    for part in parts[:-1]:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        if isinstance(current, list) and part.isdigit():
+            index = int(part)
+            if 0 <= index < len(current):
+                current = current[index]
+                continue
+        prefix = "delta path" if error_context == "delta" else "patch path"
+        raise ValueError(f"{prefix} cannot traverse missing segment {part!r}: {path!r}")
+    return current
+
+
+def _patch_target_exists(parent: Any, key: str) -> bool:
+    if isinstance(parent, dict):
+        return key in parent
+    if isinstance(parent, list) and key.isdigit():
+        index = int(key)
+        return 0 <= index < len(parent)
+    return False
+
+
+def _set_patch_target(parent: Any, key: str, value: Any, *, path: str) -> None:
+    if isinstance(parent, dict):
+        parent[key] = value
+        return
+    if isinstance(parent, list) and key.isdigit():
+        index = int(key)
+        if 0 <= index < len(parent):
+            parent[index] = value
+            return
+    raise ValueError(f"patch path cannot set segment {key!r}: {path!r}")
+
+
+def _remove_patch_target(parent: Any, key: str, *, path: str) -> None:
+    if isinstance(parent, dict):
+        del parent[key]
+        return
+    if isinstance(parent, list) and key.isdigit():
+        index = int(key)
+        if 0 <= index < len(parent):
+            del parent[index]
+            return
+    raise ValueError(f"patch path cannot remove segment {key!r}: {path!r}")
 
 
 def _validate_dotted_path(path: str, field: str) -> None:

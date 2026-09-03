@@ -1,14 +1,18 @@
 from __future__ import annotations
 from fastapi import APIRouter, Header, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict
-from typing import Optional
+from pydantic import BaseModel, ValidationError
+from typing import Any, Optional
 
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import DomainCompileReport
 from feedbax.contracts.graph import (
     GraphSpec,
-    StudioWorkspaceSpec,
-    WorkspaceDocument,
+    StudioPersistenceDocument,
+)
+from feedbax.contracts.canonical_json import CanonicalJsonError
+from feedbax.contracts.migrations import (
+    UnsupportedSpecVersion,
+    admit_studio_persistence_document,
 )
 from feedbax.contracts.studio_api import (
     GraphCreateResponse,
@@ -30,23 +34,6 @@ service = GraphService()
 def _component_registry(request: Request):
     bootstrap_state = getattr(request.app.state, "bootstrap_state", None)
     return bootstrap_state.bundle.components if bootstrap_state is not None else None
-
-
-class GraphCreateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    graph: GraphSpec
-    workspace_document: Optional[WorkspaceDocument] = None
-    workspace: Optional[StudioWorkspaceSpec] = None
-
-
-class GraphUpdateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    graph: Optional[GraphSpec] = None
-    workspace_document: Optional[WorkspaceDocument] = None
-    workspace: Optional[StudioWorkspaceSpec] = None
-    expected_save_revision: Optional[int] = None
 
 
 class GraphNodeCompileRequest(BaseModel):
@@ -79,6 +66,13 @@ def _conflict_detail(exc: GraphSaveConflictError) -> dict[str, object]:
     }
 
 
+def _admit_save(payload: dict[str, Any]) -> StudioPersistenceDocument:
+    try:
+        return admit_studio_persistence_document(payload)
+    except (CanonicalJsonError, UnsupportedSpecVersion, ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("", response_model=GraphListResponse)
 async def list_graphs(request: Request, response: Response) -> GraphListResponse:
     response.headers["Cache-Control"] = "no-store"
@@ -92,12 +86,15 @@ async def list_graphs(request: Request, response: Response) -> GraphListResponse
 
 
 @router.post("", response_model=GraphCreateResponse)
-async def create_graph(payload: GraphCreateRequest, request: Request) -> GraphCreateResponse:
+async def create_graph(payload: dict[str, Any], request: Request) -> GraphCreateResponse:
+    admitted = _admit_save(payload)
+    if admitted.graph is None:
+        raise HTTPException(status_code=422, detail="Studio graph creation requires graph")
     component_registry = _component_registry(request)
     record = service.create_graph(
-        payload.graph,
-        workspace=payload.workspace,
-        workspace_document=payload.workspace_document,
+        admitted.graph,
+        workspace=admitted.workspace,
+        workspace_document=admitted.workspace_document,
         component_registry=component_registry,
     )
     return GraphCreateResponse(data={"id": record.graph_id, "metadata": record.project.metadata})
@@ -128,19 +125,20 @@ async def get_graph(graph_id: str, request: Request, response: Response) -> Grap
 @router.put("/{graph_id}", response_model=GraphUpdateResponse)
 async def update_graph(
     graph_id: str,
-    payload: GraphUpdateRequest,
+    payload: dict[str, Any],
     request: Request,
     if_match: Optional[str] = Header(default=None, alias="If-Match"),
 ) -> GraphUpdateResponse:
+    admitted = _admit_save(payload)
     expected_revision = _parse_if_match_revision(if_match)
     if expected_revision is None:
-        expected_revision = payload.expected_save_revision
+        expected_revision = admitted.expected_save_revision
     try:
         record = service.update_graph(
             graph_id,
-            payload.graph,
-            workspace=payload.workspace,
-            workspace_document=payload.workspace_document,
+            admitted.graph,
+            workspace=admitted.workspace,
+            workspace_document=admitted.workspace_document,
             expected_save_revision=expected_revision,
             require_save_revision=True,
             component_registry=_component_registry(request),
@@ -155,17 +153,18 @@ async def update_graph(
 @router.post("/{graph_id}/beacon")
 async def beacon_update_graph(
     graph_id: str,
-    payload: GraphUpdateRequest,
+    payload: dict[str, Any],
     request: Request,
 ):
     """sendBeacon endpoint for pagehide saves; returns 204 No Content."""
+    admitted = _admit_save(payload)
     try:
         service.update_graph(
             graph_id,
-            payload.graph,
-            workspace=payload.workspace,
-            workspace_document=payload.workspace_document,
-            expected_save_revision=payload.expected_save_revision,
+            admitted.graph,
+            workspace=admitted.workspace,
+            workspace_document=admitted.workspace_document,
+            expected_save_revision=admitted.expected_save_revision,
             require_save_revision=True,
             component_registry=_component_registry(request),
         )

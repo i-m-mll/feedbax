@@ -176,6 +176,14 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         self.passive_force_length = PassiveForceLengthCurve()
         self.force_velocity = ForceVelocityCurve()
 
+    def to_params(self) -> dict[str, float | bool]:
+        """Return the authored GraphSpec parameters represented by this plant."""
+        return {
+            "tau_act": float(self.tau_act),
+            "tau_deact": float(self.tau_deact),
+            "clip_states": bool(self.clip_states),
+        }
+
     # ------------------------------------------------------------------
     # Muscle geometry (constant moment arms)
     # ------------------------------------------------------------------

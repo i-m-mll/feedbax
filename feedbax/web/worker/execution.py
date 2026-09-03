@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
+import math
 import os
 import tempfile
 import time
@@ -31,8 +32,10 @@ from feedbax.runtime.retained_observables import (
 from feedbax.studio.schema import validate_graph_connection_schema, validate_task_binding_schema
 from feedbax.contracts.graph import (
     GraphSpec,
+    StudioEpochValueSpec,
     StudioTaskBindingSpec,
     StudioTaskDataSpec,
+    StudioTaskTimelineSpec,
 )
 from feedbax.contracts.studio_api import (
     TRAINING_TRAJECTORY_SCHEMA_ID,
@@ -49,7 +52,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
-from feedbax.contracts.graphs.serialization import prototypes_from_task_bindings
+from feedbax.compiler.serialization import prototypes_from_task_bindings
 from feedbax.objectives import ObjectiveExecutionRequirements
 from feedbax.objectives.service import LossService, LoweredObjective
 from feedbax.training.executor import execute_training_run_spec
@@ -89,7 +92,7 @@ class CompiledTrainingRun:
     loss_terms: tuple[LossTermPlan, ...]
     trainable_nodes: tuple[str, ...]
     trainable_filter: Any
-    task_data: dict[str, jax.Array]
+    task_spec: TaskSpec
     n_steps: int
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -128,6 +131,8 @@ def compile_training_run(
         if isinstance(training_spec, TrainingSpec)
         else TrainingSpec.model_validate(training_spec)
     )
+    if not _has_executable_loss_leaf(training_model.loss):
+        raise _missing_loss_terms_error()
     if training_model.batch_size != 1:
         raise GraphCompilationError(
             "Unsupported training batch size",
@@ -144,12 +149,15 @@ def compile_training_run(
                 )
             ],
         )
+    task_model = TaskSpec.model_validate(task_spec)
     if isinstance(task_binding_spec, StudioTaskBindingSpec):
         binding_model = task_binding_spec
     else:
         binding_payload = migrate_studio_task_binding_spec(task_binding_spec).payload
         _reject_unsupported_task_data_value_spec_modes(binding_payload)
         binding_model = StudioTaskBindingSpec.model_validate(binding_payload)
+    _validate_authored_execution_inputs(binding_model, task_spec, cfg)
+    _validate_epoch_value_targets(task_model.timeline, binding_model)
     binding_errors = [
         issue
         for issue in validate_task_binding_schema(
@@ -213,8 +221,7 @@ def compile_training_run(
         ) from exc
 
     graph, task_inputs = expose_task_inputs(graph, binding_model)
-    n_steps = int(getattr(cfg, "n_reach_steps", None) or training_model.n_batches or 1)
-    task_data = _materialize_task_data(binding_model, task_spec, n_steps)
+    n_steps = int(cfg.n_reach_steps)
     try:
         retention_plan = lower_retention_plan(graph_model, training_model, task_spec=task_spec)
     except RetentionPlanError as exc:
@@ -230,6 +237,8 @@ def compile_training_run(
             ],
         ) from exc
     loss_terms = retention_plan.loss_terms
+    if not loss_terms:
+        raise _missing_loss_terms_error()
     trace_requests = _compile_trace_requests(graph_model, retention_plan)
     trainable_nodes = _derive_trainable_nodes(graph_model, component_registry)
     trainable_filter = _trainable_filter(graph, trainable_nodes)
@@ -245,11 +254,11 @@ def compile_training_run(
         loss_terms=loss_terms,
         trainable_nodes=trainable_nodes,
         trainable_filter=trainable_filter,
-        task_data=task_data,
+        task_spec=task_model,
         n_steps=n_steps,
         metadata={
             "execution": "generic_graph",
-            "task_spec": dict(task_spec),
+            "task_spec": task_model.model_dump(mode="json", exclude_none=True),
             "task_input_count": len(task_inputs),
             "trace_request_count": len(trace_requests),
             "loss_term_count": len(loss_terms),
@@ -258,6 +267,30 @@ def compile_training_run(
     )
     _dry_run(compiled)
     return compiled
+
+
+def _has_executable_loss_leaf(loss: Any) -> bool:
+    children = getattr(loss, "children", None)
+    if children:
+        return any(_has_executable_loss_leaf(child) for child in children.values())
+    return getattr(loss, "type", None) != "Composite"
+
+
+def _missing_loss_terms_error() -> GraphCompilationError:
+    return GraphCompilationError(
+        "Training run has no executable loss terms",
+        [
+            DomainDiagnostic(
+                severity="error",
+                code="worker.missing_loss_terms",
+                message=(
+                    "Training requires at least one authored loss term; "
+                    "add a loss selector before starting the run"
+                ),
+                location={"path": "/training_spec/loss"},
+            )
+        ],
+    )
 
 
 def run_training_graph(
@@ -518,10 +551,15 @@ def rollout_graph(
     """Roll out one trial through the executable graph boundary."""
     state = init_state_from_component(graph)
     cycle_values = graph.initial_cycle_port_values(state)
-    keys = jr.split(key, compiled.n_steps)
-    input_sequences = {
-        plan.graph_input: compiled.task_data[plan.data_id] for plan in compiled.task_inputs
-    }
+    task_key, graph_key = jr.split(key)
+    task_data = _materialize_task_data(
+        compiled.task_binding_spec,
+        compiled.task_spec,
+        compiled.n_steps,
+        key=task_key,
+    )
+    keys = jr.split(graph_key, compiled.n_steps)
+    input_sequences = {plan.graph_input: task_data[plan.data_id] for plan in compiled.task_inputs}
 
     def _step_inputs_at(i):
         return {name: value[i] for name, value in input_sequences.items()}
@@ -544,22 +582,298 @@ def rollout_graph(
     return {
         "outputs": seq["outputs"],
         "trace": seq["trace"],
-        "task_data": compiled.task_data,
+        "task_data": task_data,
         "final_state": final_state,
     }
 
 
 def _materialize_task_data(
     task_binding_spec: StudioTaskBindingSpec,
-    task_spec: dict[str, Any],
+    task_spec: TaskSpec,
     n_steps: int,
+    *,
+    key: jax.Array,
 ) -> dict[str, jax.Array]:
     data: dict[str, jax.Array] = {}
-    for item in task_binding_spec.exposed_data:
-        value = _materialize_one_task_data(item, task_spec, n_steps)
+    keys = iter(jr.split(key, len(task_binding_spec.exposed_data) + 1))
+    timeline_key = next(keys)
+    bounds = _timeline_epoch_bounds(task_spec.timeline, n_steps, timeline_key)
+    for item, item_key in zip(task_binding_spec.exposed_data, keys, strict=True):
+        value = _materialize_one_task_data(
+            item,
+            task_spec.model_dump(mode="python", exclude_none=True),
+            n_steps,
+        )
+        if task_spec.timeline is not None:
+            value = _apply_epoch_values(
+                value,
+                item,
+                task_spec,
+                bounds,
+                key=item_key,
+            )
         data[item.id] = value
         data[item.path] = value
     return data
+
+
+def _validate_authored_execution_inputs(
+    task_binding_spec: StudioTaskBindingSpec,
+    task_spec: dict[str, Any],
+    cfg: Any,
+) -> None:
+    diagnostics: list[DomainDiagnostic] = []
+    raw_n_steps = getattr(cfg, "n_reach_steps", None)
+    if raw_n_steps is None:
+        diagnostics.append(
+            DomainDiagnostic(
+                severity="error",
+                code="worker.missing_rollout_length",
+                message=(
+                    "Training requires an explicit rollout length in "
+                    "training_config.n_reach_steps or task_spec.params.n_steps"
+                ),
+                location={"path": "/training_config/n_reach_steps"},
+            )
+        )
+    else:
+        try:
+            if int(raw_n_steps) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="worker.invalid_rollout_length",
+                    message=(
+                        "Training rollout length must be a positive integer; "
+                        f"got {raw_n_steps!r}"
+                    ),
+                    location={"path": "/training_config/n_reach_steps"},
+                )
+            )
+
+    bound_data_ids = {binding.source_data_id for binding in task_binding_spec.bindings}
+    for index, item in enumerate(task_binding_spec.exposed_data):
+        if item.id not in bound_data_ids:
+            continue
+        if item.value_spec is None:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="worker.missing_task_data_value_spec",
+                    message=(
+                        f"Bound task data {item.id!r} at {item.path!r} requires an authored "
+                        "value_spec; the worker will not invent a zero signal"
+                    ),
+                    location={"path": f"/task_binding_spec/exposed_data/{index}/value_spec"},
+                    details={"data_id": item.id, "data_path": item.path},
+                )
+            )
+            continue
+        if item.value_spec.mode == "function" and item.value_spec.function_id in {
+            "delayed_reach_target_position",
+            "delayed_reach_movement_target",
+        }:
+            params = task_spec.get("params") if isinstance(task_spec, Mapping) else None
+            workspace = params.get("workspace") if isinstance(params, Mapping) else None
+            if workspace is None:
+                diagnostics.append(
+                    DomainDiagnostic(
+                        severity="error",
+                        code="worker.missing_task_workspace",
+                        message=(
+                            f"Task data function {item.value_spec.function_id!r} requires "
+                            "task_spec.params.workspace; the worker will not invent bounds"
+                        ),
+                        location={"path": "/task_spec/params/workspace"},
+                        details={"data_id": item.id, "function_id": item.value_spec.function_id},
+                    )
+                )
+
+    if diagnostics:
+        raise GraphCompilationError("Training run is missing authored execution inputs", diagnostics)
+
+
+def _validate_epoch_value_targets(
+    timeline: StudioTaskTimelineSpec | None,
+    task_binding_spec: StudioTaskBindingSpec,
+) -> None:
+    if timeline is None:
+        return
+    exposed_ids = {item.id for item in task_binding_spec.exposed_data}
+    unknown = sorted({entry.target_id for entry in timeline.epoch_value_specs} - exposed_ids)
+    if unknown:
+        raise ValueError(
+            "Timeline epoch-value targets are not exposed by task_binding_spec: "
+            + ", ".join(repr(value) for value in unknown)
+        )
+
+
+def _timeline_epoch_bounds(
+    timeline: StudioTaskTimelineSpec | None,
+    n_steps: int,
+    key: jax.Array,
+) -> jax.Array | None:
+    if timeline is None:
+        return None
+    lengths: list[jax.Array] = []
+    maximum_prefix_total = 0
+    length_keys = iter(jr.split(key, max(1, len(timeline.epochs))))
+    for position, epoch in enumerate(sorted(timeline.epochs, key=lambda item: item.index)):
+        is_final = position == len(timeline.epochs) - 1
+        spec = epoch.length
+        if is_final and spec.mode == "constant" and spec.value is None:
+            break
+        if spec.mode == "constant":
+            value = _exact_timeline_step_count(
+                spec.value,
+                epoch_id=epoch.id,
+                maximum=n_steps,
+            )
+            maximum_prefix_total += value
+            lengths.append(jnp.asarray(value, dtype=jnp.int32))
+            continue
+        if spec.mode == "distribution" and isinstance(spec.distribution, Mapping):
+            distribution = spec.distribution
+            parameters = distribution.get("parameters")
+            if distribution.get("family") != "uniform" or not isinstance(parameters, Mapping):
+                raise ValueError(
+                    f"Timeline epoch {epoch.id!r} length supports only uniform distributions"
+                )
+            try:
+                low = _exact_timeline_step_count(
+                    parameters.get("min"),
+                    epoch_id=epoch.id,
+                    maximum=n_steps,
+                )
+                high = _exact_timeline_step_count(
+                    parameters.get("max"),
+                    epoch_id=epoch.id,
+                    maximum=n_steps,
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Timeline epoch {epoch.id!r} uniform length bounds must be "
+                    "non-negative integers with min <= max"
+                ) from exc
+            if high < low:
+                raise ValueError(
+                    f"Timeline epoch {epoch.id!r} uniform length bounds must be "
+                    "non-negative integers with min <= max"
+                )
+            length_key = next(length_keys)
+            maximum_prefix_total += low if low == high else high
+            lengths.append(
+                jnp.asarray(low, dtype=jnp.int32)
+                if low == high
+                else jr.randint(length_key, (), low, high, dtype=jnp.int32)
+            )
+            continue
+        raise ValueError(f"Timeline epoch {epoch.id!r} uses unsupported length mode={spec.mode!r}")
+    if len(lengths) > max(0, len(timeline.epochs) - 1):
+        raise ValueError("Only the final timeline epoch may have an explicit remaining length")
+    if maximum_prefix_total > n_steps:
+        raise ValueError("Timeline epoch lengths may exceed the runtime step count")
+    prefix = jnp.stack(lengths) if lengths else jnp.zeros((0,), dtype=jnp.int32)
+    prefix_total = jnp.sum(prefix)
+    if not isinstance(prefix_total, jax.core.Tracer) and int(prefix_total) > n_steps:
+        raise ValueError("Timeline epoch lengths exceed the runtime step count")
+    final = jnp.maximum(jnp.asarray(n_steps, dtype=jnp.int32) - prefix_total, 0)
+    all_lengths = jnp.concatenate([prefix, final[None]])
+    return jnp.concatenate([jnp.zeros((1,), dtype=jnp.int32), jnp.cumsum(all_lengths)])
+
+
+def _exact_timeline_step_count(value: Any, *, epoch_id: str, maximum: int) -> int:
+    """Return one admitted integer step count without lossy coercion."""
+
+    if isinstance(value, Mapping):
+        if set(value) != {"steps"}:
+            raise ValueError(
+                f"Timeline epoch {epoch_id!r} length object must contain only 'steps'"
+            )
+        value = value["steps"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"Timeline epoch {epoch_id!r} length must be an integer")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"Timeline epoch {epoch_id!r} length must be finite")
+    if value < 0 or int(value) != value or value > maximum:
+        raise ValueError(
+            f"Timeline epoch {epoch_id!r} length must be a non-negative integer "
+            f"no greater than {maximum}"
+        )
+    return int(value)
+
+
+def _apply_epoch_values(
+    base: jax.Array,
+    item: StudioTaskDataSpec,
+    task_spec: TaskSpec,
+    bounds: jax.Array | None,
+    *,
+    key: jax.Array,
+) -> jax.Array:
+    timeline = task_spec.timeline
+    if timeline is None or bounds is None:
+        return base
+    entries = [entry for entry in timeline.epoch_value_specs if entry.target_id == item.id]
+    if not entries:
+        return base
+    epoch_indexes = {epoch.id: epoch.index for epoch in timeline.epochs}
+    keys = jr.split(key, len(entries))
+    value = base
+    task_payload = task_spec.model_dump(mode="python", exclude_none=True)
+    for entry, entry_key in zip(entries, keys, strict=True):
+        override = _materialize_epoch_value(entry, item, task_payload, value.shape, entry_key)
+        epoch_index = epoch_indexes[entry.epoch_id]
+        mask = (jnp.arange(value.shape[0]) >= bounds[epoch_index]) & (
+            jnp.arange(value.shape[0]) < bounds[epoch_index + 1]
+        )
+        mask = mask.reshape((value.shape[0], *(1 for _ in value.shape[1:])))
+        value = jnp.where(mask, override, value)
+    return value
+
+
+def _materialize_epoch_value(
+    entry: StudioEpochValueSpec,
+    item: StudioTaskDataSpec,
+    task_spec: dict[str, Any],
+    shape: tuple[int, ...],
+    key: jax.Array,
+) -> jax.Array:
+    spec = entry.value_spec
+    if spec.mode in {"constant", "function"}:
+        return _materialize_one_task_data(
+            item.model_copy(update={"value_spec": spec}),
+            task_spec,
+            shape[0],
+        )
+    if spec.mode == "distribution" and isinstance(spec.distribution, Mapping):
+        distribution = spec.distribution
+        parameters = distribution.get("parameters")
+        if not isinstance(parameters, Mapping):
+            raise ValueError(
+                f"Timeline target {entry.target_id!r} distribution parameters must be an object"
+            )
+        family = distribution.get("family")
+        if family == "uniform":
+            low = float(parameters.get("min"))
+            high = float(parameters.get("max"))
+            if high < low:
+                raise ValueError("Timeline uniform distribution requires min <= max")
+            return jr.uniform(key, shape, minval=low, maxval=high, dtype=jnp.float32)
+        if family == "normal":
+            mean = float(parameters.get("mean"))
+            std = float(parameters.get("std"))
+            if std < 0:
+                raise ValueError("Timeline normal distribution requires std >= 0")
+            return mean + std * jr.normal(key, shape, dtype=jnp.float32)
+        raise ValueError(
+            f"Timeline target {entry.target_id!r} uses unsupported distribution family={family!r}"
+        )
+    raise ValueError(
+        f"Timeline target {entry.target_id!r} uses unsupported value_spec mode={spec.mode!r}"
+    )
 
 
 def _reject_unsupported_task_data_value_spec_modes(task_binding_spec: Mapping[str, Any]) -> None:
@@ -585,7 +899,9 @@ def _materialize_one_task_data(
     value_spec = item.value_spec
     shape = _runtime_shape(item.expected_shape, n_steps)
     if value_spec is None:
-        return jnp.zeros(shape, dtype=jnp.float32)
+        raise ValueError(
+            f"Task data {item.id!r} at {item.path!r} requires an authored value_spec"
+        )
     if value_spec.mode == "constant":
         if value_spec.value is None:
             raise ValueError(
@@ -637,7 +953,9 @@ def _delayed_reach_target_position(
     shape: tuple[int, ...],
 ) -> jax.Array:
     params = task_spec.get("params", {}) if isinstance(task_spec, dict) else {}
-    workspace = params.get("workspace") or [[-0.25, -0.25], [0.25, 0.25]]
+    workspace = params.get("workspace")
+    if workspace is None:
+        raise ValueError("Delayed-reach task data requires task_spec.params.workspace")
     start = jnp.asarray(workspace[0], dtype=jnp.float32)
     end = jnp.asarray(workspace[1], dtype=jnp.float32)
     progress = jnp.linspace(0.0, 1.0, n_steps, dtype=jnp.float32)[:, None]
@@ -779,10 +1097,7 @@ def _evaluate_loss(
     rollout: dict[str, Any],
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     if not compiled.loss_terms:
-        output_name = next(iter(rollout["outputs"]))
-        value = rollout["outputs"][output_name]
-        loss = jnp.mean(jnp.square(value))
-        return loss, {"default_output": loss}
+        raise ValueError("Training requires at least one authored loss term")
     return evaluate_loss_plan(compiled.loss_terms, _rollout_trace_map(rollout))
 
 

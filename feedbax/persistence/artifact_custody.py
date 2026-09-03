@@ -6,15 +6,28 @@ import errno
 import hashlib
 import os
 import stat
-import sys
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError as PydanticValidationError
 
+from feedbax._secure_fs import (
+    SecurePathRigor,
+    canonicalize_trusted_system_aliases,
+    close_directory_chain,
+    directory_open_flags,
+    file_open_flags,
+    open_directory_chain,
+    open_existing_directory,
+    open_existing_file,
+    rename_no_replace,
+    recheck_directory_chain,
+    require_secure_path_capabilities,
+)
 from feedbax.contracts.artifact_custody import (
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_KIND,
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
@@ -26,7 +39,7 @@ from feedbax.contracts.artifact_custody import (
     ArtifactBlobReferenceError,
     ImmutableArtifactBlobProviderSpec,
 )
-from feedbax.contracts.manifest import ArtifactRef
+from feedbax.contracts.base import ArtifactRef
 
 
 _ARTIFACT_ID_PREFIX = "artifact://sha256/"
@@ -46,30 +59,7 @@ _RESERVED_METADATA_KEYS = frozenset(
         "uri",
     }
 )
-_DirectoryRecord = tuple[Path, int, os.stat_result]
-
-
-def _canonicalize_trusted_system_aliases(path: Path) -> Path:
-    absolute_path = Path(os.path.abspath(path))
-    if sys.platform != "darwin" or len(absolute_path.parts) < 2:
-        return absolute_path
-    alias_name = absolute_path.parts[1]
-    expected = {
-        "tmp": (Path("/private/tmp"), {"private/tmp", "/private/tmp"}),
-        "var": (Path("/private/var"), {"private/var", "/private/var"}),
-    }.get(alias_name)
-    if expected is None:
-        return absolute_path
-    canonical_prefix, allowed_targets = expected
-    alias_path = Path(absolute_path.anchor) / alias_name
-    try:
-        alias_stat = alias_path.lstat()
-        alias_target = os.readlink(alias_path)
-    except OSError:
-        return absolute_path
-    if not stat.S_ISLNK(alias_stat.st_mode) or alias_target not in allowed_targets:
-        return absolute_path
-    return canonical_prefix.joinpath(*absolute_path.parts[2:])
+_canonicalize_trusted_system_aliases = canonicalize_trusted_system_aliases
 
 
 def _parse_artifact_id(artifact_id: object) -> str:
@@ -156,109 +146,26 @@ def _file_state(file_stat: os.stat_result) -> tuple[int, ...]:
     )
 
 
-def _require_descriptor_capabilities() -> None:
-    missing = [
-        name for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK") if not getattr(os, name, 0)
-    ]
-    dir_fd_functions = (os.open, os.mkdir, os.link, os.stat, os.unlink)
-    supports_dir_fd = getattr(os, "supports_dir_fd", set())
-    missing.extend(
-        function.__name__ for function in dir_fd_functions if function not in supports_dir_fd
-    )
-    supports_follow_symlinks = getattr(os, "supports_follow_symlinks", set())
-    if os.stat not in supports_follow_symlinks:
-        missing.append("stat(follow_symlinks=False)")
-    if os.link not in supports_follow_symlinks:
-        missing.append("link(follow_symlinks=False)")
-    if missing:
-        raise ArtifactBlobContainmentError(
-            "immutable blob custody requires descriptor-relative no-follow filesystem "
-            "operations; unavailable: " + ", ".join(sorted(set(missing)))
-        )
-
-
-def _directory_flags() -> int:
-    _require_descriptor_capabilities()
-    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
-
-
-def _file_flags(*, writable: bool = False) -> int:
-    _require_descriptor_capabilities()
-    flags = os.O_RDWR if writable else os.O_RDONLY
-    return flags | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
-
-
-def _open_directory_chain(directory: Path, *, create: bool) -> list[_DirectoryRecord]:
-    absolute_directory = Path(os.path.abspath(directory))
-    anchor = Path(absolute_directory.anchor)
-    if not anchor.anchor:
-        raise ArtifactBlobContainmentError(
-            f"directory must resolve to an absolute path: {directory}"
-        )
-    records: list[_DirectoryRecord] = []
-    flags = _directory_flags()
-    try:
-        descriptor = os.open(anchor, flags)
-        anchor_stat = os.fstat(descriptor)
-        if not stat.S_ISDIR(anchor_stat.st_mode):
-            raise ArtifactBlobContainmentError(f"path anchor is not a directory: {anchor}")
-        records.append((anchor, descriptor, anchor_stat))
-        current_path = anchor
-        for component in absolute_directory.parts[1:]:
-            current_path = current_path / component
-            try:
-                next_descriptor = os.open(component, flags, dir_fd=records[-1][1])
-            except FileNotFoundError:
-                if not create:
-                    raise
-                try:
-                    os.mkdir(component, mode=0o777, dir_fd=records[-1][1])
-                except FileExistsError:
-                    pass
-                next_descriptor = os.open(component, flags, dir_fd=records[-1][1])
-            next_stat = os.fstat(next_descriptor)
-            if not stat.S_ISDIR(next_stat.st_mode):
-                os.close(next_descriptor)
-                raise ArtifactBlobContainmentError(
-                    f"path component is not a directory: {current_path}"
-                )
-            records.append((current_path, next_descriptor, next_stat))
-    except OSError as exc:
-        _close_directory_chain(records)
-        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
-            raise ArtifactBlobContainmentError(
-                f"directory path traverses a symlink or non-directory: {directory}"
-            ) from exc
-        raise
-    except Exception:
-        _close_directory_chain(records)
-        raise
-    return records
-
-
-def _recheck_directory_chain(records: list[_DirectoryRecord]) -> None:
-    for path, descriptor, initial_stat in records:
-        descriptor_stat = os.fstat(descriptor)
-        try:
-            path_stat = os.stat(path, follow_symlinks=False)
-        except FileNotFoundError as exc:
-            raise ArtifactBlobContainmentError(
-                f"directory disappeared during custody operation: {path}"
-            ) from exc
-        expected_identity = (initial_stat.st_dev, initial_stat.st_ino)
-        if (
-            not stat.S_ISDIR(path_stat.st_mode)
-            or (descriptor_stat.st_dev, descriptor_stat.st_ino) != expected_identity
-            or (path_stat.st_dev, path_stat.st_ino) != expected_identity
-        ):
-            raise ArtifactBlobContainmentError(
-                f"directory identity changed during custody operation: {path}"
-            )
-
-
-def _close_directory_chain(records: list[_DirectoryRecord]) -> None:
-    for _, descriptor, _ in reversed(records):
-        os.close(descriptor)
+_directory_flags = partial(
+    directory_open_flags,
+    error_factory=ArtifactBlobContainmentError,
+)
+_file_flags = partial(
+    file_open_flags,
+    rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+    error_factory=ArtifactBlobContainmentError,
+)
+_open_directory_chain = partial(
+    open_directory_chain,
+    error_factory=ArtifactBlobContainmentError,
+    context="immutable blob custody directory",
+)
+_recheck_directory_chain = partial(
+    recheck_directory_chain,
+    error_factory=ArtifactBlobContainmentError,
+    context="immutable blob custody directory",
+)
+_close_directory_chain = close_directory_chain
 
 
 def _write_file_descriptor(file_descriptor: int, data: bytes) -> None:
@@ -278,19 +185,20 @@ def _read_file_descriptor(file_descriptor: int) -> bytes:
     return b"".join(chunks)
 
 
-def _link_materialized_file(
+def _publish_materialized_file_no_replace(
     temporary_name: str,
     destination_name: str,
     *,
     temporary_parent_descriptor: int,
     parent_descriptor: int,
 ) -> None:
-    os.link(
+    rename_no_replace(
         temporary_name,
         destination_name,
-        src_dir_fd=temporary_parent_descriptor,
-        dst_dir_fd=parent_descriptor,
-        follow_symlinks=False,
+        source_dir_fd=temporary_parent_descriptor,
+        destination_dir_fd=parent_descriptor,
+        error_factory=ArtifactBlobIntegrityError,
+        context="immutable artifact publication",
     )
 
 
@@ -306,9 +214,10 @@ def _open_materialization_staging_container(
         pass
     directory_descriptor: int | None = None
     try:
-        directory_descriptor = os.open(
+        directory_descriptor = open_existing_directory(
             directory_name,
-            _directory_flags(),
+            error_factory=ArtifactBlobContainmentError,
+            context="materialization staging container",
             dir_fd=parent_descriptor,
         )
         descriptor_stat = os.fstat(directory_descriptor)
@@ -371,7 +280,7 @@ def _stage_blob_bytes(data: bytes, destination: Path) -> os.stat_result:
                 f"staged blob bytes failed verification: {destination}"
             )
         try:
-            _link_materialized_file(
+            _publish_materialized_file_no_replace(
                 temporary_name,
                 destination.name,
                 temporary_parent_descriptor=staging_descriptor,
@@ -384,12 +293,13 @@ def _stage_blob_bytes(data: bytes, destination: Path) -> os.stat_result:
             temporary_name=temporary_name,
         )
         staging_descriptor = None
-        final_descriptor = os.open(destination.name, _file_flags(), dir_fd=parent_descriptor)
-        before = os.fstat(final_descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            raise ArtifactBlobIntegrityError(
-                f"canonical blob is not an unaliased regular file: {destination}"
-            )
+        final_descriptor, before = open_existing_file(
+            destination.name,
+            rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+            error_factory=ArtifactBlobIntegrityError,
+            context=f"canonical blob {destination}",
+            dir_fd=parent_descriptor,
+        )
         stored = _read_file_descriptor(final_descriptor)
         after = os.fstat(final_descriptor)
         if _file_state(before) != _file_state(after) or stored != data:
@@ -438,6 +348,12 @@ class ImmutableArtifactBlobProvider:
             raise ArtifactBlobReferenceError(
                 f"unsupported immutable blob storage backend: {self.storage_backend!r}"
             )
+        require_secure_path_capabilities(
+            SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+            error_factory=ArtifactBlobContainmentError,
+            extra_dir_fd_operations=(os.mkdir, os.link, os.unlink),
+            require_link_no_follow=True,
+        )
         object.__setattr__(self, "root", _canonicalize_trusted_system_aliases(root_path))
 
     def store_bytes(
@@ -559,7 +475,7 @@ class ImmutableArtifactBlobProvider:
             temporary_descriptor = None
 
             try:
-                _link_materialized_file(
+                _publish_materialized_file_no_replace(
                     temporary_name,
                     destination_name,
                     temporary_parent_descriptor=staging_descriptor,
@@ -575,18 +491,17 @@ class ImmutableArtifactBlobProvider:
             )
             staging_descriptor = None
 
-            final_descriptor = os.open(
+            final_descriptor, final_stat_before = open_existing_file(
                 destination_name,
-                _file_flags(),
+                rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+                error_factory=ArtifactBlobIntegrityError,
+                context=f"materialized artifact {destination_path}",
                 dir_fd=parent_descriptor,
             )
-            final_stat_before = os.fstat(final_descriptor)
             if (
-                not stat.S_ISREG(final_stat_before.st_mode)
-                or final_stat_before.st_nlink != 1
-                or (final_stat_before.st_dev, final_stat_before.st_ino) != temporary_identity
-                or final_stat_before.st_size != len(data)
-            ):
+                final_stat_before.st_dev,
+                final_stat_before.st_ino,
+            ) != temporary_identity or final_stat_before.st_size != len(data):
                 raise ArtifactBlobIntegrityError(
                     f"materialized artifact identity is invalid: {destination_path}"
                 )
@@ -752,20 +667,13 @@ class ImmutableArtifactBlobProvider:
                 raise ArtifactBlobContainmentError(
                     f"canonical artifact must not be a symlink: {target}"
                 )
-            file_descriptor = os.open(
+            file_descriptor, file_stat_before = open_existing_file(
                 target.name,
-                _file_flags(),
+                rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+                error_factory=ArtifactBlobIntegrityError,
+                context=f"canonical artifact {target}",
                 dir_fd=parent_descriptor,
             )
-            file_stat_before = os.fstat(file_descriptor)
-            if not stat.S_ISREG(file_stat_before.st_mode):
-                raise ArtifactBlobIntegrityError(
-                    f"canonical artifact must be a regular file: {target}"
-                )
-            if file_stat_before.st_nlink != 1:
-                raise ArtifactBlobIntegrityError(
-                    f"canonical artifact has mutable hard-link aliases: {target}"
-                )
             if (file_stat_before.st_dev, file_stat_before.st_ino) != (
                 path_stat_before.st_dev,
                 path_stat_before.st_ino,

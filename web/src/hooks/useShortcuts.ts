@@ -8,7 +8,7 @@ import {
   getTrainingScenario,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
-import { useSaveGraph } from '@/hooks/useGraphs';
+import { saveActiveStudioDocument } from '@/services/studioPersistence';
 import {
   ensureTaskBindingSpec,
   scopedTaskBindingSpec,
@@ -39,9 +39,6 @@ export function useAppShortcuts() {
     clearSelection,
     selectAll,
     graph,
-    uiState,
-    graphId,
-    markSaved,
     markDirty,
     nodes,
     graphStack,
@@ -54,9 +51,6 @@ export function useAppShortcuts() {
       clearSelection: state.clearSelection,
       selectAll: state.selectAll,
       graph: state.graph,
-      uiState: state.uiState,
-      graphId: state.graphId,
-      markSaved: state.markSaved,
       markDirty: state.markDirty,
       nodes: state.nodes,
       graphStack: state.graphStack,
@@ -69,23 +63,17 @@ export function useAppShortcuts() {
       selectTopPaneEntity: state.selectTopPaneEntity,
     }))
   );
-  const saveMutation = useSaveGraph();
-
   const saveGraph = useCallback(async () => {
     try {
-      const response = await saveMutation.mutateAsync({ graphId, graph, uiState });
-      if ('id' in response) {
-        markSaved(response.id, response.metadata.save_revision);
-      } else if (graphId) {
-        markSaved(graphId, response.metadata.save_revision);
-      }
+      const outcome = await saveActiveStudioDocument('shortcut');
+      if (!outcome.ok) return;
       toast.success('Project saved.', { id: 'project-save-success' });
     } catch (error) {
       toast.error(actionErrorMessage(error, 'Failed to save project.'), {
         id: 'project-save-error',
       });
     }
-  }, [graphId, graph, uiState, markSaved, saveMutation]);
+  }, []);
 
   const deleteSelection = useCallback(() => {
     const selectedNodeIds = nodes

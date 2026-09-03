@@ -12,6 +12,7 @@ import math
 import os
 import posixpath
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -28,6 +29,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
+
+from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
 
 from feedbax.contracts.training import (
     TrainingProgramRegistry,
@@ -119,6 +122,7 @@ from feedbax.orchestration.schedule_eval import compare_continuation_schedule_pr
 from feedbax.orchestration.state import (
     DEPENDENCY_SKIP_OUTCOME,
     PreflightCheckEntry,
+    ProcessIdentity,
     RunSetState,
     dependency_skip_observed,
     utc_now,
@@ -194,6 +198,7 @@ import platform
 from pathlib import Path
 import sys
 
+# Trusted internal command argument serialized by this process for this probe.
 declaration = json.loads(sys.argv[1])
 declared_python = declaration["python_version"]
 observed_python = platform.python_version()
@@ -1858,8 +1863,36 @@ class RunPodOrchestrationDriver:
             execution_namespace=namespace,
         )
         self._ssh(command)
-        pid = self._read_remote_pid(bundle, row.row_id)
-        return {"row_id": row.row_id, "pid": pid, "command": command}
+        report = parse_probe_report(
+            self._ssh(
+                build_probe_command(namespace.sentinel_dir, row.row_id, bundle.run_set_id)
+            ).stdout
+        )
+        row_report = report.get("rows", {}).get(row.row_id, {})
+        identity = _process_identity_from_report(row_report)
+        pid = row_report.get("pid")
+        if identity is None or row_report.get("status") == "failed":
+            return {
+                "row_id": row.row_id,
+                "pid": pid if isinstance(pid, int) else None,
+                "status": "failed",
+                "detail": row_report.get("detail")
+                or ("remote launch did not yield verified process identity"),
+                "event_discrepancies": [
+                    {
+                        "code": "unverified_process_identity",
+                        "message": row_report.get("detail")
+                        or "remote launch did not yield verified process identity",
+                    }
+                ],
+                "command": command,
+            }
+        return {
+            "row_id": row.row_id,
+            "pid": identity.pid,
+            "process_identity": identity.model_dump(mode="json"),
+            "command": command,
+        }
 
     def smoke_row(
         self,
@@ -1902,6 +1935,9 @@ class RunPodOrchestrationDriver:
             update_budget=bundle.smoke_update_budget,
         )
         status = "running"
+        process_identity: ProcessIdentity | None = None
+        identity_status = "missing"
+        cleanup_authorized = False
         result: Mapping[str, Any] = {
             "start_completed_batches": 0,
             "end_completed_batches": None,
@@ -1917,17 +1953,37 @@ class RunPodOrchestrationDriver:
             while status not in {"completed", "failed", "deadline_exceeded"}:
                 probe = parse_probe_report(
                     self._ssh(
-                        build_probe_command(namespace.sentinel_dir, namespace.sentinel_stem)
+                        build_probe_command(
+                            namespace.sentinel_dir,
+                            namespace.sentinel_stem,
+                            bundle.run_set_id,
+                        )
                     ).stdout
                 )
-                status = str(
-                    probe.get("rows", {}).get(namespace.sentinel_stem, {}).get("status", "pending")
-                )
+                row_report = probe.get("rows", {}).get(namespace.sentinel_stem, {})
+                status = str(row_report.get("status", "pending"))
+                identity_status = str(row_report.get("identity_status", "missing"))
+                process_identity = _process_identity_from_report(row_report)
                 if status in {"completed", "failed"}:
+                    cleanup_authorized = row_report.get("terminal_status") == status
                     break
                 remaining = deadline - self._monotonic()
                 if remaining <= 0:
-                    self._ssh(build_bounded_remote_termination_command(namespace))
+                    if process_identity is None or identity_status != "owned":
+                        raise RunPodDriverError(
+                            "remote smoke termination refused: process identity is not verified"
+                        )
+                    termination = _json_object(
+                        self._ssh(
+                            build_bounded_remote_termination_command(namespace, process_identity)
+                        ).stdout
+                    )
+                    if termination.get("status") not in {"stopped", "already-exited"}:
+                        raise RunPodDriverError(
+                            "remote smoke termination refused: "
+                            f"{termination.get('detail', 'process identity verification failed')}"
+                        )
+                    cleanup_authorized = True
                     status = "deadline_exceeded"
                     break
                 self._sleep(min(self.poll_interval_seconds, remaining))
@@ -1941,9 +1997,12 @@ class RunPodOrchestrationDriver:
             status = "failed"
             detail = str(exc)
         finally:
-            try:
-                cleanup = self._cleanup_smoke_namespace(namespace, scratch_root)
-            except RunPodDriverError:
+            if cleanup_authorized:
+                try:
+                    cleanup = self._cleanup_smoke_namespace(namespace, scratch_root)
+                except RunPodDriverError:
+                    cleanup = "failed"
+            else:
                 cleanup = "failed"
 
         protected_after = self._protected_path_content_digests(bundle, row)
@@ -2083,7 +2142,8 @@ class RunPodOrchestrationDriver:
         self._ssh(
             f"rm -rf -- {_sq(scratch_root)} && "
             f"rm -f -- {_sq(stem + '.started')} {_sq(stem + '.done')} "
-            f"{_sq(stem + '.failed')} {_sq(stem + '.pid')}"
+            f"{_sq(stem + '.failed')} {_sq(stem + '.pid')} "
+            f"{_sq(stem + '.process.json')}"
         )
         return "removed"
 
@@ -2095,7 +2155,11 @@ class RunPodOrchestrationDriver:
     ) -> DriverRowProbe:
         """Return one SSH probe report for a row."""
         report = parse_probe_report(
-            self._ssh(build_probe_command(self._remote_sentinel_dir(bundle), row.row_id)).stdout
+            self._ssh(
+                build_probe_command(
+                    self._remote_sentinel_dir(bundle), row.row_id, bundle.run_set_id
+                )
+            ).stdout
         )
         row_report = report.get("rows", {}).get(row.row_id, {})
         status = str(row_report.get("status", "pending"))
@@ -2103,6 +2167,7 @@ class RunPodOrchestrationDriver:
         return DriverRowProbe(
             status=status,
             pid=pid if isinstance(pid, int) else None,
+            process_identity=_process_identity_from_report(row_report),
             detail=row_report.get("detail"),
             metadata=report,
         )
@@ -2116,7 +2181,9 @@ class RunPodOrchestrationDriver:
         """Probe every unfinished row in one SSH round trip."""
         row_ids = [row.row_id for row in rows]
         report = parse_probe_report(
-            self._ssh(build_probe_command(self._remote_sentinel_dir(bundle), row_ids)).stdout
+            self._ssh(
+                build_probe_command(self._remote_sentinel_dir(bundle), row_ids, bundle.run_set_id)
+            ).stdout
         )
         result: dict[str, DriverRowProbe] = {}
         for row_id in row_ids:
@@ -2125,6 +2192,7 @@ class RunPodOrchestrationDriver:
             result[row_id] = DriverRowProbe(
                 status=str(row_report.get("status", "pending")),
                 pid=pid if isinstance(pid, int) else None,
+                process_identity=_process_identity_from_report(row_report),
                 detail=row_report.get("detail"),
                 metadata=report,
             )
@@ -2136,17 +2204,33 @@ class RunPodOrchestrationDriver:
         row: RunRowSpec,
         state: RunSetState,
     ) -> Mapping[str, Any]:
-        """Stop one row by PID and mark its failed sentinel."""
-        sentinel_dir = self._remote_sentinel_dir(bundle)
-        command = (
-            f"pid_file={_sq(sentinel_dir + '/' + row.row_id + '.pid')}; "
-            f"failed={_sq(sentinel_dir + '/' + row.row_id + '.failed')}; "
-            'if [ -f "$pid_file" ]; then pid=$(cat "$pid_file"); '
-            'kill "$pid" 2>/dev/null || true; fi; '
-            'touch "$failed"'
+        """Stop one row only after verifying its durable process-group identity."""
+        row_state = state.rows.get(row.row_id)
+        if row_state is None or row_state.process_identity is None:
+            raise RunPodDriverError(
+                f"refusing to signal remote row {row.row_id!r}: durable process identity is absent"
+            )
+        namespace = build_runpod_execution_namespace(
+            bundle=bundle,
+            row=row,
+            remote_run_dir=self._remote_run_dir(bundle),
+            remote_sentinel_dir=self._remote_sentinel_dir(bundle),
+            env_fingerprint=state.environment_fingerprint or "",
         )
-        self._ssh(command)
-        return {"row_id": row.row_id, "status": "stopped"}
+        command = build_bounded_remote_termination_command(namespace, row_state.process_identity)
+        result = self._ssh(command)
+        outcome = _json_object(result.stdout)
+        if outcome.get("status") not in {"stopped", "already-exited"}:
+            raise RunPodDriverError(
+                f"refusing to signal remote row {row.row_id!r}: "
+                f"{outcome.get('detail', 'process identity verification failed')}"
+            )
+        return {
+            "row_id": row.row_id,
+            "pid": row_state.process_identity.pid,
+            "status": "stopped",
+            "process_identity": row_state.process_identity.model_dump(mode="json"),
+        }
 
     def collect(
         self,
@@ -2637,6 +2721,7 @@ class RunPodOrchestrationDriver:
             auth
             + build_deadman_watchdog_command(
                 pod_id=self._pod_id,
+                run_set_id=bundle.run_set_id,
                 remote_run_dir=self._remote_run_dir(bundle),
                 remote_sentinel_dir=self._remote_sentinel_dir(bundle),
                 events_dir=self._remote_events_dir(bundle),
@@ -3096,7 +3181,7 @@ def _authenticated_row_training_spec(row: RunRowSpec) -> TrainingRunSpec | None:
         raise ValueError(
             f"training execution payload digest mismatch; expected={ref.sha256} actual={actual}"
         )
-    payload = json.loads(data)
+    payload = strict_json_loads(data)
     if not isinstance(payload, Mapping):
         raise ValueError("training execution payload must be a JSON object")
     if (
@@ -3492,8 +3577,8 @@ def validate_realized_runpod_environment_fingerprint(
 ) -> None:
     """Fail closed unless a realized fingerprint binds the declared environment."""
     try:
-        payload = json.loads(fingerprint)
-    except json.JSONDecodeError as exc:
+        payload = strict_json_loads(fingerprint)
+    except (json.JSONDecodeError, StrictJsonError) as exc:
         raise RunPodDriverError("realized RunPod environment probe returned invalid JSON") from exc
     declared_environment = environment_declaration_identity_projection(bundle.environment)
     expected = {
@@ -3742,6 +3827,110 @@ def _execution_row(row: RunRowSpec, namespace: RunPodExecutionNamespace) -> RunR
     )
 
 
+_REMOTE_PROCESS_IDENTITY_WRITE_SCRIPT = """
+import json
+import os
+import sys
+import tempfile
+
+path, run_set_id, row_id, pid_text, launch_token = sys.argv[1:]
+pid = int(pid_text)
+record = {
+    "schema_id": "feedbax.orchestration.process_identity",
+    "schema_version": "feedbax.orchestration.process_identity.v1",
+    "mechanism": "environment-token-v1",
+    "run_set_id": run_set_id,
+    "row_id": row_id,
+    "pid": pid,
+    "process_group_id": os.getpgid(pid),
+    "launch_token": launch_token,
+}
+fd, temporary = tempfile.mkstemp(prefix=".process-identity.", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(record, handle, sort_keys=True, separators=(",", ":"))
+        handle.write("\\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    directory = os.open(os.path.dirname(path), os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+""".strip()
+
+
+_REMOTE_PROCESS_IDENTITY_VERIFY_SCRIPT = """
+import json
+import os
+import sys
+
+identity_path, pid_path, run_set_id, row_id = sys.argv[1:]
+try:
+    with open(identity_path, encoding="utf-8") as handle:
+        identity = json.load(handle)
+    with open(pid_path, encoding="utf-8") as handle:
+        pid = int(handle.read().strip())
+    valid = (
+        identity.get("schema_id") == "feedbax.orchestration.process_identity"
+        and identity.get("schema_version") == "feedbax.orchestration.process_identity.v1"
+        and identity.get("mechanism") == "environment-token-v1"
+        and identity.get("run_set_id") == run_set_id
+        and identity.get("row_id") == row_id
+        and identity.get("pid") == pid
+        and isinstance(identity.get("process_group_id"), int)
+        and isinstance(identity.get("launch_token"), str)
+        and len(identity["launch_token"]) == 64
+    )
+    if not valid:
+        raise RuntimeError("identity record does not match run, row, or PID")
+    process_group_id = identity["process_group_id"]
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        leader_alive = False
+    except PermissionError:
+        leader_alive = True
+    else:
+        leader_alive = True
+    if leader_alive and os.getpgid(pid) != process_group_id:
+        raise RuntimeError("process group identity mismatch")
+    expected = f"FEEDBAX_PROCESS_IDENTITY={identity['launch_token']}".encode()
+    members = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        member_pid = int(name)
+        try:
+            stat = open(f"/proc/{member_pid}/stat", encoding="utf-8").read().split()
+            if len(stat) >= 3 and stat[2] != "Z" and os.getpgid(member_pid) == process_group_id:
+                members.append(member_pid)
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+    if not members:
+        raise RuntimeError("process group has no live members")
+    for member_pid in members:
+        with open(f"/proc/{member_pid}/environ", "rb") as handle:
+            environment = handle.read().split(b"\\0")
+        if expected not in environment:
+            raise RuntimeError(
+                f"process group member {member_pid} does not carry persisted launch identity"
+            )
+except Exception:
+    raise SystemExit(1)
+""".strip()
+
+
+def _remote_process_identity_path(namespace: RunPodExecutionNamespace) -> str:
+    return f"{namespace.sentinel_dir}/{namespace.sentinel_stem}.process.json"
+
+
 def build_launch_row_command(
     *,
     bundle: RunBundle,
@@ -3759,6 +3948,7 @@ def build_launch_row_command(
     failed_file = f"{stem}.failed"
     started_file = f"{stem}.started"
     pid_file = f"{stem}.pid"
+    process_identity_file = f"{stem}.process.json"
     log_file = namespace.log_path
     events_dir = namespace.events_dir
     row_dir = namespace.row_root
@@ -3782,6 +3972,17 @@ def build_launch_row_command(
     if row.launch.command:
         command_parts = _normalize_explicit_native_launch_command(command_parts)
     command = " ".join(shlex.quote(part) for part in command_parts)
+    launch_token = secrets.token_hex(32)
+    write_identity = (
+        f"python -c {_sq(_REMOTE_PROCESS_IDENTITY_WRITE_SCRIPT)} "
+        f"{_sq(process_identity_file)} {_sq(bundle.run_set_id)} "
+        f'{_sq(namespace.sentinel_stem)} "$$" {_sq(launch_token)}'
+    )
+    verify_identity = (
+        f"python -c {_sq(_REMOTE_PROCESS_IDENTITY_VERIFY_SCRIPT)} "
+        f"{_sq(process_identity_file)} {_sq(pid_file)} {_sq(bundle.run_set_id)} "
+        f"{_sq(namespace.sentinel_stem)}"
+    )
     inner = (
         f"cd {_sq(workdir)} && success=0; child=; "
         'mark_failed() { rc=$?; if [ -n "$child" ]; then kill "$child" 2>/dev/null || true; fi; '
@@ -3790,11 +3991,12 @@ def build_launch_row_command(
         f'touch {_sq(failed_file)}; exit "$rc"; }}; '
         "trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; "
         "trap 'signal_failed 129' HUP; "
-        f"echo $$ > {_sq(pid_file)} && "
         "export XLA_PYTHON_CLIENT_PREALLOCATE=false "
         f"JAX_COMPILATION_CACHE_DIR={_sq(jax_cache_dir)} "
+        f"FEEDBAX_PROCESS_IDENTITY={_sq(launch_token)} "
         + " ".join(f"{key}={_sq(value)}" for key, value in namespace.env_exports)
         + " && "
+        f"{write_identity} && echo $$ > {_sq(pid_file)} && "
         f'( {command} ) & child=$!; wait "$child"; rc=$?; child=; '
         f'if [ "$rc" -eq 0 ]; then success=1; touch {_sq(done_file)}; '
         f'else touch {_sq(failed_file)}; exit "$rc"; fi'
@@ -3813,32 +4015,116 @@ def build_launch_row_command(
         f"{_sq(events_dir)} {_sq(row_dir)} {_sq(jax_cache_dir)} && "
         f"if [ -f {_sq(done_file)} ] || [ -f {_sq(failed_file)} ]; then exit 0; fi && "
         f"if [ -f {_sq(started_file)} ]; then "
-        f"pid=$(cat {_sq(pid_file)} 2>/dev/null || true); "
-        'if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then exit 0; fi; '
-        f"echo 'orphaned launch: started sentinel present, process dead, "
-        f"no terminal sentinel' > {_sq(failed_file)}; exit 0; fi && "
+        f"if {verify_identity}; then exit 0; fi; "
+        f"echo 'refusing to adopt started row without verified process identity' "
+        f"> {_sq(failed_file)}; exit 0; fi && "
         f"{seed_command}"
-        f"rm -f {_sq(pid_file)} && touch {_sq(started_file)} && "
+        f"rm -f {_sq(pid_file)} {_sq(process_identity_file)} && "
+        f"touch {_sq(started_file)} && "
         f"setsid -f bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 && "
-        f'i=0; while [ ! -s {_sq(pid_file)} ] && [ "$i" -lt 40 ]; do '
+        f"i=0; while {{ [ ! -s {_sq(pid_file)} ] || "
+        f'[ ! -s {_sq(process_identity_file)} ]; }} && [ "$i" -lt 40 ]; do '
         "i=$((i+1)); sleep 0.05; done; "
-        f"[ -s {_sq(pid_file)} ]"
+        f"[ -s {_sq(pid_file)} ] && [ -s {_sq(process_identity_file)} ]"
     )
 
 
-def build_bounded_remote_termination_command(namespace: RunPodExecutionNamespace) -> str:
+_REMOTE_PROCESS_GROUP_STOP_SCRIPT = """
+import json
+import os
+import signal
+import sys
+import time
+
+identity_path, failed_path, expected_json = sys.argv[1:]
+expected = json.loads(expected_json)
+
+def emit(status, detail=None):
+    print(json.dumps({"status": status, "detail": detail}, sort_keys=True))
+
+try:
+    with open(identity_path, encoding="utf-8") as handle:
+        observed = json.load(handle)
+except Exception as exc:
+    emit("refused", f"process identity record is unreadable: {exc}")
+    raise SystemExit(0)
+if observed != expected:
+    emit("refused", "persisted process identity does not match durable run state")
+    raise SystemExit(0)
+pid = expected["pid"]
+process_group_id = expected["process_group_id"]
+try:
+    os.kill(pid, 0)
+except ProcessLookupError:
+    leader_alive = False
+except PermissionError:
+    leader_alive = True
+else:
+    leader_alive = True
+try:
+    if leader_alive and os.getpgid(pid) != process_group_id:
+        raise RuntimeError("process group identity mismatch")
+    token = f"FEEDBAX_PROCESS_IDENTITY={expected['launch_token']}".encode()
+    members = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        member_pid = int(name)
+        try:
+            stat = open(f"/proc/{member_pid}/stat", encoding="utf-8").read().split()
+            if len(stat) >= 3 and stat[2] != "Z" and os.getpgid(member_pid) == process_group_id:
+                members.append(member_pid)
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+    if not members:
+        open(failed_path, "a").close()
+        emit("already-exited")
+        raise SystemExit(0)
+    for member_pid in members:
+        with open(f"/proc/{member_pid}/environ", "rb") as handle:
+            environment = handle.read().split(b"\\0")
+        if token not in environment:
+            raise RuntimeError(
+                f"process group member {member_pid} does not carry persisted launch identity"
+            )
+except Exception as exc:
+    emit("refused", str(exc))
+    raise SystemExit(0)
+try:
+    os.killpg(process_group_id, signal.SIGTERM)
+except ProcessLookupError:
+    open(failed_path, "a").close()
+    emit("already-exited")
+    raise SystemExit(0)
+deadline = time.monotonic() + 1.0
+while time.monotonic() < deadline:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.05)
+else:
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+open(failed_path, "a").close()
+emit("stopped")
+""".strip()
+
+
+def build_bounded_remote_termination_command(
+    namespace: RunPodExecutionNamespace,
+    process_identity: ProcessIdentity,
+) -> str:
     """Build bounded process-group TERM-to-KILL escalation for a smoke deadline."""
     stem = f"{namespace.sentinel_dir}/{namespace.sentinel_stem}"
-    pid_file = f"{stem}.pid"
     return (
-        f"pid=$(cat {_sq(pid_file)} 2>/dev/null || true); "
-        'if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then '
-        'kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; '
-        'i=0; while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do '
-        "i=$((i+1)); sleep 0.05; done; "
-        'kill -KILL -- "-$pid" 2>/dev/null || '
-        'kill -KILL "$pid" 2>/dev/null || true; fi; '
-        f"touch {_sq(stem + '.failed')}"
+        f"python - {_sq(_remote_process_identity_path(namespace))} "
+        f"{_sq(stem + '.failed')} "
+        f"{_sq(process_identity.model_dump_json())} <<'PY'\n"
+        f"{_REMOTE_PROCESS_GROUP_STOP_SCRIPT}\n"
+        "PY"
     )
 
 
@@ -3846,6 +4132,7 @@ def build_remote_content_digest_command(paths: Mapping[str, str]) -> str:
     """Hash path names, entry kinds, symlink targets, and file bytes, not metadata."""
     script = r"""
 import hashlib,json,os,sys
+# Trusted internal command argument serialized by build_remote_content_digest_command.
 paths=json.loads(sys.argv[1])
 def digest(root):
     h=hashlib.sha256()
@@ -4043,7 +4330,11 @@ def runpod_driver_registration() -> DriverRegistration:
     )
 
 
-def build_probe_command(remote_sentinel_dir: str, row_ids: str | Sequence[str]) -> str:
+def build_probe_command(
+    remote_sentinel_dir: str,
+    row_ids: str | Sequence[str],
+    run_set_id: str,
+) -> str:
     """Build a compact remote probe command for one or more rows."""
     rows = [row_ids] if isinstance(row_ids, str) else list(row_ids)
     return (
@@ -4051,26 +4342,72 @@ def build_probe_command(remote_sentinel_dir: str, row_ids: str | Sequence[str]) 
         "import json, os, subprocess\n"
         f"sdir={remote_sentinel_dir!r}\n"
         f"rows={rows!r}\n"
+        f"run_set_id={run_set_id!r}\n"
         "gpu=subprocess.run(['bash','-lc','nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true'],capture_output=True,text=True).stdout.strip()\n"
         "reports={}\n"
         "for row in rows:\n"
         "    base=os.path.join(sdir,row)\n"
         "    pid=None\n"
+        "    identity=None\n"
+        "    identity_status='missing'\n"
+        "    identity_detail='process identity record is missing'\n"
         "    pid_path=base+'.pid'\n"
         "    if os.path.exists(pid_path):\n"
         "        try: pid=int(open(pid_path).read().strip())\n"
         "        except Exception: pid=None\n"
+        "    identity_path=base+'.process.json'\n"
+        "    if os.path.exists(identity_path):\n"
+        "        try:\n"
+        "            candidate=json.load(open(identity_path))\n"
+        "            required=(candidate.get('schema_id')=='feedbax.orchestration.process_identity' and candidate.get('schema_version')=='feedbax.orchestration.process_identity.v1' and candidate.get('mechanism')=='environment-token-v1' and candidate.get('run_set_id')==run_set_id and candidate.get('row_id')==row and isinstance(candidate.get('pid'),int) and candidate.get('pid')>0 and isinstance(candidate.get('process_group_id'),int) and candidate.get('process_group_id')>0 and isinstance(candidate.get('launch_token'),str) and len(candidate.get('launch_token'))==64)\n"
+        "            if required and candidate.get('pid')==pid:\n"
+        "                identity=candidate\n"
+        "                try:\n"
+        "                    os.kill(pid,0)\n"
+        "                    alive=True\n"
+        "                except ProcessLookupError: alive=False\n"
+        "                except PermissionError: alive=True\n"
+        "                if alive and os.getpgid(pid)!=candidate['process_group_id']:\n"
+        "                    identity_status='mismatch'\n"
+        "                    identity_detail='process group identity mismatch'\n"
+        "                else:\n"
+        "                    members=[]\n"
+        "                    for name in os.listdir('/proc'):\n"
+        "                        if not name.isdigit(): continue\n"
+        "                        member_pid=int(name)\n"
+        "                        try:\n"
+        "                            stat=open(f'/proc/{member_pid}/stat').read().split()\n"
+        "                            if len(stat)>=3 and stat[2]!='Z' and os.getpgid(member_pid)==candidate['process_group_id']: members.append(member_pid)\n"
+        "                        except (FileNotFoundError,ProcessLookupError,PermissionError): continue\n"
+        "                    expected=f\"FEEDBAX_PROCESS_IDENTITY={candidate['launch_token']}\".encode()\n"
+        "                    mismatched=[]\n"
+        "                    for member_pid in members:\n"
+        "                        env=open(f'/proc/{member_pid}/environ','rb').read().split(b'\\0')\n"
+        "                        if expected not in env: mismatched.append(member_pid)\n"
+        "                    if mismatched:\n"
+        "                        identity_status='mismatch'\n"
+        "                        identity_detail=f'process group members do not carry persisted launch identity: {mismatched}'\n"
+        "                    elif members:\n"
+        "                        identity_status='owned'\n"
+        "                        identity_detail=None\n"
+        "                    else:\n"
+        "                        identity_status='exited'\n"
+        "                        identity_detail='process group exited without terminal sentinel'\n"
+        "            else:\n"
+        "                identity_status='mismatch'\n"
+        "                identity_detail='process identity record does not match run, row, or PID'\n"
+        "        except Exception as exc:\n"
+        "            identity_status='unverifiable'\n"
+        "            identity_detail=f'process identity is unverifiable: {exc}'\n"
         "    status='pending'\n"
+        "    terminal_status=None\n"
         "    detail=None\n"
-        "    if os.path.exists(base+'.done'): status='completed'\n"
-        "    elif os.path.exists(base+'.failed'): status='failed'\n"
+        "    if os.path.exists(base+'.done'): status=terminal_status='completed'\n"
+        "    elif os.path.exists(base+'.failed'): status=terminal_status='failed'\n"
         "    elif os.path.exists(base+'.started'):\n"
-        "        if pid:\n"
-        "            alive=subprocess.run(['bash','-lc',f'kill -0 {pid} 2>/dev/null']).returncode==0\n"
-        "            status='running' if alive else 'failed'\n"
-        "            if not alive: detail='pid exited without sentinel'\n"
-        "        else: status='running'\n"
-        "    reports[row]={'status':status,'pid':pid,'detail':detail}\n"
+        "        status='running' if identity_status=='owned' else 'failed'\n"
+        "        if status=='failed': detail=identity_detail\n"
+        "    reports[row]={'status':status,'terminal_status':terminal_status,'pid':pid,'process_identity':identity,'identity_status':identity_status,'detail':detail}\n"
         "print(json.dumps({'gpu':gpu,'rows':reports}, sort_keys=True))\n"
         "PY"
     )
@@ -4081,9 +4418,22 @@ def parse_probe_report(output: str) -> dict[str, Any]:
     return _json_object(output or "{}")
 
 
+def _process_identity_from_report(report: Mapping[str, Any]) -> ProcessIdentity | None:
+    if report.get("identity_status") not in {"owned", "exited"}:
+        return None
+    payload = report.get("process_identity")
+    if not isinstance(payload, Mapping):
+        return None
+    try:
+        return ProcessIdentity.model_validate(payload)
+    except Exception:
+        return None
+
+
 def build_deadman_watchdog_command(
     *,
     pod_id: str,
+    run_set_id: str,
     remote_run_dir: str,
     remote_sentinel_dir: str,
     events_dir: str,
@@ -4092,9 +4442,21 @@ def build_deadman_watchdog_command(
     """Build the optional in-pod dead-man watchdog command."""
     warning = f"{remote_run_dir}/deadman-warning.txt"
     pid_file = f"{remote_run_dir}/deadman.pid"
+    identity_file = f"{remote_run_dir}/deadman.process.json"
     installed_file = f"{remote_run_dir}/deadman.installed"
+    launch_token = secrets.token_hex(32)
+    write_identity = (
+        f"python -c {_sq(_REMOTE_PROCESS_IDENTITY_WRITE_SCRIPT)} {_sq(identity_file)} "
+        f'{_sq(run_set_id)} deadman "$$" {_sq(launch_token)}'
+    )
+    verify_identity = (
+        f"python -c {_sq(_REMOTE_PROCESS_IDENTITY_VERIFY_SCRIPT)} {_sq(identity_file)} "
+        f"{_sq(pid_file)} {_sq(run_set_id)} deadman"
+    )
     script = (
-        f"echo $$ > {_sq(pid_file)}; : > {_sq(installed_file)}; "
+        f"export FEEDBAX_PROCESS_IDENTITY={_sq(launch_token)}; "
+        f"{write_identity} && echo $$ > {_sq(pid_file)} || exit 1; "
+        f": > {_sq(installed_file)}; "
         f"pod_id={_sq(pod_id)}; run_dir={_sq(remote_run_dir)}; "
         f"sdir={_sq(remote_sentinel_dir)}; edir={_sq(events_dir)}; "
         f"silence={int(silence_seconds)}; warning={_sq(warning)}; "
@@ -4119,8 +4481,8 @@ def build_deadman_watchdog_command(
     )
     return (
         f"pid_file={_sq(pid_file)}; "
-        'if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then exit 0; fi; '
-        'rm -f "$pid_file"; '
+        f"if {verify_identity}; then exit 0; fi; "
+        f'rm -f "$pid_file" {_sq(identity_file)}; '
         f"setsid -f bash -lc {_sq(script)} </dev/null "
         f">>{_sq(remote_run_dir + '/logs/deadman.log')} 2>&1; "
         'i=0; while [ ! -s "$pid_file" ] && [ "$i" -lt 40 ]; do '
@@ -4143,7 +4505,7 @@ def _registered_row_payload(row: RunRowSpec) -> dict[str, Any] | None:
     path = Path(ref.uri)
     if _sha256_file(path) != ref.sha256:
         raise RunPodDriverError(f"registered payload digest mismatch for row {row.row_id!r}")
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = strict_json_loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise RunPodDriverError("registered row payload must be a JSON object")
     if (
@@ -4188,8 +4550,8 @@ def _iter_structured_error_messages(text: str) -> Iterable[str]:
         if not line:
             continue
         try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
+            payload = strict_json_loads(line)
+        except (json.JSONDecodeError, StrictJsonError):
             continue
         if isinstance(payload, Mapping):
             message = payload.get("error")
@@ -4225,8 +4587,8 @@ def _classify_create_failure(
     if _is_no_capacity_create_response(stdout, stderr):
         return "non-retryable", detail
     try:
-        payload = json.loads(result.stdout or result.stderr)
-    except json.JSONDecodeError:
+        payload = strict_json_loads(result.stdout or result.stderr)
+    except (json.JSONDecodeError, StrictJsonError):
         payload = None
     if isinstance(payload, Mapping):
         code = str(payload.get("statusCode") or payload.get("code") or "").lower()
@@ -4278,8 +4640,8 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> tuple[str, str]:
 
 def _json_object(payload: str) -> dict[str, Any]:
     try:
-        loaded = json.loads(payload)
-    except json.JSONDecodeError as exc:
+        loaded = strict_json_loads(payload)
+    except (json.JSONDecodeError, StrictJsonError) as exc:
         raise RunPodDriverError(f"invalid JSON payload: {exc}") from exc
     if isinstance(loaded, Mapping):
         return dict(loaded)
@@ -4288,7 +4650,7 @@ def _json_object(payload: str) -> dict[str, Any]:
 
 def _parse_runpod_pod_inventory(payload: str) -> tuple[ProviderPodInventoryRecord, ...]:
     """Parse supported inventory shapes without discarding provider pod names."""
-    loaded = json.loads(payload)
+    loaded = strict_json_loads(payload)
     if isinstance(loaded, list):
         pods = loaded
     elif isinstance(loaded, Mapping):

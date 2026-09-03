@@ -1,0 +1,1252 @@
+{
+  "schema_id": "feedbax.external_conformance.policy_manifest",
+  "schema_version": "feedbax.external_conformance.policy_manifest.v2",
+  "policy_id": "feedbax.downstream-interface-stability.v1",
+  "effective_release": "0.2.0",
+  "protocol": {
+    "current": 1,
+    "minimum": 1
+  },
+  "guaranteed_rows": [
+    {
+      "row_id": "plugin-bootstrap",
+      "case_ids": [
+        "unified_plugin_bootstrap"
+      ],
+      "plugin_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.plugins",
+            "public_names": [
+              "DOWNSTREAM_INTERFACE_POLICY_ID",
+              "DOWNSTREAM_PROTOCOL_CURRENT",
+              "DOWNSTREAM_PROTOCOL_MINIMUM",
+              "DOWNSTREAM_POLICY_EFFECTIVE_RELEASE",
+              "UnsupportedDownstreamProtocolVersion",
+              "validate_downstream_protocol_version",
+              "BootstrapError",
+              "BootstrapErrorCode",
+              "BootstrapState",
+              "FamilyRequirement",
+              "PluginDeclaration",
+              "PluginDependency",
+              "PluginProvenance",
+              "PluginRegistration",
+              "RegistrationContext",
+              "RegistryKey",
+              "RegistryFamilyRegistration",
+              "bootstrap_application",
+              "discover_plugin_registrations",
+              "new_registration_context",
+              "DRIVERS",
+              "APPLICATION_REGISTRY_KEYS",
+              "ApplicationRegistryBundle",
+              "TrainingProgramCatalog",
+              "COMPONENTS",
+              "TRAINING_PROGRAMS",
+              "ANALYSIS_RECIPES",
+              "EVALUATION_RECIPES",
+              "EVALUATION_BATCH_CONSUMERS",
+              "EVALUATION_PRODUCT_UNION_FINALIZERS",
+              "DeclaredTrainingProgram",
+              "TrainingProgramDeclaration",
+              "TrainingProgramRuntimeFacet",
+              "TrainingProgramAuthoringFacet",
+              "TrainingProgramPreparationFacet",
+              "TrainingProgramProjectionFacet",
+              "TrainingProgramRowLoweringFacet",
+              "declare_training_program",
+              "TrainingMethodAuthoringContribution",
+              "TrainingMethodAuthoringHook",
+              "TrainingMethodMetadataProjector",
+              "TrainingMethodScheduleProjector",
+              "TrainingProgramRegistry",
+              "ExecutionPreparationProvider",
+              "ExecutionPreparationRequest",
+              "ExecutionPreparationResult",
+              "ExecutionPreparationPlan",
+              "compile_training_method_authoring",
+              "AnalysisRecipe",
+              "AnalysisRecipeRegistry",
+              "AnalysisRecipeResult",
+              "EvaluationRecipe",
+              "EvaluationRecipeRegistry",
+              "EvaluationRecipeResult",
+              "EvaluationBatchRecipe",
+              "EvaluationAuthoringSchema",
+              "EvaluationBatchItem",
+              "EvaluationBatchRowError",
+              "EvaluationStatesStructureProviderProtocol",
+              "StagedExecutionContext",
+              "EMPTY_STAGED_EXECUTION_CONTEXT",
+              "EvaluationBatchConsumer",
+              "EvaluationBatchConsumerRegistry",
+              "EvaluationBatchConsumerInput",
+              "EvaluationBatchMergeInput",
+              "EvaluationBatchMergeState",
+              "EvaluationBatchFinalizeInput",
+              "EvaluationBatchFragment",
+              "EvaluationCompactProductUnionFinalizerRegistry",
+              "EvaluationCompactProductUnionInput"
+            ]
+          }
+        ],
+        "direct_entrypoint_imports": [
+          "EVALUATION_RECIPES",
+          "FamilyRequirement",
+          "PluginDeclaration",
+          "PluginDependency",
+          "PluginRegistration",
+          "RegistrationContext",
+          "ANALYSIS_RECIPES",
+          "EVALUATION_BATCH_CONSUMERS",
+          "EVALUATION_PRODUCT_UNION_FINALIZERS",
+          "TRAINING_PROGRAMS"
+        ],
+        "families": [
+          {
+            "key": "training_programs",
+            "registry_type": "TrainingProgramCatalog",
+            "registry_methods": [
+              "register_program",
+              "resolve",
+              "validate_payload",
+              "resolve_execution"
+            ],
+            "callback_types": [
+              "DeclaredTrainingProgram"
+            ],
+            "support_types": [
+              "TrainingProgramDeclaration",
+              "TrainingProgramRuntimeFacet",
+              "TrainingProgramAuthoringFacet",
+              "TrainingProgramPreparationFacet",
+              "TrainingProgramProjectionFacet",
+              "TrainingProgramRowLoweringFacet",
+              "ExecutionPreparationRequest",
+              "ExecutionPreparationResult",
+              "ExecutionPreparationPlan"
+            ],
+            "public_consumers": [
+              "feedbax.training.authoring:compile_training_method_authoring"
+            ]
+          },
+          {
+            "key": "analysis_recipes",
+            "registry_type": "AnalysisRecipeRegistry",
+            "registry_methods": [
+              "register",
+              "get",
+              "structure_provider"
+            ],
+            "callback_types": [
+              "AnalysisRecipe"
+            ],
+            "support_types": [
+              "AnalysisRecipeResult",
+              "EvaluationStatesStructureProviderProtocol"
+            ],
+            "public_consumers": [
+              "feedbax.analysis:resolve_analysis_inputs",
+              "feedbax.analysis:execute_analysis_run_spec"
+            ]
+          },
+          {
+            "key": "evaluation_recipes",
+            "registry_type": "EvaluationRecipeRegistry",
+            "registry_methods": [
+              "register",
+              "register_authoring_schema",
+              "get",
+              "batch"
+            ],
+            "callback_types": [
+              "EvaluationRecipe",
+              "EvaluationBatchRecipe"
+            ],
+            "support_types": [
+              "EvaluationRecipeResult",
+              "EvaluationAuthoringSchema",
+              "EvaluationBatchItem",
+              "EvaluationBatchRowError",
+              "StagedExecutionContext",
+              "EMPTY_STAGED_EXECUTION_CONTEXT"
+            ],
+            "public_consumers": [
+              "feedbax.analysis.evaluation:compile_evaluation_run_matrix",
+              "feedbax.analysis.evaluation:execute_evaluation_run_matrix",
+              "feedbax.analysis.evaluation:execute_evaluation_run_spec"
+            ]
+          },
+          {
+            "key": "evaluation_batch_consumers",
+            "registry_type": "EvaluationBatchConsumerRegistry",
+            "registry_methods": [
+              "register",
+              "get"
+            ],
+            "callback_types": [
+              "EvaluationBatchConsumer"
+            ],
+            "support_types": [
+              "EvaluationBatchConsumerInput",
+              "EvaluationBatchMergeInput",
+              "EvaluationBatchMergeState",
+              "EvaluationBatchFinalizeInput",
+              "EvaluationBatchFragment"
+            ],
+            "public_consumers": [
+              "feedbax.analysis.evaluation_compaction:compact_evaluation_batch",
+              "feedbax.analysis.evaluation_compaction:merge_evaluation_batch_fragment",
+              "feedbax.analysis.evaluation_compaction:reclaim_evaluation_batch_caches",
+              "feedbax.analysis.evaluation_compaction:publish_evaluation_compaction_products"
+            ]
+          },
+          {
+            "key": "evaluation_product_union_finalizers",
+            "registry_type": "EvaluationCompactProductUnionFinalizerRegistry",
+            "registry_methods": [
+              "register",
+              "get"
+            ],
+            "callback_types": [],
+            "support_types": [
+              "EvaluationCompactProductUnionInput"
+            ],
+            "public_consumers": [
+              "feedbax.analysis.evaluation_product_union:finalize_evaluation_compact_product_union"
+            ]
+          }
+        ]
+      },
+      "schemas": {
+        "current": [
+          "feedbax.plugin.declaration.v2"
+        ],
+        "migrated": [],
+        "rejected": [
+          "feedbax.plugin.declaration.v1"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.plugins",
+            "public_names": [
+              "DOWNSTREAM_INTERFACE_POLICY_ID",
+              "DOWNSTREAM_PROTOCOL_CURRENT",
+              "DOWNSTREAM_PROTOCOL_MINIMUM",
+              "DOWNSTREAM_POLICY_EFFECTIVE_RELEASE",
+              "UnsupportedDownstreamProtocolVersion",
+              "validate_downstream_protocol_version",
+              "BootstrapError",
+              "BootstrapErrorCode",
+              "BootstrapState",
+              "FamilyRequirement",
+              "PluginDeclaration",
+              "PluginDependency",
+              "PluginProvenance",
+              "PluginRegistration",
+              "RegistrationContext",
+              "RegistryKey",
+              "RegistryFamilyRegistration",
+              "bootstrap_application",
+              "discover_plugin_registrations",
+              "new_registration_context",
+              "DRIVERS",
+              "APPLICATION_REGISTRY_KEYS",
+              "ApplicationRegistryBundle",
+              "TrainingProgramCatalog",
+              "COMPONENTS",
+              "TRAINING_PROGRAMS",
+              "ANALYSIS_RECIPES",
+              "EVALUATION_RECIPES",
+              "EVALUATION_BATCH_CONSUMERS",
+              "EVALUATION_PRODUCT_UNION_FINALIZERS",
+              "DeclaredTrainingProgram",
+              "TrainingProgramDeclaration",
+              "TrainingProgramRuntimeFacet",
+              "TrainingProgramAuthoringFacet",
+              "TrainingProgramPreparationFacet",
+              "TrainingProgramProjectionFacet",
+              "TrainingProgramRowLoweringFacet",
+              "declare_training_program",
+              "TrainingMethodAuthoringContribution",
+              "TrainingMethodAuthoringHook",
+              "TrainingMethodMetadataProjector",
+              "TrainingMethodScheduleProjector",
+              "TrainingProgramRegistry",
+              "ExecutionPreparationProvider",
+              "ExecutionPreparationRequest",
+              "ExecutionPreparationResult",
+              "ExecutionPreparationPlan",
+              "compile_training_method_authoring",
+              "AnalysisRecipe",
+              "AnalysisRecipeRegistry",
+              "AnalysisRecipeResult",
+              "EvaluationRecipe",
+              "EvaluationRecipeRegistry",
+              "EvaluationRecipeResult",
+              "EvaluationBatchRecipe",
+              "EvaluationAuthoringSchema",
+              "EvaluationBatchItem",
+              "EvaluationBatchRowError",
+              "EvaluationStatesStructureProviderProtocol",
+              "StagedExecutionContext",
+              "EMPTY_STAGED_EXECUTION_CONTEXT",
+              "EvaluationBatchConsumer",
+              "EvaluationBatchConsumerRegistry",
+              "EvaluationBatchConsumerInput",
+              "EvaluationBatchMergeInput",
+              "EvaluationBatchMergeState",
+              "EvaluationBatchFinalizeInput",
+              "EvaluationBatchFragment",
+              "EvaluationCompactProductUnionFinalizerRegistry",
+              "EvaluationCompactProductUnionInput"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "orchestration-driver",
+      "case_ids": [
+        "external_driver_plugin"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.orchestration.driver-capabilities version 3",
+          "feedbax.spec.deployment_policy.v2",
+          "feedbax.spec.run_assembly_request.v7",
+          "feedbax.orchestration.run_bundle.v12"
+        ],
+        "migrated": [
+          "feedbax.spec.deployment_policy.v1",
+          "feedbax.orchestration.run_bundle.v11"
+        ],
+        "rejected": [
+          "feedbax.orchestration.driver-capabilities version 1",
+          "feedbax.orchestration.driver-capabilities version 2",
+          "older unsupported request and bundle versions",
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.orchestration.drivers",
+            "public_names": [
+              "DriverAuthority",
+              "DriverCapabilityEnvelope",
+              "DriverCapabilityFacts",
+              "DriverConstructionContext",
+              "DriverHook",
+              "DriverRegistration",
+              "DriverRegistry",
+              "DriverStage",
+              "DriverVenue",
+              "RealizedDriverCapabilities"
+            ]
+          },
+          {
+            "namespace": "feedbax.plugins",
+            "public_names": [
+              "DRIVERS",
+              "ApplicationRegistryBundle"
+            ]
+          },
+          {
+            "namespace": "feedbax.orchestration.bundle",
+            "public_names": [
+              "DeploymentPolicy",
+              "RunBundle"
+            ]
+          },
+          {
+            "namespace": "feedbax.orchestration.assembly",
+            "public_names": [
+              "RunAssemblyRequest"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "orchestration-lifecycle",
+      "case_ids": [
+        "public_lifecycle_recovery",
+        "custody_persistence_recovery"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.orchestration.run_set_state.v5",
+          "feedbax.manifest.training_run_certification.v1"
+        ],
+        "migrated": [
+          "absent completed",
+          "absent cancelled"
+        ],
+        "rejected": [
+          "feedbax.orchestration.run_set_state.v0",
+          "feedbax.orchestration.run_set_state.v1",
+          "feedbax.orchestration.run_set_state.v2",
+          "feedbax.orchestration.run_set_state.v3",
+          "feedbax.orchestration.run_set_state.v4",
+          "feedbax.manifest.training_run_certification.v0",
+          "absent failed"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.orchestration",
+            "public_names": [
+              "RunIntent",
+              "EffectReservation",
+              "ControllerEvent",
+              "ControllerProjection",
+              "ControllerEventStore",
+              "ProviderInventoryObservation",
+              "OrphanHandlingPolicy",
+              "DurableController",
+              "RunSetState",
+              "RunSetStateStore",
+              "StageEngine"
+            ]
+          }
+        ],
+        "cli": []
+      },
+      "obligations": [
+        {
+          "kind": "durable-nested-schema",
+          "schema": "feedbax.manifest.training_run_certification.v1",
+          "container": "TrainingRunManifest",
+          "migration": "legacy completed and cancelled manifests project deterministically",
+          "rejection": "legacy failed and nonterminal manifests reject because terminal meaning is ambiguous",
+          "evidence": [
+          "tests/test_material_dependencies.py"
+          ]
+        }
+      ]
+    },
+    {
+      "row_id": "ordered-lowering",
+      "case_ids": [
+        "ordered_registration"
+      ],
+      "schemas": {
+        "current": [],
+        "migrated": [],
+        "rejected": []
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.lowering",
+            "public_names": [
+              "LowererRegistration",
+              "LoweredContribution",
+              "LowererExecutionError",
+              "OrderedLowererRegistry"
+            ]
+          },
+          {
+            "namespace": "feedbax",
+            "public_names": [
+              "LowererRegistration",
+              "LoweredContribution",
+              "LowererExecutionError",
+              "OrderedLowererRegistry"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "component-registration",
+      "case_ids": [
+        "component_registration_and_migration",
+        "dynamic_component_ports"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.spec.component_definition.v3"
+        ],
+        "migrated": [
+          "feedbax.spec.component_definition.v1",
+          "feedbax.spec.component_definition.v2"
+        ],
+        "rejected": [
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.component_registry",
+            "public_names": [
+              "ComponentBuilder",
+              "DeclaredComponent",
+              "declare_component",
+              "ComponentResolution",
+              "ComponentRegistry",
+              "ComponentMigration",
+              "ComponentMigrationPack"
+            ]
+          }
+        ],
+        "cli": []
+      },
+      "obligations": [
+        {
+          "kind": "behavioral-case",
+          "case_id": "dynamic_component_ports",
+          "protects": "dynamic port layout is derived only from declared component policy and parameters"
+        }
+      ]
+    },
+    {
+      "row_id": "structured-migrations",
+      "case_ids": [
+        "component_registration_and_migration",
+        "component_param_array_values"
+      ],
+      "schemas": {
+        "current": [],
+        "migrated": [],
+        "rejected": []
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.contracts.migrations",
+            "public_names": [
+              "SchemaMigration",
+              "SpecSchemaFamily",
+              "SpecFamilyMigrationPolicy",
+              "SpecMigrationResult",
+              "SpecSchemaRegistry",
+              "UnknownSpecFamily",
+              "UnsupportedMigrationPath",
+              "UnsupportedSpecVersion",
+              "MissingComponentOwner",
+              "UnsupportedComponentMigration",
+              "default_spec_registry",
+              "migrate_structured_spec_payload",
+              "migrate_graph_spec"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "graph-spec",
+      "case_ids": [
+        "component_param_array_values"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.spec.graph.v5",
+          "feedbax.workspace_document version 1"
+        ],
+        "migrated": [
+          "1.0.0",
+          "feedbax.spec.graph.v2",
+          "feedbax.spec.graph.v3",
+          "feedbax.spec.graph.v4"
+        ],
+        "rejected": [
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.contracts.graph",
+            "public_names": [
+              "ComponentSpec",
+              "GraphProject",
+              "GraphSpec",
+              "ParamSchema",
+              "ParamValue",
+              "SemanticAnchor",
+              "StudioValueSpec",
+              "WireSpec",
+              "WorkspaceDocument"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "graph-compiler",
+      "case_ids": [
+        "component_param_array_values",
+        "dynamic_component_ports"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.graph_document version 1",
+          "feedbax.resolved_graph version 2",
+          "feedbax.graph_compilation_record version 2"
+        ],
+        "migrated": [
+          "GraphSpec 1.0.0 through feedbax.spec.graph.v4"
+        ],
+        "rejected": [
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.compiler",
+            "public_names": [
+              "GraphDocument",
+              "DocumentRoot",
+              "ResolvedGraph",
+              "ExecutableGraph",
+              "CompilationRecord",
+              "GraphSourceMap",
+              "GraphSourceMapEntry",
+              "GraphKeySchedule",
+              "compile_graph"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "value-identity",
+      "case_ids": [
+        "value_identity"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.value_identity.v1"
+        ],
+        "migrated": [],
+        "rejected": [
+          "feedbax.value_identity.v0",
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.contracts.value_identity",
+            "public_names": [
+              "ValueIdentityRecord",
+              "authored_value_sha256",
+              "semantic_value_sha256",
+              "realization_value_sha256",
+              "value_identity_record"
+            ]
+          },
+          {
+            "namespace": "feedbax.contracts",
+            "public_names": [
+              "ValueIdentityRecord",
+              "authored_value_sha256",
+              "semantic_value_sha256",
+              "realization_value_sha256",
+              "value_identity_record"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "material-admission",
+      "case_ids": [
+        "material_dependencies"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.spec.material_dependencies.v1",
+          "feedbax.spec.admission_waiver.v1"
+        ],
+        "migrated": [],
+        "rejected": [
+          "feedbax.spec.material_dependencies.v0",
+          "feedbax.spec.admission_waiver.v0",
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.contracts.material_dependencies",
+            "public_names": [
+              "AdmissionWaiver",
+              "MaterialDependency",
+              "MaterialDependencySet",
+              "MaterialDependencyValue",
+              "validate_material_dependency_admission"
+            ]
+          },
+          {
+            "namespace": "feedbax.contracts",
+            "public_names": [
+              "AdmissionWaiver",
+              "MaterialDependency",
+              "MaterialDependencySet",
+              "MaterialDependencyValue",
+              "validate_material_dependency_admission"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "custody-persistence",
+      "case_ids": [
+        "custody_persistence_recovery"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.orchestration.run_set_state.v5"
+        ],
+        "migrated": [],
+        "rejected": [
+          "feedbax.orchestration.run_set_state.v0",
+          "feedbax.orchestration.run_set_state.v1",
+          "feedbax.orchestration.run_set_state.v2",
+          "feedbax.orchestration.run_set_state.v3",
+          "feedbax.orchestration.run_set_state.v4"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.orchestration",
+            "public_names": [
+              "PrimaryStatePersistenceError",
+              "CustodyPreservationRequired",
+              "RunSetState",
+              "RunSetStateStore",
+              "StageEngine"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "emergency-persistence",
+      "case_ids": [
+        "custody_persistence_recovery"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.orchestration.emergency_run_set_record.v1"
+        ],
+        "migrated": [],
+        "rejected": [
+          "feedbax.orchestration.emergency_run_set_record.v0",
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.orchestration",
+            "public_names": [
+              "ControlFilesystemPreflightError",
+              "EmergencyRunSetRecord",
+              "RunSetStateStore"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "result-role-binding",
+      "case_ids": [
+        "custody_persistence_recovery"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.external_conformance.result.v14"
+        ],
+        "migrated": [
+          "feedbax.external_conformance.result.v1 to v2 normalization before rejection"
+        ],
+        "rejected": [
+          "feedbax.external_conformance.result.v2",
+          "feedbax.external_conformance.result.v3-v6",
+          "feedbax.external_conformance.result.v7",
+          "feedbax.external_conformance.result.v8",
+          "feedbax.external_conformance.result.v9",
+          "feedbax.external_conformance.result.v10",
+          "feedbax.external_conformance.result.v11",
+          "feedbax.external_conformance.result.v12",
+          "feedbax.external_conformance.result.v13",
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax_external_conformance",
+            "public_names": [
+              "REQUIRED_CASE_IDS",
+              "V10_REQUIRED_CASE_IDS",
+              "V11_REQUIRED_CASE_IDS",
+              "V12_REQUIRED_CASE_IDS",
+              "V13_REQUIRED_CASE_IDS",
+              "ConformanceResult",
+              "ProtocolRoleSlots",
+              "load_result"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "array-values",
+      "case_ids": [
+        "component_param_array_values"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.spec.component_param.array_value.v1"
+        ],
+        "migrated": [],
+        "rejected": [
+          "partial tags",
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.contracts.array_values",
+            "public_names": [
+              "ArrayValueSpec",
+              "ConstantArrayValueSpec",
+              "SparseCooArrayValueSpec",
+              "SparseCooEntrySpec",
+              "materialize_array_value"
+            ]
+          },
+          {
+            "namespace": "feedbax.contracts",
+            "public_names": [
+              "ArrayValueSpec",
+              "ConstantArrayValueSpec",
+              "SparseCooArrayValueSpec",
+              "SparseCooEntrySpec",
+              "materialize_array_value"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "figure-composition",
+      "case_ids": [
+        "figure_composition_public_contract"
+      ],
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.contracts.figures",
+            "public_names": [
+              "FigureCompositionDelta",
+              "SameSchemaStructuralAddition",
+              "FigureCompositionSpec",
+              "FigureCompositionProvenance",
+              "FigureCompositionSourceRecord",
+              "ResolvedFigureSpec",
+              "FigureRuntimeBindingSpec",
+              "FigureSpec"
+            ]
+          },
+          {
+            "namespace": "feedbax.analysis.figures",
+            "public_names": [
+              "resolve_figure_spec",
+              "coerce_figure_spec"
+            ]
+          },
+          {
+            "namespace": "feedbax.analysis.bundles",
+            "public_names": [
+              "BundleStageSpec",
+              "AnalysisBundleSpec",
+              "execute_staged_analysis_bundle"
+            ]
+          },
+          {
+            "namespace": "feedbax.contracts.matrix_core",
+            "public_names": [
+              "ContentPinnedJsonBase",
+              "SourceDocumentInheritance",
+              "materialize_inherited_document",
+              "load_content_pinned_json_base"
+            ]
+          },
+          {
+            "namespace": "feedbax.contracts.run_matrix",
+            "public_names": [
+              "MatrixCompositionDelta",
+              "apply_composition_deltas"
+            ]
+          }
+        ],
+        "cli": [
+          "feedbax-figure resolve",
+          "feedbax-figure resolve --with-lineage"
+        ]
+      },
+      "semantics": [
+        "resolved ordinary FigureSpec v2 identity remains separate from authored composition and provenance identity",
+        "provenance retains ordered full-chain source custody and qualified unique layer attribution",
+        "BundleStageSpec.figure admits composition and staged bundle execution resolves only beneath its trusted repo_root",
+        "FigureRuntimeBindingSpec v2 separates authored_figure_source_sha256 from resolved_figure_spec_sha256",
+        "Studio rejects composition without a server-owned root using figure_composition_not_supported_in_studio",
+        "ContentPinnedJsonBase payload_path and SourceDocumentInheritance share canonical list-index rules and graft only absent targets",
+        "MatrixCompositionDelta acknowledgement must overlap both the ancestor-written path and the current patch path",
+        "FigureCompositionSpec v2 owns FigureCompositionDelta structural declarations and migrates v1 without changing resolved semantics",
+        "SameSchemaStructuralAddition declarations must exactly cover every typed path introduced by an add subtree; feedbax.spec.figure_panel.v1 is declaration-side identity only and never changes resolved PanelSpec bytes"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.spec.figure.v2",
+          "feedbax.spec.figure_composition.v2",
+          "feedbax.spec.figure_composition_provenance.v1",
+          "feedbax.spec.figure_runtime_binding.v2",
+          "feedbax.spec.analysis_bundle.v6",
+          "feedbax.spec.source_document_inheritance.v1"
+        ],
+        "migrated": [
+          "feedbax.spec.figure_composition.v1",
+          "feedbax.spec.figure_runtime_binding.v1",
+          "feedbax.spec.analysis_bundle.v5"
+        ],
+        "rejected": [
+          "feedbax.spec.figure.v1",
+          "feedbax.spec.figure_composition.v0",
+          "feedbax.spec.figure_composition_provenance.v0",
+          "feedbax.spec.figure_runtime_binding.v0",
+          "feedbax.spec.source_document_inheritance.v0",
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered"
+    },
+    {
+      "row_id": "figure-role-references",
+      "case_ids": [
+        "figure_role_reference_public_contract"
+      ],
+      "schemas": {
+        "current": [
+          "feedbax.spec.authenticated_row_index.v1",
+          "feedbax.spec.row_index_custody_bindings.v2",
+          "feedbax.spec.resolved_row_set.v1",
+          "feedbax.spec.figure_row_expansion_request.v1",
+          "feedbax.spec.resolved_figure_inputs.v1",
+          "feedbax.spec.experiment_envelope_compile_result.v1"
+        ],
+        "migrated": [],
+        "rejected": [
+          "feedbax.spec.authenticated_row_index.v0",
+          "feedbax.spec.row_index_custody_bindings.v0",
+          "feedbax.spec.row_index_custody_bindings.v1",
+          "feedbax.spec.resolved_row_set.v0",
+          "feedbax.spec.figure_row_expansion_request.v0",
+          "feedbax.spec.resolved_figure_inputs.v0",
+          "feedbax.spec.experiment_envelope_compile_result.v0",
+          "unknown"
+        ]
+      },
+      "coverage_status": "covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.contracts.row_index",
+            "public_names": [
+              "migrate_row_index_custody_payload",
+              "AuthenticatedRowIndex",
+              "RowIndexEntry",
+              "RowIndexCustodyBindings",
+              "RowCustodyBinding",
+              "ResolvedRowSet",
+              "RowSetSelector",
+              "AllRowsSelector",
+              "TagRowsSelector",
+              "RowSelectionError",
+              "RowSelectionErrorCode",
+              "expand_row_selector",
+              "normalize_row_tags",
+              "derive_row_label"
+            ]
+          },
+          {
+            "namespace": "feedbax.contracts.figure_roles",
+            "public_names": [
+              "FigureRowExpansionRequest",
+              "FigureRoleBindingContract",
+              "FigureRoleReferenceError",
+              "PerRowInputReference",
+              "SharedInputReference",
+              "ResolvedFigureInput",
+              "ResolvedFigureInputs",
+              "resolve_figure_input_roles",
+              "expand_figure_rows",
+              "row_namespace"
+            ]
+          },
+          {
+            "namespace": "feedbax.contracts.experiment_envelope",
+            "public_names": [
+              "ExperimentEnvelopeCompileRequest",
+              "ExperimentEnvelopeCompileResult",
+              "ExperimentEnvelopeRejection",
+              "ExperimentEnvelopeRejectionCategory",
+              "dispatch_experiment_envelope",
+              "require_builtin_envelope_schema"
+            ]
+          }
+        ],
+        "cli": []
+      }
+    },
+    {
+      "row_id": "report-surface",
+      "case_ids": [],
+      "schemas": {
+        "current": [
+          "feedbax.spec.report.v1",
+          "feedbax.manifest.v1",
+          "feedbax.spec.report.ordered_figure.v3"
+        ],
+        "migrated": [],
+        "rejected": [
+          "feedbax.spec.report.v0",
+          "feedbax.manifest.report.v0",
+          "feedbax.spec.report.ordered_figure.v1",
+          "feedbax.spec.report.ordered_figure.v2",
+          "unknown"
+        ]
+      },
+      "coverage_status": "not-external-covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.contracts.manifest",
+            "public_names": [
+              "ReportSpec",
+              "ReportManifest",
+              "report_manifest_id",
+              "spec_identity_preimage"
+            ]
+          },
+          {
+            "namespace": "feedbax.analysis.reports",
+            "public_names": [
+              "ORDERED_FIGURE_REPORT_TYPE",
+              "ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_ID",
+              "ORDERED_FIGURE_REPORT_PARAMS_SCHEMA_VERSION",
+              "OrderedFigureReportParams",
+              "OrderedFigureReportSection",
+              "OrderedFigureReportFigure",
+              "ReportRecipeRegistry",
+              "ReportRecipeResult",
+              "ReportRecipeExecutionError",
+              "coerce_report_spec",
+              "execute_report_spec",
+              "execute_authored_report_spec"
+            ]
+          }
+        ],
+        "cli": [
+          "feedbax-analysis report"
+        ]
+      }
+    },
+    {
+      "row_id": "evaluation-surface",
+      "case_ids": [],
+      "schemas": {
+        "current": [
+          "feedbax.spec.evaluation_run.v1",
+          "feedbax.spec.evaluation_run_matrix.v3"
+        ],
+        "migrated": [
+          "feedbax.spec.evaluation_run_matrix.v1",
+          "feedbax.spec.evaluation_run_matrix.v2"
+        ],
+        "rejected": [
+          "feedbax.spec.evaluation_run.v0",
+          "feedbax.spec.evaluation_run_matrix.v0",
+          "unknown"
+        ]
+      },
+      "coverage_status": "not-external-covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.contracts.manifest",
+            "public_names": [
+              "EvaluationRunSpec",
+              "EvaluationRunManifest",
+              "evaluation_run_manifest_id"
+            ]
+          },
+          {
+            "namespace": "feedbax.analysis.evaluation",
+            "public_names": [
+              "EvaluationRunMatrixSpec",
+              "EvaluationRecipeRegistry",
+              "EvaluationRecipeResult",
+              "EvaluationBatchExecution",
+              "coerce_evaluation_run_spec",
+              "resolve_evaluation_matrix_authoring",
+              "compile_evaluation_run_matrix",
+              "materialize_evaluation_run_matrix",
+              "execute_evaluation_run_matrix",
+              "execute_evaluation_run_spec"
+            ]
+          }
+        ],
+        "cli": [
+          "feedbax-analysis evaluate"
+        ]
+      }
+    },
+    {
+      "row_id": "analysis-authoring",
+      "case_ids": [],
+      "schemas": {
+        "current": [
+          "feedbax.spec.analysis_run.v2",
+          "feedbax.spec.analysis_bundle.v6"
+        ],
+        "migrated": [
+          "feedbax.spec.analysis_run.v1",
+          "feedbax.spec.analysis_bundle.v2",
+          "feedbax.spec.analysis_bundle.v3",
+          "feedbax.spec.analysis_bundle.v4",
+          "feedbax.spec.analysis_bundle.v5"
+        ],
+        "rejected": [
+          "feedbax.spec.analysis_run.v0",
+          "feedbax.spec.analysis_bundle.v0",
+          "feedbax.spec.analysis_bundle.v1",
+          "unknown"
+        ]
+      },
+      "coverage_status": "not-external-covered",
+      "public_api": {
+        "namespaces": [
+          {
+            "namespace": "feedbax.contracts.manifest",
+            "public_names": [
+              "AnalysisRunSpec",
+              "AnalysisRunManifest",
+              "analysis_run_manifest_id"
+            ]
+          },
+          {
+            "namespace": "feedbax.analysis.specs",
+            "public_names": [
+              "execute_analysis_run_spec"
+            ]
+          },
+          {
+            "namespace": "feedbax.analysis.bundles",
+            "public_names": [
+              "AnalysisBundleSpec",
+              "AnalysisBundleDeltaSpec",
+              "authored_analysis_bundle_from_payload",
+              "resolve_analysis_bundle_authoring",
+              "execute_analysis_bundle",
+              "execute_staged_analysis_bundle",
+              "dry_run_staged_analysis_bundle"
+            ]
+          }
+        ],
+        "cli": [
+          "feedbax-analysis run",
+          "feedbax-analysis bundle"
+        ]
+      }
+    }
+  ],
+  "boundary_obligations": [
+    {
+      "obligation_id": "manifest-kind-directory-layout",
+      "kind": "durable-layout",
+      "authority": "feedbax.contracts.manifest:MANIFEST_KIND_DIRECTORIES",
+      "mapping": {
+        "GraphSpecManifest": "graph_specs",
+        "ModelArtifactManifest": "model_artifacts",
+        "TrainingRunSetManifest": "training_run_sets",
+        "TrainingRunManifest": "training_runs",
+        "EvaluationRunManifest": "evaluation_runs",
+        "CheckpointSelectionManifest": "checkpoint_selections",
+        "AnalysisRunManifest": "analysis_runs",
+        "ReportManifest": "reports",
+        "FigureManifest": "FigureManifest"
+      },
+      "unknown": "reject",
+      "evidence": [
+        "tests/test_canonical_manifest_location.py"
+      ]
+    },
+    {
+      "obligation_id": "experiment-envelope-exit-codes",
+      "kind": "cli-exit-codes",
+      "command": "python -m feedbax preflight-experiment-envelope",
+      "outcomes": {
+        "accepted": 0,
+        "infrastructure_failure": 1,
+        "rejected": 2
+      },
+      "evidence": [
+        "tests/test_experiment_envelope_dispatch.py"
+      ]
+    },
+    {
+      "obligation_id": "graph-component-type-shape",
+      "kind": "durable-json-shape",
+      "schema_id": "feedbax.spec.graph",
+      "schema_version": "feedbax.spec.graph.v5",
+      "json_pointer_pattern": "/graph/components/*/type",
+      "change_rule": "preserve, migrate deterministically, or reject by stated version",
+      "evidence": [
+        "tests/test_graphspec_schema_migrations.py",
+        "tests/test_structured_spec_migrations.py"
+      ]
+    }
+  ]
+}

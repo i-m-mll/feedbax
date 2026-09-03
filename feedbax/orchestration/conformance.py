@@ -20,7 +20,12 @@ from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
-from feedbax.contracts.manifest import StrictModel, TrainingRunManifest, load_manifest
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
+from feedbax.contracts.manifest import (
+    TrainingRunManifest,
+    load_manifest,
+)
 from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleEvidence
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import canonicalize_immutable_input_identities
@@ -662,7 +667,7 @@ def check_realized_deployment(row: ConformanceRowArtifacts) -> CheckEntry:
         ):
             problems.append("remote image identity is not immutable")
         try:
-            fingerprint = json.loads(record.environment_fingerprint or "")
+            fingerprint = strict_json_loads(record.environment_fingerprint or "")
             runtime = fingerprint["runtime"]
             if fingerprint.get("image_id") != record.immutable_image_id:
                 problems.append("environment fingerprint does not prove the recorded image")
@@ -670,7 +675,7 @@ def check_realized_deployment(row: ConformanceRowArtifacts) -> CheckEntry:
                 problems.append("environment fingerprint does not prove the recorded GPU model")
             if runtime.get("device_count") != record.gpu_count:
                 problems.append("environment fingerprint does not prove the recorded GPU count")
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (json.JSONDecodeError, StrictJsonError, KeyError, TypeError):
             problems.append("remote environment fingerprint lacks realized runtime proof")
         resources = expected["requested_resources"]
         if isinstance(resources, Mapping):
@@ -865,7 +870,7 @@ def _load_schema_artifact(
             f"artifact byte sha256 mismatch for {ref.artifact_id!r}: "
             f"expected {ref.sha256}, observed {actual}"
         )
-    payload = json.loads(data)
+    payload = strict_json_loads(data)
     if not isinstance(payload, Mapping):
         raise TypeError(f"artifact {ref.artifact_id!r} payload must be an object")
     family = next(
@@ -914,7 +919,7 @@ def _raw_manifest_payload(row: ConformanceRowArtifacts) -> dict[str, Any]:
         return dict(row.manifest_payload)
     if row.manifest_path is None:
         raise ValueError("missing final manifest")
-    payload = json.loads(Path(row.manifest_path).read_text(encoding="utf-8"))
+    payload = strict_json_loads(Path(row.manifest_path).read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise TypeError("final manifest payload must be an object")
     return dict(payload)
@@ -1131,6 +1136,7 @@ def check_manifest_valid(row: ConformanceRowArtifacts) -> CheckEntry:
     expected_spec = dict(row.preflight_normalized_payload)
     if observed_spec is _MISSING:
         return missing_input_check(check_id, "manifest.training_spec.inline")
+    # Trusted internal normalization: both JSON texts are serialized from admitted mappings here.
     if _canonical(
         json.loads(
             json.dumps(observed_spec),
@@ -1773,8 +1779,8 @@ def _checkpoint_coordinates(row: ConformanceRowArtifacts) -> list[int] | None:
     coordinates: list[int] = []
     for path in sorted(root.rglob("*.json")):
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+            payload = strict_json_loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, StrictJsonError):
             continue
         coordinate = _first_present(
             _path(payload, "coordinate", "program_step"),
@@ -1825,8 +1831,8 @@ def _load_events(
     path = Path(event_log)
     text = path.read_text(encoding="utf-8")
     if path.suffix == ".jsonl":
-        return [json.loads(line) for line in text.splitlines() if line.strip()]
-    payload = json.loads(text)
+        return [strict_json_loads(line) for line in text.splitlines() if line.strip()]
+    payload = strict_json_loads(text)
     if isinstance(payload, Mapping) and isinstance(payload.get("events"), Sequence):
         return list(payload["events"])
     if isinstance(payload, list):

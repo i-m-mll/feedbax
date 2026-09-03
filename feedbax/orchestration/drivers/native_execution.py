@@ -25,11 +25,22 @@ import hashlib
 import json
 import os
 import pathlib
+import runpy
 import stat
 import sys
 
+strict_json_path = None
+for search_root in sys.path:
+    candidate = pathlib.Path(search_root or ".") / "feedbax" / "contracts" / "strict_json.py"
+    if candidate.is_file():
+        strict_json_path = candidate
+        break
+if strict_json_path is None:
+    raise RuntimeError("feedbax strict JSON authority is unavailable")
+strict_json_loads = runpy.run_path(str(strict_json_path))["strict_json_loads"]
+
 source, attempt, target, authority_json = sys.argv[1:]
-authority = json.loads(authority_json)
+authority = strict_json_loads(authority_json)
 required_options = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
 missing_options = [name for name in required_options if not hasattr(os, name)]
 required_dir_fd = (os.open, os.mkdir, os.stat)
@@ -177,7 +188,7 @@ def authenticate_checkpoint(root_descriptor):
     expected_manifest_sha = parent_ref["metadata"]["manifest_sha256"]
     if manifest_sha != expected_manifest_sha:
         raise RuntimeError("checkpoint manifest digest differs from custody authority")
-    latest = json.loads(latest_bytes)
+    latest = strict_json_loads(latest_bytes)
     expected_latest = {
         "transaction_id": parent_ref["id"],
         "manifest_relative_path": parent_ref["uri"],
@@ -186,7 +197,7 @@ def authenticate_checkpoint(root_descriptor):
     }
     if any(latest.get(key) != value for key, value in expected_latest.items()):
         raise RuntimeError("checkpoint latest pointer differs from custody authority")
-    manifest = json.loads(manifest_bytes)
+    manifest = strict_json_loads(manifest_bytes)
     if (
         manifest.get("kind") != "TrainingCheckpointTransactionManifest"
         or manifest.get("transaction_id") != parent_ref["id"]
@@ -199,7 +210,7 @@ def authenticate_checkpoint(root_descriptor):
     checkpoint_set_bytes, _ = read_regular(
         root_descriptor, checkpoint_set_parts
     )
-    checkpoint_set = json.loads(checkpoint_set_bytes)
+    checkpoint_set = strict_json_loads(checkpoint_set_bytes)
     checkpoint_transaction = checkpoint_set.get("transaction", {})
     checkpoint_transaction_bytes = checkpoint_transaction.get("bytes", {})
     if (

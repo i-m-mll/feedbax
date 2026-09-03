@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 import feedbax.persistence.artifact_custody as custody_module
-from feedbax.contracts.manifest import ArtifactRef, store_bytes_artifact
+from feedbax.contracts.base import ArtifactRef
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.persistence import (
     ArtifactBlobContainmentError,
     ArtifactBlobCustodyError,
@@ -482,7 +483,7 @@ def test_shared_writer_parent_swap_cannot_write_outside_custody(
     digest = hashlib.sha256(data).hexdigest()
     canonical_parent = root / "artifacts" / "sha256" / digest[:2]
     moved_parent = tmp_path / "pinned-original-parent"
-    original_link = custody_module._link_materialized_file
+    original_link = custody_module._publish_materialized_file_no_replace
     swapped = False
 
     def swap_parent_then_link(
@@ -503,7 +504,9 @@ def test_shared_writer_parent_swap_cannot_write_outside_custody(
             parent_descriptor=parent_descriptor,
         )
 
-    monkeypatch.setattr(custody_module, "_link_materialized_file", swap_parent_then_link)
+    monkeypatch.setattr(
+        custody_module, "_publish_materialized_file_no_replace", swap_parent_then_link
+    )
 
     with pytest.raises(ArtifactBlobContainmentError, match="identity changed"):
         store_bytes_artifact(
@@ -580,7 +583,7 @@ def test_shared_writer_preserves_replaced_staging_container(
     canonical_parent = root / "artifacts" / "sha256" / digest[:2]
     staging_path = canonical_parent / ".feedbax-materialization-staging"
     moved_staging = tmp_path / "moved-blob-staging"
-    original_link = custody_module._link_materialized_file
+    original_link = custody_module._publish_materialized_file_no_replace
     foreign_identity: tuple[int, int] | None = None
 
     def replace_staging_then_link(
@@ -602,7 +605,9 @@ def test_shared_writer_preserves_replaced_staging_container(
             parent_descriptor=parent_descriptor,
         )
 
-    monkeypatch.setattr(custody_module, "_link_materialized_file", replace_staging_then_link)
+    monkeypatch.setattr(
+        custody_module, "_publish_materialized_file_no_replace", replace_staging_then_link
+    )
 
     artifact = store_bytes_artifact(data, root=root, role="payload", logical_name="blob")
 
@@ -763,7 +768,7 @@ def test_materialize_parent_swap_fails_closed_and_preserves_complete_owned_orpha
     cas_alias_target = provider.root / "artifacts" / "sha256" / "alias-target"
     cas_alias_target.mkdir()
     destination = destination_parent / "output.bin"
-    original_link = custody_module._link_materialized_file
+    original_link = custody_module._publish_materialized_file_no_replace
     swapped = False
 
     def swap_parent_then_link(
@@ -784,7 +789,9 @@ def test_materialize_parent_swap_fails_closed_and_preserves_complete_owned_orpha
             parent_descriptor=parent_descriptor,
         )
 
-    monkeypatch.setattr(custody_module, "_link_materialized_file", swap_parent_then_link)
+    monkeypatch.setattr(
+        custody_module, "_publish_materialized_file_no_replace", swap_parent_then_link
+    )
 
     with pytest.raises(ArtifactBlobContainmentError, match="identity changed"):
         provider.materialize(artifact, destination)
@@ -831,7 +838,7 @@ def test_materialize_preserves_replaced_staging_container(
     destination = destination_parent / "output.bin"
     staging_path = destination_parent / ".feedbax-materialization-staging"
     moved_staging = tmp_path / "moved-materialization-staging"
-    original_link = custody_module._link_materialized_file
+    original_link = custody_module._publish_materialized_file_no_replace
     foreign_identity: tuple[int, int] | None = None
 
     def replace_staging_then_link(
@@ -853,7 +860,9 @@ def test_materialize_preserves_replaced_staging_container(
             parent_descriptor=parent_descriptor,
         )
 
-    monkeypatch.setattr(custody_module, "_link_materialized_file", replace_staging_then_link)
+    monkeypatch.setattr(
+        custody_module, "_publish_materialized_file_no_replace", replace_staging_then_link
+    )
 
     assert provider.materialize(artifact, destination) == destination
 

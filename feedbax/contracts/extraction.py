@@ -32,7 +32,8 @@ from feedbax.contracts.expressions import (
     ValueQuery,
     evaluate_query,
 )
-from feedbax.contracts.manifest import AnalysisDataProduct, StrictModel
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.manifest import AnalysisDataProduct
 from feedbax.contracts.strict_json import strict_json_loads
 
 

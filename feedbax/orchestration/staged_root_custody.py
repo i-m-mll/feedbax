@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
 import stat
@@ -16,7 +15,8 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.staged_execution import (
     STAGED_CHECKPOINT_CUSTODY_BACKEND,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
@@ -184,7 +184,7 @@ def staged_root_content_sha256(
         "directories": list(directories),
         "files": [record.model_dump(mode="json", exclude_none=True) for record in files],
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    encoded = canonical_json_v1_bytes(payload)
     return hashlib.sha256(encoded).hexdigest()
 
 

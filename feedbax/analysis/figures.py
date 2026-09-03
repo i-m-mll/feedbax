@@ -68,26 +68,30 @@ from feedbax.contracts.matrix_core import (
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.run_matrix import apply_composition_deltas
 from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
+from feedbax.contracts.base import (
+    EntrypointRef,
+    ParentRef,
+    Provenance,
+    ArtifactRef,
+    canonical_json_bytes,
+    collect_git_provenance,
+    default_manifest_root,
+    sha256_bytes,
+)
+from feedbax.contracts.artifact_store import (
+    media_type_for_extension,
+    store_artifact,
+    store_json_artifact,
+)
 from feedbax.contracts.manifest import (
     AnyManifest,
-    EntrypointRef,
     FigureBindingRecord,
     FigureManifest,
     FigurePieceResolution,
     ManifestStatus,
-    ParentRef,
-    Provenance,
-    ArtifactRef,
     SpecPayload,
-    canonical_json_bytes,
-    collect_git_provenance,
-    default_manifest_root,
     figure_manifest_id,
-    media_type_for_extension,
-    sha256_bytes,
     spec_payload,
-    store_artifact,
-    store_json_artifact,
     write_manifest,
 )
 from feedbax.plot.colors import sample_colorscale_at, sample_colorscale_unique
@@ -242,9 +246,7 @@ def _figure_authored_ref(value: FigureSpecInput) -> str:
 
 def figure_composition_envelope(spec: FigureCompositionSpec) -> dict[str, Any]:
     """Return the canonical authored identity envelope, excluding the parent locator."""
-    return _raw_figure_composition_envelope(
-        spec.model_dump(mode="json", exclude_none=True)
-    )
+    return _raw_figure_composition_envelope(spec.model_dump(mode="json", exclude_none=True))
 
 
 def figure_composition_envelope_hash(spec: FigureCompositionSpec) -> str:
@@ -377,9 +379,7 @@ def resolve_figure_spec(
                 parent_payload[SOURCE_DOCUMENT_INHERITANCE_KEY]
             )
             parent_payload, inherited_source_documents = (
-                materialize_inherited_document_with_custody(
-                parent_payload, repo_root=repo_root
-                )
+                materialize_inherited_document_with_custody(parent_payload, repo_root=repo_root)
             )
             parent_payload.pop(SOURCE_DOCUMENT_INHERITANCE_KEY, None)
         payload = _current_figure_spec(parent_payload).model_dump(mode="json", exclude_none=True)
@@ -401,9 +401,7 @@ def resolve_figure_spec(
                 payload,
                 [delta.matrix_delta()],
                 ancestor_written_paths=written,
-                allowed_same_schema_structural_additions_by_layer={
-                    delta.layer_id: declared
-                },
+                allowed_same_schema_structural_additions_by_layer={delta.layer_id: declared},
             )
             added = _figure_added_structural_identities(before, payload)
             if declared != added:
@@ -424,9 +422,7 @@ def resolve_figure_spec(
                     f"declared_but_absent_or_invalid={invalid!r}"
                 )
             local_attribution.update(delta_attribution)
-        qualified = {
-            path: f"{digest}:{layer_id}" for path, layer_id in local_attribution.items()
-        }
+        qualified = {path: f"{digest}:{layer_id}" for path, layer_id in local_attribution.items()}
         attribution.update(qualified)
         layer_ids = [delta.layer_id for delta in node.deltas]
         layers.append(
@@ -1873,14 +1869,14 @@ def _piece_data(piece: Any, root: Path) -> dict[str, Any]:
         return {}
     if piece.artifact_ref.uri.startswith("artifact://sha256/"):
         raw = ImmutableArtifactBlobProvider(root.absolute()).get_bytes(piece.artifact_ref)
-        payload = json.loads(raw)
+        payload = strict_json_loads(raw)
     else:
         path = Path(piece.artifact_ref.uri)
         if not path.is_absolute():
             path = root / path
         raw = path.read_bytes()
         _verify_declared_piece_bytes(piece, piece.artifact_ref, raw)
-        payload = json.loads(raw.decode("utf-8"))
+        payload = strict_json_loads(raw.decode("utf-8"))
     if piece.data_path:
         payload = _get_payload_path(payload, piece.data_path)
     if not isinstance(payload, dict):
@@ -2092,7 +2088,5 @@ def figure_manifest_plotly_json(manifest: FigureManifest) -> dict[str, Any] | No
             continue
         if artifact.media_type != "application/json" or artifact.uri is None:
             continue
-        import json
-
-        return json.loads(Path(artifact.uri).read_text(encoding="utf-8"))
+        return strict_json_loads(Path(artifact.uri).read_text(encoding="utf-8"))
     return None

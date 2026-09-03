@@ -5,10 +5,10 @@ import {
 } from './AnalysisCanvas';
 
 describe('AnalysisCanvas interaction policy', () => {
-  it('disables default keyboard deletion and volatile node dragging', () => {
+  it('disables default keyboard deletion and enables persisted node dragging', () => {
     expect(ANALYSIS_CANVAS_INTERACTION_PROPS).toEqual({
       deleteKeyCode: null,
-      nodesDraggable: false,
+      nodesDraggable: true,
     });
   });
 

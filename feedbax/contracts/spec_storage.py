@@ -13,7 +13,10 @@ from pydantic import Field, model_validator
 if TYPE_CHECKING:
     from feedbax.contracts.training import TrainingRunSpec
 
-from feedbax.contracts.manifest import ArtifactRef, StrictModel
+from feedbax.contracts.base import (
+    ArtifactRef,
+    StrictModel,
+)
 from feedbax.contracts.resolved_snapshot_decoder import (
     SNAPSHOT_SCHEMA_ID,
     SNAPSHOT_SCHEMA_VERSION,

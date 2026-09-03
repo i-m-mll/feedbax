@@ -9,6 +9,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
+from pydantic import BaseModel
 
 from feedbax.component_registry import (
     ComponentRegistry,
@@ -19,9 +20,10 @@ from feedbax.component_registry import (
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.contracts.graphs.builders import build_component
+from feedbax.compiler.builders import build_component
+from feedbax.compiler.serialization import graph_to_spec
 from feedbax.models.cde import CDENetwork
-from feedbax.runtime.graph import Component
+from feedbax.runtime.graph import Component, Graph
 from tests.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION, RepresentationSpec
 from feedbax.plugins.application import COMPONENTS, new_registration_context
@@ -944,3 +946,81 @@ def test_elementwise_affine_modulator_is_builtin_component() -> None:
     assert meta.default_params["bias_init"] == 0.0
     assert meta.input_ports == ["signal", "modulator", "scale", "bias"]
     assert meta.output_ports == ["output"]
+
+
+class _TypedGainParams(BaseModel):
+    gain: float = 1.0
+
+
+def test_downstream_typed_model_is_the_only_schema_source() -> None:
+    registry = ComponentRegistry(load_user_components=False)
+    registry.register_component_type(
+        "downstream.TypedGain",
+        lambda params: Gain(gain=params["gain"]),
+        param_model=_TypedGainParams,
+        runtime_type=Gain,
+        input_ports=["input"],
+        output_ports=["output"],
+    )
+
+    graph = spec_to_graph(_single_node_spec("downstream.TypedGain", {"gain": 4.5}), registry)
+    serialized = graph_to_spec(graph, registry)
+
+    assert serialized.nodes["component"].type == "downstream.TypedGain"
+    assert serialized.nodes["component"].params == {"gain": 4.5}
+    with pytest.raises(ValueError, match="valid number"):
+        registry.resolve_component_spec("downstream.TypedGain", {"gain": "4.5"})
+    with pytest.raises(ValueError, match="cannot supply both"):
+        registry.register_component_type(
+            "downstream.DuplicateSchema",
+            lambda params: Gain(gain=params["gain"]),
+            param_model=_TypedGainParams,
+            param_schema=[{"name": "gain", "type": "float"}],
+            input_ports=["input"],
+            output_ports=["output"],
+        )
+
+
+def test_unbound_common_runtime_type_reverse_resolution_rejects_ambiguity() -> None:
+    registry = ComponentRegistry(load_user_components=False)
+    registry.register_component_type(
+        "downstream.OtherGain",
+        lambda params: Gain(gain=params["gain"]),
+        param_model=_TypedGainParams,
+        runtime_type=Gain,
+        input_ports=["input"],
+        output_ports=["output"],
+    )
+
+    with pytest.raises(ValueError, match="reverse resolution must match exactly one"):
+        graph_to_spec(Graph(nodes={"gain": Gain(gain=2.0)}), registry)
+
+
+def test_declared_parameter_model_owns_defaults_required_fields_and_constraints() -> None:
+    registry = ComponentRegistry(load_user_components=False)
+
+    assert registry.resolve_component_spec("MatMul", {}).params == {}
+    selector = registry.resolve_component_spec("StateFeedbackSelector", {})
+    assert selector.params["expected_state_dim"] is None
+    assert selector.params["state_slices"]
+
+    with pytest.raises(ValueError, match="gain: Field required"):
+        registry.resolve_component_spec("Gain", {})
+    with pytest.raises(ValueError, match="extra_forbidden"):
+        registry.resolve_component_spec("Gain", {"gain": 1.0, "scale": 2.0})
+    with pytest.raises(ValueError, match="greater than or equal to 1"):
+        registry.resolve_component_spec("GRU", {"input_size": 0, "hidden_size": 4})
+
+
+def test_builtin_contract_classification_meets_generic_adoption_gate() -> None:
+    registry = ComponentRegistry(load_user_components=False)
+    classifications = registry.component_classification()
+    generic = sum(value == "generic" for value in classifications.values())
+    custom = sum(value == "custom" for value in classifications.values())
+
+    assert generic / (generic + custom) >= 0.80
+    assert all(
+        registry.get(name).params.override_reason
+        for name, classification in classifications.items()
+        if classification == "custom"
+    )

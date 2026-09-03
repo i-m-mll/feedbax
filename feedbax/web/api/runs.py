@@ -9,21 +9,22 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import String
 
-from feedbax.contracts.manifest import (
-    BaseManifest,
+from feedbax.contracts.base import (
     EntrypointRef,
-    EvaluationRunManifest,
-    EvaluationRunSpec,
     ParentRef,
     Provenance,
-    TrainingRunManifest,
     default_manifest_root,
+    utc_now,
+)
+from feedbax.contracts.manifest import (
+    BaseManifest,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
+    TrainingRunManifest,
     evaluation_run_manifest_id,
     load_manifest,
     spec_payload,
-    utc_now,
     write_manifest,
 )
 from feedbax.contracts.manifest_packet import (
@@ -38,11 +39,6 @@ from feedbax.contracts.selection import (
     manifest_index_rows_from_records,
     preview_selection_spec,
     refresh_selection_spec,
-)
-from feedbax.persistence.database import (
-    EvaluationRecord,
-    ModelRecord,
-    db_session,
 )
 from feedbax.persistence.manifest_index import (
     get_indexed_manifest_record,
@@ -176,27 +172,6 @@ class ManifestImportResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _extract_hyperparams(record: ModelRecord) -> dict[str, Any]:
-    """Extract key hyperparameters from a ModelRecord for display.
-
-    Pulls explicitly-defined parameter columns that are useful for
-    at-a-glance differentiation of training runs.
-    """
-    params: dict[str, Any] = {}
-
-    for attr in ("model__n_replicates", "n_batches", "pert__type", "pert__std"):
-        try:
-            value = getattr(record, attr, None)
-            if value is not None:
-                # Use a shorter display key
-                display_key = attr.replace("model__", "").replace("pert__", "pert_")
-                params[display_key] = value
-        except Exception:
-            continue
-
-    return params
 
 
 def _summarize_perturbation_config(config: Optional[dict[str, Any]]) -> Optional[str]:
@@ -598,53 +573,6 @@ def _import_runs_dir(source_root: Path, target_root: Path) -> ManifestImportResp
     )
 
 
-def _legacy_training_runs_from_model_db() -> list[TrainingRunInfo]:
-    """Return legacy completed rows for model DB records without manifests."""
-    from sqlalchemy import func
-
-    with db_session(autocommit=False) as session:
-        row_num = (
-            func.row_number()
-            .over(
-                partition_by=(ModelRecord.expt_name, ModelRecord.hash),
-                order_by=ModelRecord.created_at.asc(),
-            )
-            .label("rn")
-        )
-        earliest = (
-            func.min(ModelRecord.created_at)
-            .over(partition_by=(ModelRecord.expt_name, ModelRecord.hash))
-            .label("earliest")
-        )
-        subq = (
-            session.query(ModelRecord, row_num, earliest)
-            .filter(ModelRecord.is_path_defunct == False)  # noqa: E712
-            .subquery()
-        )
-        from sqlalchemy.orm import aliased
-
-        RecordAlias = aliased(ModelRecord, subq)
-        rows = (
-            session.query(RecordAlias, subq.c.earliest)
-            .filter(subq.c.rn == 1)
-            .order_by(subq.c.earliest.desc())
-            .all()
-        )
-
-    return [
-        TrainingRunInfo(
-            id=record.hash,
-            name=record.expt_name or record.hash[:12],
-            created_at=earliest_ts.isoformat() if earliest_ts else "",
-            status="completed",
-            hyperparams=_extract_hyperparams(record),
-            metrics={},
-            provenance_id=record.hash,
-        )
-        for record, earliest_ts in rows
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -672,8 +600,6 @@ async def list_training_runs() -> list[TrainingRunInfo]:
         ) from exc
     for live in live_runs:
         by_id.setdefault(live["id"], TrainingRunInfo.model_validate(live))
-    for legacy in _legacy_training_runs_from_model_db():
-        by_id.setdefault(legacy.id, legacy)
     return list(by_id.values())
 
 
@@ -788,50 +714,10 @@ async def list_eval_runs(training_run_id: str) -> list[EvalRunInfo]:
         _load_training_manifest_from_index(training_run_id)
         return []
 
-    with db_session(autocommit=False) as session:
-        # Verify the training run exists
-        model = session.query(ModelRecord).filter(ModelRecord.hash == training_run_id).first()
-        if model is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Training run '{training_run_id}' not found",
-            )
-
-        # EvaluationRecord.model_hashes is a JSON column containing a list
-        # of model hash strings.  SQLite stores JSON as text, so we search
-        # for the JSON-quoted hash to avoid substring false positives (e.g.
-        # hash "abc" matching "abcdef123").
-        quoted_hash = f'"{training_run_id}"'
-        evals = (
-            session.query(EvaluationRecord)
-            .filter(EvaluationRecord.archived == False)  # noqa: E712
-            .filter(EvaluationRecord.model_hashes.cast(String).contains(quoted_hash))
-            .order_by(EvaluationRecord.created_at.desc())
-            .all()
-        )
-
-    results: list[EvalRunInfo] = []
-    for ev in evals:
-        # Build a descriptive name from available metadata
-        name = ev.expt_name or ev.hash[:12]
-
-        # Summarize what this evaluation tested
-        description = _summarize_perturbation_config(ev.perturbation_config)
-        if not description and ev.task_variants:
-            description = f"{len(ev.task_variants)} task variant(s)"
-
-        results.append(
-            EvalRunInfo(
-                id=ev.hash,
-                training_run_id=training_run_id,
-                name=name,
-                created_at=ev.created_at.isoformat() if ev.created_at else "",
-                status="completed",
-                description=description,
-            )
-        )
-
-    return results
+    raise HTTPException(
+        status_code=404,
+        detail=f"Training run '{training_run_id}' not found",
+    )
 
 
 @router.get("/training/{training_run_id}/manifest")

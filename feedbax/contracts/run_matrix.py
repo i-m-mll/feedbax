@@ -12,10 +12,14 @@ from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.expressions import Coalesce, MapObjectList, ValueExpr, ValueQuery
 from feedbax.contracts.extraction import SourceBinding
-from feedbax.contracts.matrix_core import RowDerivation
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.matrix_core import (
+    RowDerivation,
+    _apply_patch,
+    apply_override_patches as apply_override_patches,
+)
 from feedbax.contracts.manifest import (
     OverridePatch,
-    StrictModel,
     TrainingSweepAxis,
     TrainingSweepCombinationSpec,
 )
@@ -896,22 +900,6 @@ class TrainingRunMatrixSpec(_TrainingRunMatrixSpecCore):
 TrainingRunMatrixSpecVersioned: TypeAlias = TrainingRunMatrixSpecV5 | TrainingRunMatrixSpec
 
 
-def apply_override_patches(
-    payload: dict[str, Any],
-    patches: list[OverridePatch | dict[str, Any]],
-) -> dict[str, Any]:
-    """Apply ``OverridePatch`` records to a deep copy of ``payload``."""
-    result = deepcopy(payload)
-    for raw_patch in patches:
-        patch = (
-            raw_patch
-            if isinstance(raw_patch, OverridePatch)
-            else OverridePatch.model_validate(raw_patch)
-        )
-        _apply_patch(result, patch)
-    return result
-
-
 def apply_composition_deltas(
     payload: dict[str, Any],
     deltas: list[MatrixCompositionDelta],
@@ -958,7 +946,7 @@ def apply_composition_deltas(
                     f"paths {unacknowledged!r} without explicit acknowledgement"
                 )
             try:
-                _apply_patch(result, patch)
+                _apply_patch(result, patch, error_context="override")
             except ValueError as error:
                 raise ValueError(f"/deltas/{delta.layer_id}: {error}") from error
             written.add(patch.path)
@@ -1074,97 +1062,6 @@ def _schema_identities(value: Any, path: str = "") -> dict[str, tuple[Any, Any]]
 def _validate_digest(value: str, path: str) -> None:
     if not re.fullmatch(r"[0-9a-f]{64}", value):
         raise ValueError(f"{path} must be a lowercase sha256 digest")
-
-
-def _apply_patch(root: dict[str, Any], patch: OverridePatch) -> None:
-    parts = patch.path.split(".")
-    parent = _resolve_parent(root, parts, path=patch.path)
-    leaf = parts[-1]
-    if patch.op == "add" and isinstance(parent, list) and _is_list_append_token(parent, leaf):
-        parent.append(deepcopy(patch.value))
-        return
-    exists = _contains_key(parent, leaf)
-    if patch.op == "add":
-        if isinstance(parent, list) and exists:
-            parent.insert(int(leaf), deepcopy(patch.value))
-            return
-        if exists:
-            raise ValueError(f"override add patch path already exists: {patch.path!r}")
-        _set_child(parent, leaf, deepcopy(patch.value), path=patch.path)
-        return
-    if patch.op == "replace":
-        if not exists:
-            raise ValueError(f"override replace patch targets a missing key/index: {patch.path!r}")
-        _set_child(parent, leaf, deepcopy(patch.value), path=patch.path)
-        return
-    if not exists:
-        raise ValueError(f"override remove patch targets a missing key/index: {patch.path!r}")
-    _remove_child(parent, leaf, path=patch.path)
-
-
-def _is_list_append_token(parent: list[Any], leaf: str) -> bool:
-    """Return whether ``leaf`` names the JSON-Patch list-append position.
-
-    Follows JSON-Patch ``add`` semantics (RFC 6902 section 4.1): the literal
-    ``-`` token, or a numeric index exactly equal to the list's current
-    length, both mean "insert after the last element". Any other index —
-    in range or beyond it — targets a specific position and is handled by
-    the existing add/replace/remove-at-index path, which still rejects
-    beyond-range indices.
-    """
-    if leaf == "-":
-        return True
-    return leaf.isdigit() and int(leaf) == len(parent)
-
-
-def _resolve_parent(root: Any, parts: list[str], *, path: str) -> Any:
-    if not parts:
-        raise ValueError(f"patch path must be non-empty: {path!r}")
-    current = root
-    for part in parts[:-1]:
-        if isinstance(current, dict) and part in current:
-            current = current[part]
-            continue
-        if isinstance(current, list) and part.isdigit():
-            index = int(part)
-            if 0 <= index < len(current):
-                current = current[index]
-                continue
-        raise ValueError(f"patch path cannot traverse missing segment {part!r}: {path!r}")
-    return current
-
-
-def _contains_key(parent: Any, key: str) -> bool:
-    if isinstance(parent, dict):
-        return key in parent
-    if isinstance(parent, list) and key.isdigit():
-        index = int(key)
-        return 0 <= index < len(parent)
-    return False
-
-
-def _set_child(parent: Any, key: str, value: Any, *, path: str) -> None:
-    if isinstance(parent, dict):
-        parent[key] = value
-        return
-    if isinstance(parent, list) and key.isdigit():
-        index = int(key)
-        if 0 <= index < len(parent):
-            parent[index] = value
-            return
-    raise ValueError(f"patch path cannot set segment {key!r}: {path!r}")
-
-
-def _remove_child(parent: Any, key: str, *, path: str) -> None:
-    if isinstance(parent, dict):
-        del parent[key]
-        return
-    if isinstance(parent, list) and key.isdigit():
-        index = int(key)
-        if 0 <= index < len(parent):
-            del parent[index]
-            return
-    raise ValueError(f"patch path cannot remove segment {key!r}: {path!r}")
 
 
 def _validate_dotted_path(path: str, field_path: str) -> None:

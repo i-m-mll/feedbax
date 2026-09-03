@@ -5,41 +5,99 @@ from math import prod
 from typing import Any, Protocol
 
 import jax.numpy as jnp
+import jax.random as jr
 import jax.tree as jt
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
-from feedbax.contracts.graphs.mechanics_templates import point_mass_template_graph
-from feedbax.contracts.graph import ParamSchema
+from feedbax.compiler.mechanics_templates import point_mass_template_graph
 from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
     ARRAY_VALUE_SCHEMA_VERSION,
     SparseCooArrayValueSpec,
 )
-from feedbax.contracts.graphs.penzai_compiler import penzai_builder_options
+from feedbax.compiler.penzai_compiler import penzai_builder_options
 from feedbax.contracts.migrations import ComponentMigration
 from feedbax.contracts.representation import RepresentationSpec
-from feedbax.control.affine import affine_feedback_output_prototype
+from feedbax.control.affine import AffineFeedbackController, affine_feedback_output_prototype
 from feedbax.mechanics.muscle_config import (
     default_6muscle_2link_attachment_paths,
     default_6muscle_2link_segment_lengths,
 )
 from feedbax.mechanics.linear_state_space import (
     STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+    LinearStateSpace,
 )
 from feedbax.runtime.affine_composer import (
     AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+    AffineValueComposer,
     affine_value_composer_output_prototype,
 )
+from feedbax.runtime.components import (
+    Activation,
+    Constant,
+    Damper,
+    DelayLine,
+    Demux,
+    ElementwiseAffineModulator,
+    GRU,
+    Gain,
+    Input,
+    LSTM,
+    Linear,
+    MLP,
+    MatMul,
+    Multiply,
+    Mux,
+    Noise,
+    Pulse,
+    Ramp,
+    Ravel,
+    Reshape,
+    Saturation,
+    Scale,
+    Sigmoid,
+    Sine,
+    Spring,
+    Subtract,
+    Sum,
+)
+from feedbax.runtime.filters import FirstOrderFilter
+from feedbax.intervene.intervene import (
+    AddNoise,
+    AddNoiseParams,
+    ConstantInput,
+    ConstantInputParams,
+    CurlField,
+    CurlFieldParams,
+    DynamicsMatrixPerturb,
+    DynamicsMatrixPerturbParams,
+    FixedField,
+    FixedFieldParams,
+    NetworkClamp,
+    NetworkConstantInput,
+    NetworkIntervenorParams,
+)
+from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
+from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
+from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
+from feedbax.models.networks import VanillaRNN
 from feedbax.runtime.state import CartesianState
-from feedbax.runtime.state_feedback import state_feedback_output_prototype
+from feedbax.runtime.state_feedback import StateFeedbackSelector, state_feedback_output_prototype
 from feedbax.intervene.intervene import (
     THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
     THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
 )
 
 from .acausal_adapters import register_acausal_components
-from .declarations import DeclaredComponent, MissingPrototypeInput, declare_component
+from .declarations import (
+    ComponentConstructorPlan,
+    DeclaredComponent,
+    MissingPrototypeInput,
+    ParameterField,
+    declare_component,
+)
 from .templates import register_builtin_graph_templates
 
 
@@ -59,6 +117,158 @@ _DEFAULT_STRUCTURAL_DELTA_A = SparseCooArrayValueSpec(
     fill=0.0,
     entries=(),
 ).model_dump(mode="json")
+
+
+class _ConstantParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    value: JsonValue = Field(
+        default=0.0,
+        json_schema_extra={"feedbax": {"type": "object", "required": True}},
+    )
+
+
+def _extract_analytical_plant_params(component: Any, model: Any) -> Any:
+    from feedbax.mechanics.backend import DiffraxBackend
+
+    backend = component.backend
+    if not isinstance(backend, DiffraxBackend):
+        raise ValueError(
+            "AnalyticalMusculoskeletalPlant serialization requires DiffraxBackend "
+            "to recover the authored substep count"
+        )
+    if float(backend.control_dt) != float(component.dt):
+        raise ValueError(
+            "AnalyticalMusculoskeletalPlant backend control_dt must equal Mechanics dt"
+        )
+    return type(model).model_validate(
+        {
+            "dt": float(component.dt),
+            "n_steps": int(backend.n_substeps),
+            **component.plant.to_params(),
+        }
+    )
+
+
+def _extract_structural_linear_state_space_params(component: Any, model: Any) -> Any:
+    delta_A = (
+        component.initial_delta_A_value_spec.model_dump(mode="json")
+        if component.initial_delta_A_value_spec is not None
+        else [list(row) for row in component.initial_delta_A]
+    )
+    return type(model).model_validate(
+        {
+            "A": component.A.tolist(),
+            "B": component.B.tolist(),
+            "B_w": component.B_w.tolist(),
+            "delta_A": delta_A,
+            "scale": component.initial_scale,
+            "active": component.initial_active,
+            "label": component.label,
+            "dt": component.dt,
+            "initial_state": list(component.initial_state),
+            "pos_slice": list(component.pos_slice),
+            "vel_slice": list(component.vel_slice),
+        }
+    )
+
+
+def _channel_noise_values(channel: Any) -> dict[str, Any]:
+    from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
+
+    additive_std = 0.0
+    signal_dependent_std = 0.0
+    noise_func = channel.noise_func
+    terms = noise_func.terms if isinstance(noise_func, CompositeNoise) else (noise_func,)
+    for term in terms:
+        if isinstance(term, Normal):
+            additive_std = float(term.std)
+        elif isinstance(term, Multiplicative) and isinstance(term.noise_func, Normal):
+            signal_dependent_std = float(term.noise_func.std)
+    return {
+        "noise_model": getattr(channel, "noise_model", "additive_gaussian"),
+        "noise_std": additive_std,
+        "additive_noise_std": additive_std,
+        "signal_dependent_noise_std": signal_dependent_std,
+        "add_noise": bool(channel.add_noise),
+        "noise_role": getattr(channel, "noise_role", None),
+        "noise_timing": getattr(channel, "noise_timing", None),
+    }
+
+
+def _prototype_shape(prototype: Any) -> list[int] | list[list[int]] | None:
+    leaves = jt.leaves(prototype)
+    if not leaves or not all(hasattr(leaf, "shape") for leaf in leaves):
+        return None
+    shapes = [[int(dim) for dim in leaf.shape] for leaf in leaves]
+    return shapes[0] if len(shapes) == 1 else shapes
+
+
+def _extract_channel_params(component: Any, model: Any) -> Any:
+    values = {
+        "delay": int(component.delay),
+        **_channel_noise_values(component),
+        "input_shape": _prototype_shape(component.input_proto),
+    }
+    return type(model).model_validate({name: values[name] for name in type(model).model_fields})
+
+
+def _extract_feedback_channel_params(component: Any, model: Any) -> Any:
+    from feedbax.runtime.channel import Channel
+
+    channels = jt.leaves(component.channels, is_leaf=lambda item: isinstance(item, Channel))
+    specs = jt.leaves(component.specs, is_leaf=lambda item: hasattr(item, "where"))
+    if len(channels) != 1 or len(specs) != 1:
+        raise ValueError("FeedbackChannels parameter extraction requires one declared channel")
+    channel = channels[0]
+    selector = getattr(specs[0].where, "_feedbax_feedback_selector", None)
+    paths = getattr(specs[0].where, "_feedbax_feedback_paths", None)
+    if selector is None:
+        raise ValueError(
+            "FeedbackChannels parameters are not recoverable without a declared selector"
+        )
+    noise = _channel_noise_values(channel)
+    values = {
+        "delay": int(channel.delay),
+        "selector": selector,
+        "paths": list(paths or ()),
+        "noise_model": noise["noise_model"],
+        "noise_std": noise["noise_std"],
+        "add_noise": noise["add_noise"],
+        "noise_role": noise["noise_role"],
+        "noise_timing": noise["noise_timing"],
+        "input_shape": _prototype_shape(channel.input_proto),
+    }
+    return type(model).model_validate(values)
+
+
+def _extract_delayed_reaches_params(component: Any, model: Any) -> Any:
+    task = component.task
+    return type(model).model_validate(
+        {
+            "n_steps": int(task.n_steps),
+            "n_control_stages": int(task.n_steps) - 1,
+            "workspace": jnp.asarray(task.workspace).tolist(),
+            "preset": task.preset,
+            "train_endpoint_mode": task.train_endpoint_mode,
+            "epoch_len_ranges": [list(item) for item in task.epoch_len_ranges],
+            "epoch_names": list(task.epoch_names),
+            "target_on_epochs": jnp.asarray(task.target_on_epochs).tolist(),
+            "hold_epochs": jnp.asarray(task.hold_epochs).tolist(),
+            "move_epochs": jnp.asarray(task.move_epochs).tolist(),
+            "target_visible_from_start": bool(task.target_visible_from_start),
+            "go_cue_event_name": task.go_cue_event_name,
+            "p_catch_trial": float(task.p_catch_trial),
+            "catch_metadata_policy": task.catch_metadata_policy,
+            "eval_n_directions": int(task.eval_n_directions),
+            "eval_reach_length": float(task.eval_reach_length),
+            "eval_grid_n": int(task.eval_grid_n),
+        }
+    )
+
+
+def _extract_declared_to_params(component: Any, model: Any) -> Any:
+    return type(model).model_validate(component.to_params())
 
 
 def _migrate_threshold_latched_force_v1(params: dict[str, Any]) -> dict[str, Any]:
@@ -1092,12 +1302,14 @@ def rate_limiter_output_prototype(
 
 
 def register_builtin_components(registry: _Registry) -> None:
+    from feedbax.compiler import builders as _builders
+
     registry.register(
         declare_component(
             name="Subgraph",
             category="Structure",
             description="Nested graph container.",
-            param_schema=[],
+            parameter_fields=[],
             input_ports=[],
             output_ports=[],
             icon="Layers",
@@ -1109,10 +1321,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="PenzaiAdapter",
+            builder=_builders._build_penzai_adapter,
             category="Structure",
             description="Penzai neural network adapter (leaf). Wraps a trained Penzai model for inference.",
-            param_schema=[
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(
                     name="builder_name",
                     type="enum",
                     options=[builder["name"] for builder in penzai_builders],
@@ -1123,8 +1336,8 @@ def register_builtin_components(registry: _Registry) -> None:
                     description="Registered Penzai model builder.",
                     required=True,
                 ),
-                ParamSchema(name="input_port", type="str", default="input", required=False),
-                ParamSchema(name="output_port", type="str", default="output", required=False),
+                ParameterField(name="input_port", type="str", default="input", required=False),
+                ParameterField(name="output_port", type="str", default="output", required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1141,10 +1354,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Gain",
+            runtime_type=Gain,
             category="Math",
             description="Multiply input by constant.",
-            param_schema=[
-                ParamSchema(name="gain", type="float", default=1.0, required=True),
+            parameter_fields=[
+                ParameterField(name="gain", type="float", default=1.0, required=True),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1158,9 +1372,10 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Sum",
+            runtime_type=Sum,
             category="Math",
             description="Add present inputs.",
-            param_schema=[],
+            parameter_fields=[],
             input_ports=["a", "b", "c", "d"],
             output_ports=["output"],
             icon="Sigma",
@@ -1179,10 +1394,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Input",
+            runtime_type=Input,
             category="Sources",
             description="Pass an external graph input through a source-like node.",
-            param_schema=[
-                ParamSchema(name="output_port", type="str", default="output", required=True),
+            parameter_fields=[
+                ParameterField(name="output_port", type="str", default="output", required=True),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1197,9 +1413,10 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Subtract",
+            runtime_type=Subtract,
             category="Math",
             description="Subtract input b from input a.",
-            param_schema=[],
+            parameter_fields=[],
             input_ports=["a", "b"],
             output_ports=["out"],
             icon="Minus",
@@ -1213,9 +1430,10 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Multiply",
+            runtime_type=Multiply,
             category="Math",
             description="Element-wise product.",
-            param_schema=[],
+            parameter_fields=[],
             input_ports=["a", "b"],
             output_ports=["output"],
             icon="X",
@@ -1229,10 +1447,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Reshape",
+            runtime_type=Reshape,
             category="Math",
             description="Reshape an array to a fixed output shape.",
-            param_schema=[
-                ParamSchema(name="shape", type="array", default=[1, 1], required=True),
+            parameter_fields=[
+                ParameterField(name="shape", type="array", default=[1, 1], required=True),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1247,9 +1466,10 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="MatMul",
+            runtime_type=MatMul,
             category="Math",
             description="Matrix multiply a and b.",
-            param_schema=[],
+            parameter_fields=[],
             input_ports=["a", "b"],
             output_ports=["out"],
             icon="Table2",
@@ -1263,10 +1483,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Scale",
+            runtime_type=Scale,
             category="Math",
             description="Multiply input by a scalar or broadcastable scale.",
-            param_schema=[
-                ParamSchema(name="scale", type="float", default=1.0, required=True),
+            parameter_fields=[
+                ParameterField(name="scale", type="float", default=1.0, required=True),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1281,9 +1502,37 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Sigmoid",
+            runtime_type=Sigmoid,
             category="Math",
             description="Apply a logistic sigmoid elementwise.",
-            param_schema=[],
+            parameter_fields=[],
+            input_ports=["input"],
+            output_ports=["output"],
+            icon="Activity",
+            port_types=PortTypeSpec(
+                inputs={"input": PortType(dtype="any")},
+                outputs={"output": PortType(dtype="any")},
+            ),
+            output_prototype_fn=input_passthrough_output_prototype,
+        )
+    )
+    registry.register(
+        declare_component(
+            name="Activation",
+            runtime_type=Activation,
+            constructor=ComponentConstructorPlan(renames={"activation": "activation_name"}),
+            attribute_paths={"activation": "activation_name"},
+            category="Math",
+            description="Apply a named elementwise activation.",
+            parameter_fields=[
+                ParameterField(
+                    name="activation",
+                    type="enum",
+                    options=["identity", "tanh", "relu", "sigmoid", "softmax"],
+                    default="identity",
+                    required=True,
+                ),
+            ],
             input_ports=["input"],
             output_ports=["output"],
             icon="Activity",
@@ -1297,17 +1546,19 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="ElementwiseAffineModulator",
+            runtime_type=ElementwiseAffineModulator,
+            attribute_paths={"gain_init": "gain", "bias_init": "bias"},
             category="Math",
             description=(
                 "Per-element affine modulation: "
                 "signal * (baseline + gain * modulator) + bias * modulator."
             ),
-            param_schema=[
-                ParamSchema(name="signal_shape", type="array", default=[1], required=True),
-                ParamSchema(name="baseline", type="array", default=1.0, required=False),
-                ParamSchema(name="gain_init", type="array", default=0.0, required=False),
-                ParamSchema(name="bias_init", type="array", default=0.0, required=False),
-                ParamSchema(name="trainable", type="bool", default=True, required=False),
+            parameter_fields=[
+                ParameterField(name="signal_shape", type="array", default=[1], required=True),
+                ParameterField(name="baseline", type="array", default=1.0, required=False),
+                ParameterField(name="gain_init", type="array", default=0.0, required=False),
+                ParameterField(name="bias_init", type="array", default=0.0, required=False),
+                ParameterField(name="trainable", type="bool", default=True, required=False),
             ],
             input_ports=["signal", "modulator", "scale", "bias"],
             output_ports=["output"],
@@ -1327,11 +1578,10 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Constant",
+            runtime_type=Constant,
             category="Sources",
             description="Constant value output.",
-            param_schema=[
-                ParamSchema(name="value", type="float", default=0.0, required=True),
-            ],
+            param_model=_ConstantParams,
             input_ports=[],
             output_ports=["output"],
             icon="Circle",
@@ -1345,12 +1595,13 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Ramp",
+            runtime_type=Ramp,
             category="Sources",
             description="Linear ramp over time.",
-            param_schema=[
-                ParamSchema(name="slope", type="float", default=1.0, required=True),
-                ParamSchema(name="intercept", type="float", default=0.0, required=True),
-                ParamSchema(name="dt", type="float", default=0.01, required=True),
+            parameter_fields=[
+                ParameterField(name="slope", type="float", default=1.0, required=True),
+                ParameterField(name="intercept", type="float", default=0.0, required=True),
+                ParameterField(name="dt", type="float", default=0.01, required=True),
             ],
             input_ports=[],
             output_ports=["output"],
@@ -1365,14 +1616,15 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Sine",
+            runtime_type=Sine,
             category="Sources",
             description="Sinusoidal signal.",
-            param_schema=[
-                ParamSchema(name="amplitude", type="float", default=1.0, required=True),
-                ParamSchema(name="frequency", type="float", default=1.0, required=True),
-                ParamSchema(name="phase", type="float", default=0.0, required=False),
-                ParamSchema(name="offset", type="float", default=0.0, required=False),
-                ParamSchema(name="dt", type="float", default=0.01, required=True),
+            parameter_fields=[
+                ParameterField(name="amplitude", type="float", default=1.0, required=True),
+                ParameterField(name="frequency", type="float", default=1.0, required=True),
+                ParameterField(name="phase", type="float", default=0.0, required=False),
+                ParameterField(name="offset", type="float", default=0.0, required=False),
+                ParameterField(name="dt", type="float", default=0.01, required=True),
             ],
             input_ports=[],
             output_ports=["output"],
@@ -1387,14 +1639,15 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Pulse",
+            runtime_type=Pulse,
             category="Sources",
             description="Pulse/square wave.",
-            param_schema=[
-                ParamSchema(name="amplitude", type="float", default=1.0, required=True),
-                ParamSchema(name="period", type="float", default=1.0, required=True),
-                ParamSchema(name="duty_cycle", type="float", default=0.5, required=True),
-                ParamSchema(name="offset", type="float", default=0.0, required=False),
-                ParamSchema(name="dt", type="float", default=0.01, required=True),
+            parameter_fields=[
+                ParameterField(name="amplitude", type="float", default=1.0, required=True),
+                ParameterField(name="period", type="float", default=1.0, required=True),
+                ParameterField(name="duty_cycle", type="float", default=0.5, required=True),
+                ParameterField(name="offset", type="float", default=0.0, required=False),
+                ParameterField(name="dt", type="float", default=0.01, required=True),
             ],
             input_ports=[],
             output_ports=["output"],
@@ -1409,12 +1662,13 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Noise",
+            runtime_type=Noise,
             category="Signal Processing",
             description="Random noise source.",
-            param_schema=[
-                ParamSchema(name="mean", type="float", default=0.0, required=False),
-                ParamSchema(name="std", type="float", default=1.0, required=True),
-                ParamSchema(name="shape", type="array", default=[1], required=False),
+            parameter_fields=[
+                ParameterField(name="mean", type="float", default=0.0, required=False),
+                ParameterField(name="std", type="float", default=1.0, required=True),
+                ParameterField(name="shape", type="array", default=[1], required=False),
             ],
             input_ports=[],
             output_ports=["output"],
@@ -1429,11 +1683,12 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Saturation",
+            runtime_type=Saturation,
             category="Signal Processing",
             description="Clamp to min/max range.",
-            param_schema=[
-                ParamSchema(name="min_val", type="float", default=-1.0, required=True),
-                ParamSchema(name="max_val", type="float", default=1.0, required=True),
+            parameter_fields=[
+                ParameterField(name="min_val", type="float", default=-1.0, required=True),
+                ParameterField(name="max_val", type="float", default=1.0, required=True),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1448,11 +1703,16 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="DelayLine",
+            runtime_type=DelayLine,
+            constructor=ComponentConstructorPlan(
+                context_adapters={"input_shape": ("input_proto", "array_prototype")}
+            ),
             category="Signal Processing",
             description="Discrete delay buffer.",
-            param_schema=[
-                ParamSchema(name="delay", type="int", default=1, min=0, required=True),
-                ParamSchema(name="init_value", type="float", default=0.0, required=False),
+            parameter_fields=[
+                ParameterField(name="delay", type="int", default=1, min=0, required=True),
+                ParameterField(name="init_value", type="float", default=0.0, required=False),
+                ParameterField(name="input_shape", type="array", default=None, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1467,20 +1727,27 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="MLP",
+            runtime_type=MLP,
+            build_context_fields=("dtype",),
+            constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+            attribute_paths={
+                "activation": "activation_name",
+                "final_activation": "final_activation_name",
+            },
             category="Neural Networks",
             description="Multi-layer perceptron.",
-            param_schema=[
-                ParamSchema(name="input_size", type="int", default=4, min=1, required=True),
-                ParamSchema(name="output_size", type="int", default=2, min=1, required=True),
-                ParamSchema(name="hidden_sizes", type="array", default=[64], required=False),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="input_size", type="int", default=4, min=1, required=True),
+                ParameterField(name="output_size", type="int", default=2, min=1, required=True),
+                ParameterField(name="hidden_sizes", type="array", default=[64], required=False),
+                ParameterField(
                     name="activation",
                     type="enum",
                     options=["relu", "tanh", "identity"],
                     default="relu",
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="final_activation",
                     type="enum",
                     options=["identity", "tanh", "relu"],
@@ -1502,13 +1769,17 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Linear",
+            runtime_type=Linear,
+            build_context_fields=("dtype",),
+            constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+            attribute_paths={"activation": "activation_name"},
             category="Neural Networks",
             description="Linear layer.",
-            param_schema=[
-                ParamSchema(name="input_size", type="int", default=1, min=1, required=True),
-                ParamSchema(name="output_size", type="int", default=1, min=1, required=True),
-                ParamSchema(name="use_bias", type="bool", default=True, required=False),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="input_size", type="int", default=1, min=1, required=True),
+                ParameterField(name="output_size", type="int", default=1, min=1, required=True),
+                ParameterField(name="use_bias", type="bool", default=True, required=False),
+                ParameterField(
                     name="activation",
                     type="enum",
                     options=["identity", "tanh", "relu", "sigmoid"],
@@ -1530,11 +1801,14 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="GRU",
+            runtime_type=GRU,
+            build_context_fields=("dtype",),
+            constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
             category="Neural Networks",
             description="GRU cell.",
-            param_schema=[
-                ParamSchema(name="input_size", type="int", default=4, min=1, required=True),
-                ParamSchema(name="hidden_size", type="int", default=4, min=1, required=True),
+            parameter_fields=[
+                ParameterField(name="input_size", type="int", default=4, min=1, required=True),
+                ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
             ],
             input_ports=["input", "hidden"],
             output_ports=["output", "hidden"],
@@ -1550,13 +1824,30 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="VanillaRNN",
+            runtime_type=VanillaRNN,
+            build_context_fields=("dtype",),
+            constructor=ComponentConstructorPlan(renames={"activation": "activation_name"}),
+            attribute_paths={
+                "activation": "activation_name",
+                "use_bias": "cell.use_bias",
+                "use_noise": "cell.use_noise",
+                "noise_strength": "cell.noise_strength",
+                "dt": "cell.dt",
+                "tau": "cell.tau",
+            },
             category="Neural Networks",
             description="Vanilla recurrent cell.",
-            param_schema=[
-                ParamSchema(name="input_size", type="int", default=4, min=1, required=True),
-                ParamSchema(name="hidden_size", type="int", default=4, min=1, required=True),
-                ParamSchema(name="use_bias", type="bool", default=True, required=False),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="input_size", type="int", default=4, min=1, required=True),
+                ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
+                ParameterField(name="use_bias", type="bool", default=True, required=False),
+                ParameterField(name="use_noise", type="bool", default=False, required=False),
+                ParameterField(
+                    name="noise_strength", type="float", default=0.01, min=0, required=False
+                ),
+                ParameterField(name="dt", type="float", default=1.0, min=0, required=False),
+                ParameterField(name="tau", type="float", default=1.0, min=0, required=False),
+                ParameterField(
                     name="activation",
                     type="enum",
                     options=["tanh", "relu", "identity"],
@@ -1578,11 +1869,14 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="LSTM",
+            runtime_type=LSTM,
+            build_context_fields=("dtype",),
+            constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
             category="Neural Networks",
             description="LSTM cell.",
-            param_schema=[
-                ParamSchema(name="input_size", type="int", default=4, min=1, required=True),
-                ParamSchema(name="hidden_size", type="int", default=4, min=1, required=True),
+            parameter_fields=[
+                ParameterField(name="input_size", type="int", default=4, min=1, required=True),
+                ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
             ],
             input_ports=["input", "hidden", "cell"],
             output_ports=["output", "hidden", "cell"],
@@ -1608,22 +1902,22 @@ def register_builtin_components(registry: _Registry) -> None:
             name="GRUOracle",
             category="Neural Networks",
             description="GRU-based oracle/policy network that maps observations to muscle excitations.",
-            param_schema=[
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(
                     name="hidden_size",
                     type="int",
                     default=128,
                     min=1,
                     required=True,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="n_layers",
                     type="int",
                     default=1,
                     min=1,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="out_size",
                     type="int",
                     default=6,
@@ -1648,10 +1942,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Spring",
+            runtime_type=Spring,
             category="Mechanics",
             description="Linear spring.",
-            param_schema=[
-                ParamSchema(name="stiffness", type="float", default=1.0, required=True),
+            parameter_fields=[
+                ParameterField(name="stiffness", type="float", default=1.0, required=True),
             ],
             input_ports=["displacement"],
             output_ports=["force"],
@@ -1666,10 +1961,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Damper",
+            runtime_type=Damper,
             category="Mechanics",
             description="Viscous damper.",
-            param_schema=[
-                ParamSchema(name="damping", type="float", default=1.0, required=True),
+            parameter_fields=[
+                ParameterField(name="damping", type="float", default=1.0, required=True),
             ],
             input_ports=["velocity"],
             output_ports=["force"],
@@ -1684,11 +1980,14 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="TwoLinkArm",
+            builder=_builders._build_two_link_arm,
+            attribute_paths={"link_lengths": "plant.skeleton.l"},
+            override_reason="constructor wraps the skeleton in DirectForceInput and Mechanics",
             category="Mechanics",
             description="Two-link arm plant with direct force input.",
-            param_schema=[
-                ParamSchema(name="dt", type="float", default=0.01, min=0.001, required=True),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="dt", type="float", default=0.01, min=0.001, required=True),
+                ParameterField(
                     name="link_lengths",
                     type="array",
                     default=[0.30, 0.33],
@@ -1712,12 +2011,18 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="PointMass",
+            builder=_builders._build_point_mass,
+            attribute_paths={
+                "mass": "plant.skeleton.mass",
+                "damping": "plant.skeleton.damping",
+            },
+            override_reason="constructor wraps the skeleton in DirectForceInput and Mechanics",
             category="Mechanics",
             description="Point-mass plant with direct force input.",
-            param_schema=[
-                ParamSchema(name="dt", type="float", default=0.01, min=0.001, required=True),
-                ParamSchema(name="mass", type="float", default=1.0, min=0.0, required=False),
-                ParamSchema(name="damping", type="float", default=0.0, min=0.0, required=False),
+            parameter_fields=[
+                ParameterField(name="dt", type="float", default=0.01, min=0.001, required=True),
+                ParameterField(name="mass", type="float", default=1.0, min=0.0, required=False),
+                ParameterField(name="damping", type="float", default=0.0, min=0.0, required=False),
             ],
             input_ports=["force"],
             output_ports=["effector", "state"],
@@ -1739,10 +2044,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="LinearStateSpace",
+            runtime_type=LinearStateSpace,
             category="Mechanics",
             description="Discrete linear state-space mechanics.",
-            param_schema=[
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(
                     name="A",
                     type="array",
                     default=[
@@ -1753,7 +2059,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     ],
                     required=True,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="B",
                     type="array",
                     default=[
@@ -1764,16 +2070,16 @@ def register_builtin_components(registry: _Registry) -> None:
                     ],
                     required=True,
                 ),
-                ParamSchema(name="B_w", type="array", default=None, required=False),
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=False),
-                ParamSchema(
+                ParameterField(name="B_w", type="array", default=None, required=False),
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=False),
+                ParameterField(
                     name="initial_state",
                     type="array",
                     default=[0.0, 0.0, 0.0, 0.0],
                     required=False,
                 ),
-                ParamSchema(name="pos_slice", type="array", default=[0, 2], required=False),
-                ParamSchema(name="vel_slice", type="array", default=[2, 4], required=False),
+                ParameterField(name="pos_slice", type="array", default=[0, 2], required=False),
+                ParameterField(name="vel_slice", type="array", default=[2, 4], required=False),
             ],
             input_ports=["force", "epsilon"],
             output_ports=["effector", "state"],
@@ -1794,10 +2100,17 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="StructuralLinearStateSpace",
+            builder=_builders._build_structural_linear_state_space,
+            build_context_fields=("_authored_delta_A_value_spec",),
+            extractor=_extract_structural_linear_state_space_params,
+            override_reason=(
+                "constructor materializes a versioned delta_A declaration while retaining "
+                "its authored JSON for exact recovery"
+            ),
             category="Mechanics",
             description="Discrete linear mechanics with a trial-selectable structural delta_A.",
-            param_schema=[
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(
                     name="A",
                     type="array",
                     default=[
@@ -1808,7 +2121,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     ],
                     required=True,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="B",
                     type="array",
                     default=[
@@ -1819,8 +2132,8 @@ def register_builtin_components(registry: _Registry) -> None:
                     ],
                     required=True,
                 ),
-                ParamSchema(name="B_w", type="array", default=None, required=False),
-                ParamSchema(
+                ParameterField(name="B_w", type="array", default=None, required=False),
+                ParameterField(
                     name="delta_A",
                     type="object",
                     default=_DEFAULT_STRUCTURAL_DELTA_A,
@@ -1830,23 +2143,23 @@ def register_builtin_components(registry: _Registry) -> None:
                     ),
                     required=True,
                 ),
-                ParamSchema(name="scale", type="float", default=1.0, required=False),
-                ParamSchema(name="active", type="bool", default=False, required=False),
-                ParamSchema(
+                ParameterField(name="scale", type="float", default=1.0, required=False),
+                ParameterField(name="active", type="bool", default=False, required=False),
+                ParameterField(
                     name="label",
                     type="str",
                     default="structural_linear_dynamics",
                     required=False,
                 ),
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=False),
-                ParamSchema(
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=False),
+                ParameterField(
                     name="initial_state",
                     type="array",
                     default=[0.0, 0.0, 0.0, 0.0],
                     required=False,
                 ),
-                ParamSchema(name="pos_slice", type="array", default=[0, 2], required=False),
-                ParamSchema(name="vel_slice", type="array", default=[2, 4], required=False),
+                ParameterField(name="pos_slice", type="array", default=[0, 2], required=False),
+                ParameterField(name="vel_slice", type="array", default=[2, 4], required=False),
             ],
             input_ports=["force", "epsilon"],
             output_ports=["effector", "state"],
@@ -1868,10 +2181,15 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="StateFeedbackSelector",
+            runtime_type=StateFeedbackSelector,
+            attribute_paths={
+                "state_slices": "state_slices_param",
+                "channels": "channels_param",
+            },
             category="Mechanics",
             description="Select named state-vector slices and optional target-relative feedback.",
-            param_schema=[
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(
                     name="state_slices",
                     type="object",
                     default={
@@ -1880,7 +2198,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     },
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="channels",
                     type="array",
                     default=[
@@ -1889,8 +2207,8 @@ def register_builtin_components(registry: _Registry) -> None:
                     ],
                     required=False,
                 ),
-                ParamSchema(name="expected_state_dim", type="int", default=None, required=False),
-                ParamSchema(name="output_size", type="int", default=None, required=False),
+                ParameterField(name="expected_state_dim", type="int", default=None, required=False),
+                ParameterField(name="output_size", type="int", default=None, required=False),
             ],
             input_ports=["state", "target"],
             output_ports=["feedback"],
@@ -1910,9 +2228,9 @@ def register_builtin_components(registry: _Registry) -> None:
             name="MomentArmProjection",
             category="Mechanics",
             description="Projects muscle forces to joint torques via moment arm matrix (R^T @ forces). Also computes musculotendon lengths and velocities from joint kinematics.",
-            param_schema=[
-                ParamSchema(name="n_muscles", type="int", default=6, min=1, required=True),
-                ParamSchema(name="n_joints", type="int", default=2, min=1, required=True),
+            parameter_fields=[
+                ParameterField(name="n_muscles", type="int", default=6, min=1, required=True),
+                ParameterField(name="n_joints", type="int", default=2, min=1, required=True),
             ],
             input_ports=["forces", "angles", "angular_velocities"],
             output_ports=["torques", "musculotendon_lengths", "musculotendon_velocities"],
@@ -1936,8 +2254,8 @@ def register_builtin_components(registry: _Registry) -> None:
             name="RadialForceProjection",
             category="Mechanics",
             description="Projects radially-arranged muscle forces to a 2D net force vector. Muscles are arranged in evenly-spaced antagonist pairs.",
-            param_schema=[
-                ParamSchema(name="n_muscles", type="int", default=8, min=2, required=True),
+            parameter_fields=[
+                ParameterField(name="n_muscles", type="int", default=8, min=2, required=True),
             ],
             input_ports=["forces"],
             output_ports=["force_2d"],
@@ -1953,9 +2271,9 @@ def register_builtin_components(registry: _Registry) -> None:
             name="AcausalSystem",
             category="Mechanics",
             description="Assembled acausal mechanical system (mass-spring-damper etc.).",
-            param_schema=[
-                ParamSchema(name="dt", type="float", default=0.001, min=0.0001, required=True),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="dt", type="float", default=0.001, min=0.0001, required=True),
+                ParameterField(
                     name="domain",
                     type="enum",
                     options=["translational", "rotational"],
@@ -1978,11 +2296,14 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Channel",
+            builder=_builders._build_channel,
+            extractor=_extract_channel_params,
+            override_reason="noise composition and prototype shape require authored recovery",
             category="Channels",
             description="Delay and noise for a signal.",
-            param_schema=[
-                ParamSchema(name="delay", type="int", default=5, min=0, required=True),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="delay", type="int", default=5, min=0, required=True),
+                ParameterField(
                     name="noise_model",
                     type="enum",
                     options=[
@@ -1994,25 +2315,25 @@ def register_builtin_components(registry: _Registry) -> None:
                     default="additive_gaussian",
                     required=False,
                 ),
-                ParamSchema(name="noise_std", type="float", default=0.01, min=0, required=False),
-                ParamSchema(
+                ParameterField(name="noise_std", type="float", default=0.01, min=0, required=False),
+                ParameterField(
                     name="additive_noise_std",
                     type="float",
                     default=0.0,
                     min=0,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="signal_dependent_noise_std",
                     type="float",
                     default=0.0,
                     min=0,
                     required=False,
                 ),
-                ParamSchema(name="add_noise", type="bool", default=True, required=False),
-                ParamSchema(name="noise_role", type="str", default=None, required=False),
-                ParamSchema(name="noise_timing", type="str", default=None, required=False),
-                ParamSchema(name="input_shape", type="array", default=None, required=False),
+                ParameterField(name="add_noise", type="bool", default=True, required=False),
+                ParameterField(name="noise_role", type="str", default=None, required=False),
+                ParameterField(name="noise_timing", type="str", default=None, required=False),
+                ParameterField(name="input_shape", type="array", default=None, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2027,24 +2348,27 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="FeedbackChannels",
+            builder=_builders._build_feedback_channels,
+            extractor=_extract_feedback_channel_params,
+            override_reason="selector closure and nested channel state require authored recovery",
             category="Channels",
             description="Mechanics feedback selector followed by delay/noise channels.",
-            param_schema=[
-                ParamSchema(name="delay", type="int", default=0, min=0, required=False),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="delay", type="int", default=0, min=0, required=False),
+                ParameterField(
                     name="selector",
                     type="enum",
                     options=["point_mass_pos_vel", "effector_pos_vel", "plant_skeleton", "paths"],
                     default="point_mass_pos_vel",
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="paths",
                     type="array",
                     default=["plant.skeleton.pos", "plant.skeleton.vel"],
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="noise_model",
                     type="enum",
                     options=[
@@ -2056,15 +2380,17 @@ def register_builtin_components(registry: _Registry) -> None:
                     default="additive_gaussian",
                     required=False,
                 ),
-                ParamSchema(name="noise_std", type="float", default=0.0, min=0, required=False),
-                ParamSchema(name="add_noise", type="bool", default=False, required=False),
-                ParamSchema(
+                ParameterField(name="noise_std", type="float", default=0.0, min=0, required=False),
+                ParameterField(name="add_noise", type="bool", default=False, required=False),
+                ParameterField(
                     name="noise_role", type="str", default="sensory_feedback", required=False
                 ),
-                ParamSchema(
+                ParameterField(
                     name="noise_timing", type="str", default="pre_controller", required=False
                 ),
-                ParamSchema(name="input_shape", type="array", default=[[2], [2]], required=False),
+                ParameterField(
+                    name="input_shape", type="array", default=[[2], [2]], required=False
+                ),
             ],
             input_ports=["mechanics"],
             output_ports=["feedback"],
@@ -2079,13 +2405,20 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="FirstOrderFilter",
+            runtime_type=FirstOrderFilter,
+            constructor=ComponentConstructorPlan(
+                context_adapters={"input_shape": ("input_proto", "array_prototype")}
+            ),
             category="Channels",
             description="First-order low-pass filter.",
-            param_schema=[
-                ParamSchema(name="tau_rise", type="float", default=0.05, min=0.0, required=True),
-                ParamSchema(name="tau_decay", type="float", default=0.05, min=0.0, required=True),
-                ParamSchema(name="dt", type="float", default=0.001, min=0.0, required=True),
-                ParamSchema(name="init_value", type="float", default=0.0, required=False),
+            parameter_fields=[
+                ParameterField(name="tau_rise", type="float", default=0.05, min=0.0, required=True),
+                ParameterField(
+                    name="tau_decay", type="float", default=0.05, min=0.0, required=True
+                ),
+                ParameterField(name="dt", type="float", default=0.001, min=0.0, required=True),
+                ParameterField(name="init_value", type="float", default=0.0, required=False),
+                ParameterField(name="input_shape", type="array", default=None, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2100,13 +2433,22 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="CurlField",
+            runtime_type=CurlField,
+            constructor=ComponentConstructorPlan(
+                groups={"params": (CurlFieldParams, ("scale", "amplitude", "active"))}
+            ),
+            attribute_paths={
+                "scale": "_initial_state.scale",
+                "amplitude": "_initial_state.amplitude",
+                "active": "_initial_state.active",
+            },
             category="Interventions",
             description="Velocity-dependent curl field.",
-            param_schema=[
-                ParamSchema(name="scale", type="float", default=1.0, required=True),
-                ParamSchema(name="amplitude", type="float", default=1.0, required=True),
-                ParamSchema(name="active", type="bool", default=False, required=False),
-                ParamSchema(name="label", type="str", default="curl_field", required=False),
+            parameter_fields=[
+                ParameterField(name="scale", type="float", default=1.0, required=True),
+                ParameterField(name="amplitude", type="float", default=1.0, required=True),
+                ParameterField(name="active", type="bool", default=False, required=False),
+                ParameterField(name="label", type="str", default="curl_field", required=False),
             ],
             input_ports=["effector", "force", "params_override"],
             output_ports=["force"],
@@ -2125,14 +2467,30 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="FixedField",
+            runtime_type=FixedField,
+            constructor=ComponentConstructorPlan(
+                groups={
+                    "params": (
+                        FixedFieldParams,
+                        ("scale", "amplitude", "field", "active"),
+                    )
+                },
+                array_conversions={"field": None},
+            ),
+            attribute_paths={
+                "scale": "_initial_state.scale",
+                "amplitude": "_initial_state.amplitude",
+                "field": "_initial_state.field",
+                "active": "_initial_state.active",
+            },
             category="Interventions",
             description="Fixed force field.",
-            param_schema=[
-                ParamSchema(name="scale", type="float", default=1.0, required=True),
-                ParamSchema(name="amplitude", type="float", default=1.0, required=True),
-                ParamSchema(name="field", type="array", default=[0.0, 0.0], required=True),
-                ParamSchema(name="active", type="bool", default=False, required=False),
-                ParamSchema(name="label", type="str", default="fixed_field", required=False),
+            parameter_fields=[
+                ParameterField(name="scale", type="float", default=1.0, required=True),
+                ParameterField(name="amplitude", type="float", default=1.0, required=True),
+                ParameterField(name="field", type="array", default=[0.0, 0.0], required=True),
+                ParameterField(name="active", type="bool", default=False, required=False),
+                ParameterField(name="label", type="str", default="fixed_field", required=False),
             ],
             input_ports=["force", "params_override"],
             output_ports=["force"],
@@ -2150,46 +2508,49 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="ThresholdLatchedForce",
+            builder=_builders._build_threshold_latched_force,
+            extractor=_extract_declared_to_params,
+            override_reason="state selector and intervention parameters are aggregated objects",
             category="Interventions",
             description="Additive force latched by a runtime state-threshold crossing.",
-            param_schema=[
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(
                     name="state_selector",
                     type="object",
                     default={"kind": "fixed", "path": ["pos", 0]},
                     required=True,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="direction",
                     type="enum",
                     options=["increasing", "decreasing"],
                     default="increasing",
                     required=True,
                 ),
-                ParamSchema(name="threshold", type="float", default=0.0, required=True),
-                ParamSchema(
+                ParameterField(name="threshold", type="float", default=0.0, required=True),
+                ParameterField(
                     name="force",
                     type="array",
                     default=[0.0, 0.0],
                     required=True,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="lateral_force",
                     type="float",
                     default=0.0,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="ramp_duration",
                     type="float",
                     default=0.0,
                     min=0.0,
                     required=False,
                 ),
-                ParamSchema(name="scale", type="float", default=1.0, required=True),
-                ParamSchema(name="active", type="bool", default=False, required=False),
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParamSchema(
+                ParameterField(name="scale", type="float", default=1.0, required=True),
+                ParameterField(name="active", type="bool", default=False, required=False),
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+                ParameterField(
                     name="label",
                     type="str",
                     default="threshold_latched_force",
@@ -2227,24 +2588,39 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="DynamicsMatrixPerturb",
+            runtime_type=DynamicsMatrixPerturb,
+            constructor=ComponentConstructorPlan(
+                groups={
+                    "params": (
+                        DynamicsMatrixPerturbParams,
+                        ("scale", "delta_A", "active"),
+                    )
+                },
+                array_conversions={"delta_A": (2, 4)},
+            ),
+            attribute_paths={
+                "scale": "_initial_state.scale",
+                "delta_A": "_initial_state.delta_A",
+                "active": "_initial_state.active",
+            },
             category="Interventions",
             description="State-feedback dynamics-matrix perturbation in the force channel.",
-            param_schema=[
-                ParamSchema(name="scale", type="float", default=1.0, required=True),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="scale", type="float", default=1.0, required=True),
+                ParameterField(
                     name="delta_A",
                     type="array",
                     default=[[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]],
                     required=True,
                 ),
-                ParamSchema(name="active", type="bool", default=False, required=False),
-                ParamSchema(
+                ParameterField(name="active", type="bool", default=False, required=False),
+                ParameterField(
                     name="label",
                     type="str",
                     default="dynamics_matrix_perturb",
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="mass",
                     type="float",
                     default=None,
@@ -2270,17 +2646,26 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="AffineValueComposer",
+            runtime_type=AffineValueComposer,
+            constructor=ComponentConstructorPlan(omit=frozenset({"schema_version"})),
+            attribute_paths={
+                "schema_version": "$default",
+                "gain_init": "gain",
+                "bias_init": "bias",
+            },
             category="Interventions",
             description="State/target-conditioned affine value composer.",
-            param_schema=[
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(
                     name="schema_version",
                     type="str",
                     default=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
                     required=True,
                 ),
-                ParamSchema(name="output_block_size", type="int", default=1, min=1, required=True),
-                ParamSchema(
+                ParameterField(
+                    name="output_block_size", type="int", default=1, min=1, required=True
+                ),
+                ParameterField(
                     name="feature_rules",
                     type="object",
                     default=[{"kind": "identity", "state_slice": [0, 1]}],
@@ -2289,10 +2674,10 @@ def register_builtin_components(registry: _Registry) -> None:
                         "Ordered rules. Supported kinds: identity and target_relative_difference."
                     ),
                 ),
-                ParamSchema(name="gain_init", type="array", default=[[0.0]], required=False),
-                ParamSchema(name="bias_init", type="array", default=[0.0], required=False),
-                ParamSchema(name="use_bias", type="bool", default=True, required=False),
-                ParamSchema(
+                ParameterField(name="gain_init", type="array", default=[[0.0]], required=False),
+                ParameterField(name="bias_init", type="array", default=[0.0], required=False),
+                ParameterField(name="use_bias", type="bool", default=True, required=False),
+                ParameterField(
                     name="label",
                     type="str",
                     default="affine_value_composer",
@@ -2320,11 +2705,16 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="AddNoise",
+            runtime_type=AddNoise,
+            constructor=ComponentConstructorPlan(
+                groups={"params": (AddNoiseParams, ("scale", "active"))}
+            ),
+            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
             category="Interventions",
             description="Add noise to a signal.",
-            param_schema=[
-                ParamSchema(name="scale", type="float", default=1.0, required=True),
-                ParamSchema(name="active", type="bool", default=False, required=False),
+            parameter_fields=[
+                ParameterField(name="scale", type="float", default=1.0, required=True),
+                ParameterField(name="active", type="bool", default=False, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2339,11 +2729,16 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="NetworkClamp",
+            runtime_type=NetworkClamp,
+            constructor=ComponentConstructorPlan(
+                groups={"params": (NetworkIntervenorParams, ("scale", "active"))}
+            ),
+            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
             category="Interventions",
             description="Clamp network unit activity.",
-            param_schema=[
-                ParamSchema(name="scale", type="float", default=1.0, required=True),
-                ParamSchema(name="active", type="bool", default=False, required=False),
+            parameter_fields=[
+                ParameterField(name="scale", type="float", default=1.0, required=True),
+                ParameterField(name="active", type="bool", default=False, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2359,45 +2754,47 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="ReluMuscle",
+            runtime_type=ReluMuscle,
+            attribute_paths={"initial_activation": "_initial_state"},
             category="Muscles",
             description="Simple muscle: force = activation * F_max.",
-            param_schema=[
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(
                     name="max_isometric_force",
                     type="float",
                     default=500.0,
                     min=0.0,
                     required=True,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="tau_activation",
                     type="float",
                     default=0.015,
                     min=0.001,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="tau_deactivation",
                     type="float",
                     default=0.05,
                     min=0.001,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="min_activation",
                     type="float",
                     default=0.0,
                     min=0.0,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="dt",
                     type="float",
                     default=0.01,
                     min=0.001,
                     required=True,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="initial_activation",
                     type="float",
                     default=0.0,
@@ -2421,31 +2818,33 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="RigidTendonHillMuscleThelen",
+            runtime_type=RigidTendonHillMuscleThelen,
+            attribute_paths={"initial_activation": "_initial_state"},
             category="Muscles",
             description="Hill-type muscle with rigid tendon assumption. Vectorized for multiple muscles.",
-            param_schema=[
-                ParamSchema(name="n_muscles", type="int", default=6, min=1, required=True),
-                ParamSchema(name="dt", type="float", default=0.01, min=0.001, required=True),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="n_muscles", type="int", default=6, min=1, required=True),
+                ParameterField(name="dt", type="float", default=0.01, min=0.001, required=True),
+                ParameterField(
                     name="tau_activation", type="float", default=0.015, min=0.001, required=False
                 ),
-                ParamSchema(
+                ParameterField(
                     name="tau_deactivation", type="float", default=0.05, min=0.001, required=False
                 ),
-                ParamSchema(
+                ParameterField(
                     name="max_isometric_force", type="float", default=500.0, min=0.0, required=False
                 ),
-                ParamSchema(
+                ParameterField(
                     name="optimal_muscle_length",
                     type="float",
                     default=0.1,
                     min=0.001,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="tendon_slack_length", type="float", default=0.2, min=0.001, required=False
                 ),
-                ParamSchema(
+                ParameterField(
                     name="initial_activation", type="float", default=0.001, min=0.0, required=False
                 ),
             ],
@@ -2470,31 +2869,32 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Arm6MuscleRigidTendon",
+            runtime_type=Arm6MuscleRigidTendon,
             category="Mechanics",
             description="6-muscle arm with Thelen rigid tendon.",
-            param_schema=[
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(
                     name="dt",
                     type="float",
                     default=0.01,
                     min=0.001,
                     required=True,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="max_isometric_force",
                     type="float",
                     default=500.0,
                     min=0.0,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="optimal_muscle_length",
                     type="float",
                     default=0.1,
                     min=0.001,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="tendon_slack_length",
                     type="float",
                     default=0.1,
@@ -2529,24 +2929,25 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="PointMass8MuscleRelu",
+            runtime_type=PointMass8MuscleRelu,
             category="Mechanics",
             description="8-muscle point mass with ReLU actuators.",
-            param_schema=[
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(
                     name="n_pairs",
                     type="int",
                     default=4,
                     min=1,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="max_isometric_force",
                     type="float",
                     default=500.0,
                     min=0.0,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="dt",
                     type="float",
                     default=0.01,
@@ -2572,6 +2973,12 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="AnalyticalMusculoskeletalPlant",
+            builder=_builders._build_analytical_musculoskeletal_plant,
+            extractor=_extract_analytical_plant_params,
+            override_reason=(
+                "constructor aggregates body-preset parameters into an analytical plant "
+                "and Diffrax backend"
+            ),
             category="Mechanics",
             description=(
                 "Two-link arm musculoskeletal plant with pure JAX Lagrangian "
@@ -2579,36 +2986,36 @@ def register_builtin_components(registry: _Registry) -> None:
                 "differentiable; no MuJoCo dependency. ODE state: 2 joint "
                 "angles + 2 angular velocities + 6 muscle activations."
             ),
-            param_schema=[
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(
                     name="dt",
                     type="float",
                     default=0.01,
                     min=0.0001,
                     required=True,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="n_steps",
                     type="int",
                     default=1,
                     min=1,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="tau_act",
                     type="float",
                     default=0.01,
                     min=0.001,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="tau_deact",
                     type="float",
                     default=0.04,
                     min=0.001,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="clip_states",
                     type="bool",
                     default=True,
@@ -2644,11 +3051,16 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="NetworkConstantInput",
+            runtime_type=NetworkConstantInput,
+            constructor=ComponentConstructorPlan(
+                groups={"params": (NetworkIntervenorParams, ("scale", "active"))}
+            ),
+            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
             category="Interventions",
             description="Add constant input to network units.",
-            param_schema=[
-                ParamSchema(name="scale", type="float", default=1.0, required=True),
-                ParamSchema(name="active", type="bool", default=False, required=False),
+            parameter_fields=[
+                ParameterField(name="scale", type="float", default=1.0, required=True),
+                ParameterField(name="active", type="bool", default=False, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2663,11 +3075,16 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="ConstantInput",
+            runtime_type=ConstantInput,
+            constructor=ComponentConstructorPlan(
+                groups={"params": (ConstantInputParams, ("scale", "active"))}
+            ),
+            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
             category="Interventions",
             description="Add a constant input to a signal.",
-            param_schema=[
-                ParamSchema(name="scale", type="float", default=1.0, required=True),
-                ParamSchema(name="active", type="bool", default=False, required=False),
+            parameter_fields=[
+                ParameterField(name="scale", type="float", default=1.0, required=True),
+                ParameterField(name="active", type="bool", default=False, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2682,19 +3099,30 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="SimpleReaches",
+            builder=_builders._build_simple_reaches,
+            override_reason="constructor aggregates task, trial, loss, and workspace objects",
+            attribute_paths={
+                "n_steps": "task.n_steps",
+                "workspace": "task.workspace",
+                "eval_n_directions": "task.eval_n_directions",
+                "eval_reach_length": "task.eval_reach_length",
+                "eval_grid_n": "task.eval_grid_n",
+            },
             category="Tasks",
             description="Random reach endpoints in a workspace.",
-            param_schema=[
-                ParamSchema(name="n_steps", type="int", default=200, min=1, required=True),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="n_steps", type="int", default=200, min=1, required=True),
+                ParameterField(
                     name="workspace",
                     type="bounds2d",
                     default=[[-1.0, -1.0], [1.0, 1.0]],
                     required=True,
                 ),
-                ParamSchema(name="eval_n_directions", type="int", default=7, min=1, required=False),
-                ParamSchema(name="eval_reach_length", type="float", default=0.5, required=False),
-                ParamSchema(name="eval_grid_n", type="int", default=1, min=1, required=False),
+                ParameterField(
+                    name="eval_n_directions", type="int", default=7, min=1, required=False
+                ),
+                ParameterField(name="eval_reach_length", type="float", default=0.5, required=False),
+                ParameterField(name="eval_grid_n", type="int", default=1, min=1, required=False),
             ],
             input_ports=[],
             output_ports=["inputs", "targets", "inits", "intervene"],
@@ -2714,60 +3142,84 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="DelayedReaches",
+            builder=_builders._build_delayed_reaches,
+            extractor=_extract_delayed_reaches_params,
+            param_projection=_builders._project_delayed_reaches_params,
+            override_reason="n_control_stages is transformed into the task step count",
+            attribute_paths={
+                "n_steps": "task.n_steps",
+                "workspace": "task.workspace",
+                "preset": "task.preset",
+                "train_endpoint_mode": "task.train_endpoint_mode",
+                "epoch_len_ranges": "task.epoch_len_ranges",
+                "epoch_names": "task.epoch_names",
+                "target_on_epochs": "task.target_on_epochs",
+                "hold_epochs": "task.hold_epochs",
+                "move_epochs": "task.move_epochs",
+                "p_catch_trial": "task.p_catch_trial",
+                "target_visible_from_start": "task.target_visible_from_start",
+                "go_cue_event_name": "task.go_cue_event_name",
+                "catch_metadata_policy": "task.catch_metadata_policy",
+                "eval_n_directions": "task.eval_n_directions",
+                "eval_reach_length": "task.eval_reach_length",
+                "eval_grid_n": "task.eval_grid_n",
+            },
             category="Tasks",
             description="Reaches with a delay period before movement.",
-            param_schema=[
-                ParamSchema(name="n_steps", type="int", default=140, min=1, required=False),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="n_steps", type="int", default=140, min=1, required=False),
+                ParameterField(
                     name="n_control_stages",
                     type="int",
                     default=None,
                     min=1,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="workspace",
                     type="bounds2d",
                     default=[[-1.0, -1.0], [1.0, 1.0]],
                     required=True,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="preset",
                     type="enum",
                     options=["default", "delayed_center_out"],
                     default="default",
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="train_endpoint_mode",
                     type="enum",
                     options=["workspace", "center_out"],
                     default="workspace",
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="epoch_len_ranges",
                     type="array",
                     default=[[5, 15], [10, 20]],
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="epoch_names",
                     type="array",
                     default=["hold", "target_on", "movement"],
                     required=False,
                 ),
-                ParamSchema(name="target_on_epochs", type="array", default=[1, 2], required=False),
-                ParamSchema(name="hold_epochs", type="array", default=[0, 1], required=False),
-                ParamSchema(name="move_epochs", type="array", default=[2], required=False),
-                ParamSchema(
+                ParameterField(
+                    name="target_on_epochs", type="array", default=[1, 2], required=False
+                ),
+                ParameterField(name="hold_epochs", type="array", default=[0, 1], required=False),
+                ParameterField(name="move_epochs", type="array", default=[2], required=False),
+                ParameterField(
                     name="target_visible_from_start",
                     type="bool",
                     default=False,
                     required=False,
                 ),
-                ParamSchema(name="go_cue_event_name", type="str", default=None, required=False),
-                ParamSchema(
+                ParameterField(name="go_cue_event_name", type="str", default=None, required=False),
+                ParameterField(
                     name="p_catch_trial",
                     type="float",
                     default=0.5,
@@ -2775,16 +3227,18 @@ def register_builtin_components(registry: _Registry) -> None:
                     max=1.0,
                     required=False,
                 ),
-                ParamSchema(
+                ParameterField(
                     name="catch_metadata_policy",
                     type="enum",
                     options=["none", "flag"],
                     default="none",
                     required=False,
                 ),
-                ParamSchema(name="eval_n_directions", type="int", default=7, min=1, required=False),
-                ParamSchema(name="eval_reach_length", type="float", default=0.5, required=False),
-                ParamSchema(name="eval_grid_n", type="int", default=1, min=1, required=False),
+                ParameterField(
+                    name="eval_n_directions", type="int", default=7, min=1, required=False
+                ),
+                ParameterField(name="eval_reach_length", type="float", default=0.5, required=False),
+                ParameterField(name="eval_grid_n", type="int", default=1, min=1, required=False),
             ],
             input_ports=[],
             output_ports=["inputs", "targets", "inits", "intervene"],
@@ -2807,10 +3261,10 @@ def register_builtin_components(registry: _Registry) -> None:
             name="Integrator",
             category="Control",
             description="Continuous-time integrator (Euler).",
-            param_schema=[
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParamSchema(name="n_dims", type="int", default=1, min=1, required=True),
-                ParamSchema(name="initial_value", type="float", default=0.0, required=False),
+            parameter_fields=[
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="initial_value", type="float", default=0.0, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2827,10 +3281,10 @@ def register_builtin_components(registry: _Registry) -> None:
             name="Derivative",
             category="Control",
             description="Finite-difference derivative.",
-            param_schema=[
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParamSchema(name="n_dims", type="int", default=1, min=1, required=True),
-                ParamSchema(name="initial_value", type="float", default=0.0, required=False),
+            parameter_fields=[
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="initial_value", type="float", default=0.0, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2847,8 +3301,8 @@ def register_builtin_components(registry: _Registry) -> None:
             name="StateSpace",
             category="Control",
             description="Continuous LTI state-space (Euler).",
-            param_schema=[
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=True),
+            parameter_fields=[
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2864,8 +3318,8 @@ def register_builtin_components(registry: _Registry) -> None:
             name="TransferFunction",
             category="Control",
             description="Transfer function H(s)=num/den.",
-            param_schema=[
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=True),
+            parameter_fields=[
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2881,13 +3335,13 @@ def register_builtin_components(registry: _Registry) -> None:
             name="PID",
             category="Control",
             description="Continuous PID with anti-windup.",
-            param_schema=[
-                ParamSchema(name="Kp", type="float", default=1.0, required=True),
-                ParamSchema(name="Ki", type="float", default=0.0, required=False),
-                ParamSchema(name="Kd", type="float", default=0.0, required=False),
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParamSchema(name="integral_limit", type="float", default=1000.0, required=False),
-                ParamSchema(name="n_dims", type="int", default=1, min=1, required=True),
+            parameter_fields=[
+                ParameterField(name="Kp", type="float", default=1.0, required=True),
+                ParameterField(name="Ki", type="float", default=0.0, required=False),
+                ParameterField(name="Kd", type="float", default=0.0, required=False),
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+                ParameterField(name="integral_limit", type="float", default=1000.0, required=False),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
             ],
             input_ports=["error"],
             output_ports=["output"],
@@ -2904,13 +3358,13 @@ def register_builtin_components(registry: _Registry) -> None:
             name="PIDDiscrete",
             category="Control",
             description="Discrete PID (velocity form).",
-            param_schema=[
-                ParamSchema(name="Kp", type="float", default=1.0, required=True),
-                ParamSchema(name="Ki", type="float", default=0.0, required=False),
-                ParamSchema(name="Kd", type="float", default=0.0, required=False),
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParamSchema(name="output_limit", type="float", default=1000.0, required=False),
-                ParamSchema(name="n_dims", type="int", default=1, min=1, required=True),
+            parameter_fields=[
+                ParameterField(name="Kp", type="float", default=1.0, required=True),
+                ParameterField(name="Ki", type="float", default=0.0, required=False),
+                ParameterField(name="Kd", type="float", default=0.0, required=False),
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+                ParameterField(name="output_limit", type="float", default=1000.0, required=False),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
             ],
             input_ports=["error"],
             output_ports=["output"],
@@ -2925,13 +3379,14 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="AffineFeedbackController",
+            runtime_type=AffineFeedbackController,
             category="Control",
             description="Time-varying affine feedback controller with optional feedforward.",
-            param_schema=[
-                ParamSchema(name="gain", type="array", default=[[[1.0]]], required=True),
-                ParamSchema(name="bias", type="array", default=None, required=False),
-                ParamSchema(name="feedforward", type="array", default=None, required=False),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="gain", type="array", default=[[[1.0]]], required=True),
+                ParameterField(name="bias", type="array", default=None, required=False),
+                ParameterField(name="feedforward", type="array", default=None, required=False),
+                ParameterField(
                     name="schedule_policy",
                     type="enum",
                     options=["hold", "error"],
@@ -2959,10 +3414,10 @@ def register_builtin_components(registry: _Registry) -> None:
             name="IntegratorDiscrete",
             category="Discrete",
             description="Discrete-time accumulator.",
-            param_schema=[
-                ParamSchema(name="dt", type="float", default=1.0, min=0.0, required=True),
-                ParamSchema(name="n_dims", type="int", default=1, min=1, required=True),
-                ParamSchema(name="initial_value", type="float", default=0.0, required=False),
+            parameter_fields=[
+                ParameterField(name="dt", type="float", default=1.0, min=0.0, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="initial_value", type="float", default=0.0, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2979,9 +3434,9 @@ def register_builtin_components(registry: _Registry) -> None:
             name="UnitDelay",
             category="Discrete",
             description="Unit delay (z^-1).",
-            param_schema=[
-                ParamSchema(name="n_dims", type="int", default=1, min=1, required=True),
-                ParamSchema(name="initial_value", type="float", default=0.0, required=False),
+            parameter_fields=[
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="initial_value", type="float", default=0.0, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2998,10 +3453,10 @@ def register_builtin_components(registry: _Registry) -> None:
             name="ZeroOrderHold",
             category="Discrete",
             description="Sample and hold every N steps.",
-            param_schema=[
-                ParamSchema(name="hold_steps", type="int", default=1, min=1, required=True),
-                ParamSchema(name="n_dims", type="int", default=1, min=1, required=True),
-                ParamSchema(name="initial_value", type="float", default=0.0, required=False),
+            parameter_fields=[
+                ParameterField(name="hold_steps", type="int", default=1, min=1, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="initial_value", type="float", default=0.0, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3017,10 +3472,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Mux",
+            runtime_type=Mux,
             category="Signal Processing",
             description="Concatenate inputs into single vector.",
-            param_schema=[
-                ParamSchema(name="n_inputs", type="int", default=2, min=1, required=True),
+            parameter_fields=[
+                ParameterField(name="n_inputs", type="int", default=2, min=1, required=True),
             ],
             input_ports=["in_0", "in_1"],
             output_ports=["output"],
@@ -3046,9 +3502,10 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Ravel",
+            runtime_type=Ravel,
             category="Signal Processing",
             description="Flatten a PyTree value into a vector.",
-            param_schema=[],
+            parameter_fields=[],
             input_ports=["input"],
             output_ports=["output"],
             icon="Layers",
@@ -3062,10 +3519,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Demux",
+            runtime_type=Demux,
             category="Signal Processing",
             description="Split vector into multiple outputs.",
-            param_schema=[
-                ParamSchema(name="sizes", type="array", default=[1, 1], required=True),
+            parameter_fields=[
+                ParameterField(name="sizes", type="array", default=[1, 1], required=True),
             ],
             input_ports=["input"],
             output_ports=["out_0", "out_1"],
@@ -3093,8 +3551,8 @@ def register_builtin_components(registry: _Registry) -> None:
             name="Switch",
             category="Signal Processing",
             description="Route signal by threshold condition.",
-            param_schema=[
-                ParamSchema(name="threshold", type="float", default=0.0, required=True),
+            parameter_fields=[
+                ParameterField(name="threshold", type="float", default=0.0, required=True),
             ],
             input_ports=["condition", "true_input", "false_input"],
             output_ports=["output"],
@@ -3115,8 +3573,8 @@ def register_builtin_components(registry: _Registry) -> None:
             name="DeadZone",
             category="Signal Processing",
             description="Zero output for small inputs.",
-            param_schema=[
-                ParamSchema(name="threshold", type="float", default=0.1, min=0.0, required=True),
+            parameter_fields=[
+                ParameterField(name="threshold", type="float", default=0.1, min=0.0, required=True),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3133,11 +3591,11 @@ def register_builtin_components(registry: _Registry) -> None:
             name="RateLimiter",
             category="Signal Processing",
             description="Limit rate of change of signal.",
-            param_schema=[
-                ParamSchema(name="max_rate", type="float", default=1.0, min=0.0, required=True),
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParamSchema(name="n_dims", type="int", default=1, min=1, required=True),
-                ParamSchema(name="initial_value", type="float", default=0.0, required=False),
+            parameter_fields=[
+                ParameterField(name="max_rate", type="float", default=1.0, min=0.0, required=True),
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="initial_value", type="float", default=0.0, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3154,10 +3612,10 @@ def register_builtin_components(registry: _Registry) -> None:
             name="HighPassFilter",
             category="Signal Processing",
             description="High-pass filter (input - lowpass).",
-            param_schema=[
-                ParamSchema(name="tau", type="float", default=0.1, min=0.0, required=True),
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParamSchema(name="n_dims", type="int", default=1, min=1, required=True),
+            parameter_fields=[
+                ParameterField(name="tau", type="float", default=0.1, min=0.0, required=True),
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3174,11 +3632,11 @@ def register_builtin_components(registry: _Registry) -> None:
             name="BandPassFilter",
             category="Signal Processing",
             description="Band-pass: high-pass then low-pass.",
-            param_schema=[
-                ParamSchema(name="tau_low", type="float", default=0.1, min=0.0, required=True),
-                ParamSchema(name="tau_high", type="float", default=0.01, min=0.0, required=True),
-                ParamSchema(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParamSchema(name="n_dims", type="int", default=1, min=1, required=True),
+            parameter_fields=[
+                ParameterField(name="tau_low", type="float", default=0.1, min=0.0, required=True),
+                ParameterField(name="tau_high", type="float", default=0.01, min=0.0, required=True),
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3193,11 +3651,12 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Stabilization",
+            attribute_paths={"n_steps": "task.n_steps", "workspace": "task.workspace"},
             category="Tasks",
             description="Hold position against perturbations.",
-            param_schema=[
-                ParamSchema(name="n_steps", type="int", default=200, min=1, required=True),
-                ParamSchema(
+            parameter_fields=[
+                ParameterField(name="n_steps", type="int", default=200, min=1, required=True),
+                ParameterField(
                     name="workspace",
                     type="bounds2d",
                     default=[[-1.0, -1.0], [1.0, 1.0]],

@@ -15,6 +15,7 @@ import json
 
 import pytest
 
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     EVALUATION_RUN_SPEC_SCHEMA_ID,
     EVALUATION_RUN_SPEC_SCHEMA_VERSION,
@@ -22,7 +23,6 @@ from feedbax.contracts.manifest import (
     REPORT_SPEC_SCHEMA_ID,
     REPORT_SPEC_SCHEMA_VERSION,
     EvaluationRunSpec,
-    ParentRef,
     ReportSpec,
     evaluation_run_manifest_id,
     load_manifest_bytes,
@@ -977,7 +977,11 @@ class TestCheckpointInitializationLowering:
                 "program_step": 1,
             },
             segment_lineage=CheckpointSegmentLineage(start_batch=0, segment_batch_count=1),
-            consistency_predicate={"rules": [], "phase_program_digest": "c" * 64},
+            consistency_predicate={
+                "rules": [],
+                "phase_program_digest": "c" * 64,
+                "pin_algorithm": "canonical_json_v2",
+            },
             run_contract_binding={
                 "training_run_spec_schema_id": "feedbax.spec.training_run",
                 "training_run_spec_schema_version": "feedbax.spec.training_run.v4",
@@ -1071,7 +1075,7 @@ class TestRatifiedEnvelopePolicyRows:
                 / "feedbax_conformance_fixture"
                 / "src"
                 / "feedbax_external_conformance"
-                / "policy_manifest.v1.json"
+                / "policy_manifest.v2.json"
             ).read_text(encoding="utf-8")
         )
         rows = {row["row_id"]: row for row in manifest["guaranteed_rows"]}

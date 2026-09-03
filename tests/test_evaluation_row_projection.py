@@ -21,15 +21,17 @@ from feedbax.analysis import (
 )
 from feedbax.analysis.evaluation import write_evaluation_states_cache
 from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-    AnalysisRunSpec,
     EntrypointRef,
-    EvaluationRunManifest,
-    EvaluationRunSpec,
     ParentRef,
     Provenance,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunSpec,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
     SpecPayload,
     evaluation_states_cache_path,
     write_manifest,

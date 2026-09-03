@@ -19,7 +19,7 @@ from feedbax.acausal import (
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.contracts.graphs.acausal_compiler import compile_acausal_graph
+from feedbax.compiler.acausal_compiler import compile_acausal_graph
 from tests.graph_compiler_test_support import spec_to_graph
 
 

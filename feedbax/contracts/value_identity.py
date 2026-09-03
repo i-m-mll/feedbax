@@ -26,7 +26,7 @@ from typing import Any, Literal
 import numpy as np
 from pydantic import ConfigDict, Field, model_validator
 
-from feedbax.contracts.manifest import StrictModel
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes
 
 

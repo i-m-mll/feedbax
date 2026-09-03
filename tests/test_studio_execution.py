@@ -36,6 +36,8 @@ from feedbax.orchestration.realization import (
     ExpectedCost,
     MachineShape,
 )
+from feedbax.contracts.base import utc_now
+from feedbax.contracts.artifact_store import store_json_artifact
 from feedbax.contracts.manifest import (
     CheckpointSelectionManifest,
     EvaluationRunManifest,
@@ -44,8 +46,6 @@ from feedbax.contracts.manifest import (
     TrainingRunManifest,
     TrainingRunSetManifest,
     load_manifest,
-    store_json_artifact,
-    utc_now,
     write_manifest,
 )
 from feedbax.contracts.run_matrix import TrainingRowProvenance
@@ -61,6 +61,9 @@ from feedbax.contracts.graph import (
     StudioTaskBindingSpec,
     build_default_studio_workspace,
 )
+
+
+STUDIO_ANALYSIS_TYPE = "tests.studio.analysis"
 
 
 @pytest.fixture(autouse=True)
@@ -258,7 +261,7 @@ def studio_default_analysis_recipe(registry_bundle):
             common_inputs={"studio": spec.params.get("stage_id")},
         )
 
-    registry_bundle.analysis_recipes.register("feedbax.analysis.activity", recipe)
+    registry_bundle.analysis_recipes.register(STUDIO_ANALYSIS_TYPE, recipe)
     yield
 
 
@@ -642,7 +645,8 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
     assert "supersedes" not in restaged_manifest.metadata
     assert "superseded_by" not in restaged_ref.metadata
     assert "supersedes" not in restaged_ref.metadata
-    assert restaged_ref.metadata["spec_hashes"]["training_spec"].startswith("fnv1a:")
+    assert restaged_ref.metadata["spec_hashes"]["pin"] == "fnv1a32-canonical_json_v2"
+    assert len(restaged_ref.metadata["spec_hashes"]["hashes"]["training_spec"]) == 8
 
 
 def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempotent(
@@ -720,7 +724,8 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
         == EvaluationRunSpec.model_validate(eval_manifest.evaluation_spec.inline).inputs
     )
     assert first.manifest_refs[0].metadata["parent_refs"][0]["id"] == training_ref.id
-    assert first.manifest_refs[0].metadata["spec_hashes"]["evaluation_spec"].startswith("fnv1a:")
+    assert first.manifest_refs[0].metadata["spec_hashes"]["pin"] == "fnv1a32-canonical_json_v2"
+    assert len(first.manifest_refs[0].metadata["spec_hashes"]["hashes"]["evaluation_spec"]) == 8
     assert eval_manifest.provenance.metadata["checkpoint_policy"]["mode"] == "best-by-metric"
     assert checkpoint_manifest.metadata["checkpoint_policy"]["metric"] == "final_validation_loss"
 
@@ -1129,7 +1134,7 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     registry_bundle,
 ):
     workspace = _staged_training_workspace(
-        _workspace_with_analysis_type("feedbax.analysis.activity"),
+        _workspace_with_analysis_type(STUDIO_ANALYSIS_TYPE),
         job_id="studio-pipeline-train",
         registry_bundle=registry_bundle,
     )
@@ -1195,7 +1200,7 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     assert "cache/states" in eval_manifest["metadata"]["cache"]["states_path"]
     assert analysis_manifest["status"] == "completed"
     assert analysis_manifest["analysis_spec"]["inline"]["analysis_type"] == (
-        "feedbax.analysis.activity"
+        STUDIO_ANALYSIS_TYPE
     )
     assert analysis_manifest["inputs"][0]["id"] == eval_manifest["id"]
     assert analysis_manifest["provenance"]["parents"][0]["id"] == eval_manifest["id"]
@@ -1216,7 +1221,7 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
     studio_default_analysis_recipe,
     registry_bundle,
 ) -> None:
-    workspace = _workspace_with_analysis_type("feedbax.analysis.activity")
+    workspace = _workspace_with_analysis_type(STUDIO_ANALYSIS_TYPE)
     analysis_stage = next(stage for stage in workspace.stages if stage.kind == "analysis")
     scenario = workspace.scenarios[analysis_stage.scenario_id]
     scenario.analysis_spec = {
@@ -1259,7 +1264,7 @@ def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
     studio_client,
 ):
     workspace = _staged_training_workspace(
-        _workspace_with_analysis_type("feedbax.analysis.activity"),
+        _workspace_with_analysis_type(STUDIO_ANALYSIS_TYPE),
         job_id="http-studio-pipeline-train",
         registry_bundle=registry_bundle,
     )

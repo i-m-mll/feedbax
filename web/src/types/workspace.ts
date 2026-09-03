@@ -4,7 +4,14 @@ import type {
 } from '@/types/graph';
 import type { AnalysisInputRequirement } from '@/types/analysis';
 import type { LossTermSpec, TaskSpec, TimeAggregationSpec, TrainingSpec } from '@/types/training';
-import type { StudioBiomechanicsSpec } from '@/generated/studioContracts';
+import type {
+  StudioBiomechanicsSpec,
+  StudioEpochValueSpec as GeneratedStudioEpochValueSpec,
+  StudioTaskEpochSpec as GeneratedStudioTaskEpochSpec,
+  StudioTaskTimelineSegmentSpec as GeneratedStudioTaskTimelineSegmentSpec,
+  StudioTaskTimelineSignalSpec as GeneratedStudioTaskTimelineSignalSpec,
+  StudioTaskTimelineSpec as GeneratedStudioTaskTimelineSpec,
+} from '@/generated/studioContracts';
 
 export type StudioStageKind =
   | 'train'
@@ -383,42 +390,42 @@ export interface StudioSchemaRegistry {
   metadata: Record<string, unknown>;
 }
 
-export interface StudioTaskEpochSpec {
-  id: string;
-  label: string;
-  index: number;
-  length: StudioValueSpec;
+export type StudioTaskEpochSpec = Omit<GeneratedStudioTaskEpochSpec, 'metadata'> & {
   metadata: Record<string, unknown>;
-}
+};
 
-export interface StudioTaskTimelineSignalSpec {
-  id: string;
-  label: string;
+export type StudioEpochValueSpec = GeneratedStudioEpochValueSpec;
+
+export type StudioTaskTimelineSignalSpec = Omit<
+  GeneratedStudioTaskTimelineSignalSpec,
+  'kind' | 'value_schema' | 'task_data_schema' | 'metadata'
+> & {
   kind: StudioTaskDataKind | string;
-  task_data_id?: string | null;
-  path: string;
-  epoch_ids: string[];
-  value_spec?: StudioValueSpec | null;
-  epoch_value_specs?: Record<string, StudioValueSpec | null>;
   value_schema?: ValueSchema | null;
   task_data_schema?: TaskDataSchema | null;
   metadata: Record<string, unknown>;
-}
+};
 
-export interface StudioTaskTimelineSegmentSpec {
-  id: string;
-  label: string;
+export type StudioTaskTimelineSegmentSpec = Omit<
+  GeneratedStudioTaskTimelineSegmentSpec,
+  'epoch_ids' | 'metadata'
+> & {
   epoch_ids: string[];
   metadata: Record<string, unknown>;
-}
+};
 
-export interface StudioTaskTimelineSpec {
-  schema_version: 'feedbax.studio.task_timeline.v1' | string;
+export type StudioTaskTimelineSpec = Omit<
+  GeneratedStudioTaskTimelineSpec,
+  'schema_id' | 'schema_version' | 'epochs' | 'signals' | 'epoch_value_specs' | 'segments' | 'metadata'
+> & {
+  schema_id: 'feedbax.spec.studio.task_timeline';
+  schema_version: 'feedbax.spec.studio.task_timeline.v2';
   epochs: StudioTaskEpochSpec[];
   signals: StudioTaskTimelineSignalSpec[];
+  epoch_value_specs: StudioEpochValueSpec[];
   segments?: StudioTaskTimelineSegmentSpec[];
   metadata: Record<string, unknown>;
-}
+};
 
 export type StudioScenarioEntityKind =
   | 'graph_node'
@@ -478,7 +485,6 @@ export interface AnalysisPageWire {
   graph_spec: Record<string, unknown>;
   input_requirements?: AnalysisInputRequirement[];
   eval_params: Record<string, unknown>;
-  viewport: { x: number; y: number; zoom: number };
   eval_run_id: string | null;
   expanded_field_paths?: string[];
 }
@@ -505,7 +511,8 @@ export interface StudioScenarioSpec {
 
 export interface StudioStageSpec {
   id: string;
-  schema_version?: 'feedbax.spec.studio.stage.v2' | string;
+  schema_id: 'feedbax.spec.studio.stage';
+  schema_version: 'feedbax.spec.studio.stage.v2';
   kind: StudioStageKind;
   label: string;
   status: StudioStageStatus;
@@ -523,7 +530,8 @@ export interface StudioStageSpec {
 
 export interface StudioWorkspaceSpec {
   id: string;
-  schema_version: 'feedbax.spec.studio.workspace.v2' | string;
+  schema_id: 'feedbax.spec.studio.workspace';
+  schema_version: 'feedbax.spec.studio.workspace.v2';
   label: string;
   active_stage_id?: string | null;
   stages: StudioStageSpec[];

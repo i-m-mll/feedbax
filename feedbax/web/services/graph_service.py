@@ -4,21 +4,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 import json
+import os
 import uuid
 
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import DomainCompileReport
-from feedbax.contracts.graphs.acausal_compiler import compile_acausal_authoring_report
-from feedbax.contracts.graphs.penzai_compiler import compile_penzai_authoring_report
+from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
+from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
-from feedbax.contracts.graphs.normalization import (
+from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_project_for_studio_authoring,
     normalize_workspace_for_studio_authoring,
 )
 from feedbax.contracts.migrations import migrate_graph_project_payload
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.graph import (
+    ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+    ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
+    AnalysisCanvasLayoutDocument,
     AnalysisPageSpec,
     GraphProject,
     GraphSpec,
@@ -28,6 +33,7 @@ from feedbax.contracts.graph import (
     SemanticAnchor,
     WorkspaceDocument,
     build_default_studio_workspace,
+    studio_semantic_document_sha256,
 )
 from feedbax.compiler import GraphDocument, compile_graph
 
@@ -109,6 +115,7 @@ class GraphService:
         )
         presentation = self._workspace_document(
             graph,
+            workspace=semantic_workspace,
             graph_ui_state=(workspace_document.graph_ui_state if workspace_document else None),
             workspace_ui_state=(
                 workspace_document.workspace_ui_state if workspace_document else None
@@ -120,6 +127,9 @@ class GraphService:
             analysis_pages=(workspace_document.analysis_pages if workspace_document else None),
             active_analysis_page_id=(
                 workspace_document.active_analysis_page_id if workspace_document else None
+            ),
+            analysis_canvas_layout=(
+                workspace_document.analysis_canvas_layout if workspace_document else None
             ),
             component_registry=component_registry,
         )
@@ -194,12 +204,14 @@ class GraphService:
             project.graph.metadata.save_revision = next_revision
         project.workspace_document = self._workspace_document(
             project.graph,
+            workspace=project.workspace,
             graph_ui_state=presentation.graph_ui_state,
             workspace_ui_state=presentation.workspace_ui_state,
             stage_ui_state=presentation.stage_ui_state,
             scenario_ui_state=presentation.scenario_ui_state,
             analysis_pages=presentation.analysis_pages,
             active_analysis_page_id=presentation.active_analysis_page_id,
+            analysis_canvas_layout=presentation.analysis_canvas_layout,
             component_registry=component_registry,
         )
         self._ensure_workspace(project, component_registry=component_registry)
@@ -343,6 +355,7 @@ class GraphService:
     ) -> GraphProject:
         with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
+        canonical_json_v2_bytes(data)
         data = migrate_graph_project_payload(data)
         project = normalize_project_for_studio_authoring(
             GraphProject.model_validate(data),
@@ -352,9 +365,24 @@ class GraphService:
         return project
 
     def _save_project(self, path: Path, project: GraphProject) -> None:
-        self._ensure_workspace(project)
-        with open(path, "w", encoding="utf-8") as file:
-            json.dump(project.model_dump(), file, indent=2)
+        normalized = project.model_dump(mode="json")
+        canonical_json_v2_bytes(normalized)
+        validated = GraphProject.model_validate(normalized)
+        serialized = json.dumps(
+            validated.model_dump(mode="json"),
+            indent=2,
+            allow_nan=False,
+        )
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with open(temporary, "w", encoding="utf-8") as file:
+                file.write(serialized)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temporary, path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
     def _ensure_workspace(
         self,
@@ -374,20 +402,19 @@ class GraphService:
         current_workspace = project.workspace_document
         expected_root = self._workspace_document(
             project.graph,
+            workspace=project.workspace,
             graph_ui_state=current_workspace.graph_ui_state,
             workspace_ui_state=current_workspace.workspace_ui_state,
             stage_ui_state=current_workspace.stage_ui_state,
             scenario_ui_state=current_workspace.scenario_ui_state,
             analysis_pages=current_workspace.analysis_pages,
             active_analysis_page_id=current_workspace.active_analysis_page_id,
+            analysis_canvas_layout=current_workspace.analysis_canvas_layout,
             component_registry=component_registry,
         )
-        if (
-            current_workspace.semantic_root != expected_root.semantic_root
-            or (
-                component_registry is not None
-                and current_workspace.semantic_anchors != expected_root.semantic_anchors
-            )
+        if current_workspace.semantic_root != expected_root.semantic_root or (
+            component_registry is not None
+            and current_workspace.semantic_anchors != expected_root.semantic_anchors
         ):
             project.workspace_document = expected_root
         if project.workspace is not None:
@@ -402,29 +429,28 @@ class GraphService:
         self,
         graph: GraphSpec,
         *,
+        workspace: StudioWorkspaceSpec | None = None,
         graph_ui_state: GraphUIState | None = None,
         workspace_ui_state: dict[str, object] | None = None,
         stage_ui_state: dict[str, dict[str, object]] | None = None,
         scenario_ui_state: dict[str, dict[str, object]] | None = None,
         analysis_pages: List[AnalysisPageSpec] | None = None,
         active_analysis_page_id: str | None = None,
+        analysis_canvas_layout: AnalysisCanvasLayoutDocument | None = None,
         component_registry: object | None = None,
     ) -> WorkspaceDocument:
         document = GraphDocument(graph=graph)
+        document_sha256 = studio_semantic_document_sha256(graph, workspace)
         semantic_anchors: dict[str, SemanticAnchor] = {}
         if component_registry is not None:
             compilation = compile_graph(document, component_registry)
-            document_sha256 = compilation.record.document_sha256
             semantic_anchors = {
-                entry.resolved_path: entry.authored_anchor
+                entry.resolved_path: SemanticAnchor(
+                    semantic_document_sha256=document_sha256,
+                    authored_path=entry.authored_anchor.authored_path,
+                )
                 for entry in compilation.record.source_map.entries
             }
-        else:
-            from feedbax.contracts.authored_canonical import canonical_sha256
-
-            document_sha256 = canonical_sha256(
-                document.model_dump(mode="json", exclude_none=True)
-            )
         return WorkspaceDocument(
             semantic_root=SemanticAnchor(
                 semantic_document_sha256=document_sha256,
@@ -436,6 +462,11 @@ class GraphService:
             scenario_ui_state=scenario_ui_state or {},
             analysis_pages=analysis_pages or [],
             active_analysis_page_id=active_analysis_page_id,
+            analysis_canvas_layout=analysis_canvas_layout
+            or AnalysisCanvasLayoutDocument(
+                schema_id=ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+                schema_version=ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
+            ),
             semantic_anchors=semantic_anchors,
         )
 

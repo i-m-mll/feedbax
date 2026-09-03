@@ -15,17 +15,19 @@ import jax.tree_util as jtu
 import numpy as np
 from pydantic import Field, ValidationError
 
+from feedbax.contracts.base import (
+    ArtifactRef,
+    StrictModel,
+    sha256_bytes,
+)
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_ID,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
     EVALUATION_STATES_STORAGE_BACKEND_V3,
-    ArtifactRef,
-    StrictModel,
     safe_manifest_key,
-    sha256_bytes,
-    store_bytes_artifact,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion
 from feedbax.contracts.strict_json import strict_json_loads

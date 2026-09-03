@@ -16,10 +16,12 @@ from feedbax.analysis.execution_context import (
 )
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
-from feedbax.contracts.manifest import (
+from feedbax.contracts.base import (
     ArtifactRef,
-    EvaluationRunManifest,
     ParentRef,
+)
+from feedbax.contracts.manifest import (
+    EvaluationRunManifest,
     SpecPayload,
     StagedEvaluationPrerequisite,
     write_manifest,

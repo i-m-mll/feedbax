@@ -279,6 +279,14 @@ class GraphTraceRequest:
     timing: Literal["input", "output", "step", "initial", "final"] | None = None
 
 
+@dataclasses.dataclass(frozen=True)
+class ComponentBinding:
+    """Registry identity used to construct one runtime graph node."""
+
+    type_id: str
+    param_schema_version: str
+
+
 class Graph(Component):
     """A computational graph of components."""
 
@@ -297,6 +305,7 @@ class Graph(Component):
     state_consistency_fn: Optional[callable] = field(default=None, static=True)
     checkpoint: bool = eqx.field(default=False, static=True)
     parameter_constraints: tuple[object, ...] = field(default_factory=tuple, static=True)
+    component_bindings: dict[str, ComponentBinding] = field(default_factory=dict, static=True)
 
     def __check_init__(
         self,

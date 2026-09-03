@@ -10,39 +10,40 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import plotly.graph_objects as go
-from jaxtyping import PyTree
-from sqlalchemy.orm import Session
 
+from feedbax.contracts.base import (
+    ArtifactRef,
+    EntrypointRef,
+    ParentRef,
+    Provenance,
+    authenticated_manifest_ref_profile,
+    collect_git_provenance,
+    default_manifest_root,
+)
+from feedbax.contracts.artifact_store import (
+    media_type_for_extension,
+    store_artifact,
+)
 from feedbax.contracts.manifest import (
     AnalysisDataProduct,
     AnalysisEvaluationStateResolutionDiagnostic,
     AnalysisEvaluationStateSource,
     AnalysisRunManifest,
     AnalysisRunSpec,
-    ArtifactRef,
     DataProductParentRef,
-    EntrypointRef,
     ManifestStatus,
-    ParentRef,
-    Provenance,
     RegenerationSpec,
     SpecPayload,
     analysis_results_cache_dir,
     analysis_run_manifest_id,
-    authenticated_manifest_ref_profile,
-    collect_git_provenance,
-    default_manifest_root,
-    media_type_for_extension,
     safe_manifest_key,
     spec_payload,
-    store_artifact,
     write_manifest,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from jax_cookbook import arrays_to_lists
 
 if TYPE_CHECKING:
-    from feedbax.persistence.database import EvaluationRecord, ModelRecord
     from feedbax.plugins.registry import ExperimentRegistry
 
 
@@ -73,9 +74,6 @@ class AnalysisRunContext:
 
     spec: AnalysisRunSpec
     root: Path | str | None = None
-    db_session: Session | None = None
-    eval_info: EvaluationRecord | None = None
-    model_info: PyTree[ModelRecord] | None = None
     fig_dump_path: Path | str | None = None
     fig_dump_formats: Sequence[str] = ("html",)
     provenance: Provenance | None = None
@@ -102,8 +100,6 @@ class AnalysisRunContext:
         self.root = Path(self.root) if self.root is not None else default_manifest_root()
         if self.fig_dump_path is not None:
             self.fig_dump_path = Path(self.fig_dump_path)
-        if (self.db_session is None) != (self.eval_info is None):
-            raise ValueError("db_session and eval_info must be provided together")
 
     @property
     def manifest_id(self) -> str:
@@ -406,18 +402,6 @@ class AnalysisRunContext:
         """Persist one figure and record it as an ``AnalysisRunManifest`` artifact."""
         from feedbax.plot.lifecycle import close_figure
         from feedbax.plot.utils import savefig
-
-        if self.db_session is not None and self.eval_info is not None:
-            from feedbax.persistence.database import add_evaluation_figure
-
-            add_evaluation_figure(
-                self.db_session,
-                self.eval_info,
-                fig,
-                analysis_name,
-                model_records=self.model_info,
-                **params,
-            )
 
         formats = tuple(dump_formats or self.fig_dump_formats)
         figure_dir = self._figure_dir(dump_path)

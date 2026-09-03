@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.value_schema import ValueSchema
 
 
@@ -354,12 +354,8 @@ def descriptor_basis_identity_envelope(basis: DescriptorBasisIdentity) -> dict[s
 
 
 def descriptor_basis_hash(basis: DescriptorBasisIdentity) -> str:
-    """Hash a descriptor basis identity using stable canonical JSON."""
-    data = json.dumps(
-        descriptor_basis_identity_envelope(basis),
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
+    """Hash a descriptor basis identity using ``canonical_json_v1``."""
+    data = canonical_json_v1_bytes(descriptor_basis_identity_envelope(basis))
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
 
 

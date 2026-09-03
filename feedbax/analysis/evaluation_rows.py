@@ -8,12 +8,12 @@ from enum import StrEnum
 from typing import Any, TypeVar
 
 from feedbax.analysis.specs import ResolvedAnalysisInput, ResolvedEvaluationStateHandle
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     AnalysisEvaluationStateSource,
     EvaluationManifestProvenanceEnvelope,
     EvaluationRunManifest,
     EvaluationRunSpec,
-    ParentRef,
     load_manifest_bytes,
     verify_evaluation_manifest_provenance,
 )

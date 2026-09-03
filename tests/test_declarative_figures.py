@@ -38,14 +38,16 @@ from feedbax.contracts.figures import (
     SlotSpec,
     TraceBinding,
 )
-from feedbax.contracts.manifest import (
-    AnalysisDataProduct,
-    AnalysisRunManifest,
-    AnalysisRunSpec,
+from feedbax.contracts.base import (
     ArtifactRef,
     ParentRef,
     StrictModel,
     canonical_json_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisDataProduct,
+    AnalysisRunManifest,
+    AnalysisRunSpec,
     load_manifest,
     spec_payload,
     write_manifest,

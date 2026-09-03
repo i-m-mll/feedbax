@@ -9,8 +9,7 @@ import pytest
 
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParameterConstraintSpec
 from feedbax.contracts.migrations import UnsupportedSpecVersion
-from feedbax.runtime.graph import Graph
-from feedbax.contracts.graphs.templates import (
+from feedbax.compiler.templates import (
     network_template_graph,
     recurrent_controller_template_graph,
 )
@@ -27,42 +26,9 @@ from feedbax.models.networks import (
     population_structure_from_spec,
 )
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
-from feedbax.contracts.graphs import builders as graph_builders
-from feedbax.contracts.graphs.serialization import graph_to_spec
+from feedbax.compiler import builders as graph_builders
+from feedbax.compiler.serialization import graph_to_spec
 from tests.graph_compiler_test_support import spec_to_graph
-
-
-def _floating_leaf_dtypes(tree) -> set[jnp.dtype]:
-    return {
-        leaf.dtype
-        for leaf in jax.tree.leaves(tree)
-        if eqx.is_array(leaf) and jnp.issubdtype(leaf.dtype, jnp.floating)
-    }
-
-
-def test_compat_builders_preserve_legacy_default_dtype_under_x64(tmp_path) -> None:
-    builders = [
-        lambda params: graph_builders._build_linear({"input_size": 2, "output_size": 3, **params}),
-        lambda params: graph_builders._build_mlp(
-            {"input_size": 2, "output_size": 3, "hidden_sizes": [4], **params}
-        ),
-        lambda params: graph_builders._build_gru({"input_size": 2, "hidden_size": 3, **params}),
-        lambda params: graph_builders._build_lstm({"input_size": 2, "hidden_size": 3, **params}),
-        lambda params: graph_builders._build_network(
-            {"input_size": 2, "hidden_size": 3, "out_size": 1, **params}
-        ),
-    ]
-    with jax.experimental.enable_x64():
-        for index, build in enumerate(builders):
-            legacy = build({})
-            explicit = build({"dtype": "float32"})
-            path = tmp_path / f"legacy_dtype_{index}.eqx"
-            eqx.tree_serialise_leaves(path, legacy)
-            loaded = eqx.tree_deserialise_leaves(path, build({}))
-
-            assert _floating_leaf_dtypes(legacy) == {jnp.dtype(jnp.float64)}
-            assert _floating_leaf_dtypes(loaded) == {jnp.dtype(jnp.float64)}
-            assert _floating_leaf_dtypes(explicit) == {jnp.dtype(jnp.float32)}
 
 
 def _linear_constraint_spec(mask) -> GraphSpec:
@@ -527,43 +493,6 @@ def test_population_constraints_project_after_synthetic_update() -> None:
     assert jnp.all(projected.nodes["cell"].cell.weight_ih[~input_mask] == 0.0)
     assert jnp.all(projected.nodes["cell"].cell.weight_hh == 1.0)
     assert jnp.all(projected.nodes["readout"].layer.weight[~readout_mask] == 0.0)
-
-
-def test_population_constraints_round_trip_from_legacy_network_serialization() -> None:
-    population = _fixed_population_structure()
-    legacy = SimpleStagedNetwork(
-        input_size=2,
-        hidden_size=4,
-        out_size=2,
-        population_structure=population,
-        key=jax.random.PRNGKey(2),
-    )
-    spec = graph_to_spec(
-        Graph(
-            nodes={"network": legacy},
-            input_ports=("input", "feedback"),
-            output_ports=("output",),
-            input_bindings={"input": ("network", "input"), "feedback": ("network", "feedback")},
-            output_bindings={"output": ("network", "output")},
-        )
-    )
-
-    assert spec.subgraphs is None
-    assert "network" not in spec.nodes
-    assert spec.parameter_constraints == list(
-        lower_population_constraints(
-            population,
-            hidden_size=4,
-            input_size=2,
-            out_size=2,
-            cell_type="GRU",
-            cell_node="network_cell",
-            readout_node="network_readout",
-        )
-    )
-
-    restored = graph_to_spec(spec_to_graph(spec, ComponentRegistry(load_user_components=False)))
-    assert restored.parameter_constraints == spec.parameter_constraints
 
 
 def test_parameter_constraints_reject_incompatible_mask_shape() -> None:

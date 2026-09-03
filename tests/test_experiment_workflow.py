@@ -23,7 +23,8 @@ from feedbax.workflow.experiment import (
 )
 from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
 from feedbax.contracts.experiment_compile_lock import EvaluationSubjectBinding, ReportParentBinding
-from feedbax.contracts.manifest import load_manifest, store_bytes_artifact
+from feedbax.contracts.artifact_store import store_bytes_artifact
+from feedbax.contracts.manifest import load_manifest
 
 from tests.fake_project_experiment.products import (
     BULLETIN_TYPE,

@@ -47,7 +47,10 @@ from feedbax.orchestration.executor_family import (
     ExecutorFamilyError,
     executor_family_adapter,
 )
-from feedbax.contracts.manifest import canonical_json_bytes, sha256_bytes
+from feedbax.contracts.base import (
+    canonical_json_bytes,
+    sha256_bytes,
+)
 from feedbax.orchestration.revision import resolve_feedbax_revision
 from feedbax.orchestration.stages import StageEngine
 from feedbax.orchestration.state import StageState
