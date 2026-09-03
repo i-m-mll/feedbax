@@ -46,6 +46,8 @@ from feedbax.runtime.components import (
     Input,
     LSTM,
     Linear,
+    LINEAR_PARAM_SCHEMA_VERSION,
+    LINEAR_PARAM_SCHEMA_VERSION_V1,
     MLP,
     MatMul,
     Multiply,
@@ -278,6 +280,10 @@ def _migrate_threshold_latched_force_v1(params: dict[str, Any]) -> dict[str, Any
     migrated["state_selector"] = selector
     migrated["lateral_force"] = 0.0
     return migrated
+
+
+def _migrate_linear_v1(params: dict[str, Any]) -> dict[str, Any]:
+    return {**params, "initialization": "random"}
 
 
 def _missing_input(port: str, *, component: str) -> MissingPrototypeInput:
@@ -1780,6 +1786,13 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(name="output_size", type="int", default=1, min=1, required=True),
                 ParameterField(name="use_bias", type="bool", default=True, required=False),
                 ParameterField(
+                    name="initialization",
+                    type="enum",
+                    options=["random", "zeros"],
+                    default="random",
+                    required=False,
+                ),
+                ParameterField(
                     name="activation",
                     type="enum",
                     options=["identity", "tanh", "relu", "sigmoid"],
@@ -1795,7 +1808,20 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={"output": PortType(dtype="vector")},
             ),
             output_prototype_fn=linear_output_prototype,
+            param_schema_version=LINEAR_PARAM_SCHEMA_VERSION,
             trainable_by_default=True,
+        )
+    )
+    registry.register_migration(
+        ComponentMigration(
+            source_type="Linear",
+            target_type="Linear",
+            owner="feedbax",
+            source_param_schema_version=LINEAR_PARAM_SCHEMA_VERSION_V1,
+            target_param_schema_version=LINEAR_PARAM_SCHEMA_VERSION,
+            migration_id="feedbax.component.Linear.params.v1-to-v2",
+            migrate_params=_migrate_linear_v1,
+            description="Make the existing random Linear initialization explicit.",
         )
     )
     registry.register(
