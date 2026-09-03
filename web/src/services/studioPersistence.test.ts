@@ -4,6 +4,7 @@ import { studioPersistenceDocument, type StudioPersistenceResult } from '@/api/c
 import type { WorkspaceDocument } from '@/generated/studioContracts';
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
 import type { StudioWorkspaceSpec } from '@/types/workspace';
+import type { AnalysisClassDef } from '@/types/analysis';
 import { studioDraftHashes } from '@/utils/studioDraftHash';
 import {
   StudioPersistenceCoordinator,
@@ -19,6 +20,16 @@ import { useGraphStore } from '@/stores/graphStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
+
+const analysisClass: AnalysisClassDef = {
+  name: 'ActivityPlot',
+  description: 'Plot activity',
+  category: 'Figures',
+  inputPorts: [],
+  outputPorts: [],
+  defaultParams: {},
+  icon: 'LineChart',
+};
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -390,6 +401,19 @@ describe('persisted mutation revisions', () => {
     const pageId = useAnalysisStore.getState().activePageId!;
     expect(useGraphStore.getState().localRevision).toBeGreaterThan(beforeAnalysis);
 
+    const beforeNodeAdd = useGraphStore.getState().localRevision;
+    useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 100, y: 200 });
+    const nodeId = useAnalysisStore.getState().nodes.find((node) => node.type === 'analysis')!.id;
+    expect(useGraphStore.getState().localRevision).toBeGreaterThan(beforeNodeAdd);
+
+    const beforeViewport = useGraphStore.getState().localRevision;
+    useAnalysisStore.getState().setViewport({ x: 40, y: -20, zoom: 1.2 });
+    expect(useGraphStore.getState().localRevision).toBeGreaterThan(beforeViewport);
+
+    const beforeNodeDelete = useGraphStore.getState().localRevision;
+    useAnalysisStore.getState().removeNode(nodeId);
+    expect(useGraphStore.getState().localRevision).toBeGreaterThan(beforeNodeDelete);
+
     const beforeClear = useGraphStore.getState().localRevision;
     useAnalysisStore.getState().removePage(pageId);
     expect(useGraphStore.getState().localRevision).toBeGreaterThan(beforeClear);
@@ -448,6 +472,77 @@ describe('persisted mutation revisions', () => {
       isDirty: true,
       lastSavedAt: null,
     });
+  });
+
+  it('keeps semantic hashes stable when only Analysis Canvas layout moves', () => {
+    useGraphStore.getState().resetGraph();
+    useAnalysisStore.getState().resetAnalysis();
+    const persistedGraph = useGraphStore.getState().capturePersistedGraph();
+    useWorkspaceStore.getState().setWorkspace(buildWorkspaceSnapshot({
+      workspace: null,
+      graph: persistedGraph.graph,
+      uiState: persistedGraph.uiState,
+      trainingSpec: useTrainingStore.getState().trainingSpec,
+      taskSpec: useTrainingStore.getState().taskSpec,
+      analysisSnapshot: null,
+    }));
+    useWorkspaceStore.getState().setWorkspaceDocument(workspaceDocument());
+    useAnalysisStore.getState().addPage('Layout identity');
+    useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 100, y: 200 });
+    const nodeId = useAnalysisStore.getState().nodes.find((node) => node.type === 'analysis')!.id;
+    const before = captureActiveStudioDocument();
+
+    useAnalysisStore.getState().onNodesChange([
+      { id: nodeId, type: 'position', position: { x: 640, y: -32 }, dragging: false },
+    ]);
+    useAnalysisStore.getState().setViewport({ x: -120, y: 48, zoom: 1.4 });
+    const after = captureActiveStudioDocument();
+
+    expect(after.draftHashes.hashes.graph_spec).toBe(before.draftHashes.hashes.graph_spec);
+    expect(after.draftHashes.hashes.workspace).toBe(before.draftHashes.hashes.workspace);
+    expect(after.draftHashes.hashes.workspace_document)
+      .not.toBe(before.draftHashes.hashes.workspace_document);
+    expect(after.workspace.stages.find((stage) => stage.kind === 'analysis')?.execution_spec)
+      .toEqual(before.workspace.stages.find((stage) => stage.kind === 'analysis')?.execution_spec);
+  });
+
+  it('overlays newer layout after a delayed acknowledgement of an older revision', () => {
+    useGraphStore.getState().resetGraph();
+    useAnalysisStore.getState().resetAnalysis();
+    const persistedGraph = useGraphStore.getState().capturePersistedGraph();
+    useWorkspaceStore.getState().setWorkspace(buildWorkspaceSnapshot({
+      workspace: null,
+      graph: persistedGraph.graph,
+      uiState: persistedGraph.uiState,
+      trainingSpec: useTrainingStore.getState().trainingSpec,
+      taskSpec: useTrainingStore.getState().taskSpec,
+      analysisSnapshot: null,
+    }));
+    useWorkspaceStore.getState().setWorkspaceDocument(workspaceDocument());
+    useAnalysisStore.getState().addPage('Delayed layout');
+    useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 100, y: 200 });
+    const nodeId = useAnalysisStore.getState().nodes.find((node) => node.type === 'analysis')!.id;
+    useAnalysisStore.getState().onNodesChange([
+      { id: nodeId, type: 'position', position: { x: 300, y: 400 }, dragging: false },
+    ]);
+    const captured = captureActiveStudioDocument();
+    useAnalysisStore.getState().onNodesChange([
+      { id: nodeId, type: 'position', position: { x: 700, y: 800 }, dragging: false },
+    ]);
+
+    useProjectsStore.getState().acknowledgeDocumentSave(
+      captured.documentId,
+      captured.localRevision,
+      'graph:acknowledged',
+      5,
+      captured.envelope.workspace_document,
+    );
+
+    const current = captureActiveStudioDocument();
+    const pageId = useAnalysisStore.getState().activePageId!;
+    expect(current.envelope.workspace_document?.analysis_canvas_layout?.stages?.['stage:analysis']
+      ?.pages?.[pageId]?.node_positions?.[nodeId]).toEqual({ x: 700, y: 800 });
+    expect(useGraphStore.getState().isDirty).toBe(true);
   });
 
   it('queues a restored dirty document and preserves its identity across a tab switch', () => {

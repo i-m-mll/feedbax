@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { deleteAnalysisNodeWithConfirmation } from '@/components/analysis/analysisDeletion';
 import { useAnalysisStore } from '@/stores/analysisStore';
+import { useGraphStore } from '@/stores/graphStore';
 import { buildWorkspaceSnapshot, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { AnalysisClassDef } from '@/types/analysis';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
@@ -39,6 +40,7 @@ const taskSpec: TaskSpec = {
 };
 
 beforeEach(() => {
+  useGraphStore.getState().resetGraph();
   const workspace = buildWorkspaceSnapshot({
     workspace: null,
     graph,
@@ -301,7 +303,7 @@ describe('useAnalysisStore stage ownership', () => {
     expect(confirm).toHaveBeenCalledWith(confirmationCopy);
   });
 
-  it('ignores volatile node position changes', () => {
+  it('persists final node positions without rewriting the semantic analysis draft', () => {
     const analysisClass: AnalysisClassDef = {
       name: 'ActivityPlot',
       description: 'Plot activity',
@@ -315,12 +317,186 @@ describe('useAnalysisStore stage ownership', () => {
     useAnalysisStore.getState().addPage('Fixed layout');
     useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 240, y: 80 });
     const node = useAnalysisStore.getState().nodes.find((item) => item.type === 'analysis')!;
+    const workspace = useWorkspaceStore.getState().workspace!;
+    const analysisStage = getStageByKind(workspace, 'analysis')!;
+    const semanticBefore = JSON.stringify(
+      workspace.scenarios[analysisStage.scenario_id!].analysis_spec
+    );
+    const revisionBeforeDrag = useGraphStore.getState().localRevision;
 
     useAnalysisStore.getState().onNodesChange([
       { id: node.id, type: 'position', position: { x: 900, y: 700 }, dragging: true },
     ]);
+    expect(useGraphStore.getState().localRevision).toBe(revisionBeforeDrag);
+    useAnalysisStore.getState().onNodesChange([
+      { id: node.id, type: 'position', position: { x: 912, y: 704 }, dragging: false },
+    ]);
 
     expect(useAnalysisStore.getState().nodes.find((item) => item.id === node.id)?.position)
-      .toEqual({ x: 240, y: 80 });
+      .toEqual({ x: 912, y: 704 });
+    expect(useAnalysisStore.getState().captureSnapshot().pages[0].nodePositions?.[node.id])
+      .toEqual({ x: 912, y: 704 });
+    expect(useGraphStore.getState().localRevision).toBeGreaterThan(revisionBeforeDrag);
+    expect(JSON.stringify(workspace.scenarios[analysisStage.scenario_id!].analysis_spec))
+      .toBe(semanticBefore);
+  });
+
+  it('preserves independent positions and viewports across analysis page switches', () => {
+    const analysisClass: AnalysisClassDef = {
+      name: 'ActivityPlot',
+      description: 'Plot activity',
+      category: 'Figures',
+      inputPorts: [],
+      outputPorts: [],
+      defaultParams: {},
+      icon: 'LineChart',
+    };
+
+    useAnalysisStore.getState().addPage('First');
+    const firstPageId = useAnalysisStore.getState().activePageId!;
+    useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 100, y: 200 });
+    const firstNodeId = useAnalysisStore.getState().nodes.find((node) => node.type === 'analysis')!.id;
+    useAnalysisStore.getState().onNodesChange([
+      { id: firstNodeId, type: 'position', position: { x: 144, y: 288 }, dragging: false },
+    ]);
+    useAnalysisStore.getState().setViewport({ x: -40, y: 60, zoom: 1.25 });
+
+    useAnalysisStore.getState().addPage('Second');
+    const secondPageId = useAnalysisStore.getState().activePageId!;
+    useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 500, y: 600 });
+    const secondNodeId = useAnalysisStore.getState().nodes.find((node) => node.type === 'analysis')!.id;
+    useAnalysisStore.getState().setViewport({ x: 80, y: -20, zoom: 0.75 });
+
+    useAnalysisStore.getState().switchPage(firstPageId);
+    expect(useAnalysisStore.getState().viewport).toEqual({ x: -40, y: 60, zoom: 1.25 });
+    expect(useAnalysisStore.getState().nodes.find((node) => node.id === firstNodeId)?.position)
+      .toEqual({ x: 144, y: 288 });
+
+    useAnalysisStore.getState().switchPage(secondPageId);
+    expect(useAnalysisStore.getState().viewport).toEqual({ x: 80, y: -20, zoom: 0.75 });
+    expect(useAnalysisStore.getState().nodes.find((node) => node.id === secondNodeId)?.position)
+      .toEqual({ x: 500, y: 600 });
+  });
+
+  it('ignores stale persisted positions when restoring a page', () => {
+    useAnalysisStore.getState().restoreSnapshot({
+      pages: [{
+        id: 'page:stale-layout',
+        name: 'Stale layout',
+        graphSpec: {
+          nodes: {},
+          wires: [],
+          dataSourceId: '__data_source__',
+        },
+        inputRequirements: [],
+        evalParams: {},
+        viewport: { x: 0, y: 0, zoom: 1 },
+        nodePositions: { 'deleted-node': { x: 400, y: 400 } },
+        evalRunId: null,
+        expandedFieldPaths: [],
+      }],
+      activePageId: 'page:stale-layout',
+    });
+
+    expect(useAnalysisStore.getState().nodes.some((node) => node.id === 'deleted-node')).toBe(false);
+    expect(useAnalysisStore.getState().captureSnapshot().pages[0].nodePositions)
+      .not.toHaveProperty('deleted-node');
+  });
+
+  it('records the deterministic first layout after it is rendered', () => {
+    useAnalysisStore.getState().restoreSnapshot({
+      pages: [{
+        id: 'page:first-layout',
+        name: 'First layout',
+        graphSpec: {
+          nodes: {},
+          wires: [],
+          dataSourceId: '__data_source__',
+        },
+        inputRequirements: [],
+        evalParams: {},
+        viewport: { x: 0, y: 0, zoom: 1 },
+        nodePositions: {},
+        evalRunId: null,
+        expandedFieldPaths: [],
+      }],
+      activePageId: 'page:first-layout',
+    });
+    const revisionBeforeRender = useGraphStore.getState().localRevision;
+
+    useAnalysisStore.getState().persistRenderedLayout();
+
+    expect(useAnalysisStore.getState().pages[0].nodePositions)
+      .toHaveProperty('__data_source__');
+    expect(useGraphStore.getState().localRevision).toBeGreaterThan(revisionBeforeRender);
+  });
+
+  it('keeps analysis layout unchanged across semantic graph undo and redo', () => {
+    useAnalysisStore.getState().addPage('History-independent layout');
+    useAnalysisStore.getState().setViewport({ x: 45, y: -18, zoom: 1.4 });
+    useAnalysisStore.getState().persistRenderedLayout();
+    const layoutBefore = useAnalysisStore.getState().captureSnapshot();
+
+    useGraphStore.getState().addRetainedObservable({
+      id: 'observable:layout-history',
+      label: 'Layout history probe',
+      source: { node_id: 'missing', port: 'output' },
+    } as any);
+    useGraphStore.getState().undo();
+    useGraphStore.getState().redo();
+
+    expect(useAnalysisStore.getState().captureSnapshot()).toEqual(layoutBefore);
+  });
+
+  it('does not reuse a restored semantic node id for a newly added node', () => {
+    const restoredNodes = Object.fromEntries(
+      Array.from({ length: 100 }, (_, index) => {
+        const id = `analysis_${index + 1}`;
+        return [id, {
+          id,
+          type: 'ActivityPlot',
+          label: id,
+          category: 'Figures',
+          inputPorts: [],
+          outputPorts: [],
+          params: {},
+          role: 'analysis' as const,
+        }];
+      })
+    );
+    useAnalysisStore.getState().restoreSnapshot({
+      pages: [{
+        id: 'page:restored-ids',
+        name: 'Restored IDs',
+        graphSpec: {
+          nodes: restoredNodes,
+          wires: [],
+          dataSourceId: '__data_source__',
+        },
+        inputRequirements: [],
+        evalParams: {},
+        viewport: { x: 0, y: 0, zoom: 1 },
+        nodePositions: {},
+        evalRunId: null,
+        expandedFieldPaths: [],
+      }],
+      activePageId: 'page:restored-ids',
+    });
+    const restoredIds = new Set(Object.keys(restoredNodes));
+    const analysisClass: AnalysisClassDef = {
+      name: 'ActivityPlot',
+      description: 'Plot activity',
+      category: 'Figures',
+      inputPorts: [],
+      outputPorts: [],
+      defaultParams: {},
+      icon: 'LineChart',
+    };
+
+    useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 10, y: 20 });
+    const currentIds = Object.keys(useAnalysisStore.getState().graphSpec!.nodes);
+
+    expect(currentIds).toHaveLength(101);
+    expect(currentIds.filter((id) => !restoredIds.has(id))).toHaveLength(1);
   });
 });

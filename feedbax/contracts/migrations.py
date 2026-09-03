@@ -261,6 +261,8 @@ from feedbax.contracts.experiment_envelope import (
     EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_VERSION,
 )
 from feedbax.contracts.graph import (
+    ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+    ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION,
     GRAPH_SPEC_SCHEMA_ID,
@@ -2382,6 +2384,12 @@ def admit_studio_persistence_document(
             registry=active_registry,
         ).payload
 
+    workspace_document = admitted.get("workspace_document")
+    if isinstance(workspace_document, Mapping):
+        admitted["workspace_document"] = _migrate_workspace_document_analysis_layout(
+            workspace_document
+        )
+
     validated = StudioPersistenceDocument.model_validate(admitted)
     canonical_json_v2_bytes(validated.model_dump(mode="json", exclude_none=True))
     return validated
@@ -2432,6 +2440,30 @@ def _stamp_parent_carried_nested_schema_version(
     family = registry.resolve(kind)
     payload_dict["schema_version"] = carried_version or family.current_version
     return payload_dict
+
+
+def _migrate_workspace_document_analysis_layout(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Admit pre-layout presentation documents as an explicit empty layout."""
+    migrated = dict(payload)
+    if "analysis_canvas_layout" in migrated:
+        return migrated
+    pages = []
+    for raw_page in migrated.get("analysis_pages") or []:
+        if not isinstance(raw_page, Mapping):
+            pages.append(raw_page)
+            continue
+        page = dict(raw_page)
+        page.pop("viewport", None)
+        pages.append(page)
+    migrated["analysis_pages"] = pages
+    migrated["analysis_canvas_layout"] = {
+        "schema_id": ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+        "schema_version": ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
+        "stages": {},
+    }
+    return migrated
 
 
 def migrate_graph_project_payload(
@@ -2520,6 +2552,9 @@ def migrate_graph_project_payload(
         workspace_document.setdefault("stage_ui_state", stage_ui_state)
         workspace_document.setdefault("scenario_ui_state", scenario_ui_state)
         migrated["workspace_document"] = workspace_document
+    migrated["workspace_document"] = _migrate_workspace_document_analysis_layout(
+        migrated["workspace_document"]
+    )
     return migrated
 
 
@@ -5072,6 +5107,21 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             required_tests=(
                 "tests/test_studio_workspace.py",
                 "web/src/generated/studioContracts.test.ts",
+            ),
+        )
+    )
+    families.append(
+        _family(
+            "AnalysisCanvasLayoutDocument",
+            ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+            ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("Studio frontend whole-document persistence",),
+            consumed_by=("Studio Analysis Canvas",),
+            description="Presentation-only Analysis Canvas node geometry and viewport.",
+            required_tests=(
+                "tests/test_studio_workspace.py",
+                "web/src/stores/analysisStore.test.ts",
             ),
         )
     )

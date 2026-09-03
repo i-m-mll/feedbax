@@ -582,12 +582,13 @@ class GraphUIState(BaseModel):
 class AnalysisPageSpec(BaseModel):
     """Specification for a single analysis page within a project."""
 
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     name: str
     graph_spec: Dict[str, Any] = Field(default_factory=dict)
     eval_params: Dict[str, Any] = Field(default_factory=dict)
     input_requirements: List[AnalysisInputRequirement] = Field(default_factory=list)
-    viewport: Dict[str, float] = Field(default_factory=lambda: {"x": 0, "y": 0, "zoom": 1})
     eval_run_id: Optional[str] = None
     expanded_field_paths: List[str] = Field(default_factory=list)
 
@@ -602,6 +603,8 @@ STUDIO_WORKSPACE_SCHEMA_VERSION_V1 = "feedbax.spec.studio.workspace.v1"
 STUDIO_WORKSPACE_SCHEMA_VERSION = "feedbax.spec.studio.workspace.v2"
 WORKSPACE_DOCUMENT_SCHEMA_ID = "feedbax.workspace_document"
 WORKSPACE_DOCUMENT_SCHEMA_VERSION = "1"
+ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID = "feedbax.spec.studio.analysis_canvas_layout"
+ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION = "feedbax.spec.studio.analysis_canvas_layout.v1"
 LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION = "feedbax.studio.scenario.v1"
 STUDIO_SCENARIO_SCHEMA_VERSION_V1 = "feedbax.spec.studio.scenario.v1"
 STUDIO_SCENARIO_SCHEMA_VERSION_V2 = "feedbax.spec.studio.scenario.v2"
@@ -1085,6 +1088,94 @@ class SemanticAnchor(BaseModel):
     authored_path: str = Field(pattern=r"^/")
 
 
+class AnalysisCanvasPosition(BaseModel):
+    """Finite position for one visible node in Analysis Canvas coordinates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(ge=-10_000_000, le=10_000_000)
+    y: float = Field(ge=-10_000_000, le=10_000_000)
+
+
+class AnalysisCanvasViewport(BaseModel):
+    """Finite, bounded Analysis Canvas pan and zoom state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: float = Field(default=0, ge=-10_000_000, le=10_000_000)
+    y: float = Field(default=0, ge=-10_000_000, le=10_000_000)
+    zoom: float = Field(default=1, ge=0.1, le=2.5)
+
+
+class AnalysisCanvasPageLayout(BaseModel):
+    """Presentation layout for one semantic analysis page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_positions: Dict[str, AnalysisCanvasPosition] = Field(default_factory=dict)
+    viewport: AnalysisCanvasViewport = Field(default_factory=AnalysisCanvasViewport)
+
+
+class AnalysisCanvasStageLayout(BaseModel):
+    """Page layouts owned by one semantic analysis stage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pages: Dict[str, AnalysisCanvasPageLayout] = Field(default_factory=dict)
+
+
+class AnalysisCanvasLayoutDocument(BaseModel):
+    """Versioned presentation authority for Analysis Canvas geometry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID]
+    schema_version: Literal[ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION]
+    stages: Dict[str, AnalysisCanvasStageLayout] = Field(default_factory=dict)
+
+
+def _analysis_canvas_semantic_node_ids(page: AnalysisPageSpec) -> set[str]:
+    graph_spec = page.graph_spec
+    node_ids = set(str(node_id) for node_id in (graph_spec.get("nodes") or {}))
+    data_source_id = graph_spec.get("dataSourceId", graph_spec.get("data_source_id"))
+    if isinstance(data_source_id, str):
+        node_ids.add(data_source_id)
+    for wire in graph_spec.get("wires") or []:
+        if not isinstance(wire, Mapping):
+            continue
+        transform = wire.get("transform")
+        if isinstance(transform, Mapping) and isinstance(transform.get("id"), str):
+            node_ids.add(transform["id"])
+    return node_ids
+
+
+def reconcile_analysis_canvas_layout(
+    layout: AnalysisCanvasLayoutDocument,
+    pages: List[AnalysisPageSpec],
+) -> AnalysisCanvasLayoutDocument:
+    """Prune layout entries that cannot name a current semantic analysis node."""
+    page_node_ids = {page.id: _analysis_canvas_semantic_node_ids(page) for page in pages}
+    stages: Dict[str, AnalysisCanvasStageLayout] = {}
+    for stage_id, stage_layout in layout.stages.items():
+        reconciled_pages: Dict[str, AnalysisCanvasPageLayout] = {}
+        for page_id, page_layout in stage_layout.pages.items():
+            valid_node_ids = page_node_ids.get(page_id)
+            if valid_node_ids is None:
+                continue
+            reconciled_pages[page_id] = page_layout.model_copy(
+                update={
+                    "node_positions": {
+                        node_id: position
+                        for node_id, position in page_layout.node_positions.items()
+                        if node_id in valid_node_ids
+                    }
+                }
+            )
+        if reconciled_pages:
+            stages[stage_id] = stage_layout.model_copy(update={"pages": reconciled_pages})
+    return layout.model_copy(update={"stages": stages})
+
+
 class WorkspaceDocument(BaseModel):
     """Durable Studio presentation state for one exact semantic graph revision."""
 
@@ -1099,11 +1190,21 @@ class WorkspaceDocument(BaseModel):
     scenario_ui_state: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     analysis_pages: List[AnalysisPageSpec] = Field(default_factory=list)
     active_analysis_page_id: Optional[str] = None
+    analysis_canvas_layout: AnalysisCanvasLayoutDocument = Field(
+        default_factory=lambda: AnalysisCanvasLayoutDocument(
+            schema_id=ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+            schema_version=ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
+        )
+    )
     semantic_anchors: Dict[str, SemanticAnchor] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_semantic_anchors(self) -> "WorkspaceDocument":
         validate_cross_field_refinements(type(self).__name__, self)
+        self.analysis_canvas_layout = reconcile_analysis_canvas_layout(
+            self.analysis_canvas_layout,
+            self.analysis_pages,
+        )
         return self
 
 
