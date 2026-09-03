@@ -552,6 +552,10 @@ def _build_delayed_reaches(params: Mapping[str, Any]) -> TaskComponent:
     return _build_task_component("DelayedReaches", params)
 
 
+def _build_stabilization(params: Mapping[str, Any]) -> TaskComponent:
+    return _build_task_component("Stabilization", params)
+
+
 _DISPLAY_ONLY_MESSAGES: dict[str, str] = {
     "MomentArmProjection": (
         "MomentArmProjection node {node_name!r} has no Python builder yet. "

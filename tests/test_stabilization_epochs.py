@@ -1,19 +1,14 @@
 """Focused contracts for ``Stabilization`` full-trial epoch naming."""
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 
 from feedbax.objectives.loss import CompositeLoss
-from feedbax.tasks import Stabilization, TrialSpecDependency
+from feedbax.tasks import Stabilization
 
 
-class _ConcreteStabilization(Stabilization):
-    input_dependencies: dict[str, TrialSpecDependency] = eqx.field(default_factory=dict)
-
-
-def _task(epoch_name: str | None = None) -> _ConcreteStabilization:
-    return _ConcreteStabilization(
+def _task(epoch_name: str | None = None) -> Stabilization:
+    return Stabilization(
         n_steps=5,
         loss_func=CompositeLoss(()),
         workspace=jnp.asarray([[-1.0, -0.5], [1.0, 0.75]], dtype=jnp.float32),

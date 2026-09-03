@@ -1950,6 +1950,7 @@ class Stabilization(AbstractTask):
     #     converter=jnp.asarray, default=None
     # )
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
+    input_dependencies: dict[str, TrialSpecDependency] = field(default_factory=dict)
     epoch_name: Optional[str] = field(default=None, static=True)
 
     def get_train_trial(

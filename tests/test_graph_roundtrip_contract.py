@@ -28,22 +28,11 @@ def _registry_cases() -> list[pytest.ParameterSet]:
         params = meta.param_schema or [None]
         for schema in params:
             param_name = None if schema is None else schema.name
-            marks = []
-            if component_type == "Stabilization":
-                marks.append(
-                    pytest.mark.xfail(
-                        strict=True,
-                        reason=(
-                            "fbed0f2: registered Stabilization remains abstract and cannot build"
-                        ),
-                    )
-                )
             cases.append(
                 pytest.param(
                     component_type,
                     param_name,
                     id=f"{component_type}-{param_name or 'no-params'}",
-                    marks=marks,
                 )
             )
     return cases
