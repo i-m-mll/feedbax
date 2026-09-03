@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Literal, Sequence
 
 import equinox as eqx
 from equinox import Module, field
@@ -14,6 +14,10 @@ import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
+
+
+LINEAR_PARAM_SCHEMA_VERSION_V1 = "1"
+LINEAR_PARAM_SCHEMA_VERSION = "2"
 
 
 def identity_activation(x: Any) -> Any:
@@ -510,6 +514,7 @@ class Linear(Component):
     input_size: int = field(static=True)
     output_size: int = field(static=True)
     use_bias: bool = field(static=True)
+    initialization: Literal["random", "zeros"] = field(static=True)
     dtype: Any = field(static=True)
 
     def __init__(
@@ -518,6 +523,7 @@ class Linear(Component):
         output_size: int,
         use_bias: bool = True,
         activation: str | Callable = "identity",
+        initialization: Literal["random", "zeros"] = "random",
         dtype: Any = jnp.float32,
         *,
         key: PRNGKeyArray,
@@ -525,15 +531,26 @@ class Linear(Component):
         self.input_size = int(input_size)
         self.output_size = int(output_size)
         self.use_bias = bool(use_bias)
+        if initialization not in ("random", "zeros"):
+            raise ValueError(
+                "Linear initialization must be 'random' or 'zeros'; "
+                f"got {initialization!r}"
+            )
+        self.initialization = initialization
         self.dtype = dtype
         self.activation_name, self.activation = resolve_activation(activation)
-        self.layer = eqx.nn.Linear(
+        layer = eqx.nn.Linear(
             self.input_size,
             self.output_size,
             use_bias=self.use_bias,
             dtype=dtype,
             key=key,
         )
+        if self.initialization == "zeros":
+            layer = eqx.tree_at(lambda item: item.weight, layer, jnp.zeros_like(layer.weight))
+            if layer.bias is not None:
+                layer = eqx.tree_at(lambda item: item.bias, layer, jnp.zeros_like(layer.bias))
+        self.layer = layer
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         output = self.activation(self.layer(inputs["input"]))

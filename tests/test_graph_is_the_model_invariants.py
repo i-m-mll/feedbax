@@ -26,7 +26,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import equinox as eqx
 import jax
+import jax.numpy as jnp
 import pytest
 
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
@@ -35,6 +37,10 @@ from feedbax.compiler.serialization import graph_to_spec
 from tests.graph_compiler_test_support import spec_to_graph
 from feedbax.compiler.templates import network_template_graph
 from feedbax.runtime.graph import Graph
+from feedbax.runtime.components import (
+    LINEAR_PARAM_SCHEMA_VERSION,
+    LINEAR_PARAM_SCHEMA_VERSION_V1,
+)
 from feedbax.web.worker.diagnostics import GraphCompilationError
 from feedbax.web.worker.execution import compile_training_run
 
@@ -382,6 +388,56 @@ def test_built_component_params_match_spec_exactly() -> None:
     assert linear.layer.bias is None
     assert linear.activation_name == "tanh"
     assert linear.activation is jax.nn.tanh
+
+
+def test_linear_zero_initialization_is_compiled_executed_and_serialized() -> None:
+    def linear_spec(
+        params: dict[str, Any],
+        *,
+        param_schema_version: str | None = None,
+    ) -> GraphSpec:
+        return GraphSpec(
+            nodes={
+                "linear": ComponentSpec(
+                    type="Linear",
+                    params={"input_size": 3, "output_size": 2, **params},
+                    param_schema_version=param_schema_version,
+                    input_ports=["input"],
+                    output_ports=["output"],
+                )
+            },
+            input_ports=["input"],
+            output_ports=["output"],
+            input_bindings={"input": ("linear", "input")},
+            output_bindings={"output": ("linear", "output")},
+        )
+
+    graph = spec_to_graph(linear_spec({"initialization": "zeros"}), _registry())
+    linear = graph.nodes["linear"]
+    assert jnp.array_equal(linear.layer.weight, jnp.zeros((2, 3), dtype=jnp.float32))
+    assert jnp.array_equal(linear.layer.bias, jnp.zeros((2,), dtype=jnp.float32))
+
+    outputs, _ = graph(
+        {"input": jnp.asarray([1.0, -2.0, 3.0])},
+        graph.init_state(key=jax.random.PRNGKey(1)),
+        key=jax.random.PRNGKey(2),
+    )
+    assert jnp.array_equal(outputs["output"], jnp.zeros((2,), dtype=jnp.float32))
+
+    serialized = graph_to_spec(graph).nodes["linear"]
+    assert serialized.param_schema_version == LINEAR_PARAM_SCHEMA_VERSION
+    assert serialized.params["initialization"] == "zeros"
+
+    legacy = spec_to_graph(
+        linear_spec({}, param_schema_version=LINEAR_PARAM_SCHEMA_VERSION_V1),
+        _registry(),
+    )
+    default = spec_to_graph(linear_spec({}), _registry())
+    expected_default = eqx.nn.Linear(3, 2, key=jax.random.PRNGKey(0))
+    assert legacy.nodes["linear"].initialization == "random"
+    assert default.nodes["linear"].initialization == "random"
+    assert jnp.array_equal(default.nodes["linear"].layer.weight, expected_default.weight)
+    assert jnp.array_equal(default.nodes["linear"].layer.bias, expected_default.bias)
 
 
 def test_round_trip_preserves_node_types_and_topology() -> None:
