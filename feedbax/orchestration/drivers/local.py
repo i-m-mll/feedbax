@@ -86,6 +86,40 @@ FEEDBAX_JAX_COMPILATION_CACHE_DIR_ENV = "FEEDBAX_JAX_COMPILATION_CACHE_DIR"
 FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV = "FEEDBAX_DISABLE_JAX_COMPILATION_CACHE"
 FEEDBAX_PROCESS_IDENTITY_ENV = "FEEDBAX_PROCESS_IDENTITY"
 
+_LOCAL_PROCESS_LAUNCH_SCRIPT = r"""
+import json
+import os
+import sys
+
+identity_path, *command = sys.argv[1:]
+payload = {
+    "schema_id": "feedbax.orchestration.process_identity",
+    "schema_version": "feedbax.orchestration.process_identity.v1",
+    "mechanism": "environment-token-v1",
+    "run_set_id": os.environ["FEEDBAX_RUN_SET_ID"],
+    "row_id": os.environ["FEEDBAX_ROW_ID"],
+    "launch_token": os.environ["FEEDBAX_PROCESS_IDENTITY"],
+    "pid": os.getpid(),
+    "process_group_id": os.getpgrp(),
+}
+data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+descriptor = os.open(
+    identity_path,
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+    0o600,
+)
+try:
+    while data:
+        written = os.write(descriptor, data)
+        if written <= 0:
+            raise RuntimeError("process identity acknowledgement write made no progress")
+        data = data[written:]
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+os.execvpe(command[0], command, os.environ)
+"""
+
 
 def resolve_jax_compilation_cache_dir() -> Path | None:
     """Resolve the persistent JAX compilation cache directory for local rows.
@@ -438,7 +472,13 @@ class LocalOrchestrationDriver:
         stdout = (paths["row_dir"] / "stdout.log").open("ab")
         stderr = (paths["row_dir"] / "stderr.log").open("ab")
         process = subprocess.Popen(
-            command,
+            [
+                sys.executable,
+                "-c",
+                _LOCAL_PROCESS_LAUNCH_SCRIPT,
+                str(paths["process_identity"]),
+                *command,
+            ],
             cwd=self.cwd,
             env=env,
             stdout=stdout,
@@ -455,8 +495,19 @@ class LocalOrchestrationDriver:
             process_group_id=process.pid,
             launch_token=launch_token,
         )
-        _atomic_write_local_json(paths["process_identity"], identity.model_dump(mode="json"))
         paths["pid"].write_text(f"{process.pid}\n", encoding="utf-8")
+        deadline = time.monotonic() + 2.0
+        while not paths["process_identity"].is_file() and process.poll() is None:
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.005)
+        observed, identity_error = _read_local_process_identity(paths["process_identity"])
+        if observed != identity:
+            if process.poll() is None:
+                _terminate_process_group(process.pid, process=process)
+            detail = identity_error or "process identity record does not match launch"
+            paths["failed"].write_text(detail + "\n", encoding="utf-8")
+            return {"row_id": row.row_id, "pid": process.pid, "status": "failed", "detail": detail}
         return {
             "row_id": row.row_id,
             "pid": process.pid,
@@ -477,6 +528,18 @@ class LocalOrchestrationDriver:
             if returncode is None:
                 identity, detail = _verified_local_process_identity(paths, bundle, row, process.pid)
                 if identity is None:
+                    try:
+                        returncode = process.wait(timeout=0.05)
+                    except subprocess.TimeoutExpired:
+                        returncode = None
+                    if returncode == 0:
+                        paths["done"].write_text("0\n", encoding="utf-8")
+                        return DriverRowProbe(status="completed", pid=process.pid)
+                    if returncode is not None:
+                        paths["failed"].write_text(f"{returncode}\n", encoding="utf-8")
+                        return DriverRowProbe(
+                            status="failed", pid=process.pid, detail=f"exit={returncode}"
+                        )
                     return DriverRowProbe(status="failed", pid=process.pid, detail=detail)
                 return DriverRowProbe(status="running", pid=process.pid, process_identity=identity)
             if returncode == 0:
@@ -1266,30 +1329,6 @@ def _read_local_process_identity(path: Path) -> tuple[ProcessIdentity | None, st
         return None, f"process identity record is invalid: {exc}"
 
 
-def _process_environment_contains(pid: int, launch_token: str) -> tuple[bool, str | None]:
-    expected = f"{FEEDBAX_PROCESS_IDENTITY_ENV}={launch_token}"
-    proc_environ = Path(f"/proc/{pid}/environ")
-    if proc_environ.is_file():
-        try:
-            values = proc_environ.read_bytes().split(b"\0")
-        except OSError as exc:
-            return False, f"process environment is unreadable: {exc}"
-        return expected.encode() in values, None
-    try:
-        result = subprocess.run(
-            ["ps", "eww", "-p", str(pid), "-o", "command="],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"process environment inspection failed: {exc}"
-    if result.returncode != 0:
-        return False, f"process environment inspection exited {result.returncode}"
-    return expected in result.stdout.split(), None
-
-
 def _verified_local_process_identity(
     paths: Mapping[str, Path],
     bundle: RunBundle,
@@ -1315,22 +1354,6 @@ def _verified_local_process_identity(
         return None, member_error
     if not members:
         return None, "process group exited before identity verification"
-    for member_pid in members:
-        carries_token, token_error = _process_environment_contains(
-            member_pid, identity.launch_token
-        )
-        if token_error is not None:
-            remaining, _ = _process_group_member_pids(identity.process_group_id)
-            if member_pid not in remaining:
-                continue
-            return None, token_error
-        if not carries_token:
-            remaining, _ = _process_group_member_pids(identity.process_group_id)
-            if member_pid not in remaining:
-                continue
-            return None, (
-                f"process group member {member_pid} does not carry the persisted launch identity"
-            )
     return identity, "verified"
 
 

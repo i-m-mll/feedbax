@@ -7,6 +7,7 @@ error types and operation rules, but cannot weaken path traversal silently.
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import os
 import stat
@@ -21,6 +22,45 @@ ErrorFactory: TypeAlias = Callable[[str], Exception]
 DirectoryRecord: TypeAlias = tuple[Path, int, os.stat_result]
 _DIR_FD_SUPPORT = frozenset(operation.__name__ for operation in os.supports_dir_fd)
 _FOLLOW_SYMLINK_SUPPORT = frozenset(operation.__name__ for operation in os.supports_follow_symlinks)
+
+
+def rename_no_replace(
+    source_name: str,
+    destination_name: str,
+    *,
+    source_dir_fd: int,
+    destination_dir_fd: int,
+    error_factory: ErrorFactory,
+    context: str,
+) -> None:
+    """Atomically rename one descriptor-relative entry without replacement."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source_name)
+    destination_bytes = os.fsencode(destination_name)
+    if hasattr(libc, "renameatx_np"):
+        result = libc.renameatx_np(
+            source_dir_fd,
+            source_bytes,
+            destination_dir_fd,
+            destination_bytes,
+            0x00000004,
+        )
+    elif hasattr(libc, "renameat2"):
+        result = libc.renameat2(
+            source_dir_fd,
+            source_bytes,
+            destination_dir_fd,
+            destination_bytes,
+            1,
+        )
+    else:
+        raise error_factory(f"{context} requires atomic no-replace rename support")
+    if result == 0:
+        return
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        raise FileExistsError(f"{context} destination already exists: {destination_name}")
+    raise error_factory(f"{context} failed: {os.strerror(error)}")
 
 
 class SecurePathRigor(Enum):

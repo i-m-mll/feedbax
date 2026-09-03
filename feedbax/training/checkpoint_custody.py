@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import ctypes
 import hashlib
 import gzip
 import io
@@ -41,6 +40,7 @@ from feedbax._secure_fs import (
     open_directory_chain,
     open_existing_directory,
     open_existing_file,
+    rename_no_replace,
     take_directory_chain_leaf,
     validate_opened_path,
 )
@@ -2057,34 +2057,14 @@ def _perform_archive_rename_no_replace(
     parent_descriptor: int, source_name: str, destination_name: str
 ) -> None:
     """Invoke the supported descriptor-relative no-replace rename primitive."""
-    libc = ctypes.CDLL(None, use_errno=True)
-    source_bytes = os.fsencode(source_name)
-    destination_bytes = os.fsencode(destination_name)
-    if hasattr(libc, "renameatx_np"):
-        result = libc.renameatx_np(
-            parent_descriptor,
-            source_bytes,
-            parent_descriptor,
-            destination_bytes,
-            0x00000004,
-        )
-    elif hasattr(libc, "renameat2"):
-        result = libc.renameat2(
-            parent_descriptor, source_bytes, parent_descriptor, destination_bytes, 1
-        )
-    else:
-        raise CheckpointReferenceResolutionError(
-            "atomic no-replace directory publication is unsupported on this platform"
-        )
-    if result != 0:
-        error = ctypes.get_errno()
-        if error == getattr(os, "EEXIST", 17):
-            raise FileExistsError(
-                f"checkpoint archive destination won publication race: {destination_name}"
-            )
-        raise CheckpointReferenceResolutionError(
-            f"atomic no-replace directory publication failed: {os.strerror(error)}"
-        )
+    rename_no_replace(
+        source_name,
+        destination_name,
+        source_dir_fd=parent_descriptor,
+        destination_dir_fd=parent_descriptor,
+        error_factory=CheckpointReferenceResolutionError,
+        context="checkpoint archive publication race",
+    )
 
 
 def _canonical_archive_relative_path(value: str | None, *, context: str) -> str:

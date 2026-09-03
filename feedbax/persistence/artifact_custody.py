@@ -24,6 +24,7 @@ from feedbax._secure_fs import (
     open_directory_chain,
     open_existing_directory,
     open_existing_file,
+    rename_no_replace,
     recheck_directory_chain,
     require_secure_path_capabilities,
 )
@@ -184,19 +185,20 @@ def _read_file_descriptor(file_descriptor: int) -> bytes:
     return b"".join(chunks)
 
 
-def _link_materialized_file(
+def _publish_materialized_file_no_replace(
     temporary_name: str,
     destination_name: str,
     *,
     temporary_parent_descriptor: int,
     parent_descriptor: int,
 ) -> None:
-    os.link(
+    rename_no_replace(
         temporary_name,
         destination_name,
-        src_dir_fd=temporary_parent_descriptor,
-        dst_dir_fd=parent_descriptor,
-        follow_symlinks=False,
+        source_dir_fd=temporary_parent_descriptor,
+        destination_dir_fd=parent_descriptor,
+        error_factory=ArtifactBlobIntegrityError,
+        context="immutable artifact publication",
     )
 
 
@@ -278,7 +280,7 @@ def _stage_blob_bytes(data: bytes, destination: Path) -> os.stat_result:
                 f"staged blob bytes failed verification: {destination}"
             )
         try:
-            _link_materialized_file(
+            _publish_materialized_file_no_replace(
                 temporary_name,
                 destination.name,
                 temporary_parent_descriptor=staging_descriptor,
@@ -473,7 +475,7 @@ class ImmutableArtifactBlobProvider:
             temporary_descriptor = None
 
             try:
-                _link_materialized_file(
+                _publish_materialized_file_no_replace(
                     temporary_name,
                     destination_name,
                     temporary_parent_descriptor=staging_descriptor,
