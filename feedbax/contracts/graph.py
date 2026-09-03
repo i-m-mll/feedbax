@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
 import uuid
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
@@ -30,6 +32,13 @@ STUDIO_VALUE_SPEC_SCHEMA_VERSION = "feedbax.spec.studio.value.v2"
 LEGACY_STUDIO_VALUE_SPEC_SCHEMA_V1 = "feedbax.spec.studio.value.v1"
 LEGACY_STUDIO_VALUE_SPEC_FRONTEND_SCHEMA_V1 = "feedbax.studio.value.v1"
 STUDIO_VALUE_SPEC_SCHEMA_ID = "feedbax.spec.studio.value"
+STUDIO_EPOCH_VALUE_SPEC_SCHEMA_ID = "feedbax.spec.studio.epoch_value"
+STUDIO_EPOCH_VALUE_SPEC_SCHEMA_VERSION = "feedbax.spec.studio.epoch_value.v1"
+STUDIO_TASK_TIMELINE_SCHEMA_ID = "feedbax.spec.studio.task_timeline"
+STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1 = "feedbax.spec.studio.task_timeline.v1"
+STUDIO_TASK_TIMELINE_SCHEMA_VERSION = "feedbax.spec.studio.task_timeline.v2"
+STUDIO_SEMANTIC_DOCUMENT_SCHEMA_ID = "feedbax.spec.studio.semantic_document"
+STUDIO_SEMANTIC_DOCUMENT_SCHEMA_VERSION = "feedbax.spec.studio.semantic_document.v1"
 
 
 def _is_value_spec_like_payload(value: Any) -> bool:
@@ -858,6 +867,44 @@ class StudioValueSpec(BaseModel):
         return self
 
 
+def _validate_finite_authored_value(value: Any, *, path: str) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{path} contains a non-finite number")
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_finite_authored_value(item, path=f"{path}[{index}]")
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            _validate_finite_authored_value(item, path=f"{path}.{key}")
+
+
+def _legacy_epoch_value_spec(value: Mapping[str, Any], *, active: bool) -> dict[str, Any]:
+    base = StudioValueSpec.model_validate(value)
+    if active and base.mode != "constant":
+        return base.model_dump(mode="json", exclude_none=True)
+    authored = base.value
+    if isinstance(authored, Mapping):
+        literal = authored.get("active" if active else "inactive", 1 if active else 0)
+    elif active:
+        literal = authored if authored is not None else 1
+    elif isinstance(authored, list):
+        literal = [0 for _ in authored]
+    elif isinstance(authored, bool):
+        literal = False
+    else:
+        literal = 0
+    return StudioValueSpec(
+        value_form="literal",
+        mode="constant",
+        value=literal,
+        dtype=base.dtype,
+        shape=base.shape,
+        units=base.units,
+        frame=base.frame,
+        metadata=base.metadata,
+    ).model_dump(mode="json", exclude_none=True)
+
+
 class StudioInterventionValueBounds(BaseModel):
     """Optional lower and upper bounds for clamp-style interventions."""
 
@@ -894,11 +941,60 @@ class StudioTaskTimelineSignalSpec(BaseModel):
     kind: str
     task_data_id: Optional[str] = None
     path: str
-    epoch_ids: List[str] = Field(default_factory=list)
     value_spec: Optional[StudioValueSpec] = None
     value_schema: Optional[Dict[str, Any]] = None
     task_data_schema: Optional[Dict[str, Any]] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioEpochValueSpec(BaseModel):
+    """One authored value over the complete interval of one named task epoch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[STUDIO_EPOCH_VALUE_SPEC_SCHEMA_ID] = STUDIO_EPOCH_VALUE_SPEC_SCHEMA_ID
+    schema_version: Literal[STUDIO_EPOCH_VALUE_SPEC_SCHEMA_VERSION] = (
+        STUDIO_EPOCH_VALUE_SPEC_SCHEMA_VERSION
+    )
+    target_id: str = Field(min_length=1)
+    epoch_id: str = Field(min_length=1)
+    value_spec: StudioValueSpec
+
+    @model_validator(mode="after")
+    def validate_safe_value(self) -> "StudioEpochValueSpec":
+        _validate_finite_authored_value(
+            self.value_spec.model_dump(mode="python", exclude_none=True),
+            path=f"epoch_value_specs[{self.target_id!r}, {self.epoch_id!r}]",
+        )
+        spec = self.value_spec
+        if spec.mode not in {"constant", "function", "distribution"}:
+            raise ValueError(f"unsupported timeline epoch-value mode {spec.mode!r}")
+        if spec.mode == "constant" and spec.value is None:
+            raise ValueError("timeline constant epoch values require value")
+        if spec.mode == "function" and not spec.function_id:
+            raise ValueError("timeline function epoch values require function_id")
+        if spec.mode == "distribution":
+            distribution = spec.distribution
+            if not isinstance(distribution, Mapping):
+                raise ValueError("timeline distribution epoch values require distribution")
+            parameters = distribution.get("parameters")
+            if not isinstance(parameters, Mapping):
+                raise ValueError("timeline distribution epoch values require parameters")
+            family = distribution.get("family")
+            names = ("min", "max") if family == "uniform" else ("mean", "std")
+            if family not in {"uniform", "normal"} or any(
+                isinstance(parameters.get(name), bool)
+                or not isinstance(parameters.get(name), (int, float))
+                for name in names
+            ):
+                raise ValueError(
+                    "timeline distributions support numeric uniform min/max or normal mean/std"
+                )
+            if family == "uniform" and parameters["max"] < parameters["min"]:
+                raise ValueError("timeline uniform distribution requires min <= max")
+            if family == "normal" and parameters["std"] < 0:
+                raise ValueError("timeline normal distribution requires std >= 0")
+        return self
 
 
 class StudioTaskTimelineSegmentSpec(BaseModel):
@@ -913,13 +1009,115 @@ class StudioTaskTimelineSegmentSpec(BaseModel):
 class StudioTaskTimelineSpec(BaseModel):
     """Structured task timeline stored under Studio task specs."""
 
-    schema_version: Literal["feedbax.spec.studio.task_timeline.v1"] = (
-        "feedbax.spec.studio.task_timeline.v1"
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: Literal[STUDIO_TASK_TIMELINE_SCHEMA_ID] = STUDIO_TASK_TIMELINE_SCHEMA_ID
+    schema_version: Literal[STUDIO_TASK_TIMELINE_SCHEMA_VERSION] = (
+        STUDIO_TASK_TIMELINE_SCHEMA_VERSION
     )
     epochs: List[StudioTaskEpochSpec] = Field(default_factory=list)
     signals: List[StudioTaskTimelineSignalSpec] = Field(default_factory=list)
+    epoch_value_specs: List[StudioEpochValueSpec] = Field(default_factory=list)
     segments: List[StudioTaskTimelineSegmentSpec] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_v1(cls, data: Any) -> Any:
+        if not isinstance(data, Mapping):
+            return data
+        payload = dict(data)
+        version = payload.get("schema_version", STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1)
+        if version == STUDIO_TASK_TIMELINE_SCHEMA_VERSION:
+            return payload
+        if version not in {
+            STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1,
+            "feedbax.studio.task_timeline.v1",
+        }:
+            raise ValueError(
+                f"unsupported StudioTaskTimelineSpec schema_version {version!r}; "
+                f"expected {STUDIO_TASK_TIMELINE_SCHEMA_VERSION!r}"
+            )
+        entries: list[dict[str, Any]] = []
+        epoch_ids = [
+            str(epoch.get("id"))
+            for epoch in payload.get("epochs", [])
+            if isinstance(epoch, Mapping) and isinstance(epoch.get("id"), str)
+        ]
+        signals: list[Any] = []
+        for raw_signal in payload.get("signals", []):
+            if not isinstance(raw_signal, Mapping):
+                signals.append(raw_signal)
+                continue
+            signal = dict(raw_signal)
+            target_id = signal.get("task_data_id") or signal.get("id")
+            explicit = signal.pop("epoch_value_specs", None)
+            active_epochs = set(signal.pop("epoch_ids", []) or [])
+            base = signal.get("value_spec")
+            if isinstance(target_id, str) and isinstance(explicit, Mapping):
+                for epoch_id, value_spec in explicit.items():
+                    if value_spec is not None:
+                        entries.append(
+                            {
+                                "target_id": target_id,
+                                "epoch_id": str(epoch_id),
+                                "value_spec": value_spec,
+                            }
+                        )
+            elif isinstance(target_id, str) and isinstance(base, Mapping):
+                for epoch_id in epoch_ids:
+                    entries.append(
+                        {
+                            "target_id": target_id,
+                            "epoch_id": epoch_id,
+                            "value_spec": _legacy_epoch_value_spec(
+                                base,
+                                active=epoch_id in active_epochs,
+                            ),
+                        }
+                    )
+            signals.append(signal)
+        return {
+            **payload,
+            "schema_id": STUDIO_TASK_TIMELINE_SCHEMA_ID,
+            "schema_version": STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
+            "signals": signals,
+            "epoch_value_specs": entries,
+        }
+
+    @model_validator(mode="after")
+    def validate_epoch_values(self) -> "StudioTaskTimelineSpec":
+        epoch_ids = [epoch.id for epoch in self.epochs]
+        if len(epoch_ids) != len(set(epoch_ids)):
+            raise ValueError("timeline epoch ids must be unique")
+        if sorted(epoch.index for epoch in self.epochs) != list(range(len(self.epochs))):
+            raise ValueError("timeline epoch indexes must be contiguous from zero")
+        target_ids = [signal.task_data_id or signal.id for signal in self.signals]
+        if len(target_ids) != len(set(target_ids)):
+            raise ValueError("timeline signal target ids must be unique")
+        known_epochs = set(epoch_ids)
+        known_targets = set(target_ids)
+        occupied: set[tuple[str, str]] = set()
+        epoch_order = {epoch_id: index for index, epoch_id in enumerate(epoch_ids)}
+        for entry in self.epoch_value_specs:
+            if entry.target_id not in known_targets:
+                raise ValueError(f"unknown timeline epoch-value target {entry.target_id!r}")
+            if entry.epoch_id not in known_epochs:
+                raise ValueError(f"unknown timeline epoch-value epoch {entry.epoch_id!r}")
+            key = (entry.target_id, entry.epoch_id)
+            if key in occupied:
+                raise ValueError(
+                    "overlapping timeline epoch values are forbidden for "
+                    f"target {entry.target_id!r} in epoch {entry.epoch_id!r}"
+                )
+            occupied.add(key)
+        canonical = sorted(
+            self.epoch_value_specs,
+            key=lambda entry: (entry.target_id, epoch_order[entry.epoch_id]),
+        )
+        if self.epoch_value_specs != canonical:
+            raise ValueError("timeline epoch values must be ordered by target_id then epoch index")
+        return self
 
 
 class StudioTaskDataSpec(BaseModel):
@@ -1036,6 +1234,15 @@ class StudioScenarioSpec(BaseModel):
     report_spec: Optional[Dict[str, Any]] = None
     validation: StudioValidationState = Field(default_factory=StudioValidationState)
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("task_spec", mode="before")
+    @classmethod
+    def admit_task_spec(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        from feedbax.contracts.training import TaskSpec
+
+        return TaskSpec.model_validate(value).model_dump(mode="json", exclude_none=True)
 
 
 class StudioStageSpec(BaseModel):
@@ -1224,6 +1431,33 @@ class StudioPersistenceDocument(BaseModel):
     workspace_document: Optional[WorkspaceDocument] = None
     workspace: Optional[StudioWorkspaceSpec] = None
     expected_save_revision: Optional[int] = Field(default=None, ge=0)
+
+
+def studio_semantic_document_bytes(
+    graph: GraphSpec,
+    workspace: StudioWorkspaceSpec | None,
+) -> bytes:
+    """Return canonical v2 bytes for every authored fact that changes Studio execution."""
+    from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+
+    return canonical_json_v2_bytes(
+        {
+            "schema_id": STUDIO_SEMANTIC_DOCUMENT_SCHEMA_ID,
+            "schema_version": STUDIO_SEMANTIC_DOCUMENT_SCHEMA_VERSION,
+            "graph": graph.model_dump(mode="json", exclude_none=True),
+            "workspace": None
+            if workspace is None
+            else workspace.model_dump(mode="json", exclude_none=True),
+        }
+    )
+
+
+def studio_semantic_document_sha256(
+    graph: GraphSpec,
+    workspace: StudioWorkspaceSpec | None,
+) -> str:
+    """Return the runnable Studio model identity, excluding presentation state."""
+    return hashlib.sha256(studio_semantic_document_bytes(graph, workspace)).hexdigest()
 
 
 class GraphProject(BaseModel):

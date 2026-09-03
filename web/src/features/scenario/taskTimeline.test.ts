@@ -4,6 +4,7 @@ import {
   delayedReachTaskWithTimeline,
   delayedReachTimelinePreview,
   delayedReachTimelineFromTask,
+  signalEpochValueSpec,
   toggleDelayedReachSignalEpoch,
   updateTaskTimelineSignalValueSpec,
   updateDelayedReachEpochRange,
@@ -47,10 +48,9 @@ describe('delayed reach task timeline helpers', () => {
       },
     });
     expect(timeline.epochs[2].length.metadata.inferred_from_remaining_steps).toBe(true);
-    expect(timeline.signals.find((signal) => signal.id === 'target_on')?.epoch_ids).toEqual([
-      'epoch:1',
-      'epoch:2',
-    ]);
+    expect(['epoch:0', 'epoch:1', 'epoch:2'].filter((epochId) =>
+      Number(signalEpochValueSpec(timeline, 'target_on', epochId)?.value) !== 0
+    )).toEqual(['epoch:1', 'epoch:2']);
     expect(timeline.signals.map((signal) => signal.id)).toEqual([
       'target_position',
       'hold',
@@ -59,7 +59,6 @@ describe('delayed reach task timeline helpers', () => {
     ]);
     expect(timeline.signals.find((signal) => signal.id === 'target_position')).toMatchObject({
       task_data_id: 'target_position',
-      epoch_ids: ['epoch:1', 'epoch:2'],
       value_spec: {
         mode: 'function',
         function_id: 'delayed_reach_target_position',
@@ -95,6 +94,11 @@ describe('delayed reach task timeline helpers', () => {
       storage: 'compact_task_params',
       materializes_targets: true,
     });
+    expect(timeline).toMatchObject({
+      schema_id: 'feedbax.spec.studio.task_timeline',
+      schema_version: 'feedbax.spec.studio.task_timeline.v2',
+    });
+    expect(timeline.epoch_value_specs).toHaveLength(12);
     expect(timeline.segments).toMatchObject([
       { id: 'hold', epoch_ids: ['epoch:0'] },
       { id: 'target_on', epoch_ids: ['epoch:1'] },
@@ -120,7 +124,7 @@ describe('delayed reach task timeline helpers', () => {
       [12, 30],
     ]);
     expect(editedTask.params.hold_epochs).toEqual([0]);
-    expect(editedTask.timeline?.schema_version).toBe('feedbax.studio.task_timeline.v1');
+    expect(editedTask.timeline?.schema_version).toBe('feedbax.spec.studio.task_timeline.v2');
     expect(editedRange.epochs[1].length.metadata.value_schema_id).toBe(
       'value:task_timeline:epoch_length'
     );
@@ -137,13 +141,14 @@ describe('delayed reach task timeline helpers', () => {
     );
     const editedTask = delayedReachTaskWithTimeline(task, editedSignals);
 
-    expect(
-      editedSignals.signals.find((signal) => signal.id === 'target_position')?.epoch_ids
-    ).toEqual(['epoch:0', 'epoch:1', 'epoch:2']);
-    expect(editedSignals.signals.find((signal) => signal.id === 'target_on')?.epoch_ids).toEqual([
-      'epoch:0',
-      'epoch:1',
-      'epoch:2',
+    expect(['target_position', 'target_on'].map((signalId) =>
+      ['epoch:0', 'epoch:1', 'epoch:2'].filter((epochId) =>
+        signalEpochValueSpec(editedSignals, signalId, epochId)?.mode !== 'constant' ||
+        Number(signalEpochValueSpec(editedSignals, signalId, epochId)?.value) !== 0
+      )
+    )).toEqual([
+      ['epoch:0', 'epoch:1', 'epoch:2'],
+      ['epoch:0', 'epoch:1', 'epoch:2'],
     ]);
     expect(editedTask.params.target_on_epochs).toEqual([0, 1, 2]);
   });
@@ -199,13 +204,13 @@ describe('delayed reach task timeline helpers', () => {
 
     const edited = updateTaskTimelineSignalValueSpec(timeline, signal.id, {
       ...signal.value_spec!,
+      value_form: 'schedule',
       mode: 'schedule',
       schedule: { domain: 'epoch', function_id: 'step' },
       sampling_scope: 'epoch',
     });
 
     expect(edited.signals.find((item) => item.id === 'target_on')).toMatchObject({
-      epoch_ids: ['epoch:1', 'epoch:2'],
       value_spec: {
         mode: 'schedule',
         sampling_scope: 'epoch',
@@ -214,6 +219,9 @@ describe('delayed reach task timeline helpers', () => {
         value_spec_updated_from: 'task_timeline_value_editor',
       },
     });
+    expect(delayedReachTimelinePreview(edited).signals.find(
+      (item) => item.id === 'target_on'
+    )?.active_epoch_ids).toEqual(['epoch:1', 'epoch:2']);
   });
 
   it('preserves authored timeline value specs stored on the task', () => {
@@ -221,6 +229,7 @@ describe('delayed reach task timeline helpers', () => {
     const signal = timeline.signals.find((item) => item.id === 'target_position')!;
     const editedTimeline = updateTaskTimelineSignalValueSpec(timeline, signal.id, {
       ...signal.value_spec!,
+      value_form: 'distribution',
       mode: 'distribution',
       distribution: { family: 'uniform', parameters: { min: 0, max: 1 } },
       sampling_scope: 'trial',
@@ -239,5 +248,17 @@ describe('delayed reach task timeline helpers', () => {
       },
     });
     expect(roundTripped.segments?.find((item) => item.id === 'movement')).toBeTruthy();
+  });
+
+  it('fails visibly instead of replacing an unsupported authored timeline', () => {
+    expect(() => delayedReachTimelineFromTask({
+      ...task,
+      timeline: {
+        schema_id: 'feedbax.spec.studio.task_timeline',
+        schema_version: 'feedbax.spec.studio.task_timeline.v99',
+        epochs: [],
+        signals: [],
+      } as unknown as TaskSpec['timeline'],
+    })).toThrow('Unsupported task timeline schema version');
   });
 });

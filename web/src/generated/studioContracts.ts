@@ -492,13 +492,20 @@ export interface StudioTaskEpochSpec {
   metadata?: Record<string, unknown>;
 }
 
+export interface StudioEpochValueSpec {
+  schema_id?: "feedbax.spec.studio.epoch_value";
+  schema_version?: "feedbax.spec.studio.epoch_value.v1";
+  target_id: string;
+  epoch_id: string;
+  value_spec: StudioValueSpec;
+}
+
 export interface StudioTaskTimelineSignalSpec {
   id: string;
   label: string;
   kind: string;
   task_data_id?: string | null;
   path: string;
-  epoch_ids?: string[];
   value_spec?: StudioValueSpec | null;
   value_schema?: Record<string, unknown> | null;
   task_data_schema?: Record<string, unknown> | null;
@@ -513,9 +520,11 @@ export interface StudioTaskTimelineSegmentSpec {
 }
 
 export interface StudioTaskTimelineSpec {
-  schema_version?: "feedbax.spec.studio.task_timeline.v1";
+  schema_id?: "feedbax.spec.studio.task_timeline";
+  schema_version?: "feedbax.spec.studio.task_timeline.v2";
   epochs?: StudioTaskEpochSpec[];
   signals?: StudioTaskTimelineSignalSpec[];
+  epoch_value_specs?: StudioEpochValueSpec[];
   segments?: StudioTaskTimelineSegmentSpec[];
   metadata?: Record<string, unknown>;
 }
@@ -1109,7 +1118,7 @@ export interface TrainingSpec {
 export interface TaskSpec {
   type: string;
   params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
-  timeline?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>> | null;
+  timeline?: StudioTaskTimelineSpec | null;
 }
 
 export interface TrainingConfig {
@@ -1959,6 +1968,13 @@ function containsArrayValueEnvelope(value: unknown): boolean {
       record.schema_version.startsWith('feedbax.spec.component_param.array_value.'))
   ) return true;
   return Object.values(record).some(containsArrayValueEnvelope);
+}
+
+function containsNonFiniteNumber(value: unknown): boolean {
+  if (typeof value === 'number') return !Number.isFinite(value);
+  if (Array.isArray(value)) return value.some(containsNonFiniteNumber);
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).some(containsNonFiniteNumber);
 }
 
 function invalidTypedParamEnvelope(value: unknown): boolean {
@@ -2885,6 +2901,44 @@ export const StudioTaskEpochSpecSchema: z.ZodType<StudioTaskEpochSpec> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<StudioTaskEpochSpec>;
 
+export const StudioEpochValueSpecSchema: z.ZodType<StudioEpochValueSpec> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.epoch_value").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.epoch_value.v1").optional(),
+      "target_id": z.string().min(1),
+      "epoch_id": z.string().min(1),
+      "value_spec": StudioValueSpecSchema,
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (containsNonFiniteNumber(value.value_spec)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epoch values must contain only finite numbers",
+        });
+      }
+      if (!['constant', 'function', 'distribution'].includes(value.value_spec.mode)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epoch values support constant, function, or distribution modes",
+        });
+      }
+      if ((value.value_spec.mode === 'constant' && value.value_spec.value == null) || (value.value_spec.mode === 'function' && !value.value_spec.function_id) || (value.value_spec.mode === 'distribution' && (value.value_spec.distribution == null || typeof value.value_spec.distribution !== 'object' || value.value_spec.distribution.parameters == null || typeof value.value_spec.distribution.parameters !== 'object'))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epoch value is missing its required mode payload",
+        });
+      }
+      if (value.value_spec.mode === 'distribution' && (() => { const distribution = value.value_spec.distribution as Record<string, unknown>; const parameters = distribution?.parameters as Record<string, unknown>; const first = parameters?.[distribution?.family === 'uniform' ? 'min' : 'mean']; const second = parameters?.[distribution?.family === 'uniform' ? 'max' : 'std']; if (distribution?.family !== 'uniform' && distribution?.family !== 'normal') return true; if (typeof first !== 'number' || !Number.isFinite(first) || typeof second !== 'number' || !Number.isFinite(second)) return true; return distribution.family === 'uniform' ? second < first : second < 0; })()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline distribution must be uniform min/max or normal mean/std with valid bounds",
+        });
+      }
+    })
+) as unknown as z.ZodType<StudioEpochValueSpec>;
+
 export const StudioTaskTimelineSignalSpecSchema: z.ZodType<StudioTaskTimelineSignalSpec> = z.lazy(() =>
   z
     .object({
@@ -2893,7 +2947,6 @@ export const StudioTaskTimelineSignalSpecSchema: z.ZodType<StudioTaskTimelineSig
       "kind": z.string(),
       "task_data_id": z.string().nullable().optional(),
       "path": z.string(),
-      "epoch_ids": z.array(z.string()).optional(),
       "value_spec": StudioValueSpecSchema.nullable().optional(),
       "value_schema": z.record(z.string(), z.unknown()).nullable().optional(),
       "task_data_schema": z.record(z.string(), z.unknown()).nullable().optional(),
@@ -2916,13 +2969,47 @@ export const StudioTaskTimelineSegmentSpecSchema: z.ZodType<StudioTaskTimelineSe
 export const StudioTaskTimelineSpecSchema: z.ZodType<StudioTaskTimelineSpec> = z.lazy(() =>
   z
     .object({
-      "schema_version": z.literal("feedbax.spec.studio.task_timeline.v1").optional(),
+      "schema_id": z.literal("feedbax.spec.studio.task_timeline").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.task_timeline.v2").optional(),
       "epochs": z.array(StudioTaskEpochSpecSchema).optional(),
       "signals": z.array(StudioTaskTimelineSignalSpecSchema).optional(),
+      "epoch_value_specs": z.array(StudioEpochValueSpecSchema).optional(),
       "segments": z.array(StudioTaskTimelineSegmentSpecSchema).optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.schema_id !== 'feedbax.spec.studio.task_timeline' || value.schema_version !== 'feedbax.spec.studio.task_timeline.v2') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "unsupported Studio task timeline schema identity",
+        });
+      }
+      if (hasDuplicate((value.epochs ?? []).map((epoch) => epoch.id)) || (value.epochs ?? []).map((epoch) => epoch.index).slice().sort((a, b) => a - b).some((index, position) => index !== position)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epochs must have unique ids and contiguous indexes",
+        });
+      }
+      if (hasDuplicate((value.signals ?? []).map((signal) => signal.task_data_id ?? signal.id))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline signal target ids must be unique",
+        });
+      }
+      if ((value.epoch_value_specs ?? []).some((entry) => !(value.signals ?? []).some((signal) => (signal.task_data_id ?? signal.id) === entry.target_id) || !(value.epochs ?? []).some((epoch) => epoch.id === entry.epoch_id)) || hasDuplicate((value.epoch_value_specs ?? []).map((entry) => `${entry.target_id}\u0000${entry.epoch_id}`))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epoch values must name known targets and epochs without overlap",
+        });
+      }
+      if ((value.epoch_value_specs ?? []).some((entry, index, entries) => index > 0 && (entries[index - 1].target_id > entry.target_id || (entries[index - 1].target_id === entry.target_id && (value.epochs ?? []).findIndex((epoch) => epoch.id === entries[index - 1].epoch_id) > (value.epochs ?? []).findIndex((epoch) => epoch.id === entry.epoch_id))))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeline epoch values must be ordered by target_id then epoch index",
+        });
+      }
+    })
 ) as unknown as z.ZodType<StudioTaskTimelineSpec>;
 
 export const StudioTaskDataSpecSchema: z.ZodType<StudioTaskDataSpec> = z.lazy(() =>
@@ -2999,6 +3086,14 @@ export const StudioScenarioSpecSchema: z.ZodType<StudioScenarioSpec> = z.lazy(()
       "metadata": z.record(z.string(), z.unknown()).optional(),
     })
     .strict()
+    .superRefine((value, ctx) => {
+      if (value.task_spec != null && !TaskSpecSchema.safeParse(value.task_spec).success) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Studio scenario task_spec must satisfy the generated TaskSpec contract",
+        });
+      }
+    })
 ) as unknown as z.ZodType<StudioScenarioSpec>;
 
 export const StudioStageSpecSchema: z.ZodType<StudioStageSpec> = z.lazy(() =>
@@ -3922,7 +4017,7 @@ export const TaskSpecSchema: z.ZodType<TaskSpec> = z.lazy(() =>
     .object({
       "type": z.string(),
       "params": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
-      "timeline": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).nullable().optional(),
+      "timeline": StudioTaskTimelineSpecSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TaskSpec>;

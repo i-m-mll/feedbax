@@ -277,6 +277,11 @@ from feedbax.contracts.graph import (
     STUDIO_GRAPH_PROJECT_SCHEMA_VERSION_LEGACY,
     STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_ID,
     STUDIO_PERSISTENCE_DOCUMENT_SCHEMA_VERSION,
+    STUDIO_EPOCH_VALUE_SPEC_SCHEMA_ID,
+    STUDIO_EPOCH_VALUE_SPEC_SCHEMA_VERSION,
+    STUDIO_TASK_TIMELINE_SCHEMA_ID,
+    STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
+    STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1,
     STUDIO_BIOMECHANICS_SCHEMA_ID,
     STUDIO_BIOMECHANICS_SCHEMA_VERSION,
     STUDIO_SCENARIO_SCHEMA_VERSION,
@@ -1707,6 +1712,13 @@ def _migrate_studio_value_spec_v1_payload(payload: dict[str, Any]) -> dict[str, 
     from feedbax.contracts.graph import StudioValueSpec
 
     return StudioValueSpec.model_validate(payload).model_dump(mode="json", exclude_none=True)
+
+
+def _migrate_studio_task_timeline_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Move legacy per-signal epoch membership into explicit epoch-value entries."""
+    from feedbax.contracts.graph import StudioTaskTimelineSpec
+
+    return StudioTaskTimelineSpec.model_validate(payload).model_dump(mode="json", exclude_none=True)
 
 
 def _migrate_representation_spec_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -5475,8 +5487,13 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         ),
         (
             "StudioTaskTimelineSpec",
-            "feedbax.spec.studio.task_timeline",
+            STUDIO_TASK_TIMELINE_SCHEMA_ID,
             "Structured Studio-authored task timeline.",
+        ),
+        (
+            "StudioEpochValueSpec",
+            STUDIO_EPOCH_VALUE_SPEC_SCHEMA_ID,
+            "One authored value over one named task epoch interval.",
         ),
         ("StudioValueSpec", "feedbax.spec.studio.value", "Structured Studio-authored value."),
     ):
@@ -5514,6 +5531,19 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             stance = "migrate"
             supported = ("feedbax.spec.studio.value.v1", "feedbax.studio.value.v1")
             rejected = ("feedbax.spec.studio.value.v0",)
+        elif kind == "StudioTaskTimelineSpec":
+            current_version = STUDIO_TASK_TIMELINE_SCHEMA_VERSION
+            stance = "migrate"
+            supported = (
+                STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1,
+                "feedbax.studio.task_timeline.v1",
+            )
+            rejected = ("feedbax.spec.studio.task_timeline.v0",)
+        elif kind == "StudioEpochValueSpec":
+            current_version = STUDIO_EPOCH_VALUE_SPEC_SCHEMA_VERSION
+            stance = "reject"
+            supported = None
+            rejected = ("feedbax.spec.studio.epoch_value.v0",)
         else:
             current_version = f"{schema_id}.v1"
             stance = "reject"
@@ -6859,6 +6889,26 @@ default_spec_registry.register_migration(
         migration_id="studio-value-spec-v1-to-v2",
         migrate=_migrate_studio_value_spec_v1_payload,
         description="Split legacy mode/sampling_scope into value_form and variation.",
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioTaskTimelineSpec",
+    SchemaMigration(
+        source_version=STUDIO_TASK_TIMELINE_SCHEMA_VERSION_V1,
+        target_version=STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
+        migration_id="studio-task-timeline-v1-to-v2-epoch-values",
+        migrate=_migrate_studio_task_timeline_v1_payload,
+        description="Move per-signal epoch membership into explicit epoch-value entries.",
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioTaskTimelineSpec",
+    SchemaMigration(
+        source_version="feedbax.studio.task_timeline.v1",
+        target_version=STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
+        migration_id="studio-task-timeline-frontend-v1-to-v2-epoch-values",
+        migrate=_migrate_studio_task_timeline_v1_payload,
+        description="Normalize the legacy frontend timeline spelling and epoch values.",
     ),
 )
 default_spec_registry.register_migration(
