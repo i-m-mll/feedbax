@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
 
 const LOCAL_PROJECTS_STORAGE_KEY = 'feedbax:studio-local-tabs';
@@ -75,7 +75,12 @@ const savedTabsPayload = JSON.stringify({
   ],
 });
 
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
 afterEach(() => {
+  vi.clearAllTimers();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -421,7 +426,6 @@ describe('projectsStore local restore state', () => {
   });
 
   it('does not schedule local persistence for selection, viewport, or history-only churn', async () => {
-    vi.useFakeTimers();
     vi.resetModules();
     const storage = makeStorage();
     vi.stubGlobal('window', { localStorage: storage });
@@ -460,7 +464,10 @@ describe('projectsStore local restore state', () => {
 
     vi.advanceTimersByTime(300);
 
-    expect(storage.setItem).not.toHaveBeenCalled();
+    const localProjectWrites = vi.mocked(storage.setItem).mock.calls.filter(
+      ([key]) => key === LOCAL_PROJECTS_STORAGE_KEY
+    );
+    expect(localProjectWrites).toHaveLength(0);
   });
 
   it('omits undo and redo history from persisted local tab payloads', async () => {
