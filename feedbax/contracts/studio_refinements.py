@@ -144,6 +144,73 @@ CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
             "value.value_form === 'distribution' && value.variation.scope === 'replicate' && value.variation.stochastic_policy != null && value.variation.stochastic_policy !== 'resample_per_replicate'",
         ),
     ),
+    "StudioEpochValueSpec": (
+        CrossFieldRefinement(
+            "epoch-value.finite",
+            "timeline epoch values must contain only finite numbers",
+            None,
+            "containsNonFiniteNumber(value.value_spec)",
+        ),
+        CrossFieldRefinement(
+            "epoch-value.mode",
+            "timeline epoch values support constant, function, or distribution modes",
+            None,
+            "!['constant', 'function', 'distribution'].includes(value.value_spec.mode)",
+        ),
+        CrossFieldRefinement(
+            "epoch-value.required-payload",
+            "timeline epoch value is missing its required mode payload",
+            None,
+            "(value.value_spec.mode === 'constant' && value.value_spec.value == null) || (value.value_spec.mode === 'function' && !value.value_spec.function_id) || (value.value_spec.mode === 'distribution' && (value.value_spec.distribution == null || typeof value.value_spec.distribution !== 'object' || value.value_spec.distribution.parameters == null || typeof value.value_spec.distribution.parameters !== 'object'))",
+        ),
+        CrossFieldRefinement(
+            "epoch-value.distribution",
+            "timeline distribution must be uniform min/max or normal mean/std with valid bounds",
+            None,
+            "value.value_spec.mode === 'distribution' && (() => { const distribution = value.value_spec.distribution as Record<string, unknown>; const parameters = distribution?.parameters as Record<string, unknown>; const first = parameters?.[distribution?.family === 'uniform' ? 'min' : 'mean']; const second = parameters?.[distribution?.family === 'uniform' ? 'max' : 'std']; if (distribution?.family !== 'uniform' && distribution?.family !== 'normal') return true; if (typeof first !== 'number' || !Number.isFinite(first) || typeof second !== 'number' || !Number.isFinite(second)) return true; return distribution.family === 'uniform' ? second < first : second < 0; })()",
+        ),
+    ),
+    "StudioTaskTimelineSpec": (
+        CrossFieldRefinement(
+            "task-timeline.identity",
+            "unsupported Studio task timeline schema identity",
+            lambda value: value.schema_id != "feedbax.spec.studio.task_timeline"
+            or value.schema_version != "feedbax.spec.studio.task_timeline.v2",
+            "value.schema_id !== 'feedbax.spec.studio.task_timeline' || value.schema_version !== 'feedbax.spec.studio.task_timeline.v2'",
+        ),
+        CrossFieldRefinement(
+            "task-timeline.epochs",
+            "timeline epochs must have unique ids and contiguous indexes",
+            None,
+            "hasDuplicate((value.epochs ?? []).map((epoch) => epoch.id)) || (value.epochs ?? []).map((epoch) => epoch.index).slice().sort((a, b) => a - b).some((index, position) => index !== position)",
+        ),
+        CrossFieldRefinement(
+            "task-timeline.targets",
+            "timeline signal target ids must be unique",
+            None,
+            "hasDuplicate((value.signals ?? []).map((signal) => signal.task_data_id ?? signal.id))",
+        ),
+        CrossFieldRefinement(
+            "task-timeline.epoch-values",
+            "timeline epoch values must name known targets and epochs without overlap",
+            None,
+            "(value.epoch_value_specs ?? []).some((entry) => !(value.signals ?? []).some((signal) => (signal.task_data_id ?? signal.id) === entry.target_id) || !(value.epochs ?? []).some((epoch) => epoch.id === entry.epoch_id)) || hasDuplicate((value.epoch_value_specs ?? []).map((entry) => `${entry.target_id}\\u0000${entry.epoch_id}`))",
+        ),
+        CrossFieldRefinement(
+            "task-timeline.canonical-order",
+            "timeline epoch values must be ordered by target_id then epoch index",
+            None,
+            "(value.epoch_value_specs ?? []).some((entry, index, entries) => index > 0 && (entries[index - 1].target_id > entry.target_id || (entries[index - 1].target_id === entry.target_id && (value.epochs ?? []).findIndex((epoch) => epoch.id === entries[index - 1].epoch_id) > (value.epochs ?? []).findIndex((epoch) => epoch.id === entry.epoch_id))))",
+        ),
+    ),
+    "StudioScenarioSpec": (
+        CrossFieldRefinement(
+            "studio-scenario.task-spec",
+            "Studio scenario task_spec must satisfy the generated TaskSpec contract",
+            None,
+            "value.task_spec != null && !TaskSpecSchema.safeParse(value.task_spec).success",
+        ),
+    ),
     "WorkspaceDocument": (
         CrossFieldRefinement(
             "workspace-document.semantic-root",
@@ -394,6 +461,9 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
     "StudioValueEnumerableSpec": frozenset({"validate_form_payload"}),
     "StudioValueVariationSpec": frozenset({"validate_scope_payload"}),
     "StudioValueSpec": frozenset({"validate_value_variation"}),
+    "StudioEpochValueSpec": frozenset({"validate_safe_value"}),
+    "StudioTaskTimelineSpec": frozenset({"validate_epoch_values"}),
+    "StudioScenarioSpec": frozenset({"admit_task_spec"}),
     "WorkspaceDocument": frozenset({"validate_semantic_anchors"}),
     "DynamicPortPolicy": frozenset({"validate_port_namespace"}),
     "RepresentationStateAnchorSelectorBinding": frozenset({"validate_anchor_subpath_namespace"}),

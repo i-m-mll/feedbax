@@ -4,6 +4,7 @@ import { studioPersistenceDocument, type StudioPersistenceResult } from '@/api/c
 import type { WorkspaceDocument } from '@/generated/studioContracts';
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
 import type { StudioWorkspaceSpec } from '@/types/workspace';
+import type { TaskSpec } from '@/types/training';
 import type { AnalysisClassDef } from '@/types/analysis';
 import { studioDraftHashes } from '@/utils/studioDraftHash';
 import {
@@ -20,6 +21,10 @@ import { useGraphStore } from '@/stores/graphStore';
 import { useTrainingStore } from '@/stores/trainingStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { buildWorkspaceSnapshot, useWorkspaceStore } from '@/stores/workspaceStore';
+import {
+  delayedReachTimelineFromTask,
+  updateTaskTimelineSignalEpochValueSpec,
+} from '@/features/scenario/taskTimeline';
 
 const analysisClass: AnalysisClassDef = {
   name: 'ActivityPlot',
@@ -110,20 +115,85 @@ function workspace(): StudioWorkspaceSpec {
   };
 }
 
+function workspaceWithEpochValue(value: number): StudioWorkspaceSpec {
+  const taskSpec = {
+    type: 'DelayedReaches',
+    params: {
+      n_steps: 8,
+      epoch_len_ranges: [[2, 2], [2, 2]],
+      hold_epochs: [0],
+      target_on_epochs: [1, 2],
+      move_epochs: [2],
+    },
+  };
+  const timeline = delayedReachTimelineFromTask(taskSpec)!;
+  const edited = updateTaskTimelineSignalEpochValueSpec(
+    timeline,
+    'hold',
+    'epoch:0',
+    {
+      schema_version: 'feedbax.spec.studio.value.v2',
+      value_form: 'literal',
+      variation: { scope: 'fixed', enumerable: null, metadata: {} },
+      mode: 'constant',
+      value,
+      metadata: {},
+    }
+  );
+  const base = workspace();
+  return {
+    ...base,
+    active_stage_id: 'stage:train',
+    stages: [{
+      id: 'stage:train',
+      schema_id: 'feedbax.spec.studio.stage',
+      schema_version: 'feedbax.spec.studio.stage.v2',
+      kind: 'train',
+      label: 'Train',
+      status: 'draft',
+      scenario_id: 'scenario:train',
+      input_collections: [],
+      output_collections: [],
+      manifest_refs: [],
+      artifact_refs: [],
+      selection_spec: {},
+      validation: { errors: [], warnings: [], metadata: {} },
+      ui_state: {},
+      metadata: {},
+    }],
+    scenarios: {
+      'scenario:train': {
+        id: 'scenario:train',
+        schema_version: 'feedbax.spec.studio.scenario.v3',
+        label: 'Train',
+        stage_id: 'stage:train',
+        task_spec: {
+          ...taskSpec,
+          timeline: edited as unknown as TaskSpec['timeline'],
+        },
+        validation: { errors: [], warnings: [], metadata: {} },
+        ui_state: {},
+        metadata: {},
+      },
+    },
+  };
+}
+
 function draft({
   documentId = 'document:a',
   graphId = 'graph:a',
   localRevision = 1,
   saveRevision = 4,
+  workspaceSpec = workspace(),
 }: {
   documentId?: string;
   graphId?: string | null;
   localRevision?: number;
   saveRevision?: number | null;
+  workspaceSpec?: StudioWorkspaceSpec;
 } = {}): StudioDocumentDraft {
   const graphSpec = graph(saveRevision ?? 0);
   const document = workspaceDocument();
-  const workspaceSpec = workspace();
   return {
     documentId,
     label: documentId,
@@ -201,6 +271,41 @@ afterEach(() => {
 });
 
 describe('document-scoped Studio persistence transactions', () => {
+  it('keeps the newest exact timeline value through a delayed acknowledgement and retry', async () => {
+    const first = deferred<StudioPersistenceResult>();
+    const second = deferred<StudioPersistenceResult>();
+    const persist = vi
+      .fn<StudioPersistenceDependencies['persist']>()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const { coordinator } = harness(persist);
+
+    coordinator.documentChanged(draft({
+      localRevision: 1,
+      workspaceSpec: workspaceWithEpochValue(1),
+    }));
+    const firstSave = coordinator.save(draft({
+      localRevision: 1,
+      workspaceSpec: workspaceWithEpochValue(1),
+    }), 'manual');
+    coordinator.documentChanged(draft({
+      localRevision: 2,
+      workspaceSpec: workspaceWithEpochValue(7),
+    }));
+
+    first.resolve(result(5));
+    await expect(firstSave).resolves.toMatchObject({ ok: true, localRevision: 1 });
+    await flushPromises();
+    const latestTimeline = persist.mock.calls[1][1].workspace!.scenarios['scenario:train']
+      .task_spec!.timeline!;
+    expect(latestTimeline.epoch_value_specs.find(
+      (entry) => entry.target_id === 'hold' && entry.epoch_id === 'epoch:0'
+    )?.value_spec.value).toBe(7);
+
+    second.resolve(result(6));
+    await flushPromises();
+  });
+
   it('keeps a newer autosave edit dirty and submits it after the stale success', async () => {
     vi.useFakeTimers();
     const first = deferred<StudioPersistenceResult>();
@@ -332,17 +437,30 @@ describe('document-scoped Studio persistence transactions', () => {
       .mockImplementationOnce(() => retry.promise);
     const { coordinator, failed } = harness(persist);
 
-    const first = await coordinator.save(draft({ localRevision: 1 }), 'manual');
+    const first = await coordinator.save(draft({
+      localRevision: 1,
+      workspaceSpec: workspaceWithEpochValue(1),
+    }), 'manual');
     expect(first).toMatchObject({ ok: false, kind: 'error' });
     expect(failed).toHaveLength(1);
     expect(coordinator.state('document:a').blocked).toBe(true);
 
-    coordinator.documentChanged(draft({ localRevision: 2 }));
+    coordinator.documentChanged(draft({
+      localRevision: 2,
+      workspaceSpec: workspaceWithEpochValue(7),
+    }));
     await vi.advanceTimersByTimeAsync(100);
     expect(persist).toHaveBeenCalledTimes(1);
 
-    const explicitRetry = coordinator.save(draft({ localRevision: 2 }), 'manual');
+    const explicitRetry = coordinator.save(draft({
+      localRevision: 2,
+      workspaceSpec: workspaceWithEpochValue(7),
+    }), 'manual');
     expect(persist).toHaveBeenCalledTimes(2);
+    expect(persist.mock.calls[1][1].workspace!.scenarios['scenario:train']
+      .task_spec!.timeline!.epoch_value_specs.find(
+        (entry) => entry.target_id === 'hold' && entry.epoch_id === 'epoch:0'
+      )?.value_spec.value).toBe(7);
     retry.resolve(result(5));
     await expect(explicitRetry).resolves.toMatchObject({ ok: true, localRevision: 2 });
   });
@@ -362,6 +480,24 @@ describe('document-scoped Studio persistence transactions', () => {
 });
 
 describe('persisted mutation revisions', () => {
+  it('keeps timeline semantic ownership through graph undo and redo', () => {
+    useGraphStore.getState().resetGraph();
+    useWorkspaceStore.getState().setWorkspace(workspaceWithEpochValue(7));
+    const before = useWorkspaceStore.getState().workspace.scenarios['scenario:train']
+      .task_spec!.timeline!.epoch_value_specs;
+
+    useGraphStore.getState().addRetainedObservable({
+      id: 'observable:timeline-ownership',
+      label: 'Timeline ownership',
+      source: { node_id: 'missing', port: 'output' },
+    } as any);
+    useGraphStore.getState().undo();
+    useGraphStore.getState().redo();
+
+    expect(useWorkspaceStore.getState().workspace.scenarios['scenario:train']
+      .task_spec!.timeline!.epoch_value_specs).toEqual(before);
+  });
+
   it('advances for graph history, workspace, training, analysis, and empty-page clearing', () => {
     useGraphStore.getState().resetGraph();
     useAnalysisStore.getState().resetAnalysis();

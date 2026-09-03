@@ -7,6 +7,7 @@ import {
   SparseCooArrayValueSpecSchema,
   SparseCooEntrySpecSchema,
   StudioPersistenceDocumentSchema,
+  StudioTaskTimelineSpecSchema,
   StudioValueEnumerableSpecSchema,
 } from '@/generated/studioContracts';
 import type {
@@ -95,6 +96,38 @@ describe('generated component-param array value contracts', () => {
 });
 
 describe('generated Studio constraint parity', () => {
+  const valueSpec = (value: unknown) => ({
+    schema_version: 'feedbax.spec.studio.value.v2' as const,
+    value_form: 'literal' as const,
+    variation: { scope: 'fixed' as const, metadata: {} },
+    mode: 'constant' as const,
+    value,
+    metadata: {},
+  });
+  const timeline = () => ({
+    schema_id: 'feedbax.spec.studio.task_timeline' as const,
+    schema_version: 'feedbax.spec.studio.task_timeline.v2' as const,
+    epochs: [{ id: 'epoch:0', label: 'Epoch', index: 0, length: valueSpec(null), metadata: {} }],
+    signals: [{
+      id: 'hold',
+      label: 'Hold',
+      kind: 'signal',
+      task_data_id: 'hold',
+      path: 'inputs.hold',
+      value_spec: valueSpec(0),
+      metadata: {},
+    }],
+    epoch_value_specs: [{
+      schema_id: 'feedbax.spec.studio.epoch_value' as const,
+      schema_version: 'feedbax.spec.studio.epoch_value.v1' as const,
+      target_id: 'hold',
+      epoch_id: 'epoch:0',
+      value_spec: valueSpec(1),
+    }],
+    segments: [],
+    metadata: {},
+  });
+
   it('projects numeric bounds and string patterns', () => {
     expect(
       GraphMetadataSchema.safeParse({
@@ -136,5 +169,31 @@ describe('generated Studio constraint parity', () => {
         schema_version: 'feedbax.spec.studio.persistence_document.v99',
       }).success,
     ).toBe(false);
+  });
+
+  it('enforces the generated timeline identity, targets, and overlap rules', () => {
+    expect(StudioTaskTimelineSpecSchema.safeParse(timeline()).success).toBe(true);
+
+    const future = timeline();
+    (future as { schema_version: string }).schema_version =
+      'feedbax.spec.studio.task_timeline.v99';
+    expect(StudioTaskTimelineSpecSchema.safeParse(future).success).toBe(false);
+
+    const unknown = timeline();
+    unknown.epoch_value_specs[0].target_id = 'missing';
+    expect(StudioTaskTimelineSpecSchema.safeParse(unknown).success).toBe(false);
+
+    const overlap = timeline();
+    overlap.epoch_value_specs.push({ ...overlap.epoch_value_specs[0] });
+    expect(StudioTaskTimelineSpecSchema.safeParse(overlap).success).toBe(false);
+
+    const malformed = timeline();
+    (malformed.epoch_value_specs[0] as { value_spec: unknown }).value_spec = {
+      ...valueSpec(null),
+      value_form: 'distribution',
+      mode: 'distribution',
+      distribution: { family: 'uniform', parameters: { min: 0 } },
+    };
+    expect(StudioTaskTimelineSpecSchema.safeParse(malformed).success).toBe(false);
   });
 });

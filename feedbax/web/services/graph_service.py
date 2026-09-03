@@ -33,6 +33,7 @@ from feedbax.contracts.graph import (
     SemanticAnchor,
     WorkspaceDocument,
     build_default_studio_workspace,
+    studio_semantic_document_sha256,
 )
 from feedbax.compiler import GraphDocument, compile_graph
 
@@ -114,6 +115,7 @@ class GraphService:
         )
         presentation = self._workspace_document(
             graph,
+            workspace=semantic_workspace,
             graph_ui_state=(workspace_document.graph_ui_state if workspace_document else None),
             workspace_ui_state=(
                 workspace_document.workspace_ui_state if workspace_document else None
@@ -202,6 +204,7 @@ class GraphService:
             project.graph.metadata.save_revision = next_revision
         project.workspace_document = self._workspace_document(
             project.graph,
+            workspace=project.workspace,
             graph_ui_state=presentation.graph_ui_state,
             workspace_ui_state=presentation.workspace_ui_state,
             stage_ui_state=presentation.stage_ui_state,
@@ -399,6 +402,7 @@ class GraphService:
         current_workspace = project.workspace_document
         expected_root = self._workspace_document(
             project.graph,
+            workspace=project.workspace,
             graph_ui_state=current_workspace.graph_ui_state,
             workspace_ui_state=current_workspace.workspace_ui_state,
             stage_ui_state=current_workspace.stage_ui_state,
@@ -425,6 +429,7 @@ class GraphService:
         self,
         graph: GraphSpec,
         *,
+        workspace: StudioWorkspaceSpec | None = None,
         graph_ui_state: GraphUIState | None = None,
         workspace_ui_state: dict[str, object] | None = None,
         stage_ui_state: dict[str, dict[str, object]] | None = None,
@@ -435,18 +440,17 @@ class GraphService:
         component_registry: object | None = None,
     ) -> WorkspaceDocument:
         document = GraphDocument(graph=graph)
+        document_sha256 = studio_semantic_document_sha256(graph, workspace)
         semantic_anchors: dict[str, SemanticAnchor] = {}
         if component_registry is not None:
             compilation = compile_graph(document, component_registry)
-            document_sha256 = compilation.record.document_sha256
             semantic_anchors = {
-                entry.resolved_path: entry.authored_anchor
+                entry.resolved_path: SemanticAnchor(
+                    semantic_document_sha256=document_sha256,
+                    authored_path=entry.authored_anchor.authored_path,
+                )
                 for entry in compilation.record.source_map.entries
             }
-        else:
-            from feedbax.contracts.authored_canonical import canonical_sha256
-
-            document_sha256 = canonical_sha256(document.model_dump(mode="json", exclude_none=True))
         return WorkspaceDocument(
             semantic_root=SemanticAnchor(
                 semantic_document_sha256=document_sha256,

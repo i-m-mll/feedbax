@@ -1274,7 +1274,10 @@ def test_studio_task_timeline_spec_validates_value_specs() -> None:
     )
 
     assert timeline.epochs[0].length.mode == "constant"
-    assert timeline.signals[0].epoch_ids == ["epoch:0"]
+    assert timeline.schema_version == "feedbax.spec.studio.task_timeline.v2"
+    assert timeline.epoch_value_specs[0].target_id == "inputs"
+    assert timeline.epoch_value_specs[0].epoch_id == "epoch:0"
+    assert timeline.epoch_value_specs[0].value_spec.mode == "distribution"
     assert timeline.signals[0].value_spec is not None
     assert timeline.signals[0].value_spec.mode == "distribution"
     assert timeline.signals[0].value_schema["shape"] == [2]

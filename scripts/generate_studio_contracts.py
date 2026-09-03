@@ -93,6 +93,7 @@ from feedbax.contracts.graph import (
     StudioBiomechanicsSpec,
     StudioArtifactRef,
     StudioCollectionRef,
+    StudioEpochValueSpec,
     StudioInterventionTransformSpec,
     StudioInterventionValueBounds,
     StudioManifestRef,
@@ -337,6 +338,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     StudioInterventionValueBounds,
     StudioInterventionTransformSpec,
     StudioTaskEpochSpec,
+    StudioEpochValueSpec,
     StudioTaskTimelineSignalSpec,
     StudioTaskTimelineSegmentSpec,
     StudioTaskTimelineSpec,
@@ -541,6 +543,13 @@ function containsArrayValueEnvelope(value: unknown): boolean {
   return Object.values(record).some(containsArrayValueEnvelope);
 }
 
+function containsNonFiniteNumber(value: unknown): boolean {
+  if (typeof value === 'number') return !Number.isFinite(value);
+  if (Array.isArray(value)) return value.some(containsNonFiniteNumber);
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).some(containsNonFiniteNumber);
+}
+
 function invalidTypedParamEnvelope(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(invalidTypedParamEnvelope);
   if (value === null || typeof value !== 'object') return false;
@@ -641,6 +650,7 @@ CONTRACT_MODEL_NAMES = [
 MIGRATION_OR_NORMALIZATION_VALIDATORS = {
     ("ComponentSpec", "validate_value_spec_params"),
     ("StudioValueSpec", "migrate_legacy_value_spec"),
+    ("StudioTaskTimelineSpec", "migrate_v1"),
     ("StudioTaskBinding", "reject_legacy_task_binding_field_names"),
     ("StudioTaskBindingSpec", "reject_legacy_task_binding_contract"),
     ("GraphProject", "drop_unparseable_compile_reports"),

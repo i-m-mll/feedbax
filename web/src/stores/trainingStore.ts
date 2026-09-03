@@ -90,13 +90,6 @@ export const defaultTaskSpec: TaskSpec = {
     eval_reach_length: 0.5,
     eval_grid_n: 1,
   },
-  timeline: {
-    epochs: {
-      pre_movement: [0, 50],
-      movement: [50, 150],
-      hold: [150, 200],
-    },
-  },
 };
 
 const MAX_LOSS_HISTORY = 2000;
