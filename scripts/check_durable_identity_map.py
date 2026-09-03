@@ -193,17 +193,18 @@ ENCODERS = (
         id="studio-fnv1a-draft",
         identity_kind="persisted presentation-revision comparison",
         algorithm="32-bit FNV-1a",
-        version="unversioned fnv1a prefix contract",
+        version="fnv1a32-canonical_json_v2",
         bytes_contract=(
-            "A recursively key-sorted JSON-like string. Python and TypeScript implementations "
-            "are separate current producers; integral floats and negative zero are known to "
-            "serialize differently and are owned by the Studio convergence lanes."
+            "RFC 8785 canonical JSON v2 UTF-8 bytes. Python and TypeScript apply the same "
+            "FNV-1a-32 reduction and carry the result in the versioned Studio draft-hash "
+            "envelope. Historical runtime-local hashes are admitted only as rehash-required "
+            "history and never prove current equality."
         ),
         producers=(
-            Anchor("feedbax/studio/execution.py", "_stable_ui_hash"),
+            Anchor("feedbax/studio/draft_hash.py", "studio_draft_digest_v2"),
             Anchor(
-                "web/src/utils/pipelineCollections.ts",
-                "stableHash",
+                "web/src/utils/studioDraftHash.ts",
+                "studioDraftDigestV2",
                 language="typescript",
             ),
         ),
@@ -534,14 +535,17 @@ SURFACES = (
         ),
         assertions=(
             Anchor(
-                "web/src/utils/pipelineCollections.ts", "stableStringify", language="typescript"
+                "feedbax/studio/draft_hash.py", "admit_studio_draft_hashes"
             ),
-            Anchor("web/src/utils/pipelineCollections.test.ts", "describe", language="typescript"),
+            Anchor(
+                "web/src/utils/canonicalJsonV2.test.ts", "describe", language="typescript"
+            ),
         ),
         downstream="Studio frontend only; no known rlrmp2 persisted consumer.",
         boundary=(
-            "fnv1a values are not SHA-256 and do not authenticate model, manifest, or artifact "
-            "bytes. Cross-language number spelling is a known current mismatch."
+            "FNV-1a values are not SHA-256 and do not authenticate model, manifest, or artifact "
+            "bytes. The v2 pin identifies canonical JSON bytes; legacy values remain explicitly "
+            "rehash-required and cannot satisfy a current equality check."
         ),
     ),
     Surface(

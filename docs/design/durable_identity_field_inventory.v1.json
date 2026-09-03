@@ -2,7 +2,7 @@
   "schema_id": "feedbax.governance.durable_identity_field_inventory",
   "schema_version": "feedbax.governance.durable_identity_field_inventory.v1",
   "scope": "Lexical inventory of hash, digest, fingerprint, and pin-bearing annotated class fields under feedbax/. The durable identity map supplies the authoritative domain boundaries; domain_hint is a review routing aid.",
-  "field_count": 307,
+  "field_count": 311,
   "fields": [
     {
       "path": "feedbax/analysis/bundles.py",
@@ -1928,6 +1928,34 @@
       "field": "fingerprint",
       "annotation": "str",
       "domain_hint": "canonical-json-v1-or-cross-boundary-reference"
+    },
+    {
+      "path": "feedbax/studio/draft_hash.py",
+      "class": "StudioDraftHashes",
+      "field": "pin",
+      "annotation": "Literal['fnv1a32-canonical_json_v2']",
+      "domain_hint": "presentation-or-api-reference"
+    },
+    {
+      "path": "feedbax/studio/draft_hash.py",
+      "class": "StudioDraftHashes",
+      "field": "hashes",
+      "annotation": "dict[str, str | None]",
+      "domain_hint": "presentation-or-api-reference"
+    },
+    {
+      "path": "feedbax/studio/draft_hash.py",
+      "class": "LegacyStudioDraftHashes",
+      "field": "pin",
+      "annotation": "Literal['fnv1a32-runtime_local_json_v1']",
+      "domain_hint": "presentation-or-api-reference"
+    },
+    {
+      "path": "feedbax/studio/draft_hash.py",
+      "class": "LegacyStudioDraftHashes",
+      "field": "hashes",
+      "annotation": "dict[str, str | None]",
+      "domain_hint": "presentation-or-api-reference"
     },
     {
       "path": "feedbax/testing/material_dependencies.py",

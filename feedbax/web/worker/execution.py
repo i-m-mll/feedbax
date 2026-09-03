@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
+import math
 import os
 import tempfile
 import time
@@ -627,15 +628,13 @@ def _timeline_epoch_bounds(
         if is_final and spec.mode == "constant" and spec.value is None:
             break
         if spec.mode == "constant":
-            value = spec.value
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError(f"Timeline epoch {epoch.id!r} length must be an integer")
-            if int(value) != value or value < 0:
-                raise ValueError(
-                    f"Timeline epoch {epoch.id!r} length must be a non-negative integer"
-                )
-            maximum_prefix_total += int(value)
-            lengths.append(jnp.asarray(int(value), dtype=jnp.int32))
+            value = _exact_timeline_step_count(
+                spec.value,
+                epoch_id=epoch.id,
+                maximum=n_steps,
+            )
+            maximum_prefix_total += value
+            lengths.append(jnp.asarray(value, dtype=jnp.int32))
             continue
         if spec.mode == "distribution" and isinstance(spec.distribution, Mapping):
             distribution = spec.distribution
@@ -644,28 +643,33 @@ def _timeline_epoch_bounds(
                 raise ValueError(
                     f"Timeline epoch {epoch.id!r} length supports only uniform distributions"
                 )
-            low = parameters.get("min")
-            high = parameters.get("max")
-            if (
-                isinstance(low, bool)
-                or isinstance(high, bool)
-                or not isinstance(low, (int, float))
-                or not isinstance(high, (int, float))
-                or int(low) != low
-                or int(high) != high
-                or low < 0
-                or high < low
-            ):
+            try:
+                low = _exact_timeline_step_count(
+                    parameters.get("min"),
+                    epoch_id=epoch.id,
+                    maximum=n_steps,
+                )
+                high = _exact_timeline_step_count(
+                    parameters.get("max"),
+                    epoch_id=epoch.id,
+                    maximum=n_steps,
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Timeline epoch {epoch.id!r} uniform length bounds must be "
+                    "non-negative integers with min <= max"
+                ) from exc
+            if high < low:
                 raise ValueError(
                     f"Timeline epoch {epoch.id!r} uniform length bounds must be "
                     "non-negative integers with min <= max"
                 )
             length_key = next(length_keys)
-            maximum_prefix_total += int(low if low == high else high)
+            maximum_prefix_total += low if low == high else high
             lengths.append(
-                jnp.asarray(int(low), dtype=jnp.int32)
+                jnp.asarray(low, dtype=jnp.int32)
                 if low == high
-                else jr.randint(length_key, (), int(low), int(high), dtype=jnp.int32)
+                else jr.randint(length_key, (), low, high, dtype=jnp.int32)
             )
             continue
         raise ValueError(f"Timeline epoch {epoch.id!r} uses unsupported length mode={spec.mode!r}")
@@ -680,6 +684,27 @@ def _timeline_epoch_bounds(
     final = jnp.maximum(jnp.asarray(n_steps, dtype=jnp.int32) - prefix_total, 0)
     all_lengths = jnp.concatenate([prefix, final[None]])
     return jnp.concatenate([jnp.zeros((1,), dtype=jnp.int32), jnp.cumsum(all_lengths)])
+
+
+def _exact_timeline_step_count(value: Any, *, epoch_id: str, maximum: int) -> int:
+    """Return one admitted integer step count without lossy coercion."""
+
+    if isinstance(value, Mapping):
+        if set(value) != {"steps"}:
+            raise ValueError(
+                f"Timeline epoch {epoch_id!r} length object must contain only 'steps'"
+            )
+        value = value["steps"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"Timeline epoch {epoch_id!r} length must be an integer")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"Timeline epoch {epoch_id!r} length must be finite")
+    if value < 0 or int(value) != value or value > maximum:
+        raise ValueError(
+            f"Timeline epoch {epoch_id!r} length must be a non-negative integer "
+            f"no greater than {maximum}"
+        )
+    return int(value)
 
 
 def _apply_epoch_values(
