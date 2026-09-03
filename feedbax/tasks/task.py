@@ -1429,6 +1429,25 @@ class SimpleReachTaskInputs(Module):
     effector_target: CartesianState
 
 
+def _full_trial_timeline(
+    n_steps: int,
+    epoch_name: Optional[str],
+    batch_size: Optional[int] = None,
+) -> TrialTimeline:
+    if epoch_name is None:
+        return TrialTimeline(n_steps)
+
+    n_time = n_steps - 1
+    epoch_bounds = jnp.asarray([0, n_time], dtype=jnp.int32)
+    if batch_size is not None:
+        epoch_bounds = jnp.broadcast_to(epoch_bounds, (batch_size, 2))
+    return TrialTimeline.from_epochs_events(
+        n_time,
+        epoch_bounds=epoch_bounds,
+        epoch_names=(epoch_name,),
+    )
+
+
 class SimpleReaches(AbstractTask):
     """Reaches between random endpoints in a rectangular workspace. No hold signal.
 
@@ -1548,19 +1567,10 @@ class SimpleReaches(AbstractTask):
     def _construct_trial_spec(self, effector_init_state, effector_target_state):
         batched = effector_init_state.pos.ndim > 1
         pos_discount = self._pos_discount
-        if self.epoch_name is None:
-            timeline = TrialTimeline(self.n_steps)
-        else:
-            n_time = self.n_steps - 1
-            epoch_bounds = jnp.asarray([0, n_time], dtype=jnp.int32)
-            if batched:
-                epoch_bounds = jnp.broadcast_to(epoch_bounds, (effector_init_state.pos.shape[0], 2))
-                pos_discount = jnp.broadcast_to(pos_discount, effector_target_state.pos.shape[:-1])
-            timeline = TrialTimeline.from_epochs_events(
-                n_time,
-                epoch_bounds=epoch_bounds,
-                epoch_names=(self.epoch_name,),
-            )
+        batch_size = effector_init_state.pos.shape[0] if batched else None
+        timeline = _full_trial_timeline(self.n_steps, self.epoch_name, batch_size)
+        if self.epoch_name is not None and batched:
+            pos_discount = jnp.broadcast_to(pos_discount, effector_target_state.pos.shape[:-1])
 
         return TaskTrialSpec(
             inits=WhereDict({(lambda state: state.mechanics.effector): effector_init_state}),
@@ -1916,7 +1926,19 @@ class DelayedReaches(AbstractTask):
 class Stabilization(AbstractTask):
     """Postural stabilization task at random points in workspace.
 
-    Validation set is center-out reaches.
+    Validation trials cover a regular workspace grid. When ``epoch_name`` is
+    set, the full trial is labeled as one epoch; when it is ``None``, the task
+    emits the historical unnamed timeline.
+
+    Attributes:
+        n_steps: The number of time steps in each task trial.
+        loss_func: The loss function that grades performance on each trial.
+        workspace: The rectangular workspace containing stabilization targets.
+        seed_validation: The random seed for generating validation trials.
+        eval_grid_n: The number of validation grid points along each dimension.
+        intervention_specs: Per-trial intervention parameter specifications for
+            training trials.
+        epoch_name: Optional name for the full-trial stabilization epoch.
     """
 
     n_steps: int
@@ -1928,6 +1950,8 @@ class Stabilization(AbstractTask):
     #     converter=jnp.asarray, default=None
     # )
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
+    input_dependencies: dict[str, TrialSpecDependency] = field(default_factory=dict)
+    epoch_name: Optional[str] = field(default=None, static=True)
 
     def get_train_trial(
         self, key: PRNGKeyArray, batch_info: Optional[BatchInfo] = None
@@ -1961,7 +1985,7 @@ class Stabilization(AbstractTask):
                     ),
                 }
             ),
-            timeline=TrialTimeline(self.n_steps),
+            timeline=_full_trial_timeline(self.n_steps, self.epoch_name),
         )
 
     def validation_plots(self, states, trial_specs=None) -> Mapping[str, "go.Figure"]:
@@ -2007,7 +2031,11 @@ class Stabilization(AbstractTask):
                     ),
                 }
             ),
-            timeline=TrialTimeline(self.n_steps),
+            timeline=_full_trial_timeline(
+                self.n_steps,
+                self.epoch_name,
+                batch_size=init_states.pos.shape[0],
+            ),
         )
 
     @property

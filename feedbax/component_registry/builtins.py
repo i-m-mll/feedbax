@@ -3677,6 +3677,8 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Stabilization",
+            builder=_builders._build_stabilization,
+            override_reason="constructor aggregates task, trial, loss, and workspace objects",
             attribute_paths={"n_steps": "task.n_steps", "workspace": "task.workspace"},
             category="Tasks",
             description="Hold position against perturbations.",
