@@ -2057,14 +2057,19 @@ def _perform_archive_rename_no_replace(
     parent_descriptor: int, source_name: str, destination_name: str
 ) -> None:
     """Invoke the supported descriptor-relative no-replace rename primitive."""
-    rename_no_replace(
-        source_name,
-        destination_name,
-        source_dir_fd=parent_descriptor,
-        destination_dir_fd=parent_descriptor,
-        error_factory=CheckpointReferenceResolutionError,
-        context="checkpoint archive publication race",
-    )
+    try:
+        rename_no_replace(
+            source_name,
+            destination_name,
+            source_dir_fd=parent_descriptor,
+            destination_dir_fd=parent_descriptor,
+            error_factory=CheckpointReferenceResolutionError,
+            context="checkpoint archive publication",
+        )
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"checkpoint archive destination won publication race: {destination_name}"
+        ) from exc
 
 
 def _canonical_archive_relative_path(value: str | None, *, context: str) -> str:

@@ -10,10 +10,11 @@ import socket
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-import httpx
+if TYPE_CHECKING:
+    import httpx
 
 
 class WorkerTransportError(RuntimeError):
@@ -80,6 +81,8 @@ class WorkerConsumptionLimits:
             )
 
     def httpx_timeout(self) -> httpx.Timeout:
+        import httpx
+
         return httpx.Timeout(
             connect=self.connect_seconds,
             read=self.read_seconds,
@@ -298,6 +301,8 @@ async def request_json(
     params: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Make one redirect-free, revalidated, bounded JSON request."""
+    import httpx
+
     try:
         async with asyncio.timeout(endpoint.limits.request_seconds):
             await endpoint.revalidate_address_async()
@@ -334,6 +339,8 @@ def request_json_sync(
     params: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Synchronous form of the canonical bounded JSON request."""
+    import httpx
+
     deadline = time.monotonic() + endpoint.limits.request_seconds
     try:
         endpoint.revalidate_address()
