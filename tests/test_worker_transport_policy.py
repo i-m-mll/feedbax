@@ -5,6 +5,7 @@ import ipaddress
 from dataclasses import replace
 from typing import Any
 
+import httpx
 import pytest
 
 import feedbax.web.worker.transport as transport
@@ -75,7 +76,7 @@ def _install_async_client(
             calls.append({"method": method, "url": url, **kwargs})
             return _AsyncStream(response)
 
-    monkeypatch.setattr(transport.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(httpx, "AsyncClient", Client)
     return calls
 
 
