@@ -21,6 +21,9 @@ from feedbax.contracts.migrations import migrate_graph_project_payload
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.graph import (
+    ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+    ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
+    AnalysisCanvasLayoutDocument,
     AnalysisPageSpec,
     GraphProject,
     GraphSpec,
@@ -123,6 +126,9 @@ class GraphService:
             active_analysis_page_id=(
                 workspace_document.active_analysis_page_id if workspace_document else None
             ),
+            analysis_canvas_layout=(
+                workspace_document.analysis_canvas_layout if workspace_document else None
+            ),
             component_registry=component_registry,
         )
         project = GraphProject(
@@ -202,6 +208,7 @@ class GraphService:
             scenario_ui_state=presentation.scenario_ui_state,
             analysis_pages=presentation.analysis_pages,
             active_analysis_page_id=presentation.active_analysis_page_id,
+            analysis_canvas_layout=presentation.analysis_canvas_layout,
             component_registry=component_registry,
         )
         self._ensure_workspace(project, component_registry=component_registry)
@@ -398,6 +405,7 @@ class GraphService:
             scenario_ui_state=current_workspace.scenario_ui_state,
             analysis_pages=current_workspace.analysis_pages,
             active_analysis_page_id=current_workspace.active_analysis_page_id,
+            analysis_canvas_layout=current_workspace.analysis_canvas_layout,
             component_registry=component_registry,
         )
         if current_workspace.semantic_root != expected_root.semantic_root or (
@@ -423,6 +431,7 @@ class GraphService:
         scenario_ui_state: dict[str, dict[str, object]] | None = None,
         analysis_pages: List[AnalysisPageSpec] | None = None,
         active_analysis_page_id: str | None = None,
+        analysis_canvas_layout: AnalysisCanvasLayoutDocument | None = None,
         component_registry: object | None = None,
     ) -> WorkspaceDocument:
         document = GraphDocument(graph=graph)
@@ -449,6 +458,11 @@ class GraphService:
             scenario_ui_state=scenario_ui_state or {},
             analysis_pages=analysis_pages or [],
             active_analysis_page_id=active_analysis_page_id,
+            analysis_canvas_layout=analysis_canvas_layout
+            or AnalysisCanvasLayoutDocument(
+                schema_id=ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
+                schema_version=ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
+            ),
             semantic_anchors=semantic_anchors,
         )
 

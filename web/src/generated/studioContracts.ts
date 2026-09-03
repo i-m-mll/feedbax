@@ -331,9 +331,34 @@ export interface AnalysisPageSpec {
   graph_spec?: Record<string, unknown>;
   eval_params?: Record<string, unknown>;
   input_requirements?: AnalysisInputRequirement[];
-  viewport?: Record<string, number>;
   eval_run_id?: string | null;
   expanded_field_paths?: string[];
+}
+
+export interface AnalysisCanvasPosition {
+  x: number;
+  y: number;
+}
+
+export interface AnalysisCanvasViewport {
+  x?: number;
+  y?: number;
+  zoom?: number;
+}
+
+export interface AnalysisCanvasPageLayout {
+  node_positions?: Record<string, AnalysisCanvasPosition>;
+  viewport?: AnalysisCanvasViewport;
+}
+
+export interface AnalysisCanvasStageLayout {
+  pages?: Record<string, AnalysisCanvasPageLayout>;
+}
+
+export interface AnalysisCanvasLayoutDocument {
+  schema_id: "feedbax.spec.studio.analysis_canvas_layout";
+  schema_version: "feedbax.spec.studio.analysis_canvas_layout.v1";
+  stages?: Record<string, AnalysisCanvasStageLayout>;
 }
 
 export interface StudioValidationIssue {
@@ -599,6 +624,7 @@ export interface WorkspaceDocument {
   scenario_ui_state?: Record<string, Record<string, unknown>>;
   analysis_pages?: AnalysisPageSpec[];
   active_analysis_page_id?: string | null;
+  analysis_canvas_layout?: AnalysisCanvasLayoutDocument;
   semantic_anchors?: Record<string, SemanticAnchor>;
 }
 
@@ -2528,12 +2554,57 @@ export const AnalysisPageSpecSchema: z.ZodType<AnalysisPageSpec> = z.lazy(() =>
       "graph_spec": z.record(z.string(), z.unknown()).optional(),
       "eval_params": z.record(z.string(), z.unknown()).optional(),
       "input_requirements": z.array(AnalysisInputRequirementSchema).optional(),
-      "viewport": z.record(z.string(), z.number().finite()).optional(),
       "eval_run_id": z.string().nullable().optional(),
       "expanded_field_paths": z.array(z.string()).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<AnalysisPageSpec>;
+
+export const AnalysisCanvasPositionSchema: z.ZodType<AnalysisCanvasPosition> = z.lazy(() =>
+  z
+    .object({
+      "x": z.number().finite().gte(-10000000).lte(10000000),
+      "y": z.number().finite().gte(-10000000).lte(10000000),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisCanvasPosition>;
+
+export const AnalysisCanvasViewportSchema: z.ZodType<AnalysisCanvasViewport> = z.lazy(() =>
+  z
+    .object({
+      "x": z.number().finite().gte(-10000000).lte(10000000).optional(),
+      "y": z.number().finite().gte(-10000000).lte(10000000).optional(),
+      "zoom": z.number().finite().gte(0.1).lte(2.5).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisCanvasViewport>;
+
+export const AnalysisCanvasPageLayoutSchema: z.ZodType<AnalysisCanvasPageLayout> = z.lazy(() =>
+  z
+    .object({
+      "node_positions": z.record(z.string(), AnalysisCanvasPositionSchema).optional(),
+      "viewport": AnalysisCanvasViewportSchema.optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisCanvasPageLayout>;
+
+export const AnalysisCanvasStageLayoutSchema: z.ZodType<AnalysisCanvasStageLayout> = z.lazy(() =>
+  z
+    .object({
+      "pages": z.record(z.string(), AnalysisCanvasPageLayoutSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisCanvasStageLayout>;
+
+export const AnalysisCanvasLayoutDocumentSchema: z.ZodType<AnalysisCanvasLayoutDocument> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.analysis_canvas_layout"),
+      "schema_version": z.literal("feedbax.spec.studio.analysis_canvas_layout.v1"),
+      "stages": z.record(z.string(), AnalysisCanvasStageLayoutSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<AnalysisCanvasLayoutDocument>;
 
 export const StudioValidationIssueSchema: z.ZodType<StudioValidationIssue> = z.lazy(() =>
   z
@@ -2992,6 +3063,7 @@ export const WorkspaceDocumentSchema: z.ZodType<WorkspaceDocument> = z.lazy(() =
       "scenario_ui_state": z.record(z.string(), z.record(z.string(), z.unknown())).optional(),
       "analysis_pages": z.array(AnalysisPageSpecSchema).optional(),
       "active_analysis_page_id": z.string().nullable().optional(),
+      "analysis_canvas_layout": AnalysisCanvasLayoutDocumentSchema.optional(),
       "semantic_anchors": z.record(z.string(), SemanticAnchorSchema).optional(),
     })
     .strict()

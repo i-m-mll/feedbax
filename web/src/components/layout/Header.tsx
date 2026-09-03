@@ -27,7 +27,7 @@ import { buildWorkspaceSnapshot, hydrateWorkspacePresentation } from '@/stores/w
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
 import { PROJECT_TEMPLATES } from '@/data/project-templates';
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
-import type { AnalysisGraphSpec, AnalysisSnapshot } from '@/types/analysis';
+import { analysisSnapshotFromWorkspaceDocument } from '@/utils/analysisCanvasLayout';
 import {
   buildDetachedStudioDocument,
   saveActiveStudioDocument,
@@ -113,25 +113,10 @@ export function Header() {
         data.workspace,
         data.workspace_document,
       );
-      // Build analysis snapshot from persisted pages (convert snake_case wire format)
-      let analysisSnapshot: AnalysisSnapshot | null = null;
-      if (data.workspace_document.analysis_pages.length > 0) {
-        const pages = data.workspace_document.analysis_pages.map((wp: any) => ({
-          id: wp.id,
-          name: wp.name,
-          graphSpec: wp.graph_spec as unknown as AnalysisGraphSpec,
-          evalParams: wp.eval_params as Record<string, unknown>,
-          viewport: wp.viewport,
-          evalRunId: wp.eval_run_id ?? null,
-          expandedFieldPaths: (wp.expanded_field_paths as string[]) ?? [],
-        }));
-        // Restore the persisted active page, falling back to the first page
-        const restoredActiveId = data.workspace_document.active_analysis_page_id;
-        const activePageId = restoredActiveId && pages.some((p) => p.id === restoredActiveId)
-          ? restoredActiveId
-          : pages[0].id;
-        analysisSnapshot = { pages, activePageId };
-      }
+      const analysisSnapshot = analysisSnapshotFromWorkspaceDocument(
+        data.workspace_document,
+        hydratedWorkspace,
+      );
       openProjectInTab(
         id,
         data.graph,

@@ -478,7 +478,6 @@ export interface AnalysisPageWire {
   graph_spec: Record<string, unknown>;
   input_requirements?: AnalysisInputRequirement[];
   eval_params: Record<string, unknown>;
-  viewport: { x: number; y: number; zoom: number };
   eval_run_id: string | null;
   expanded_field_paths?: string[];
 }

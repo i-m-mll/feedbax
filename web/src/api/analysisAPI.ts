@@ -11,8 +11,6 @@ import type {
   SelectionSpec,
 } from '@/generated/studioContracts';
 import type {
-  AnalysisGraphSpec,
-  AnalysisPageSpec,
   AnalysisPackage,
   AnalysisClassDef,
   AnalysisSnapshot,
@@ -20,34 +18,7 @@ import type {
 import { fetchGraph } from '@/api/client';
 import { asApiRequestError, requestJson } from '@/api/request';
 import { parseContract } from '@/generated/studioContracts';
-
-// ---------------------------------------------------------------------------
-// Wire format conversion - backend uses snake_case, frontend uses camelCase
-// ---------------------------------------------------------------------------
-
-/** Backend wire format for an analysis page. */
-interface AnalysisPageWire {
-  id: string;
-  name: string;
-  graph_spec: Record<string, unknown>;
-  eval_params: Record<string, unknown>;
-  viewport: { x: number; y: number; zoom: number };
-  eval_run_id: string | null;
-  expanded_field_paths?: string[];
-}
-
-/** Convert a backend wire-format page to the frontend camelCase type. */
-function pageFromWire(wire: AnalysisPageWire): AnalysisPageSpec {
-  return {
-    id: wire.id,
-    name: wire.name,
-    graphSpec: wire.graph_spec as unknown as AnalysisGraphSpec,
-    evalParams: wire.eval_params,
-    viewport: wire.viewport,
-    evalRunId: wire.eval_run_id ?? null,
-    expandedFieldPaths: wire.expanded_field_paths ?? [],
-  };
-}
+import { analysisSnapshotFromWorkspaceDocument } from '@/utils/analysisCanvasLayout';
 
 /**
  * Fetch available analysis packages.
@@ -99,11 +70,5 @@ export async function fetchAnalysisPages(
   graphId: string
 ): Promise<AnalysisSnapshot | null> {
   const data = await fetchGraph(graphId);
-  const wirePages = data.workspace_document.analysis_pages as AnalysisPageWire[];
-  if (!wirePages || wirePages.length === 0) return null;
-  const pages = wirePages.map(pageFromWire);
-  return {
-    pages,
-    activePageId: pages[0].id,
-  };
+  return analysisSnapshotFromWorkspaceDocument(data.workspace_document, data.workspace);
 }

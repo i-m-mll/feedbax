@@ -52,7 +52,7 @@ const edgeTypes = {
 
 export const ANALYSIS_CANVAS_INTERACTION_PROPS = {
   deleteKeyCode: null,
-  nodesDraggable: false,
+  nodesDraggable: true,
 } as const;
 
 export function consumeAnalysisDeleteKey(event: KeyboardEvent<HTMLElement>) {
@@ -78,6 +78,10 @@ export function AnalysisCanvas() {
     addAnalysisNode,
     connectNodes,
     analysisClasses,
+    activePageId,
+    viewport,
+    setViewport,
+    persistRenderedLayout,
   } = useAnalysisStore();
 
   const reactFlow = useReactFlow();
@@ -108,10 +112,11 @@ export function AnalysisCanvas() {
       const nextX = width / 2 - centerFlow.x * newZoom;
       const nextY = height / 2 - centerFlow.y * newZoom;
       reactFlow.setViewport({ x: nextX, y: nextY, zoom: newZoom }, { duration: 0 });
+      setViewport({ x: nextX, y: nextY, zoom: newZoom });
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [reactFlow]);
+  }, [reactFlow, setViewport]);
 
   // Build a lookup for analysis classes by name
   const classMap = useMemo(
@@ -160,6 +165,7 @@ export function AnalysisCanvas() {
       className="w-full h-full bg-[radial-gradient(circle_at_top,_#f0fdf4_0%,_#f7f7f8_45%,_#f0f1f3_100%)]"
     >
       <ReactFlow
+        key={activePageId ?? 'analysis-empty'}
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
@@ -180,8 +186,12 @@ export function AnalysisCanvas() {
         }}
         onDrop={onDrop}
         onDragOver={onDragOver}
+        defaultViewport={viewport}
+        minZoom={0.1}
+        maxZoom={2.5}
+        onMoveEnd={(_, nextViewport) => setViewport(nextViewport)}
+        onInit={() => persistRenderedLayout()}
         {...ANALYSIS_CANVAS_INTERACTION_PROPS}
-        fitView
         snapToGrid
         snapGrid={[16, 16]}
         proOptions={{ hideAttribution: true }}

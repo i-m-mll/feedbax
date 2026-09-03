@@ -37,6 +37,7 @@ import type {
 } from '@/types/workspace';
 import type { WorkspaceDocument } from '@/generated/studioContracts';
 import { useGraphStore } from '@/stores/graphStore';
+import { buildAnalysisCanvasLayoutDocument } from '@/utils/analysisCanvasLayout';
 
 export function buildWorkspaceDocumentSnapshot(
   document: WorkspaceDocument | null,
@@ -61,6 +62,11 @@ export function buildWorkspaceDocumentSnapshot(
       analysisSnapshot
     ) as unknown as WorkspaceDocument['analysis_pages'],
     active_analysis_page_id: analysisSnapshot?.activePageId ?? null,
+    analysis_canvas_layout: buildAnalysisCanvasLayoutDocument(
+      document.analysis_canvas_layout,
+      workspace,
+      analysisSnapshot,
+    ),
   };
 }
 
@@ -627,7 +633,6 @@ function analysisPagesFromSnapshot(snapshot: AnalysisSnapshot | null): AnalysisP
     graph_spec: page.graphSpec as unknown as Record<string, unknown>,
     input_requirements: page.inputRequirements ?? [],
     eval_params: page.evalParams,
-    viewport: page.viewport,
     eval_run_id: page.evalRunId,
     expanded_field_paths: page.expandedFieldPaths ?? [],
   }));
