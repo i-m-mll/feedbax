@@ -11,6 +11,7 @@ import logging
 import os
 import pickle
 import platform
+import re
 import shutil
 import stat
 import tarfile
@@ -4490,7 +4491,9 @@ def _validate_prepared_fork_templates(
             continue
         actual = structural_abi_fingerprint(prepared_slots[spec.slot])
         expected = structural_abi_fingerprint(expected_slots[spec.slot])
-        if actual.fingerprint_sha256 != expected.fingerprint_sha256:
+        if _semantic_structural_abi_sha256(actual) != _semantic_structural_abi_sha256(
+            expected
+        ):
             raise CheckpointCompatibilityError(
                 f"checkpoint fork target {target_id!r} slot {spec.slot!r} structural ABI "
                 f"mismatch{_format_structural_abi_diff(expected, actual)}"
@@ -5967,8 +5970,11 @@ def _format_structural_abi_diff(
         leaf_diff_text = "<none in comparable leaves>"
     elif len(diffs) > len(displayed_diffs):
         leaf_diff_text += f"; ... ({len(diffs)} total differing leaves)"
+    treedef_equal = _canonical_structural_abi_treedef(
+        recorded.treedef
+    ) == _canonical_structural_abi_treedef(actual.treedef)
     suffix = (
-        f"; treedef_equal={recorded.treedef == actual.treedef}"
+        f"; treedef_equal={treedef_equal}"
         f"; leaf_count_delta={actual.leaf_count - recorded.leaf_count}"
         f" (recorded={recorded.leaf_count}, actual={actual.leaf_count})"
         f"; differing_leaves={leaf_diff_text}"
@@ -6156,7 +6162,9 @@ def _validate_structural_abi(
         if loaded_fingerprint is None:
             loaded_fingerprint = structural_abi_fingerprint(loaded)
         expected = structural_abi_fingerprint(expected_slots[slot.slot])
-        if loaded_fingerprint.fingerprint_sha256 != expected.fingerprint_sha256:
+        if _semantic_structural_abi_sha256(
+            loaded_fingerprint
+        ) != _semantic_structural_abi_sha256(expected):
             diff_suffix = _format_structural_abi_diff(expected, loaded_fingerprint)
             raise CheckpointCompatibilityError(
                 f"checkpoint slot {slot.slot!r} structural ABI mismatch{diff_suffix}"
@@ -6684,7 +6692,34 @@ def _semantic_structural_abi_sha256(fingerprint: StructuralAbiFingerprint) -> st
         leaf.model_copy(update={"leaf_type": _canonical_leaf_type(leaf.leaf_type)})
         for leaf in fingerprint.leaves
     ]
-    return structural_abi_content_sha256(fingerprint.model_copy(update={"leaves": leaves}))
+    return structural_abi_content_sha256(
+        fingerprint.model_copy(
+            update={
+                "treedef": _canonical_structural_abi_treedef(fingerprint.treedef),
+                "leaves": leaves,
+            }
+        )
+    )
+
+
+_ANONYMOUS_STATE_INDEX_MARKERS = (
+    re.compile(
+        r"(StateIndex\[\('init',\), \('marker',\), \()"
+        r"<object object at 0x[0-9a-fA-F]+>"
+        r"(,\)\])"
+    ),
+    re.compile(
+        r"(StateIndex\[\(Missing, )"
+        r"<object object at 0x[0-9a-fA-F]+>"
+        r"(\)\])"
+    ),
+)
+
+
+def _canonical_structural_abi_treedef(treedef: str) -> str:
+    for pattern in _ANONYMOUS_STATE_INDEX_MARKERS:
+        treedef = pattern.sub(r"\1<anonymous StateIndex marker>\2", treedef)
+    return treedef
 
 
 def _canonical_leaf_type(leaf_type: str) -> str:
