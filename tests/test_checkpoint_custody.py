@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -738,6 +739,54 @@ def test_semantic_state_root_ignores_pickle_memo_identity_but_preserves_semantic
     assert root(shared_value) == root(unshared_value)
     assert root({"left": shared, "right": shared + " changed"}) != root(shared_value)
     assert root({"left": "a", "right": "b"}) != root({"left": "b", "right": "a"})
+
+
+def test_semantic_state_root_projects_nested_typed_dataclass_state() -> None:
+    @dataclass(frozen=True, slots=True)
+    class ClampState:
+        value: float
+        count: int
+
+    @dataclass(frozen=True, slots=True)
+    class MethodState:
+        clamp: ClampState
+        enabled: bool
+
+    def root(value: object) -> str:
+        return custody_module.semantic_state_root_sha256(
+            slot="method",
+            role="method",
+            value=value,
+            structural_abi_fingerprint=custody_module.structural_abi_fingerprint(value),
+            materialized_axes=None,
+            population=None,
+        )
+
+    baseline = MethodState(clamp=ClampState(value=0.5, count=3), enabled=True)
+    equal = MethodState(clamp=ClampState(value=0.5, count=3), enabled=True)
+    changed = MethodState(clamp=ClampState(value=0.5, count=4), enabled=True)
+
+    assert root(equal) == root(baseline)
+    assert root(changed) != root(baseline)
+
+
+def test_semantic_state_root_rejects_typed_dataclass_cycles() -> None:
+    @dataclass(frozen=True, slots=True)
+    class RecursiveState:
+        child: object | None = None
+
+    value = RecursiveState()
+    object.__setattr__(value, "child", value)
+
+    with pytest.raises(CheckpointSemanticStateUnsupported, match="dataclass cycle"):
+        custody_module.semantic_state_root_sha256(
+            slot="method",
+            role="method",
+            value=value,
+            structural_abi_fingerprint=custody_module.structural_abi_fingerprint(value),
+            materialized_axes=None,
+            population=None,
+        )
 
 
 def test_semantic_state_root_normalizes_only_anonymous_state_index_markers() -> None:

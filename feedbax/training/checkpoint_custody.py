@@ -22,7 +22,8 @@ import uuid
 import zlib
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass, field as dataclass_field, fields as dataclass_fields
+from dataclasses import is_dataclass
 from functools import partial
 from pathlib import Path, PurePosixPath
 from types import FunctionType, MappingProxyType
@@ -6984,8 +6985,12 @@ def _array_leaf_content_digest(leaf: Any) -> tuple[str, int]:
         return hashlib.sha256(buffer).hexdigest(), buffer.nbytes
 
 
-def _semantic_leaf_value_projection(path: Any, leaf: Any) -> dict[str, Any]:
-    path_text = _key_path_to_text(path)
+def _semantic_value_projection(
+    leaf: Any,
+    *,
+    path_text: str,
+    active_dataclasses: set[int],
+) -> dict[str, Any]:
     if eqx.is_array(leaf):
         array = np.asarray(leaf)
         if array.dtype.hasobject:
@@ -6994,7 +6999,6 @@ def _semantic_leaf_value_projection(path: Any, leaf: Any) -> dict[str, Any]:
             )
         value_sha256, size_bytes = _array_leaf_content_digest(array)
         return {
-            "path": path_text,
             "kind": "array",
             "dtype": str(array.dtype),
             "dtype_str": array.dtype.str,
@@ -7004,27 +7008,25 @@ def _semantic_leaf_value_projection(path: Any, leaf: Any) -> dict[str, Any]:
             "size_bytes": size_bytes,
         }
     if leaf is None:
-        return {"path": path_text, "kind": "none", "value": None}
+        return {"kind": "none", "value": None}
     if type(leaf) is bool:
-        return {"path": path_text, "kind": "bool", "value": leaf}
+        return {"kind": "bool", "value": leaf}
     if type(leaf) is int:
-        return {"path": path_text, "kind": "int", "value": str(leaf)}
+        return {"kind": "int", "value": str(leaf)}
     if type(leaf) is float:
         return {
-            "path": path_text,
             "kind": "float64",
             "value_bits": np.asarray(leaf, dtype=">f8").tobytes().hex(),
         }
     if type(leaf) is complex:
         return {
-            "path": path_text,
             "kind": "complex128",
             "value_bits": np.asarray(leaf, dtype=">c16").tobytes().hex(),
         }
     if type(leaf) is str:
-        return {"path": path_text, "kind": "str", "value": leaf}
+        return {"kind": "str", "value": leaf}
     if type(leaf) is bytes:
-        return {"path": path_text, "kind": "bytes", "value_hex": leaf.hex()}
+        return {"kind": "bytes", "value_hex": leaf.hex()}
     if isinstance(leaf, np.generic):
         scalar = np.asarray(leaf)
         if scalar.dtype.hasobject:
@@ -7032,16 +7034,62 @@ def _semantic_leaf_value_projection(path: Any, leaf: Any) -> dict[str, Any]:
                 f"checkpoint semantic state does not support object scalar leaf {path_text!r}"
             )
         return {
-            "path": path_text,
             "kind": "numpy_scalar",
             "dtype": str(scalar.dtype),
             "dtype_str": scalar.dtype.str,
             "value_hex": scalar.tobytes().hex(),
         }
+    if is_dataclass(leaf) and not isinstance(leaf, type):
+        identity = id(leaf)
+        if identity in active_dataclasses:
+            raise CheckpointSemanticStateUnsupported(
+                f"checkpoint semantic state contains a typed dataclass cycle at {path_text!r}"
+            )
+        active_dataclasses.add(identity)
+        try:
+            projected_fields = []
+            for field in dataclass_fields(leaf):
+                field_path = f"{path_text.rstrip('/')}/{field.name}"
+                try:
+                    field_value = getattr(leaf, field.name)
+                except AttributeError as exc:
+                    raise CheckpointSemanticStateUnsupported(
+                        "checkpoint semantic state cannot read typed dataclass field "
+                        f"{field_path!r}"
+                    ) from exc
+                projected_fields.append(
+                    {
+                        "name": field.name,
+                        "value": _semantic_value_projection(
+                            field_value,
+                            path_text=field_path,
+                            active_dataclasses=active_dataclasses,
+                        ),
+                    }
+                )
+        finally:
+            active_dataclasses.remove(identity)
+        return {
+            "kind": "typed_dataclass",
+            "type": _qualified_type_name(leaf),
+            "fields": projected_fields,
+        }
     raise CheckpointSemanticStateUnsupported(
         "checkpoint semantic state has unsupported or ambiguous leaf "
         f"{path_text!r} of type {_qualified_type_name(leaf)!r}"
     )
+
+
+def _semantic_leaf_value_projection(path: Any, leaf: Any) -> dict[str, Any]:
+    path_text = _key_path_to_text(path)
+    return {
+        "path": path_text,
+        **_semantic_value_projection(
+            leaf,
+            path_text=path_text,
+            active_dataclasses=set(),
+        ),
+    }
 
 
 def _semantic_state_content_projection(
