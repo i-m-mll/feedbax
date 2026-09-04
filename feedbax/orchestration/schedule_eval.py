@@ -48,6 +48,27 @@ class MissingScheduleContext(ValueError):
     """Raised when scheduled optimizer evaluation lacks resume/build context."""
 
 
+def preflight_schedule_contexts(
+    run_spec: Mapping[str, Any],
+) -> tuple[ScheduleEvalContext, ScheduleEvalContext]:
+    """Resolve independent declared and optimizer-build contexts for preflight.
+
+    A run without a continuation source starts both clocks at zero. Explicit
+    contexts remain independent evidence and therefore continue to be compared
+    rather than one being used as a fallback for the other.
+    """
+    resume_context = extract_resume_context(run_spec)
+    optimizer_build_context = extract_optimizer_build_context(run_spec)
+    continuation = _path(run_spec, "checkpoint_progress", "continuation")
+    if continuation is _MISSING or continuation is None:
+        resume_context = _origin_zero_when_absent(resume_context)
+        optimizer_build_context = _origin_zero_when_absent(optimizer_build_context)
+    return (
+        require_schedule_context(resume_context, label="resume_context"),
+        require_schedule_context(optimizer_build_context, label="optimizer_build_context"),
+    )
+
+
 def learning_rate_from_build_optimizer(
     optimizer_spec: OptimizerSpec,
     *,
@@ -173,6 +194,16 @@ def require_schedule_context(context: Mapping[str, Any], *, label: str) -> Sched
         current_step=int(context["current_step"]),
         optimizer_count_at_current_step=int(context["optimizer_count_at_current_step"]),
     )
+
+
+def _origin_zero_when_absent(context: Mapping[str, Any]) -> Mapping[str, Any]:
+    if all(value is _MISSING for value in context.values()):
+        return {
+            "schedule_origin_step": 0,
+            "current_step": 0,
+            "optimizer_count_at_current_step": 0,
+        }
+    return context
 
 
 def schedule_sample_steps(

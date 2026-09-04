@@ -1096,6 +1096,7 @@ def execute_training_run_spec(
             cancellation=cancellation,
             runtime_telemetry=runtime_telemetry,
             execution_context=producer_context,
+            collection_root=collection_root,
             diagnostics_ref=diagnostics_ref,
             completed_batches=diagnostics.completed_batches,
             projection_custody=projection_custody,
@@ -1238,6 +1239,7 @@ def execute_training_run_spec(
             cancellation=interrupted.decision,
             runtime_telemetry=runtime_telemetry,
             execution_context=producer_context,
+            collection_root=collection_root,
             diagnostics_ref=diagnostics_ref,
             completed_batches=diagnostics.completed_batches,
             projection_custody=projection_custody,
@@ -1414,6 +1416,7 @@ def _finalize_nan_guard_failure(
         status="failed",
         runtime_telemetry=runtime_telemetry,
         execution_context=producer_context,
+        collection_root=collection_root,
         diagnostics_ref=diagnostics_ref,
         completed_batches=diagnostics.completed_batches,
         projection_custody=projection_custody,
@@ -3328,6 +3331,7 @@ def _build_manifest(
     cancellation: CancellationDecision | None = None,
     runtime_telemetry: Mapping[str, Any] | None = None,
     execution_context: NativeExecutionProducerContext | None = None,
+    collection_root: Path | None = None,
     diagnostics_ref: ArtifactRef,
     completed_batches: int,
     projection_custody: TrainingManifestMetadataProjectionCustody | None,
@@ -3338,6 +3342,8 @@ def _build_manifest(
     failure_details: Mapping[str, Any] | None = None,
 ) -> TrainingRunManifest:
     artifacts = [*barrier_artifacts, diagnostics_ref, *extra_artifacts]
+    if collection_root is not None:
+        (collection_root / "manifests").mkdir(parents=True, exist_ok=True)
     if history_events:
         artifacts.append(
             store_json_artifact(

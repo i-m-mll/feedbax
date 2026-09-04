@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import inspect
-import json
 from pathlib import Path
 import re
 from typing import Any, Callable, Iterable, Mapping
@@ -29,6 +28,7 @@ from feedbax.contracts.run_composition import (
     parse_composition_node,
 )
 from feedbax.contracts.spec_storage import training_spec_canonical_bytes, training_spec_sha256
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.registry_errors import RegistryCollisionError
 
 
@@ -49,23 +49,31 @@ class GovernedTrainingRowParent:
 
     provenance: TrainingRowParentProvenance
     parent: AuthoredIntentParent | ResolvedOutputParent
-    _payload_json: bytes
+    _payload_bytes: bytes
 
     def __init__(
         self,
         *,
         provenance: TrainingRowParentProvenance,
         parent: AuthoredIntentParent | ResolvedOutputParent,
-        payload: Mapping[str, Any],
+        payload: Mapping[str, Any] | None = None,
+        payload_bytes: bytes | None = None,
     ) -> None:
+        if (payload is None) == (payload_bytes is None):
+            raise ValueError("supply exactly one governed parent payload representation")
         object.__setattr__(self, "provenance", provenance.model_copy(deep=True))
         object.__setattr__(self, "parent", parent.model_copy(deep=True))
-        object.__setattr__(self, "_payload_json", training_spec_canonical_bytes(payload))
+        object.__setattr__(
+            self,
+            "_payload_bytes",
+            bytes(payload_bytes)
+            if payload_bytes is not None
+            else training_spec_canonical_bytes(payload),
+        )
 
     def payload(self) -> dict[str, Any]:
         """Return a fresh JSON copy of the governed parent payload."""
-        # Trusted internal copy: __init__ produced these canonical bytes from payload.
-        payload = json.loads(self._payload_json)
+        payload = strict_json_loads(self._payload_bytes, ref=self.provenance.artifact_id)
         if not isinstance(payload, dict):
             raise TrainingRowLowererRegistryError(
                 "governed training-row parent payload is not an object"

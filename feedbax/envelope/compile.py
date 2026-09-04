@@ -44,7 +44,6 @@ authenticated reference a previous run produced, and it may never author one.
 
 from __future__ import annotations
 
-import hashlib
 import posixpath
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
@@ -155,7 +154,6 @@ from feedbax.contracts.row_index import (
     RowSelectionErrorCode,
     expand_row_selector,
 )
-from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.project_experiment import (
     ProjectExperimentDeclaration,
@@ -177,6 +175,10 @@ from feedbax.envelope.resolution import (
     PinnedDocument,
     build_lineage,
     load_pinned,
+)
+from feedbax.training._governed_parent import (
+    _GovernedParentAuthenticationError,
+    _authenticate_governed_training_row_parent,
 )
 
 _DELTA_ONLY_HOME = "an envelope carries only what changes; delete the line"
@@ -860,61 +862,27 @@ def _resolve_governed_matrix_parent(
     authority = matches[0]
     expected_parent = _resolved_output_parent(base)
     provenance = authority.provenance
-    if (
-        authority.parent != expected_parent
-        or provenance.semantic_hash != expected_parent.resolved_root_hash
-    ):
-        _reject(
-            ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT,
-            field,
-            f"resolved_output:{ref!r} was declared under different parent semantics",
-            correct_home="supply authority for the exact parent identity the envelope compiled",
-        )
-    observed_artifact_sha256 = hashlib.sha256(authority.payload_bytes).hexdigest()
-    if observed_artifact_sha256 != provenance.artifact_sha256:
-        _reject(
-            ExperimentEnvelopeRejectionCategory.PARENT_BYTE_DRIFT,
-            field,
-            f"artifact {provenance.artifact_id!r} has byte hash {observed_artifact_sha256} "
-            f"but its declaration pins {provenance.artifact_sha256}",
-            correct_home="supply the immutable bytes named by the artifact declaration",
-        )
     try:
-        payload = strict_json_loads(authority.payload_bytes, ref=provenance.artifact_id)
-    except ValueError as exc:
-        _reject(
-            ExperimentEnvelopeRejectionCategory.PARENT_BYTE_DRIFT,
-            field,
-            f"artifact {provenance.artifact_id!r} is not strict JSON: {exc}",
+        authenticated = _authenticate_governed_training_row_parent(
+            parent=authority.parent,
+            provenance=provenance,
+            payload_bytes=authority.payload_bytes,
+            expected_parent=expected_parent,
         )
-    if not isinstance(payload, Mapping):
+    except _GovernedParentAuthenticationError as exc:
         _reject(
-            ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT,
+            ExperimentEnvelopeRejectionCategory.PARENT_BYTE_DRIFT
+            if exc.byte_drift
+            else ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT,
             field,
-            f"artifact {provenance.artifact_id!r} does not contain an object payload",
+            str(exc),
+            correct_home=(
+                "supply the immutable bytes named by the artifact declaration"
+                if exc.byte_drift
+                else "supply authority for the exact parent identity the envelope compiled"
+            ),
         )
-    embedded_schema = payload.get("schema_id"), payload.get("schema_version")
-    if embedded_schema != (None, None) and embedded_schema != (
-        provenance.schema_id,
-        provenance.schema_version,
-    ):
-        _reject(
-            ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT,
-            field,
-            f"artifact {provenance.artifact_id!r} schema identity drifted from "
-            f"{provenance.schema_id!r} at {provenance.schema_version!r}",
-            correct_home="declare the schema identity carried by the authenticated payload",
-        )
-    observed_semantic_hash = training_spec_sha256(payload)
-    if observed_semantic_hash != expected_parent.resolved_root_hash:
-        _reject(
-            ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT,
-            field,
-            f"resolved_output:{ref!r} semantic hash is {observed_semantic_hash}, but the "
-            f"parent pins {expected_parent.resolved_root_hash}",
-            correct_home="supply the artifact whose resolved semantics the parent pins",
-        )
-    return dict(payload), GovernedParentReference(
+    return authenticated.payload, GovernedParentReference(
         parent=expected_parent,
         role=provenance.role,
         artifact_id=provenance.artifact_id,

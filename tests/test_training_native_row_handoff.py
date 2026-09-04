@@ -94,6 +94,7 @@ from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.state import RowState, RunSetState
 from feedbax.orchestration.stages import (
     OrchestrationStageError,
+    StageEngine,
     _verify_collected_native_checkpoint_custody,
 )
 from feedbax.training.diagnostics import (
@@ -139,6 +140,7 @@ def _training_spec(
     *,
     completed_batches: int = 1,
     continuation: CheckpointContinuationRequest | None = None,
+    progress_interval: int | None = None,
 ) -> TrainingRunSpec:
     method_payload = standard_supervised_method_payload()
     method_payload.payload = StandardSupervisedMethodPayload(
@@ -167,6 +169,7 @@ def _training_spec(
         ),
         checkpoint_progress=CheckpointProgressPolicySpec(
             checkpoint_interval=1,
+            progress_interval=progress_interval,
             continuation=continuation,
         ),
     )
@@ -187,6 +190,7 @@ def _assemble_lowered_bundle(
     gain: int,
     completed_batches: int = 1,
     continuation: CheckpointContinuationRequest | None = None,
+    progress_interval: int | None = None,
     input_kind: str = "registered-artifact",
 ) -> RunBundle:
     matrix = TrainingRunMatrixSpecV5.model_validate(
@@ -243,6 +247,7 @@ def _assemble_lowered_bundle(
                 lowered_gain,
                 completed_batches=completed_batches,
                 continuation=continuation,
+                progress_interval=progress_interval,
             ).model_dump(mode="json", exclude_none=True),
             lowerer_identities=[
                 RowLowererIdentity(
@@ -673,6 +678,14 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         artifact for artifact in result.manifest.artifacts if artifact.role == "training_history"
     )
     history_relative_path = Path(history_ref.uri).relative_to(collection_root / "manifests")
+    assert Path(history_ref.uri) == (
+        collection_root
+        / "manifests"
+        / "artifacts"
+        / "sha256"
+        / history_ref.sha256[:2]
+        / history_ref.sha256
+    )
     collected_manifest_root = Path(collected["manifests"])
     assert (collected_manifest_root / history_relative_path).read_bytes() == Path(
         history_ref.uri
@@ -898,6 +911,73 @@ def test_local_shadow_runtime_binding_adds_update_budget_without_mutating_bundle
     assert captured["command"].count("--update-budget") == 1
     assert captured["command"][captured["command"].index("--update-budget") + 1] == "1"
     assert row.launch.command.count("--update-budget") == 0
+
+
+def test_one_update_shadow_collects_empty_declared_manifest_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
+    )
+    bundle = _without_resolved_inputs(
+        _assemble_lowered_bundle(
+            tmp_path / "shadow-collect",
+            gain=2,
+            progress_interval=2,
+        )
+    )
+    slots_path = tmp_path / "initial-slots.json"
+    slots_path.write_text(
+        json.dumps(
+            {
+                "model": 0,
+                "optimizer": {"count": 1},
+                "prng": [0, 1],
+                "batch_counter": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    row = bundle.rows[0]
+    row = row.model_copy(
+        update={
+            "launch": row.launch.model_copy(
+                update={
+                    "command": [
+                        *row.launch.command,
+                        "--initial-slots",
+                        str(slots_path),
+                        "--no-progress",
+                    ]
+                }
+            )
+        }
+    )
+    bundle = bundle.model_copy(update={"rows": [row]})
+
+    state = StageEngine(
+        bundle=bundle,
+        driver=LocalOrchestrationDriver(
+            cwd=tmp_path,
+            freeze_lines=[],
+            update_budget=1,
+        ),
+        poll_interval_seconds=0.01,
+    ).run(stop_after_stage="COLLECT")
+
+    assert state.stage("COLLECT").status == "completed"
+    collected = state.rows[row.row_id].collected_outputs
+    assert set(collected) == {
+        "manifest.json",
+        "training-diagnostics.json",
+        "checkpoints",
+        "manifests",
+    }
+    collected_manifest_root = Path(collected["manifests"])
+    assert collected_manifest_root.is_dir()
+    assert list(collected_manifest_root.iterdir()) == []
 
 
 def test_local_ordinary_runtime_binding_does_not_add_update_budget(
