@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Generic, Literal, TypeVar
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.base import (
@@ -53,8 +53,11 @@ TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6 = (
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7 = (
     "feedbax.manifest.training_checkpoint_transaction.v7"
 )
-TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8 = (
     "feedbax.manifest.training_checkpoint_transaction.v8"
+)
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+    "feedbax.manifest.training_checkpoint_transaction.v9"
 )
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID = "feedbax.manifest.training_checkpoint_latest_pointer"
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2 = (
@@ -93,6 +96,14 @@ CHECKPOINT_DIGEST_MIGRATION_RECORD_SCHEMA_ID = (
 CHECKPOINT_DIGEST_MIGRATION_RECORD_SCHEMA_VERSION = (
     "feedbax.manifest.training_checkpoint.digest_migration.v1"
 )
+CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_ID = "feedbax.manifest.training_checkpoint.content_integrity"
+CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION_V1 = (
+    "feedbax.manifest.training_checkpoint.content_integrity.v1"
+)
+CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION = (
+    "feedbax.manifest.training_checkpoint.content_integrity.v2"
+)
+SEMANTIC_STATE_ROOT_ALGORITHM_VERSION = "feedbax.training_checkpoint.semantic_state_root.v1"
 
 
 CheckpointDocumentT = TypeVar("CheckpointDocumentT")
@@ -361,8 +372,8 @@ class SlotLeafContentDigest(StrictModel):
     size_bytes: int | None = None
 
 
-class SlotContentDigest(StrictModel):
-    """Per-slot content digest record."""
+class LegacySlotContentDigest(StrictModel):
+    """Per-slot exact-byte custody digest used by content-integrity v1."""
 
     slot: str
     blob_sha256: str
@@ -371,13 +382,42 @@ class SlotContentDigest(StrictModel):
     slot_root_sha256: str
 
 
-class ContentIntegrityDigest(StrictModel):
-    """Content hashes for all slots and the complete transaction."""
+class SlotContentDigest(LegacySlotContentDigest):
+    """Per-slot custody and semantic-state digests for content-integrity v2."""
 
-    schema_id: str = "feedbax.manifest.training_checkpoint.content_integrity"
-    schema_version: str = "feedbax.manifest.training_checkpoint.content_integrity.v1"
+    semantic_state_root_sha256: str
+
+    @field_validator("semantic_state_root_sha256")
+    @classmethod
+    def _validate_semantic_state_root_sha256(cls, value: str) -> str:
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise ValueError("semantic_state_root_sha256 must be a lowercase sha256")
+        return value
+
+
+SlotContentDigestRecord = SlotContentDigest | LegacySlotContentDigest
+
+
+class LegacyContentIntegrityDigest(StrictModel):
+    """Exact-byte content hashes retained for legacy checkpoint transactions."""
+
+    schema_id: str = CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_ID
+    schema_version: str = CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION_V1
+    slots: list[LegacySlotContentDigest]
+    transaction_root_sha256: str
+
+
+class ContentIntegrityDigest(StrictModel):
+    """Exact-byte custody hashes plus versioned semantic-state identities."""
+
+    schema_id: str = CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_ID
+    schema_version: str = CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION
+    semantic_state_root_algorithm_version: str
     slots: list[SlotContentDigest]
     transaction_root_sha256: str
+
+
+ContentIntegrityDigestRecord = ContentIntegrityDigest | LegacyContentIntegrityDigest
 
 
 class RunContractBinding(StrictModel):
@@ -428,7 +468,7 @@ class CheckpointSlotBlobRef(StrictModel):
     size_bytes: int
     coordinate: ProgressCoordinate
     structural_abi_fingerprint: StructuralAbiFingerprint
-    content_digest: SlotContentDigest
+    content_digest: SlotContentDigestRecord
     materialized_axes: tuple[MaterializedSlotAxisBinding, ...] | None = None
     population: PopulationIdentityRecord | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -451,7 +491,7 @@ class CheckpointForkSourceRecord(StrictModel):
     manifest_sha256: str
     transaction_root_sha256: str
     manifest_relative_path: str | None = None
-    slot_content_digests: list[SlotContentDigest] = Field(default_factory=list)
+    slot_content_digests: list[SlotContentDigestRecord] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -829,7 +869,8 @@ class CheckpointTransactionManifest(StrictModel):
     consistency_predicate: ConsistencyPredicateSpec
     run_contract_binding: RunContractBinding
     slots: list[CheckpointSlotBlobRef]
-    content_integrity_digest: ContentIntegrityDigest
+    content_integrity_digest: ContentIntegrityDigestRecord
+    semantic_state_roots_status: Literal["available", "unavailable_legacy"] = "available"
     history_availability: dict[str, bool] = Field(default_factory=dict)
     parent_lineage: list[CheckpointLineageRef] = Field(default_factory=list)
     source_training_run: ParentRef | ArtifactRef | None = None
@@ -844,6 +885,18 @@ class CheckpointTransactionManifest(StrictModel):
             raise ValueError(
                 f"unsupported checkpoint transaction schema_version {self.schema_version!r}"
             )
+        if self.semantic_state_roots_status == "available":
+            if not isinstance(self.content_integrity_digest, ContentIntegrityDigest):
+                raise ValueError(
+                    "current checkpoint transaction requires content-integrity v2 semantic "
+                    "state roots"
+                )
+            if any(not isinstance(slot.content_digest, SlotContentDigest) for slot in self.slots):
+                raise ValueError(
+                    "current checkpoint transaction requires semantic state roots on every slot"
+                )
+        elif not isinstance(self.content_integrity_digest, LegacyContentIntegrityDigest):
+            raise ValueError("legacy-unavailable semantic state roots require content-integrity v1")
         slot_names = [slot.slot for slot in self.slots]
         if len(slot_names) != len(set(slot_names)):
             raise ValueError("checkpoint transaction slot names must be unique")

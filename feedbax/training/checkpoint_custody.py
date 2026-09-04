@@ -22,7 +22,8 @@ import uuid
 import zlib
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass, field as dataclass_field, fields as dataclass_fields
+from dataclasses import is_dataclass
 from functools import partial
 from pathlib import Path, PurePosixPath
 from types import FunctionType, MappingProxyType
@@ -68,14 +69,20 @@ from feedbax.contracts.checkpoints import (
     CheckpointProvenanceNotice,
     CheckpointSlotBlobRef,
     CheckpointTransactionManifest,
+    CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_ID,
+    CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION,
+    CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION_V1,
     ContentIntegrityDigest,
+    LegacySlotContentDigest,
     PopulationIdentityRecord,
     RunContractBinding,
     SerializerVersionRecord,
     SlotContentDigest,
     SlotLeafContentDigest,
     SlotLeafFingerprint,
+    SEMANTIC_STATE_ROOT_ALGORITHM_VERSION,
     StructuralAbiFingerprint,
+    structural_abi_content_projection,
     structural_abi_content_sha256,
     structural_abi_leaf_content_projection,
 )
@@ -154,8 +161,6 @@ _RUN_CONTRACT_BINDING_ALGORITHM_V2 = "feedbax.training_checkpoint.run_contract_b
 _RUN_CONTRACT_BINDING_ALGORITHM_V3 = "feedbax.training_checkpoint.run_contract_binding.v3"
 _RUN_CONTRACT_BINDING_ALGORITHM_V4 = "feedbax.training_checkpoint.run_contract_binding.v4"
 _RUN_CONTRACT_HASH_DOMAIN = "migrated-canonical-json"
-_CONTENT_INTEGRITY_SCHEMA_ID = ContentIntegrityDigest.model_fields["schema_id"].default
-_CONTENT_INTEGRITY_SCHEMA_VERSION = ContentIntegrityDigest.model_fields["schema_version"].default
 _STRUCTURAL_ABI_SCHEMA_ID = StructuralAbiFingerprint.model_fields["schema_id"].default
 _STRUCTURAL_ABI_SCHEMA_VERSION = StructuralAbiFingerprint.model_fields["schema_version"].default
 _STRUCTURAL_ABI_ALGORITHM_VERSION = StructuralAbiFingerprint.model_fields[
@@ -328,6 +333,18 @@ class CheckpointReferenceResolutionError(CheckpointIntegrityError):
 
 class CheckpointCompatibilityError(CheckpointCustodyError):
     """Raised when a checkpoint is structurally incompatible with resume templates."""
+
+
+class CheckpointSemanticStateRootUnavailable(CheckpointCustodyError):
+    """Raised when a legacy checkpoint has no governed semantic-state identity."""
+
+
+class CheckpointSemanticStateUnsupported(CheckpointCustodyError):
+    """Raised when a checkpoint leaf cannot enter semantic-state identity."""
+
+
+class CheckpointSemanticStateMismatch(CheckpointCustodyError):
+    """Raised when two governed checkpoint semantic-state roots differ."""
 
 
 class CheckpointDigestMigrationRequired(CheckpointCustodyError):
@@ -2139,13 +2156,19 @@ def _resolve_checkpoint_custody_ref(
             value = _deserialize_checkpoint_slot(slot, blob_path)
         except (CheckpointIntegrityError, OSError) as exc:
             raise CheckpointReferenceResolutionError(str(exc)) from exc
-        _validate_decoded_slot_integrity(slot, value)
+        try:
+            _validate_decoded_slot_integrity(slot, value)
+        except CheckpointReferenceResolutionError:
+            raise
+        except Exception as exc:
+            raise CheckpointReferenceResolutionError(str(exc)) from exc
         loaded_slots[name] = value
 
     try:
         provenance_notices, _ = _validate_manifest_structural_abi(manifest, loaded_slots)
     except CheckpointIntegrityError as exc:
         raise CheckpointReferenceResolutionError(str(exc)) from exc
+    _validate_decoded_semantic_state_roots(manifest, loaded_slots)
     return ResolvedCheckpointTransaction(
         parent_ref=_immutable_model_snapshot(ref),
         manifest_sha256=manifest_sha256,
@@ -2468,14 +2491,26 @@ def _validate_checkpoint_transaction_integrity_records(
     manifest: CheckpointTransactionManifest,
 ) -> dict[str, CheckpointSlotBlobRef]:
     integrity = manifest.content_integrity_digest
-    if integrity.schema_id != _CONTENT_INTEGRITY_SCHEMA_ID:
+    if integrity.schema_id != CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_ID:
         raise CheckpointReferenceResolutionError(
             f"checkpoint content integrity schema_id is unsupported: {integrity.schema_id!r}"
         )
-    if integrity.schema_version != _CONTENT_INTEGRITY_SCHEMA_VERSION:
+    expected_integrity_version = (
+        CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION
+        if manifest.semantic_state_roots_status == "available"
+        else CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION_V1
+    )
+    if integrity.schema_version != expected_integrity_version:
         raise CheckpointReferenceResolutionError(
             "checkpoint content integrity schema_version is unsupported: "
             f"{integrity.schema_version!r}"
+        )
+    if isinstance(integrity, ContentIntegrityDigest) and (
+        integrity.semantic_state_root_algorithm_version != SEMANTIC_STATE_ROOT_ALGORITHM_VERSION
+    ):
+        raise CheckpointReferenceResolutionError(
+            "checkpoint semantic state root algorithm is unsupported: "
+            f"{integrity.semantic_state_root_algorithm_version!r}"
         )
     slots_by_name = {slot.slot: slot for slot in manifest.slots}
     if len(slots_by_name) != len(manifest.slots):
@@ -2586,6 +2621,28 @@ def _validate_decoded_slot_integrity(slot: CheckpointSlotBlobRef, value: Any) ->
         raise CheckpointReferenceResolutionError(
             f"checkpoint slot {slot.slot!r} decoded content root mismatch"
         )
+
+
+def _validate_decoded_semantic_state_roots(
+    manifest: CheckpointTransactionManifest,
+    loaded_slots: Mapping[str, Any],
+) -> None:
+    for slot in manifest.slots:
+        if slot.slot not in loaded_slots or not isinstance(slot.content_digest, SlotContentDigest):
+            continue
+        value = loaded_slots[slot.slot]
+        actual_semantic_root = semantic_state_root_sha256(
+            slot=slot.slot,
+            role=slot.role,
+            value=value,
+            structural_abi_fingerprint=structural_abi_fingerprint(value),
+            materialized_axes=slot.materialized_axes,
+            population=slot.population,
+        )
+        if actual_semantic_root != slot.content_digest.semantic_state_root_sha256:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {slot.slot!r} semantic state root mismatch"
+            )
 
 
 def _is_sha256(value: Any) -> bool:
@@ -3116,26 +3173,26 @@ def write_checkpoint_transaction(
             # hashing leaves so the two payload-sized buffers never coexist.
             del blob_bytes
             integrity = _slot_integrity_records(value)
-            content_digest = SlotContentDigest(
-                slot=spec.slot,
-                blob_sha256=blob_sha256,
-                blob_size_bytes=blob_size_bytes,
-                leaf_hashes=integrity.leaf_digests,
-                slot_root_sha256=_slot_root_sha256(
-                    spec.slot,
-                    blob_sha256,
-                    integrity.leaf_digests,
-                ),
-            )
             population = _population_record(
                 spec.slot,
                 value,
                 population_member_ids=population_member_ids or {},
                 population_slots=population_slots,
             )
+            role = slot_roles.get(spec.slot, "auxiliary")
+            content_digest = _slot_content_digest(
+                slot=spec.slot,
+                role=role,
+                value=value,
+                blob_sha256=blob_sha256,
+                blob_size_bytes=blob_size_bytes,
+                integrity=integrity,
+                materialized_axes=materialized_axes,
+                population=population,
+            )
             slot_record = CheckpointSlotBlobRef(
                 slot=spec.slot,
-                role=slot_roles.get(spec.slot, "auxiliary"),
+                role=role,
                 required=spec.required,
                 relative_path=str(blob_path.relative_to(tmp_dir)),
                 sha256=blob_sha256,
@@ -3194,6 +3251,7 @@ def write_checkpoint_transaction(
             run_contract_binding=run_contract_binding(run_spec, phase_program),
             slots=slot_records,
             content_integrity_digest=ContentIntegrityDigest(
+                semantic_state_root_algorithm_version=SEMANTIC_STATE_ROOT_ALGORITHM_VERSION,
                 slots=slot_digests,
                 transaction_root_sha256=transaction_root,
             ),
@@ -5133,26 +5191,48 @@ def fork_checkpoint_transaction(
                         "checkpoint fork link strategy must return 'hardlink' or 'copy'; "
                         f"got {mode!r} for slot {spec.slot!r}"
                     )
+                value = prepared_slots[spec.slot]
+                integrity = _slot_integrity_records(value)
+                population = _population_record(
+                    spec.slot,
+                    value,
+                    population_member_ids=expected_population_member_ids or {},
+                    population_slots=population_slots,
+                )
+                role = slot_roles.get(spec.slot, "auxiliary")
+                content_digest = _slot_content_digest(
+                    slot=spec.slot,
+                    role=role,
+                    value=value,
+                    blob_sha256=source_slot.sha256,
+                    blob_size_bytes=source_slot.size_bytes,
+                    integrity=integrity,
+                    materialized_axes=expected_axes,
+                    population=population,
+                )
+                if (
+                    content_digest.leaf_hashes != source_slot.content_digest.leaf_hashes
+                    or content_digest.slot_root_sha256
+                    != source_slot.content_digest.slot_root_sha256
+                ):
+                    raise CheckpointIntegrityError(
+                        f"checkpoint fork slot {spec.slot!r} exact transfer changed custody "
+                        "identity"
+                    )
                 slot_record = CheckpointSlotBlobRef(
                     slot=spec.slot,
-                    role=slot_roles.get(spec.slot, "auxiliary"),
+                    role=role,
                     required=spec.required,
                     relative_path=str(target_blob_path.relative_to(tmp_dir)),
                     sha256=source_slot.sha256,
                     size_bytes=source_slot.size_bytes,
                     coordinate=coordinate,
-                    structural_abi_fingerprint=source_slot.structural_abi_fingerprint,
-                    content_digest=source_slot.content_digest,
+                    structural_abi_fingerprint=integrity.structural_abi_fingerprint,
+                    content_digest=content_digest,
                     materialized_axes=expected_axes,
-                    population=_population_record(
-                        spec.slot,
-                        prepared_slots[spec.slot],
-                        population_member_ids=expected_population_member_ids or {},
-                        population_slots=population_slots,
-                    ),
+                    population=population,
                     metadata=dict(spec.metadata),
                 )
-                content_digest = source_slot.content_digest
                 provenance = CheckpointForkSlotProvenance(
                     slot=spec.slot,
                     source_sha256=source_slot.sha256,
@@ -5246,6 +5326,7 @@ def fork_checkpoint_transaction(
             run_contract_binding=run_contract_binding(target_run_spec, phase_program),
             slots=slot_records,
             content_integrity_digest=ContentIntegrityDigest(
+                semantic_state_root_algorithm_version=SEMANTIC_STATE_ROOT_ALGORITHM_VERSION,
                 slots=slot_digests,
                 transaction_root_sha256=transaction_root,
             ),
@@ -5727,20 +5808,26 @@ def _write_fresh_slot_blob(
     # leaves so the two payload-sized buffers never coexist.
     del blob_bytes
     integrity = _slot_integrity_records(value)
-    content_digest = SlotContentDigest(
+    population = _population_record(
+        spec.slot,
+        value,
+        population_member_ids=population_member_ids,
+        population_slots=population_slots,
+    )
+    role = slot_roles.get(spec.slot, "auxiliary")
+    content_digest = _slot_content_digest(
         slot=spec.slot,
+        role=role,
+        value=value,
         blob_sha256=blob_sha256,
         blob_size_bytes=blob_size_bytes,
-        leaf_hashes=integrity.leaf_digests,
-        slot_root_sha256=_slot_root_sha256(
-            spec.slot,
-            blob_sha256,
-            integrity.leaf_digests,
-        ),
+        integrity=integrity,
+        materialized_axes=materialized_axes,
+        population=population,
     )
     slot_record = CheckpointSlotBlobRef(
         slot=spec.slot,
-        role=slot_roles.get(spec.slot, "auxiliary"),
+        role=role,
         required=spec.required,
         relative_path=str(blob_path.relative_to(transaction_dir)),
         sha256=blob_sha256,
@@ -5749,12 +5836,7 @@ def _write_fresh_slot_blob(
         structural_abi_fingerprint=integrity.structural_abi_fingerprint,
         content_digest=content_digest,
         materialized_axes=materialized_axes,
-        population=_population_record(
-            spec.slot,
-            value,
-            population_member_ids=population_member_ids,
-            population_slots=population_slots,
-        ),
+        population=population,
         metadata=dict(spec.metadata),
     )
     return slot_record, content_digest
@@ -6723,11 +6805,20 @@ def _semantic_structural_abi_sha256(
     *,
     value: Any | None = None,
 ) -> str:
+    return _canonical_hash(_semantic_structural_abi_projection(fingerprint, value=value))
+
+
+def _semantic_structural_abi_projection(
+    fingerprint: StructuralAbiFingerprint,
+    *,
+    value: Any | None = None,
+) -> dict[str, Any]:
+    """Project structural ABI fields after canonical semantic normalization."""
     leaves = [
         leaf.model_copy(update={"leaf_type": _canonical_leaf_type(leaf.leaf_type)})
         for leaf in fingerprint.leaves
     ]
-    return structural_abi_content_sha256(
+    return structural_abi_content_projection(
         fingerprint.model_copy(
             update={
                 "treedef": _canonical_structural_abi_treedef(
@@ -6754,9 +6845,7 @@ _ANONYMOUS_STATE_INDEX_MARKERS = (
 )
 
 
-_FUNCTION_REPR = re.compile(
-    r"<function (?P<qualname>[^>]+?) at 0x[0-9a-fA-F]+>"
-)
+_FUNCTION_REPR = re.compile(r"<function (?P<qualname>[^>]+?) at 0x[0-9a-fA-F]+>")
 
 
 @dataclass(frozen=True)
@@ -6896,6 +6985,167 @@ def _array_leaf_content_digest(leaf: Any) -> tuple[str, int]:
         return hashlib.sha256(buffer).hexdigest(), buffer.nbytes
 
 
+def _semantic_value_projection(
+    leaf: Any,
+    *,
+    path_text: str,
+    active_dataclasses: set[int],
+) -> dict[str, Any]:
+    if eqx.is_array(leaf):
+        array = np.asarray(leaf)
+        if array.dtype.hasobject:
+            raise CheckpointSemanticStateUnsupported(
+                f"checkpoint semantic state does not support object array leaf {path_text!r}"
+            )
+        value_sha256, size_bytes = _array_leaf_content_digest(array)
+        return {
+            "kind": "array",
+            "dtype": str(array.dtype),
+            "dtype_str": array.dtype.str,
+            "shape": [int(dim) for dim in array.shape],
+            "weak_type": bool(getattr(leaf, "weak_type", False)),
+            "value_sha256": value_sha256,
+            "size_bytes": size_bytes,
+        }
+    if leaf is None:
+        return {"kind": "none", "value": None}
+    if type(leaf) is bool:
+        return {"kind": "bool", "value": leaf}
+    if type(leaf) is int:
+        return {"kind": "int", "value": str(leaf)}
+    if type(leaf) is float:
+        return {
+            "kind": "float64",
+            "value_bits": np.asarray(leaf, dtype=">f8").tobytes().hex(),
+        }
+    if type(leaf) is complex:
+        return {
+            "kind": "complex128",
+            "value_bits": np.asarray(leaf, dtype=">c16").tobytes().hex(),
+        }
+    if type(leaf) is str:
+        return {"kind": "str", "value": leaf}
+    if type(leaf) is bytes:
+        return {"kind": "bytes", "value_hex": leaf.hex()}
+    if isinstance(leaf, np.generic):
+        scalar = np.asarray(leaf)
+        if scalar.dtype.hasobject:
+            raise CheckpointSemanticStateUnsupported(
+                f"checkpoint semantic state does not support object scalar leaf {path_text!r}"
+            )
+        return {
+            "kind": "numpy_scalar",
+            "dtype": str(scalar.dtype),
+            "dtype_str": scalar.dtype.str,
+            "value_hex": scalar.tobytes().hex(),
+        }
+    if is_dataclass(leaf) and not isinstance(leaf, type):
+        identity = id(leaf)
+        if identity in active_dataclasses:
+            raise CheckpointSemanticStateUnsupported(
+                f"checkpoint semantic state contains a typed dataclass cycle at {path_text!r}"
+            )
+        active_dataclasses.add(identity)
+        try:
+            projected_fields = []
+            for field in dataclass_fields(leaf):
+                field_path = f"{path_text.rstrip('/')}/{field.name}"
+                try:
+                    field_value = getattr(leaf, field.name)
+                except AttributeError as exc:
+                    raise CheckpointSemanticStateUnsupported(
+                        "checkpoint semantic state cannot read typed dataclass field "
+                        f"{field_path!r}"
+                    ) from exc
+                projected_fields.append(
+                    {
+                        "name": field.name,
+                        "value": _semantic_value_projection(
+                            field_value,
+                            path_text=field_path,
+                            active_dataclasses=active_dataclasses,
+                        ),
+                    }
+                )
+        finally:
+            active_dataclasses.remove(identity)
+        return {
+            "kind": "typed_dataclass",
+            "type": _qualified_type_name(leaf),
+            "fields": projected_fields,
+        }
+    raise CheckpointSemanticStateUnsupported(
+        "checkpoint semantic state has unsupported or ambiguous leaf "
+        f"{path_text!r} of type {_qualified_type_name(leaf)!r}"
+    )
+
+
+def _semantic_leaf_value_projection(path: Any, leaf: Any) -> dict[str, Any]:
+    path_text = _key_path_to_text(path)
+    return {
+        "path": path_text,
+        **_semantic_value_projection(
+            leaf,
+            path_text=path_text,
+            active_dataclasses=set(),
+        ),
+    }
+
+
+def _semantic_state_content_projection(
+    *,
+    slot: str,
+    role: str,
+    value: Any,
+    structural_abi_fingerprint: StructuralAbiFingerprint,
+    materialized_axes: Sequence[MaterializedSlotAxisBinding] | None,
+    population: PopulationIdentityRecord | None,
+) -> dict[str, Any]:
+    """Return the one canonical semantic-state projection for a checkpoint slot."""
+    path_leaves, _ = jt.flatten_with_path(value)
+    return {
+        "algorithm_version": SEMANTIC_STATE_ROOT_ALGORITHM_VERSION,
+        "slot": slot,
+        "role": role,
+        "structural_abi": _semantic_structural_abi_projection(
+            structural_abi_fingerprint,
+            value=value,
+        ),
+        "leaves": [_semantic_leaf_value_projection(path, leaf) for path, leaf in path_leaves],
+        "materialized_axes": [
+            binding.model_dump(mode="json", exclude_none=True)
+            for binding in materialized_axes or ()
+        ],
+        "population": (
+            population.model_dump(mode="json", exclude_none=True)
+            if population is not None
+            else None
+        ),
+    }
+
+
+def semantic_state_root_sha256(
+    *,
+    slot: str,
+    role: str,
+    value: Any,
+    structural_abi_fingerprint: StructuralAbiFingerprint,
+    materialized_axes: Sequence[MaterializedSlotAxisBinding] | None,
+    population: PopulationIdentityRecord | None,
+) -> str:
+    """Hash the canonical semantic-state projection for one checkpoint slot."""
+    return _canonical_hash(
+        _semantic_state_content_projection(
+            slot=slot,
+            role=role,
+            value=value,
+            structural_abi_fingerprint=structural_abi_fingerprint,
+            materialized_axes=materialized_axes,
+            population=population,
+        )
+    )
+
+
 def _slot_integrity_records(value: Any) -> _SlotIntegrityRecords:
     pairs, treedef = jt.flatten_with_path(value)
     digests: list[SlotLeafContentDigest] = []
@@ -6944,12 +7194,115 @@ def _slot_root_sha256(
     return _canonical_hash(payload)
 
 
-def _transaction_root_sha256(slot_digests: Sequence[SlotContentDigest]) -> str:
+def _slot_content_digest(
+    *,
+    slot: str,
+    role: str,
+    value: Any,
+    blob_sha256: str,
+    blob_size_bytes: int,
+    integrity: _SlotIntegrityRecords,
+    materialized_axes: Sequence[MaterializedSlotAxisBinding] | None,
+    population: PopulationIdentityRecord | None,
+) -> SlotContentDigest:
+    return SlotContentDigest(
+        slot=slot,
+        blob_sha256=blob_sha256,
+        blob_size_bytes=blob_size_bytes,
+        leaf_hashes=integrity.leaf_digests,
+        slot_root_sha256=_slot_root_sha256(
+            slot,
+            blob_sha256,
+            integrity.leaf_digests,
+        ),
+        semantic_state_root_sha256=semantic_state_root_sha256(
+            slot=slot,
+            role=role,
+            value=value,
+            structural_abi_fingerprint=integrity.structural_abi_fingerprint,
+            materialized_axes=materialized_axes,
+            population=population,
+        ),
+    )
+
+
+def _legacy_slot_content_projection(
+    digest: SlotContentDigest | LegacySlotContentDigest,
+) -> dict[str, Any]:
+    """Project the unchanged content-integrity v1 custody identity."""
+    return digest.model_dump(
+        mode="json",
+        exclude_none=True,
+        exclude={"semantic_state_root_sha256"},
+    )
+
+
+def _transaction_root_sha256(
+    slot_digests: Sequence[SlotContentDigest | LegacySlotContentDigest],
+) -> str:
     payload = [
-        digest.model_dump(mode="json", exclude_none=True)
+        _legacy_slot_content_projection(digest)
         for digest in sorted(slot_digests, key=lambda digest: digest.slot)
     ]
     return _canonical_hash(payload)
+
+
+def checkpoint_semantic_state_root(
+    manifest: CheckpointTransactionManifest,
+    slot: str,
+) -> str:
+    """Return one stored semantic-state root or report typed legacy unavailability."""
+    if manifest.semantic_state_roots_status != "available" or not isinstance(
+        manifest.content_integrity_digest,
+        ContentIntegrityDigest,
+    ):
+        raise CheckpointSemanticStateRootUnavailable(
+            "checkpoint semantic state root is unavailable for migrated legacy "
+            f"content-integrity v1; slot={slot!r}"
+        )
+    if (
+        manifest.content_integrity_digest.schema_id != CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_ID
+        or manifest.content_integrity_digest.schema_version
+        != CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION
+    ):
+        raise CheckpointSemanticStateRootUnavailable(
+            "checkpoint semantic state root content-integrity schema is unsupported: "
+            f"schema_id={manifest.content_integrity_digest.schema_id!r} "
+            f"schema_version={manifest.content_integrity_digest.schema_version!r}"
+        )
+    if (
+        manifest.content_integrity_digest.semantic_state_root_algorithm_version
+        != SEMANTIC_STATE_ROOT_ALGORITHM_VERSION
+    ):
+        raise CheckpointSemanticStateRootUnavailable(
+            "checkpoint semantic state root algorithm is unsupported: "
+            f"{manifest.content_integrity_digest.semantic_state_root_algorithm_version!r}"
+        )
+    for digest in manifest.content_integrity_digest.slots:
+        if digest.slot == slot:
+            if not _is_sha256(digest.semantic_state_root_sha256):
+                raise CheckpointSemanticStateRootUnavailable(
+                    f"checkpoint semantic state root is invalid for slot {slot!r}"
+                )
+            return digest.semantic_state_root_sha256
+    raise CheckpointSemanticStateRootUnavailable(
+        f"checkpoint semantic state root slot is missing: {slot!r}"
+    )
+
+
+def require_checkpoint_semantic_state_equal(
+    left: CheckpointTransactionManifest,
+    right: CheckpointTransactionManifest,
+    slot: str,
+) -> None:
+    """Require one slot to have the same governed semantic state in two manifests."""
+    left_root = checkpoint_semantic_state_root(left, slot)
+    right_root = checkpoint_semantic_state_root(right, slot)
+    if left_root != right_root:
+        raise CheckpointSemanticStateMismatch(
+            f"checkpoint semantic state root mismatch for slot {slot!r}: "
+            f"left={left_root!r} right={right_root!r}"
+        )
 
 
 def _serializer_versions() -> SerializerVersionRecord:

@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -44,6 +45,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
     structural_abi_content_projection,
     structural_abi_content_sha256,
 )
@@ -69,6 +71,7 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.worker import (
     CheckpointSlotSpec,
+    MaterializedSlotAxisBinding,
     ProgressCoordinate,
     TrainingBatchProgressSpec,
 )
@@ -78,6 +81,9 @@ from feedbax.training.checkpoint_custody import (
     CheckpointContractBindingError,
     CheckpointIntegrityError,
     CheckpointReferenceResolutionError,
+    CheckpointSemanticStateMismatch,
+    CheckpointSemanticStateRootUnavailable,
+    CheckpointSemanticStateUnsupported,
     CheckpointForkPlanBindings,
     CheckpointForkTransformRegistration,
     CheckpointForkTransformRegistry,
@@ -85,6 +91,7 @@ from feedbax.training.checkpoint_custody import (
     authenticate_published_checkpoint_custody,
     checkpoint_fork_binding_content_sha256,
     checkpoint_slot_names,
+    checkpoint_semantic_state_root,
     derive_checkpoint_fork_compatibility_projection,
     fork_checkpoint_transaction,
     fork_checkpoint_plan,
@@ -93,6 +100,7 @@ from feedbax.training.checkpoint_custody import (
     load_checkpoint_latest_pointer_json,
     load_checkpoint_transaction_manifest_file,
     resolve_checkpoint_custody_ref,
+    require_checkpoint_semantic_state_equal,
     write_checkpoint_transaction,
     concatenate_checkpoint_histories,
     materialize_concatenated_checkpoint_histories,
@@ -237,6 +245,24 @@ def _sha256_file(path: Path) -> str:
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, sort_keys=True, indent=2))
+
+
+def _as_legacy_transaction_payload(
+    payload: dict[str, object],
+    schema_version: str,
+) -> dict[str, object]:
+    payload["schema_version"] = schema_version
+    payload.pop("semantic_state_roots_status", None)
+    content_integrity = payload["content_integrity_digest"]
+    content_integrity["schema_version"] = (
+        "feedbax.manifest.training_checkpoint.content_integrity.v1"
+    )
+    content_integrity.pop("semantic_state_root_algorithm_version", None)
+    for digest in content_integrity["slots"]:
+        digest.pop("semantic_state_root_sha256", None)
+    for slot in payload["slots"]:
+        slot["content_digest"].pop("semantic_state_root_sha256", None)
+    return payload
 
 
 def _rewrite_manifest_and_latest(result, payload: dict[str, object]) -> None:
@@ -686,6 +712,280 @@ def test_checkpoint_write_records_host_copy_digests_and_real_blob_sizes(
     assert set(resolved.slots) == {slot.slot for slot in result.manifest.slots}
 
 
+def test_semantic_state_root_ignores_pickle_memo_identity_but_preserves_semantics() -> None:
+    def equal_string() -> str:
+        return "".join(("semantic checkpoint ", "identity"))
+
+    shared = equal_string()
+    shared_value = {"left": shared, "right": shared}
+    unshared_value = {"left": equal_string(), "right": equal_string()}
+    assert shared_value == unshared_value
+    assert shared_value["left"] is shared_value["right"]
+    assert unshared_value["left"] is not unshared_value["right"]
+    shared_blob = pickle.dumps(shared_value, protocol=pickle.HIGHEST_PROTOCOL)
+    unshared_blob = pickle.dumps(unshared_value, protocol=pickle.HIGHEST_PROTOCOL)
+    assert hashlib.sha256(shared_blob).digest() != hashlib.sha256(unshared_blob).digest()
+
+    def root(value: object) -> str:
+        return custody_module.semantic_state_root_sha256(
+            slot="model",
+            role="model",
+            value=value,
+            structural_abi_fingerprint=custody_module.structural_abi_fingerprint(value),
+            materialized_axes=None,
+            population=None,
+        )
+
+    assert root(shared_value) == root(unshared_value)
+    assert root({"left": shared, "right": shared + " changed"}) != root(shared_value)
+    assert root({"left": "a", "right": "b"}) != root({"left": "b", "right": "a"})
+
+
+def test_semantic_state_root_projects_nested_typed_dataclass_state() -> None:
+    @dataclass(frozen=True, slots=True)
+    class ClampState:
+        value: float
+        count: int
+
+    @dataclass(frozen=True, slots=True)
+    class MethodState:
+        clamp: ClampState
+        enabled: bool
+
+    def root(value: object) -> str:
+        return custody_module.semantic_state_root_sha256(
+            slot="method",
+            role="method",
+            value=value,
+            structural_abi_fingerprint=custody_module.structural_abi_fingerprint(value),
+            materialized_axes=None,
+            population=None,
+        )
+
+    baseline = MethodState(clamp=ClampState(value=0.5, count=3), enabled=True)
+    equal = MethodState(clamp=ClampState(value=0.5, count=3), enabled=True)
+    changed = MethodState(clamp=ClampState(value=0.5, count=4), enabled=True)
+
+    assert root(equal) == root(baseline)
+    assert root(changed) != root(baseline)
+
+
+def test_semantic_state_root_rejects_typed_dataclass_cycles() -> None:
+    @dataclass(frozen=True, slots=True)
+    class RecursiveState:
+        child: object | None = None
+
+    value = RecursiveState()
+    object.__setattr__(value, "child", value)
+
+    with pytest.raises(CheckpointSemanticStateUnsupported, match="dataclass cycle"):
+        custody_module.semantic_state_root_sha256(
+            slot="method",
+            role="method",
+            value=value,
+            structural_abi_fingerprint=custody_module.structural_abi_fingerprint(value),
+            materialized_axes=None,
+            population=None,
+        )
+
+
+def test_semantic_state_root_normalizes_only_anonymous_state_index_markers() -> None:
+    anonymous_left = StateIndex(jnp.zeros(1, dtype=jnp.float32))
+    anonymous_right = StateIndex(jnp.zeros(1, dtype=jnp.float32))
+    named_left = _state_index_with_marker("stable-left")
+    named_right = _state_index_with_marker("stable-right")
+
+    def root(value: object) -> str:
+        return custody_module.semantic_state_root_sha256(
+            slot="model",
+            role="model",
+            value=value,
+            structural_abi_fingerprint=custody_module.structural_abi_fingerprint(value),
+            materialized_axes=None,
+            population=None,
+        )
+
+    assert root(anonymous_left) == root(anonymous_right)
+    assert root(named_left) != root(named_right)
+
+
+def test_semantic_state_root_binds_role_axes_population_and_rejects_ambiguous_leaves() -> None:
+    value = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    fingerprint = custody_module.structural_abi_fingerprint(value)
+    mapped = MaterializedSlotAxisBinding(
+        axis="member",
+        role="member",
+        size=2,
+        level=0,
+        mode="mapped",
+        array_axis=0,
+    )
+    population = custody_module.PopulationIdentityRecord(
+        slot="model",
+        length=2,
+        member_ids=["member-a", "member-b"],
+    )
+
+    def root(*, role: str = "model", axes=(), population_record=None) -> str:
+        return custody_module.semantic_state_root_sha256(
+            slot="model",
+            role=role,
+            value=value,
+            structural_abi_fingerprint=fingerprint,
+            materialized_axes=axes,
+            population=population_record,
+        )
+
+    baseline = root()
+    assert root(role="optimizer") != baseline
+    assert root(axes=(mapped,)) != baseline
+    assert root(population_record=population) != baseline
+    with pytest.raises(CheckpointSemanticStateUnsupported, match="unsupported or ambiguous"):
+        custody_module.semantic_state_root_sha256(
+            slot="model",
+            role="model",
+            value={"leaf": object()},
+            structural_abi_fingerprint=custody_module.structural_abi_fingerprint(
+                {"leaf": object()}
+            ),
+            materialized_axes=None,
+            population=None,
+        )
+
+
+def test_v9_writer_records_semantic_roots_without_changing_custody_roots(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    manifest = result.manifest
+    assert manifest.schema_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    assert manifest.content_integrity_digest.schema_version == (
+        custody_module.CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION
+    )
+    assert manifest.content_integrity_digest.semantic_state_root_algorithm_version == (
+        custody_module.SEMANTIC_STATE_ROOT_ALGORITHM_VERSION
+    )
+    for slot in manifest.slots:
+        assert checkpoint_semantic_state_root(manifest, slot.slot) == (
+            slot.content_digest.semantic_state_root_sha256
+        )
+    assert manifest.content_integrity_digest.transaction_root_sha256 == (
+        custody_module._transaction_root_sha256(manifest.content_integrity_digest.slots)
+    )
+    legacy_digests = [
+        custody_module.LegacySlotContentDigest.model_validate(
+            digest.model_dump(mode="json", exclude={"semantic_state_root_sha256"})
+        )
+        for digest in manifest.content_integrity_digest.slots
+    ]
+    assert (
+        manifest.content_integrity_digest.transaction_root_sha256
+        == custody_module._canonical_hash(
+            [
+                digest.model_dump(mode="json", exclude_none=True)
+                for digest in sorted(legacy_digests, key=lambda item: item.slot)
+            ]
+        )
+    )
+
+
+def test_legacy_v8_remains_resumable_but_semantic_equality_is_typed_unavailable(
+    tmp_path: Path,
+) -> None:
+    result = _write_resolver_checkpoint(tmp_path)
+    payload = _as_legacy_transaction_payload(
+        json.loads(result.manifest_path.read_text()),
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+    )
+    _rewrite_manifest_and_latest(result, payload)
+    legacy_bytes = result.manifest_path.read_bytes()
+
+    loaded = load_checkpoint_transaction_manifest_file(result.manifest_path)
+
+    assert result.manifest_path.read_bytes() == legacy_bytes
+    assert loaded.migrated
+    assert loaded.document.semantic_state_roots_status == "unavailable_legacy"
+    with pytest.raises(CheckpointSemanticStateRootUnavailable, match="legacy"):
+        checkpoint_semantic_state_root(loaded.document, "controller")
+    resolved = resolve_checkpoint_custody_ref(
+        _resolver_parent_ref(result),
+        allowed_root=tmp_path,
+        slot_names=["controller"],
+    )
+    assert resolved.slots["controller"].tolist() == [1.0, 2.0]
+
+
+def test_legacy_v8_exact_transfer_fork_emits_v9_semantic_roots(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    slots = _minimax_slots()
+    source = _write_resolver_checkpoint(tmp_path / "source", slots=slots)
+    payload = _as_legacy_transaction_payload(
+        json.loads(source.manifest_path.read_text()),
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+    )
+    legacy_transaction_root = payload["content_integrity_digest"]["transaction_root_sha256"]
+    _rewrite_manifest_and_latest(source, payload)
+
+    target = fork_checkpoint_transaction(
+        source.root,
+        tmp_path / "target",
+        target_run_spec=run_spec,
+        target_phase_program=run_spec.worker_execution.method_contract.phase_program,
+        expected_slots=slots,
+    )
+
+    assert target.manifest.schema_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    assert target.manifest.semantic_state_roots_status == "available"
+    assert target.manifest.content_integrity_digest.transaction_root_sha256 == (
+        legacy_transaction_root
+    )
+    for slot in target.manifest.slots:
+        assert checkpoint_semantic_state_root(target.manifest, slot.slot)
+
+
+def test_semantic_state_accessors_fail_closed_for_unknown_missing_and_mismatch(
+    tmp_path: Path,
+) -> None:
+    left = _write_resolver_checkpoint(tmp_path / "left").manifest
+    right_result = _write_resolver_checkpoint(
+        tmp_path / "right",
+        slots={**_minimax_slots(), "controller": jnp.array([1.0, 3.0])},
+    )
+    with pytest.raises(CheckpointSemanticStateMismatch, match="mismatch"):
+        require_checkpoint_semantic_state_equal(left, right_result.manifest, "controller")
+    with pytest.raises(CheckpointSemanticStateRootUnavailable, match="missing"):
+        checkpoint_semantic_state_root(left, "absent")
+
+    unknown_integrity = left.content_integrity_digest.model_copy(
+        update={"semantic_state_root_algorithm_version": "unknown"}
+    )
+    unknown_manifest = left.model_copy(update={"content_integrity_digest": unknown_integrity})
+    with pytest.raises(CheckpointSemanticStateRootUnavailable, match="unsupported"):
+        checkpoint_semantic_state_root(unknown_manifest, "controller")
+
+    missing_payload = json.loads(right_result.manifest_path.read_text())
+    missing_payload["content_integrity_digest"]["slots"][0].pop("semantic_state_root_sha256")
+    with pytest.raises(CheckpointIntegrityError, match="semantic_state_root_sha256"):
+        custody_module.load_checkpoint_transaction_manifest_json(json.dumps(missing_payload))
+
+    payload = json.loads(right_result.manifest_path.read_text())
+    controller = next(slot for slot in payload["slots"] if slot["slot"] == "controller")
+    digest = next(
+        item
+        for item in payload["content_integrity_digest"]["slots"]
+        if item["slot"] == "controller"
+    )
+    controller["content_digest"]["semantic_state_root_sha256"] = "0" * 64
+    digest["semantic_state_root_sha256"] = "0" * 64
+    _rewrite_manifest_and_latest(right_result, payload)
+    with pytest.raises(CheckpointReferenceResolutionError, match="semantic state root mismatch"):
+        resolve_checkpoint_custody_ref(
+            _resolver_parent_ref(right_result),
+            allowed_root=right_result.root,
+            slot_names=["controller"],
+        )
+
+
 def test_training_run_manifest_links_checkpoint_custody_ref() -> None:
     ref = ParentRef(
         kind="TrainingCheckpointTransactionManifest",
@@ -718,6 +1018,7 @@ def test_checkpoint_transaction_schema_family_is_registered() -> None:
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
     )
 
 
@@ -735,7 +1036,10 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
         slots=_minimax_slots(),
     )
     payload = result.manifest.model_dump(mode="json", exclude_none=True)
-    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1
+    _as_legacy_transaction_payload(
+        payload,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
+    )
     payload.pop("fork_provenance", None)
 
     migrated = migrate_structured_spec_payload(
@@ -755,6 +1059,7 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
         "training-checkpoint-transaction-v5-to-v6-batch-history",
         "training-checkpoint-transaction-v6-to-v7-segment-lineage",
         "training-checkpoint-transaction-v7-to-v8-mapped-axes",
+        "training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
     ]
     assert migrated.payload["metadata"]["batch_history_tree_migration"] == (
         "declared_paths_v5_to_v6"
@@ -780,7 +1085,10 @@ def test_checkpoint_transaction_manifest_v2_migrates_structural_and_binding_cont
         slots=_minimax_slots(),
     )
     payload = result.manifest.model_dump(mode="json", exclude_none=True)
-    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2
+    _as_legacy_transaction_payload(
+        payload,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+    )
     fingerprint = payload["slots"][0]["structural_abi_fingerprint"]
     fingerprint["schema_version"] = "feedbax.manifest.training_checkpoint.structural_abi.v1"
     fingerprint["serializer_versions"] = fingerprint.pop("environment_provenance")
@@ -837,7 +1145,10 @@ def test_checkpoint_transaction_manifest_v3_migrates_batch_progress_metadata(
         metadata={"completed_batches": 16500},
     )
     payload = result.manifest.model_dump(mode="json", exclude_none=True)
-    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3
+    _as_legacy_transaction_payload(
+        payload,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
+    )
     payload.pop("completed_training_batches")
     payload.pop("completed_coordinate_semantics")
 
@@ -2655,7 +2966,10 @@ def test_defaulted_legacy_projection_migrates_and_resumes(
         slots=_minimax_slots(),
     )
     payload = json.loads(result.manifest_path.read_text())
-    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2
+    _as_legacy_transaction_payload(
+        payload,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+    )
     binding = payload["run_contract_binding"]
     binding["canonical_projection"]["training_run_spec"]["schema_version"] = (
         "feedbax.spec.training_run.v1"
@@ -3275,7 +3589,10 @@ def test_v5_declared_path_migrates_untyped_array_to_batch_history(tmp_path: Path
         completed_training_batches=4,
     )
     payload = json.loads(result.manifest_path.read_text())
-    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5
+    _as_legacy_transaction_payload(
+        payload,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
+    )
     payload["metadata"]["checkpoint_continuation"] = {
         "schema_version": "feedbax.spec.training_checkpoint_continuation.v1",
         "source_completed_batches": 4,
@@ -3309,7 +3626,10 @@ def test_v5_declared_path_migration_rejects_missing_path(tmp_path: Path) -> None
         completed_training_batches=4,
     )
     payload = json.loads(result.manifest_path.read_text())
-    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5
+    _as_legacy_transaction_payload(
+        payload,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
+    )
     payload["metadata"]["checkpoint_continuation"] = {
         "schema_version": "feedbax.spec.training_checkpoint_continuation.v1",
         "source_completed_batches": 4,
@@ -3915,7 +4235,10 @@ def test_legacy_absent_binding_projection_loads_and_reports_hash_field_diff(
         slots=_minimax_slots(),
     )
     payload = json.loads(result.manifest_path.read_text())
-    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2
+    _as_legacy_transaction_payload(
+        payload,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
+    )
     binding = payload["run_contract_binding"]
     binding.pop("canonical_projection")
     binding.pop("canonical_projection_sha256")
@@ -4272,6 +4595,11 @@ def test_checkpoint_custody_ref_resolver_rejects_absolute_slot_path(
     [
         ("content", "schema_id", "content integrity schema_id"),
         ("content", "schema_version", "content integrity schema_version"),
+        (
+            "content",
+            "semantic_state_root_algorithm_version",
+            "semantic state root algorithm",
+        ),
         ("abi", "schema_id", "structural ABI schema_id"),
         ("abi", "schema_version", "structural ABI schema_version"),
         ("abi", "fingerprint_algorithm_version", "structural ABI algorithm"),
@@ -4310,9 +4638,17 @@ def test_checkpoint_custody_ref_resolver_rejects_nested_schema_or_algorithm(
 def test_checkpoint_custody_ref_resolver_wraps_post_unpickle_runtime_error(
     tmp_path: Path,
 ) -> None:
-    slots = _minimax_slots()
-    slots["controller"] = _RuntimeErrorAfterRoundTrip()
-    result = _write_resolver_checkpoint(tmp_path, slots=slots)
+    result = _write_resolver_checkpoint(tmp_path)
+    payload = _replace_resolver_slot_blob(
+        result,
+        "controller",
+        _RuntimeErrorAfterRoundTrip(),
+    )
+    _as_legacy_transaction_payload(
+        payload,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+    )
+    _rewrite_manifest_and_latest(result, payload)
 
     with pytest.raises(
         CheckpointReferenceResolutionError,
@@ -4570,7 +4906,10 @@ def test_checkpoint_custody_ref_resolver_uses_registered_manifest_migration(
 ) -> None:
     result = _write_resolver_checkpoint(tmp_path)
     payload = json.loads(result.manifest_path.read_text())
-    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6
+    _as_legacy_transaction_payload(
+        payload,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+    )
     payload.pop("segment_lineage")
     _write_json(result.manifest_path, payload)
 
@@ -4585,6 +4924,7 @@ def test_checkpoint_custody_ref_resolver_uses_registered_manifest_migration(
     assert [record.migration_id for record in resolved.migration_records] == [
         "training-checkpoint-transaction-v6-to-v7-segment-lineage",
         "training-checkpoint-transaction-v7-to-v8-mapped-axes",
+        "training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
     ]
 
 
@@ -4595,7 +4935,10 @@ def test_checkpoint_custody_ref_resolver_v5_migration_keeps_raw_slot_tree(
     slots["controller"] = {"loss": jnp.arange(4, dtype=jnp.float32)}
     result = _write_resolver_checkpoint(tmp_path, slots=slots)
     payload = json.loads(result.manifest_path.read_text())
-    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5
+    _as_legacy_transaction_payload(
+        payload,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
+    )
     payload.pop("segment_lineage")
     payload["metadata"]["checkpoint_continuation"] = {
         "schema_version": "feedbax.spec.training_checkpoint_continuation.v1",
@@ -4617,6 +4960,7 @@ def test_checkpoint_custody_ref_resolver_v5_migration_keeps_raw_slot_tree(
         "training-checkpoint-transaction-v5-to-v6-batch-history",
         "training-checkpoint-transaction-v6-to-v7-segment-lineage",
         "training-checkpoint-transaction-v7-to-v8-mapped-axes",
+        "training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
     ]
 
 
@@ -4637,7 +4981,10 @@ def test_checkpoint_custody_ref_resolver_rejects_invalid_supported_migration(
 ) -> None:
     result = _write_resolver_checkpoint(tmp_path)
     payload = json.loads(result.manifest_path.read_text())
-    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6
+    _as_legacy_transaction_payload(
+        payload,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
+    )
     payload.pop("segment_lineage")
     payload["completed_training_batches"] = "invalid"
     _write_json(result.manifest_path, payload)

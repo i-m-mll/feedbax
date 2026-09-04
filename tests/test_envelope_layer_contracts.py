@@ -956,6 +956,7 @@ class TestCheckpointInitializationLowering:
             CheckpointSlotBlobRef,
             CheckpointSegmentLineage,
             CheckpointTransactionManifest,
+            SEMANTIC_STATE_ROOT_ALGORITHM_VERSION,
             SlotContentDigest,
             StructuralAbiFingerprint,
         )
@@ -965,6 +966,13 @@ class TestCheckpointInitializationLowering:
             leaf_count=1,
             leaves=[_leaf("net.weight")],
             fingerprint_sha256="b" * 64,
+        )
+        content_digest = SlotContentDigest(
+            slot="model",
+            blob_sha256="e" * 64,
+            blob_size_bytes=10,
+            slot_root_sha256="e" * 64,
+            semantic_state_root_sha256="a" * 64,
         )
         manifest = CheckpointTransactionManifest(
             transaction_id="txn-1",
@@ -999,21 +1007,20 @@ class TestCheckpointInitializationLowering:
                     sha256="e" * 64,
                     size_bytes=10,
                     coordinate={
-                "run_id": "feedbax-training-run:one",
-                "phase": "train",
-                "completed_barrier": "batch",
-                "program_step": 1,
-            },
+                        "run_id": "feedbax-training-run:one",
+                        "phase": "train",
+                        "completed_barrier": "batch",
+                        "program_step": 1,
+                    },
                     structural_abi_fingerprint=fingerprint,
-                    content_digest=SlotContentDigest(
-                        slot="model",
-                        blob_sha256="e" * 64,
-                        blob_size_bytes=10,
-                        slot_root_sha256="e" * 64,
-                    ),
+                    content_digest=content_digest,
                 )
             ],
-            content_integrity_digest={"slots": [], "transaction_root_sha256": "f" * 64},
+            content_integrity_digest={
+                "semantic_state_root_algorithm_version": (SEMANTIC_STATE_ROOT_ALGORITHM_VERSION),
+                "slots": [content_digest],
+                "transaction_root_sha256": "f" * 64,
+            },
         )
         structure = checkpoint_structure_from_manifest(manifest)
         assert [slot.slot for slot in structure.slots] == ["model"]
