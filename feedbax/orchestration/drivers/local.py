@@ -1066,6 +1066,22 @@ def _terminate_process_group(
         os.killpg(process_group_id, signal.SIGTERM)
     except ProcessLookupError:
         return
+    except PermissionError as exc:
+        # macOS may report EPERM when the session leader exits between the
+        # identity check and killpg(). Treat that race as an idempotent stop
+        # only when this driver still owns the exact Popen and a fresh process
+        # table snapshot proves that the group has no live members.
+        members, member_error = _process_group_member_pids(process_group_id)
+        if (
+            process is not None
+            and process.poll() is not None
+            and member_error is None
+            and not members
+        ):
+            return
+        raise LocalDriverError(
+            f"could not terminate verified process group {process_group_id}"
+        ) from exc
     except OSError as exc:
         raise LocalDriverError(
             f"could not terminate verified process group {process_group_id}"
