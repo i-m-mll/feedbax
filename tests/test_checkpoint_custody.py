@@ -10,10 +10,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from equinox.nn import StateIndex
 
 import feedbax.training.checkpoint_custody as custody_module
 from feedbax.training import CheckpointForkPlanRelockResult
@@ -95,6 +97,8 @@ from feedbax.training.checkpoint_custody import (
     rebuild_checkpoint_fork_derived_digests,
     relock_checkpoint_fork_derived_digests,
 )
+from feedbax.runtime.components import GRU
+from feedbax.runtime.graph import Graph
 from tests.checkpoint_minimax_plugin import (
     PLUGIN_MODULE as CHECKPOINT_MINIMAX_PLUGIN,
     checkpoint_minimax_effective_phase,
@@ -180,6 +184,23 @@ def _minimax_slots() -> dict[str, object]:
         "rng": jnp.array([11, 22], dtype=jnp.uint32),
         "loss": [0.5],
     }
+
+
+def _stateful_gru_graph() -> Graph:
+    return Graph(
+        nodes={"gru": GRU(2, 3, key=jax.random.PRNGKey(0))},
+        wires=(),
+        input_ports=("input",),
+        output_ports=("output",),
+        input_bindings={"input": ("gru", "input")},
+        output_bindings={"output": ("gru", "output")},
+    )
+
+
+def _state_index_with_marker(marker: str) -> StateIndex:
+    index = StateIndex(jnp.zeros(1, dtype=jnp.float32))
+    object.__setattr__(index, "marker", marker)
+    return index
 
 
 def _sha256_file(path: Path) -> str:
@@ -2793,6 +2814,65 @@ def test_resume_rejects_structural_abi_mismatch_before_returning_slots(
     assert "checkpoint slot 'adversary_population'" in message
     assert "path=/0 field=shape recorded=[3] actual=[2]" in message
     assert "jax_enable_x64 differs" not in message
+
+
+@pytest.mark.parametrize("delete_init_state", [False, True], ids=["initialized", "prepared"])
+def test_stateful_gru_graph_round_trips_through_checkpoint_resume(
+    tmp_path: Path,
+    delete_init_state: bool,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    slots = _minimax_slots()
+    graph = _stateful_gru_graph()
+    slots["controller"] = eqx.nn.delete_init_state(graph) if delete_init_state else graph
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=slots,
+    )
+
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=slots,
+    )
+
+    assert isinstance(loaded.slots["controller"], Graph)
+    assert loaded.manifest.transaction_id == result.manifest.transaction_id
+
+
+def test_checkpoint_resume_rejects_distinct_stable_state_index_markers(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    slots = _minimax_slots()
+    slots["controller"] = _state_index_with_marker("controller-state")
+    write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=slots,
+    )
+    expected_slots = dict(slots)
+    expected_slots["controller"] = _state_index_with_marker("different-state")
+
+    with pytest.raises(CheckpointCompatibilityError, match="structural ABI mismatch") as exc_info:
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=expected_slots,
+        )
+
+    assert "treedef_equal=False" in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
