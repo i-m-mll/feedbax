@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import shutil
 from dataclasses import dataclass, replace
@@ -13,11 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Callable, Mapping, Protocol
 from pydantic import Field, JsonValue, model_validator
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.strict_json import (
-    StrictJsonError,
-    strict_json_loads,
-    strict_model_validate_json,
-)
+from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
 from feedbax.contracts.evaluation_lifecycle import EvaluationMatrixBatchPlan
 from feedbax.contracts.evaluation_preflight import (
     EvaluationOutputPreflightEvidence,
@@ -26,8 +21,6 @@ from feedbax.contracts.evaluation_preflight import (
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
     ResolvedOutputParent,
-    authored_envelope_hash,
-    parse_composition_node,
 )
 from feedbax.contracts.run_matrix import TrainingRowParentProvenance, TrainingRowProvenance
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
@@ -37,7 +30,6 @@ from feedbax.contracts.spec_storage import (
     store_canonical_json_artifact,
     training_run_execution_hash,
     training_spec_canonical_bytes,
-    training_spec_sha256,
 )
 from feedbax.orchestration.bundle import (
     EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
@@ -64,6 +56,10 @@ from feedbax.orchestration.staged_root_custody import StagedRootCustody
 from feedbax.training.row_lowering import (
     GovernedTrainingRowParent,
     TrainingRowLoweringContext,
+)
+from feedbax.training._governed_parent import (
+    _AuthenticatedGovernedParent,
+    _authenticate_governed_training_row_parent,
 )
 
 if TYPE_CHECKING:
@@ -749,71 +745,52 @@ def _resolve_training_row_parents(
 ) -> Any:
     parents: list[GovernedTrainingRowParent] = []
     for declaration in declarations:
-        payload, artifact_sha256 = _load_training_row_parent_artifact(
-            declaration.artifact,
+        authenticated = _load_training_row_parent_artifact(
+            declaration,
             context=context,
         )
-        parent = declaration.parent
-        if isinstance(parent, AuthoredIntentParent):
-            observed_hash = authored_envelope_hash(parse_composition_node(payload))
-            semantic_hash = parent.content_hash
-        else:
-            observed_hash = training_spec_sha256(payload)
-            semantic_hash = parent.resolved_root_hash
-        if observed_hash != semantic_hash:
-            raise ValueError(
-                f"training-row parent {parent.kind}:{parent.ref!r} semantic hash drifted"
-            )
         parents.append(
             GovernedTrainingRowParent(
-                provenance=TrainingRowParentProvenance(
-                    role=declaration.role,
-                    parent_kind=parent.kind,
-                    ref=parent.ref,
-                    semantic_hash=semantic_hash,
-                    artifact_id=declaration.artifact.artifact_id,
-                    artifact_sha256=artifact_sha256,
-                    schema_id=declaration.artifact.schema_id,
-                    schema_version=declaration.artifact.schema_version,
-                ),
-                parent=parent,
-                payload=payload,
+                provenance=authenticated.provenance,
+                parent=authenticated.parent,
+                payload_bytes=authenticated.payload_bytes,
             )
         )
     return TrainingRowLoweringContext(tuple(parents))
 
 
 def _load_training_row_parent_artifact(
-    ref: SchemaArtifactRef,
+    declaration: GovernedTrainingRowParentDeclaration,
     *,
     context: AssemblyContext,
-) -> tuple[dict[str, Any], str]:
+) -> _AuthenticatedGovernedParent:
+    ref = declaration.artifact
     if context.artifact_resolver is not None:
         data = context.artifact_resolver(ref)
     elif ref.uri is not None:
         data = Path(ref.uri).read_bytes()
     else:
         raise ValueError(f"training-row parent artifact {ref.artifact_id!r} has no resolver or URI")
-    actual_sha256 = hashlib.sha256(data).hexdigest()
-    if actual_sha256 != ref.sha256:
-        raise ValueError(
-            f"artifact byte digest mismatch for {ref.artifact_id!r}: "
-            f"expected={ref.sha256} actual={actual_sha256}"
-        )
-    try:
-        payload = strict_json_loads(data)
-    except (UnicodeDecodeError, json.JSONDecodeError, StrictJsonError) as exc:
-        raise ValueError(
-            f"training-row parent artifact {ref.artifact_id!r} is not valid JSON"
-        ) from exc
-    if not isinstance(payload, dict):
-        raise ValueError("training-row parent artifact must contain a JSON object")
-    if (payload.get("schema_id"), payload.get("schema_version")) != (
-        ref.schema_id,
-        ref.schema_version,
-    ):
-        raise ValueError("training-row parent schema identity does not match its declaration")
-    return payload, actual_sha256
+    parent = declaration.parent
+    semantic_hash = (
+        parent.content_hash
+        if isinstance(parent, AuthoredIntentParent)
+        else parent.resolved_root_hash
+    )
+    return _authenticate_governed_training_row_parent(
+        parent=parent,
+        provenance=TrainingRowParentProvenance(
+            role=declaration.role,
+            parent_kind=parent.kind,
+            ref=parent.ref,
+            semantic_hash=semantic_hash,
+            artifact_id=ref.artifact_id,
+            artifact_sha256=ref.sha256,
+            schema_id=ref.schema_id,
+            schema_version=ref.schema_version,
+        ),
+        payload_bytes=data,
+    )
 
 
 def _resolve_input(

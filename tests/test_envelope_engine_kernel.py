@@ -1998,6 +1998,8 @@ def _resolved_parent_authority(
     semantic_hash: str | None = None,
     artifact_sha256: str | None = None,
     payload_bytes: bytes | None = None,
+    schema_id: str | None = None,
+    schema_version: str | None = None,
 ) -> ExperimentEnvelopeParentAuthority:
     canonical_bytes = training_spec_canonical_bytes(payload)
     return ExperimentEnvelopeParentAuthority(
@@ -2008,8 +2010,8 @@ def _resolved_parent_authority(
             semantic_hash=semantic_hash or (declared_parent or parent).resolved_root_hash,
             artifact_id="artifact-version:resolved-training-parent",
             artifact_sha256=artifact_sha256 or hashlib.sha256(canonical_bytes).hexdigest(),
-            schema_id=str(payload["schema_id"]),
-            schema_version=str(payload["schema_version"]),
+            schema_id=schema_id or str(payload["schema_id"]),
+            schema_version=schema_version or str(payload["schema_version"]),
         ),
         parent=declared_parent or parent,
         payload_bytes=canonical_bytes if payload_bytes is None else payload_bytes,
@@ -2018,9 +2020,14 @@ def _resolved_parent_authority(
 
 def _write_resolved_parent_alias_chain(
     repo: Path,
+    *,
+    untyped: bool = False,
 ) -> tuple[Path, ResolvedOutputParent, dict[str, Any]]:
     payload = _standard_run_spec_payload()
     payload["training"] = {"n_batches": 1}
+    if untyped:
+        payload.pop("schema_id")
+        payload.pop("schema_version")
     inherited_diagnostics = {
         "trace_schema_id": "rlrmp2.adaptive_lambda.method_trace",
         "trace_schema_version": "rlrmp2.adaptive_lambda.method_trace.v1",
@@ -2149,6 +2156,40 @@ def test_alias_child_authenticates_resolved_parent_bytes_before_applying_row_del
             field="resolved-child.lock",
         )
     assert prior.value.category is ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION
+
+
+def test_alias_child_authenticates_untyped_resolved_parent_with_declared_schema(
+    repo: Path,
+) -> None:
+    declared = _standard_run_spec_payload()
+    child_path, parent, payload = _write_resolved_parent_alias_chain(repo, untyped=True)
+    payload_bytes = training_spec_canonical_bytes(payload)
+    authority = _resolved_parent_authority(
+        payload,
+        parent,
+        schema_id=str(declared["schema_id"]),
+        schema_version=str(declared["schema_version"]),
+    )
+
+    outcome = kernel_for(
+        PROJECT_DECLARATION, parent_authorities=(authority,)
+    ).compile_envelope_file(child_path, repo_root=repo)
+
+    governed = next(
+        reference
+        for reference in outcome.compile_lock["references"]
+        if reference["kind"] == "governed_parent"
+    )
+    assert governed == {
+        "kind": "governed_parent",
+        "parent": parent.model_dump(mode="json", exclude_none=True),
+        "role": "training.base",
+        "artifact_id": "artifact-version:resolved-training-parent",
+        "artifact_sha256": hashlib.sha256(payload_bytes).hexdigest(),
+        "schema_id": declared["schema_id"],
+        "schema_version": declared["schema_version"],
+    }
+    assert parent.resolved_root_hash == training_spec_sha256(payload)
 
 
 @pytest.mark.parametrize(

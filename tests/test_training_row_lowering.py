@@ -89,6 +89,7 @@ from feedbax.training.spec_storage import (
     register_training_run_matrix_compiler,
 )
 from feedbax.orchestration.revision import resolve_feedbax_revision
+from feedbax.orchestration.assembly import _resolve_training_row_parents
 
 
 _AUTHORED_SCHEMA_ID = "tests.spec.downstream_authored_row"
@@ -489,12 +490,41 @@ def test_registry_fails_closed_on_missing_broken_and_drifted_lowerers() -> None:
 def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
     tmp_path: Path,
 ) -> None:
-    terminal = _execution_payload()
+    typed_terminal = _execution_payload()
+    terminal = {
+        key: value
+        for key, value in typed_terminal.items()
+        if key not in {"schema_id", "schema_version"}
+    }
     terminal_parent = ResolvedOutputParent(
         ref="terminal",
         resolved_root_hash=training_spec_sha256(terminal),
+        row_id="native-baseline",
+        checkpoint_transaction_id="tx-baseline",
     )
-    authored_parent = CompositionNode(name="parent", parent=terminal_parent)
+    authored_parent = CompositionNode(
+        name="parent",
+        parent=terminal_parent,
+        deltas=[
+            {
+                "layer_id": "current-training-schema",
+                "schema_id": typed_terminal["schema_id"],
+                "schema_version": typed_terminal["schema_version"],
+                "patches": [
+                    {
+                        "path": "schema_id",
+                        "op": "add",
+                        "value": typed_terminal["schema_id"],
+                    },
+                    {
+                        "path": "schema_version",
+                        "op": "add",
+                        "value": typed_terminal["schema_version"],
+                    },
+                ],
+            }
+        ],
+    )
     child_parent = AuthoredIntentParent(
         ref="parent",
         content_hash=authored_envelope_hash(authored_parent),
@@ -505,6 +535,11 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
         row: AuthoredTrainingRow,
         context: TrainingRowLoweringContext,
     ) -> TrainingRowLoweringResult:
+        terminal_custody = [
+            item for item in context.parents if item.parent.kind == "resolved_output"
+        ]
+        if terminal_custody:
+            assert terminal_custody[0]._payload_bytes == payloads["terminal"]
         copy_one = context.resolve_parent(child_parent)
         assert isinstance(copy_one, CompositionNode)
         copy_one.name = "mutated"
@@ -557,13 +592,19 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
         "parent": training_spec_canonical_bytes(
             authored_parent.model_dump(mode="json", exclude_none=True)
         ),
-        "terminal": training_spec_canonical_bytes(terminal),
+        "terminal": json.dumps(terminal, indent=2).encode("utf-8"),
     }
 
-    def artifact_ref(name: str, payload: dict[str, object]) -> SchemaArtifactRef:
+    def artifact_ref(
+        name: str,
+        payload: dict[str, object],
+        *,
+        schema_payload: dict[str, object] | None = None,
+    ) -> SchemaArtifactRef:
+        declared = payload if schema_payload is None else schema_payload
         return SchemaArtifactRef(
-            schema_id=str(payload["schema_id"]),
-            schema_version=str(payload["schema_version"]),
+            schema_id=str(declared["schema_id"]),
+            schema_version=str(declared["schema_version"]),
             artifact_id=name,
             sha256=hashlib.sha256(payloads[name]).hexdigest(),
         )
@@ -587,7 +628,7 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
             GovernedTrainingRowParentDeclaration(
                 role="terminal",
                 parent=terminal_parent,
-                artifact=artifact_ref("terminal", terminal),
+                artifact=artifact_ref("terminal", terminal, schema_payload=typed_terminal),
             ),
         ],
         deployment_policy=DeploymentPolicy(
@@ -628,6 +669,14 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
         ("authored_intent", "parent"),
         ("resolved_output", "terminal"),
     ]
+    resolved_provenance = provenance.parent_inputs[1]
+    assert resolved_provenance.semantic_hash == training_spec_sha256(terminal)
+    assert resolved_provenance.artifact_sha256 == hashlib.sha256(payloads["terminal"]).hexdigest()
+    assert resolved_provenance.schema_id == typed_terminal["schema_id"]
+    assert resolved_provenance.schema_version == typed_terminal["schema_version"]
+    assert json.loads(Path(bundle.rows[0].execution.payload.uri).read_text(encoding="utf-8")) == (
+        typed_terminal
+    )
     assert all(check.status == "pass" for check in run_authority_preflight_checks(bundle))
 
     with pytest.raises(TrainingRowLowererRegistryError, match="missing or undeclared"):
@@ -642,8 +691,72 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
     payloads["terminal"] = training_spec_canonical_bytes(
         {**terminal, "metadata": {"tampered": True}}
     )
-    with pytest.raises(ValueError, match="artifact byte digest mismatch"):
+    with pytest.raises(ValueError, match="has byte hash"):
         assemble(request, "tampered")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("byte_hash", "has byte hash"),
+        ("semantic_hash", "semantic hash is"),
+        ("partial_schema", "schema identity drifted"),
+        ("mismatched_schema", "schema identity drifted"),
+        ("untyped_authored_intent", "schema identity required"),
+    ],
+)
+def test_assembly_rejects_unauthenticated_untyped_parent_states(
+    tmp_path: Path,
+    mutation: str,
+    message: str,
+) -> None:
+    declared_schema = _execution_payload()
+    payload: dict[str, object] = {"training": {"n_batches": 1}}
+    if mutation == "partial_schema":
+        payload["schema_id"] = declared_schema["schema_id"]
+    elif mutation == "mismatched_schema":
+        payload.update(
+            {
+                "schema_id": "tests.foreign_parent",
+                "schema_version": "tests.foreign_parent.v1",
+            }
+        )
+    payload_bytes = training_spec_canonical_bytes(payload)
+    if mutation == "untyped_authored_intent":
+        parent: AuthoredIntentParent | ResolvedOutputParent = AuthoredIntentParent(
+            ref="legacy-parent",
+            content_hash="0" * 64,
+        )
+    else:
+        parent = ResolvedOutputParent(
+            ref="legacy-parent",
+            resolved_root_hash=(
+                "0" * 64 if mutation == "semantic_hash" else training_spec_sha256(payload)
+            ),
+            row_id="native-baseline",
+            checkpoint_transaction_id="tx-baseline",
+        )
+    declaration = GovernedTrainingRowParentDeclaration(
+        role="training.base",
+        parent=parent,
+        artifact=SchemaArtifactRef(
+            schema_id=str(declared_schema["schema_id"]),
+            schema_version=str(declared_schema["schema_version"]),
+            artifact_id="fixture:legacy-parent",
+            sha256="0" * 64
+            if mutation == "byte_hash"
+            else hashlib.sha256(payload_bytes).hexdigest(),
+        ),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        _resolve_training_row_parents(
+            [declaration],
+            context=AssemblyContext(
+                custody_root=tmp_path,
+                artifact_resolver=lambda _ref: payload_bytes,
+            ),
+        )
 
 
 def _governed_compiled_row_parent() -> CompositionNodeV2:

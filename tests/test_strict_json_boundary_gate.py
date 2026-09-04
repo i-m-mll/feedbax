@@ -98,9 +98,6 @@ TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
     ("feedbax/training/executor.py", "prepare_training_manifest_metadata_projection"): (
         "Round-trips of canonical bytes serialized from models or mappings already held here."
     ),
-    ("feedbax/training/row_lowering.py", "GovernedTrainingRowParent.payload"): (
-        "Fresh copy of canonical bytes produced by this instance from its constructor payload."
-    ),
     ("feedbax/training/run_matrix.py", "_planned_run_id"): (
         "Fresh copies of canonical bytes serialized from the admitted payload and coordinates."
     ),
