@@ -5,9 +5,11 @@ import json
 import math
 import os
 import pickle
+import re
 import shutil
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 
 import equinox as eqx
@@ -97,7 +99,7 @@ from feedbax.training.checkpoint_custody import (
     rebuild_checkpoint_fork_derived_digests,
     relock_checkpoint_fork_derived_digests,
 )
-from feedbax.runtime.components import GRU
+from feedbax.runtime.components import Activation, GRU, identity_activation
 from feedbax.runtime.graph import Graph
 from tests.checkpoint_minimax_plugin import (
     PLUGIN_MODULE as CHECKPOINT_MINIMAX_PLUGIN,
@@ -118,6 +120,32 @@ class _TouchMarkerOnUnpickle:
 
     def __reduce__(self):
         return (_touch_marker, (str(self.marker_path),))
+
+
+def _different_stable_activation(value: object) -> object:
+    return value
+
+
+def _offset_activation(value: object, *, offset: int) -> object:
+    del offset
+    return value
+
+
+def _closure_activation():
+    captured = object()
+
+    def activation(value: object) -> object:
+        return (captured, value)[1]
+
+    return activation
+
+
+class _CallableActivation:
+    def __init__(self, scale: int = 1) -> None:
+        self.scale = scale
+
+    def __call__(self, value: object) -> object:
+        return value
 
 
 def _minimal_graph() -> dict[str, object]:
@@ -2873,6 +2901,144 @@ def test_checkpoint_resume_rejects_distinct_stable_state_index_markers(
         )
 
     assert "treedef_equal=False" in str(exc_info.value)
+
+
+def test_stable_top_level_callable_resumes_in_fresh_process(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    slots = _minimax_slots()
+    slots["controller"] = Activation("identity", identity_activation)
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=slots,
+    )
+    manifest_bytes = result.manifest_path.read_bytes()
+    recorded = next(slot for slot in result.manifest.slots if slot.slot == "controller")
+    assert "<function identity_activation at 0x" in recorded.structural_abi_fingerprint.treedef
+    assert (
+        "<function feedbax.runtime.components.identity_activation>"
+        in custody_module._canonical_structural_abi_treedef(
+            recorded.structural_abi_fingerprint.treedef,
+            value=slots["controller"],
+        )
+    )
+
+    expected_path = tmp_path / "expected.pkl"
+    expected_path.write_bytes(pickle.dumps((run_spec, program, slots)))
+    code = """
+import pickle
+import sys
+from pathlib import Path
+
+from feedbax.training.checkpoint_custody import load_latest_checkpoint
+
+root = Path(sys.argv[1])
+run_spec, program, slots = pickle.loads((root / "expected.pkl").read_bytes())
+load_latest_checkpoint(
+    root,
+    expected_run_spec=run_spec,
+    expected_phase_program=program,
+    expected_slots=slots,
+)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path)],
+        cwd=Path(__file__).parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert result.manifest_path.read_bytes() == manifest_bytes
+
+
+def test_checkpoint_resume_rejects_different_stable_callable(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    slots = _minimax_slots()
+    slots["controller"] = Activation("identity", identity_activation)
+    write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=slots,
+    )
+    expected_slots = dict(slots)
+    expected_slots["controller"] = Activation("identity", _different_stable_activation)
+
+    with pytest.raises(CheckpointCompatibilityError, match="structural ABI mismatch"):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=expected_slots,
+        )
+
+
+@pytest.mark.parametrize(
+    "activation_factory",
+    [
+        pytest.param(_closure_activation, id="closure"),
+        pytest.param(lambda: partial(_offset_activation, offset=1), id="partial"),
+        pytest.param(_CallableActivation, id="callable-object"),
+    ],
+)
+def test_ambiguous_callable_identity_remains_process_local(
+    activation_factory,
+) -> None:
+    value = Activation("ambiguous", activation_factory())
+    fingerprint = custody_module.structural_abi_fingerprint(value)
+    changed_treedef, replacement_count = re.subn(
+        r"0x[0-9a-fA-F]+",
+        "0x12345678",
+        fingerprint.treedef,
+    )
+    assert replacement_count > 0
+    different_process = fingerprint.model_copy(update={"treedef": changed_treedef})
+
+    assert custody_module._semantic_structural_abi_sha256(
+        fingerprint,
+        value=value,
+    ) != custody_module._semantic_structural_abi_sha256(
+        different_process,
+        value=value,
+    )
+
+
+@pytest.mark.parametrize(
+    ("recorded", "actual"),
+    [
+        pytest.param(
+            Activation("partial", partial(_offset_activation, offset=1)),
+            Activation("partial", partial(_offset_activation, offset=2)),
+            id="partial-bound-value",
+        ),
+        pytest.param(
+            Activation("callable-object", _CallableActivation(scale=1)),
+            Activation("callable-object", _CallableActivation(scale=2)),
+            id="callable-object-structure",
+        ),
+    ],
+)
+def test_ambiguous_callables_with_different_state_reject(
+    recorded: Activation,
+    actual: Activation,
+) -> None:
+    assert custody_module._semantic_structural_abi_sha256(
+        custody_module.structural_abi_fingerprint(recorded),
+        value=recorded,
+    ) != custody_module._semantic_structural_abi_sha256(
+        custody_module.structural_abi_fingerprint(actual),
+        value=actual,
+    )
 
 
 @pytest.mark.parametrize(

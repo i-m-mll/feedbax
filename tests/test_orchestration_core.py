@@ -138,6 +138,7 @@ from feedbax.orchestration.drivers.local import (
     LocalOrchestrationDriver,
     _canonicalize_dependency_inventory,
     _process_group_alive,
+    _terminate_process_group,
     compute_environment_fingerprint,
     resolve_jax_compilation_cache_dir,
 )
@@ -4567,6 +4568,52 @@ def test_local_driver_recovers_and_stops_exact_owned_process_group(tmp_path: Pat
     assert stopped["status"] == "stopped"
     launcher._processes[row.row_id].wait(timeout=5)
     assert not _process_group_alive(identity.process_group_id)
+
+
+def test_local_stop_accepts_eperm_only_after_owned_process_group_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FinishedOwnedProcess:
+        def poll(self) -> int:
+            return 0
+
+    def deny_signal(_process_group_id: int, _signal: int) -> None:
+        raise PermissionError(errno.EPERM, "operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", deny_signal)
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.local._process_group_member_pids",
+        lambda _process_group_id: ((), None),
+    )
+
+    _terminate_process_group(4321, process=FinishedOwnedProcess())  # type: ignore[arg-type]
+
+
+def test_local_stop_does_not_swallow_eperm_without_owned_terminal_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LiveOwnedProcess:
+        def poll(self) -> None:
+            return None
+
+    def deny_signal(_process_group_id: int, _signal: int) -> None:
+        raise PermissionError(errno.EPERM, "operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", deny_signal)
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.local._process_group_member_pids",
+        lambda _process_group_id: ((), None),
+    )
+
+    with pytest.raises(LocalDriverError, match="could not terminate verified process group 4321"):
+        _terminate_process_group(4321, process=None)
+
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.local._process_group_member_pids",
+        lambda process_group_id: ((process_group_id,), None),
+    )
+    with pytest.raises(LocalDriverError, match="could not terminate verified process group 4321"):
+        _terminate_process_group(4321, process=LiveOwnedProcess())  # type: ignore[arg-type]
 
 
 def test_local_driver_refuses_replaced_pid_without_signaling_either_process(
