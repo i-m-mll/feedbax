@@ -2723,7 +2723,7 @@ def test_preflight_discovers_nested_method_training_optimizer(tmp_path: Path) ->
     ].status == "pass"
 
 
-def test_preflight_schedule_realization_requires_controller_optimizer_metadata_contexts(
+def test_preflight_schedule_realization_defaults_fresh_controller_context_to_origin_zero(
     tmp_path: Path,
 ) -> None:
     bundle = _bundle(
@@ -2739,9 +2739,14 @@ def test_preflight_schedule_realization_requires_controller_optimizer_metadata_c
     checks = {check.name: check for check in _registry_preflight(bundle)}
 
     schedule_check = checks["schedule-realization"]
-    assert schedule_check.status == "fail"
-    assert "resume_context missing" in (schedule_check.detail or "")
-    assert schedule_check.observed == {"row-a": []}
+    assert schedule_check.status == "pass"
+    row_observed = schedule_check.observed["row-a"][0]
+    assert row_observed["expected_context"] == _schedule_context(
+        schedule_origin_step=0,
+        current_step=0,
+        optimizer_count_at_current_step=0,
+    )
+    assert row_observed["observed_context"] == row_observed["expected_context"]
 
 
 def test_preflight_schedule_realization_fails_miswired_resume_before_driver(
@@ -2879,10 +2884,16 @@ def test_preflight_schedule_realization_fails_when_resume_context_is_dropped(
                 "row-a",
                 run_spec={
                     "optimizer": _scheduled_optimizer_payload(),
+                    "checkpoint_progress": {
+                        "continuation": {
+                            "source_completed_batches": 12_000,
+                            "additional_batches": 1_000,
+                        }
+                    },
                     "optimizer_build_context": _schedule_context(
-                        schedule_origin_step=0,
-                        current_step=0,
-                        optimizer_count_at_current_step=0,
+                        schedule_origin_step=12_000,
+                        current_step=12_000,
+                        optimizer_count_at_current_step=12_000,
                     ),
                 },
             )

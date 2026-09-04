@@ -3412,14 +3412,7 @@ def _evaluate_optimizer_schedule_at_preflight(
         optimizer.init({"preflight": 0.0})
         return {"optimizer_index": optimizer_index, "scheduled": True, "points": 1}
 
-    expected_context = schedule_eval.require_schedule_context(
-        schedule_eval.extract_resume_context(run_spec),
-        label="resume_context",
-    )
-    observed_context = schedule_eval.require_schedule_context(
-        schedule_eval.extract_optimizer_build_context(run_spec),
-        label="optimizer_build_context",
-    )
+    expected_context, observed_context = schedule_eval.preflight_schedule_contexts(run_spec)
     run_end_step = _schedule_run_end_step(run_spec, expected_context)
     samples, mismatches = schedule_eval.compare_schedule_samples(
         optimizer_spec,
