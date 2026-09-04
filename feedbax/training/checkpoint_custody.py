@@ -6,6 +6,7 @@ import copy
 import hashlib
 import gzip
 import io
+import inspect
 import json
 import logging
 import os
@@ -14,6 +15,7 @@ import platform
 import re
 import shutil
 import stat
+import sys
 import tarfile
 import tempfile
 import uuid
@@ -23,7 +25,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field
 from functools import partial
 from pathlib import Path, PurePosixPath
-from types import MappingProxyType
+from types import FunctionType, MappingProxyType
 from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 
@@ -4491,12 +4493,22 @@ def _validate_prepared_fork_templates(
             continue
         actual = structural_abi_fingerprint(prepared_slots[spec.slot])
         expected = structural_abi_fingerprint(expected_slots[spec.slot])
-        if _semantic_structural_abi_sha256(actual) != _semantic_structural_abi_sha256(
-            expected
+        if _semantic_structural_abi_sha256(
+            actual,
+            value=prepared_slots[spec.slot],
+        ) != _semantic_structural_abi_sha256(
+            expected,
+            value=expected_slots[spec.slot],
         ):
+            diff_suffix = _format_structural_abi_diff(
+                expected,
+                actual,
+                recorded_value=expected_slots[spec.slot],
+                actual_value=prepared_slots[spec.slot],
+            )
             raise CheckpointCompatibilityError(
                 f"checkpoint fork target {target_id!r} slot {spec.slot!r} structural ABI "
-                f"mismatch{_format_structural_abi_diff(expected, actual)}"
+                f"mismatch{diff_suffix}"
             )
 
 
@@ -5962,6 +5974,9 @@ def _structural_abi_fingerprint_from_leaves(
 def _format_structural_abi_diff(
     recorded: StructuralAbiFingerprint,
     actual: StructuralAbiFingerprint,
+    *,
+    recorded_value: Any | None = None,
+    actual_value: Any | None = None,
 ) -> str:
     diffs = _structural_abi_leaf_diffs(recorded, actual)
     displayed_diffs = diffs[:10]
@@ -5971,8 +5986,9 @@ def _format_structural_abi_diff(
     elif len(diffs) > len(displayed_diffs):
         leaf_diff_text += f"; ... ({len(diffs)} total differing leaves)"
     treedef_equal = _canonical_structural_abi_treedef(
-        recorded.treedef
-    ) == _canonical_structural_abi_treedef(actual.treedef)
+        recorded.treedef,
+        value=recorded_value,
+    ) == _canonical_structural_abi_treedef(actual.treedef, value=actual_value)
     suffix = (
         f"; treedef_equal={treedef_equal}"
         f"; leaf_count_delta={actual.leaf_count - recorded.leaf_count}"
@@ -6163,9 +6179,18 @@ def _validate_structural_abi(
             loaded_fingerprint = structural_abi_fingerprint(loaded)
         expected = structural_abi_fingerprint(expected_slots[slot.slot])
         if _semantic_structural_abi_sha256(
-            loaded_fingerprint
-        ) != _semantic_structural_abi_sha256(expected):
-            diff_suffix = _format_structural_abi_diff(expected, loaded_fingerprint)
+            loaded_fingerprint,
+            value=loaded,
+        ) != _semantic_structural_abi_sha256(
+            expected,
+            value=expected_slots[slot.slot],
+        ):
+            diff_suffix = _format_structural_abi_diff(
+                expected,
+                loaded_fingerprint,
+                recorded_value=expected_slots[slot.slot],
+                actual_value=loaded,
+            )
             raise CheckpointCompatibilityError(
                 f"checkpoint slot {slot.slot!r} structural ABI mismatch{diff_suffix}"
             )
@@ -6182,12 +6207,18 @@ def _validate_manifest_structural_abi(
             continue
         loaded_fingerprint = structural_abi_fingerprint(loaded_slots[slot.slot])
         loaded_fingerprints[slot.slot] = loaded_fingerprint
-        if _semantic_structural_abi_sha256(loaded_fingerprint) != _semantic_structural_abi_sha256(
-            slot.structural_abi_fingerprint
+        if _semantic_structural_abi_sha256(
+            loaded_fingerprint,
+            value=loaded_slots[slot.slot],
+        ) != _semantic_structural_abi_sha256(
+            slot.structural_abi_fingerprint,
+            value=loaded_slots[slot.slot],
         ):
             diff_suffix = _format_structural_abi_diff(
                 slot.structural_abi_fingerprint,
                 loaded_fingerprint,
+                recorded_value=loaded_slots[slot.slot],
+                actual_value=loaded_slots[slot.slot],
             )
             raise CheckpointIntegrityError(
                 f"checkpoint slot {slot.slot!r} structural ABI fingerprint is stale{diff_suffix}"
@@ -6687,7 +6718,11 @@ def _leaf_fingerprint(path: Any, leaf: Any) -> SlotLeafFingerprint:
     )
 
 
-def _semantic_structural_abi_sha256(fingerprint: StructuralAbiFingerprint) -> str:
+def _semantic_structural_abi_sha256(
+    fingerprint: StructuralAbiFingerprint,
+    *,
+    value: Any | None = None,
+) -> str:
     leaves = [
         leaf.model_copy(update={"leaf_type": _canonical_leaf_type(leaf.leaf_type)})
         for leaf in fingerprint.leaves
@@ -6695,7 +6730,10 @@ def _semantic_structural_abi_sha256(fingerprint: StructuralAbiFingerprint) -> st
     return structural_abi_content_sha256(
         fingerprint.model_copy(
             update={
-                "treedef": _canonical_structural_abi_treedef(fingerprint.treedef),
+                "treedef": _canonical_structural_abi_treedef(
+                    fingerprint.treedef,
+                    value=value,
+                ),
                 "leaves": leaves,
             }
         )
@@ -6716,10 +6754,118 @@ _ANONYMOUS_STATE_INDEX_MARKERS = (
 )
 
 
-def _canonical_structural_abi_treedef(treedef: str) -> str:
+_FUNCTION_REPR = re.compile(
+    r"<function (?P<qualname>[^>]+?) at 0x[0-9a-fA-F]+>"
+)
+
+
+@dataclass(frozen=True)
+class _StableFunctionIdentity:
+    qualname: str
+    semantic_name: str
+
+
+def _canonical_structural_abi_treedef(
+    treedef: str,
+    *,
+    value: Any | None = None,
+) -> str:
     for pattern in _ANONYMOUS_STATE_INDEX_MARKERS:
         treedef = pattern.sub(r"\1<anonymous StateIndex marker>\2", treedef)
-    return treedef
+    if value is None:
+        return treedef
+    identities = _stable_treedef_function_identities(value)
+    if identities is None:
+        return treedef
+    matches = list(_FUNCTION_REPR.finditer(treedef))
+    if len(matches) != len(identities) or any(
+        match.group("qualname") != identity.qualname
+        for match, identity in zip(matches, identities, strict=True)
+    ):
+        return treedef
+    parts: list[str] = []
+    start = 0
+    for match, identity in zip(matches, identities, strict=True):
+        parts.extend((treedef[start : match.start()], f"<function {identity.semantic_name}>"))
+        start = match.end()
+    parts.append(treedef[start:])
+    return "".join(parts)
+
+
+def _stable_treedef_function_identities(
+    value: Any,
+) -> list[_StableFunctionIdentity] | None:
+    from feedbax.training.preparation import _thaw_runtime_value
+
+    _, treedef = jt.flatten(_thaw_runtime_value(value))
+    identities: list[_StableFunctionIdentity] = []
+
+    def collect(node: Any) -> bool:
+        node_data = node.node_data()
+        if node_data is not None and not _collect_stable_function_identities(
+            node_data,
+            identities,
+        ):
+            return False
+        return all(collect(child) for child in node.children())
+
+    if not collect(treedef):
+        return None
+    return identities
+
+
+def _collect_stable_function_identities(
+    value: Any,
+    identities: list[_StableFunctionIdentity],
+) -> bool:
+    static_field_values = getattr(value, "static_field_values", None)
+    if isinstance(static_field_values, tuple):
+        return _collect_stable_function_identities(static_field_values, identities)
+    if inspect.isclass(value):
+        return True
+    if isinstance(value, FunctionType):
+        identity = _stable_function_identity(value)
+        if identity is None:
+            return False
+        identities.append(identity)
+        return True
+    if callable(value):
+        return False
+    if isinstance(value, Mapping):
+        return all(
+            _collect_stable_function_identities(item, identities)
+            for pair in value.items()
+            for item in pair
+        )
+    if isinstance(value, (tuple, list)):
+        return all(_collect_stable_function_identities(item, identities) for item in value)
+    return True
+
+
+def _stable_function_identity(function: FunctionType) -> _StableFunctionIdentity | None:
+    module_name = function.__module__
+    qualname = function.__qualname__
+    if (
+        function.__closure__ is not None
+        or not module_name
+        or not qualname
+        or function.__name__ == "<lambda>"
+        or "<locals>" in qualname
+    ):
+        return None
+    resolved: Any = sys.modules.get(module_name)
+    if resolved is None:
+        return None
+    for segment in qualname.split("."):
+        resolved = getattr(resolved, segment, None)
+        if resolved is None:
+            return None
+    if resolved is not function:
+        return None
+    return _StableFunctionIdentity(
+        qualname=qualname,
+        semantic_name=f"{module_name}.{qualname}",
+    )
 
 
 def _canonical_leaf_type(leaf_type: str) -> str:
