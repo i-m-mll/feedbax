@@ -34,6 +34,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
     structural_abi_content_sha256,
 )
 from feedbax.contracts.checkpoint_initialization import (
@@ -1230,6 +1231,16 @@ def _migrate_checkpoint_axes_v7_to_v8_payload(
     if isinstance(provenance, Mapping):
         migrated_provenance = _migrate_checkpoint_fork_provenance_v1_to_v2_payload(provenance)
         migrated["fork_provenance"] = migrated_provenance
+    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8
+    return migrated
+
+
+def _migrate_checkpoint_semantic_state_roots_v8_to_v9_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Retain legacy custody identities while marking semantic roots unavailable."""
+    migrated = dict(payload)
+    migrated["semantic_state_roots_status"] = "unavailable_legacy"
     migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
     return migrated
 
@@ -4322,6 +4333,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
             ),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
@@ -6698,10 +6710,23 @@ default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(
         source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
         migration_id="training-checkpoint-transaction-v7-to-v8-mapped-axes",
         migrate=_migrate_checkpoint_axes_v7_to_v8_payload,
         description="Add optional resolved mapped-axis evidence to checkpoint slots.",
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        migration_id="training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
+        migrate=_migrate_checkpoint_semantic_state_roots_v8_to_v9_payload,
+        description=(
+            "Preserve legacy content-integrity v1 custody hashes while marking semantic "
+            "state roots unavailable."
+        ),
     ),
 )
 default_spec_registry.register_migration(
