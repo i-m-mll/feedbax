@@ -28,6 +28,10 @@ from feedbax.contracts.base import (
     canonical_json_bytes,
     sha256_bytes,
 )
+from feedbax.contracts.artifact_custody import (
+    CONTENT_BINDING_SCHEMA_VERSION,
+    ContentBinding,
+)
 from feedbax.contracts.manifest import (
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
@@ -37,10 +41,6 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.spec_storage import (
     canonicalize_immutable_input_identities,
     training_run_execution_hash,
-)
-from feedbax.orchestration.staged_root_custody import (
-    STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
-    StagedRootCustody,
 )
 
 
@@ -121,7 +121,7 @@ def compile_evaluation_run_matrix_for_orchestration(
         registry=registry,
         repo_root=context.repo_root,
     )
-    _validate_staged_root_applicability(matrix, context.staged_roots)
+    _validate_content_binding_applicability(matrix, context.content_bindings)
     ordered_row_ids = tuple(row.row_id for row in rows)
     payload_hashes = {
         row.row_id: sha256_bytes(
@@ -164,14 +164,13 @@ def compile_evaluation_run_matrix_for_orchestration(
             if composition is not None
             else None
         ),
-        "staged_roots": [
+        "content_bindings": [
             {
                 "binding_name": item.binding_name,
                 "root_kind": item.root_kind,
-                "custody_ref": item.custody_ref,
-                "content_sha256": item.content_sha256,
+                "tree_id": item.tree.tree_id,
             }
-            for item in context.staged_roots
+            for item in context.content_bindings
         ],
     }
     lifecycle_row_id = f"matrix-{intent_hash[:16]}"
@@ -248,8 +247,8 @@ class EvaluationMatrixIdentityAdapter:
             versions["evaluation_run_matrix_delta"] = (
                 EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION
             )
-        if context.staged_roots:
-            versions["staged_root_custody"] = STAGED_ROOT_CUSTODY_SCHEMA_VERSION
+        if context.content_bindings:
+            versions["content_binding"] = CONTENT_BINDING_SCHEMA_VERSION
         return EvaluationMatrixExecutionCapsule(
             materializer_commit=context.materializer_commit,
             relevant_schema_versions=versions,
@@ -290,11 +289,11 @@ def register_evaluation_run_matrix_compiler(registry: Any, *, evaluation_registr
         )
 
 
-def _validate_staged_root_applicability(
+def _validate_content_binding_applicability(
     matrix: EvaluationRunMatrixSpec,
-    staged_roots: tuple[StagedRootCustody, ...],
+    content_bindings: tuple[ContentBinding, ...],
 ) -> None:
-    available = {(item.root_kind, item.binding_name) for item in staged_roots}
+    available = {(item.root_kind, item.binding_name) for item in content_bindings}
     required: set[tuple[str, str]] = set()
     for name, prerequisite in matrix.staged_parents.items():
         if prerequisite.artifact_provider is None:
@@ -307,7 +306,7 @@ def _validate_staged_root_applicability(
     missing = sorted(required - available)
     if missing:
         raise ValueError(
-            f"evaluation matrix staged parents lack governed staged-root custody: {missing!r}"
+            f"evaluation matrix staged parents lack canonical content bindings: {missing!r}"
         )
 
 

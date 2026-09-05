@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import os
 import stat
+import threading
+import unicodedata
 import uuid
 from collections.abc import Mapping
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterator, Literal
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -37,9 +42,26 @@ from feedbax.contracts.artifact_custody import (
     ArtifactBlobCustodyError,
     ArtifactBlobIntegrityError,
     ArtifactBlobReferenceError,
+    CONTENT_MANIFEST_REF_PREFIX,
+    CONTENT_OBJECT_REF_PREFIX,
+    CONTENT_TREE_REF_PREFIX,
+    ContentManifestConflictError,
+    ContentManifestRef,
+    ContentGcReceipt,
+    ContentGcRequest,
+    ContentHoldRecord,
+    ContentLeaseRecord,
+    ContentObjectRef,
+    ContentRetentionTarget,
+    ContentRootRecord,
+    ContentTree,
+    ContentTreeFile,
+    ContentTreeRef,
     ImmutableArtifactBlobProviderSpec,
 )
 from feedbax.contracts.base import ArtifactRef
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
+from feedbax.contracts.strict_json import strict_json_loads
 
 
 _ARTIFACT_ID_PREFIX = "artifact://sha256/"
@@ -60,6 +82,59 @@ _RESERVED_METADATA_KEYS = frozenset(
     }
 )
 _canonicalize_trusted_system_aliases = canonicalize_trusted_system_aliases
+_store_lock_state = threading.local()
+
+
+def _parse_content_object_id(object_id: object) -> str:
+    if not isinstance(object_id, str) or not object_id.startswith(CONTENT_OBJECT_REF_PREFIX):
+        raise ArtifactBlobReferenceError(
+            "content object id must use content-object://sha256/<digest> syntax"
+        )
+    return _validate_digest(object_id.removeprefix(CONTENT_OBJECT_REF_PREFIX))
+
+
+def _manifest_reference_key(kind: str, manifest_id: str) -> str:
+    for field, value in (("kind", kind), ("manifest_id", manifest_id)):
+        if not isinstance(value, str) or not value or "\x00" in value:
+            raise ArtifactBlobReferenceError(
+                f"manifest {field} must be a non-empty NUL-free string"
+            )
+    return hashlib.sha256(f"{kind}\0{manifest_id}".encode("utf-8")).hexdigest()
+
+
+@contextmanager
+def _exclusive_store_lock(root: Path) -> Iterator[None]:
+    lock_key = str(root)
+    held = getattr(_store_lock_state, "held", {})
+    if lock_key in held:
+        held[lock_key] += 1
+        try:
+            yield
+        finally:
+            held[lock_key] -= 1
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / ".content-store.lock"
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        lock_stat = os.fstat(descriptor)
+        path_stat = os.stat(lock_path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(lock_stat.st_mode)
+            or lock_stat.st_nlink != 1
+            or (lock_stat.st_dev, lock_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino)
+        ):
+            raise ArtifactBlobContainmentError("content-store lock must be one stable regular file")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        held[lock_key] = 1
+        _store_lock_state.held = held
+        try:
+            yield
+        finally:
+            del held[lock_key]
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def _parse_artifact_id(artifact_id: object) -> str:
@@ -344,6 +419,13 @@ class ImmutableArtifactBlobProvider:
 
     def __post_init__(self) -> None:
         root_path = _validate_explicit_root(self.root)
+        try:
+            if stat.S_ISLNK(root_path.lstat().st_mode):
+                raise ArtifactBlobContainmentError(
+                    "immutable blob provider root must not be a symlink"
+                )
+        except FileNotFoundError:
+            pass
         if self.storage_backend != _STORAGE_BACKEND:
             raise ArtifactBlobReferenceError(
                 f"unsupported immutable blob storage backend: {self.storage_backend!r}"
@@ -355,6 +437,498 @@ class ImmutableArtifactBlobProvider:
             require_link_no_follow=True,
         )
         object.__setattr__(self, "root", _canonicalize_trusted_system_aliases(root_path))
+
+    def _exclusive_lock(self) -> AbstractContextManager[None]:
+        """Return the one store lock shared by references and retention state."""
+        return _exclusive_store_lock(self.root)
+
+    def register_root(self, root: ContentRootRecord) -> ContentRootRecord:
+        """Register one explicit canonical retention root."""
+        from feedbax.persistence.content_retention import register_root
+
+        return register_root(self, root)
+
+    def set_run_state(
+        self,
+        root_id: str,
+        *,
+        nonterminal: bool,
+        restartable: bool,
+    ) -> ContentRootRecord:
+        """Record whether a run root remains nonterminal or restartable."""
+        from feedbax.persistence.content_retention import set_run_state
+
+        return set_run_state(
+            self,
+            root_id,
+            nonterminal=nonterminal,
+            restartable=restartable,
+        )
+
+    def release_root(self, root_id: str) -> ContentRootRecord:
+        """Release one terminal non-restartable root."""
+        from feedbax.persistence.content_retention import release_root
+
+        return release_root(self, root_id)
+
+    def place_hold(self, hold: ContentHoldRecord) -> ContentHoldRecord:
+        """Place one explicit scientific or owner hold."""
+        from feedbax.persistence.content_retention import place_hold
+
+        return place_hold(self, hold)
+
+    def release_hold(self, hold_id: str) -> ContentHoldRecord:
+        """Release one explicit hold."""
+        from feedbax.persistence.content_retention import release_hold
+
+        return release_hold(self, hold_id)
+
+    def acquire_lease(self, lease: ContentLeaseRecord) -> ContentLeaseRecord:
+        """Acquire one exact lease under the store transaction lock."""
+        from feedbax.persistence.content_retention import acquire_lease
+
+        return acquire_lease(self, lease)
+
+    def renew_lease(self, lease_id: str, *, expires_at: datetime) -> ContentLeaseRecord:
+        """Renew one exact active lease using a caller-selected expiry."""
+        from feedbax.persistence.content_retention import renew_lease
+
+        return renew_lease(self, lease_id, expires_at=expires_at)
+
+    def release_lease(self, lease_id: str) -> ContentLeaseRecord:
+        """Durably release one lease; expiry is never implicit release."""
+        from feedbax.persistence.content_retention import release_lease
+
+        return release_lease(self, lease_id)
+
+    def collect_garbage(
+        self,
+        request: ContentGcRequest | None = None,
+        *,
+        now: datetime | None = None,
+    ) -> ContentGcReceipt:
+        """Report candidates by default or execute one guarded manual sweep."""
+        from feedbax.persistence.content_retention import collect_garbage
+
+        return collect_garbage(self, request, now=now)
+
+    def recover_garbage_collection(self) -> ContentGcReceipt | None:
+        """Resume one interrupted marked generation idempotently."""
+        from feedbax.persistence.content_retention import recover_garbage_collection
+
+        return recover_garbage_collection(self)
+
+    def store_object(self, data: bytes) -> ContentObjectRef:
+        """Store one role-free exact byte object in the canonical CAS."""
+        if not isinstance(data, bytes):
+            raise TypeError("content object data must be bytes")
+        digest = hashlib.sha256(data).hexdigest()
+        destination = self._canonical_path(digest)
+        self._validate_store_target(destination)
+        with self._exclusive_lock():
+            self._validate_store_target(destination)
+            written = _stage_blob_bytes(data, destination)
+            ref = ContentObjectRef(
+                object_id=f"{CONTENT_OBJECT_REF_PREFIX}{digest}",
+                sha256=digest,
+                size_bytes=written.st_size,
+            )
+            if self.get_object(ref) != data:
+                raise ArtifactBlobIntegrityError(
+                    f"pre-existing content object differs from stored payload: {ref.object_id}"
+                )
+            return ref
+
+    def get_object(
+        self,
+        object_ref: ContentObjectRef | str,
+        *,
+        size_bytes: int | None = None,
+    ) -> bytes:
+        """Read one pinned role-free object and verify its exact identity."""
+        if isinstance(object_ref, str):
+            digest = _parse_content_object_id(object_ref)
+            if size_bytes is None:
+                raise ArtifactBlobReferenceError(
+                    "size_bytes is required when reading a raw content object id"
+                )
+            expected_size = _validate_size(size_bytes, field="size_bytes")
+        elif isinstance(object_ref, ContentObjectRef):
+            digest = _parse_content_object_id(object_ref.object_id)
+            if object_ref.sha256 != digest:
+                raise ArtifactBlobReferenceError(
+                    "content object id digest does not match ContentObjectRef.sha256"
+                )
+            expected_size = object_ref.size_bytes
+            if size_bytes is not None and size_bytes != expected_size:
+                raise ArtifactBlobReferenceError(
+                    "size_bytes override does not match ContentObjectRef.size_bytes"
+                )
+        else:
+            raise ArtifactBlobReferenceError(
+                "object_ref must be a ContentObjectRef or content object id"
+            )
+        data = self._read_canonical_blob(self._canonical_path(digest), expected_size)
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise ArtifactBlobIntegrityError(f"content object SHA-256 mismatch: expected {digest}")
+        return data
+
+    def ingest_tree(self, source_root: Path | str) -> ContentTreeRef:
+        """Ingest a canonical regular-file tree with identity independent of its role."""
+        with self._exclusive_lock():
+            return self._ingest_tree_locked(source_root)
+
+    def _ingest_tree_locked(self, source_root: Path | str) -> ContentTreeRef:
+        """Ingest a tree while publication and GC share one store transaction."""
+        source = _canonicalize_trusted_system_aliases(_validate_explicit_root(source_root))
+        try:
+            source_stat = source.stat(follow_symlinks=False)
+            resolved = source.resolve(strict=True)
+        except OSError as exc:
+            raise ArtifactBlobContainmentError("content-tree source root is unavailable") from exc
+        if resolved != source or not stat.S_ISDIR(source_stat.st_mode):
+            raise ArtifactBlobContainmentError(
+                "content-tree source root must be a canonical non-symlink directory"
+            )
+        directories: list[str] = []
+        files: list[ContentTreeFile] = []
+        root_descriptor = open_existing_directory(
+            source,
+            error_factory=ArtifactBlobContainmentError,
+            context="content-tree source root",
+        )
+        try:
+            self._ingest_tree_directory(root_descriptor, (), directories, files)
+            after = os.stat(source, follow_symlinks=False)
+            opened_after = os.fstat(root_descriptor)
+            if _file_state(source_stat) != _file_state(after) or _file_state(
+                source_stat
+            ) != _file_state(opened_after):
+                raise ArtifactBlobIntegrityError("content-tree source changed during ingest")
+        finally:
+            os.close(root_descriptor)
+        tree = ContentTree(
+            directories=tuple(sorted(directories)),
+            files=tuple(sorted(files, key=lambda entry: entry.relative_path)),
+        )
+        descriptor_bytes = canonical_json_v1_bytes(tree.model_dump(mode="json"))
+        descriptor = self.store_object(descriptor_bytes)
+        return ContentTreeRef(
+            tree_id=f"{CONTENT_TREE_REF_PREFIX}{descriptor.sha256}",
+            descriptor=descriptor,
+        )
+
+    def publish_rooted_tree(
+        self,
+        members: Mapping[str, Path | ContentObjectRef],
+        *,
+        root_id: str,
+        root_kind: Literal["logical-ref", "run", "export", "import", "migration"],
+        nonterminal: bool = False,
+        restartable: bool = False,
+    ) -> tuple[ContentTreeRef, ContentRootRecord]:
+        """Store or reuse exact members, then publish and root their complete tree."""
+        with self._exclusive_lock():
+            files: list[ContentTreeFile] = []
+            directories: set[str] = set()
+            for relative_path, source in sorted(members.items()):
+                if isinstance(source, ContentObjectRef):
+                    self.get_object(source)
+                    object_ref = source
+                elif isinstance(source, Path):
+                    object_ref = self.store_object(self._read_regular_source(source))
+                else:
+                    raise TypeError(
+                        "rooted-tree members must be pathlib.Path or ContentObjectRef values"
+                    )
+                canonical_path = ContentTreeFile(
+                    relative_path=relative_path,
+                    object=object_ref,
+                ).relative_path
+                parent = PurePosixPath(canonical_path).parent
+                while parent != PurePosixPath("."):
+                    directories.add(parent.as_posix())
+                    parent = parent.parent
+                files.append(ContentTreeFile(relative_path=canonical_path, object=object_ref))
+
+            tree = ContentTree(
+                directories=tuple(sorted(directories)),
+                files=tuple(files),
+            )
+            descriptor = self.store_object(canonical_json_v1_bytes(tree.model_dump(mode="json")))
+            tree_ref = ContentTreeRef(
+                tree_id=f"{CONTENT_TREE_REF_PREFIX}{descriptor.sha256}",
+                descriptor=descriptor,
+            )
+            root = ContentRootRecord(
+                root_id=root_id,
+                root_kind=root_kind,
+                targets=(ContentRetentionTarget(ref_kind="tree", tree=tree_ref),),
+                nonterminal=nonterminal,
+                restartable=restartable,
+            )
+            self.register_root(root)
+            return tree_ref, root
+
+    @staticmethod
+    def _read_regular_source(source: Path) -> bytes:
+        path = _canonicalize_trusted_system_aliases(_validate_explicit_root(source))
+        try:
+            before = path.stat(follow_symlinks=False)
+            if path.resolve(strict=True) != path:
+                raise ArtifactBlobContainmentError(
+                    f"rooted-tree source must be canonical and non-symlink: {source}"
+                )
+            descriptor, opened = open_existing_file(
+                path,
+                rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+                error_factory=ArtifactBlobContainmentError,
+                context=f"rooted-tree source {source}",
+            )
+            try:
+                data = _read_file_descriptor(descriptor)
+                after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            current = path.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise ArtifactBlobContainmentError(
+                f"rooted-tree source is not one stable regular file: {source}"
+            ) from exc
+        if (
+            _file_state(before) != _file_state(opened)
+            or _file_state(opened) != _file_state(after)
+            or _file_state(before) != _file_state(current)
+        ):
+            raise ArtifactBlobIntegrityError(f"rooted-tree source changed during read: {source}")
+        return data
+
+    def get_tree(self, tree_ref: ContentTreeRef) -> ContentTree:
+        """Resolve and revalidate one exact role-free content-tree descriptor."""
+        if not isinstance(tree_ref, ContentTreeRef):
+            raise ArtifactBlobReferenceError("tree_ref must be a ContentTreeRef")
+        raw = self.get_object(tree_ref.descriptor)
+        try:
+            payload = strict_json_loads(raw.decode("utf-8"), ref=tree_ref.tree_id)
+            tree = ContentTree.model_validate(payload)
+        except Exception as exc:
+            raise ArtifactBlobIntegrityError(
+                f"content-tree descriptor is invalid: {tree_ref.tree_id}: {exc}"
+            ) from exc
+        expected = canonical_json_v1_bytes(tree.model_dump(mode="json"))
+        if raw != expected:
+            raise ArtifactBlobIntegrityError(
+                f"content-tree descriptor is not canonical: {tree_ref.tree_id}"
+            )
+        return tree
+
+    def bind_manifest(
+        self,
+        kind: str,
+        manifest_id: str,
+        raw_bytes: bytes,
+    ) -> ContentManifestRef:
+        """Pin one logical manifest identity to one exact immutable byte object."""
+        return self.bind_manifests(((kind, manifest_id, raw_bytes),))[0]
+
+    def bind_manifests(
+        self,
+        manifests: tuple[tuple[str, str, bytes], ...],
+    ) -> tuple[ContentManifestRef, ...]:
+        """Validate then publish a conflict-free batch of exact manifest references."""
+        with self._exclusive_lock():
+            proposed = self._prepare_manifest_bindings(manifests)
+            if not proposed:
+                return ()
+            self._validate_manifest_bindings_locked(proposed)
+            self._publish_manifest_bindings_locked(proposed)
+        return tuple(ref for _key, ref, _bytes in proposed)
+
+    def _prepare_manifest_bindings(
+        self,
+        manifests: tuple[tuple[str, str, bytes], ...],
+    ) -> list[tuple[str, ContentManifestRef, bytes]]:
+        """Build and validate manifest-reference records without publishing them."""
+        proposed: list[tuple[str, ContentManifestRef, bytes]] = []
+        seen: dict[tuple[str, str], str] = {}
+        for kind, manifest_id, raw_bytes in manifests:
+            key = _manifest_reference_key(kind, manifest_id)
+            if not isinstance(raw_bytes, bytes):
+                raise TypeError("manifest bytes must be bytes")
+            try:
+                payload = strict_json_loads(
+                    raw_bytes.decode("utf-8"),
+                    ref=f"manifest {(kind, manifest_id)!r}",
+                )
+            except Exception as exc:
+                raise ArtifactBlobReferenceError(
+                    f"manifest {(kind, manifest_id)!r} must contain strict UTF-8 JSON: {exc}"
+                ) from exc
+            if not isinstance(payload, Mapping) or (
+                payload.get("kind"),
+                payload.get("id"),
+            ) != (kind, manifest_id):
+                raise ArtifactBlobReferenceError(
+                    "manifest bytes must state the exact kind and id being bound: "
+                    f"expected={(kind, manifest_id)!r}"
+                )
+            object_ref = self.store_object(raw_bytes)
+            logical = (kind, manifest_id)
+            previous = seen.get(logical)
+            if previous is not None and previous != object_ref.sha256:
+                raise ContentManifestConflictError(
+                    f"conflicting bytes for manifest {(kind, manifest_id)!r}: "
+                    f"{previous} != {object_ref.sha256}"
+                )
+            seen[logical] = object_ref.sha256
+            ref = ContentManifestRef(
+                kind=kind,
+                id=manifest_id,
+                ref=f"{CONTENT_MANIFEST_REF_PREFIX}{kind}/{manifest_id}",
+                object=object_ref,
+            )
+            proposed.append((key, ref, canonical_json_v1_bytes(ref.model_dump(mode="json"))))
+
+        return proposed
+
+    def _validate_manifest_bindings_locked(
+        self,
+        proposed: list[tuple[str, ContentManifestRef, bytes]],
+    ) -> None:
+        for key, ref, expected in proposed:
+            existing = self._read_manifest_reference(key, required=False)
+            if existing is not None and existing != expected:
+                current = ContentManifestRef.model_validate(
+                    strict_json_loads(existing.decode("utf-8"), ref=ref.ref)
+                )
+                raise ContentManifestConflictError(
+                    f"manifest {(ref.kind, ref.id)!r} is already pinned to "
+                    f"{current.object.sha256}, not {ref.object.sha256}"
+                )
+
+    def _publish_manifest_bindings_locked(
+        self,
+        proposed: list[tuple[str, ContentManifestRef, bytes]],
+    ) -> None:
+        for key, _ref, expected in proposed:
+            _stage_blob_bytes(expected, self._manifest_reference_path(key))
+
+    def resolve_manifest(
+        self,
+        kind: str,
+        manifest_id: str,
+    ) -> tuple[ContentManifestRef, bytes]:
+        """Resolve one logical manifest only through its exact pinned store reference."""
+        key = _manifest_reference_key(kind, manifest_id)
+        raw_ref = self._read_manifest_reference(key, required=True)
+        assert raw_ref is not None
+        try:
+            ref = ContentManifestRef.model_validate(
+                strict_json_loads(raw_ref.decode("utf-8"), ref=f"manifest reference {key}")
+            )
+        except Exception as exc:
+            raise ArtifactBlobIntegrityError(
+                f"manifest reference record is invalid: {(kind, manifest_id)!r}: {exc}"
+            ) from exc
+        if raw_ref != canonical_json_v1_bytes(ref.model_dump(mode="json")):
+            raise ArtifactBlobIntegrityError(
+                f"manifest reference record is not canonical: {(kind, manifest_id)!r}"
+            )
+        if (ref.kind, ref.id) != (kind, manifest_id):
+            raise ArtifactBlobIntegrityError(
+                f"manifest reference key resolves a different logical identity: {ref.ref}"
+            )
+        return ref, self.get_object(ref.object)
+
+    def _manifest_reference_path(self, key: str) -> Path:
+        return self.root / "references" / "manifests" / "sha256" / key[:2] / key
+
+    def _read_manifest_reference(self, key: str, *, required: bool) -> bytes | None:
+        path = self._manifest_reference_path(key)
+        try:
+            path_stat = path.lstat()
+        except FileNotFoundError:
+            if required:
+                raise FileNotFoundError(f"manifest reference is missing: {key}")
+            return None
+        if not stat.S_ISREG(path_stat.st_mode) or path_stat.st_nlink != 1:
+            raise ArtifactBlobIntegrityError(f"manifest reference must be one regular file: {path}")
+        return self._read_canonical_blob(path, path_stat.st_size)
+
+    def _ingest_tree_directory(
+        self,
+        directory_descriptor: int,
+        relative: tuple[str, ...],
+        directories: list[str],
+        files: list[ContentTreeFile],
+    ) -> None:
+        children = sorted(
+            os.scandir(directory_descriptor), key=lambda entry: os.fsencode(entry.name)
+        )
+        for child in children:
+            name = child.name
+            if unicodedata.normalize("NFC", name) != name:
+                raise ArtifactBlobContainmentError(
+                    "content-tree member names must use NFC Unicode normalization"
+                )
+            before = child.stat(follow_symlinks=False)
+            path = PurePosixPath(*relative, name).as_posix()
+            if stat.S_ISDIR(before.st_mode):
+                child_descriptor = open_existing_directory(
+                    name,
+                    error_factory=ArtifactBlobContainmentError,
+                    context=f"content-tree directory {path}",
+                    dir_fd=directory_descriptor,
+                )
+                directories.append(path)
+                try:
+                    self._ingest_tree_directory(
+                        child_descriptor,
+                        (*relative, name),
+                        directories,
+                        files,
+                    )
+                    after = os.fstat(child_descriptor)
+                    current = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
+                    if _file_state(before) != _file_state(after) or _file_state(
+                        before
+                    ) != _file_state(current):
+                        raise ArtifactBlobIntegrityError(
+                            f"content-tree directory changed during ingest: {path}"
+                        )
+                finally:
+                    os.close(child_descriptor)
+            elif stat.S_ISREG(before.st_mode):
+                if before.st_nlink != 1:
+                    raise ArtifactBlobContainmentError(
+                        f"content-tree files must have exactly one hard link: {path}"
+                    )
+                descriptor, opened = open_existing_file(
+                    name,
+                    rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+                    error_factory=ArtifactBlobContainmentError,
+                    context=f"content-tree file {path}",
+                    dir_fd=directory_descriptor,
+                )
+                try:
+                    data = _read_file_descriptor(descriptor)
+                    after = os.fstat(descriptor)
+                    current = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
+                    if (
+                        _file_state(before) != _file_state(opened)
+                        or _file_state(opened) != _file_state(after)
+                        or _file_state(before) != _file_state(current)
+                    ):
+                        raise ArtifactBlobIntegrityError(
+                            f"content-tree file changed during ingest: {path}"
+                        )
+                finally:
+                    os.close(descriptor)
+                files.append(ContentTreeFile(relative_path=path, object=self.store_object(data)))
+            else:
+                raise ArtifactBlobContainmentError(
+                    f"content-tree members must be regular files or directories: {path}"
+                )
 
     def store_bytes(
         self,
@@ -371,16 +945,15 @@ class ImmutableArtifactBlobProvider:
         artifact_metadata = dict(metadata or {})
         self._reject_reserved_metadata(artifact_metadata)
 
-        digest = hashlib.sha256(data).hexdigest()
+        object_ref = self.store_object(data)
+        digest = object_ref.sha256
         artifact_id = f"{_ARTIFACT_ID_PREFIX}{digest}"
-        self._validate_store_target(self._canonical_path(digest))
-        written = _stage_blob_bytes(data, self._canonical_path(digest))
         artifact = ArtifactRef(
             role=role,
             logical_name=logical_name,
             artifact_id=artifact_id,
             sha256=digest,
-            size_bytes=written.st_size,
+            size_bytes=object_ref.size_bytes,
             storage_backend=_STORAGE_BACKEND,
             uri=artifact_id,
             media_type=media_type,
@@ -799,6 +1372,12 @@ __all__ = [
     "ArtifactBlobCustodyError",
     "ArtifactBlobIntegrityError",
     "ArtifactBlobReferenceError",
+    "ContentManifestConflictError",
+    "ContentManifestRef",
+    "ContentObjectRef",
+    "ContentTree",
+    "ContentTreeFile",
+    "ContentTreeRef",
     "ImmutableArtifactBlobProvider",
     "open_immutable_artifact_blob_provider",
 ]

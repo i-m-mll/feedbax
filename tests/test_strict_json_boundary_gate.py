@@ -62,11 +62,6 @@ TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
         "in this process one expression earlier. The document that carried "
         "``self.values`` was already admitted by ``load_manifest_bytes``."
     ),
-    ("feedbax/contracts/manifest_packet.py", "_manifest_data_for_import"): (
-        "Deep copy of a mapping already admitted by ``strict_json_loads`` in "
-        "``_validate_packet_manifests``, via bytes ``json.dumps`` produced one "
-        "expression earlier."
-    ),
     ("feedbax/contracts/evaluation_states.py", "_encode_mixed_leaves"): (
         "Round-trip of ``_canonical_metadata_leaf_bytes`` output for an "
         "in-memory leaf; canonical serialization emits each member once."

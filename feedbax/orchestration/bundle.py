@@ -12,7 +12,7 @@ from typing import Any, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
-from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.artifact_custody import ContentBinding, ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.evaluation_preflight import EvaluationOutputPreflightEvidence
 from feedbax.contracts.base import (
@@ -27,7 +27,6 @@ from feedbax.contracts.spec_storage import (
     training_run_execution_hash,
     validate_sha256,
 )
-from feedbax.orchestration.staged_root_custody import StagedRootCustody
 
 
 RUN_BUNDLE_SCHEMA_ID = "feedbax.orchestration.run_bundle"
@@ -42,7 +41,8 @@ RUN_BUNDLE_SCHEMA_VERSION_V8 = "feedbax.orchestration.run_bundle.v8"
 RUN_BUNDLE_SCHEMA_VERSION_V9 = "feedbax.orchestration.run_bundle.v9"
 RUN_BUNDLE_SCHEMA_VERSION_V10 = "feedbax.orchestration.run_bundle.v10"
 RUN_BUNDLE_SCHEMA_VERSION_V11 = "feedbax.orchestration.run_bundle.v11"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v12"
+RUN_BUNDLE_SCHEMA_VERSION_V12 = "feedbax.orchestration.run_bundle.v12"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v13"
 DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
 DEPLOYMENT_POLICY_SCHEMA_VERSION_V1 = "feedbax.spec.deployment_policy.v1"
 DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v2"
@@ -493,7 +493,7 @@ class RunBundle(StrictModel):
     """
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v12"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v13"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
     feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     execution_family: ExecutionFamily = "native-training"
@@ -504,7 +504,7 @@ class RunBundle(StrictModel):
     launch_policy: LaunchPolicy = Field(default_factory=LaunchPolicy)
     budget: BudgetPolicy
     resolved_inputs: list[ResolvedAssemblyInput] = Field(default_factory=list)
-    staged_roots: list[StagedRootCustody] = Field(default_factory=list)
+    content_bindings: list[ContentBinding] = Field(default_factory=list)
     evaluation_output_preflight: EvaluationOutputPreflightEvidence | None = None
     orchestration_root: str | None = None
     keep_alive: bool = False
@@ -514,6 +514,16 @@ class RunBundle(StrictModel):
     smoke_update_budget: int = Field(default=2, ge=1)
     smoke_deadline_seconds: int = Field(default=1800, ge=60)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_staged_roots(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "staged_roots" in value:
+            raise ValueError(
+                "RunBundle v13 does not admit staged_roots; run "
+                "python -m feedbax migrate-content-store --run-bundle-v12 ..."
+            )
+        return value
 
     @field_validator("smoke_update_budget", mode="before")
     @classmethod
@@ -550,15 +560,13 @@ class RunBundle(StrictModel):
                 "resolved input custody target roles collide with generated row payload "
                 f"filenames: {collisions!r}"
             )
-        staged_root_keys = [(item.root_kind, item.binding_name) for item in self.staged_roots]
-        if staged_root_keys != sorted(staged_root_keys):
-            raise ValueError("staged_roots must be in canonical (root_kind, binding_name) order")
-        if len(staged_root_keys) != len(set(staged_root_keys)):
-            raise ValueError("staged_roots contain duplicate typed binding names")
-        if self.staged_roots and "staged-roots" in target_roles:
+        content_keys = [(item.root_kind, item.binding_name) for item in self.content_bindings]
+        if content_keys != sorted(content_keys):
             raise ValueError(
-                "resolved input target_role 'staged-roots' collides with staged-root custody"
+                "content_bindings must be in canonical (root_kind, binding_name) order"
             )
+        if len(content_keys) != len(set(content_keys)):
+            raise ValueError("content_bindings contain duplicate typed binding names")
         for row in self.rows:
             row_identities = canonicalize_immutable_input_identities(row.execution.immutable_inputs)
             if row_identities != canonical_identities:

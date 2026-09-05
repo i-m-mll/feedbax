@@ -2,13 +2,13 @@
   "schema": "feedbax.import_cycle_baseline.v1",
   "description": "Upper bound on package-level import-cycle edges. This set may shrink, never grow. Regenerate deliberately with: uv run --no-sync python scripts/import_cycle_baseline.py --write",
   "summary": {
-    "classified_import_edges": 1659,
-    "cross_package_import_edges": 909,
+    "classified_import_edges": 1709,
+    "cross_package_import_edges": 941,
     "packages": 30,
     "package_edges": 142,
     "packages_in_largest_cycle": 26,
     "mutually_dependent_package_pairs": 12,
-    "cycle_package_edges": 119,
+    "cycle_package_edges": 118,
     "largest_cycle_packages": [
       "acausal",
       "analysis",
@@ -62,10 +62,6 @@
     [
       "analysis",
       "intervene"
-    ],
-    [
-      "analysis",
-      "orchestration"
     ],
     [
       "analysis",

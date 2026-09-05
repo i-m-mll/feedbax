@@ -39,15 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     export_parser.add_argument(
         "--include-artifacts",
-        choices=["auto", "include", "external"],
-        default="auto",
-        help="Artifact inclusion policy",
-    )
-    export_parser.add_argument(
-        "--max-included-artifact-bytes",
-        type=int,
-        default=512 * 1024 * 1024,
-        help="Auto mode total artifact byte limit",
+        choices=["include", "external"],
+        default="include",
+        help="Explicit self-contained or references-only artifact policy",
     )
     export_parser.add_argument(
         "--producer",
@@ -69,7 +63,6 @@ def main(argv: list[str] | None = None) -> int:
             dest=args.dest,
             direction=args.direction,
             include_artifacts=args.include_artifacts,
-            max_included_artifact_bytes=args.max_included_artifact_bytes,
             producer=producer,
         )
         _write_json(result)

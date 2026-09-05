@@ -118,6 +118,8 @@ def _request_engine_probe(
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     native_update_budget: int | None = None,
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
+    content_store_root: str | Path | None = None,
+    content_lease_seconds: int | None = None,
     conformance_registry: CheckRegistry,
     plugin_provenance: Sequence[Any],
     registry_bundle: Any,
@@ -130,6 +132,8 @@ def _request_engine_probe(
         input_provider_bindings,
         native_update_budget,
         staged_root_bindings,
+        content_store_root,
+        content_lease_seconds,
         conformance_registry,
         plugin_provenance,
         registry_bundle,
@@ -153,6 +157,8 @@ def test_orchestration_request_commands_match_engine_registry_boundary(
         run_set_id=None,
         input_provider=[],
         staged_root=[],
+        content_store_root=None,
+        content_lease_seconds=None,
         bootstrap_state=_bootstrap_state(),
     )
 
@@ -178,6 +184,8 @@ def test_orchestration_teardown_passes_training_registry(
         plugin_provenance: Sequence[Any],
         input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
         collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
+        content_store_root: str | Path | None = None,
+        content_lease_seconds: int | None = None,
     ) -> None:
         del (
             run_set_id,
@@ -190,6 +198,8 @@ def test_orchestration_teardown_passes_training_registry(
             plugin_provenance,
             input_provider_bindings,
             collection_recovery_bindings,
+            content_store_root,
+            content_lease_seconds,
         )
         assert training_method_registry is training_methods
         raise _ReachedCommandBoundary
@@ -198,6 +208,8 @@ def test_orchestration_teardown_passes_training_registry(
     args = SimpleNamespace(
         run_set="run-set",
         force=False,
+        content_store_root=None,
+        content_lease_seconds=None,
         bootstrap_state=_bootstrap_state(training_methods),
     )
 

@@ -217,7 +217,9 @@ def test_the_source_authenticates_and_lowers_against_its_own_structure(
     assert plan.source == entry.source
     assert plan.fresh_paths == ()
     assert set(plan.restored_paths) == {
-        f"{slot.slot}/{leaf.path}" for slot in structure.slots for leaf in slot.leaves
+        f"{slot.slot}/{leaf.path.lstrip('/')}"
+        for slot in structure.slots
+        for leaf in slot.leaves
     }
 
 

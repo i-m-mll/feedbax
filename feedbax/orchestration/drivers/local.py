@@ -15,6 +15,7 @@ import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -67,13 +68,16 @@ from feedbax.orchestration.executor_family import executor_family_adapter
 from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
     InputProviderRootBinding,
+    acquire_content_projection_lease,
+    compile_content_input_projection,
     materialize_bundle_inputs,
+    materialize_content_input_projection,
     preflight_bundle_input_bindings,
-    reclaim_materialized_staged_roots,
 )
 from feedbax.orchestration.repo_snapshot import git_common_dir
 from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
 from feedbax.orchestration.state import PreflightCheckEntry, ProcessIdentity, RunSetState
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training import publish_directory_no_replace
 
 
@@ -89,6 +93,7 @@ FEEDBAX_PROCESS_IDENTITY_ENV = "FEEDBAX_PROCESS_IDENTITY"
 _LOCAL_PROCESS_LAUNCH_SCRIPT = r"""
 import json
 import os
+import secrets
 import sys
 
 identity_path, *command = sys.argv[1:]
@@ -103,20 +108,33 @@ payload = {
     "process_group_id": os.getpgrp(),
 }
 data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+temporary_path = f"{identity_path}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
 descriptor = os.open(
-    identity_path,
+    temporary_path,
     os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
     0o600,
 )
 try:
-    while data:
-        written = os.write(descriptor, data)
-        if written <= 0:
-            raise RuntimeError("process identity acknowledgement write made no progress")
-        data = data[written:]
-    os.fsync(descriptor)
+    try:
+        while data:
+            written = os.write(descriptor, data)
+            if written <= 0:
+                raise RuntimeError("process identity acknowledgement write made no progress")
+            data = data[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.link(temporary_path, identity_path, follow_symlinks=False)
+    directory = os.open(os.path.dirname(identity_path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 finally:
-    os.close(descriptor)
+    try:
+        os.unlink(temporary_path)
+    except FileNotFoundError:
+        pass
 os.execvpe(command[0], command, os.environ)
 """
 
@@ -252,6 +270,8 @@ class LocalOrchestrationDriver:
         freeze_lines: Sequence[str] | None = None,
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
         staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
+        content_store_root: Path | str | None = None,
+        content_lease_seconds: int | None = None,
         update_budget: int | None = None,
         realized_capabilities: RealizedDriverCapabilities | None = None,
     ) -> None:
@@ -261,17 +281,22 @@ class LocalOrchestrationDriver:
         self.freeze_lines = tuple(freeze_lines) if freeze_lines is not None else None
         self.input_provider_bindings = tuple(input_provider_bindings)
         self.staged_root_bindings = tuple(staged_root_bindings)
+        self.content_store_root = content_store_root
+        if content_lease_seconds is not None and content_lease_seconds <= 0:
+            raise ValueError("content_lease_seconds must be positive")
+        self.content_lease_seconds = content_lease_seconds
         self.update_budget = update_budget
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Authenticate every local input binding before PROVISION."""
-        if not bundle.staged_roots:
+        if not bundle.content_bindings and not self.staged_root_bindings:
             return []
         failures, observed = preflight_bundle_input_bindings(
             bundle,
             provider_bindings=self.input_provider_bindings,
             staged_root_bindings=self.staged_root_bindings,
+            content_store_root=self.content_store_root,
         )
         return [
             PreflightCheckEntry(
@@ -306,12 +331,33 @@ class LocalOrchestrationDriver:
             / (f"stage-inputs-{state.stage('STAGE_INPUTS').attempts}")
         )
         try:
+            content_projection = None
+            if bundle.content_bindings:
+                if self.content_store_root is None:
+                    raise InputMaterializationError(
+                        "content bindings require one explicit canonical store root"
+                    )
+                content_provider = ImmutableArtifactBlobProvider(self.content_store_root)
+                content_projection = compile_content_input_projection(
+                    bundle.content_bindings, content_provider
+                )
             staged_inputs = materialize_bundle_inputs(
                 bundle,
                 destination_root=attempt_root,
                 provider_bindings=self.input_provider_bindings,
                 staged_root_bindings=self.staged_root_bindings,
+                content_store_root=self.content_store_root,
             )
+            if content_projection is not None:
+                staged_inputs = (
+                    *staged_inputs,
+                    *materialize_content_input_projection(
+                        content_projection,
+                        content_provider,
+                        destination_root=attempt_root / "inputs" / "content" / "trees",
+                        object_root=bundle.run_set_dir / ".content-cache" / "objects" / "sha256",
+                    ),
+                )
         except InputMaterializationError as exc:
             raise LocalDriverError(str(exc)) from exc
         payloads: list[dict[str, str]] = []
@@ -342,11 +388,31 @@ class LocalOrchestrationDriver:
                     "target": str(inputs_dir / target.name),
                 }
             )
+        content_provider = (
+            ImmutableArtifactBlobProvider(self.content_store_root)
+            if bundle.content_bindings and self.content_store_root is not None
+            else None
+        )
         parent_descriptor = os.open(
             bundle.run_set_dir,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
+        lease_acquired = False
         try:
+            if content_projection is not None:
+                if content_provider is None or self.content_lease_seconds is None:
+                    raise LocalDriverError(
+                        "content bindings require canonical store and explicit lease seconds"
+                    )
+                acquire_content_projection_lease(
+                    content_projection,
+                    content_provider,
+                    lease_id=bundle.run_set_id,
+                    owner=f"local:{bundle.run_set_id}",
+                    expires_at=datetime.now(timezone.utc)
+                    + timedelta(seconds=self.content_lease_seconds),
+                )
+                lease_acquired = True
             source_name = (attempt_root / "inputs").relative_to(bundle.run_set_dir).as_posix()
             publish_directory_no_replace(
                 parent_descriptor,
@@ -356,6 +422,10 @@ class LocalOrchestrationDriver:
                     source_name, dir_fd=parent_descriptor, follow_symlinks=False
                 ),
             )
+        except Exception:
+            if lease_acquired and content_provider is not None:
+                content_provider.release_lease(bundle.run_set_id)
+            raise
         finally:
             os.close(parent_descriptor)
         return {
@@ -363,7 +433,9 @@ class LocalOrchestrationDriver:
             "inputs": [
                 {
                     "target_role": staged.target_role,
-                    "destination": str(inputs_dir / staged.target_role),
+                    "destination": str(
+                        inputs_dir / staged.destination.relative_to(attempt_root / "inputs")
+                    ),
                     "files": [asdict(item) for item in staged.files],
                 }
                 for staged in staged_inputs
@@ -657,6 +729,11 @@ class LocalOrchestrationDriver:
         return collected
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
+        result = dict(self._teardown_resources(bundle, state))
+        result["content_lease"] = self._release_content_lease(bundle)
+        return result
+
+    def _teardown_resources(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         if self.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED:
             return {
                 "driver": "local",
@@ -683,21 +760,10 @@ class LocalOrchestrationDriver:
             state,
         )
         reclamation: dict[str, Any] = {
-            "status": "retained",
-            "custody_refs": [custody.custody_ref for custody in bundle.staged_roots],
+            "status": "not-applicable",
+            "custody_refs": [],
             "reclaimed_bytes": 0,
-            "reason": "terminal-consumer-barrier-not-complete",
         }
-        if _terminal_staged_root_reclamation_allowed(bundle, state):
-            result = reclaim_materialized_staged_roots(
-                bundle,
-                inputs_root=bundle.run_set_dir / "inputs",
-            )
-            reclamation = {
-                "status": result.status,
-                "custody_refs": list(result.custody_refs),
-                "reclaimed_bytes": result.reclaimed_bytes,
-            }
         return {
             "driver": "local",
             "stopped_rows": stopped,
@@ -705,6 +771,14 @@ class LocalOrchestrationDriver:
             "successful_evaluation_reclamation": successful_evaluation_reclamation,
             "staged_root_reclamation": reclamation,
         }
+
+    def _release_content_lease(self, bundle: RunBundle) -> str:
+        if not getattr(bundle, "content_bindings", ()):
+            return "not-applicable"
+        if self.content_store_root is None:
+            raise LocalDriverError("canonical content store is unavailable at teardown")
+        ImmutableArtifactBlobProvider(self.content_store_root).release_lease(bundle.run_set_id)
+        return "released"
 
 
 def compute_environment_fingerprint(
@@ -746,31 +820,6 @@ def compute_environment_fingerprint(
         )
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
-
-def _terminal_staged_root_reclamation_allowed(
-    bundle: RunBundle,
-    state: RunSetState,
-) -> bool:
-    if not bundle.staged_roots:
-        return False
-    if any(state.rows.get(row.row_id) is None for row in bundle.rows):
-        return False
-    row_statuses = {state.rows[row.row_id].status for row in bundle.rows}
-    if not row_statuses <= {"completed", "failed", "stopped"}:
-        return False
-    if state.stage("STAGE_INPUTS").status != "completed":
-        return False
-    if row_statuses == {"completed"}:
-        if any(state.stage(stage_id).status != "completed" for stage_id in ("COLLECT", "CERTIFY")):
-            return False
-    elif state.stage("COLLECT").status not in {"completed", "failed"}:
-        return False
-    if bundle.execution_family == "evaluation-matrix":
-        ordered_union = state.stage("COLLECT").outputs.get("evaluation_matrix_ordered_union")
-        if row_statuses == {"completed"} and not isinstance(ordered_union, Mapping):
-            return False
-    return True
 
 
 def _reclaim_successful_evaluation_stores(
@@ -1477,6 +1526,8 @@ def local_driver_registration() -> DriverRegistration:
             freeze_lines=runtime.get("freeze_lines"),
             input_provider_bindings=runtime.get("input_provider_bindings", ()),
             staged_root_bindings=runtime.get("staged_root_bindings", ()),
+            content_store_root=runtime.get("content_store_root"),
+            content_lease_seconds=runtime.get("content_lease_seconds"),
             update_budget=_optional_runtime_int(runtime, "native_update_budget"),
             realized_capabilities=realized,
         )

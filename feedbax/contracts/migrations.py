@@ -9,6 +9,28 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from feedbax.contracts.artifact_custody import (
+    CONTENT_BINDING_SCHEMA_ID,
+    CONTENT_BINDING_SCHEMA_VERSION,
+    CONTENT_GC_RECEIPT_SCHEMA_ID,
+    CONTENT_GC_RECEIPT_SCHEMA_VERSION,
+    CONTENT_HOLD_RECORD_SCHEMA_ID,
+    CONTENT_HOLD_RECORD_SCHEMA_VERSION,
+    CONTENT_LEASE_RECORD_SCHEMA_ID,
+    CONTENT_LEASE_RECORD_SCHEMA_VERSION,
+    CONTENT_MANIFEST_REF_SCHEMA_ID,
+    CONTENT_MANIFEST_REF_SCHEMA_VERSION,
+    CONTENT_MIGRATION_RECEIPT_SCHEMA_ID,
+    CONTENT_MIGRATION_RECEIPT_SCHEMA_VERSION,
+    CONTENT_OBJECT_REF_SCHEMA_ID,
+    CONTENT_OBJECT_REF_SCHEMA_VERSION,
+    CONTENT_RETENTION_INDEX_SCHEMA_ID,
+    CONTENT_RETENTION_INDEX_SCHEMA_VERSION,
+    CONTENT_ROOT_RECORD_SCHEMA_ID,
+    CONTENT_ROOT_RECORD_SCHEMA_VERSION,
+    CONTENT_TREE_REF_SCHEMA_ID,
+    CONTENT_TREE_REF_SCHEMA_VERSION,
+    CONTENT_TREE_SCHEMA_ID,
+    CONTENT_TREE_SCHEMA_VERSION,
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
 )
@@ -35,6 +57,8 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
+    StructuralAbiFingerprint,
     structural_abi_content_sha256,
 )
 from feedbax.contracts.checkpoint_initialization import (
@@ -44,6 +68,9 @@ from feedbax.contracts.checkpoint_initialization import (
     CHECKPOINT_INITIALIZATION_SCHEMA_VERSION,
     CHECKPOINT_STRUCTURE_SCHEMA_ID,
     CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
+    CHECKPOINT_STRUCTURE_SCHEMA_VERSION_V1,
+    derive_checkpoint_semantic_abis,
+    derive_legacy_checkpoint_semantic_abi,
 )
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
@@ -506,6 +533,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V9,
     RUN_BUNDLE_SCHEMA_VERSION_V10,
     RUN_BUNDLE_SCHEMA_VERSION_V11,
+    RUN_BUNDLE_SCHEMA_VERSION_V12,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
@@ -551,7 +579,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = "feedbax.spec.run_assembly_request.v3"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = "feedbax.spec.run_assembly_request.v4"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5 = "feedbax.spec.run_assembly_request.v5"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6 = "feedbax.spec.run_assembly_request.v6"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v7"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7 = "feedbax.spec.run_assembly_request.v7"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v8"
 EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID = (
     "feedbax.manifest.evaluation_matrix_execution_capsule"
 )
@@ -1241,7 +1270,98 @@ def _migrate_checkpoint_semantic_state_roots_v8_to_v9_payload(
     """Retain legacy custody identities while marking semantic roots unavailable."""
     migrated = dict(payload)
     migrated["semantic_state_roots_status"] = "unavailable_legacy"
+    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9
+    return migrated
+
+
+def _migrate_checkpoint_semantic_abi_v9_to_v10_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Derive named leaf ownership from authenticated slot and phase identities."""
+    migrated = deepcopy(dict(payload))
+    slots = list(migrated.get("slots") or ())
+    fingerprints: dict[str, StructuralAbiFingerprint] = {}
+    slot_roles: dict[str, str] = {}
+    for raw_slot in slots:
+        if not isinstance(raw_slot, Mapping):
+            continue
+        name = raw_slot.get("slot")
+        fingerprint = raw_slot.get("structural_abi_fingerprint")
+        if isinstance(name, str) and isinstance(fingerprint, Mapping):
+            fingerprints[name] = StructuralAbiFingerprint.model_validate(fingerprint)
+            slot_roles[name] = str(raw_slot.get("role", "auxiliary"))
+    binding = migrated.get("run_contract_binding")
+    projection = binding.get("canonical_projection") if isinstance(binding, Mapping) else None
+    phase_program = projection.get("phase_program") if isinstance(projection, Mapping) else None
+    optimizer_bindings = (
+        list(phase_program.get("optimizer_bindings") or ())
+        if isinstance(phase_program, Mapping)
+        else []
+    )
+    has_unbound_optimizer = not optimizer_bindings and any(
+        role == "optimizer" for role in slot_roles.values()
+    )
+    if not has_unbound_optimizer:
+        semantic_abis = derive_checkpoint_semantic_abis(
+            fingerprints,
+            slot_roles=slot_roles,
+            optimizer_bindings=optimizer_bindings,
+        )
+    else:
+        semantic_abis = {
+            slot: derive_legacy_checkpoint_semantic_abi(
+                slot=slot,
+                role=slot_roles.get(slot, "auxiliary"),
+                fingerprint=fingerprint,
+            )
+            for slot, fingerprint in fingerprints.items()
+        }
+        metadata = dict(migrated.get("metadata") or {})
+        metadata["semantic_abi_migration"] = {
+            "status": "legacy-path-identity",
+            "reason": "historical transaction has optimizer slots but no target bindings",
+        }
+        migrated["metadata"] = metadata
+    migrated["slots"] = [
+        {
+            **dict(raw_slot),
+            "semantic_abi": semantic_abis[str(raw_slot["slot"])].model_dump(
+                mode="json", exclude_none=True
+            ),
+        }
+        if isinstance(raw_slot, Mapping) and str(raw_slot.get("slot")) in semantic_abis
+        else raw_slot
+        for raw_slot in slots
+    ]
     migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    return migrated
+
+
+def _migrate_checkpoint_structure_v1_to_v2_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Map path-only structures to explicit semantic identities or legacy refusal IDs."""
+    migrated = deepcopy(dict(payload))
+    migrated_slots: list[Any] = []
+    for raw_slot in list(migrated.get("slots") or ()):
+        if not isinstance(raw_slot, Mapping):
+            migrated_slots.append(raw_slot)
+            continue
+        slot = dict(raw_slot)
+        fingerprint = StructuralAbiFingerprint(
+            treedef=str(slot.get("treedef", "legacy")),
+            leaf_count=len(list(slot.get("leaves") or ())),
+            leaves=list(slot.get("leaves") or ()),
+            fingerprint_sha256="0" * 64,
+        )
+        slot["semantic_abi"] = derive_legacy_checkpoint_semantic_abi(
+            slot=str(slot.get("slot")),
+            role=str(slot.get("role", "auxiliary")),
+            fingerprint=fingerprint,
+        ).model_dump(mode="json", exclude_none=True)
+        migrated_slots.append(slot)
+    migrated["slots"] = migrated_slots
+    migrated["schema_version"] = CHECKPOINT_STRUCTURE_SCHEMA_VERSION
     return migrated
 
 
@@ -2855,6 +2975,59 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             description="Complete authored semantic graph document.",
             required_tests=("tests/test_graph_compiler.py",),
         ),
+        *(
+            _family(
+                kind,
+                schema_id,
+                schema_version,
+                owner_module="feedbax.contracts.artifact_custody",
+                emitted_by=(emitter,),
+                consumed_by=("canonical content-store retention and manual GC",),
+                description=description,
+                rejected_old_versions=(f"{schema_id}.v0",),
+                required_tests=(
+                    "tests/test_content_retention.py",
+                    "tests/test_structured_spec_migrations.py",
+                ),
+            )
+            for kind, schema_id, schema_version, emitter, description in (
+                (
+                    "ContentRootRecord",
+                    CONTENT_ROOT_RECORD_SCHEMA_ID,
+                    CONTENT_ROOT_RECORD_SCHEMA_VERSION,
+                    "ImmutableArtifactBlobProvider.register_root",
+                    "Explicit logical, run, export, import, or migration retention root.",
+                ),
+                (
+                    "ContentLeaseRecord",
+                    CONTENT_LEASE_RECORD_SCHEMA_ID,
+                    CONTENT_LEASE_RECORD_SCHEMA_VERSION,
+                    "ImmutableArtifactBlobProvider.acquire_lease",
+                    "Explicit renewable lease whose expiry never implies release.",
+                ),
+                (
+                    "ContentHoldRecord",
+                    CONTENT_HOLD_RECORD_SCHEMA_ID,
+                    CONTENT_HOLD_RECORD_SCHEMA_VERSION,
+                    "ImmutableArtifactBlobProvider.place_hold",
+                    "Explicit scientific or owner retention hold.",
+                ),
+                (
+                    "ContentRetentionIndex",
+                    CONTENT_RETENTION_INDEX_SCHEMA_ID,
+                    CONTENT_RETENTION_INDEX_SCHEMA_VERSION,
+                    "feedbax.persistence.content_retention",
+                    "Generation-guarded canonical retention state.",
+                ),
+                (
+                    "ContentGcReceipt",
+                    CONTENT_GC_RECEIPT_SCHEMA_ID,
+                    CONTENT_GC_RECEIPT_SCHEMA_VERSION,
+                    "ImmutableArtifactBlobProvider.collect_garbage",
+                    "Exact manual candidate, quarantine, and sweep receipt.",
+                ),
+            )
+        ),
         _family(
             "ResolvedGraph",
             RESOLVED_GRAPH_SCHEMA_ID,
@@ -2974,6 +3147,63 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "tests/test_structured_spec_migrations.py",
             ),
             covers="ImmutableArtifactBlobProviderSpec",
+        ),
+        *(
+            _family(
+                kind,
+                schema_id,
+                schema_version,
+                owner_module="feedbax.contracts.artifact_custody",
+                emitted_by=("feedbax.persistence.ImmutableArtifactBlobProvider",),
+                consumed_by=(
+                    "feedbax.persistence.ImmutableArtifactBlobProvider",
+                    "Feedbax orchestration content projection",
+                ),
+                description=description,
+                rejected_old_versions=(f"{schema_id}.v0",),
+                required_tests=(
+                    "tests/test_artifact_custody.py",
+                    "tests/test_structured_spec_migrations.py",
+                ),
+            )
+            for kind, schema_id, schema_version, description in (
+                (
+                    "ContentObjectRef",
+                    CONTENT_OBJECT_REF_SCHEMA_ID,
+                    CONTENT_OBJECT_REF_SCHEMA_VERSION,
+                    "Role-free exact-byte object reference in the canonical store.",
+                ),
+                (
+                    "ContentTree",
+                    CONTENT_TREE_SCHEMA_ID,
+                    CONTENT_TREE_SCHEMA_VERSION,
+                    "Canonical role-free directory-tree descriptor.",
+                ),
+                (
+                    "ContentTreeRef",
+                    CONTENT_TREE_REF_SCHEMA_ID,
+                    CONTENT_TREE_REF_SCHEMA_VERSION,
+                    "Pinned content-tree descriptor reference.",
+                ),
+                (
+                    "ContentManifestRef",
+                    CONTENT_MANIFEST_REF_SCHEMA_ID,
+                    CONTENT_MANIFEST_REF_SCHEMA_VERSION,
+                    "Logical manifest kind/id pinned to exact bytes.",
+                ),
+                (
+                    "ContentBinding",
+                    CONTENT_BINDING_SCHEMA_ID,
+                    CONTENT_BINDING_SCHEMA_VERSION,
+                    "Runtime role binding kept separate from content-tree identity.",
+                ),
+                (
+                    "ContentMigrationReceipt",
+                    CONTENT_MIGRATION_RECEIPT_SCHEMA_ID,
+                    CONTENT_MIGRATION_RECEIPT_SCHEMA_VERSION,
+                    "Complete receipt for explicit offline legacy-custody migration.",
+                ),
+            )
         ),
         _family(
             "RunMatrixMaterialization",
@@ -3096,7 +3326,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.orchestration.assembly.RunAssemblyRequest",),
             consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
             description="Authored request resolved and compiled by persisted ASSEMBLE.",
-            stance="reject",
+            stance="migrate",
+            supported_old_versions=(RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7,),
             rejected_old_versions=(
                 f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1,
@@ -3112,7 +3343,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "v4 omitted the optional typed evaluation output preflight policy; "
                 "v5 nested an unmigrated deployment policy. No version below v7 "
                 "carries the required Feedbax revision authority, and a migrator "
-                "cannot invent one, so every earlier version now rejects."
+                "cannot invent one, so every version below v7 rejects. v7 migrates "
+                "only when it has no legacy staged_roots; migrated roots require the "
+                "explicit content-store migration command."
             ),
         ),
         _family(
@@ -4171,9 +4404,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             consumed_by=("checkpoint initialize/continue lowering",),
             description=(
-                "Exact canonical slot, PyTree-definition, and leaf structure for one side of "
-                "the closed checkpoint initialize/continue matching rule."
+                "Named semantic leaf ownership with raw PyTree integrity evidence for one "
+                "side of checkpoint initialize/continue matching."
             ),
+            stance="migrate",
+            supported_old_versions=(CHECKPOINT_STRUCTURE_SCHEMA_VERSION_V1,),
             required_tests=("tests/test_envelope_layer_contracts.py",),
         ),
         _family(
@@ -4334,6 +4569,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
             ),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
@@ -4383,7 +4619,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             description="Durable run-set orchestration request bundle.",
             stance="migrate",
-            supported_old_versions=(RUN_BUNDLE_SCHEMA_VERSION_V11,),
+            supported_old_versions=(RUN_BUNDLE_SCHEMA_VERSION_V11, RUN_BUNDLE_SCHEMA_VERSION_V12),
             rejected_old_versions=(
                 "feedbax.orchestration.run_bundle.v0",
                 RUN_BUNDLE_SCHEMA_VERSION_V1,
@@ -5063,14 +5299,14 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         _family(
             "ManifestPacket",
             "feedbax.spec.manifest_packet",
-            "feedbax.spec.manifest_packet.v1",
+            "feedbax.spec.manifest_packet.v2",
             owner_module="feedbax.contracts.manifest_packet",
             emitted_by=("feedbax.contracts.manifest_packet", "feedbax.bin.packet"),
             consumed_by=("feedbax.contracts.manifest_packet",),
             description=(
-                "Directory packet index for identity-preserving manifest and artifact "
-                "import/export."
+                "Unique-object packet with exact manifest and logical-reference import/export."
             ),
+            rejected_old_versions=("feedbax.spec.manifest_packet.v1",),
             required_tests=(
                 "tests/test_manifest_packets.py",
                 "tests/test_structured_spec_migrations.py",
@@ -5908,7 +6144,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     "RunAssemblyRequest v1 lacks explicit deployment review authorization, "
                     "and no version below v7 carries the required feedbax_revision "
                     "authority; a migrator cannot invent the revision a request was "
-                    "authored against, so re-author a current v7 request that names it "
+                    "authored against, so re-author a current v8 request that names it "
                     "explicitly."
                     if family.kind == "RunAssemblyRequest"
                     else (
@@ -6106,10 +6342,38 @@ def _migrate_run_bundle_v11_to_v12_payload(payload: dict[str, Any]) -> dict[str,
     """Lift the nested deployment policy to the registry-resolved schema."""
     migrated = dict(payload)
     migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
-    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION
+    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION_V12
     policy = migrated.get("deployment_policy")
     if isinstance(policy, Mapping):
         migrated["deployment_policy"] = _migrate_deployment_policy_v1_to_v2_payload(dict(policy))
+    return migrated
+
+
+def _migrate_run_bundle_v12_to_v13_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Admit path-free v12 bundles and require explicit migration for staged roots."""
+    if payload.get("staged_roots"):
+        raise ValueError(
+            "RunBundle v12 staged_roots require explicit offline content-store migration"
+        )
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
+    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION
+    migrated.pop("staged_roots", None)
+    migrated.setdefault("content_bindings", [])
+    return migrated
+
+
+def _migrate_run_assembly_request_v7_to_v8_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Admit path-free v7 requests and require explicit migration for staged roots."""
+    if payload.get("staged_roots"):
+        raise ValueError(
+            "RunAssemblyRequest v7 staged_roots require explicit offline content-store migration"
+        )
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    migrated.pop("staged_roots", None)
+    migrated.setdefault("content_bindings", [])
     return migrated
 
 
@@ -6299,10 +6563,36 @@ default_spec_registry.register_migration(
     "RunBundle",
     SchemaMigration(
         source_version=RUN_BUNDLE_SCHEMA_VERSION_V11,
-        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION_V12,
         migration_id="run-bundle-v11-to-v12-registry-driver",
         migrate=_migrate_run_bundle_v11_to_v12_payload,
         description="Lift the nested deployment policy to its registry-resolved schema.",
+    ),
+)
+default_spec_registry.register_migration(
+    "RunBundle",
+    SchemaMigration(
+        source_version=RUN_BUNDLE_SCHEMA_VERSION_V12,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        migration_id="run-bundle-v12-to-v13-content-bindings",
+        migrate=_migrate_run_bundle_v12_to_v13_payload,
+        description=(
+            "Add canonical content bindings to path-free bundles; legacy staged roots "
+            "require explicit offline migration."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RunAssemblyRequest",
+    SchemaMigration(
+        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+        migration_id="run-assembly-request-v7-to-v8-content-bindings",
+        migrate=_migrate_run_assembly_request_v7_to_v8_payload,
+        description=(
+            "Add canonical content bindings to path-free requests; legacy staged roots "
+            "require explicit offline migration."
+        ),
     ),
 )
 default_spec_registry.register_migration(
@@ -6720,12 +7010,38 @@ default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(
         source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
         migration_id="training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
         migrate=_migrate_checkpoint_semantic_state_roots_v8_to_v9_payload,
         description=(
             "Preserve legacy content-integrity v1 custody hashes while marking semantic "
             "state roots unavailable."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        migration_id="training-checkpoint-transaction-v9-to-v10-semantic-abi",
+        migrate=_migrate_checkpoint_semantic_abi_v9_to_v10_payload,
+        description=(
+            "Derive stable component, parameter-role, and optimizer ownership identities "
+            "while retaining raw PyTree structure as integrity evidence."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "CheckpointStructure",
+    SchemaMigration(
+        source_version=CHECKPOINT_STRUCTURE_SCHEMA_VERSION_V1,
+        target_version=CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
+        migration_id="checkpoint-structure-v1-to-v2-semantic-ownership",
+        migrate=_migrate_checkpoint_structure_v1_to_v2_payload,
+        description=(
+            "Map model paths, including initial-hidden baseline and optional encoder roles, "
+            "to semantic identities; mark unbound historical optimizer paths as legacy."
         ),
     ),
 )

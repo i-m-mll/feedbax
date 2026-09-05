@@ -46,6 +46,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
     structural_abi_content_projection,
     structural_abi_content_sha256,
 )
@@ -99,6 +100,7 @@ from feedbax.training.checkpoint_custody import (
     load_checkpoint_custody_documents,
     load_checkpoint_latest_pointer_json,
     load_checkpoint_transaction_manifest_file,
+    migrate_path_backed_checkpoint,
     resolve_checkpoint_custody_ref,
     require_checkpoint_semantic_state_equal,
     write_checkpoint_transaction,
@@ -107,6 +109,11 @@ from feedbax.training.checkpoint_custody import (
     rebuild_checkpoint_fork_derived_digests,
     relock_checkpoint_fork_derived_digests,
 )
+from feedbax.orchestration.input_materialization import (
+    compile_content_input_projection,
+    materialize_content_input_projection,
+)
+from feedbax.persistence import ImmutableArtifactBlobProvider
 from feedbax.runtime.components import Activation, GRU, identity_activation
 from feedbax.runtime.graph import Graph
 from tests.checkpoint_minimax_plugin import (
@@ -421,6 +428,149 @@ def _write_resolver_checkpoint(
         coordinate=_coordinate(),
         slots=slots or _minimax_slots(),
     )
+
+
+def test_checkpoint_write_publishes_complete_materializable_content_tree(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    provider = ImmutableArtifactBlobProvider(tmp_path / "content")
+    result = write_checkpoint_transaction(
+        tmp_path / "checkpoint",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+        content_provider=provider,
+    )
+
+    assert result.content_binding is not None
+    assert result.content_root is not None
+    tree = provider.get_tree(result.content_binding.tree)
+    transaction = f"transactions/{result.manifest.transaction_id}"
+    assert {member.relative_path for member in tree.files} == {
+        "latest.json",
+        f"{transaction}/manifest.json",
+        f"{transaction}/checkpoint-set.json",
+        *(f"{transaction}/{slot.relative_path}" for slot in result.manifest.slots),
+    }
+
+    shutil.rmtree(result.root / "transactions")
+    (result.root / "latest.json").unlink()
+    projection = compile_content_input_projection((result.content_binding,), provider)
+    staged = materialize_content_input_projection(
+        projection,
+        provider,
+        destination_root=tmp_path / "materialized",
+    )
+    assert (staged[0].destination / "latest.json").is_file()
+    assert (staged[0].destination / transaction / "checkpoint-set.json").is_file()
+
+
+def test_checkpoint_fork_leases_source_and_reuses_canonical_slot_objects(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    provider = ImmutableArtifactBlobProvider(tmp_path / "content")
+    source = write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+        content_provider=provider,
+    )
+    assert source.content_binding is not None
+    shutil.rmtree(source.root)
+
+    forked = fork_checkpoint_transaction(
+        tmp_path / "unavailable-source-view",
+        tmp_path / "target",
+        target_run_spec=run_spec,
+        target_phase_program=program,
+        expected_slots=_minimax_slots(),
+        content_provider=provider,
+        source_content_binding=source.content_binding,
+    )
+
+    assert forked.content_binding is not None
+    source_objects = {
+        member.object.sha256: member.object
+        for member in provider.get_tree(source.content_binding.tree).files
+    }
+    target_tree = provider.get_tree(forked.content_binding.tree)
+    for slot in forked.manifest.slots:
+        member = next(
+            item for item in target_tree.files if item.relative_path.endswith(slot.relative_path)
+        )
+        assert member.object == source_objects[slot.sha256]
+    retention = json.loads((provider.root / "retention" / "index.json").read_text())
+    assert len(retention["roots"]) == 2
+    assert retention["leases"] and all(lease["released"] for lease in retention["leases"])
+
+
+def test_checkpoint_fork_releases_source_lease_when_target_validation_fails(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    provider = ImmutableArtifactBlobProvider(tmp_path / "content")
+    source = write_checkpoint_transaction(
+        tmp_path / "source",
+        run_spec=run_spec,
+        phase_program=run_spec.worker_execution.method_contract.phase_program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+        content_provider=provider,
+    )
+    assert source.content_binding is not None
+
+    with pytest.raises(CheckpointCompatibilityError):
+        fork_checkpoint_transaction(
+            tmp_path / "unused-source-view",
+            tmp_path / "target",
+            target_run_spec=_incompatible_slot_run_spec(run_spec),
+            expected_slots=_minimax_slots(),
+            content_provider=provider,
+            source_content_binding=source.content_binding,
+        )
+
+    retention = json.loads((provider.root / "retention" / "index.json").read_text())
+    assert len(retention["roots"]) == 1
+    assert len(retention["leases"]) == 1
+    assert retention["leases"][0]["released"] is True
+
+
+def test_path_backed_checkpoint_migration_uses_checkpoint_publisher(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    source = write_checkpoint_transaction(
+        tmp_path / "legacy",
+        run_spec=run_spec,
+        phase_program=run_spec.worker_execution.method_contract.phase_program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=_minimax_slots(),
+    )
+    provider = ImmutableArtifactBlobProvider(tmp_path / "content")
+
+    binding, receipt = migrate_path_backed_checkpoint(
+        source.root,
+        content_provider=provider,
+    )
+    repeated, _ = migrate_path_backed_checkpoint(
+        source.root,
+        content_provider=provider,
+    )
+
+    assert binding.binding_name == source.manifest.transaction_id
+    assert repeated == binding
+    assert receipt.source_schema_version == source.manifest.schema_version
+    assert receipt.metadata["binding"] == binding.model_dump(mode="json")
+    assert len(receipt.mappings) == len(provider.get_tree(binding.tree).files) + 1
 
 
 def _resolver_parent_ref(result, **updates: object) -> ParentRef:
@@ -1019,6 +1169,7 @@ def test_checkpoint_transaction_schema_family_is_registered() -> None:
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
     )
 
 
@@ -1060,6 +1211,7 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
         "training-checkpoint-transaction-v6-to-v7-segment-lineage",
         "training-checkpoint-transaction-v7-to-v8-mapped-axes",
         "training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
+        "training-checkpoint-transaction-v9-to-v10-semantic-abi",
     ]
     assert migrated.payload["metadata"]["batch_history_tree_migration"] == (
         "declared_paths_v5_to_v6"
@@ -3449,6 +3601,22 @@ def test_manifest_structural_abi_tamper_fails_closed(tmp_path: Path) -> None:
         )
 
 
+def test_manifest_semantic_abi_tamper_fails_closed(tmp_path: Path) -> None:
+    run_spec, program, result = _write_minimax_checkpoint(tmp_path)
+    payload = json.loads(result.manifest_path.read_text())
+    controller = next(slot for slot in payload["slots"] if slot["slot"] == "controller")
+    controller["semantic_abi"]["leaves"][0]["parameter_role"] = "unknown"
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointIntegrityError, match="semantic ABI fingerprint is stale"):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
 def test_manifest_structural_abi_x64_mismatch_reports_leaf_diff_and_hint(
     tmp_path: Path,
 ) -> None:
@@ -4221,7 +4389,7 @@ def test_changed_learning_rate_fails_closed_with_field_diff_unless_override(
     assert loaded.previous_transaction_id == loaded.manifest.transaction_id
 
 
-def test_legacy_absent_binding_projection_loads_and_reports_hash_field_diff(
+def test_legacy_absent_binding_projection_refuses_unbound_optimizer_and_reports_hash_diff(
     tmp_path: Path,
 ) -> None:
     run_spec = _run_spec(minimax=True)
@@ -4244,15 +4412,13 @@ def test_legacy_absent_binding_projection_loads_and_reports_hash_field_diff(
     binding.pop("canonical_projection_sha256")
     _rewrite_manifest_and_latest(result, payload)
 
-    loaded = load_latest_checkpoint(
-        tmp_path,
-        expected_run_spec=run_spec,
-        expected_phase_program=program,
-        expected_slots=_minimax_slots(),
-    )
-
-    assert loaded.manifest.run_contract_binding.canonical_projection is None
-    assert loaded.manifest.run_contract_binding.metadata["projection_status"] == ("legacy_absent")
+    with pytest.raises(CheckpointCompatibilityError, match="legacy:optimizer"):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
 
     changed = run_spec.model_copy(deep=True)
     changed.training_config.learning_rate = 0.5
@@ -4925,6 +5091,7 @@ def test_checkpoint_custody_ref_resolver_uses_registered_manifest_migration(
         "training-checkpoint-transaction-v6-to-v7-segment-lineage",
         "training-checkpoint-transaction-v7-to-v8-mapped-axes",
         "training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
+        "training-checkpoint-transaction-v9-to-v10-semantic-abi",
     ]
 
 
@@ -4961,6 +5128,7 @@ def test_checkpoint_custody_ref_resolver_v5_migration_keeps_raw_slot_tree(
         "training-checkpoint-transaction-v6-to-v7-segment-lineage",
         "training-checkpoint-transaction-v7-to-v8-mapped-axes",
         "training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
+        "training-checkpoint-transaction-v9-to-v10-semantic-abi",
     ]
 
 

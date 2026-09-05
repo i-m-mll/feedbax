@@ -24,6 +24,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field, fields as dataclass_fields
 from dataclasses import is_dataclass
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
 from types import FunctionType, MappingProxyType
@@ -65,6 +66,7 @@ from feedbax.contracts.checkpoints import (
     CheckpointForkTransformRecord,
     CheckpointForkTransformStep,
     CheckpointResumeResult,
+    CheckpointSemanticAbi,
     CheckpointSegmentLineage,
     CheckpointProvenanceNotice,
     CheckpointSlotBlobRef,
@@ -86,7 +88,18 @@ from feedbax.contracts.checkpoints import (
     structural_abi_content_sha256,
     structural_abi_leaf_content_projection,
 )
-from feedbax.contracts.artifact_custody import ArtifactBlobProvider
+from feedbax.contracts.checkpoint_initialization import (
+    derive_checkpoint_semantic_abis,
+    validate_checkpoint_semantic_abi,
+)
+from feedbax.contracts.artifact_custody import (
+    ArtifactBlobProvider,
+    ContentBinding,
+    ContentMigrationMapping,
+    ContentMigrationReceipt,
+    ContentObjectRef,
+    ContentRootRecord,
+)
 from feedbax.contracts.base import (
     ArtifactRef,
     ArtifactMigrationRecord,
@@ -387,6 +400,8 @@ class CheckpointWriteResult:
     latest_pointer: CheckpointLatestPointer
     checkpoint_set_path: Path
     checkpoint_set: CheckpointSet
+    content_binding: ContentBinding | None = None
+    content_root: ContentRootRecord | None = None
 
 
 ResumeSlotTransform = Callable[[Mapping[str, Any]], Mapping[str, Any]]
@@ -644,6 +659,54 @@ class CheckpointForkResult:
     checkpoint_set: CheckpointSet
     slot_transfer_modes: Mapping[str, str]
     source_provenance_notices: tuple[CheckpointProvenanceNotice, ...] = ()
+    content_binding: ContentBinding | None = None
+    content_root: ContentRootRecord | None = None
+
+
+def _publish_checkpoint_content(
+    provider: ArtifactBlobProvider,
+    *,
+    latest_pointer_path: Path,
+    manifest_path: Path,
+    checkpoint_set_path: Path,
+    manifest: CheckpointTransactionManifest,
+    checkpoint_set: CheckpointSet,
+    reusable_objects: Mapping[str, ContentObjectRef] | None = None,
+) -> tuple[ContentBinding, ContentRootRecord]:
+    """Publish one complete checkpoint view through the canonical content provider."""
+    reusable = dict(reusable_objects or {})
+    transaction_prefix = PurePosixPath(TRANSACTIONS_DIR_NAME, manifest.transaction_id)
+    members: dict[str, Path | ContentObjectRef] = {
+        LATEST_POINTER_NAME: latest_pointer_path,
+        (transaction_prefix / MANIFEST_NAME).as_posix(): manifest_path,
+        (transaction_prefix / CHECKPOINT_SET_NAME).as_posix(): checkpoint_set_path,
+    }
+    for slot in manifest.slots:
+        source = manifest_path.parent / slot.relative_path
+        reused = reusable.get(slot.sha256)
+        if reused is not None:
+            if reused.size_bytes != slot.size_bytes:
+                raise CheckpointIntegrityError(
+                    f"canonical object size differs for checkpoint slot {slot.slot!r}"
+                )
+            member: Path | ContentObjectRef = reused
+        else:
+            member = source
+        members[(transaction_prefix / slot.relative_path).as_posix()] = member
+
+    tree_ref, content_root = provider.publish_rooted_tree(
+        members,
+        root_id=f"checkpoint:{checkpoint_set.checkpoint_id}",
+        root_kind="logical-ref",
+    )
+    return (
+        ContentBinding(
+            binding_name=manifest.transaction_id,
+            root_kind="checkpoint-custody",
+            tree=tree_ref,
+        ),
+        content_root,
+    )
 
 
 CheckpointForkPlanTransform = Callable[
@@ -2530,6 +2593,16 @@ def _validate_checkpoint_transaction_integrity_records(
     for name, slot in slots_by_name.items():
         digest = digests_by_name[name]
         fingerprint = slot.structural_abi_fingerprint
+        if slot.semantic_abi is None:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {name!r} semantic ABI ownership is missing"
+            )
+        try:
+            validate_checkpoint_semantic_abi(slot.semantic_abi)
+        except ValueError as exc:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {name!r} semantic ABI fingerprint is stale"
+            ) from exc
         if fingerprint.schema_id != _STRUCTURAL_ABI_SCHEMA_ID:
             raise CheckpointReferenceResolutionError(
                 f"checkpoint slot {name!r} structural ABI schema_id is unsupported: "
@@ -3125,6 +3198,7 @@ def write_checkpoint_transaction(
     segment_parent_checkpoint_set: CheckpointSet | None = None,
     metadata: Mapping[str, Any] | None = None,
     publish_latest: bool = True,
+    content_provider: ArtifactBlobProvider | None = None,
 ) -> CheckpointWriteResult:
     """Write one atomic multi-slot checkpoint transaction and publish latest.
 
@@ -3150,6 +3224,15 @@ def write_checkpoint_transaction(
         blob_dir = tmp_dir / "blobs"
         blob_dir.mkdir()
         slot_roles = _slot_roles(run_spec)
+        semantic_abis = derive_checkpoint_semantic_abis(
+            {
+                spec.slot: structural_abi_fingerprint(slots[spec.slot])
+                for spec in slot_specs
+                if spec.slot in slots
+            },
+            slot_roles=slot_roles,
+            optimizer_bindings=phase_program.optimizer_bindings,
+        )
         population_slots = _population_slot_names(run_spec)
         slot_records: list[CheckpointSlotBlobRef] = []
         slot_digests: list[SlotContentDigest] = []
@@ -3202,6 +3285,7 @@ def write_checkpoint_transaction(
                     resolved_axes,
                 ),
                 structural_abi_fingerprint=integrity.structural_abi_fingerprint,
+                semantic_abi=semantic_abis[spec.slot],
                 content_digest=content_digest,
                 materialized_axes=materialized_axes,
                 population=population,
@@ -3291,6 +3375,21 @@ def write_checkpoint_transaction(
                 latest_path,
                 latest_pointer.model_dump(mode="json", exclude_none=True),
             )
+        elif content_provider is not None:
+            raise CheckpointCustodyError(
+                "canonical checkpoint publication requires its immutable latest.json snapshot"
+            )
+        content_binding: ContentBinding | None = None
+        content_root: ContentRootRecord | None = None
+        if content_provider is not None:
+            content_binding, content_root = _publish_checkpoint_content(
+                content_provider,
+                latest_pointer_path=latest_path,
+                manifest_path=manifest_path,
+                checkpoint_set_path=checkpoint_set_path,
+                manifest=manifest,
+                checkpoint_set=checkpoint_set,
+            )
         return CheckpointWriteResult(
             root=root_path,
             transaction_dir=final_dir,
@@ -3300,6 +3399,8 @@ def write_checkpoint_transaction(
             latest_pointer=latest_pointer,
             checkpoint_set_path=checkpoint_set_path,
             checkpoint_set=checkpoint_set,
+            content_binding=content_binding,
+            content_root=content_root,
         )
     except Exception:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -3330,6 +3431,58 @@ def load_latest_checkpoint(
         resume_slot_transform=resume_slot_transform,
         continuation_request=continuation_request,
         allow_new_lineage_override=allow_new_lineage_override,
+    )
+
+
+def migrate_path_backed_checkpoint(
+    source_root: str | Path,
+    *,
+    content_provider: ArtifactBlobProvider,
+) -> tuple[ContentBinding, ContentMigrationReceipt]:
+    """Publish one existing path-backed checkpoint through canonical content custody."""
+    source = Path(source_root).resolve()
+    authenticate_published_checkpoint_custody(source)
+    documents = load_checkpoint_custody_documents(source)
+    manifest = documents.manifest.document
+    checkpoint_set_path = documents.manifest_path.parent / CHECKPOINT_SET_NAME
+    checkpoint_set = load_checkpoint_set(source, manifest.transaction_id)
+    binding, _content_root = _publish_checkpoint_content(
+        content_provider,
+        latest_pointer_path=source / LATEST_POINTER_NAME,
+        manifest_path=documents.manifest_path,
+        checkpoint_set_path=checkpoint_set_path,
+        manifest=manifest,
+        checkpoint_set=checkpoint_set,
+    )
+    tree = content_provider.get_tree(binding.tree)
+    mappings = tuple(
+        ContentMigrationMapping(
+            source_type="path-backed-import",
+            source_ref=member.relative_path,
+            source_sha256=member.object.sha256,
+            target_ref=member.object.object_id,
+            target_sha256=member.object.sha256,
+            size_bytes=member.object.size_bytes,
+        )
+        for member in tree.files
+    ) + (
+        ContentMigrationMapping(
+            source_type="path-backed-import",
+            source_ref=f"checkpoint:{checkpoint_set.checkpoint_id}",
+            source_sha256=binding.tree.descriptor.sha256,
+            target_ref=binding.tree.tree_id,
+            target_sha256=binding.tree.descriptor.sha256,
+            size_bytes=binding.tree.descriptor.size_bytes,
+        ),
+    )
+    return binding, ContentMigrationReceipt(
+        source_schema_version=manifest.schema_version,
+        destination_store=str(content_provider.root),
+        mappings=mappings,
+        metadata={
+            "migration_mode": "offline-explicit",
+            "binding": binding.model_dump(mode="json"),
+        },
     )
 
 
@@ -3416,6 +3569,7 @@ def _load_checkpoint_from_pointer(
         manifest,
         expected_slots,
         loaded_slots,
+        expected_phase_program=expected_phase_program,
         loaded_fingerprints=loaded_fingerprints,
     )
     _validate_recorded_slot_axes(manifest, expected_axes, loaded_slots)
@@ -4788,6 +4942,8 @@ def fork_checkpoint_plan(
     *,
     transform_registry: CheckpointForkTransformRegistry | None = None,
     tool_version: str | None = None,
+    content_provider: ArtifactBlobProvider | None = None,
+    source_content_binding: ContentBinding | None = None,
 ) -> dict[str, CheckpointForkResult]:
     """Preflight and execute a portable multi-target checkpoint fork plan."""
     resolved_plan = _coerce_checkpoint_fork_plan(plan)
@@ -4853,12 +5009,14 @@ def fork_checkpoint_plan(
                 "checkpoint_fork_plan_target_id": prepared.target_id,
                 "checkpoint_fork_plan_compatibility_projection": projection,
             },
+            content_provider=content_provider,
+            source_content_binding=source_content_binding,
         )
         results[prepared.target_id] = result
     return results
 
 
-def fork_checkpoint_transaction(
+def _fork_checkpoint_transaction_from_path(
     source_root: str | Path,
     target_root: str | Path,
     *,
@@ -4883,6 +5041,8 @@ def fork_checkpoint_transaction(
     tool_version: str | None = None,
     metadata: Mapping[str, Any] | None = None,
     fork_provenance_metadata: Mapping[str, Any] | None = None,
+    content_provider: ArtifactBlobProvider | None = None,
+    source_content_binding: ContentBinding | None = None,
 ) -> CheckpointForkResult:
     """Fork one valid custody checkpoint into a target run contract/root.
 
@@ -5068,6 +5228,15 @@ def fork_checkpoint_transaction(
         blob_dir = tmp_dir / "blobs"
         blob_dir.mkdir()
         slot_roles = _slot_roles(target_run_spec)
+        semantic_abis = derive_checkpoint_semantic_abis(
+            {
+                spec.slot: structural_abi_fingerprint(prepared_slots[spec.slot])
+                for spec in barrier.slots
+                if spec.slot in prepared_slots
+            },
+            slot_roles=slot_roles,
+            optimizer_bindings=phase_program.optimizer_bindings,
+        )
         population_slots = _population_slot_names(target_run_spec)
         source_slots_by_name = {slot.slot: slot for slot in source.manifest.slots}
         source_transaction_dir = source.manifest_path.parent
@@ -5140,6 +5309,7 @@ def fork_checkpoint_transaction(
                     population_slots=population_slots,
                     population_member_ids=expected_population_member_ids or {},
                     materialized_axes=expected_axes,
+                    semantic_abi=semantic_abis[spec.slot],
                 )
                 provenance = CheckpointForkSlotProvenance(
                     slot=spec.slot,
@@ -5228,6 +5398,7 @@ def fork_checkpoint_transaction(
                     size_bytes=source_slot.size_bytes,
                     coordinate=coordinate,
                     structural_abi_fingerprint=integrity.structural_abi_fingerprint,
+                    semantic_abi=semantic_abis[spec.slot],
                     content_digest=content_digest,
                     materialized_axes=expected_axes,
                     population=population,
@@ -5405,6 +5576,24 @@ def fork_checkpoint_transaction(
             latest_path,
             latest_pointer.model_dump(mode="json", exclude_none=True),
         )
+        content_binding: ContentBinding | None = None
+        content_root: ContentRootRecord | None = None
+        if content_provider is not None:
+            reusable_objects: dict[str, ContentObjectRef] = {}
+            if source_content_binding is not None:
+                source_tree = content_provider.get_tree(source_content_binding.tree)
+                reusable_objects = {
+                    member.object.sha256: member.object for member in source_tree.files
+                }
+            content_binding, content_root = _publish_checkpoint_content(
+                content_provider,
+                latest_pointer_path=latest_path,
+                manifest_path=manifest_path,
+                checkpoint_set_path=checkpoint_set_path,
+                manifest=manifest,
+                checkpoint_set=checkpoint_set,
+                reusable_objects=reusable_objects,
+            )
         return CheckpointForkResult(
             root=target_root_path,
             transaction_dir=final_dir,
@@ -5416,10 +5605,128 @@ def fork_checkpoint_transaction(
             checkpoint_set=checkpoint_set,
             slot_transfer_modes=transfer_modes,
             source_provenance_notices=source.provenance_notices,
+            content_binding=content_binding,
+            content_root=content_root,
         )
     except Exception:
         shutil.rmtree(final_dir if moved_to_final else tmp_dir, ignore_errors=True)
         raise
+
+
+def fork_checkpoint_transaction(
+    source_root: str | Path,
+    target_root: str | Path,
+    *,
+    target_run_spec: TrainingRunSpec,
+    target_phase_program: PhaseProgramSpec | None = None,
+    expected_slots: Mapping[str, Any] | None = None,
+    target_coordinate: ProgressCoordinate | None = None,
+    barrier_mapping: CheckpointForkBarrierMapping | Mapping[str, Any] | None = None,
+    expected_population_member_ids: Mapping[str, Sequence[str]] | None = None,
+    slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
+    transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    source_slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
+    source_transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    segment_history_templates: Mapping[str, Any] | None = None,
+    target_slot_transform: ResumeSlotTransform | None = None,
+    target_transform_metadata: Mapping[str, Any] | None = None,
+    target_transformed_slots: Sequence[str] | None = None,
+    target_only_slots: Mapping[str, Mapping[str, Any]] | None = None,
+    continuation_request: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
+    continuation_applied: bool = True,
+    link_strategy: CheckpointBlobLinkStrategy | None = None,
+    tool_version: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    fork_provenance_metadata: Mapping[str, Any] | None = None,
+    content_provider: ArtifactBlobProvider | None = None,
+    source_content_binding: ContentBinding | None = None,
+) -> CheckpointForkResult:
+    """Fork from a leased canonical projection when content custody is supplied."""
+    common = dict(
+        target_run_spec=target_run_spec,
+        target_phase_program=target_phase_program,
+        expected_slots=expected_slots,
+        target_coordinate=target_coordinate,
+        barrier_mapping=barrier_mapping,
+        expected_population_member_ids=expected_population_member_ids,
+        slot_transforms=slot_transforms,
+        transform_metadata=transform_metadata,
+        source_slot_transforms=source_slot_transforms,
+        source_transform_metadata=source_transform_metadata,
+        segment_history_templates=segment_history_templates,
+        target_slot_transform=target_slot_transform,
+        target_transform_metadata=target_transform_metadata,
+        target_transformed_slots=target_transformed_slots,
+        target_only_slots=target_only_slots,
+        continuation_request=continuation_request,
+        continuation_applied=continuation_applied,
+        link_strategy=link_strategy,
+        tool_version=tool_version,
+        metadata=metadata,
+        fork_provenance_metadata=fork_provenance_metadata,
+        content_provider=content_provider,
+        source_content_binding=source_content_binding,
+    )
+    if source_content_binding is None:
+        if content_provider is not None and link_strategy is None:
+            common["link_strategy"] = _copy_checkpoint_blob
+        return _fork_checkpoint_transaction_from_path(source_root, target_root, **common)
+    if content_provider is None:
+        raise CheckpointCustodyError(
+            "canonical checkpoint forks require both content_provider and source_content_binding"
+        )
+    if source_content_binding.root_kind != "checkpoint-custody":
+        raise CheckpointCustodyError(
+            "canonical checkpoint forks require a checkpoint-custody content binding"
+        )
+
+    with materialize_checkpoint_content(
+        source_content_binding,
+        content_provider,
+        owner="checkpoint-fork",
+    ) as materialized:
+        return _fork_checkpoint_transaction_from_path(materialized, target_root, **common)
+
+
+@contextmanager
+def materialize_checkpoint_content(
+    binding: ContentBinding,
+    provider: ArtifactBlobProvider,
+    *,
+    owner: str,
+) -> Iterator[Path]:
+    """Lease and materialize one canonical checkpoint tree for a bounded operation."""
+    if binding.root_kind != "checkpoint-custody":
+        raise CheckpointCustodyError(
+            "canonical checkpoint materialization requires a checkpoint-custody binding"
+        )
+    from feedbax.orchestration.input_materialization import (
+        acquire_content_projection_lease,
+        compile_content_input_projection,
+        materialize_content_input_projection,
+    )
+
+    projection = compile_content_input_projection((binding,), provider)
+    lease_id = f"{owner}:{uuid.uuid4().hex}"
+    acquire_content_projection_lease(
+        projection,
+        provider,
+        lease_id=lease_id,
+        owner=owner,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    try:
+        with tempfile.TemporaryDirectory(prefix="feedbax-checkpoint-content-") as temporary:
+            staged = materialize_content_input_projection(
+                projection,
+                provider,
+                destination_root=Path(temporary) / "trees",
+            )
+            if len(staged) != 1:
+                raise CheckpointCustodyError("checkpoint source projection must contain one tree")
+            yield staged[0].destination
+    finally:
+        provider.release_lease(lease_id)
 
 
 def _load_latest_checkpoint_transaction(root: str | Path) -> _LoadedCheckpointTransaction:
@@ -5791,6 +6098,7 @@ def _write_fresh_slot_blob(
     slot_roles: Mapping[str, str],
     population_slots: set[str],
     population_member_ids: Mapping[str, Sequence[str]],
+    semantic_abi: CheckpointSemanticAbi,
     materialized_axes: tuple[MaterializedSlotAxisBinding, ...] | None = None,
 ) -> tuple[CheckpointSlotBlobRef, SlotContentDigest]:
     _validate_slot_axes(
@@ -5834,6 +6142,7 @@ def _write_fresh_slot_blob(
         size_bytes=blob_size_bytes,
         coordinate=coordinate,
         structural_abi_fingerprint=integrity.structural_abi_fingerprint,
+        semantic_abi=semantic_abi,
         content_digest=content_digest,
         materialized_axes=materialized_axes,
         population=population,
@@ -5861,6 +6170,12 @@ def _hardlink_first_copy_fallback(source: Path, target: Path) -> str:
         )
         shutil.copy2(source, target)
         return "copy"
+
+
+def _copy_checkpoint_blob(source: Path, target: Path) -> str:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    return "copy"
 
 
 def _transform_record(
@@ -6247,34 +6562,119 @@ def _validate_structural_abi(
     expected_slots: Mapping[str, Any],
     loaded_slots: Mapping[str, Any],
     *,
+    expected_phase_program: PhaseProgramSpec,
     loaded_fingerprints: Mapping[str, StructuralAbiFingerprint] | None = None,
 ) -> None:
     loaded_fingerprints = loaded_fingerprints or {}
+    manifest_slots = {slot.slot for slot in manifest.slots}
+    expected_fingerprints = {
+        name: structural_abi_fingerprint(value)
+        for name, value in expected_slots.items()
+        if name in manifest_slots
+    }
+    actual_fingerprints = {
+        name: loaded_fingerprints.get(name) or structural_abi_fingerprint(value)
+        for name, value in loaded_slots.items()
+        if name in manifest_slots
+    }
+    expected_semantic = derive_checkpoint_semantic_abis(
+        expected_fingerprints,
+        slot_roles={slot.slot: slot.role for slot in manifest.slots},
+        optimizer_bindings=expected_phase_program.optimizer_bindings,
+    )
+    transformed_semantic = derive_checkpoint_semantic_abis(
+        actual_fingerprints,
+        slot_roles={slot.slot: slot.role for slot in manifest.slots},
+        optimizer_bindings=expected_phase_program.optimizer_bindings,
+    )
     for slot in manifest.slots:
         if slot.slot not in expected_slots:
             continue
         if slot.slot not in loaded_slots:
             continue
         loaded = loaded_slots[slot.slot]
-        loaded_fingerprint = loaded_fingerprints.get(slot.slot)
-        if loaded_fingerprint is None:
-            loaded_fingerprint = structural_abi_fingerprint(loaded)
-        expected = structural_abi_fingerprint(expected_slots[slot.slot])
-        if _semantic_structural_abi_sha256(
-            loaded_fingerprint,
-            value=loaded,
-        ) != _semantic_structural_abi_sha256(
-            expected,
-            value=expected_slots[slot.slot],
-        ):
-            diff_suffix = _format_structural_abi_diff(
-                expected,
-                loaded_fingerprint,
-                recorded_value=expected_slots[slot.slot],
-                actual_value=loaded,
+        loaded_fingerprint = actual_fingerprints[slot.slot]
+        expected = expected_fingerprints[slot.slot]
+        target_abi = expected_semantic[slot.slot]
+        source_abi = (
+            slot.semantic_abi
+            if slot.slot in loaded_fingerprints and slot.semantic_abi is not None
+            else transformed_semantic[slot.slot]
+        )
+        source_identities = {leaf.identity: leaf for leaf in source_abi.leaves}
+        target_identities = {leaf.identity: leaf for leaf in target_abi.leaves}
+        missing = sorted(
+            identity
+            for identity, leaf in target_identities.items()
+            if leaf.required and identity not in source_identities
+        )
+        unknown = sorted(
+            identity
+            for identity, leaf in source_identities.items()
+            if leaf.required and identity not in target_identities
+        )
+        if missing or unknown:
+            raise CheckpointCompatibilityError(
+                f"checkpoint slot {slot.slot!r} structural ABI mismatch: semantic identity; "
+                f"missing_required={missing!r} unknown_required={unknown!r}"
+            )
+        loaded_by_path = {leaf.path: leaf for leaf in loaded_fingerprint.leaves}
+        expected_by_path = {leaf.path: leaf for leaf in expected.leaves}
+        semantic_diffs: list[_StructuralAbiLeafDiff] = []
+        for identity in sorted(set(source_identities) & set(target_identities)):
+            source_identity = source_identities[identity]
+            target_identity = target_identities[identity]
+            source_leaf = loaded_by_path[source_identity.raw_path]
+            target_leaf = expected_by_path[target_identity.raw_path]
+            for field in _STRUCTURAL_ABI_DIFF_FIELDS:
+                source_value = getattr(source_leaf, field)
+                target_value = getattr(target_leaf, field)
+                if field == "leaf_type":
+                    source_value = _canonical_leaf_type(source_value)
+                    target_value = _canonical_leaf_type(target_value)
+                if source_value != target_value:
+                    semantic_diffs.append(
+                        _StructuralAbiLeafDiff(
+                            path=target_identity.raw_path,
+                            field=field,
+                            recorded=target_value,
+                            actual=source_value,
+                        )
+                    )
+        if semantic_diffs:
+            detail = "; ".join(
+                _format_structural_abi_leaf_diff(diff) for diff in semantic_diffs[:10]
+            )
+            treedef_equal = _canonical_structural_abi_treedef(
+                loaded_fingerprint.treedef,
+                value=loaded,
+            ) == _canonical_structural_abi_treedef(
+                expected.treedef,
+                value=expected_slots[slot.slot],
             )
             raise CheckpointCompatibilityError(
-                f"checkpoint slot {slot.slot!r} structural ABI mismatch{diff_suffix}"
+                f"checkpoint slot {slot.slot!r} structural ABI mismatch: semantic leaf; "
+                f"treedef_equal={treedef_equal}; "
+                f"leaf_count_delta={expected.leaf_count - loaded_fingerprint.leaf_count}; "
+                f"{detail}"
+            )
+        raw_paths_equal = {
+            identity: source_identities[identity].raw_path
+            for identity in set(source_identities) & set(target_identities)
+        } == {
+            identity: target_identities[identity].raw_path
+            for identity in set(source_identities) & set(target_identities)
+        }
+        if raw_paths_equal and _canonical_structural_abi_treedef(
+            loaded_fingerprint.treedef,
+            value=loaded,
+        ) != _canonical_structural_abi_treedef(
+            expected.treedef,
+            value=expected_slots[slot.slot],
+        ):
+            raise CheckpointCompatibilityError(
+                f"checkpoint slot {slot.slot!r} structural ABI mismatch: stable static "
+                "component metadata differs at unchanged semantic paths; treedef_equal=False"
             )
 
 
@@ -6309,7 +6709,40 @@ def _validate_manifest_structural_abi(
         if notice is not None:
             _LOGGER.warning(notice.message)
             notices.append(notice)
+    current_slots = {
+        slot.slot
+        for slot in manifest.slots
+        if slot.semantic_abi is not None
+        and slot.semantic_abi.algorithm_version
+        == "feedbax.training_checkpoint.semantic_abi.v1"
+    }
+    current_semantic = derive_checkpoint_semantic_abis(
+        {name: fingerprint for name, fingerprint in loaded_fingerprints.items() if name in current_slots},
+        slot_roles={slot.slot: slot.role for slot in manifest.slots if slot.slot in current_slots},
+        optimizer_bindings=_manifest_optimizer_bindings(manifest),
+    )
+    for slot in manifest.slots:
+        if slot.slot not in current_semantic or slot.semantic_abi is None:
+            continue
+        if slot.semantic_abi != current_semantic[slot.slot]:
+            raise CheckpointIntegrityError(
+                f"checkpoint slot {slot.slot!r} semantic ABI fingerprint is stale: "
+                "recorded ownership differs from decoded slot ownership"
+            )
     return notices, loaded_fingerprints
+
+
+def _manifest_optimizer_bindings(
+    manifest: CheckpointTransactionManifest,
+) -> Sequence[Mapping[str, Any]]:
+    projection = manifest.run_contract_binding.canonical_projection
+    if not isinstance(projection, Mapping):
+        return ()
+    phase_program = projection.get("phase_program")
+    if not isinstance(phase_program, Mapping):
+        return ()
+    bindings = phase_program.get("optimizer_bindings")
+    return tuple(binding for binding in bindings or () if isinstance(binding, Mapping))
 
 
 def _validate_contract_binding(

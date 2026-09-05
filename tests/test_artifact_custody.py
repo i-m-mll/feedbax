@@ -15,7 +15,13 @@ import pytest
 
 import feedbax.persistence.artifact_custody as custody_module
 from feedbax.contracts.base import ArtifactRef
-from feedbax.contracts.artifact_store import store_bytes_artifact
+from feedbax.contracts.artifact_store import migrate_path_backed_content, store_bytes_artifact
+from feedbax.contracts.artifact_custody import (
+    ContentBinding,
+    ContentManifestConflictError,
+    ContentTree,
+    ContentTreeFile,
+)
 from feedbax.persistence import (
     ArtifactBlobContainmentError,
     ArtifactBlobCustodyError,
@@ -43,6 +49,149 @@ def _artifact_path(root: Path, digest: str) -> Path:
     return root / "artifacts" / "sha256" / digest[:2] / digest
 
 
+def test_role_free_objects_trees_and_bindings_share_one_canonical_identity(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    (source / "empty").mkdir(parents=True)
+    (source / "nested").mkdir()
+    (source / "nested" / "café.json").write_bytes(b'{"exact":true}\n')
+    (source / "alias.bin").write_bytes(b'{"exact":true}\n')
+    provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
+
+    first = provider.ingest_tree(source)
+    second = provider.ingest_tree(source)
+    training = ContentBinding(binding_name="training", root_kind="manifest-store", tree=first)
+    paired = ContentBinding(
+        binding_name="paired_trial_bank",
+        root_kind="checkpoint-custody",
+        tree=second,
+    )
+
+    assert first == second
+    assert first.tree_id == (
+        "content-tree://sha256/c6c24d09581e574cefee0f859cbfc1ebbc2939a1b85a3b8b4fb2a167a730c1a2"
+    )
+    assert training.tree.tree_id == paired.tree.tree_id
+    tree = provider.get_tree(first)
+    assert tree.directories == ("empty", "nested")
+    assert tree.files[0].object == tree.files[1].object
+    assert provider.get_object(tree.files[0].object) == b'{"exact":true}\n'
+    object_files = [
+        path for path in (provider.root / "artifacts" / "sha256").rglob("*") if path.is_file()
+    ]
+    assert len(object_files) == 2  # one payload object plus one tree descriptor object
+
+
+def test_rooted_tree_publication_reuses_objects_and_commits_one_complete_root(
+    tmp_path: Path,
+) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
+    reused = provider.store_object(b"same bytes")
+    source = tmp_path / "source.json"
+    source.write_bytes(b'{"complete":true}\n')
+
+    tree_ref, root = provider.publish_rooted_tree(
+        {
+            "blobs/reused.pkl": reused,
+            "latest.json": source,
+        },
+        root_id="checkpoint:one",
+        root_kind="logical-ref",
+    )
+
+    tree = provider.get_tree(tree_ref)
+    by_path = {member.relative_path: member.object for member in tree.files}
+    assert tree.directories == ("blobs",)
+    assert by_path["blobs/reused.pkl"] == reused
+    assert provider.get_object(by_path["latest.json"]) == source.read_bytes()
+    report = provider.collect_garbage()
+    assert report.root_ids == (root.root_id,)
+    assert not [decision for decision in report.decisions if decision.decision != "live"]
+
+
+def test_invalid_rooted_tree_publication_leaves_no_partial_root(tmp_path: Path) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
+    valid = tmp_path / "valid"
+    valid.write_bytes(b"stored but never rooted")
+    missing = tmp_path / "missing"
+
+    with pytest.raises(ArtifactBlobContainmentError):
+        provider.publish_rooted_tree(
+            {"a": valid, "b": missing},
+            root_id="checkpoint:invalid",
+            root_kind="logical-ref",
+        )
+
+    assert provider.collect_garbage().root_ids == ()
+
+
+def test_concurrent_content_and_manifest_writers_converge_or_conflict(tmp_path: Path) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
+    data = b"concurrent canonical object"
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        refs = list(executor.map(lambda _index: provider.store_object(data), range(16)))
+    assert len({ref.object_id for ref in refs}) == 1
+    assert provider.get_object(refs[0]) == data
+
+    first_bytes = b'{"kind":"TrainingRunManifest","id":"run:one","v":1}\n'
+    second_bytes = b'{"kind":"TrainingRunManifest","id":"run:one","v":2}\n'
+    first = provider.bind_manifest("TrainingRunManifest", "run:one", first_bytes)
+    assert provider.resolve_manifest(first.kind, first.id) == (first, first_bytes)
+    assert provider.bind_manifest(first.kind, first.id, first_bytes) == first
+    with pytest.raises(ContentManifestConflictError, match="already pinned"):
+        provider.bind_manifest(first.kind, first.id, second_bytes)
+
+
+def test_content_tree_rejects_links_and_portable_name_collisions(tmp_path: Path) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
+    symlink_root = tmp_path / "symlink"
+    symlink_root.mkdir()
+    target = tmp_path / "target"
+    target.write_bytes(b"target")
+    (symlink_root / "link").symlink_to(target)
+    with pytest.raises(ArtifactBlobContainmentError):
+        provider.ingest_tree(symlink_root)
+
+    hardlink_root = tmp_path / "hardlink"
+    hardlink_root.mkdir()
+    original = hardlink_root / "one"
+    original.write_bytes(b"same inode")
+    os.link(original, hardlink_root / "two")
+    with pytest.raises(ArtifactBlobContainmentError, match="hard link"):
+        provider.ingest_tree(hardlink_root)
+
+    object_ref = provider.store_object(b"collision")
+    with pytest.raises(ValueError, match="collide"):
+        ContentTree(
+            files=(
+                ContentTreeFile(relative_path="Name", object=object_ref),
+                ContentTreeFile(relative_path="name", object=object_ref),
+            )
+        )
+    with pytest.raises(ValueError, match="lacks explicit parent directory"):
+        ContentTree(files=(ContentTreeFile(relative_path="nested/value", object=object_ref),))
+
+
+def test_path_backed_import_migrates_with_receipt_and_no_source_dependency(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "imported.bin"
+    source.write_bytes(b"path-backed exact bytes")
+    refs, receipt = migrate_path_backed_content(
+        {"legacy-import:one": source},
+        destination_store=tmp_path / "store",
+    )
+    source.unlink()
+
+    ref = refs["legacy-import:one"]
+    assert ImmutableArtifactBlobProvider(tmp_path / "store").get_object(ref) == (
+        b"path-backed exact bytes"
+    )
+    assert receipt.mappings[0].source_ref == "legacy-import:one"
+    assert receipt.mappings[0].target_ref == ref.object_id
+
+
 def test_store_uses_existing_suffixless_cas_and_round_trips_exact_binary_bytes(
     tmp_path: Path,
 ) -> None:
@@ -64,7 +213,10 @@ def test_store_uses_existing_suffixless_cas_and_round_trips_exact_binary_bytes(
     assert artifact.size_bytes == len(data)
     assert artifact.metadata == {"purpose": "round-trip"}
     assert canonical_path.read_bytes() == data
-    assert [path for path in root.rglob("*") if path.is_file()] == [canonical_path]
+    assert set(path for path in root.rglob("*") if path.is_file()) == {
+        root / ".content-store.lock",
+        canonical_path,
+    }
     assert provider.get_bytes(artifact) == data
     assert provider.get_bytes(artifact.artifact_id, size_bytes=len(data)) == data
 
@@ -251,10 +403,8 @@ def test_provider_rejects_arbitrary_explicit_root_symlink(tmp_path: Path) -> Non
     target.mkdir()
     root_alias = tmp_path / "custody-alias"
     root_alias.symlink_to(target, target_is_directory=True)
-    provider = ImmutableArtifactBlobProvider(root_alias)
-
     with pytest.raises(ArtifactBlobContainmentError):
-        provider.store_bytes(b"must-not-escape", role="payload", logical_name="blob")
+        ImmutableArtifactBlobProvider(root_alias)
 
     assert list(target.iterdir()) == []
 

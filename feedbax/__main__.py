@@ -16,6 +16,8 @@ from pydantic import TypeAdapter
 
 from feedbax.bin.staged_inputs import add_staged_input_arguments
 from feedbax.contracts.checkpoints import CheckpointForkPlan
+from feedbax.contracts.checkpoint_initialization import CheckpointInitializationPlan
+from feedbax.contracts.artifact_custody import ContentBinding
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeCompilerError,
     ExperimentEnvelopeRejection,
@@ -361,6 +363,22 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(prog="python -m feedbax")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    migration_parser = subparsers.add_parser(
+        "migrate-content-store",
+        help="Offline conversion of legacy custody into canonical content references.",
+    )
+    migration_source = migration_parser.add_mutually_exclusive_group(required=True)
+    migration_source.add_argument("--packet-v1")
+    migration_source.add_argument("--staged-root-v1")
+    migration_source.add_argument("--run-bundle-v12")
+    migration_source.add_argument(
+        "--path-backed-json",
+        help="JSON mapping of provenance refs to explicit absolute source paths.",
+    )
+    migration_parser.add_argument("--source-root")
+    migration_parser.add_argument("--source-roots-json")
+    migration_parser.add_argument("--destination-store", required=True)
+    migration_parser.add_argument("--receipt")
     execute_parser = subparsers.add_parser(
         "execute-training-run-spec",
         help="Execute a TrainingRunSpec and emit a native TrainingRunManifest.",
@@ -368,6 +386,13 @@ def build_parser() -> argparse.ArgumentParser:
     execute_parser.add_argument("spec", help="TrainingRunSpec JSON path")
     execute_parser.add_argument("--manifest-root", help="Manifest root override")
     execute_parser.add_argument("--checkpoint-root", help="Checkpoint custody root override")
+    execute_parser.add_argument("--checkpoint-source-root")
+    execute_parser.add_argument("--checkpoint-initialization-plan")
+    execute_parser.add_argument("--checkpoint-fork-plan")
+    execute_parser.add_argument("--checkpoint-fork-bindings")
+    execute_parser.add_argument("--checkpoint-fork-target-id")
+    execute_parser.add_argument("--checkpoint-content-store")
+    execute_parser.add_argument("--checkpoint-source-binding")
     execute_parser.add_argument("--run-id", help="Stable run id override")
     execute_parser.add_argument("--initial-slots", help="JSON path for simple initial slots")
     execute_parser.add_argument(
@@ -707,6 +732,51 @@ def main(argv: Sequence[str] | None = None) -> int:
     command_started_at = time.perf_counter()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "migrate-content-store":
+        if args.packet_v1:
+            from feedbax.contracts.manifest_packet import migrate_manifest_packet_v1
+
+            receipt = migrate_manifest_packet_v1(
+                args.packet_v1,
+                destination_root=args.destination_store,
+            )
+        elif args.staged_root_v1:
+            if args.source_root is None:
+                parser.error("--staged-root-v1 requires --source-root")
+            from feedbax.orchestration.staged_root_custody import migrate_staged_root_v1
+
+            _binding, receipt = migrate_staged_root_v1(
+                _read_json(args.staged_root_v1),
+                source_root=args.source_root,
+                destination_store=args.destination_store,
+            )
+        elif args.run_bundle_v12:
+            if args.source_roots_json is None:
+                parser.error("--run-bundle-v12 requires --source-roots-json")
+            from feedbax.orchestration.staged_root_custody import (
+                migrate_run_bundle_staged_roots_v12,
+            )
+
+            _bindings, receipt = migrate_run_bundle_staged_roots_v12(
+                _read_json(args.run_bundle_v12),
+                source_roots=_read_json(args.source_roots_json),
+                destination_store=args.destination_store,
+            )
+        else:
+            from feedbax.contracts.artifact_store import migrate_path_backed_content
+
+            sources = _read_json(args.path_backed_json)
+            _refs, receipt = migrate_path_backed_content(
+                sources,
+                destination_store=args.destination_store,
+            )
+        rendered = receipt.model_dump_json(indent=2) + "\n"
+        if args.receipt:
+            receipt_path = Path(args.receipt)
+            receipt_path.write_text(rendered, encoding="utf-8")
+        else:
+            sys.stdout.write(rendered)
+        return 0
     if args.command == "check-project-science-surface":
         return run_science_surface_cli(
             root=args.root, policy=args.policy, baseline_ref=args.baseline_ref
@@ -844,6 +914,46 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.execution_context
             else (json.loads(args.execution_context_json) if args.execution_context_json else None)
         )
+        initialization_plan = (
+            CheckpointInitializationPlan.model_validate(
+                default_spec_registry.migrate(
+                    "CheckpointInitializationPlan",
+                    _read_json(args.checkpoint_initialization_plan),
+                ).payload
+            )
+            if args.checkpoint_initialization_plan
+            else None
+        )
+        fork_plan = (
+            CheckpointForkPlan.model_validate(
+                default_spec_registry.migrate(
+                    "CheckpointForkPlan", _read_json(args.checkpoint_fork_plan)
+                ).payload
+            )
+            if args.checkpoint_fork_plan
+            else None
+        )
+        fork_bindings = (
+            _load_checkpoint_fork_plan_bindings(
+                args.checkpoint_fork_bindings, registries.training_programs
+            )
+            if args.checkpoint_fork_bindings
+            else None
+        )
+        checkpoint_provider = None
+        if args.checkpoint_content_store:
+            # Persistence is a CLI/runtime adapter; the scientific executor receives
+            # only the portable ArtifactBlobProvider contract.
+            from feedbax.persistence import ImmutableArtifactBlobProvider
+
+            checkpoint_provider = ImmutableArtifactBlobProvider(
+                Path(args.checkpoint_content_store).resolve()
+            )
+        source_binding = (
+            ContentBinding.model_validate(_read_json(args.checkpoint_source_binding))
+            if args.checkpoint_source_binding
+            else None
+        )
         started_at = time.perf_counter()
         emitter = RunEventEmitter.from_env(render_batch_lines=False)
         with RunInterruptionController() as interruption:
@@ -855,6 +965,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     initial_slots=initial_slots,
                     manifest_root=args.manifest_root,
                     checkpoint_root=args.checkpoint_root,
+                    checkpoint_source_root=args.checkpoint_source_root,
+                    checkpoint_initialization_plan=initialization_plan,
+                    checkpoint_fork_plan=fork_plan,
+                    checkpoint_fork_plan_bindings=fork_bindings,
+                    checkpoint_fork_target_id=args.checkpoint_fork_target_id,
+                    checkpoint_content_provider=checkpoint_provider,
+                    checkpoint_source_content_binding=source_binding,
                     registry=registries.training_programs,
                     training_spec_payload=training_payload,
                     training_spec_payload_kind=args.training_payload_kind,

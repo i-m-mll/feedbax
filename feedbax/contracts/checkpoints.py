@@ -56,8 +56,11 @@ TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7 = (
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8 = (
     "feedbax.manifest.training_checkpoint_transaction.v8"
 )
-TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9 = (
     "feedbax.manifest.training_checkpoint_transaction.v9"
+)
+TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION = (
+    "feedbax.manifest.training_checkpoint_transaction.v10"
 )
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_ID = "feedbax.manifest.training_checkpoint_latest_pointer"
 TRAINING_CHECKPOINT_LATEST_POINTER_SCHEMA_VERSION_V2 = (
@@ -303,6 +306,46 @@ class StructuralAbiFingerprint(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class CheckpointSemanticLeafIdentity(StrictModel):
+    """Stable ownership of one checkpoint leaf, independent of PyTree order."""
+
+    identity: str = Field(min_length=1)
+    raw_path: str = Field(min_length=1)
+    owner_slot: str = Field(min_length=1)
+    component_slot: str = Field(min_length=1)
+    parameter_role: str = Field(min_length=1)
+    optimizer_binding: str | None = None
+    optimizer_role: str | None = None
+    required: bool = True
+
+
+class CheckpointSemanticAbi(StrictModel):
+    """Named semantic ownership for every leaf in one checkpoint slot."""
+
+    algorithm_version: str = "feedbax.training_checkpoint.semantic_abi.v1"
+    leaves: list[CheckpointSemanticLeafIdentity]
+    fingerprint_sha256: str
+
+    @model_validator(mode="after")
+    def _validate_unique_ownership(self) -> "CheckpointSemanticAbi":
+        identities = [leaf.identity for leaf in self.leaves]
+        duplicate_identities = sorted(
+            {identity for identity in identities if identities.count(identity) > 1}
+        )
+        paths = [leaf.raw_path for leaf in self.leaves]
+        duplicate_paths = sorted({path for path in paths if paths.count(path) > 1})
+        if duplicate_identities:
+            raise ValueError(
+                "checkpoint semantic ABI has duplicate identities: "
+                f"{duplicate_identities!r}"
+            )
+        if duplicate_paths:
+            raise ValueError(
+                f"checkpoint semantic ABI has duplicate raw paths: {duplicate_paths!r}"
+            )
+        return self
+
+
 def structural_abi_leaf_content_projection(
     leaf: SlotLeafFingerprint | Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -468,6 +511,7 @@ class CheckpointSlotBlobRef(StrictModel):
     size_bytes: int
     coordinate: ProgressCoordinate
     structural_abi_fingerprint: StructuralAbiFingerprint
+    semantic_abi: CheckpointSemanticAbi | None = None
     content_digest: SlotContentDigestRecord
     materialized_axes: tuple[MaterializedSlotAxisBinding, ...] | None = None
     population: PopulationIdentityRecord | None = None
@@ -900,6 +944,12 @@ class CheckpointTransactionManifest(StrictModel):
         slot_names = [slot.slot for slot in self.slots]
         if len(slot_names) != len(set(slot_names)):
             raise ValueError("checkpoint transaction slot names must be unique")
+        missing_semantic_abi = [slot.slot for slot in self.slots if slot.semantic_abi is None]
+        if missing_semantic_abi:
+            raise ValueError(
+                "current checkpoint transaction requires semantic ABI ownership for every "
+                f"slot; missing={missing_semantic_abi!r}"
+            )
         return self
 
 
