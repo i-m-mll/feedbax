@@ -4310,7 +4310,6 @@ def build_launch_row_command(
         "trap 'signal_failed 129' HUP; "
         "export XLA_PYTHON_CLIENT_PREALLOCATE=false "
         f"JAX_COMPILATION_CACHE_DIR={_sq(jax_cache_dir)} "
-        f"FEEDBAX_PROCESS_IDENTITY={_sq(launch_token)} "
         + " ".join(f"{key}={_sq(value)}" for key, value in namespace.env_exports)
         + " && "
         f"{write_identity} && echo $$ > {_sq(pid_file)} && "
@@ -4338,6 +4337,7 @@ def build_launch_row_command(
         f"{seed_command}"
         f"rm -f {_sq(pid_file)} {_sq(process_identity_file)} && "
         f"touch {_sq(started_file)} && "
+        f"FEEDBAX_PROCESS_IDENTITY={_sq(launch_token)} "
         f"setsid -f bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 && "
         f"i=0; while {{ [ ! -s {_sq(pid_file)} ] || "
         f'[ ! -s {_sq(process_identity_file)} ]; }} && [ "$i" -lt 40 ]; do '
@@ -4786,7 +4786,6 @@ def build_deadman_watchdog_command(
         f"{_sq(pid_file)} {_sq(run_set_id)} deadman"
     )
     script = (
-        f"export FEEDBAX_PROCESS_IDENTITY={_sq(launch_token)}; "
         f"{write_identity} && echo $$ > {_sq(pid_file)} || exit 1; "
         f": > {_sq(installed_file)}; "
         f"pod_id={_sq(pod_id)}; run_dir={_sq(remote_run_dir)}; "
@@ -4815,6 +4814,7 @@ def build_deadman_watchdog_command(
         f"pid_file={_sq(pid_file)}; "
         f"if {verify_identity}; then exit 0; fi; "
         f'rm -f "$pid_file" {_sq(identity_file)}; '
+        f"FEEDBAX_PROCESS_IDENTITY={_sq(launch_token)} "
         f"setsid -f bash -lc {_sq(script)} </dev/null "
         f">>{_sq(remote_run_dir + '/logs/deadman.log')} 2>&1; "
         'i=0; while [ ! -s "$pid_file" ] && [ "$i" -lt 40 ]; do '

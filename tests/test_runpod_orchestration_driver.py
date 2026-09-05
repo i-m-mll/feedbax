@@ -3078,6 +3078,9 @@ def test_launch_row_command_returns_before_buffered_child_and_replaces_stale_pid
         "import os\n"
         "import sys\n"
         "assert sys.argv[1] == '-f'\n"
+        "token = os.environ.get('FEEDBAX_PROCESS_IDENTITY')\n"
+        "if token is None or len(token) != 64:\n"
+        "    raise SystemExit(42)\n"
         "if os.fork():\n"
         "    raise SystemExit(0)\n"
         "os.setsid()\n"
@@ -3139,6 +3142,168 @@ def test_launch_row_command_returns_before_buffered_child_and_replaces_stale_pid
             os.killpg(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or shutil.which("setsid") is None,
+    reason="production process-group verification requires Linux /proc and setsid",
+)
+@pytest.mark.parametrize("tokenless_row", [None, "hot"])
+def test_concurrent_live_launch_groups_inherit_and_verify_identity_token(
+    tmp_path: Path,
+    tokenless_row: str | None,
+) -> None:
+    worker = tmp_path / "live-process-group.py"
+    worker.write_text(
+        """
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+report_root, child_mode = sys.argv[1:]
+child_source = '''
+import json
+import os
+from pathlib import Path
+import sys
+import time
+
+Path(sys.argv[1] + ".child.json").write_text(json.dumps({
+    "pid": os.getpid(),
+    "process_group_id": os.getpgid(0),
+    "launch_token": os.environ.get("FEEDBAX_PROCESS_IDENTITY"),
+}))
+time.sleep(30)
+'''
+child_environment = os.environ.copy()
+if child_mode == "tokenless":
+    child_environment.pop("FEEDBAX_PROCESS_IDENTITY", None)
+child = subprocess.Popen(
+    [sys.executable, "-c", child_source, report_root],
+    env=child_environment,
+)
+Path(report_root + ".parent.json").write_text(json.dumps({
+    "pid": os.getpid(),
+    "process_group_id": os.getpgid(0),
+    "launch_token": os.environ.get("FEEDBAX_PROCESS_IDENTITY"),
+}))
+Path(report_root + ".ready").touch()
+try:
+    time.sleep(30)
+finally:
+    child.terminate()
+    child.wait()
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    bundle = _bundle(tmp_path)
+    original = bundle.rows[0]
+    row_ids = ("warm", "cool", "hot")
+    rows = [
+        original.model_copy(
+            update={
+                "row_id": row_id,
+                "launch": RowLaunchSpec(
+                    command=[
+                        sys.executable,
+                        str(worker),
+                        str(tmp_path / f"member-{row_id}"),
+                        "tokenless" if row_id == tokenless_row else "owned",
+                    ]
+                ),
+            }
+        )
+        for row_id in row_ids
+    ]
+    bundle = bundle.model_copy(update={"rows": rows})
+    remote_run_dir = tmp_path / "run"
+    sentinel_dir = remote_run_dir / "sentinels"
+    namespaces = {
+        row.row_id: build_runpod_execution_namespace(
+            bundle=bundle,
+            row=row,
+            remote_run_dir=str(remote_run_dir),
+            remote_sentinel_dir=str(sentinel_dir),
+            env_fingerprint="fingerprint-123",
+        )
+        for row in rows
+    }
+    commands = [
+        build_launch_row_command(
+            bundle=bundle,
+            row=row,
+            workdir=str(tmp_path),
+            jax_cache_dir=str(tmp_path / "jax-cache"),
+            env_fingerprint="fingerprint-123",
+            execution_namespace=namespaces[row.row_id],
+        )
+        for row in rows
+    ]
+    launchers = [
+        subprocess.Popen(["bash", "-c", command], text=True, stderr=subprocess.PIPE)
+        for command in commands
+    ]
+    process_groups: set[int] = set()
+    try:
+        for launcher in launchers:
+            _, stderr = launcher.communicate(timeout=5)
+            assert launcher.returncode == 0, stderr
+        deadline = time.monotonic() + 5
+        while not all((tmp_path / f"member-{row_id}.ready").exists() for row_id in row_ids):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+        completed = subprocess.run(
+            [
+                "bash",
+                "-c",
+                runpod_module.build_probe_command(
+                    str(sentinel_dir), list(row_ids), bundle.run_set_id
+                ),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        reports = runpod_module.parse_probe_report(completed.stdout)["rows"]
+        for row_id in row_ids:
+            identity = json.loads(
+                (sentinel_dir / f"{row_id}.process.json").read_text(encoding="utf-8")
+            )
+            process_groups.add(identity["process_group_id"])
+            for role in ("parent", "child"):
+                member = json.loads(
+                    (tmp_path / f"member-{row_id}.{role}.json").read_text(encoding="utf-8")
+                )
+                assert member["process_group_id"] == identity["process_group_id"]
+                expected = (
+                    None
+                    if row_id == tokenless_row and role == "child"
+                    else identity["launch_token"]
+                )
+                assert member["launch_token"] == expected
+            if row_id == tokenless_row:
+                assert reports[row_id]["identity_status"] == "mismatch"
+                assert reports[row_id]["status"] == "pending"
+                assert "do not carry persisted launch identity" in reports[row_id]["detail"]
+            else:
+                assert reports[row_id]["identity_status"] == "owned"
+                assert reports[row_id]["status"] == "running"
+    finally:
+        for row_id in row_ids:
+            identity_path = sentinel_dir / f"{row_id}.process.json"
+            if identity_path.is_file():
+                identity = json.loads(identity_path.read_text(encoding="utf-8"))
+                process_groups.add(identity["process_group_id"])
+        for process_group_id in process_groups:
+            try:
+                os.killpg(process_group_id, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
 
 def test_launch_row_injects_native_execution_context_from_bundle_row(
@@ -3386,6 +3551,8 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
     watchdog = next(command for command in transport.ssh_commands if "deadman.pid" in command)
     assert "feedbax.orchestration.process_identity.v1" in watchdog
     assert "FEEDBAX_PROCESS_IDENTITY=" in watchdog
+    assert re.search(r"FEEDBAX_PROCESS_IDENTITY=[0-9a-f]{64} setsid -f", watchdog)
+    assert "export FEEDBAX_PROCESS_IDENTITY=" not in watchdog
     assert "setsid -f bash -lc" in watchdog
     assert "echo $$ >" in watchdog
     assert "deadman.installed" in watchdog
