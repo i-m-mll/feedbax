@@ -750,7 +750,7 @@ class LocalOrchestrationDriver:
         }
 
     def _release_content_lease(self, bundle: RunBundle) -> str:
-        if not bundle.content_bindings:
+        if not getattr(bundle, "content_bindings", ()):
             return "not-applicable"
         if self.content_lease_manager is None:
             raise LocalDriverError("content lease manager is unavailable at teardown")

@@ -2608,7 +2608,7 @@ class RunPodOrchestrationDriver:
         return result
 
     def _release_content_lease(self, bundle: RunBundle) -> str:
-        if not bundle.content_bindings:
+        if not getattr(bundle, "content_bindings", ()):
             return "not-applicable"
         if self.content_lease_manager is None:
             raise RunPodDriverError("content lease manager is unavailable at teardown")
