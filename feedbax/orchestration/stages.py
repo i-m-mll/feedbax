@@ -2021,6 +2021,7 @@ class StageEngine:
             manifest_path=discovered.get("manifest_path"),
             manifest_payload=discovered.get("manifest_payload"),
             training_diagnostics=discovered.get("training_diagnostics"),
+            preflight_resume_context=_preflight_resume_context(state, row.row_id),
             checkpoint_custody_root=discovered.get("checkpoint_custody_root"),
             preflight_normalized_payload=preflight_payload,
             row_state=state.rows.get(row.row_id),
@@ -3265,6 +3266,58 @@ def _row_payload(row: RunRowSpec) -> dict[str, Any] | None:
             f"row {row.row_id!r} executable payload schema does not match its artifact ref"
         )
     return payload
+
+
+def _preflight_resume_context(
+    state: RunSetState,
+    row_id: str,
+) -> dict[str, int] | None:
+    """Read one row's exact resume context from completed preflight evidence."""
+    preflight = state.stage(STAGE_PREFLIGHT)
+    if preflight.status != "completed":
+        return None
+    recorded_checks = preflight.outputs.get("checks")
+    current_checks = [check.model_dump(mode="json") for check in preflight.checks]
+    if recorded_checks is not None and recorded_checks != current_checks:
+        raise OrchestrationStageError(
+            "completed PREFLIGHT outputs do not match its persisted check evidence"
+        )
+    matches = [check for check in preflight.checks if check.name == "schedule-realization"]
+    if not matches:
+        return None
+    if len(matches) != 1 or matches[0].status != "pass":
+        raise OrchestrationStageError(
+            "CERTIFY requires one passing schedule-realization preflight check"
+        )
+    observed = matches[0].observed
+    if not isinstance(observed, Mapping):
+        return None
+    row_evidence = observed.get(row_id)
+    if not isinstance(row_evidence, list):
+        return None
+    contexts: list[dict[str, int]] = []
+    for optimizer_evidence in row_evidence:
+        if not isinstance(optimizer_evidence, Mapping):
+            raise OrchestrationStageError(
+                f"schedule-realization evidence for row {row_id!r} is malformed"
+            )
+        if (
+            optimizer_evidence.get("scheduled") is not True
+            or "expected_context" not in optimizer_evidence
+        ):
+            continue
+        context = schedule_eval.require_schedule_context(
+            optimizer_evidence.get("expected_context", {}),
+            label=f"preflight schedule-realization row {row_id!r}",
+        ).model_dump()
+        contexts.append(context)
+    if not contexts:
+        return None
+    if any(context != contexts[0] for context in contexts[1:]):
+        raise OrchestrationStageError(
+            f"schedule-realization evidence for row {row_id!r} has ambiguous resume contexts"
+        )
+    return contexts[0]
 
 
 def _is_training_run_payload(payload: Any) -> bool:

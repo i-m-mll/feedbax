@@ -196,6 +196,36 @@ def require_schedule_context(context: Mapping[str, Any], *, label: str) -> Sched
     )
 
 
+def reconcile_resume_context_authority(
+    declared: Mapping[str, Any],
+    preflight: Mapping[str, Any] | None,
+) -> Mapping[str, Any]:
+    """Reconcile row/diagnostic context with the durable preflight authority.
+
+    A wholly absent declaration may use the exact context already accepted and
+    persisted by preflight. Partial declarations and disagreements remain
+    ambiguous and fail closed rather than being completed by fallback.
+    """
+    if preflight is None:
+        return declared
+    preflight_context = require_schedule_context(preflight, label="preflight_resume_context")
+    missing = [key for key, value in declared.items() if value is _MISSING]
+    if len(missing) == len(declared):
+        return preflight_context.model_dump()
+    if missing:
+        raise MissingScheduleContext(
+            "resume_context is partially declared and cannot be completed from preflight; "
+            f"missing {', '.join(missing)}"
+        )
+    declared_context = require_schedule_context(declared, label="resume_context")
+    if declared_context != preflight_context:
+        raise ValueError(
+            "ambiguous resume schedule authority: row/diagnostics context disagrees "
+            "with completed preflight"
+        )
+    return declared_context.model_dump()
+
+
 def _origin_zero_when_absent(context: Mapping[str, Any]) -> Mapping[str, Any]:
     if all(value is _MISSING for value in context.values()):
         return {
