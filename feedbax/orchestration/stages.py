@@ -1024,6 +1024,13 @@ class StageEngine:
                 )
                 state = state.with_stage(STAGE_PREFLIGHT, reset)
                 self.store.save(state)
+        if state.stage(STAGE_PREFLIGHT).status == "completed":
+            try:
+                self._assert_science_repo_pin(state)
+            except FeedbaxRevisionError as exc:
+                raise PreflightFailed(
+                    "persisted PREFLIGHT science revision is invalid: " + str(exc)
+                ) from exc
         return state
 
     def _stage_preflight(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
@@ -1049,19 +1056,50 @@ class StageEngine:
                 self.store.save(state)
                 failed = [check for check in checks if check.status == "fail"]
             raise PreflightFailed(_format_preflight_failures(failed))
+
+        # RunPod's static preflight seals the complete local repo realization
+        # without querying the provider. When science plugins are imported, use
+        # that existing phase to reject a checkout mismatch before credentials,
+        # balance, image, or acquisition calls can occur.
+        imported_science_revisions = resolve_science_repo_import_revisions(self.plugin_provenance)
+        driver_static_preflight = self._driver_hook(
+            DriverHook.STATIC_PREFLIGHT_CHECKS,
+            "static_preflight_checks",
+        )
+        if imported_science_revisions and driver_static_preflight is not None:
+            provider_free_checks = driver_static_preflight(
+                self.bundle,
+                upstream_failures=(),
+            )
+            state = self._capture_repo_realization_plan(state)
+            provider_free_failed = [
+                check for check in provider_free_checks if check.status == "fail"
+            ]
+            science_check = self._science_repo_revision_preflight_check(
+                state,
+                imported_revisions=imported_science_revisions,
+            )
+            if science_check.status == "fail":
+                provider_free_failed.append(science_check)
+            if provider_free_failed:
+                checks.extend(provider_free_checks)
+                checks.append(science_check)
+                stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
+                state = state.with_stage(STAGE_PREFLIGHT, stage)
+                self.store.save(state)
+                raise PreflightFailed(_format_preflight_failures(provider_free_failed))
+
         driver_preflight = self._driver_hook(DriverHook.PREFLIGHT_CHECKS, "preflight_checks")
         if driver_preflight is not None:
             checks.extend(driver_preflight(self.bundle))
-        realization_plan = self._driver_hook(
-            DriverHook.REPO_REALIZATION_PLAN,
-            "repo_realization_plan",
-        )
-        if realization_plan is not None:
-            plan = realization_plan()
-            if plan is not None:
-                state = state.model_copy(
-                    update={"repo_realization_plan": plan, "updated_at": utc_now()}
+        state = self._capture_repo_realization_plan(state)
+        if imported_science_revisions:
+            checks.append(
+                self._science_repo_revision_preflight_check(
+                    state,
+                    imported_revisions=imported_science_revisions,
                 )
+            )
         stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
         state = state.with_stage(STAGE_PREFLIGHT, stage)
         self.store.save(state)
@@ -1080,6 +1118,64 @@ class StageEngine:
         if state.repo_realization_plan is not None:
             outputs["repo_realization_plan"] = state.repo_realization_plan.model_dump(mode="json")
         return state, outputs
+
+    def _capture_repo_realization_plan(self, state: RunSetState) -> RunSetState:
+        """Project the driver-owned provider-free repo plan into durable run state."""
+        realization_plan = self._driver_hook(
+            DriverHook.REPO_REALIZATION_PLAN,
+            "repo_realization_plan",
+        )
+        if realization_plan is None:
+            return state
+        plan = realization_plan()
+        if plan is None:
+            return state
+        return state.model_copy(update={"repo_realization_plan": plan, "updated_at": utc_now()})
+
+    def _science_repo_revision_preflight_check(
+        self,
+        state: RunSetState,
+        *,
+        imported_revisions: Mapping[str, str],
+    ) -> PreflightCheckEntry:
+        """Compare run-pinned science authority with local certification imports."""
+        plan = state.repo_realization_plan
+        if plan is None or plan.repos.get(plan.primary_repo) is None:
+            return _check(
+                "science-repo-revision-pin",
+                False,
+                detail=(
+                    "science repo revision pin cannot be checked before provider access: "
+                    "the run has no primary repo realization authority; imported checkouts="
+                    f"{sorted(imported_revisions)!r}"
+                ),
+            )
+        primary_entry = plan.repos[plan.primary_repo]
+        expected = primary_entry.snapshot.commit
+        try:
+            assert_science_repo_revision_pin(
+                primary_repo=plan.primary_repo,
+                realized_revision=expected,
+                imported_revisions=imported_revisions,
+            )
+        except FeedbaxRevisionError as exc:
+            return _check(
+                "science-repo-revision-pin",
+                False,
+                detail=str(exc),
+                observed={
+                    "expected_revision": expected,
+                    "imported_revisions": dict(sorted(imported_revisions.items())),
+                },
+            )
+        return _check(
+            "science-repo-revision-pin",
+            True,
+            observed={
+                "expected_revision": expected,
+                "imported_revisions": dict(sorted(imported_revisions.items())),
+            },
+        )
 
     def _uses_engine_acquisition(self) -> bool:
         if self.driver is None:
@@ -1854,15 +1950,15 @@ class StageEngine:
         return state, stage_outputs
 
     def _assert_science_repo_pin(self, state: RunSetState) -> None:
-        """Refuse CERTIFY payload derivation under a mis-pinned science repo.
+        """Refuse local science work under a mis-pinned imported checkout.
 
-        Runs for both the initial certification and every retry, before any
-        payload is derived or ``conformance.json`` is overwritten, so a
-        mis-pinned invocation is refused before it can consume or overwrite
-        governed evidence. The check is a no-op when the run carries no realized
-        repository snapshot or no science provider can be resolved; it never
-        weakens the existing Feedbax provenance or environment-fingerprint
-        checks.
+        PREFLIGHT calls the equivalent named check before provider access, and
+        completed-PREFLIGHT restore calls this assertion before any resumed
+        stage can acquire resources. CERTIFY retains this assertion for initial
+        certification and every retry, before payload derivation or overwrite.
+        The check is a no-op when the run carries no realized repository
+        snapshot or no science provider can be resolved; it never weakens the
+        existing Feedbax provenance or environment-fingerprint checks.
         """
         plan = state.repo_realization_plan
         if plan is None:

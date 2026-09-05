@@ -1395,6 +1395,18 @@ class RunPodOrchestrationDriver:
 
     def seal_repo_realization_plan(self, bundle: RunBundle) -> RepoRealizationPlan:
         """Build the complete provider-free realization authority before provisioning."""
+        if self._repo_realization_plan is not None and self._repo_snapshots is not None:
+            error, _observed = validate_runpod_repo_realization_plan(
+                bundle,
+                self.config,
+                self._repo_realization_plan,
+                self._repo_snapshots,
+            )
+            if error is not None:
+                raise RunPodDriverError(error)
+            return self._repo_realization_plan
+        if self._repo_realization_plan is not None or self._repo_snapshots is not None:
+            raise RunPodDriverError("repo realization plan cache is internally inconsistent")
         plan, snapshots = build_runpod_repo_realization_plan(
             bundle,
             self.config,

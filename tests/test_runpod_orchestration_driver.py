@@ -21,6 +21,7 @@ import pytest
 
 import feedbax.orchestration.collection_recovery as collection_recovery
 import feedbax.orchestration.drivers.runpod as runpod_module
+import feedbax.orchestration.stages as stages
 from feedbax._distribution_provenance import provenance_for_distribution_build
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.remote_smoke import RemoteSmokeEvidence
@@ -89,9 +90,11 @@ from feedbax.orchestration.drivers.base import (
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.repo_realization import (
     EditableSourceResolution,
+    RepoRealizationEntry,
     RepoRealizationError,
     RepoRealizationPlan,
 )
+from feedbax.orchestration.repo_snapshot import RepoSnapshotManifest, RepoSnapshotRecord
 from feedbax.training.interruption import CancellationDecision
 from feedbax.orchestration.conformance import CheckEntry, CheckRegistry
 from feedbax.orchestration.stages import (
@@ -4761,6 +4764,112 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
     assert resumed.stage(STAGE_PROVISION).status == "completed"
     assert RestoredDriver.provision_calls == 1
     assert resume_transport.operations == []
+
+
+@pytest.mark.parametrize("resume", [False, True], ids=["initial", "resumed"])
+def test_live_preflight_rejects_report_only_descendant_science_checkout_before_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resume: bool,
+) -> None:
+    science_repo = tmp_path / "science"
+    _init_snapshot_repo(science_repo)
+    git = ["git", "-C", str(science_repo), "--no-optional-locks"]
+    expected = subprocess.run(
+        [*git, "rev-parse", "HEAD^{commit}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (science_repo / "report.md").write_text("report-only descendant\n", encoding="utf-8")
+    subprocess.run([*git, "add", "report.md"], check=True, capture_output=True)
+    subprocess.run(
+        [*git, "commit", "-m", "report only"],
+        check=True,
+        capture_output=True,
+    )
+    observed = subprocess.run(
+        [*git, "rev-parse", "HEAD^{commit}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert observed != expected
+
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+    bundle = _bundle(bundle_root, baseline=False)
+    record = RepoSnapshotRecord(
+        commit=expected,
+        dirty=False,
+        content_sha256="1" * 64,
+        source_state_sha256="2" * 64,
+        file_count=2,
+    )
+    plan = RepoRealizationPlan.create(
+        primary_repo="rlrmp2",
+        repos={
+            "rlrmp2": RepoRealizationEntry(
+                local_root=str(science_repo),
+                staging_root=str(tmp_path / "sealed-science"),
+                remote_root="/workspace/rlrmp2",
+                snapshot=record,
+                sealed_lock_digests={},
+            )
+        },
+        editable_source_resolutions=[],
+        snapshot_manifest=RepoSnapshotManifest(repos={"rlrmp2": record}),
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 5090",
+            image=bundle.environment.image_id or "",
+        ),
+        transport=transport,
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    monkeypatch.setattr(
+        stages,
+        "resolve_science_repo_import_revisions",
+        lambda _plugin_provenance: {str(science_repo): observed},
+    )
+
+    if resume:
+        preflight = StageState(
+            status="completed", started_at=stages.utc_now(), completed_at=stages.utc_now()
+        )
+        store.save(
+            _state(bundle).model_copy(
+                update={
+                    "repo_realization_plan": plan,
+                    "stages": {STAGE_PREFLIGHT: preflight},
+                }
+            )
+        )
+        monkeypatch.setattr(driver, "restore_completed_preflight", lambda *_: True)
+    else:
+        monkeypatch.setattr(driver, "static_preflight_checks", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(driver, "repo_realization_plan", lambda: plan)
+        monkeypatch.setattr(
+            driver,
+            "preflight_checks",
+            lambda _bundle: pytest.fail("provider preflight must not run after science mismatch"),
+        )
+
+    with pytest.raises(PreflightFailed) as captured:
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            plugin_provenance=(SimpleNamespace(entry_point_value="rlrmp2.plugin"),),
+        ).run(stop_after_stage=STAGE_PROVISION)
+
+    detail = str(captured.value)
+    assert expected in detail
+    assert observed in detail
+    assert str(science_repo) in detail
+    assert transport.operations == []
 
 
 def test_completed_preflight_without_schedule_check_is_rerun(tmp_path: Path) -> None:
