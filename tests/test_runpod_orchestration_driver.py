@@ -1189,6 +1189,60 @@ def test_post_provision_early_failure_retains_identity_and_verifies_teardown(
     assert any(("remove", "pod", "pod-early-failure") == call for call in transport.runpodctl_calls)
 
 
+def test_interrupted_provision_teardown_blocks_reacquisition_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "interrupted-provision-state.json")
+
+    class TerminalBarrierTransport(AcquisitionLeaseTransport):
+        def runpodctl(
+            self,
+            *args: str,
+            timeout_seconds: float | None = None,
+        ) -> CommandResult:
+            if args[:2] == ("remove", "pod"):
+                assert self.store.load().provisioning_stop_reason == "interrupted-teardown"
+            return super().runpodctl(*args, timeout_seconds=timeout_seconds)
+
+    transport = TerminalBarrierTransport(store)
+    transport.create_results = [CommandResult(0, '{"id":"pod-interrupted"}')]
+    transport.register_on_create = [("pod-interrupted",)]
+    engine, driver, state = _acquisition_engine(bundle, store, transport, datacenters=("CA-MTL-1",))
+
+    def interrupt_during_provision(_pod_id: str) -> Any:
+        raise _DeferredOperatorSignal(signal.SIGTERM)
+
+    monkeypatch.setattr(driver, "_wait_for_endpoint", interrupt_during_provision)
+    with pytest.raises(_DeferredOperatorSignal):
+        engine._engine_owned_provision(state, attempt_ordinal=1)
+
+    interrupted = store.load()
+    intent = interrupted.acquisition_intents[0]
+    assert interrupted.provisioning_stop_reason == "interrupted-teardown"
+    assert intent.state == "resolved-torn-down"
+    assert intent.pod_ids == ["pod-interrupted"]
+    assert intent.teardown_evidence[-1]["pod_absence"]["verified"] is True
+    assert intent.teardown_evidence[-1]["final_pod_inventory"]["verified"] is True
+    assert transport.inventory == {}
+    assert len(transport.create_names) == 1
+
+    resumed_transport = AcquisitionLeaseTransport(store)
+    resumed_transport.create_results = [CommandResult(0, '{"id":"replacement"}')]
+    resumed_transport.register_on_create = [("replacement",)]
+    resumed_driver = RunPodOrchestrationDriver(config=driver.config, transport=resumed_transport)
+    resumed_driver._preflight_passed = True
+    resumed_engine = StageEngine(bundle=bundle, driver=resumed_driver, store=store)
+
+    with pytest.raises(OrchestrationStageError, match="interrupted-teardown"):
+        resumed_engine._stage_provision(interrupted)
+
+    assert resumed_transport.create_names == []
+    assert resumed_transport.inventory == {}
+    assert store.load().provisioning_stop_reason == "interrupted-teardown"
+
+
 def test_deadman_is_installed_after_endpoint_and_before_gpu_readiness(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path, deadman_enabled=True)
     store = RunSetStateStore(bundle.run_set_dir / "early-deadman-state.json")
