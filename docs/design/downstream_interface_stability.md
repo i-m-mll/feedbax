@@ -137,6 +137,38 @@ protected delivery and owner-ratification step.
   `feedbax.graph_compilation_record` v3 and `feedbax.graph_compilation_failure` v1;
   earlier and unknown record versions reject rather than being restamped.
 
+## Proposed canonical content-store amendment
+
+This candidate is not part of the owner-ratified guarantee table above. The
+protected delivery must record the explicit surface-admission decision before
+it may become guaranteed downstream policy.
+
+- Extend the existing fixed `ImmutableArtifactBlobProvider`; do not add a
+  provider family. Candidate public models are `ContentObjectRef`, `ContentTree`,
+  `ContentTreeFile`, `ContentTreeRef`, `ContentManifestRef`, `ContentBinding`,
+  `ContentMigrationMapping`, and `ContentMigrationReceipt`. Candidate provider
+  operations are `store_object`, `get_object`, `ingest_tree`, `get_tree`,
+  `bind_manifest`, `bind_manifests`, and `resolve_manifest`.
+- Add `python -m feedbax migrate-content-store`,
+  `migrate_manifest_packet_v1`, `migrate_staged_root_v1`,
+  `migrate_run_bundle_staged_roots_v12`, `migrate_path_backed_content`,
+  `require_content_binding`, and `reject_legacy_run_bundle_staged_roots` as the
+  explicit migration and rejection boundary.
+- Admit only `feedbax.spec.manifest_packet.v2` at runtime. Packet v1 and
+  `feedbax.orchestration.staged_root_custody.v1` are offline migration inputs;
+  runtime use rejects with the exact migration command and never searches an
+  old or alternate root.
+- Add durable `feedbax.spec.*.v1` identities for content object refs, role-free
+  trees, tree refs, pinned manifest refs, role bindings, and migration receipts.
+  Their semantics, migration table, integrity rules, sibling handoff APIs, and
+  surface-admission rationale are defined in
+  `docs/design/canonical_content_store.md`.
+
+The repo-owned clean-install fixture is the available local compatibility
+corpus. No custody-pinned rlrmp2 inventory is present in this checkout, so the
+protected-delivery evidence must pin the exact external revision or artifact
+examined before ratification; issue counts alone are not compatibility evidence.
+
 ## Owner-ratified envelope-layer prerequisite rows
 
 The rows `report-surface`, `evaluation-surface`, and `analysis-authoring` were

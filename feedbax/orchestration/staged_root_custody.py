@@ -7,14 +7,21 @@ import os
 import shutil
 import stat
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.artifact_custody import (
+    LEGACY_CONTENT_MIGRATION_COMMAND,
+    ContentBinding,
+    ContentMigrationMapping,
+    ContentMigrationReceipt,
+    ImmutableArtifactBlobProviderSpec,
+    LegacyContentFormatError,
+)
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.staged_execution import (
@@ -168,6 +175,141 @@ class StagedExecutionRootBindings:
     artifact_provider_bindings: tuple[StagedArtifactProviderRootBinding, ...]
     manifest_root_bindings: tuple[StagedManifestRootBinding, ...]
     checkpoint_custody_bindings: tuple[StagedCheckpointCustodyRootBinding, ...]
+
+
+def migrate_staged_root_v1(
+    custody: StagedRootCustody | Mapping[str, object],
+    *,
+    source_root: Path | str,
+    destination_store: Path | str,
+) -> tuple[ContentBinding, ContentMigrationReceipt]:
+    """Offline-only migration from one authenticated role-coupled v1 root."""
+    legacy = (
+        custody
+        if isinstance(custody, StagedRootCustody)
+        else StagedRootCustody.model_validate(custody)
+    )
+    source = _canonical_explicit_root(source_root, kind="legacy staged-root v1")
+    verify_staged_root_snapshot(legacy, source)
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+    provider = ImmutableArtifactBlobProvider(Path(destination_store).absolute())
+    tree_ref = provider.ingest_tree(source)
+    tree = provider.get_tree(tree_ref)
+    by_path = {entry.relative_path: entry.object for entry in tree.files}
+    mappings = [
+        ContentMigrationMapping(
+            source_type="staged-root-v1",
+            source_ref=f"{legacy.custody_ref}#{record.relative_path}",
+            source_sha256=record.sha256,
+            target_ref=by_path[record.relative_path].object_id,
+            target_sha256=by_path[record.relative_path].sha256,
+            size_bytes=record.size_bytes,
+        )
+        for record in legacy.files
+    ]
+    mappings.append(
+        ContentMigrationMapping(
+            source_type="staged-root-v1",
+            source_ref=legacy.custody_ref,
+            source_sha256=legacy.content_sha256,
+            target_ref=tree_ref.tree_id,
+            target_sha256=tree_ref.descriptor.sha256,
+            size_bytes=tree_ref.descriptor.size_bytes,
+        )
+    )
+    binding = ContentBinding(
+        binding_name=legacy.binding_name,
+        root_kind=legacy.root_kind,
+        tree=tree_ref,
+    )
+    receipt = ContentMigrationReceipt(
+        source_schema_version=STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
+        destination_store=str(provider.root),
+        mappings=tuple(mappings),
+        metadata={
+            "migration_mode": "offline-explicit",
+            "binding": binding.model_dump(mode="json"),
+        },
+    )
+    return binding, receipt
+
+
+def require_content_binding(value: object) -> ContentBinding:
+    """Admit only successor content bindings at new runtime boundaries."""
+    if isinstance(value, StagedRootCustody) or (
+        isinstance(value, Mapping)
+        and value.get("schema_version") == STAGED_ROOT_CUSTODY_SCHEMA_VERSION
+    ):
+        raise LegacyContentFormatError(
+            "staged-root custody v1 is offline-migration input, not runtime input; run "
+            f"{LEGACY_CONTENT_MIGRATION_COMMAND} --staged-root-v1 <custody.json> "
+            "--source-root <snapshot> --destination-store <root>"
+        )
+    try:
+        return ContentBinding.model_validate(value)
+    except Exception as exc:
+        raise LegacyContentFormatError(
+            "runtime content binding is invalid; supply feedbax.spec.content_binding.v1 or run "
+            f"{LEGACY_CONTENT_MIGRATION_COMMAND} for legacy custody"
+        ) from exc
+
+
+def migrate_run_bundle_staged_roots_v12(
+    bundle: Mapping[str, object],
+    *,
+    source_roots: Mapping[str, Mapping[str, Path | str]],
+    destination_store: Path | str,
+) -> tuple[tuple[ContentBinding, ...], ContentMigrationReceipt]:
+    """Offline conversion of every staged-root record embedded in one v12 bundle."""
+    source_version = bundle.get("schema_version")
+    if source_version != "feedbax.orchestration.run_bundle.v12":
+        raise LegacyContentFormatError(
+            "saved-bundle migration requires feedbax.orchestration.run_bundle.v12"
+        )
+    raw_roots = bundle.get("staged_roots")
+    if not isinstance(raw_roots, list) or not raw_roots:
+        raise LegacyContentFormatError("saved bundle has no staged-root v1 records to migrate")
+    bindings: list[ContentBinding] = []
+    mappings: list[ContentMigrationMapping] = []
+    for raw in raw_roots:
+        legacy = StagedRootCustody.model_validate(raw)
+        try:
+            source_root = source_roots[legacy.root_kind][legacy.binding_name]
+        except KeyError as exc:
+            raise LegacyContentFormatError(
+                "saved-bundle migration lacks the exact source snapshot for "
+                f"{(legacy.root_kind, legacy.binding_name)!r}"
+            ) from exc
+        binding, receipt = migrate_staged_root_v1(
+            legacy,
+            source_root=source_root,
+            destination_store=destination_store,
+        )
+        bindings.append(binding)
+        mappings.extend(receipt.mappings)
+    ordered = tuple(sorted(bindings, key=lambda item: (item.root_kind, item.binding_name)))
+    return ordered, ContentMigrationReceipt(
+        source_schema_version="feedbax.orchestration.run_bundle.v12",
+        destination_store=str(Path(destination_store).absolute()),
+        mappings=tuple(sorted(mappings, key=lambda item: (item.source_ref, item.target_ref))),
+        metadata={
+            "migration_mode": "offline-explicit",
+            "bindings": [binding.model_dump(mode="json") for binding in ordered],
+        },
+    )
+
+
+def reject_legacy_run_bundle_staged_roots(bundle: Mapping[str, object]) -> None:
+    """Reject v12 staged-root runtime use without consulting old snapshot paths."""
+    if bundle.get("schema_version") == "feedbax.orchestration.run_bundle.v12" and bundle.get(
+        "staged_roots"
+    ):
+        raise LegacyContentFormatError(
+            "RunBundle v12 staged_roots are offline-migration input, not runtime input; run "
+            f"{LEGACY_CONTENT_MIGRATION_COMMAND} --run-bundle-v12 <bundle.json> "
+            "--source-roots-json <roots.json> --destination-store <root>"
+        )
 
 
 def staged_root_content_sha256(
@@ -437,10 +579,9 @@ def _copy_root(
         _copy_directory(root_descriptor, destination, (), directories, records)
         root_after = os.stat(source, follow_symlinks=False)
         opened_after = os.fstat(root_descriptor)
-        if (
-            _directory_state(root_after) != _directory_state(opened_before)
-            or _directory_state(opened_after) != _directory_state(opened_before)
-        ):
+        if _directory_state(root_after) != _directory_state(opened_before) or _directory_state(
+            opened_after
+        ) != _directory_state(opened_before):
             raise StagedRootCustodyError("staged-root identity changed during snapshot")
     finally:
         os.close(root_descriptor)
@@ -482,13 +623,10 @@ def _copy_directory(
                 )
                 completed = os.fstat(child_descriptor)
                 current = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
-                if (
-                    _directory_state(completed) != _directory_state(before)
-                    or _directory_state(current) != _directory_state(before)
-                ):
-                    raise StagedRootCustodyError(
-                        "staged-root directory changed during snapshot"
-                    )
+                if _directory_state(completed) != _directory_state(before) or _directory_state(
+                    current
+                ) != _directory_state(before):
+                    raise StagedRootCustodyError("staged-root directory changed during snapshot")
             finally:
                 os.close(child_descriptor)
         elif stat.S_ISREG(before.st_mode):
@@ -648,6 +786,10 @@ __all__ = [
     "StagedRootSnapshotBinding",
     "StagedRootSourceBinding",
     "materialize_staged_root_snapshot",
+    "migrate_staged_root_v1",
+    "migrate_run_bundle_staged_roots_v12",
+    "reject_legacy_run_bundle_staged_roots",
+    "require_content_binding",
     "seal_staged_root",
     "staged_execution_root_bindings",
     "staged_root_content_sha256",

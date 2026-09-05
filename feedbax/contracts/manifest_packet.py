@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
-import shutil
+import stat
+import unicodedata
 from collections import deque
 from collections.abc import Iterable, Mapping
 from datetime import datetime
@@ -21,11 +21,17 @@ from feedbax.contracts.base import (
     sha256_file,
     utc_now,
 )
+from feedbax.contracts.artifact_custody import (
+    LEGACY_CONTENT_MIGRATION_COMMAND,
+    ContentManifestConflictError,
+    ContentMigrationMapping,
+    ContentMigrationReceipt,
+    LegacyContentFormatError,
+)
 from feedbax.contracts.manifest import (
     BaseManifest,
     MANIFEST_MODELS,
     load_manifest,
-    safe_manifest_key,
 )
 from feedbax.contracts.migrations import (
     SpecSchemaRegistry,
@@ -38,8 +44,8 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 
 MANIFEST_PACKET_SCHEMA_ID = "feedbax.spec.manifest_packet"
-MANIFEST_PACKET_SCHEMA_VERSION = "feedbax.spec.manifest_packet.v1"
-DEFAULT_PACKET_ARTIFACT_TOTAL_LIMIT_BYTES = 512 * 1024 * 1024
+MANIFEST_PACKET_SCHEMA_VERSION_V1 = "feedbax.spec.manifest_packet.v1"
+MANIFEST_PACKET_SCHEMA_VERSION = "feedbax.spec.manifest_packet.v2"
 
 ClosureDirection = Literal["ancestors", "descendants", "both"]
 ArtifactInclusionPolicy = Literal["auto", "include", "external"]
@@ -64,6 +70,7 @@ class ManifestPacketManifestEntry(StrictModel):
     kind: str
     id: str
     path: str
+    target_path: str | None = None
     sha256: str
     schema_version: str | None = None
 
@@ -93,6 +100,14 @@ class ManifestPacketArtifactEntry(StrictModel):
         return self
 
 
+class ManifestPacketObjectEntry(StrictModel):
+    """One unique exact object carried once by a self-contained packet."""
+
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(ge=0)
+    path: str
+
+
 class ManifestPacketIndex(StrictModel):
     """Schema-governed index for a Feedbax manifest packet directory."""
 
@@ -101,6 +116,46 @@ class ManifestPacketIndex(StrictModel):
     producer: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     feedbax_version: str = Field(default_factory=feedbax_version)
+    closure_root_ids: list[str]
+    closure_direction: ClosureDirection = "descendants"
+    manifests: list[ManifestPacketManifestEntry] = Field(default_factory=list)
+    artifacts: list[ManifestPacketArtifactEntry] = Field(default_factory=list)
+    objects: list[ManifestPacketObjectEntry] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_unique_entries(self) -> "ManifestPacketIndex":
+        object_digests = [entry.sha256 for entry in self.objects]
+        object_paths = [entry.path for entry in self.objects]
+        manifest_keys = [(entry.kind, entry.id) for entry in self.manifests]
+        target_paths = [entry.target_path for entry in self.manifests]
+        artifact_keys = [
+            (entry.manifest_kind, entry.manifest_id, entry.ref_path) for entry in self.artifacts
+        ]
+        for name, values in (
+            ("object digest", object_digests),
+            ("object path", object_paths),
+            ("manifest kind/id", manifest_keys),
+            ("artifact logical ref", artifact_keys),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"manifest packet contains duplicate {name} entries")
+        if any(path is None for path in target_paths):
+            raise ValueError("manifest packet v2 requires every manifest target_path")
+        collision_keys = [str(path).casefold() for path in target_paths]
+        if len(collision_keys) != len(set(collision_keys)):
+            raise ValueError("manifest packet target paths collide on a portable filesystem")
+        return self
+
+
+class _ManifestPacketIndexV1(StrictModel):
+    """Offline-decoder shape for the retired path-backed packet format."""
+
+    schema_id: Literal[MANIFEST_PACKET_SCHEMA_ID] = MANIFEST_PACKET_SCHEMA_ID
+    schema_version: Literal[MANIFEST_PACKET_SCHEMA_VERSION_V1] = MANIFEST_PACKET_SCHEMA_VERSION_V1
+    producer: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    feedbax_version: str
     closure_root_ids: list[str]
     closure_direction: ClosureDirection = "descendants"
     manifests: list[ManifestPacketManifestEntry] = Field(default_factory=list)
@@ -138,8 +193,7 @@ def export_manifest_packet(
     root: Path | str | None = None,
     dest: Path | str,
     direction: ClosureDirection = "descendants",
-    include_artifacts: ArtifactInclusionPolicy | bool = "auto",
-    max_included_artifact_bytes: int = DEFAULT_PACKET_ARTIFACT_TOTAL_LIMIT_BYTES,
+    include_artifacts: ArtifactInclusionPolicy | bool = "include",
     producer: Mapping[str, Any] | None = None,
 ) -> ManifestPacketExportResult:
     """Export a lineage-closed directory packet from a manifest root."""
@@ -162,32 +216,30 @@ def export_manifest_packet(
 
     selected_ids = _lineage_closure(ids, records, direction=direction)
     selected = [records[manifest_id] for manifest_id in selected_ids]
-    artifact_refs = [
-        artifact
-        for record in selected
-        for artifact in _artifact_refs_from_manifest_data(record.data)
-        if artifact.ref.get("sha256")
-    ]
     policy = _normalize_artifact_policy(include_artifacts)
-    include_all = _should_include_artifacts(
-        artifact_refs,
-        root=root_path,
-        policy=policy,
-        max_total_bytes=max_included_artifact_bytes,
-    )
+    include_all = policy == "include"
 
     manifest_entries: list[ManifestPacketManifestEntry] = []
     artifact_entries: list[ManifestPacketArtifactEntry] = []
+    object_entries: dict[str, ManifestPacketObjectEntry] = {}
     for record in selected:
-        packet_manifest_path = Path("manifests") / record.relative_path.relative_to("manifests")
+        packet_manifest_path = _packet_object_path(sha256_bytes(record.raw_bytes))
         target = dest_path / packet_manifest_path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(record.path, target)
+        _publish_packet_object(record.raw_bytes, target)
+        object_entries.setdefault(
+            sha256_bytes(record.raw_bytes),
+            ManifestPacketObjectEntry(
+                sha256=sha256_bytes(record.raw_bytes),
+                size_bytes=len(record.raw_bytes),
+                path=packet_manifest_path.as_posix(),
+            ),
+        )
         manifest_entries.append(
             ManifestPacketManifestEntry(
                 kind=record.manifest.kind,
                 id=record.manifest.id,
                 path=packet_manifest_path.as_posix(),
+                target_path=record.relative_path.as_posix(),
                 sha256=sha256_bytes(record.raw_bytes),
                 schema_version=record.manifest.schema_version,
             )
@@ -204,6 +256,16 @@ def export_manifest_packet(
             )
             if entry is not None:
                 artifact_entries.append(entry)
+                if entry.mode == "included":
+                    assert entry.path is not None and entry.size_bytes is not None
+                    object_entries.setdefault(
+                        entry.sha256,
+                        ManifestPacketObjectEntry(
+                            sha256=entry.sha256,
+                            size_bytes=entry.size_bytes,
+                            path=entry.path,
+                        ),
+                    )
 
     index = ManifestPacketIndex(
         producer=dict(producer or {}),
@@ -211,6 +273,7 @@ def export_manifest_packet(
         closure_direction=direction,
         manifests=manifest_entries,
         artifacts=artifact_entries,
+        objects=[object_entries[digest] for digest in sorted(object_entries)],
     )
     index_path = dest_path / "packet.json"
     index_path.write_text(
@@ -241,24 +304,24 @@ def import_manifest_packet(
     packet_path = Path(packet)
     root_path = Path(root) if root is not None else default_manifest_root()
     active_registry = registry or default_spec_registry
-    index, packet_hash = _load_packet_index(packet_path, registry=active_registry)
+    index = _load_packet_index(packet_path, registry=active_registry)
     target_records = _scan_manifest_root(root_path)
+    packet_objects = _validate_packet_objects(packet_path, index)
+    provider = ImmutableArtifactBlobProvider(root_path.absolute())
 
     manifest_writes: list[tuple[ManifestPacketManifestEntry, Path, bytes]] = []
-    artifact_copies: list[tuple[ManifestPacketArtifactEntry, Path, bytes]] = []
     errors: list[str] = []
 
-    artifact_entries_by_manifest: dict[str, list[ManifestPacketArtifactEntry]] = {}
     for artifact in index.artifacts:
-        artifact_entries_by_manifest.setdefault(artifact.manifest_id, []).append(artifact)
         try:
             source_bytes = _validate_packet_artifact(packet_path, artifact)
-            target_path = _imported_artifact_path(root_path, artifact)
         except ManifestPacketValidationError as exc:
             errors.append(str(exc))
             continue
-        if artifact.mode == "included":
-            artifact_copies.append((artifact, target_path, source_bytes))
+        if artifact.mode == "included" and packet_objects.get(artifact.sha256) != source_bytes:
+            errors.append(
+                f"packet artifact does not resolve its unique object: {artifact.artifact_id!r}"
+            )
 
     for entry in index.manifests:
         try:
@@ -275,13 +338,22 @@ def import_manifest_packet(
                 entry_id=entry.id,
                 raw_path=entry.path,
             )
+            if entry.target_path is None:
+                raise ManifestPacketValidationError(
+                    f"Manifest packet v2 entry lacks target_path: id={entry.id!r}"
+                )
+            target_relative_path = _safe_packet_entry_path(
+                entry.target_path,
+                entry_type="manifest target",
+                entry_id=entry.id,
+            )
             target_path = _contained_path(
                 root_path,
-                packet_relative_path,
+                target_relative_path,
                 container_name="target root",
-                entry_type="manifest",
+                entry_type="manifest target",
                 entry_id=entry.id,
-                raw_path=entry.path,
+                raw_path=entry.target_path,
             )
         except ManifestPacketValidationError as exc:
             errors.append(str(exc))
@@ -298,6 +370,9 @@ def import_manifest_packet(
                 f"actual={actual_sha!r}"
             )
             continue
+        if packet_objects.get(entry.sha256) != raw_bytes:
+            errors.append(f"packet manifest does not resolve its unique object: id={entry.id!r}")
+            continue
         try:
             raw_data = strict_json_loads(
                 raw_bytes.decode("utf-8"),
@@ -308,46 +383,52 @@ def import_manifest_packet(
                 registry=active_registry,
                 manifest_id=entry.id,
             )
-            imported_data = _manifest_data_for_import(
-                raw_data,
-                packet_index=index,
-                packet_hash=packet_hash,
-                manifest_entry=entry,
-                artifact_entries=artifact_entries_by_manifest.get(entry.id, []),
-                root=root_path,
-            )
-            expected_bytes = _manifest_import_bytes(imported_data)
         except Exception as exc:
             errors.append(f"Invalid packet manifest id={entry.id!r}: {exc}")
             continue
 
         existing = target_records.get(entry.id)
         if existing is not None:
-            expected_sha = sha256_bytes(expected_bytes)
             existing_sha = sha256_bytes(existing.raw_bytes)
-            if existing_sha not in {entry.sha256, expected_sha}:
+            if existing_sha != entry.sha256:
                 errors.append(
                     "Divergent manifest id already exists: "
                     f"id={entry.id!r}, existing_sha256={existing_sha!r}, "
-                    f"packet_sha256={entry.sha256!r}, expected_import_sha256={expected_sha!r}"
+                    f"packet_sha256={entry.sha256!r}"
                 )
             continue
 
-        manifest_writes.append((entry, target_path, expected_bytes))
+        manifest_writes.append((entry, target_path, raw_bytes))
 
     if errors:
         raise ManifestPacketValidationError(
             "Manifest packet import failed before writing any files:\n- " + "\n- ".join(errors)
         )
 
-    for _artifact, target, data in artifact_copies:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.exists():
-            target.write_bytes(data)
+    for digest in sorted(packet_objects):
+        provider.store_object(packet_objects[digest])
+
+    try:
+        provider.bind_manifests(
+            tuple((entry.kind, entry.id, data) for entry, _target, data in manifest_writes)
+            + tuple(
+                (entry.kind, entry.id, packet_objects[entry.sha256])
+                for entry in index.manifests
+                if entry.id in target_records
+            )
+        )
+    except ContentManifestConflictError as exc:
+        raise ManifestPacketConflictError(str(exc)) from exc
 
     for _entry, target, data in manifest_writes:
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        if target.exists():
+            if target.read_bytes() != data:
+                raise ManifestPacketConflictError(
+                    f"manifest target changed after validation: {target}"
+                )
+        else:
+            target.write_bytes(data)
 
     from feedbax.persistence.manifest_index import rebuild_manifest_index
 
@@ -367,6 +448,120 @@ def import_manifest_packet(
         external_artifact_count=sum(1 for entry in index.artifacts if entry.mode == "external"),
         index_path=str(db_path),
     )
+
+
+def migrate_manifest_packet_v1(
+    packet: Path | str,
+    *,
+    destination_root: Path | str,
+) -> ContentMigrationReceipt:
+    """Offline-only conversion of one authenticated packet-v1 directory into the store."""
+    packet_path = Path(packet)
+    index_path = packet_path / "packet.json"
+    try:
+        raw_index = index_path.read_bytes()
+        payload = strict_json_loads(raw_index.decode("utf-8"), ref=str(index_path))
+        index = _ManifestPacketIndexV1.model_validate(payload)
+    except Exception as exc:
+        raise ManifestPacketValidationError(f"invalid manifest packet v1 index: {exc}") from exc
+    provider = ImmutableArtifactBlobProvider(Path(destination_root).absolute())
+    mappings: list[ContentMigrationMapping] = []
+    manifests: list[tuple[str, str, bytes]] = []
+
+    for entry in index.manifests:
+        source = _contained_path(
+            packet_path,
+            _safe_packet_entry_path(entry.path, entry_type="manifest", entry_id=entry.id),
+            container_name="packet directory",
+            entry_type="manifest",
+            entry_id=entry.id,
+            raw_path=entry.path,
+        )
+        data = _read_legacy_packet_file(source, expected_sha256=entry.sha256)
+        manifests.append((entry.kind, entry.id, data))
+        object_ref = provider.store_object(data)
+        mappings.append(
+            ContentMigrationMapping(
+                source_type="manifest-packet-v1",
+                source_ref=f"{index_path}:{entry.path}",
+                source_sha256=entry.sha256,
+                target_ref=f"content-manifest://{entry.kind}/{entry.id}",
+                target_sha256=object_ref.sha256,
+                size_bytes=object_ref.size_bytes,
+            )
+        )
+
+    for entry in index.artifacts:
+        if entry.mode != "included" or entry.path is None:
+            raise ManifestPacketValidationError(
+                "packet-v1 external/path-backed artifacts require their exact source paths; "
+                f"rerun {LEGACY_CONTENT_MIGRATION_COMMAND} with a self-contained packet"
+            )
+        source = _contained_path(
+            packet_path,
+            _safe_packet_entry_path(
+                entry.path,
+                entry_type="artifact",
+                entry_id=entry.artifact_id,
+            ),
+            container_name="packet directory",
+            entry_type="artifact",
+            entry_id=entry.artifact_id,
+            raw_path=entry.path,
+        )
+        data = _read_legacy_packet_file(
+            source,
+            expected_sha256=entry.sha256,
+            expected_size=entry.size_bytes,
+        )
+        object_ref = provider.store_object(data)
+        mappings.append(
+            ContentMigrationMapping(
+                source_type="manifest-packet-v1",
+                source_ref=(
+                    f"{index_path}:{entry.path}"
+                    f"#{entry.manifest_kind}/{entry.manifest_id}{entry.ref_path}"
+                ),
+                source_sha256=entry.sha256,
+                target_ref=object_ref.object_id,
+                target_sha256=object_ref.sha256,
+                size_bytes=object_ref.size_bytes,
+            )
+        )
+    provider.bind_manifests(tuple(manifests))
+    return ContentMigrationReceipt(
+        source_schema_version=MANIFEST_PACKET_SCHEMA_VERSION_V1,
+        destination_store=str(provider.root),
+        mappings=tuple(sorted(mappings, key=lambda item: (item.source_ref, item.target_ref))),
+        metadata={
+            "packet_index_sha256": sha256_bytes(raw_index),
+            "migration_mode": "offline-explicit",
+        },
+    )
+
+
+def _read_legacy_packet_file(
+    source: Path,
+    *,
+    expected_sha256: str,
+    expected_size: int | None = None,
+) -> bytes:
+    try:
+        source_stat = source.lstat()
+    except OSError as exc:
+        raise ManifestPacketValidationError(
+            f"legacy packet member is unavailable: {source}"
+        ) from exc
+    if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_nlink != 1:
+        raise ManifestPacketValidationError(
+            f"legacy packet member must be one regular non-link file: {source}"
+        )
+    data = source.read_bytes()
+    if sha256_bytes(data) != expected_sha256 or (
+        expected_size is not None and len(data) != expected_size
+    ):
+        raise ManifestPacketValidationError(f"legacy packet member identity mismatch: {source}")
+    return data
 
 
 class _ManifestRecord(StrictModel):
@@ -389,8 +584,24 @@ def _scan_manifest_root(root: Path) -> dict[str, _ManifestRecord]:
     manifests_dir = root / "manifests"
     if not manifests_dir.exists():
         return {}
+    if manifests_dir.is_symlink() or not manifests_dir.is_dir():
+        raise ManifestPacketValidationError(
+            f"Manifest packet source root must be a non-symlink directory: {manifests_dir}"
+        )
     records: dict[str, _ManifestRecord] = {}
+    portable_paths: set[str] = set()
     for path in sorted(manifests_dir.glob("**/*.json")):
+        path_stat = path.lstat()
+        if not stat.S_ISREG(path_stat.st_mode) or path_stat.st_nlink != 1:
+            raise ManifestPacketValidationError(
+                f"Manifest packet source must be one regular non-link file: {path}"
+            )
+        portable_key = unicodedata.normalize("NFC", path.relative_to(root).as_posix()).casefold()
+        if portable_key in portable_paths:
+            raise ManifestPacketValidationError(
+                f"Manifest packet source paths collide on a portable filesystem: {path}"
+            )
+        portable_paths.add(portable_key)
         raw_bytes = path.read_bytes()
         data = strict_json_loads(raw_bytes.decode("utf-8"), ref=str(path))
         manifest = load_manifest(path)
@@ -501,29 +712,12 @@ def _normalize_artifact_policy(
         return "include"
     if include_artifacts is False:
         return "external"
+    if include_artifacts == "auto":
+        raise ManifestPacketValidationError(
+            "manifest packet v2 requires explicit included or external artifact mode; "
+            "use include_artifacts='include' for a self-contained packet"
+        )
     return include_artifacts
-
-
-def _should_include_artifacts(
-    artifacts: list[_ArtifactRefRecord],
-    *,
-    root: Path,
-    policy: ArtifactInclusionPolicy,
-    max_total_bytes: int,
-) -> bool:
-    if policy == "include":
-        return True
-    if policy == "external":
-        return False
-    total = 0
-    for artifact in artifacts:
-        path = _resolve_artifact_source_path(artifact.ref, root=root)
-        if path is None or not path.is_file():
-            return False
-        total += path.stat().st_size
-        if total > max_total_bytes:
-            return False
-    return True
 
 
 def _packet_artifact_entry(
@@ -539,6 +733,12 @@ def _packet_artifact_entry(
     source_path = _resolve_artifact_source_path(ref, root=root)
     ref_sha = ref.get("sha256")
     if source_path is not None and source_path.is_file():
+        source_stat = source_path.lstat()
+        if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_nlink != 1:
+            raise ManifestPacketValidationError(
+                "Packet artifacts must be one regular non-link file: "
+                f"manifest_id={manifest.id!r}, ref_path={artifact.ref_path!r}"
+            )
         actual_sha = sha256_file(source_path)
         if ref_sha is not None and ref_sha != actual_sha:
             raise ManifestPacketValidationError(
@@ -569,12 +769,9 @@ def _packet_artifact_entry(
                     f"manifest_id={manifest.id!r}, ref_path={artifact.ref_path!r}"
                 )
         else:
-            rel_path = (
-                Path("artifacts") / safe_manifest_key(artifact_id) / safe_manifest_key(logical_name)
-            )
+            rel_path = _packet_object_path(ref_sha)
             target = packet_root / rel_path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, target)
+            _publish_packet_object(source_path.read_bytes(), target)
             return ManifestPacketArtifactEntry(
                 artifact_id=artifact_id,
                 logical_name=logical_name,
@@ -605,6 +802,21 @@ def _packet_artifact_entry(
     )
 
 
+def _packet_object_path(digest: str) -> Path:
+    return Path("objects") / "sha256" / digest[:2] / digest
+
+
+def _publish_packet_object(data: bytes, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        if not target.is_file() or target.read_bytes() != data:
+            raise ManifestPacketValidationError(
+                f"packet object path already contains conflicting bytes: {target}"
+            )
+        return
+    target.write_bytes(data)
+
+
 def _resolve_artifact_source_path(ref: Mapping[str, Any], *, root: Path) -> Path | None:
     candidates: list[Path] = []
     uri = ref.get("uri")
@@ -631,10 +843,15 @@ def _load_packet_index(
     packet_path: Path,
     *,
     registry: SpecSchemaRegistry,
-) -> tuple[ManifestPacketIndex, str]:
+) -> ManifestPacketIndex:
     index_path = packet_path / "packet.json"
     if not index_path.is_file():
         raise ManifestPacketValidationError(f"Missing manifest packet index: {index_path}")
+    index_stat = index_path.lstat()
+    if not stat.S_ISREG(index_stat.st_mode) or index_stat.st_nlink != 1:
+        raise ManifestPacketValidationError(
+            f"Manifest packet index must be one regular non-link file: {index_path}"
+        )
     raw_bytes = index_path.read_bytes()
     payload = strict_json_loads(raw_bytes.decode("utf-8"), ref=str(index_path))
     schema_id = payload.get("schema_id")
@@ -643,12 +860,79 @@ def _load_packet_index(
             "Unsupported manifest packet schema identity: "
             f"schema_id={schema_id!r}, expected={MANIFEST_PACKET_SCHEMA_ID!r}"
         )
+    if payload.get("schema_version") == MANIFEST_PACKET_SCHEMA_VERSION_V1:
+        raise LegacyContentFormatError(
+            "manifest packet v1 is offline-migration input, not runtime input; run "
+            f"{LEGACY_CONTENT_MIGRATION_COMMAND} --packet-v1 <packet> "
+            "--destination-store <root>"
+        )
     registry.migrate(
         "ManifestPacket",
         payload,
         source_version=payload.get("schema_version"),
     )
-    return ManifestPacketIndex.model_validate(payload), sha256_bytes(raw_bytes)
+    return ManifestPacketIndex.model_validate(payload)
+
+
+def _validate_packet_objects(
+    packet_path: Path,
+    index: ManifestPacketIndex,
+) -> dict[str, bytes]:
+    objects: dict[str, bytes] = {}
+    paths: set[str] = set()
+    errors: list[str] = []
+    for entry in index.objects:
+        try:
+            relative = _safe_packet_entry_path(
+                entry.path,
+                entry_type="object",
+                entry_id=entry.sha256,
+            )
+            expected_path = _packet_object_path(entry.sha256)
+            if relative != expected_path:
+                raise ManifestPacketValidationError(
+                    f"Packet object path is not canonical: digest={entry.sha256!r}, "
+                    f"path={entry.path!r}, expected={expected_path.as_posix()!r}"
+                )
+            if entry.sha256 in objects:
+                raise ManifestPacketValidationError(
+                    f"Duplicate packet object digest: {entry.sha256!r}"
+                )
+            if entry.path in paths:
+                raise ManifestPacketValidationError(f"Duplicate packet object path: {entry.path!r}")
+            source = _contained_path(
+                packet_path,
+                relative,
+                container_name="packet directory",
+                entry_type="object",
+                entry_id=entry.sha256,
+                raw_path=entry.path,
+            )
+            source_stat = source.lstat()
+            if not source.is_file() or source.is_symlink() or source_stat.st_nlink != 1:
+                raise ManifestPacketValidationError(
+                    f"Packet object must be one regular non-link file: {entry.path!r}"
+                )
+            data = source.read_bytes()
+            if len(data) != entry.size_bytes or sha256_bytes(data) != entry.sha256:
+                raise ManifestPacketValidationError(
+                    f"Packet object identity mismatch: digest={entry.sha256!r}, path={entry.path!r}"
+                )
+            objects[entry.sha256] = data
+            paths.add(entry.path)
+        except (OSError, ManifestPacketValidationError) as exc:
+            errors.append(str(exc))
+    referenced = {entry.sha256 for entry in index.manifests}
+    referenced.update(entry.sha256 for entry in index.artifacts if entry.mode == "included")
+    missing = sorted(referenced - objects.keys())
+    if missing:
+        errors.append(f"Packet references missing object digests: {missing}")
+    if errors:
+        raise ManifestPacketValidationError(
+            "Manifest packet object validation failed before publishing references:\n- "
+            + "\n- ".join(errors)
+        )
+    return objects
 
 
 def _validate_packet_artifact(
@@ -740,101 +1024,6 @@ def _validate_manifest_schema_families(
     visit(value, "")
 
 
-def _manifest_data_for_import(
-    data: dict[str, Any],
-    *,
-    packet_index: ManifestPacketIndex,
-    packet_hash: str,
-    manifest_entry: ManifestPacketManifestEntry,
-    artifact_entries: list[ManifestPacketArtifactEntry],
-    root: Path,
-) -> dict[str, Any]:
-    # Trusted-internal, not an authority boundary: this is a deep copy of a
-    # mapping this process already parsed and admitted through
-    # ``strict_json_loads`` in ``_validate_packet_manifests``. The bytes are
-    # produced by ``json.dumps`` one expression earlier, so no object in them
-    # can state a member twice and there is no external authority to refuse.
-    imported = json.loads(json.dumps(data))
-    metadata = dict(imported.get("metadata") or {})
-    metadata["imported_from"] = {
-        "schema_id": packet_index.schema_id,
-        "schema_version": packet_index.schema_version,
-        "packet_sha256": packet_hash,
-        "producer": packet_index.producer,
-        "manifest_sha256": manifest_entry.sha256,
-        "manifest_path": manifest_entry.path,
-    }
-    imported["metadata"] = metadata
-    for artifact in artifact_entries:
-        _update_artifact_ref(imported, artifact, root=root)
-    return imported
-
-
-def _update_artifact_ref(
-    data: dict[str, Any],
-    artifact: ManifestPacketArtifactEntry,
-    *,
-    root: Path,
-) -> None:
-    target = _path_get(data, artifact.ref_path)
-    if not isinstance(target, dict):
-        return
-    metadata = dict(target.get("metadata") or {})
-    metadata["manifest_packet"] = {
-        "mode": artifact.mode,
-        "packet_artifact_id": artifact.artifact_id,
-        "sha256": artifact.sha256,
-    }
-    target["metadata"] = metadata
-    target["sha256"] = artifact.sha256
-    target["size_bytes"] = artifact.size_bytes
-    target["artifact_id"] = artifact.artifact_id
-    if artifact.mode == "included":
-        target["storage_backend"] = "feedbax-local"
-        target["uri"] = str(_imported_artifact_path(root, artifact))
-    else:
-        target["storage_backend"] = "external"
-        target["uri"] = artifact.external_uri
-
-
-def _path_get(data: Any, path: str) -> Any:
-    current = data
-    for part in [part for part in path.split("/") if part]:
-        if isinstance(current, list):
-            current = current[int(part)]
-        elif isinstance(current, dict):
-            current = current.get(part)
-        else:
-            return None
-    return current
-
-
-def _manifest_import_bytes(data: dict[str, Any]) -> bytes:
-    kind = data.get("kind")
-    if not isinstance(kind, str) or kind not in MANIFEST_MODELS:
-        raise ValueError(f"Unknown Feedbax manifest kind: {kind!r}")
-    model = MANIFEST_MODELS[kind].model_validate(data)
-    return (model.model_dump_json(indent=2, exclude_none=True) + "\n").encode("utf-8")
-
-
-def _imported_artifact_path(root: Path, artifact: ManifestPacketArtifactEntry) -> Path:
-    logical_name = safe_manifest_key(artifact.logical_name)
-    relative_path = (
-        Path("artifacts")
-        / "manifest_packet"
-        / safe_manifest_key(artifact.artifact_id)
-        / logical_name
-    )
-    return _contained_path(
-        root,
-        relative_path,
-        container_name="target root",
-        entry_type="artifact",
-        entry_id=artifact.artifact_id,
-        raw_path=str(relative_path),
-    )
-
-
 def _safe_packet_entry_path(
     path: str | None,
     *,
@@ -847,7 +1036,13 @@ def _safe_packet_entry_path(
             "packet entries must use a non-empty relative path"
         )
     candidate = Path(path)
-    if candidate.is_absolute() or ".." in candidate.parts:
+    if (
+        candidate.is_absolute()
+        or ".." in candidate.parts
+        or "\\" in path
+        or "\x00" in path
+        or unicodedata.normalize("NFC", path) != path
+    ):
         raise ManifestPacketValidationError(
             f"Unsafe packet {entry_type} path: id={entry_id!r}, path={path!r}; "
             "packet entries must stay within the packet directory and target root"
@@ -878,6 +1073,18 @@ def _contained_path(
             f"Unsafe packet {entry_type} path: id={entry_id!r}, path={raw_path!r}; "
             f"resolved path escapes the {container_name}"
         ) from exc
+    current = root_path
+    for part in relative_path.parts:
+        current = current / part
+        try:
+            current_stat = current.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(current_stat.st_mode):
+            raise ManifestPacketValidationError(
+                f"Unsafe packet {entry_type} path: id={entry_id!r}, path={raw_path!r}; "
+                f"symlinks are forbidden in the {container_name}"
+            )
     return candidate
 
 
