@@ -163,6 +163,16 @@ it may become guaranteed downstream policy.
   Their semantics, migration table, integrity rules, sibling handoff APIs, and
   surface-admission rationale are defined in
   `docs/design/canonical_content_store.md`.
+- Add explicit `ContentRootRecord`, `ContentLeaseRecord`, `ContentHoldRecord`,
+  `ContentRetentionIndex`, and `ContentGcReceipt` v1 schemas. The fixed provider
+  gains root/hold administration, manual generation-guarded GC and recovery,
+  plus the orchestration-facing `acquire_lease`, `renew_lease`, and
+  `release_lease` names. Elapsed leases and uncertain state fail closed; no
+  automatic schedule or default time-to-live is part of the contract.
+- Remote attempt caches use those lease and quarantine invariants but remain
+  non-authoritative: they cannot register roots or holds. This is a candidate
+  cloud lifecycle state-machine increase and requires the separate owner
+  decision named by the protected-merge surface-admission policy.
 
 The repo-owned clean-install fixture is the available local compatibility
 corpus. No custody-pinned rlrmp2 inventory is present in this checkout, so the

@@ -10,8 +10,9 @@ import stat
 import unicodedata
 import uuid
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
@@ -45,7 +46,12 @@ from feedbax.contracts.artifact_custody import (
     CONTENT_TREE_REF_PREFIX,
     ContentManifestConflictError,
     ContentManifestRef,
+    ContentGcReceipt,
+    ContentGcRequest,
+    ContentHoldRecord,
+    ContentLeaseRecord,
     ContentObjectRef,
+    ContentRootRecord,
     ContentTree,
     ContentTreeFile,
     ContentTreeRef,
@@ -407,6 +413,86 @@ class ImmutableArtifactBlobProvider:
             require_link_no_follow=True,
         )
         object.__setattr__(self, "root", _canonicalize_trusted_system_aliases(root_path))
+
+    def _exclusive_lock(self) -> AbstractContextManager[None]:
+        """Return the one store lock shared by references and retention state."""
+        return _exclusive_store_lock(self.root)
+
+    def register_root(self, root: ContentRootRecord) -> ContentRootRecord:
+        """Register one explicit canonical retention root."""
+        from feedbax.persistence.content_retention import register_root
+
+        return register_root(self, root)
+
+    def set_run_state(
+        self,
+        root_id: str,
+        *,
+        nonterminal: bool,
+        restartable: bool,
+    ) -> ContentRootRecord:
+        """Record whether a run root remains nonterminal or restartable."""
+        from feedbax.persistence.content_retention import set_run_state
+
+        return set_run_state(
+            self,
+            root_id,
+            nonterminal=nonterminal,
+            restartable=restartable,
+        )
+
+    def release_root(self, root_id: str) -> ContentRootRecord:
+        """Release one terminal non-restartable root."""
+        from feedbax.persistence.content_retention import release_root
+
+        return release_root(self, root_id)
+
+    def place_hold(self, hold: ContentHoldRecord) -> ContentHoldRecord:
+        """Place one explicit scientific or owner hold."""
+        from feedbax.persistence.content_retention import place_hold
+
+        return place_hold(self, hold)
+
+    def release_hold(self, hold_id: str) -> ContentHoldRecord:
+        """Release one explicit hold."""
+        from feedbax.persistence.content_retention import release_hold
+
+        return release_hold(self, hold_id)
+
+    def acquire_lease(self, lease: ContentLeaseRecord) -> ContentLeaseRecord:
+        """Acquire one exact lease under the store transaction lock."""
+        from feedbax.persistence.content_retention import acquire_lease
+
+        return acquire_lease(self, lease)
+
+    def renew_lease(self, lease_id: str, *, expires_at: datetime) -> ContentLeaseRecord:
+        """Renew one exact active lease using a caller-selected expiry."""
+        from feedbax.persistence.content_retention import renew_lease
+
+        return renew_lease(self, lease_id, expires_at=expires_at)
+
+    def release_lease(self, lease_id: str) -> ContentLeaseRecord:
+        """Durably release one lease; expiry is never implicit release."""
+        from feedbax.persistence.content_retention import release_lease
+
+        return release_lease(self, lease_id)
+
+    def collect_garbage(
+        self,
+        request: ContentGcRequest | None = None,
+        *,
+        now: datetime | None = None,
+    ) -> ContentGcReceipt:
+        """Report candidates by default or execute one guarded manual sweep."""
+        from feedbax.persistence.content_retention import collect_garbage
+
+        return collect_garbage(self, request, now=now)
+
+    def recover_garbage_collection(self) -> ContentGcReceipt | None:
+        """Resume one interrupted marked generation idempotently."""
+        from feedbax.persistence.content_retention import recover_garbage_collection
+
+        return recover_garbage_collection(self)
 
     def store_object(self, data: bytes) -> ContentObjectRef:
         """Store one role-free exact byte object in the canonical CAS."""
