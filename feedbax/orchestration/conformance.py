@@ -40,6 +40,7 @@ from feedbax.orchestration.schedule_eval import (
     _MISSING as _SCHEDULE_MISSING,
     extract_resume_context,
     learning_rate_from_build_optimizer,
+    reconcile_resume_context_authority,
     require_schedule_context,
 )
 from feedbax.orchestration.state import RowState
@@ -305,6 +306,7 @@ class ConformanceRowArtifacts:
     bundle_row_spec: Mapping[str, Any] | None = None
     recorded_environment_fingerprint: Any = None
     preflight_normalized_payload: Mapping[str, Any] | None = None
+    preflight_resume_context: Mapping[str, Any] | None = None
     manifest_payload: Mapping[str, Any] | None = None
     row_state: RowState | None = None
     runtime_inputs: RowConformanceRuntimeInputs | None = None
@@ -1327,8 +1329,11 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
     """Verify realized learning-rate samples against the declared schedule."""
     check_id = "lr_trace"
     trace = _lr_trace(row)
-    context = extract_resume_context(row.bundle_row_spec, row.training_diagnostics)
     try:
+        context = reconcile_resume_context_authority(
+            extract_resume_context(row.bundle_row_spec, row.training_diagnostics),
+            row.preflight_resume_context,
+        )
         optimizer_spec_payload = _optimizer_spec_payload(row)
         optimizer_spec = (
             None
@@ -1385,8 +1390,20 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
             )
         expected = {}
         observed = {}
+        segment_completed = _path(row.training_diagnostics, "segment_completed_batches")
+        minimum_samples = (
+            min(3, int(segment_completed))
+            if isinstance(segment_completed, int)
+            and not isinstance(segment_completed, bool)
+            and segment_completed > 0
+            else 3
+        )
         for coordinates, coordinate_trace in trace.items():
-            samples = _selected_lr_samples(coordinate_trace, optimizer_spec)
+            samples = _selected_lr_samples(
+                coordinate_trace,
+                optimizer_spec,
+                minimum=minimum_samples,
+            )
             expected[coordinates] = {
                 step: learning_rate_from_build_optimizer(
                     optimizer_spec,
@@ -1608,10 +1625,14 @@ def _exact_nonnegative_event_coordinate(value: Any, *, name: str) -> int:
 def _selected_lr_samples(
     trace: Mapping[int, float],
     optimizer_spec: OptimizerSpec,
+    *,
+    minimum: int = 3,
 ) -> tuple[int, ...]:
     steps = sorted(trace)
-    if len(steps) < 3:
-        raise ValueError("lr_trace requires at least three realized samples")
+    if len(steps) < minimum:
+        raise ValueError(f"lr_trace requires at least {minimum} realized samples")
+    if minimum < 3:
+        return tuple(steps)
     schedule = optimizer_spec.lr_schedule
     candidates = {steps[0], steps[-1], steps[len(steps) // 2]}
     if schedule is not None:

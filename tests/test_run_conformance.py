@@ -1241,6 +1241,65 @@ def test_lr_trace_uses_native_method_training_optimizer_for_constant_schedule() 
     assert result.expected["(('replica', 0),)"][500] == pytest.approx(3e-5)
 
 
+def test_lr_trace_uses_durable_fresh_preflight_context_and_rejects_missing_or_ambiguous() -> None:
+    optimizer = OptimizerSpec(
+        type="adamw",
+        params={"weight_decay": 0.0},
+        lr_schedule=LrScheduleSpec(
+            kind="warmup_cosine",
+            learning_rate_0=0.1,
+            total_steps=10,
+            constant_lr_iterations=4,
+            warmup_init_fraction=0.1,
+            cosine_annealing_alpha=0.2,
+        ),
+    ).model_dump(mode="json")
+    fresh_spec = {
+        "method_payload": {"payload": {"training": {"optimizer": optimizer}}},
+        "checkpoint_progress": {"continuation": None},
+    }
+    diagnostics = {
+        "segment_completed_batches": 1,
+        "cumulative_completed_batches": 1,
+        "lr_trace": {1: 0.01},
+    }
+    origin_zero = {
+        "schedule_origin_step": 0,
+        "current_step": 0,
+        "optimizer_count_at_current_step": 0,
+    }
+
+    passing = check_lr_trace(
+        _row(
+            bundle_row_spec=fresh_spec,
+            training_diagnostics=diagnostics,
+            preflight_resume_context=origin_zero,
+        )
+    )
+    missing = check_lr_trace(_row(bundle_row_spec=fresh_spec, training_diagnostics=diagnostics))
+    ambiguous = check_lr_trace(
+        _row(
+            bundle_row_spec=fresh_spec,
+            training_diagnostics={
+                **diagnostics,
+                "resume_context": {
+                    "schedule_origin_step": 1,
+                    "current_step": 1,
+                    "optimizer_count_at_current_step": 1,
+                },
+            },
+            preflight_resume_context=origin_zero,
+        )
+    )
+
+    assert passing.status == "pass", passing
+    assert passing.expected[0] == pytest.approx(0.01)
+    assert missing.status == "fail"
+    assert "missing required input" in str(missing.detail)
+    assert ambiguous.status == "fail"
+    assert "ambiguous resume schedule authority" in str(ambiguous.detail)
+
+
 def test_lr_trace_normalizes_segment_local_continuation_steps() -> None:
     optimizer = OptimizerSpec(
         type="adamw",
