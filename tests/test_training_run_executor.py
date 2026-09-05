@@ -28,7 +28,15 @@ from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     resolve_staged_execution_context,
 )
-from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.base import ParentRef, authenticated_manifest_ref_metadata, sha256_bytes
+from feedbax.contracts.checkpoint_initialization import (
+    CheckpointInitializationPlan,
+    CheckpointInitializationRequest,
+    CheckpointSlotStructure,
+    CheckpointStructure,
+    checkpoint_structure_from_manifest,
+    lower_checkpoint_initialization,
+)
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
     load_manifest,
@@ -38,6 +46,12 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
     BatchHistory,
     CheckpointContinuationRequest,
+    CheckpointForkHistoryPolicy,
+    CheckpointForkPlan,
+    CheckpointForkSourcePreparation,
+    CheckpointForkTarget,
+    CheckpointForkTransformRecord,
+    CheckpointForkTransformStep,
     CheckpointSegmentLineage,
 )
 from feedbax.contracts.nan_attribution import (
@@ -121,10 +135,13 @@ from feedbax.orchestration.drivers.native_execution import (
     inject_native_execution_context,
 )
 from feedbax.training.checkpoint_custody import (
+    CheckpointForkPlanBindings,
     CheckpointCompatibilityError,
     concatenate_checkpoint_histories,
     fork_checkpoint_transaction,
+    derive_checkpoint_fork_compatibility_projection,
     load_latest_checkpoint,
+    structural_abi_fingerprint,
     write_checkpoint_transaction,
 )
 from feedbax.training.executor import (
@@ -138,6 +155,12 @@ from feedbax.training.executor import (
     _realized_lr_trace,
     _synchronized_optimizer_step,
     execute_training_run_spec,
+)
+from feedbax.persistence import ImmutableArtifactBlobProvider
+from feedbax.training.checkpoint_transform import (
+    SEMANTIC_CHECKPOINT_TRANSFORM_IDENTITY,
+    SEMANTIC_CHECKPOINT_TRANSFORM_VERSION,
+    semantic_checkpoint_transform_implementation_sha256,
 )
 from feedbax.training.preparation import (
     ExecutionPreparationRequest,
@@ -4474,6 +4497,325 @@ def test_execute_training_run_spec_resumes_through_checkpoint_custody(
     assert resumed.checkpoint_writes[0].manifest.parent_lineage
 
 
+def _checkpoint_initialization_plan(source, *, mode: str, target_slots):
+    write = source.checkpoint_writes[-1]
+    manifest_bytes = write.manifest_path.read_bytes()
+    source_ref = ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id=write.manifest.transaction_id,
+        role="training_checkpoint_custody",
+        metadata=authenticated_manifest_ref_metadata(
+            sha256_bytes(manifest_bytes),
+            len(manifest_bytes),
+        ),
+    )
+    source_structure = checkpoint_structure_from_manifest(write.manifest)
+    source_slots = {slot.slot: slot for slot in source_structure.slots}
+    target_structure = CheckpointStructure(
+        slots=[
+            CheckpointSlotStructure(
+                slot=name,
+                role=source_slots[name].role,
+                required=source_slots[name].required,
+                treedef=(fingerprint := structural_abi_fingerprint(value)).treedef,
+                leaves=list(fingerprint.leaves),
+                semantic_abi=source_slots[name].semantic_abi,
+            )
+            for name, value in target_slots.items()
+            if name in source_slots
+        ]
+    )
+    return lower_checkpoint_initialization(
+        CheckpointInitializationRequest(mode=mode, source=source_ref),
+        source=source_structure,
+        target=target_structure,
+    )
+
+
+def test_execute_training_run_spec_continues_through_initialization_plan(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source-checkpoint"
+    provider = ImmutableArtifactBlobProvider(tmp_path / "content")
+    initial_slots = _initial_slots(arrays=True)
+    source = execute_training_run_spec(
+        _run_spec(),
+        registry=default_training_program_registry(),
+        run_id="plan-source",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "source-manifests",
+        checkpoint_root=source_root,
+        checkpoint_content_provider=provider,
+        stop_after_barrier="after_train_batch",
+    )
+    plan = _checkpoint_initialization_plan(
+        source,
+        mode="continue_from",
+        target_slots=initial_slots,
+    )
+    source_binding = source.checkpoint_writes[-1].content_binding
+    assert source_binding is not None
+    continuation_spec = _run_spec().model_copy(
+        update={
+            "checkpoint_progress": _run_spec().checkpoint_progress.model_copy(
+                update={
+                    "continuation": CheckpointContinuationRequest(
+                        source_completed_batches=source.end_completed_batches,
+                        additional_batches=1,
+                    )
+                }
+            )
+        }
+    )
+
+    continued = execute_training_run_spec(
+        continuation_spec,
+        registry=default_training_program_registry(),
+        run_id="plan-continuation",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "continued-manifests",
+        checkpoint_root=tmp_path / "continued-checkpoint",
+        checkpoint_source_root=tmp_path / "unavailable-source-view",
+        checkpoint_initialization_plan=plan,
+        checkpoint_content_provider=provider,
+        checkpoint_source_content_binding=source_binding,
+    )
+
+    published = continued.checkpoint_writes[-1].manifest
+    assert continued.start_completed_batches == source.end_completed_batches
+    assert published.segment_lineage.parent_transaction_id == plan.source.id
+    assert published.parent_lineage[0].relationship == "parent"
+    assert published.metadata["checkpoint_initialization"]["mode"] == "continue_from"
+    assert continued.manifest.provenance.parents == [plan.source]
+    assert (
+        continued.manifest.provenance.metadata["checkpoint_initialization"]["mode"]
+        == "continue_from"
+    )
+    assert continued.checkpoint_writes[-1].content_binding is not None
+
+
+def test_execute_training_run_spec_warm_start_keeps_optimizer_and_state_fresh(
+    tmp_path: Path,
+) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "content")
+    slots = _initial_slots(arrays=True)
+    source = execute_training_run_spec(
+        _run_spec(),
+        registry=default_training_program_registry(),
+        run_id="warm-source",
+        initial_slots=slots,
+        checkpoint_root=tmp_path / "source",
+        manifest_root=tmp_path / "source-manifests",
+        checkpoint_content_provider=provider,
+    )
+    binding = source.checkpoint_writes[-1].content_binding
+    assert binding is not None
+    initialized = execute_training_run_spec(
+        _run_spec(),
+        registry=default_training_program_registry(),
+        run_id="warm-target",
+        initial_slots=slots,
+        checkpoint_root=tmp_path / "target",
+        manifest_root=tmp_path / "target-manifests",
+        checkpoint_source_root=tmp_path / "unavailable-source-view",
+        checkpoint_initialization_plan=_checkpoint_initialization_plan(
+            source, mode="initialize_from", target_slots=slots
+        ),
+        checkpoint_content_provider=provider,
+        checkpoint_source_content_binding=binding,
+    )
+    assert initialized.start_completed_batches == 0
+    assert initialized.final_slots["optimizer"]["count"].tolist() == [2.0]
+    assert initialized.checkpoint_writes[-1].manifest.parent_lineage[0].relationship == (
+        "new_lineage_override"
+    )
+
+
+def test_execute_training_run_spec_graph_change_uses_fork_transform_and_canonical_custody(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source-checkpoint"
+    target_root = tmp_path / "target-checkpoint"
+    provider = ImmutableArtifactBlobProvider(tmp_path / "content")
+    source_slots = _initial_slots(arrays=True)
+    source_slots["optimizer"] = {
+        **source_slots["optimizer"],
+        "moment": jnp.array([3.0]),
+    }
+    source = execute_training_run_spec(
+        _run_spec(),
+        registry=default_training_program_registry(),
+        run_id="graph-source",
+        initial_slots=source_slots,
+        manifest_root=tmp_path / "source-manifests",
+        checkpoint_root=source_root,
+        checkpoint_content_provider=provider,
+    )
+    source_write = source.checkpoint_writes[-1]
+    assert source_write.content_binding is not None
+    target_slots = {
+        **source_slots,
+        "model": jnp.array([0.0, 17.0]),
+        "optimizer": {"count": jnp.array([1.0]), "moment": jnp.array([0.0, 17.0])},
+    }
+    continuation = CheckpointContinuationRequest(
+        source_completed_batches=source.end_completed_batches,
+        additional_batches=1,
+    )
+    target_spec = _run_spec().model_copy(
+        update={
+            "checkpoint_progress": _run_spec().checkpoint_progress.model_copy(
+                update={"continuation": continuation}
+            )
+        }
+    )
+    program = target_spec.worker_execution.method_contract.phase_program
+    transform = CheckpointForkTransformRecord(
+        slot="model",
+        identity=SEMANTIC_CHECKPOINT_TRANSFORM_IDENTITY,
+        version=SEMANTIC_CHECKPOINT_TRANSFORM_VERSION,
+        implementation_sha256=semantic_checkpoint_transform_implementation_sha256(),
+        parameters={
+            "added_axes": [
+                {"component_slot": "root", "parameter_role": "root", "axis": 0}
+            ],
+            "optimizer_policy": "preserve",
+            "learning_rate_schedule_policy": "continue",
+        },
+    )
+    plan = CheckpointForkPlan(
+        source=CheckpointForkSourcePreparation(
+            checkpoint_root_ref="source",
+            expected_transaction_id=source_write.manifest.transaction_id,
+            expected_transaction_root_sha256=(
+                source_write.manifest.content_integrity_digest.transaction_root_sha256
+            ),
+        ),
+        targets=[
+            CheckpointForkTarget(
+                target_id="target",
+                checkpoint_root_ref="target",
+                run_spec_ref="run",
+                slot_template_ref="slots",
+                compatibility=derive_checkpoint_fork_compatibility_projection(
+                    target_spec, program, target_slots
+                ),
+                history_policy=CheckpointForkHistoryPolicy(
+                    mode="prepare_continuation",
+                    continuation_request=continuation,
+                ),
+                transforms=[
+                    CheckpointForkTransformStep(
+                        step_id="extend-model-input",
+                        stage="target_post",
+                        records=[transform, transform.model_copy(update={"slot": "optimizer"})],
+                    )
+                ],
+            )
+        ],
+    )
+    bindings = CheckpointForkPlanBindings(
+        checkpoint_roots={"source": source_root, "target": target_root},
+        run_specs={"run": target_spec},
+        slot_templates={"slots": target_slots},
+    )
+
+    invalid_plan = plan.model_copy(deep=True)
+    invalid_plan.targets[0].transforms[0].records = [
+        record.model_copy(
+            update={
+                "parameters": {
+                    **record.parameters,
+                    "learning_rate_schedule_policy": "restart",
+                }
+            }
+        )
+        for record in invalid_plan.targets[0].transforms[0].records
+    ]
+    with pytest.raises(TrainingRunExecutorError, match="requires explicit schedule"):
+        execute_training_run_spec(
+            target_spec,
+            registry=default_training_program_registry(),
+            run_id="invalid-graph-target",
+            initial_slots=target_slots,
+            manifest_root=tmp_path / "invalid-manifests",
+            checkpoint_root=target_root,
+            checkpoint_source_root=tmp_path / "unavailable-source-view",
+            checkpoint_fork_plan=invalid_plan,
+            checkpoint_fork_plan_bindings=bindings,
+            checkpoint_fork_target_id="target",
+            checkpoint_content_provider=provider,
+            checkpoint_source_content_binding=source_write.content_binding,
+        )
+    assert not target_root.exists()
+
+    continued = execute_training_run_spec(
+        target_spec,
+        registry=default_training_program_registry(),
+        run_id="graph-target",
+        initial_slots=target_slots,
+        manifest_root=tmp_path / "target-manifests",
+        checkpoint_root=target_root,
+        checkpoint_source_root=tmp_path / "unavailable-source-view",
+        checkpoint_fork_plan=plan,
+        checkpoint_fork_plan_bindings=bindings,
+        checkpoint_fork_target_id="target",
+        checkpoint_content_provider=provider,
+        checkpoint_source_content_binding=source_write.content_binding,
+    )
+
+    receipt = continued.manifest.provenance.metadata["checkpoint_initialization"][
+        "transformation"
+    ]
+    assert receipt["identity"] == SEMANTIC_CHECKPOINT_TRANSFORM_IDENTITY
+    assert any(item["disposition"] == "extended" for item in receipt["accounting"])
+    assert continued.final_slots["optimizer"]["moment"].tolist() == [3.0, 17.0]
+    assert continued.checkpoint_writes[-1].content_binding is not None
+    assert continued.checkpoint_writes[-1].manifest.parent_lineage[0].transaction_id == (
+        receipt["fork_transaction_id"]
+    )
+
+
+def test_execute_training_run_spec_initialization_plan_rejects_wrong_source(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source-checkpoint"
+    provider = ImmutableArtifactBlobProvider(tmp_path / "content")
+    initial_slots = _initial_slots(arrays=True)
+    source = execute_training_run_spec(
+        _run_spec(),
+        registry=default_training_program_registry(),
+        run_id="declared-source",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "source-manifests",
+        checkpoint_root=source_root,
+        checkpoint_content_provider=provider,
+    )
+    plan = _checkpoint_initialization_plan(
+        source,
+        mode="continue_from",
+        target_slots=initial_slots,
+    )
+    source_binding = source.checkpoint_writes[-1].content_binding
+    assert source_binding is not None
+    wrong_source = plan.source.model_copy(update={"id": "feedbax-checkpoint:wrong"})
+
+    with pytest.raises(TrainingRunExecutorError, match="resolves a different transaction"):
+        execute_training_run_spec(
+            _run_spec(),
+            registry=default_training_program_registry(),
+            run_id="wrong-source-target",
+            initial_slots=initial_slots,
+            manifest_root=tmp_path / "target-manifests",
+            checkpoint_root=tmp_path / "target-checkpoint",
+            checkpoint_source_root=tmp_path / "unavailable-source-view",
+            checkpoint_initialization_plan=plan.model_copy(update={"source": wrong_source}),
+            checkpoint_content_provider=provider,
+            checkpoint_source_content_binding=source_binding,
+        )
+    assert not (tmp_path / "target-checkpoint").exists()
+
+
 def test_same_row_resume_realizes_segment_lineage_and_cadence(
     tmp_path: Path,
 ) -> None:
@@ -5513,6 +5855,95 @@ def test_execute_training_run_spec_cli_returns_nonzero_for_failed_result(
 
     assert exit_code == 1
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
+
+
+def test_execute_training_run_spec_cli_forwards_authored_checkpoint_plans(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    spec = _run_spec()
+    spec_path = tmp_path / "spec.json"
+    slots_path = tmp_path / "slots.json"
+    init_path = tmp_path / "initialization.json"
+    fork_path = tmp_path / "fork.json"
+    _write_json(spec_path, spec.model_dump(mode="json"))
+    _write_json(slots_path, _initial_slots())
+    source_ref = ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id="tx-source",
+        role="training_checkpoint_custody",
+        metadata=authenticated_manifest_ref_metadata("a" * 64, 1),
+    )
+    initialization = CheckpointInitializationPlan(
+        mode="continue_from", source=source_ref
+    )
+    _write_json(init_path, initialization.model_dump(mode="json"))
+    fork = CheckpointForkPlan(
+        source=CheckpointForkSourcePreparation(checkpoint_root_ref="source"),
+        targets=[
+            CheckpointForkTarget(
+                target_id="target",
+                checkpoint_root_ref="target",
+                run_spec_ref="run",
+                slot_template_ref="slots",
+                compatibility=derive_checkpoint_fork_compatibility_projection(
+                    spec,
+                    spec.worker_execution.method_contract.phase_program,
+                    _initial_slots(),
+                ),
+            )
+        ],
+    )
+    _write_json(fork_path, fork.model_dump(mode="json"))
+    bindings = CheckpointForkPlanBindings(
+        checkpoint_roots={"source": tmp_path / "source", "target": tmp_path / "target"},
+        run_specs={"run": spec},
+        slot_templates={"slots": _initial_slots()},
+    )
+    monkeypatch.setattr(feedbax_main, "_load_checkpoint_fork_plan_bindings", lambda *_: bindings)
+    calls = []
+    manifest = TrainingRunManifest(
+        id="feedbax-training-run:cli", status="completed", completed_at="2026-01-01T00:00:00Z"
+    )
+
+    def fake_execute(*args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            run_id="cli",
+            status="completed",
+            start_completed_batches=0,
+            end_completed_batches=1,
+            payload_binding_status="not_bound",
+            manifest_path=tmp_path / "manifest.json",
+            manifest=manifest,
+        )
+
+    monkeypatch.setattr(feedbax_main, "execute_training_run_spec", fake_execute)
+    common = [
+        "execute-training-run-spec",
+        str(spec_path),
+        "--initial-slots",
+        str(slots_path),
+        "--no-progress",
+    ]
+    assert feedbax_main.main([*common, "--checkpoint-initialization-plan", str(init_path)]) == 0
+    assert feedbax_main.main(
+        [
+            *common,
+            "--checkpoint-fork-plan",
+            str(fork_path),
+            "--checkpoint-fork-bindings",
+            str(tmp_path / "bindings.json"),
+            "--checkpoint-fork-target-id",
+            "target",
+        ]
+    ) == 0
+    capsys.readouterr()
+    assert calls[0]["checkpoint_initialization_plan"] == initialization
+    assert calls[1]["checkpoint_fork_plan"] == fork
+    assert calls[1]["checkpoint_fork_plan_bindings"] is bindings
+    assert calls[1]["checkpoint_fork_target_id"] == "target"
 
 
 def test_preflight_training_run_manifest_cli_reports_normalized_payload(

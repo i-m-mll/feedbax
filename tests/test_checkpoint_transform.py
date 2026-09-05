@@ -6,16 +6,20 @@ import optax
 import pytest
 
 from feedbax.contracts.checkpoint_initialization import (
+    CheckpointInitializationRequest,
     CheckpointSlotStructure,
     CheckpointStructure,
     derive_checkpoint_semantic_abis,
+    lower_checkpoint_initialization,
 )
+from feedbax.contracts.base import ParentRef, authenticated_manifest_ref_metadata
 from feedbax.contracts.worker import OptimizerTargetBinding
 from feedbax.training.checkpoint_custody import structural_abi_fingerprint
 from feedbax.training.checkpoint_transform import (
     AddedParameterAxis,
     CheckpointTransformErrorCode,
     CheckpointTransformRefused,
+    apply_semantic_checkpoint_initialization,
     derive_and_apply_semantic_checkpoint_transform,
 )
 
@@ -149,6 +153,54 @@ def test_duplicate_identity_across_slots_is_ambiguous() -> None:
             learning_rate_schedule_policy="continue",
         )
     assert excinfo.value.code is CheckpointTransformErrorCode.AMBIGUOUS_IDENTITY
+
+
+def test_initialization_plan_copies_by_semantic_identity_across_treedef_change() -> None:
+    source_values = {"model": {"nodes": {"controller": {"weight": jnp.array([3.0])}}}}
+    target_values = {
+        "model": {"wrapper": {"nodes": {"controller": {"weight": jnp.array([0.0])}}}}
+    }
+
+    def structure(values):
+        fingerprint = structural_abi_fingerprint(values["model"])
+        semantic = derive_checkpoint_semantic_abis(
+            {"model": fingerprint}, slot_roles={"model": "model"}
+        )["model"]
+        return CheckpointStructure(
+            slots=[
+                CheckpointSlotStructure(
+                    slot="model",
+                    role="model",
+                    treedef=fingerprint.treedef,
+                    leaves=fingerprint.leaves,
+                    semantic_abi=semantic,
+                )
+            ]
+        )
+
+    source_structure = structure(source_values)
+    target_structure = structure(target_values)
+    plan = lower_checkpoint_initialization(
+        CheckpointInitializationRequest(
+            mode="continue_from",
+            source=ParentRef(
+                kind="TrainingCheckpointTransactionManifest",
+                id="tx",
+                role="training_checkpoint_custody",
+                metadata=authenticated_manifest_ref_metadata("a" * 64, 1),
+            ),
+        ),
+        source=source_structure,
+        target=target_structure,
+    )
+    restored = apply_semantic_checkpoint_initialization(
+        plan,
+        source_structure=source_structure,
+        target_structure=target_structure,
+        source_values=source_values,
+        target_values=target_values,
+    )
+    assert restored["model"]["wrapper"]["nodes"]["controller"]["weight"].tolist() == [3.0]
 
 
 @pytest.mark.parametrize(

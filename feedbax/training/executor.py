@@ -23,16 +23,30 @@ from pydantic import ValidationError
 from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
 
 from feedbax.contracts.publication import CheckpointSet
+from feedbax.contracts.artifact_custody import ContentBinding
+from feedbax.contracts.checkpoint_initialization import (
+    CheckpointInitializationPlan,
+    CheckpointInitializationRequest,
+    CheckpointSlotStructure,
+    CheckpointStructure,
+    checkpoint_structure_from_manifest,
+    derive_checkpoint_semantic_abis,
+    lower_checkpoint_initialization,
+)
 from feedbax.contracts.checkpoints import (
+    CheckpointForkPlan,
     CheckpointSegmentLineage,
     CheckpointLineageRef,
     CheckpointTransactionManifest,
 )
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.base import (
     EntrypointRef,
     ParentRef,
     Provenance,
     ArtifactRef,
+    authenticated_manifest_ref_metadata,
+    authenticated_manifest_ref_profile,
     canonical_json_bytes,
     default_manifest_root,
     sha256_bytes,
@@ -102,12 +116,28 @@ from feedbax.orchestration.events import (
 )
 from feedbax.orchestration.schedule_eval import project_training_schedules
 from feedbax.training.checkpoint_custody import (
+    CheckpointForkPlanBindings,
+    CheckpointForkTransformRegistry,
     CheckpointWriteResult,
     ResumeSlotTransform,
+    authenticate_published_checkpoint_custody,
+    checkpoint_fork_plan_sha256,
+    fork_checkpoint_plan,
     load_checkpoint_set,
     load_latest_checkpoint,
+    materialize_checkpoint_content,
+    resolve_checkpoint_custody_ref,
+    structural_abi_fingerprint,
     write_checkpoint_transaction,
     materialize_concatenated_checkpoint_histories,
+)
+from feedbax.training.checkpoint_transform import (
+    CheckpointTransformRefused,
+    SEMANTIC_CHECKPOINT_TRANSFORM_IDENTITY,
+    SEMANTIC_CHECKPOINT_TRANSFORM_VERSION,
+    apply_semantic_checkpoint_initialization,
+    bind_semantic_checkpoint_fork_step,
+    semantic_checkpoint_transform_implementation_sha256,
 )
 from feedbax.training.phase_executor import (
     InMemoryCheckpointStore,
@@ -413,6 +443,48 @@ class TrainingRunExecutionResult:
     payload_binding_status: Literal["verified", "not_bound"]
 
 
+@dataclass(frozen=True)
+class _ResolvedCheckpointInitialization:
+    mode: Literal["initialize_from", "continue_from"]
+    source: ParentRef
+    manifest: CheckpointTransactionManifest
+    slots: dict[str, Any]
+    source_root: Path
+    checkpoint_set: CheckpointSet
+    plan: CheckpointInitializationPlan | None = None
+    transformation: Mapping[str, Any] | None = None
+    source_content_binding: ContentBinding | None = None
+    content_provider: ImmutableArtifactBlobProvider | None = None
+
+    @property
+    def provenance(self) -> dict[str, Any]:
+        return {
+            "schema_id": (
+                self.plan.schema_id
+                if self.plan is not None
+                else str(self.transformation["plan_schema_id"])
+            ),
+            "schema_version": (
+                self.plan.schema_version
+                if self.plan is not None
+                else str(self.transformation["plan_schema_version"])
+            ),
+            "mode": self.mode,
+            "source": self.source.model_dump(mode="json", exclude_none=True),
+            "resolved_source": {
+                "transaction_id": self.manifest.transaction_id,
+                "transaction_root_sha256": (
+                    self.manifest.content_integrity_digest.transaction_root_sha256
+                ),
+            },
+            **(
+                {"transformation": dict(self.transformation)}
+                if self.transformation is not None
+                else {}
+            ),
+        }
+
+
 class StreamingCheckpointStore(InMemoryCheckpointStore):
     """Checkpoint store that writes custody transactions at barrier time."""
 
@@ -431,6 +503,8 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         resolved_method: ResolvedTrainingMethod[Any],
         slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
         run_event_emitter: RunEventEmitter | None = None,
+        checkpoint_initialization: Mapping[str, Any] | None = None,
+        content_provider: ImmutableArtifactBlobProvider | None = None,
     ) -> None:
         super().__init__()
         self.root = Path(root)
@@ -445,6 +519,8 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         self.resolved_method = resolved_method
         self.slot_axis_bindings = dict(slot_axis_bindings or {})
         self.run_event_emitter = run_event_emitter
+        self.checkpoint_initialization = dict(checkpoint_initialization or {})
+        self.content_provider = content_provider
         self._barrier_specs = {
             barrier.name: barrier for barrier in phase_program.checkpoint_barriers
         }
@@ -492,7 +568,14 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
                     f"completed_batches={cumulative_completed_batches} "
                     f"segment_start_batch={self.segment_start_batch}"
                 )
-        checkpoint_metadata: dict[str, Any] = {"barrier_visit_ordinal": saved.visit_ordinal}
+        checkpoint_metadata: dict[str, Any] = {
+            "barrier_visit_ordinal": saved.visit_ordinal,
+            **(
+                {"checkpoint_initialization": self.checkpoint_initialization}
+                if self.checkpoint_initialization
+                else {}
+            ),
+        }
         program = self.resolved_method.program
         if program is not None and program.optimizer_step_extractor is not None:
             checkpoint_metadata["optimizer_step"] = _synchronized_optimizer_step(
@@ -516,6 +599,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             segment_parent_checkpoint_set=self.segment_parent_checkpoint_set,
             history_availability={"progress": True},
             metadata=checkpoint_metadata,
+            content_provider=self.content_provider,
         )
         self._writes.append(write)
         if self.run_event_emitter is not None:
@@ -572,6 +656,12 @@ def execute_training_run_spec(
     manifest_root: Path | str | None = None,
     checkpoint_root: Path | str | None = None,
     checkpoint_source_root: Path | str | None = None,
+    checkpoint_initialization_plan: CheckpointInitializationPlan | None = None,
+    checkpoint_fork_plan: CheckpointForkPlan | None = None,
+    checkpoint_fork_plan_bindings: CheckpointForkPlanBindings | None = None,
+    checkpoint_fork_target_id: str | None = None,
+    checkpoint_content_provider: ImmutableArtifactBlobProvider | None = None,
+    checkpoint_source_content_binding: ContentBinding | None = None,
     registry: TrainingProgramRegistry,
     loss_service: LossService | None = None,
     environment: WorkerExecutabilityEnvironment | None = None,
@@ -612,14 +702,10 @@ def execute_training_run_spec(
     decision completes the next durable checkpoint before returning a cancelled
     manifest; ``terminate`` emits a cancelled manifest immediately.
 
-    ``checkpoint_source_root`` (only valid with ``resume=True``) resumes from a
-    read-only checkpoint custody directory that is distinct from
-    ``checkpoint_root``, so a bounded rehearsal/one-update probe writes every new
-    transaction and its ``latest.json`` pointer into the disposable
-    ``checkpoint_root`` output namespace and never mutates the source. Omitting
-    it resumes and writes under the same custody root as before. Pair it with
-    ``isolated_checkpoint_probe`` for the mutation tripwire and namespace
-    cleanup.
+    ``checkpoint_source_root`` names a read-only source for legacy resume or an
+    explicit initialization/fork plan. Plan-driven execution additionally
+    requires the source's canonical content binding and publishes every output
+    checkpoint through that immutable content provider.
     """
     run_spec = _validate_spec(spec)
     mapping_levels, slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
@@ -828,7 +914,44 @@ def execute_training_run_spec(
         configured_root=checkpoint_root or run_spec.artifacts.artifact_root,
         run_id=resolved_run_id,
     )
-    if checkpoint_source_root is not None and not resume:
+    initialization_authorities = sum(
+        value is not None for value in (checkpoint_initialization_plan, checkpoint_fork_plan)
+    )
+    if initialization_authorities > 1:
+        raise TrainingRunExecutorError(
+            "checkpoint initialization accepts either a same-graph initialization plan or "
+            "an explicit graph-changing fork plan, not both"
+        )
+    if initialization_authorities and resume:
+        raise TrainingRunExecutorError(
+            "the checkpoint initialization authority is mutually "
+            "exclusive with the legacy resume flag"
+        )
+    if initialization_authorities and checkpoint_source_root is None:
+        raise TrainingRunExecutorError(
+            "checkpoint initialization requires checkpoint_source_root as its explicit "
+            "trusted custody authority"
+        )
+    if initialization_authorities and (
+        checkpoint_content_provider is None or checkpoint_source_content_binding is None
+    ):
+        raise TrainingRunExecutorError(
+            "checkpoint initialization requires checkpoint_content_provider and "
+            "checkpoint_source_content_binding as its canonical custody authority"
+        )
+    if checkpoint_fork_plan is None and (
+        checkpoint_fork_plan_bindings is not None or checkpoint_fork_target_id is not None
+    ):
+        raise TrainingRunExecutorError(
+            "checkpoint fork bindings and target id require checkpoint_fork_plan"
+        )
+    if checkpoint_fork_plan is not None and (
+        checkpoint_fork_plan_bindings is None or checkpoint_fork_target_id is None
+    ):
+        raise TrainingRunExecutorError(
+            "checkpoint_fork_plan requires explicit bindings and target id"
+        )
+    if checkpoint_source_root is not None and not resume and not initialization_authorities:
         raise TrainingRunExecutorError(
             "checkpoint_source_root requires resume=True; it names a read-only "
             "checkpoint source that is distinct from the checkpoint output namespace"
@@ -838,6 +961,54 @@ def execute_training_run_spec(
         if checkpoint_source_root is not None
         else custody_root
     )
+    resolved_initialization: _ResolvedCheckpointInitialization | None = None
+    if initialization_authorities:
+        assert checkpoint_content_provider is not None
+        assert checkpoint_source_content_binding is not None
+        with materialize_checkpoint_content(
+            checkpoint_source_content_binding,
+            checkpoint_content_provider,
+            owner=f"training-executor:{resolved_run_id}",
+        ) as canonical_source_root:
+            if checkpoint_initialization_plan is not None:
+                resolved_initialization = _resolve_checkpoint_initialization(
+                    checkpoint_initialization_plan,
+                    source_root=canonical_source_root,
+                    target_slots=slots,
+                    state_slots=effective_phase.state_slots,
+                    run_spec=run_spec,
+                    phase_program=program,
+                )
+                resolved_initialization = replace(
+                    resolved_initialization,
+                    source_content_binding=checkpoint_source_content_binding,
+                    content_provider=checkpoint_content_provider,
+                )
+            else:
+                assert checkpoint_fork_plan is not None
+                assert checkpoint_fork_plan_bindings is not None
+                assert checkpoint_fork_target_id is not None
+                fork_roots = dict(checkpoint_fork_plan_bindings.checkpoint_roots)
+                fork_roots[checkpoint_fork_plan.source.checkpoint_root_ref] = (
+                    canonical_source_root
+                )
+                resolved_initialization = _resolve_checkpoint_fork_initialization(
+                    checkpoint_fork_plan,
+                    bindings=replace(
+                        checkpoint_fork_plan_bindings,
+                        checkpoint_roots=fork_roots,
+                    ),
+                    target_id=checkpoint_fork_target_id,
+                    source_root=canonical_source_root,
+                    output_root=custody_root,
+                    target_slots=slots,
+                    state_slots=effective_phase.state_slots,
+                    run_spec=run_spec,
+                    phase_program=program,
+                    content_provider=checkpoint_content_provider,
+                )
+        slots.update(resolved_initialization.slots)
+
     resume_barrier: str | None = None
     parent_lineage: list[CheckpointLineageRef] = []
     loaded_resume_checkpoint: PhaseCheckpoint | None = None
@@ -845,7 +1016,7 @@ def execute_training_run_spec(
     segment_batch_count: int | None = None
     segment_parent_transaction_id: str | None = None
     segment_parent_checkpoint_set: CheckpointSet | None = None
-    if resume:
+    if resolved_initialization is None and resume:
         loaded = load_latest_checkpoint(
             resume_source_root,
             expected_run_spec=run_spec,
@@ -855,37 +1026,67 @@ def execute_training_run_spec(
             continuation_request=run_spec.checkpoint_progress.continuation,
             allow_new_lineage_override=(run_spec.checkpoint_progress.continuation is not None),
         )
-        loaded_resume_checkpoint = PhaseCheckpoint(
-            barrier=loaded.manifest.barrier,
-            coordinate=loaded.manifest.completed_coordinate,
-            slots=loaded.slots,
-            visit_ordinal=_checkpoint_visit_ordinal(loaded.manifest.metadata),
+        resolved_initialization = _ResolvedCheckpointInitialization(
+            mode="continue_from",
+            source=ParentRef(
+                kind="TrainingCheckpointTransactionManifest",
+                id=loaded.manifest.transaction_id,
+                role="resume_parent",
+            ),
+            manifest=loaded.manifest,
+            slots=dict(loaded.slots),
+            source_root=resume_source_root,
+            checkpoint_set=load_checkpoint_set(
+                resume_source_root, loaded.manifest.transaction_id
+            ),
         )
-        resume_barrier = loaded.manifest.barrier
+    if resolved_initialization is not None:
+        source_manifest = resolved_initialization.manifest
+        relationship: Literal["parent", "new_lineage_override"] = (
+            "parent"
+            if resolved_initialization.mode == "continue_from"
+            else "new_lineage_override"
+        )
+        lineage_metadata = (
+            {"initialization_mode": resolved_initialization.mode}
+            if resolved_initialization.plan is not None
+            or resolved_initialization.transformation is not None
+            else {}
+        )
         parent_lineage.append(
             CheckpointLineageRef(
-                transaction_id=loaded.manifest.transaction_id,
-                manifest=ParentRef(
-                    kind="TrainingCheckpointTransactionManifest",
-                    id=loaded.manifest.transaction_id,
-                    role="resume_parent",
-                ),
+                transaction_id=source_manifest.transaction_id,
+                manifest=resolved_initialization.source,
+                relationship=relationship,
+                metadata=lineage_metadata,
             )
         )
-        continuation = run_spec.checkpoint_progress.continuation
-        if continuation is not None:
-            segment_start_batch = continuation.source_completed_batches
-            segment_batch_count = continuation.additional_batches
-            segment_parent_transaction_id = loaded.manifest.transaction_id
-        else:
-            segment_start_batch = _same_row_resume_start_batch(loaded.manifest)
-            if segment_start_batch > 0:
-                segment_parent_transaction_id = loaded.manifest.transaction_id
-        if segment_parent_transaction_id is not None:
-            segment_parent_checkpoint_set = load_checkpoint_set(
-                resume_source_root,
-                segment_parent_transaction_id,
+        if resolved_initialization.mode == "continue_from":
+            continuation = run_spec.checkpoint_progress.continuation
+            segment_start_batch = _same_row_resume_start_batch(source_manifest)
+            if (
+                continuation is not None
+                and continuation.source_completed_batches != segment_start_batch
+            ):
+                raise TrainingRunExecutorError(
+                    "checkpoint continue_from source progress disagrees with the authored "
+                    "continuation policy: "
+                    f"source={segment_start_batch} "
+                    f"authored={continuation.source_completed_batches}"
+                )
+            loaded_resume_checkpoint = PhaseCheckpoint(
+                barrier=source_manifest.barrier,
+                coordinate=source_manifest.completed_coordinate,
+                slots=resolved_initialization.slots,
+                visit_ordinal=_checkpoint_visit_ordinal(source_manifest.metadata),
             )
+            resume_barrier = source_manifest.barrier
+            if continuation is not None:
+                segment_batch_count = continuation.additional_batches
+            if continuation is not None or segment_start_batch > 0:
+                segment_parent_transaction_id = source_manifest.transaction_id
+        if segment_parent_transaction_id is not None:
+            segment_parent_checkpoint_set = resolved_initialization.checkpoint_set
 
     checkpoint_store = StreamingCheckpointStore(
         root=custody_root,
@@ -900,6 +1101,28 @@ def execute_training_run_spec(
         resolved_method=resolved_method,
         slot_axis_bindings=slot_axis_bindings,
         run_event_emitter=run_event_emitter,
+        checkpoint_initialization=(
+            resolved_initialization.provenance
+            if resolved_initialization is not None
+            and (
+                resolved_initialization.plan is not None
+                or resolved_initialization.transformation is not None
+            )
+            else None
+        ),
+        content_provider=checkpoint_content_provider,
+    )
+    resolved_checkpoint_parents = (
+        [resolved_initialization.source] if resolved_initialization is not None else []
+    )
+    resolved_checkpoint_initialization = (
+        resolved_initialization.provenance
+        if resolved_initialization is not None
+        and (
+            resolved_initialization.plan is not None
+            or resolved_initialization.transformation is not None
+        )
+        else None
     )
     executor = PhaseProgramExecutor(
         program,
@@ -1040,13 +1263,39 @@ def execute_training_run_spec(
         checkpoint_writes = checkpoint_store.writes
         continuation = run_spec.checkpoint_progress.continuation
         if continuation is not None and continuation.self_contained and checkpoint_writes:
-            materialize_concatenated_checkpoint_histories(
-                custody_root,
-                custody_root / "derived" / f"{resolved_run_id}-stitched-histories.pkl",
-                parent_roots={
-                    lineage.transaction_id: resume_source_root for lineage in parent_lineage
-                },
+            stitched_path = (
+                custody_root / "derived" / f"{resolved_run_id}-stitched-histories.pkl"
             )
+            if (
+                resolved_initialization is not None
+                and resolved_initialization.source_content_binding is not None
+                and resolved_initialization.content_provider is not None
+            ):
+                with materialize_checkpoint_content(
+                    resolved_initialization.source_content_binding,
+                    resolved_initialization.content_provider,
+                    owner=f"training-history:{resolved_run_id}",
+                ) as parent_root:
+                    materialize_concatenated_checkpoint_histories(
+                        custody_root,
+                        stitched_path,
+                        parent_roots={
+                            lineage.transaction_id: parent_root for lineage in parent_lineage
+                        },
+                    )
+            else:
+                parent_root = (
+                    resolved_initialization.source_root
+                    if resolved_initialization is not None
+                    else resume_source_root
+                )
+                materialize_concatenated_checkpoint_histories(
+                    custody_root,
+                    stitched_path,
+                    parent_roots={
+                        lineage.transaction_id: parent_root for lineage in parent_lineage
+                    },
+                )
         barrier_artifacts = checkpoint_store.barrier_artifacts
         history_events = live_history_events
         final_metrics = _final_metrics(
@@ -1088,6 +1337,8 @@ def execute_training_run_spec(
             training_spec_payload_ref=effective_training_spec_ref,
             task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
             checkpoint_writes=checkpoint_writes,
+            checkpoint_parents=resolved_checkpoint_parents,
+            checkpoint_initialization=resolved_checkpoint_initialization,
             barrier_artifacts=barrier_artifacts,
             history_events=history_events,
             final_metrics=final_metrics,
@@ -1173,6 +1424,8 @@ def execute_training_run_spec(
                 diagnostics_path=diagnostics_path,
                 payload_binding_status=payload_binding_status,
                 run_event_emitter=run_event_emitter,
+                checkpoint_parents=resolved_checkpoint_parents,
+                checkpoint_initialization=resolved_checkpoint_initialization,
             )
         except Exception as finalization_error:
             if run_event_emitter is not None:
@@ -1231,6 +1484,8 @@ def execute_training_run_spec(
             training_spec_payload_ref=effective_training_spec_ref,
             task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
             checkpoint_writes=checkpoint_writes,
+            checkpoint_parents=resolved_checkpoint_parents,
+            checkpoint_initialization=resolved_checkpoint_initialization,
             barrier_artifacts=barrier_artifacts,
             history_events=history_events,
             final_metrics=final_metrics,
@@ -1355,6 +1610,8 @@ def _finalize_nan_guard_failure(
     diagnostics_path: Path,
     payload_binding_status: Literal["verified", "not_bound"],
     run_event_emitter: RunEventEmitter | None,
+    checkpoint_parents: Sequence[ParentRef],
+    checkpoint_initialization: Mapping[str, Any] | None,
 ) -> TrainingRunExecutionResult:
     """Emit every durable failed-run surface for either NaN policy."""
 
@@ -1409,6 +1666,8 @@ def _finalize_nan_guard_failure(
         training_spec_payload_ref=effective_training_spec_ref,
         task_binding_spec=dict(task_binding_spec) if task_binding_spec is not None else None,
         checkpoint_writes=checkpoint_writes,
+        checkpoint_parents=checkpoint_parents,
+        checkpoint_initialization=checkpoint_initialization,
         barrier_artifacts=barrier_artifacts,
         history_events=live_history_events,
         final_metrics={},
@@ -2099,6 +2358,316 @@ def _initial_slots(
     for slot in executor_owned_slots:
         slots.setdefault(slot, lowered_objective)
     return slots
+
+
+def _resolve_checkpoint_initialization(
+    plan: CheckpointInitializationPlan,
+    *,
+    source_root: Path,
+    target_slots: Mapping[str, Any],
+    state_slots: Sequence[Any],
+    run_spec: TrainingRunSpec,
+    phase_program: Any,
+) -> _ResolvedCheckpointInitialization:
+    """Authenticate, revalidate, and apply one same-graph initialization plan."""
+
+    request = CheckpointInitializationRequest(mode=plan.mode, source=plan.source)
+    expected_profile = authenticated_manifest_ref_profile(request.source)
+    assert expected_profile is not None
+    expected_manifest_sha256, expected_manifest_size = expected_profile
+
+    authenticated = authenticate_published_checkpoint_custody(source_root)
+    if authenticated.manifest.transaction_id != request.source.id:
+        raise TrainingRunExecutorError(
+            "checkpoint initialization source root resolves a different transaction: "
+            f"declared={request.source.id!r} "
+            f"resolved={authenticated.manifest.transaction_id!r}"
+        )
+    if authenticated.manifest_sha256 != expected_manifest_sha256:
+        raise TrainingRunExecutorError(
+            "checkpoint initialization source manifest digest disagrees with the authored "
+            f"source: declared={expected_manifest_sha256!r} "
+            f"resolved={authenticated.manifest_sha256!r}"
+        )
+    manifest_path = source_root / str(authenticated.parent_ref.uri)
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+    except OSError as exc:
+        raise TrainingRunExecutorError(
+            f"checkpoint initialization source manifest became unavailable: {manifest_path}"
+        ) from exc
+    if (
+        len(manifest_bytes) != expected_manifest_size
+        or sha256_bytes(manifest_bytes) != expected_manifest_sha256
+    ):
+        raise TrainingRunExecutorError(
+            "checkpoint initialization source manifest byte profile disagrees with the "
+            "authored source"
+        )
+
+    resolved = resolve_checkpoint_custody_ref(
+        authenticated.parent_ref,
+        allowed_root=source_root,
+    )
+    if plan.mode == "continue_from":
+        continuation = run_spec.checkpoint_progress.continuation
+        if continuation is None:
+            raise TrainingRunExecutorError(
+                "checkpoint continue_from requires an explicit checkpoint_progress.continuation "
+                "policy for optimizer and learning-rate schedule continuation"
+            )
+        compatible = load_latest_checkpoint(
+            source_root,
+            expected_run_spec=run_spec,
+            expected_phase_program=phase_program,
+            expected_slots=target_slots,
+            continuation_request=continuation,
+            allow_new_lineage_override=True,
+        )
+        if compatible.manifest.transaction_id != resolved.manifest.transaction_id:
+            raise TrainingRunExecutorError(
+                "checkpoint continuation compatibility validation resolved a different source"
+            )
+        resolved_manifest = compatible.manifest
+        resolved_slots = compatible.slots
+    else:
+        resolved_manifest = resolved.manifest
+        resolved_slots = resolved.slots
+    declared_slots = {entry.slot: entry for entry in plan.slots}
+    missing_targets = sorted(set(declared_slots) - set(target_slots))
+    if missing_targets:
+        raise TrainingRunExecutorError(
+            "checkpoint initialization plan names target slots absent from prepared execution: "
+            f"{missing_targets!r}"
+        )
+    target_structure = _runtime_checkpoint_structure(
+        target_slots,
+        state_slots=state_slots,
+        phase_program=phase_program,
+        names=list(declared_slots),
+    )
+    validated_plan = lower_checkpoint_initialization(
+        request,
+        source=checkpoint_structure_from_manifest(resolved_manifest),
+        target=target_structure,
+    )
+    if validated_plan != plan:
+        raise TrainingRunExecutorError(
+            "checkpoint initialization plan disagrees with the authenticated source and "
+            "prepared target structures"
+        )
+
+    try:
+        initialized = apply_semantic_checkpoint_initialization(
+            plan,
+            source_structure=checkpoint_structure_from_manifest(resolved_manifest),
+            target_structure=target_structure,
+            source_values={entry.slot: resolved_slots[entry.slot] for entry in plan.slots},
+            target_values={entry.slot: target_slots[entry.slot] for entry in plan.slots},
+        )
+    except CheckpointTransformRefused as exc:
+        raise TrainingRunExecutorError(str(exc)) from exc
+
+    return _ResolvedCheckpointInitialization(
+        mode=plan.mode,
+        source=plan.source,
+        plan=plan,
+        manifest=resolved_manifest,
+        slots=dict(initialized),
+        source_root=source_root,
+        checkpoint_set=load_checkpoint_set(source_root, resolved_manifest.transaction_id),
+    )
+
+
+def _runtime_checkpoint_structure(
+    values: Mapping[str, Any],
+    *,
+    state_slots: Sequence[Any],
+    phase_program: Any,
+    names: Sequence[str],
+) -> CheckpointStructure:
+    runtime_slots = {entry.name: entry for entry in state_slots}
+    fingerprints = {name: structural_abi_fingerprint(values[name]) for name in names}
+    semantic_abis = derive_checkpoint_semantic_abis(
+        fingerprints,
+        slot_roles={
+            name: runtime_slots[name].role if name in runtime_slots else "auxiliary"
+            for name in names
+        },
+        optimizer_bindings=phase_program.optimizer_bindings,
+    )
+    return CheckpointStructure(
+        slots=[
+            CheckpointSlotStructure(
+                slot=name,
+                role=(runtime_slots[name].role if name in runtime_slots else "auxiliary"),
+                required=(runtime_slots[name].required if name in runtime_slots else True),
+                treedef=fingerprints[name].treedef,
+                leaves=list(fingerprints[name].leaves),
+                semantic_abi=semantic_abis[name],
+            )
+            for name in names
+        ]
+    )
+
+
+def _resolve_checkpoint_fork_initialization(
+    plan: CheckpointForkPlan,
+    *,
+    bindings: CheckpointForkPlanBindings,
+    target_id: str,
+    source_root: Path,
+    output_root: Path,
+    target_slots: Mapping[str, Any],
+    state_slots: Sequence[Any],
+    run_spec: TrainingRunSpec,
+    phase_program: Any,
+    content_provider: ImmutableArtifactBlobProvider,
+) -> _ResolvedCheckpointInitialization:
+    """Execute one explicit graph-changing fork and prepare its continuation."""
+    if len(plan.targets) != 1 or plan.targets[0].target_id != target_id:
+        raise TrainingRunExecutorError(
+            "native execution requires a single-target CheckpointForkPlan matching the "
+            "explicit checkpoint_fork_target_id"
+        )
+    target = plan.targets[0]
+    try:
+        bound_source_root = Path(bindings.checkpoint_roots[plan.source.checkpoint_root_ref])
+        bound_target_root = Path(bindings.checkpoint_roots[target.checkpoint_root_ref])
+        bound_run_spec = bindings.run_specs[target.run_spec_ref]
+        bound_target_slots = bindings.slot_templates[target.slot_template_ref]
+    except KeyError as exc:
+        raise TrainingRunExecutorError(
+            f"checkpoint fork plan has an unresolved runtime binding: {exc.args[0]!r}"
+        ) from exc
+    if bound_source_root.resolve() != source_root.resolve():
+        raise TrainingRunExecutorError("checkpoint fork did not use the canonical source view")
+    if bound_target_root.resolve() != output_root.resolve():
+        raise TrainingRunExecutorError(
+            "checkpoint fork target must publish into this execution's checkpoint root"
+        )
+    if bound_run_spec != run_spec:
+        raise TrainingRunExecutorError(
+            "checkpoint fork target run-spec binding disagrees with the executed run spec"
+        )
+    authenticated_source = authenticate_published_checkpoint_custody(source_root)
+    source_structure = checkpoint_structure_from_manifest(authenticated_source.manifest)
+    target_names = [slot.slot for slot in source_structure.slots]
+    if set(target_names) != set(bound_target_slots) or set(target_names) - set(target_slots):
+        raise TrainingRunExecutorError(
+            "checkpoint fork target template must cover exactly the source checkpoint slots"
+        )
+    target_structure = _runtime_checkpoint_structure(
+        bound_target_slots,
+        state_slots=state_slots,
+        phase_program=phase_program,
+        names=target_names,
+    )
+    actual_target_structure = _runtime_checkpoint_structure(
+        target_slots,
+        state_slots=state_slots,
+        phase_program=phase_program,
+        names=target_names,
+    )
+    if actual_target_structure != target_structure:
+        raise TrainingRunExecutorError(
+            "checkpoint fork slot template disagrees with the actual executor target"
+        )
+    semantic_steps = [
+        step
+        for step in (*plan.source.transforms, *target.transforms)
+        if step.records[0].identity == SEMANTIC_CHECKPOINT_TRANSFORM_IDENTITY
+    ]
+    if len(semantic_steps) != 1 or semantic_steps[0].stage != "target_post":
+        raise TrainingRunExecutorError(
+            "graph-changing execution requires exactly one target_post semantic transform step"
+        )
+    try:
+        semantic_runtime = bind_semantic_checkpoint_fork_step(
+            semantic_steps[0],
+            source_structure=source_structure,
+            target_structure=target_structure,
+            target_values=bound_target_slots,
+        )
+    except CheckpointTransformRefused as exc:
+        raise TrainingRunExecutorError(str(exc)) from exc
+    parameters = semantic_steps[0].records[0].parameters
+    if target.history_policy.mode != "prepare_continuation":
+        raise TrainingRunExecutorError(
+            "graph-changing native continuation requires prepare_continuation history policy"
+        )
+    continuation = run_spec.checkpoint_progress.continuation
+    if continuation is None:
+        raise TrainingRunExecutorError(
+            "graph-changing checkpoint continuation requires an explicit continuation request"
+        )
+    schedule_policy = parameters["learning_rate_schedule_policy"]
+    if schedule_policy == "continue" and continuation.schedule_discontinuity_exemptions:
+        raise TrainingRunExecutorError(
+            "continued learning-rate policy cannot carry restart discontinuity exemptions"
+        )
+    if schedule_policy == "restart" and not continuation.schedule_discontinuity_exemptions:
+        raise TrainingRunExecutorError(
+            "restarted learning-rate policy requires explicit schedule discontinuity exemptions"
+        )
+    registry = CheckpointForkTransformRegistry()
+    registry.register(semantic_runtime.registration)
+    results = fork_checkpoint_plan(
+        plan,
+        bindings,
+        transform_registry=registry,
+        content_provider=content_provider,
+    )
+    forked = results[target_id]
+    if (
+        len(semantic_runtime.results) != 1
+        or forked.content_binding is None
+        or forked.content_root is None
+    ):
+        raise TrainingRunExecutorError(
+            "semantic checkpoint fork did not produce one canonical transformation receipt"
+        )
+    transformed = semantic_runtime.results[0]
+    loaded = load_latest_checkpoint(
+        forked.root,
+        expected_run_spec=run_spec,
+        expected_phase_program=phase_program,
+        expected_slots=target_slots,
+        continuation_request=continuation,
+        allow_new_lineage_override=True,
+    )
+    manifest_bytes = forked.manifest_path.read_bytes()
+    source = ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id=forked.manifest.transaction_id,
+        role="training_checkpoint_custody",
+        metadata=authenticated_manifest_ref_metadata(
+            sha256_bytes(manifest_bytes), len(manifest_bytes)
+        ),
+    )
+    return _ResolvedCheckpointInitialization(
+        mode="continue_from",
+        source=source,
+        manifest=loaded.manifest,
+        slots=dict(loaded.slots),
+        source_root=forked.root,
+        checkpoint_set=forked.checkpoint_set,
+        transformation={
+            "plan_schema_id": plan.schema_id,
+            "plan_schema_version": plan.schema_version,
+            "plan_sha256": checkpoint_fork_plan_sha256(plan),
+            "target_id": target_id,
+            "identity": SEMANTIC_CHECKPOINT_TRANSFORM_IDENTITY,
+            "version": SEMANTIC_CHECKPOINT_TRANSFORM_VERSION,
+            "implementation_sha256": semantic_checkpoint_transform_implementation_sha256(),
+            "accounting": list(transformed.accounting_records()),
+            "optimizer_policy": transformed.optimizer_policy,
+            "learning_rate_schedule_policy": transformed.learning_rate_schedule_policy,
+            "fork_transaction_id": forked.manifest.transaction_id,
+            "content_binding": forked.content_binding.model_dump(mode="json"),
+            "content_root": forked.content_root.model_dump(mode="json"),
+        },
+    )
 
 
 def _normalize_batch_progress_slot(
@@ -3323,6 +3892,8 @@ def _build_manifest(
     training_spec_payload_ref: str | None,
     task_binding_spec: dict[str, Any] | None,
     checkpoint_writes: Sequence[CheckpointWriteResult],
+    checkpoint_parents: Sequence[ParentRef],
+    checkpoint_initialization: Mapping[str, Any] | None,
     barrier_artifacts: Sequence[ArtifactRef],
     history_events: list[dict[str, Any]],
     final_metrics: dict[str, Any],
@@ -3448,8 +4019,14 @@ def _build_manifest(
                 command="python -m feedbax execute-training-run-spec",
             ),
             issues=list(issues or ()),
+            parents=checkpoint_parents,
             metadata={
                 "training_executor": "native",
+                **(
+                    {"checkpoint_initialization": checkpoint_initialization}
+                    if checkpoint_initialization is not None
+                    else {}
+                ),
                 **projection_provenance,
                 **(
                     {"environment_fingerprint": execution_context.environment_fingerprint}

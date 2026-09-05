@@ -16,6 +16,8 @@ from pydantic import TypeAdapter
 
 from feedbax.bin.staged_inputs import add_staged_input_arguments
 from feedbax.contracts.checkpoints import CheckpointForkPlan
+from feedbax.contracts.checkpoint_initialization import CheckpointInitializationPlan
+from feedbax.contracts.artifact_custody import ContentBinding
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeCompilerError,
     ExperimentEnvelopeRejection,
@@ -67,6 +69,7 @@ from feedbax.training.checkpoint_custody import (
     relock_checkpoint_fork_plan_file,
     validate_checkpoint_fork_execution_dependencies,
 )
+from feedbax.persistence import ImmutableArtifactBlobProvider
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -384,6 +387,13 @@ def build_parser() -> argparse.ArgumentParser:
     execute_parser.add_argument("spec", help="TrainingRunSpec JSON path")
     execute_parser.add_argument("--manifest-root", help="Manifest root override")
     execute_parser.add_argument("--checkpoint-root", help="Checkpoint custody root override")
+    execute_parser.add_argument("--checkpoint-source-root")
+    execute_parser.add_argument("--checkpoint-initialization-plan")
+    execute_parser.add_argument("--checkpoint-fork-plan")
+    execute_parser.add_argument("--checkpoint-fork-bindings")
+    execute_parser.add_argument("--checkpoint-fork-target-id")
+    execute_parser.add_argument("--checkpoint-content-store")
+    execute_parser.add_argument("--checkpoint-source-binding")
     execute_parser.add_argument("--run-id", help="Stable run id override")
     execute_parser.add_argument("--initial-slots", help="JSON path for simple initial slots")
     execute_parser.add_argument(
@@ -905,6 +915,42 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.execution_context
             else (json.loads(args.execution_context_json) if args.execution_context_json else None)
         )
+        initialization_plan = (
+            CheckpointInitializationPlan.model_validate(
+                default_spec_registry.migrate(
+                    "CheckpointInitializationPlan",
+                    _read_json(args.checkpoint_initialization_plan),
+                ).payload
+            )
+            if args.checkpoint_initialization_plan
+            else None
+        )
+        fork_plan = (
+            CheckpointForkPlan.model_validate(
+                default_spec_registry.migrate(
+                    "CheckpointForkPlan", _read_json(args.checkpoint_fork_plan)
+                ).payload
+            )
+            if args.checkpoint_fork_plan
+            else None
+        )
+        fork_bindings = (
+            _load_checkpoint_fork_plan_bindings(
+                args.checkpoint_fork_bindings, registries.training_programs
+            )
+            if args.checkpoint_fork_bindings
+            else None
+        )
+        checkpoint_provider = (
+            ImmutableArtifactBlobProvider(Path(args.checkpoint_content_store).resolve())
+            if args.checkpoint_content_store
+            else None
+        )
+        source_binding = (
+            ContentBinding.model_validate(_read_json(args.checkpoint_source_binding))
+            if args.checkpoint_source_binding
+            else None
+        )
         started_at = time.perf_counter()
         emitter = RunEventEmitter.from_env(render_batch_lines=False)
         with RunInterruptionController() as interruption:
@@ -916,6 +962,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     initial_slots=initial_slots,
                     manifest_root=args.manifest_root,
                     checkpoint_root=args.checkpoint_root,
+                    checkpoint_source_root=args.checkpoint_source_root,
+                    checkpoint_initialization_plan=initialization_plan,
+                    checkpoint_fork_plan=fork_plan,
+                    checkpoint_fork_plan_bindings=fork_bindings,
+                    checkpoint_fork_target_id=args.checkpoint_fork_target_id,
+                    checkpoint_content_provider=checkpoint_provider,
+                    checkpoint_source_content_binding=source_binding,
                     registry=registries.training_programs,
                     training_spec_payload=training_payload,
                     training_spec_payload_kind=args.training_payload_kind,
