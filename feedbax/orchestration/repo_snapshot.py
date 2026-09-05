@@ -8,6 +8,7 @@ import os
 import shutil
 import stat
 import tempfile
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -17,11 +18,18 @@ from typing import Any, Final, Literal
 from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax._distribution_provenance import (
+    PROVENANCE_PATH,
+    DistributionProvenanceError,
+    build_provenance_from_git,
+    verify_provenance_bytes,
+)
 
 
 REPO_SNAPSHOT_MANIFEST_SCHEMA_ID: Final = "feedbax.orchestration.repo_snapshot_manifest"
 REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1: Final = "feedbax.orchestration.repo_snapshot_manifest.v1"
-REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION: Final = "feedbax.orchestration.repo_snapshot_manifest.v2"
+REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V2: Final = "feedbax.orchestration.repo_snapshot_manifest.v2"
+REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION: Final = "feedbax.orchestration.repo_snapshot_manifest.v3"
 
 REPO_SNAPSHOT_CACHE_DIR_ENV = "FEEDBAX_REPO_SNAPSHOT_CACHE_DIR"
 
@@ -49,13 +57,17 @@ class RepoSnapshotCacheFault(RepoSnapshotError):
 
 
 class RepoSnapshotRecord(StrictModel):
-    """Durable identity of one sealed tracked-working-tree snapshot."""
+    """Durable identity of one sealed source snapshot."""
 
     commit: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     dirty: bool
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     file_count: int = Field(ge=0)
+    distribution_provenance_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
 
 class RepoSnapshotManifest(StrictModel):
@@ -64,7 +76,7 @@ class RepoSnapshotManifest(StrictModel):
     schema_id: Literal["feedbax.orchestration.repo_snapshot_manifest"] = (
         REPO_SNAPSHOT_MANIFEST_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.orchestration.repo_snapshot_manifest.v2"] = (
+    schema_version: Literal["feedbax.orchestration.repo_snapshot_manifest.v3"] = (
         REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION
     )
     repos: dict[str, RepoSnapshotRecord] = Field(default_factory=dict)
@@ -210,6 +222,17 @@ def seal_repo_snapshot(
             expected_entries=entries,
             expected_dirty=dirty,
         )
+        distribution_provenance_sha256 = _add_distribution_provenance(
+            source_root=source_root,
+            snapshot_root=build_root,
+            commit=commit,
+        )
+        _assert_git_state_unchanged(
+            source_root,
+            expected_commit=commit,
+            expected_entries=entries,
+            expected_dirty=dirty,
+        )
         content_sha256, file_count = _snapshot_tree_identity(build_root)
         name_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
         staging_root = parent / name_key / content_sha256
@@ -221,6 +244,7 @@ def seal_repo_snapshot(
             content_sha256=content_sha256,
             source_state_sha256=source_state_sha256,
             file_count=file_count,
+            distribution_provenance_sha256=distribution_provenance_sha256,
         )
         return SealedRepoSnapshot(
             name=name,
@@ -256,6 +280,7 @@ def restore_repo_snapshots(
                 "sealed snapshot cache entry is damaged: its bytes no longer match the "
                 f"content address holding them: {staging_root}"
             )
+        _verify_distribution_provenance(staging_root, record)
         _seal_tree_modes(staging_root)
         snapshots[name] = SealedRepoSnapshot(
             name=name,
@@ -288,6 +313,74 @@ def verify_repo_snapshot(
     observed_sha256, observed_count = _snapshot_tree_identity(Path(root))
     if observed_sha256 != content_sha256 or observed_count != file_count:
         raise RepoSnapshotError(f"sealed repo snapshot digest mismatch: {root}")
+
+
+def _add_distribution_provenance(
+    *,
+    source_root: Path,
+    snapshot_root: Path,
+    commit: str,
+) -> str | None:
+    """Add Feedbax's canonical generated provenance to a sealed Feedbax source."""
+    pyproject = snapshot_root / "pyproject.toml"
+    try:
+        metadata = pyproject.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            return None
+        document = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    project = document.get("project")
+    if not isinstance(project, Mapping) or project.get("name") != "feedbax":
+        return None
+
+    try:
+        encoded = build_provenance_from_git(source_root)
+        revision = verify_provenance_bytes(snapshot_root / "feedbax", encoded)
+    except DistributionProvenanceError as exc:
+        raise RepoSnapshotSourceFault(
+            f"cannot seal a distribution-buildable Feedbax snapshot: {exc}"
+        ) from exc
+    if revision != commit:
+        raise RepoSnapshotSourceFault(
+            "generated Feedbax distribution provenance does not match the sealed commit"
+        )
+    destination = snapshot_root.joinpath(*PurePosixPath(PROVENANCE_PATH).parts)
+    if destination.exists() or destination.is_symlink():
+        raise RepoSnapshotSourceFault(
+            f"generated Feedbax distribution provenance path is already tracked: {PROVENANCE_PATH}"
+        )
+    destination.write_bytes(encoded)
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _verify_distribution_provenance(root: Path, record: RepoSnapshotRecord) -> None:
+    if record.distribution_provenance_sha256 is None:
+        return
+    path = root.joinpath(*PurePosixPath(PROVENANCE_PATH).parts)
+    try:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OSError("not a regular file")
+        encoded = path.read_bytes()
+    except OSError as exc:
+        raise RepoSnapshotCacheFault(
+            f"sealed snapshot distribution provenance is unavailable: {path}"
+        ) from exc
+    if hashlib.sha256(encoded).hexdigest() != record.distribution_provenance_sha256:
+        raise RepoSnapshotCacheFault(
+            f"sealed snapshot distribution provenance digest mismatch: {path}"
+        )
+    try:
+        revision = verify_provenance_bytes(root / "feedbax", encoded)
+    except DistributionProvenanceError as exc:
+        raise RepoSnapshotCacheFault(
+            f"sealed Feedbax distribution provenance is invalid: {exc}"
+        ) from exc
+    if revision != record.commit:
+        raise RepoSnapshotCacheFault(
+            "sealed Feedbax distribution provenance does not match its recorded commit"
+        )
 
 
 def git_common_dir(root: Path) -> Path | None:

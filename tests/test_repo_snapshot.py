@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -12,10 +13,12 @@ import pytest
 
 import feedbax
 import feedbax.orchestration.repo_snapshot as repo_snapshot_module
+from feedbax._distribution_provenance import PROVENANCE_PATH, provenance_for_distribution_build
 from feedbax.orchestration.repo_snapshot import (
     REPO_SNAPSHOT_CACHE_DIR_ENV,
     REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
     REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1,
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V2,
     RepoSnapshotCacheFault,
     RepoSnapshotError,
     RepoSnapshotManifest,
@@ -71,10 +74,51 @@ def test_snapshot_contains_only_tracked_working_tree_bytes(tmp_path: Path) -> No
     assert snapshot.staging_root.joinpath("tracked.txt").stat().st_mode & 0o222 == 0
 
 
-def test_v1_manifest_is_rejected_because_it_lacks_source_provenance() -> None:
+def test_feedbax_snapshot_carries_verified_distribution_provenance(tmp_path: Path) -> None:
+    root = tmp_path / "feedbax"
+    package = root / "feedbax"
+    package.mkdir(parents=True)
+    _git(root, "init")
+    _git(root, "config", "user.email", "snapshot@example.invalid")
+    _git(root, "config", "user.name", "Snapshot Test")
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "feedbax"\nversion = "0.0.0"\n',
+        encoding="utf-8",
+    )
+    (package / "__init__.py").write_text('VALUE = "sealed"\n', encoding="utf-8")
+    _git(root, "add", "pyproject.toml", "feedbax/__init__.py")
+    _git(root, "commit", "-m", "Feedbax fixture")
+
+    snapshot = seal_repo_snapshot("provider", root, snapshot_parent=tmp_path / "snapshots")
+    provenance = snapshot.staging_root.joinpath(*PROVENANCE_PATH.split("/"))
+
+    assert not (snapshot.staging_root / ".git").exists()
+    assert provenance_for_distribution_build(snapshot.staging_root) == provenance.read_bytes()
+    assert (
+        snapshot.record.distribution_provenance_sha256
+        == hashlib.sha256(provenance.read_bytes()).hexdigest()
+    )
+    assert json.loads(provenance.read_bytes())["revision"] == _git(root, "rev-parse", "HEAD")
+
+    mismatched = snapshot.record.model_copy(update={"distribution_provenance_sha256": "0" * 64})
+    with pytest.raises(RepoSnapshotCacheFault, match="distribution provenance digest mismatch"):
+        restore_repo_snapshots(
+            {"provider": root},
+            RepoSnapshotManifest(repos={"provider": mismatched}),
+            snapshot_parent=tmp_path / "snapshots",
+        )
+
+
+@pytest.mark.parametrize(
+    "version",
+    [REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1, REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V2],
+)
+def test_old_manifest_is_rejected_because_it_lacks_complete_source_provenance(
+    version: str,
+) -> None:
     payload = {
         "schema_id": "feedbax.orchestration.repo_snapshot_manifest",
-        "schema_version": REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1,
+        "schema_version": version,
         "repos": {},
     }
 
@@ -84,7 +128,7 @@ def test_v1_manifest_is_rejected_because_it_lacks_source_provenance() -> None:
     ):
         RepoSnapshotManifest.model_validate(payload)
 
-    assert REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION.endswith(".v2")
+    assert REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION.endswith(".v3")
 
 
 def test_snapshot_rejects_file_swapped_to_symlink_before_open(

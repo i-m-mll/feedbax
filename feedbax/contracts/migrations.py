@@ -559,6 +559,7 @@ from feedbax.orchestration.repo_snapshot import (
     REPO_SNAPSHOT_MANIFEST_SCHEMA_ID,
     REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
     REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1,
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V2,
 )
 from feedbax.orchestration.events import (
     MAPPED_METRIC_VALUE_SCHEMA_ID,
@@ -4662,10 +4663,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             owner_module="feedbax.orchestration.repo_snapshot",
             emitted_by=("feedbax.orchestration.repo_snapshot.seal_repo_snapshots",),
             consumed_by=("feedbax.orchestration.drivers.runpod.RunPodOrchestrationDriver",),
-            description="Sealed tracked-working-tree transfer authority.",
+            description="Sealed source transfer authority with generated distribution provenance.",
             rejected_old_versions=(
                 "feedbax.orchestration.repo_snapshot_manifest.v0",
                 REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1,
+                REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V2,
             ),
             required_tests=(
                 "tests/test_repo_snapshot.py",

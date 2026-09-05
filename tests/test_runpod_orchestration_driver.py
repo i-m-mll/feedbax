@@ -21,6 +21,7 @@ import pytest
 
 import feedbax.orchestration.collection_recovery as collection_recovery
 import feedbax.orchestration.drivers.runpod as runpod_module
+from feedbax._distribution_provenance import provenance_for_distribution_build
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.remote_smoke import RemoteSmokeEvidence
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
@@ -2408,6 +2409,37 @@ def test_runpod_snapshot_digest_changes_environment_reuse_key(tmp_path: Path) ->
     assert first.dirty is second.dirty is True
     assert first.content_sha256 != second.content_sha256
     assert first_fingerprint != second_fingerprint
+
+
+def test_preflight_seals_editable_feedbax_with_distribution_provenance(
+    tmp_path: Path,
+) -> None:
+    consumer = tmp_path / "consumer"
+    feedbax_root = tmp_path / "feedbax"
+    package = feedbax_root / "feedbax"
+    package.mkdir(parents=True)
+    (feedbax_root / "pyproject.toml").write_text(
+        '[project]\nname = "feedbax"\nversion = "0.0.0"\n',
+        encoding="utf-8",
+    )
+    (package / "__init__.py").write_text('VALUE = "remote editable"\n', encoding="utf-8")
+    _git_seal_ready(feedbax_root, "pyproject.toml", "feedbax/__init__.py")
+    bundle, config = _layout_case(
+        tmp_path,
+        'version = 1\n[[package]]\nname = "feedbax"\nsource = { editable = "../feedbax" }\n',
+        local_repos={"consumer": consumer, "feedbax": feedbax_root},
+        remote_repos={"consumer": "/workspace/consumer", "feedbax": "/workspace/feedbax"},
+    )
+    driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
+
+    plan = driver.seal_repo_realization_plan(bundle)
+    snapshot = driver._repo_snapshots.snapshots["feedbax"]
+    provenance = snapshot.staging_root / "feedbax" / "_distribution_provenance.json"
+
+    assert plan.editable_source_resolutions[0].target_repo == "feedbax"
+    assert not (snapshot.staging_root / ".git").exists()
+    assert provenance_for_distribution_build(snapshot.staging_root) == provenance.read_bytes()
+    assert json.loads(provenance.read_bytes())["revision"] == plan.repos["feedbax"].snapshot.commit
 
 
 def test_runpod_plan_root_and_resolution_changes_invalidate_reuse_key(
@@ -5454,7 +5486,9 @@ def test_collect_recovery_rejects_destination_replacement_race(
         collection_recovery_bindings=[CollectionRecoveryBinding(row.row_id, preserved)],
     )
 
-    with pytest.raises(CollectionRecoveryError, match="attempt root identity changed while opening"):
+    with pytest.raises(
+        CollectionRecoveryError, match="attempt root identity changed while opening"
+    ):
         driver.collect(bundle, row, _completed_recovery_state(bundle))
 
 
