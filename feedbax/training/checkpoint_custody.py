@@ -24,6 +24,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field, fields as dataclass_fields
 from dataclasses import is_dataclass
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path, PurePosixPath
 from types import FunctionType, MappingProxyType
@@ -91,7 +92,14 @@ from feedbax.contracts.checkpoint_initialization import (
     derive_checkpoint_semantic_abis,
     validate_checkpoint_semantic_abi,
 )
-from feedbax.contracts.artifact_custody import ArtifactBlobProvider
+from feedbax.contracts.artifact_custody import (
+    ArtifactBlobProvider,
+    ContentBinding,
+    ContentMigrationMapping,
+    ContentMigrationReceipt,
+    ContentObjectRef,
+    ContentRootRecord,
+)
 from feedbax.contracts.base import (
     ArtifactRef,
     ArtifactMigrationRecord,
@@ -141,6 +149,7 @@ from feedbax.contracts.worker import (
     derive_consistency_predicate,
 )
 from feedbax.orchestration.events import normalize_serialized_metrics
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training.worker_validation import resolve_execution_mapping
 
 
@@ -392,6 +401,8 @@ class CheckpointWriteResult:
     latest_pointer: CheckpointLatestPointer
     checkpoint_set_path: Path
     checkpoint_set: CheckpointSet
+    content_binding: ContentBinding | None = None
+    content_root: ContentRootRecord | None = None
 
 
 ResumeSlotTransform = Callable[[Mapping[str, Any]], Mapping[str, Any]]
@@ -649,6 +660,54 @@ class CheckpointForkResult:
     checkpoint_set: CheckpointSet
     slot_transfer_modes: Mapping[str, str]
     source_provenance_notices: tuple[CheckpointProvenanceNotice, ...] = ()
+    content_binding: ContentBinding | None = None
+    content_root: ContentRootRecord | None = None
+
+
+def _publish_checkpoint_content(
+    provider: "ImmutableArtifactBlobProvider",
+    *,
+    latest_pointer_path: Path,
+    manifest_path: Path,
+    checkpoint_set_path: Path,
+    manifest: CheckpointTransactionManifest,
+    checkpoint_set: CheckpointSet,
+    reusable_objects: Mapping[str, ContentObjectRef] | None = None,
+) -> tuple[ContentBinding, ContentRootRecord]:
+    """Publish one complete checkpoint view through the canonical content provider."""
+    reusable = dict(reusable_objects or {})
+    transaction_prefix = PurePosixPath(TRANSACTIONS_DIR_NAME, manifest.transaction_id)
+    members: dict[str, Path | ContentObjectRef] = {
+        LATEST_POINTER_NAME: latest_pointer_path,
+        (transaction_prefix / MANIFEST_NAME).as_posix(): manifest_path,
+        (transaction_prefix / CHECKPOINT_SET_NAME).as_posix(): checkpoint_set_path,
+    }
+    for slot in manifest.slots:
+        source = manifest_path.parent / slot.relative_path
+        reused = reusable.get(slot.sha256)
+        if reused is not None:
+            if reused.size_bytes != slot.size_bytes:
+                raise CheckpointIntegrityError(
+                    f"canonical object size differs for checkpoint slot {slot.slot!r}"
+                )
+            member: Path | ContentObjectRef = reused
+        else:
+            member = source
+        members[(transaction_prefix / slot.relative_path).as_posix()] = member
+
+    tree_ref, content_root = provider.publish_rooted_tree(
+        members,
+        root_id=f"checkpoint:{checkpoint_set.checkpoint_id}",
+        root_kind="logical-ref",
+    )
+    return (
+        ContentBinding(
+            binding_name=manifest.transaction_id,
+            root_kind="checkpoint-custody",
+            tree=tree_ref,
+        ),
+        content_root,
+    )
 
 
 CheckpointForkPlanTransform = Callable[
@@ -3140,6 +3199,7 @@ def write_checkpoint_transaction(
     segment_parent_checkpoint_set: CheckpointSet | None = None,
     metadata: Mapping[str, Any] | None = None,
     publish_latest: bool = True,
+    content_provider: ImmutableArtifactBlobProvider | None = None,
 ) -> CheckpointWriteResult:
     """Write one atomic multi-slot checkpoint transaction and publish latest.
 
@@ -3316,6 +3376,21 @@ def write_checkpoint_transaction(
                 latest_path,
                 latest_pointer.model_dump(mode="json", exclude_none=True),
             )
+        elif content_provider is not None:
+            raise CheckpointCustodyError(
+                "canonical checkpoint publication requires its immutable latest.json snapshot"
+            )
+        content_binding: ContentBinding | None = None
+        content_root: ContentRootRecord | None = None
+        if content_provider is not None:
+            content_binding, content_root = _publish_checkpoint_content(
+                content_provider,
+                latest_pointer_path=latest_path,
+                manifest_path=manifest_path,
+                checkpoint_set_path=checkpoint_set_path,
+                manifest=manifest,
+                checkpoint_set=checkpoint_set,
+            )
         return CheckpointWriteResult(
             root=root_path,
             transaction_dir=final_dir,
@@ -3325,6 +3400,8 @@ def write_checkpoint_transaction(
             latest_pointer=latest_pointer,
             checkpoint_set_path=checkpoint_set_path,
             checkpoint_set=checkpoint_set,
+            content_binding=content_binding,
+            content_root=content_root,
         )
     except Exception:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -3355,6 +3432,58 @@ def load_latest_checkpoint(
         resume_slot_transform=resume_slot_transform,
         continuation_request=continuation_request,
         allow_new_lineage_override=allow_new_lineage_override,
+    )
+
+
+def migrate_path_backed_checkpoint(
+    source_root: str | Path,
+    *,
+    content_provider: ImmutableArtifactBlobProvider,
+) -> tuple[ContentBinding, ContentMigrationReceipt]:
+    """Publish one existing path-backed checkpoint through canonical content custody."""
+    source = Path(source_root).resolve()
+    authenticate_published_checkpoint_custody(source)
+    documents = load_checkpoint_custody_documents(source)
+    manifest = documents.manifest.document
+    checkpoint_set_path = documents.manifest_path.parent / CHECKPOINT_SET_NAME
+    checkpoint_set = load_checkpoint_set(source, manifest.transaction_id)
+    binding, _content_root = _publish_checkpoint_content(
+        content_provider,
+        latest_pointer_path=source / LATEST_POINTER_NAME,
+        manifest_path=documents.manifest_path,
+        checkpoint_set_path=checkpoint_set_path,
+        manifest=manifest,
+        checkpoint_set=checkpoint_set,
+    )
+    tree = content_provider.get_tree(binding.tree)
+    mappings = tuple(
+        ContentMigrationMapping(
+            source_type="path-backed-import",
+            source_ref=member.relative_path,
+            source_sha256=member.object.sha256,
+            target_ref=member.object.object_id,
+            target_sha256=member.object.sha256,
+            size_bytes=member.object.size_bytes,
+        )
+        for member in tree.files
+    ) + (
+        ContentMigrationMapping(
+            source_type="path-backed-import",
+            source_ref=f"checkpoint:{checkpoint_set.checkpoint_id}",
+            source_sha256=binding.tree.descriptor.sha256,
+            target_ref=binding.tree.tree_id,
+            target_sha256=binding.tree.descriptor.sha256,
+            size_bytes=binding.tree.descriptor.size_bytes,
+        ),
+    )
+    return binding, ContentMigrationReceipt(
+        source_schema_version=manifest.schema_version,
+        destination_store=str(content_provider.root),
+        mappings=mappings,
+        metadata={
+            "migration_mode": "offline-explicit",
+            "binding": binding.model_dump(mode="json"),
+        },
     )
 
 
@@ -4884,7 +5013,7 @@ def fork_checkpoint_plan(
     return results
 
 
-def fork_checkpoint_transaction(
+def _fork_checkpoint_transaction_from_path(
     source_root: str | Path,
     target_root: str | Path,
     *,
@@ -4909,6 +5038,8 @@ def fork_checkpoint_transaction(
     tool_version: str | None = None,
     metadata: Mapping[str, Any] | None = None,
     fork_provenance_metadata: Mapping[str, Any] | None = None,
+    content_provider: ImmutableArtifactBlobProvider | None = None,
+    source_content_binding: ContentBinding | None = None,
 ) -> CheckpointForkResult:
     """Fork one valid custody checkpoint into a target run contract/root.
 
@@ -5442,6 +5573,24 @@ def fork_checkpoint_transaction(
             latest_path,
             latest_pointer.model_dump(mode="json", exclude_none=True),
         )
+        content_binding: ContentBinding | None = None
+        content_root: ContentRootRecord | None = None
+        if content_provider is not None:
+            reusable_objects: dict[str, ContentObjectRef] = {}
+            if source_content_binding is not None:
+                source_tree = content_provider.get_tree(source_content_binding.tree)
+                reusable_objects = {
+                    member.object.sha256: member.object for member in source_tree.files
+                }
+            content_binding, content_root = _publish_checkpoint_content(
+                content_provider,
+                latest_pointer_path=latest_path,
+                manifest_path=manifest_path,
+                checkpoint_set_path=checkpoint_set_path,
+                manifest=manifest,
+                checkpoint_set=checkpoint_set,
+                reusable_objects=reusable_objects,
+            )
         return CheckpointForkResult(
             root=target_root_path,
             transaction_dir=final_dir,
@@ -5453,10 +5602,113 @@ def fork_checkpoint_transaction(
             checkpoint_set=checkpoint_set,
             slot_transfer_modes=transfer_modes,
             source_provenance_notices=source.provenance_notices,
+            content_binding=content_binding,
+            content_root=content_root,
         )
     except Exception:
         shutil.rmtree(final_dir if moved_to_final else tmp_dir, ignore_errors=True)
         raise
+
+
+def fork_checkpoint_transaction(
+    source_root: str | Path,
+    target_root: str | Path,
+    *,
+    target_run_spec: TrainingRunSpec,
+    target_phase_program: PhaseProgramSpec | None = None,
+    expected_slots: Mapping[str, Any] | None = None,
+    target_coordinate: ProgressCoordinate | None = None,
+    barrier_mapping: CheckpointForkBarrierMapping | Mapping[str, Any] | None = None,
+    expected_population_member_ids: Mapping[str, Sequence[str]] | None = None,
+    slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
+    transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    source_slot_transforms: Mapping[str, ResumeSlotTransform] | None = None,
+    source_transform_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+    segment_history_templates: Mapping[str, Any] | None = None,
+    target_slot_transform: ResumeSlotTransform | None = None,
+    target_transform_metadata: Mapping[str, Any] | None = None,
+    target_transformed_slots: Sequence[str] | None = None,
+    target_only_slots: Mapping[str, Mapping[str, Any]] | None = None,
+    continuation_request: CheckpointContinuationRequest | Mapping[str, Any] | None = None,
+    continuation_applied: bool = True,
+    link_strategy: CheckpointBlobLinkStrategy | None = None,
+    tool_version: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    fork_provenance_metadata: Mapping[str, Any] | None = None,
+    content_provider: ImmutableArtifactBlobProvider | None = None,
+    source_content_binding: ContentBinding | None = None,
+) -> CheckpointForkResult:
+    """Fork from a leased canonical projection when content custody is supplied."""
+    common = dict(
+        target_run_spec=target_run_spec,
+        target_phase_program=target_phase_program,
+        expected_slots=expected_slots,
+        target_coordinate=target_coordinate,
+        barrier_mapping=barrier_mapping,
+        expected_population_member_ids=expected_population_member_ids,
+        slot_transforms=slot_transforms,
+        transform_metadata=transform_metadata,
+        source_slot_transforms=source_slot_transforms,
+        source_transform_metadata=source_transform_metadata,
+        segment_history_templates=segment_history_templates,
+        target_slot_transform=target_slot_transform,
+        target_transform_metadata=target_transform_metadata,
+        target_transformed_slots=target_transformed_slots,
+        target_only_slots=target_only_slots,
+        continuation_request=continuation_request,
+        continuation_applied=continuation_applied,
+        link_strategy=link_strategy,
+        tool_version=tool_version,
+        metadata=metadata,
+        fork_provenance_metadata=fork_provenance_metadata,
+        content_provider=content_provider,
+        source_content_binding=source_content_binding,
+    )
+    if content_provider is None and source_content_binding is None:
+        return _fork_checkpoint_transaction_from_path(source_root, target_root, **common)
+    if content_provider is None or source_content_binding is None:
+        raise CheckpointCustodyError(
+            "canonical checkpoint forks require both content_provider and source_content_binding"
+        )
+    if source_content_binding.root_kind != "checkpoint-custody":
+        raise CheckpointCustodyError(
+            "canonical checkpoint forks require a checkpoint-custody content binding"
+        )
+
+    from feedbax.orchestration.input_materialization import (
+        acquire_content_projection_lease,
+        compile_content_input_projection,
+        materialize_content_input_projection,
+    )
+
+    projection = compile_content_input_projection((source_content_binding,), content_provider)
+    lease_id = f"checkpoint-fork:{uuid.uuid4().hex}"
+    acquired = False
+    try:
+        acquire_content_projection_lease(
+            projection,
+            content_provider,
+            lease_id=lease_id,
+            owner=lease_id,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        acquired = True
+        with tempfile.TemporaryDirectory(prefix="feedbax-checkpoint-fork-") as temporary:
+            staged = materialize_content_input_projection(
+                projection,
+                content_provider,
+                destination_root=Path(temporary) / "trees",
+            )
+            if len(staged) != 1:
+                raise CheckpointCustodyError("checkpoint source projection must contain one tree")
+            return _fork_checkpoint_transaction_from_path(
+                staged[0].destination,
+                target_root,
+                **common,
+            )
+    finally:
+        if acquired:
+            content_provider.release_lease(lease_id)
 
 
 def _load_latest_checkpoint_transaction(root: str | Path) -> _LoadedCheckpointTransaction:

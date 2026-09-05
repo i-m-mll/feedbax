@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -52,6 +52,7 @@ from feedbax.contracts.artifact_custody import (
     ContentHoldRecord,
     ContentLeaseRecord,
     ContentObjectRef,
+    ContentRetentionTarget,
     ContentRootRecord,
     ContentTree,
     ContentTreeFile,
@@ -616,6 +617,91 @@ class ImmutableArtifactBlobProvider:
             tree_id=f"{CONTENT_TREE_REF_PREFIX}{descriptor.sha256}",
             descriptor=descriptor,
         )
+
+    def publish_rooted_tree(
+        self,
+        members: Mapping[str, Path | ContentObjectRef],
+        *,
+        root_id: str,
+        root_kind: Literal["logical-ref", "run", "export", "import", "migration"],
+        nonterminal: bool = False,
+        restartable: bool = False,
+    ) -> tuple[ContentTreeRef, ContentRootRecord]:
+        """Store or reuse exact members, then publish and root their complete tree."""
+        with self._exclusive_lock():
+            files: list[ContentTreeFile] = []
+            directories: set[str] = set()
+            for relative_path, source in sorted(members.items()):
+                if isinstance(source, ContentObjectRef):
+                    self.get_object(source)
+                    object_ref = source
+                elif isinstance(source, Path):
+                    object_ref = self.store_object(self._read_regular_source(source))
+                else:
+                    raise TypeError(
+                        "rooted-tree members must be pathlib.Path or ContentObjectRef values"
+                    )
+                canonical_path = ContentTreeFile(
+                    relative_path=relative_path,
+                    object=object_ref,
+                ).relative_path
+                parent = PurePosixPath(canonical_path).parent
+                while parent != PurePosixPath("."):
+                    directories.add(parent.as_posix())
+                    parent = parent.parent
+                files.append(ContentTreeFile(relative_path=canonical_path, object=object_ref))
+
+            tree = ContentTree(
+                directories=tuple(sorted(directories)),
+                files=tuple(files),
+            )
+            descriptor = self.store_object(canonical_json_v1_bytes(tree.model_dump(mode="json")))
+            tree_ref = ContentTreeRef(
+                tree_id=f"{CONTENT_TREE_REF_PREFIX}{descriptor.sha256}",
+                descriptor=descriptor,
+            )
+            root = ContentRootRecord(
+                root_id=root_id,
+                root_kind=root_kind,
+                targets=(ContentRetentionTarget(ref_kind="tree", tree=tree_ref),),
+                nonterminal=nonterminal,
+                restartable=restartable,
+            )
+            self.register_root(root)
+            return tree_ref, root
+
+    @staticmethod
+    def _read_regular_source(source: Path) -> bytes:
+        path = _canonicalize_trusted_system_aliases(_validate_explicit_root(source))
+        try:
+            before = path.stat(follow_symlinks=False)
+            if path.resolve(strict=True) != path:
+                raise ArtifactBlobContainmentError(
+                    f"rooted-tree source must be canonical and non-symlink: {source}"
+                )
+            descriptor, opened = open_existing_file(
+                path,
+                rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+                error_factory=ArtifactBlobContainmentError,
+                context=f"rooted-tree source {source}",
+            )
+            try:
+                data = _read_file_descriptor(descriptor)
+                after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            current = path.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise ArtifactBlobContainmentError(
+                f"rooted-tree source is not one stable regular file: {source}"
+            ) from exc
+        if (
+            _file_state(before) != _file_state(opened)
+            or _file_state(opened) != _file_state(after)
+            or _file_state(before) != _file_state(current)
+        ):
+            raise ArtifactBlobIntegrityError(f"rooted-tree source changed during read: {source}")
+        return data
 
     def get_tree(self, tree_ref: ContentTreeRef) -> ContentTree:
         """Resolve and revalidate one exact role-free content-tree descriptor."""
