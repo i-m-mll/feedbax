@@ -86,13 +86,6 @@ def canonical_orchestration_root(root: Path | str) -> Path:
     to the immutable custody provider's no-follow containment checks.
     """
     root_path = Path(root).expanduser()
-    if not root_path.is_absolute():
-        raise ValueError(
-            "orchestration_root must be an explicit absolute path so its physical "
-            "custody root can be fixed before execution"
-        )
-    if ".." in root_path.parts:
-        raise ValueError("orchestration_root must not contain lexical '..' components")
     try:
         return root_path.resolve(strict=False)
     except (OSError, RuntimeError) as exc:

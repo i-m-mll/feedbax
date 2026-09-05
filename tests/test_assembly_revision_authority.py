@@ -239,7 +239,9 @@ def test_matching_clean_install_assembles_and_copies_the_authored_revision(
 
 
 def test_declared_outer_symlink_is_canonical_before_state_and_bundle_custody(
-    tmp_path: Path, clean_checkout: tuple[Path, str]
+    tmp_path: Path,
+    clean_checkout: tuple[Path, str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _package_root, head = clean_checkout
     fixture = _assembly_fixture(tmp_path / "fixture", feedbax_revision=head)
@@ -249,7 +251,10 @@ def test_declared_outer_symlink_is_canonical_before_state_and_bundle_custody(
     alias_parent.mkdir()
     alias_root = alias_parent / "_artifacts"
     alias_root.symlink_to(physical_root, target_is_directory=True)
-    request = fixture.request.model_copy(update={"orchestration_root": str(alias_root)})
+    monkeypatch.chdir(tmp_path)
+    request = fixture.request.model_copy(
+        update={"orchestration_root": str(alias_root.relative_to(tmp_path))}
+    )
     fixture = dataclasses.replace(fixture, request=request)
     run_set_id = "2026-01-02-deadbeef"
 
