@@ -17,10 +17,18 @@ import jax.tree as jt
 import numpy as np
 
 from feedbax.contracts.checkpoint_initialization import (
+    CheckpointInitializationPlan,
     CheckpointStructure,
     validate_checkpoint_semantic_abi,
 )
-from feedbax.contracts.checkpoints import CheckpointSemanticLeafIdentity
+from feedbax.contracts.checkpoints import (
+    CheckpointForkTransformStep,
+    CheckpointSemanticLeafIdentity,
+)
+
+
+SEMANTIC_CHECKPOINT_TRANSFORM_IDENTITY = "feedbax.semantic-checkpoint-transform"
+SEMANTIC_CHECKPOINT_TRANSFORM_VERSION = "1"
 
 
 class CheckpointTransformErrorCode(StrEnum):
@@ -89,6 +97,14 @@ class SemanticCheckpointTransformResult:
     def accounting_records(self) -> tuple[dict[str, Any], ...]:
         """Return deterministic JSON-shaped records for the storage publisher."""
         return tuple(item.machine_record() for item in self.accounting)
+
+
+@dataclass
+class SemanticCheckpointForkRuntime:
+    """Runtime registration and captured receipts for one semantic fork step."""
+
+    registration: Any
+    results: list[SemanticCheckpointTransformResult]
 
 
 @dataclass(frozen=True)
@@ -413,11 +429,141 @@ def derive_and_apply_semantic_checkpoint_transform(
     )
 
 
+def apply_semantic_checkpoint_initialization(
+    plan: CheckpointInitializationPlan,
+    *,
+    source_structure: CheckpointStructure,
+    target_structure: CheckpointStructure,
+    source_values: Mapping[str, Any],
+    target_values: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Apply a lowered plan by semantic identity onto the actual target trees."""
+    source, _ = _semantic_index(source_structure, source_values)
+    target, target_flattened = _semantic_index(target_structure, target_values)
+    slot_plans = {slot.slot: slot for slot in plan.slots}
+    restored = {
+        (slot.slot, path) for slot in plan.slots for path in slot.restored_paths
+    }
+    seen: set[tuple[str, str]] = set()
+    for identity, target_leaf in target.items():
+        key = (target_leaf.semantic.owner_slot, target_leaf.semantic.raw_path)
+        if key not in restored:
+            continue
+        source_leaf = source.get(identity)
+        if source_leaf is None:
+            raise CheckpointTransformRefused(
+                CheckpointTransformErrorCode.UNKNOWN_IDENTITY,
+                f"initialization source lacks semantic identity {identity!r}",
+                identities=(identity,),
+            )
+        treedef, leaves = target_flattened[target_leaf.semantic.owner_slot]
+        leaves[target_leaf.index] = source_leaf.value
+        target_flattened[target_leaf.semantic.owner_slot] = (treedef, leaves)
+        seen.add(key)
+    if seen != restored or set(slot_plans) != set(target_flattened):
+        raise CheckpointTransformRefused(
+            CheckpointTransformErrorCode.INCOMPLETE_ACCOUNTING,
+            "checkpoint initialization plan does not account for the actual target structure",
+        )
+    return {
+        slot: jt.unflatten(treedef, leaves)
+        for slot, (treedef, leaves) in target_flattened.items()
+    }
+
+
+def bind_semantic_checkpoint_fork_step(
+    step: CheckpointForkTransformStep,
+    *,
+    source_structure: CheckpointStructure,
+    target_structure: CheckpointStructure,
+    target_values: Mapping[str, Any],
+) -> SemanticCheckpointForkRuntime:
+    """Decode and register the canonical semantic transform for one fork step."""
+    if step.stage != "target_post" or any(
+        record.identity != SEMANTIC_CHECKPOINT_TRANSFORM_IDENTITY for record in step.records
+    ):
+        raise CheckpointTransformRefused(
+            CheckpointTransformErrorCode.INVALID_POLICY,
+            "semantic fork binding requires one target_post semantic transform step",
+        )
+    parameters = step.records[0].parameters
+    if set(parameters) != {
+        "added_axes",
+        "optimizer_policy",
+        "learning_rate_schedule_policy",
+    }:
+        raise CheckpointTransformRefused(
+            CheckpointTransformErrorCode.INVALID_POLICY,
+            "semantic fork parameters must declare added_axes and both explicit policies",
+        )
+    try:
+        added_axes = tuple(AddedParameterAxis(**item) for item in parameters["added_axes"])
+    except (TypeError, ValueError) as exc:
+        raise CheckpointTransformRefused(
+            CheckpointTransformErrorCode.INVALID_POLICY,
+            "semantic fork added_axes declarations are invalid",
+        ) from exc
+    results: list[SemanticCheckpointTransformResult] = []
+
+    def transform(
+        source_values: Mapping[str, Any], _parameters: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        names = {slot.slot for slot in source_structure.slots}
+        result = derive_and_apply_semantic_checkpoint_transform(
+            source_structure=source_structure,
+            target_structure=target_structure,
+            source_values={name: source_values[name] for name in names},
+            target_values={name: target_values[name] for name in names},
+            added_axes=added_axes,
+            optimizer_policy=parameters["optimizer_policy"],
+            learning_rate_schedule_policy=parameters["learning_rate_schedule_policy"],
+        )
+        results.append(result)
+        materialized = dict(source_values)
+        for name, value in result.values.items():
+            source_leaves, source_treedef = jt.flatten(source_values[name])
+            target_leaves, target_treedef = jt.flatten(value)
+            materialized[name] = (
+                source_values[name]
+                if source_treedef == target_treedef
+                and all(source is target for source, target in zip(source_leaves, target_leaves))
+                else value
+            )
+        return materialized
+
+    from feedbax.training.checkpoint_custody import CheckpointForkTransformRegistration
+
+    return SemanticCheckpointForkRuntime(
+        registration=CheckpointForkTransformRegistration(
+            identity=SEMANTIC_CHECKPOINT_TRANSFORM_IDENTITY,
+            version=SEMANTIC_CHECKPOINT_TRANSFORM_VERSION,
+            implementation_sha256=semantic_checkpoint_transform_implementation_sha256(),
+            transform=transform,
+        ),
+        results=results,
+    )
+
+
+def semantic_checkpoint_transform_implementation_sha256() -> str:
+    """Return the exact implementation pin used by durable fork plans."""
+    from feedbax.training.row_lowering import training_row_lowerer_implementation_sha256
+
+    return training_row_lowerer_implementation_sha256(
+        (derive_and_apply_semantic_checkpoint_transform, validate_checkpoint_semantic_abi)
+    )
+
+
 __all__ = [
     "AddedParameterAxis",
     "CheckpointLeafTransfer",
     "CheckpointTransformErrorCode",
     "CheckpointTransformRefused",
     "SemanticCheckpointTransformResult",
+    "SemanticCheckpointForkRuntime",
+    "SEMANTIC_CHECKPOINT_TRANSFORM_IDENTITY",
+    "SEMANTIC_CHECKPOINT_TRANSFORM_VERSION",
     "derive_and_apply_semantic_checkpoint_transform",
+    "apply_semantic_checkpoint_initialization",
+    "bind_semantic_checkpoint_fork_step",
+    "semantic_checkpoint_transform_implementation_sha256",
 ]

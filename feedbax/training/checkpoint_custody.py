@@ -4943,6 +4943,8 @@ def fork_checkpoint_plan(
     *,
     transform_registry: CheckpointForkTransformRegistry | None = None,
     tool_version: str | None = None,
+    content_provider: ImmutableArtifactBlobProvider | None = None,
+    source_content_binding: ContentBinding | None = None,
 ) -> dict[str, CheckpointForkResult]:
     """Preflight and execute a portable multi-target checkpoint fork plan."""
     resolved_plan = _coerce_checkpoint_fork_plan(plan)
@@ -5008,6 +5010,8 @@ def fork_checkpoint_plan(
                 "checkpoint_fork_plan_target_id": prepared.target_id,
                 "checkpoint_fork_plan_compatibility_projection": projection,
             },
+            content_provider=content_provider,
+            source_content_binding=source_content_binding,
         )
         results[prepared.target_id] = result
     return results
@@ -5664,9 +5668,11 @@ def fork_checkpoint_transaction(
         content_provider=content_provider,
         source_content_binding=source_content_binding,
     )
-    if content_provider is None and source_content_binding is None:
+    if source_content_binding is None:
+        if content_provider is not None and link_strategy is None:
+            common["link_strategy"] = _copy_checkpoint_blob
         return _fork_checkpoint_transaction_from_path(source_root, target_root, **common)
-    if content_provider is None or source_content_binding is None:
+    if content_provider is None:
         raise CheckpointCustodyError(
             "canonical checkpoint forks require both content_provider and source_content_binding"
         )
@@ -5675,40 +5681,53 @@ def fork_checkpoint_transaction(
             "canonical checkpoint forks require a checkpoint-custody content binding"
         )
 
+    with materialize_checkpoint_content(
+        source_content_binding,
+        content_provider,
+        owner="checkpoint-fork",
+    ) as materialized:
+        return _fork_checkpoint_transaction_from_path(materialized, target_root, **common)
+
+
+@contextmanager
+def materialize_checkpoint_content(
+    binding: ContentBinding,
+    provider: ImmutableArtifactBlobProvider,
+    *,
+    owner: str,
+) -> Iterator[Path]:
+    """Lease and materialize one canonical checkpoint tree for a bounded operation."""
+    if binding.root_kind != "checkpoint-custody":
+        raise CheckpointCustodyError(
+            "canonical checkpoint materialization requires a checkpoint-custody binding"
+        )
     from feedbax.orchestration.input_materialization import (
         acquire_content_projection_lease,
         compile_content_input_projection,
         materialize_content_input_projection,
     )
 
-    projection = compile_content_input_projection((source_content_binding,), content_provider)
-    lease_id = f"checkpoint-fork:{uuid.uuid4().hex}"
-    acquired = False
+    projection = compile_content_input_projection((binding,), provider)
+    lease_id = f"{owner}:{uuid.uuid4().hex}"
+    acquire_content_projection_lease(
+        projection,
+        provider,
+        lease_id=lease_id,
+        owner=owner,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
     try:
-        acquire_content_projection_lease(
-            projection,
-            content_provider,
-            lease_id=lease_id,
-            owner=lease_id,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-        )
-        acquired = True
-        with tempfile.TemporaryDirectory(prefix="feedbax-checkpoint-fork-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="feedbax-checkpoint-content-") as temporary:
             staged = materialize_content_input_projection(
                 projection,
-                content_provider,
+                provider,
                 destination_root=Path(temporary) / "trees",
             )
             if len(staged) != 1:
                 raise CheckpointCustodyError("checkpoint source projection must contain one tree")
-            return _fork_checkpoint_transaction_from_path(
-                staged[0].destination,
-                target_root,
-                **common,
-            )
+            yield staged[0].destination
     finally:
-        if acquired:
-            content_provider.release_lease(lease_id)
+        provider.release_lease(lease_id)
 
 
 def _load_latest_checkpoint_transaction(root: str | Path) -> _LoadedCheckpointTransaction:
@@ -6152,6 +6171,12 @@ def _hardlink_first_copy_fallback(source: Path, target: Path) -> str:
         )
         shutil.copy2(source, target)
         return "copy"
+
+
+def _copy_checkpoint_blob(source: Path, target: Path) -> str:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    return "copy"
 
 
 def _transform_record(

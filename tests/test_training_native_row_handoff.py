@@ -1028,6 +1028,33 @@ def test_shadow_runtime_binding_rejects_caller_owned_update_budget(tmp_path: Pat
         )
 
 
+def test_native_runtime_binding_preserves_authored_checkpoint_plan_inputs(
+    tmp_path: Path,
+) -> None:
+    bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path, gain=2))
+    row = bundle.rows[0]
+    authored = [
+        "--checkpoint-fork-plan",
+        "fork-plan.json",
+        "--checkpoint-fork-bindings",
+        "fork-bindings.json",
+        "--checkpoint-fork-target-id",
+        "target",
+        "--checkpoint-content-store",
+        "content",
+        "--checkpoint-source-binding",
+        "source-binding.json",
+    ]
+    command, _ = bind_native_execution_command(
+        [*row.launch.command, *authored],
+        row=row,
+        payload_path=tmp_path / "payload.json",
+        collection_root=tmp_path / "row",
+    )
+    for option in authored[::2]:
+        assert command[command.index(option) + 1] == authored[authored.index(option) + 1]
+
+
 def test_local_driver_executes_compiled_native_row_subprocess(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
