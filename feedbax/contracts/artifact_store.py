@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from pathlib import Path
 from typing import Any, Optional
 
@@ -11,6 +13,11 @@ from feedbax.contracts.base import (
     ArtifactRef,
     default_manifest_root,
     sha256_bytes,
+)
+from feedbax.contracts.artifact_custody import (
+    ContentMigrationMapping,
+    ContentMigrationReceipt,
+    ContentObjectRef,
 )
 from feedbax.contracts.retention_artifact_schema import (
     RETENTION_ARTIFACT_ROLE_SCHEMAS,
@@ -150,22 +157,99 @@ def store_bytes_artifact(
     """
     if not isinstance(data, bytes):
         raise TypeError("artifact data must be bytes")
-    from feedbax.persistence.publication import LocalBlobStore
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
     root_path = Path(root) if root is not None else default_manifest_root()
-    blob = LocalBlobStore(Path(root_path).absolute()).stage(data)
-    dest = _artifact_path(root_path, blob.digest)
+    object_ref = ImmutableArtifactBlobProvider(Path(root_path).absolute()).store_object(data)
+    dest = _artifact_path(root_path, object_ref.sha256)
     artifact_metadata = dict(metadata or {})
     artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
     return ArtifactRef(
         role=role,
         logical_name=logical_name,
-        artifact_id=f"artifact://sha256/{blob.digest}",
-        sha256=blob.digest,
+        artifact_id=f"artifact://sha256/{object_ref.sha256}",
+        sha256=object_ref.sha256,
         media_type=media_type,
-        size_bytes=blob.size_bytes,
+        size_bytes=object_ref.size_bytes,
         uri=str(dest),
         metadata=artifact_metadata,
+    )
+
+
+def migrate_path_backed_content(
+    sources: dict[str, Path | str],
+    *,
+    destination_store: Path | str,
+) -> tuple[dict[str, ContentObjectRef], ContentMigrationReceipt]:
+    """Offline-only ingestion of explicitly named path-backed imported material."""
+    from feedbax.persistence.artifact_custody import (
+        ArtifactBlobContainmentError,
+        ArtifactBlobIntegrityError,
+        ImmutableArtifactBlobProvider,
+    )
+
+    provider = ImmutableArtifactBlobProvider(Path(destination_store).absolute())
+    refs: dict[str, ContentObjectRef] = {}
+    mappings: list[ContentMigrationMapping] = []
+    collision_keys: set[str] = set()
+    for source_ref, supplied_path in sorted(sources.items()):
+        if not source_ref or "\x00" in source_ref:
+            raise ArtifactBlobContainmentError(
+                "path-backed source refs must be non-empty and NUL-free"
+            )
+        path = Path(supplied_path)
+        if not path.is_absolute() or ".." in path.parts:
+            raise ArtifactBlobContainmentError(
+                f"path-backed migration source must be an explicit absolute path: {path}"
+            )
+        lexical = Path(os.path.abspath(path))
+        resolved = path.resolve(strict=True)
+        before = path.stat(follow_symlinks=False)
+        collision_key = os.path.normcase(str(resolved))
+        if collision_key in collision_keys:
+            raise ArtifactBlobContainmentError(
+                f"path-backed migration contains a target-path collision: {path}"
+            )
+        collision_keys.add(collision_key)
+        if lexical != resolved or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ArtifactBlobContainmentError(
+                f"path-backed migration source must be one canonical regular non-link file: {path}"
+            )
+        data = path.read_bytes()
+        after = path.stat(follow_symlinks=False)
+        if _file_content_identity(path) != (sha256_bytes(data), len(data)) or (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise ArtifactBlobIntegrityError(
+                f"path-backed migration source changed during ingest: {path}"
+            )
+        object_ref = provider.store_object(data)
+        refs[source_ref] = object_ref
+        mappings.append(
+            ContentMigrationMapping(
+                source_type="path-backed-import",
+                source_ref=source_ref,
+                source_sha256=object_ref.sha256,
+                target_ref=object_ref.object_id,
+                target_sha256=object_ref.sha256,
+                size_bytes=object_ref.size_bytes,
+            )
+        )
+    return refs, ContentMigrationReceipt(
+        source_schema_version="feedbax.path_backed_import.v1",
+        destination_store=str(provider.root),
+        mappings=tuple(mappings),
+        metadata={"migration_mode": "offline-explicit"},
     )
 
 

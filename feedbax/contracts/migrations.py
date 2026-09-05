@@ -9,6 +9,18 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from feedbax.contracts.artifact_custody import (
+    CONTENT_BINDING_SCHEMA_ID,
+    CONTENT_BINDING_SCHEMA_VERSION,
+    CONTENT_MANIFEST_REF_SCHEMA_ID,
+    CONTENT_MANIFEST_REF_SCHEMA_VERSION,
+    CONTENT_MIGRATION_RECEIPT_SCHEMA_ID,
+    CONTENT_MIGRATION_RECEIPT_SCHEMA_VERSION,
+    CONTENT_OBJECT_REF_SCHEMA_ID,
+    CONTENT_OBJECT_REF_SCHEMA_VERSION,
+    CONTENT_TREE_REF_SCHEMA_ID,
+    CONTENT_TREE_REF_SCHEMA_VERSION,
+    CONTENT_TREE_SCHEMA_ID,
+    CONTENT_TREE_SCHEMA_VERSION,
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
 )
@@ -2975,6 +2987,63 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             covers="ImmutableArtifactBlobProviderSpec",
         ),
+        *(
+            _family(
+                kind,
+                schema_id,
+                schema_version,
+                owner_module="feedbax.contracts.artifact_custody",
+                emitted_by=("feedbax.persistence.ImmutableArtifactBlobProvider",),
+                consumed_by=(
+                    "feedbax.persistence.ImmutableArtifactBlobProvider",
+                    "Feedbax orchestration content projection",
+                ),
+                description=description,
+                rejected_old_versions=(f"{schema_id}.v0",),
+                required_tests=(
+                    "tests/test_artifact_custody.py",
+                    "tests/test_structured_spec_migrations.py",
+                ),
+            )
+            for kind, schema_id, schema_version, description in (
+                (
+                    "ContentObjectRef",
+                    CONTENT_OBJECT_REF_SCHEMA_ID,
+                    CONTENT_OBJECT_REF_SCHEMA_VERSION,
+                    "Role-free exact-byte object reference in the canonical store.",
+                ),
+                (
+                    "ContentTree",
+                    CONTENT_TREE_SCHEMA_ID,
+                    CONTENT_TREE_SCHEMA_VERSION,
+                    "Canonical role-free directory-tree descriptor.",
+                ),
+                (
+                    "ContentTreeRef",
+                    CONTENT_TREE_REF_SCHEMA_ID,
+                    CONTENT_TREE_REF_SCHEMA_VERSION,
+                    "Pinned content-tree descriptor reference.",
+                ),
+                (
+                    "ContentManifestRef",
+                    CONTENT_MANIFEST_REF_SCHEMA_ID,
+                    CONTENT_MANIFEST_REF_SCHEMA_VERSION,
+                    "Logical manifest kind/id pinned to exact bytes.",
+                ),
+                (
+                    "ContentBinding",
+                    CONTENT_BINDING_SCHEMA_ID,
+                    CONTENT_BINDING_SCHEMA_VERSION,
+                    "Runtime role binding kept separate from content-tree identity.",
+                ),
+                (
+                    "ContentMigrationReceipt",
+                    CONTENT_MIGRATION_RECEIPT_SCHEMA_ID,
+                    CONTENT_MIGRATION_RECEIPT_SCHEMA_VERSION,
+                    "Complete receipt for explicit offline legacy-custody migration.",
+                ),
+            )
+        ),
         _family(
             "RunMatrixMaterialization",
             RUN_MATRIX_MATERIALIZATION_SCHEMA_ID,
@@ -5063,14 +5132,14 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
         _family(
             "ManifestPacket",
             "feedbax.spec.manifest_packet",
-            "feedbax.spec.manifest_packet.v1",
+            "feedbax.spec.manifest_packet.v2",
             owner_module="feedbax.contracts.manifest_packet",
             emitted_by=("feedbax.contracts.manifest_packet", "feedbax.bin.packet"),
             consumed_by=("feedbax.contracts.manifest_packet",),
             description=(
-                "Directory packet index for identity-preserving manifest and artifact "
-                "import/export."
+                "Unique-object packet with exact manifest and logical-reference import/export."
             ),
+            rejected_old_versions=("feedbax.spec.manifest_packet.v1",),
             required_tests=(
                 "tests/test_manifest_packets.py",
                 "tests/test_structured_spec_migrations.py",

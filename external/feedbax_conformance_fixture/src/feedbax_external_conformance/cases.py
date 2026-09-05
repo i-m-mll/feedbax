@@ -167,6 +167,7 @@ from feedbax.training.preparation import ExecutionPreparationRequest
 from feedbax.training.row_lowering import TrainingRowLoweringContext
 from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence import ContentBinding, ContentManifestConflictError
 from feedbax.plugins import (
     COMPONENTS,
     DRIVERS,
@@ -1822,9 +1823,44 @@ def check_figure_role_reference_public_contract() -> bool:
     return True
 
 
+def check_content_store_candidate_contract() -> bool:
+    """Exercise the proposed public content-store boundary from an external package."""
+    with TemporaryDirectory(prefix="feedbax-content-store-conformance-") as temporary:
+        root = Path(temporary).resolve()
+        source = root / "source"
+        (source / "empty").mkdir(parents=True)
+        (source / "payload.bin").write_bytes(b"external exact content")
+        provider = ImmutableArtifactBlobProvider(root / "store")
+        tree = provider.ingest_tree(source)
+        left = ContentBinding(binding_name="training", root_kind="manifest-store", tree=tree)
+        right = ContentBinding(
+            binding_name="evaluation",
+            root_kind="checkpoint-custody",
+            tree=provider.ingest_tree(source),
+        )
+        if left.tree.tree_id != right.tree.tree_id:
+            raise AssertionError("content-tree identity depended on its runtime role")
+        manifest_bytes = b'{"kind":"TrainingRunManifest","id":"external:content","exact":true}\n'
+        manifest = provider.bind_manifest("TrainingRunManifest", "external:content", manifest_bytes)
+        if provider.resolve_manifest(manifest.kind, manifest.id)[1] != manifest_bytes:
+            raise AssertionError("exact manifest bytes did not resolve from canonical custody")
+        try:
+            provider.bind_manifest(
+                manifest.kind,
+                manifest.id,
+                b'{"kind":"TrainingRunManifest","id":"external:content","exact":false}\n',
+            )
+        except ContentManifestConflictError:
+            pass
+        else:
+            raise AssertionError("divergent bytes replaced one manifest kind/id")
+    return True
+
+
 __all__ = [
     "check_component_registration_and_migration",
     "check_component_param_array_values",
+    "check_content_store_candidate_contract",
     "check_exact_parent_migration",
     "check_figure_composition_public_contract",
     "check_figure_role_reference_public_contract",

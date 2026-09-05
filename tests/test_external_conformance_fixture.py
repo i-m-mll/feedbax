@@ -831,6 +831,12 @@ def test_custody_persistence_case_uses_public_installed_contract(fixture_package
     assert lifecycle.check_custody_persistence_recovery()
 
 
+def test_content_store_candidate_uses_public_installed_contract(fixture_package) -> None:
+    cases = importlib.import_module(f"{fixture_package.__name__}.cases")
+
+    assert cases.check_content_store_candidate_contract()
+
+
 def test_custody_persistence_exceptions_are_public_typed_contracts() -> None:
     assert issubclass(PrimaryStatePersistenceError, OSError)
     assert issubclass(CustodyPreservationRequired, RuntimeError)

@@ -198,13 +198,23 @@ def test_packet_manifest_that_states_its_status_twice_is_refused(tmp_path: Path)
     index = _packet_index(packet)
     entry = next(item for item in index["manifests"] if item["id"] == manifest_id)
     manifest_path = packet / entry["path"]
-    duplicated = _state_member_twice(
-        manifest_path.read_text(encoding="utf-8"), "status", "failed"
-    )
+    duplicated = _state_member_twice(manifest_path.read_text(encoding="utf-8"), "status", "failed")
     _assert_decoy_is_invisible_to_json_loads(duplicated, "status", "completed")
-    manifest_path.write_text(duplicated, encoding="utf-8")
-    # Recompute the packet's own digest so the sha256 gate cannot mask the point.
-    entry["sha256"] = sha256_bytes(manifest_path.read_bytes())
+    changed_bytes = duplicated.encode()
+    changed_sha = sha256_bytes(changed_bytes)
+    object_entry = next(item for item in index["objects"] if item["sha256"] == entry["sha256"])
+    changed_path = packet / "objects" / "sha256" / changed_sha[:2] / changed_sha
+    changed_path.parent.mkdir(parents=True, exist_ok=True)
+    changed_path.write_bytes(changed_bytes)
+    manifest_path.unlink()
+    entry.update({"sha256": changed_sha, "path": str(changed_path.relative_to(packet))})
+    object_entry.update(
+        {
+            "sha256": changed_sha,
+            "size_bytes": len(changed_bytes),
+            "path": str(changed_path.relative_to(packet)),
+        }
+    )
     (packet / "packet.json").write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
 
     target = tmp_path / "target"
@@ -225,9 +235,7 @@ def test_packet_index_that_states_its_schema_id_twice_is_refused(tmp_path: Path)
     index_path = packet / "packet.json"
     text = index_path.read_text(encoding="utf-8")
     duplicated = _state_member_twice(text, "schema_id", "attacker.spec.packet")
-    _assert_decoy_is_invisible_to_json_loads(
-        duplicated, "schema_id", json.loads(text)["schema_id"]
-    )
+    _assert_decoy_is_invisible_to_json_loads(duplicated, "schema_id", json.loads(text)["schema_id"])
     index_path.write_text(duplicated, encoding="utf-8")
 
     with pytest.raises(DuplicateJsonKeyError) as excinfo:
@@ -256,9 +264,7 @@ def test_target_manifest_root_document_that_states_a_member_twice_is_refused(
         id="feedbax-training-run:strict-json-resident", status="completed"
     )
     resident_path = write_manifest(existing, root=target)
-    duplicated = _state_member_twice(
-        resident_path.read_text(encoding="utf-8"), "status", "failed"
-    )
+    duplicated = _state_member_twice(resident_path.read_text(encoding="utf-8"), "status", "failed")
     _assert_decoy_is_invisible_to_json_loads(duplicated, "status", "completed")
     resident_path.write_text(duplicated, encoding="utf-8")
 
@@ -289,9 +295,7 @@ def test_repo_composition_parent_that_states_a_member_twice_is_refused(tmp_path:
     flattened = flatten_repo_composition(node, repo_root=tmp_path)
     assert flattened.payload == resolved
 
-    duplicated = _state_member_twice(
-        path.read_text(encoding="utf-8"), "learning_rate", 10.0
-    )
+    duplicated = _state_member_twice(path.read_text(encoding="utf-8"), "learning_rate", 10.0)
     _assert_decoy_is_invisible_to_json_loads(duplicated, "learning_rate", 0.001)
     path.write_text(duplicated, encoding="utf-8")
     # The pin still matches, because the pin is computed from the parse.
@@ -361,9 +365,7 @@ def test_authoring_budget_that_states_a_cap_twice_is_refused() -> None:
     assert document["schema_id"] == "feedbax.spec.authoring_budget"
 
     text = raw.decode("utf-8")
-    duplicated = text.replace(
-        '"training": {', '"training": {"max_bytes": 1048576, ', 1
-    )
+    duplicated = text.replace('"training": {', '"training": {"max_bytes": 1048576, ', 1)
     assert duplicated != text
     assert json.loads(duplicated)["layers"]["training"]["max_bytes"] == 8192
 
@@ -395,9 +397,7 @@ def test_project_declaration_that_states_its_project_twice_is_refused(tmp_path: 
     (budget_root / "probe.budgets.json").write_bytes(BUDGET_FIXTURE.read_bytes())
 
     raw = json.dumps(_declaration_document()).encode("utf-8")
-    declaration = parse_project_declaration(
-        raw, budget_root=budget_root, source="tests:probe"
-    )
+    declaration = parse_project_declaration(raw, budget_root=budget_root, source="tests:probe")
     assert declaration.project == "probe"
     assert isinstance(declaration.authoring_budget, AuthoringBudgetResource)
 
@@ -430,9 +430,7 @@ def test_evaluation_states_container_metadata_stating_a_member_twice_is_refused(
     _assert_decoy_is_invisible_to_json_loads(
         duplicated, "schema_version", json.loads(text)["schema_version"]
     )
-    tampered = _rewrite_zip_member(
-        data, EVALUATION_STATES_METADATA_KEY, duplicated.encode("utf-8")
-    )
+    tampered = _rewrite_zip_member(data, EVALUATION_STATES_METADATA_KEY, duplicated.encode("utf-8"))
 
     with pytest.raises(DuplicateJsonKeyError) as excinfo:
         load_evaluation_states_container_bytes(tampered)

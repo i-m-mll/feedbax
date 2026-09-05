@@ -361,6 +361,22 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(prog="python -m feedbax")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    migration_parser = subparsers.add_parser(
+        "migrate-content-store",
+        help="Offline conversion of legacy custody into canonical content references.",
+    )
+    migration_source = migration_parser.add_mutually_exclusive_group(required=True)
+    migration_source.add_argument("--packet-v1")
+    migration_source.add_argument("--staged-root-v1")
+    migration_source.add_argument("--run-bundle-v12")
+    migration_source.add_argument(
+        "--path-backed-json",
+        help="JSON mapping of provenance refs to explicit absolute source paths.",
+    )
+    migration_parser.add_argument("--source-root")
+    migration_parser.add_argument("--source-roots-json")
+    migration_parser.add_argument("--destination-store", required=True)
+    migration_parser.add_argument("--receipt")
     execute_parser = subparsers.add_parser(
         "execute-training-run-spec",
         help="Execute a TrainingRunSpec and emit a native TrainingRunManifest.",
@@ -707,6 +723,51 @@ def main(argv: Sequence[str] | None = None) -> int:
     command_started_at = time.perf_counter()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "migrate-content-store":
+        if args.packet_v1:
+            from feedbax.contracts.manifest_packet import migrate_manifest_packet_v1
+
+            receipt = migrate_manifest_packet_v1(
+                args.packet_v1,
+                destination_root=args.destination_store,
+            )
+        elif args.staged_root_v1:
+            if args.source_root is None:
+                parser.error("--staged-root-v1 requires --source-root")
+            from feedbax.orchestration.staged_root_custody import migrate_staged_root_v1
+
+            _binding, receipt = migrate_staged_root_v1(
+                _read_json(args.staged_root_v1),
+                source_root=args.source_root,
+                destination_store=args.destination_store,
+            )
+        elif args.run_bundle_v12:
+            if args.source_roots_json is None:
+                parser.error("--run-bundle-v12 requires --source-roots-json")
+            from feedbax.orchestration.staged_root_custody import (
+                migrate_run_bundle_staged_roots_v12,
+            )
+
+            _bindings, receipt = migrate_run_bundle_staged_roots_v12(
+                _read_json(args.run_bundle_v12),
+                source_roots=_read_json(args.source_roots_json),
+                destination_store=args.destination_store,
+            )
+        else:
+            from feedbax.contracts.artifact_store import migrate_path_backed_content
+
+            sources = _read_json(args.path_backed_json)
+            _refs, receipt = migrate_path_backed_content(
+                sources,
+                destination_store=args.destination_store,
+            )
+        rendered = receipt.model_dump_json(indent=2) + "\n"
+        if args.receipt:
+            receipt_path = Path(args.receipt)
+            receipt_path.write_text(rendered, encoding="utf-8")
+        else:
+            sys.stdout.write(rendered)
+        return 0
     if args.command == "check-project-science-surface":
         return run_science_surface_cli(
             root=args.root, policy=args.policy, baseline_ref=args.baseline_ref

@@ -9,6 +9,7 @@ and the engine inventory is read from the engine parser rather than copied.
 
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 from typing import Any, Sequence
@@ -74,9 +75,7 @@ def _capture(monkeypatch: pytest.MonkeyPatch, name: str, result: Any) -> list[li
     return calls
 
 
-@pytest.mark.parametrize(
-    "name", ["run", "analysis", "figure", "train", "provider", "orchestrate"]
-)
+@pytest.mark.parametrize("name", ["run", "analysis", "figure", "train", "provider", "orchestrate"])
 def test_a_delegated_command_receives_its_own_arguments_verbatim(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
@@ -141,6 +140,43 @@ def test_the_engine_inventory_is_read_from_the_engine_parser() -> None:
     assert cli.engine_commands() == engine_command_names()
     assert "preflight-experiment-envelope" in cli.engine_commands()
     assert "check-project-science-surface" in cli.engine_commands()
+    assert "migrate-content-store" in cli.engine_commands()
+
+
+def test_content_store_cli_migrates_explicit_path_map(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import feedbax.__main__ as engine
+    from feedbax.persistence import ImmutableArtifactBlobProvider
+
+    source = tmp_path / "legacy.bin"
+    source.write_bytes(b"cli migration bytes")
+    mapping = tmp_path / "paths.json"
+    mapping.write_text(json.dumps({"legacy:cli": str(source)}), encoding="utf-8")
+    destination = tmp_path / "store"
+
+    assert (
+        engine.main(
+            [
+                "migrate-content-store",
+                "--path-backed-json",
+                str(mapping),
+                "--destination-store",
+                str(destination),
+            ]
+        )
+        == 0
+    )
+    receipt = json.loads(capsys.readouterr().out)
+    object_ref = receipt["mappings"][0]["target_ref"]
+    assert (
+        ImmutableArtifactBlobProvider(destination).get_object(
+            object_ref,
+            size_bytes=len(b"cli migration bytes"),
+        )
+        == b"cli migration bytes"
+    )
 
 
 def test_no_engine_command_collides_with_a_delegated_command() -> None:
@@ -178,9 +214,7 @@ def test_help_lists_every_delegated_and_engine_command(
 
 
 @pytest.mark.parametrize("flag", ["-h", "--help", "help"])
-def test_every_help_spelling_succeeds(
-    capsys: pytest.CaptureFixture[str], flag: str
-) -> None:
+def test_every_help_spelling_succeeds(capsys: pytest.CaptureFixture[str], flag: str) -> None:
     assert cli.main([flag]) == 0
     assert "usage: feedbax <command>" in capsys.readouterr().out
 
