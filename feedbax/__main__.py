@@ -69,7 +69,6 @@ from feedbax.training.checkpoint_custody import (
     relock_checkpoint_fork_plan_file,
     validate_checkpoint_fork_execution_dependencies,
 )
-from feedbax.persistence import ImmutableArtifactBlobProvider
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -941,11 +940,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.checkpoint_fork_bindings
             else None
         )
-        checkpoint_provider = (
-            ImmutableArtifactBlobProvider(Path(args.checkpoint_content_store).resolve())
-            if args.checkpoint_content_store
-            else None
-        )
+        checkpoint_provider = None
+        if args.checkpoint_content_store:
+            # Persistence is a CLI/runtime adapter; the scientific executor receives
+            # only the portable ArtifactBlobProvider contract.
+            from feedbax.persistence import ImmutableArtifactBlobProvider
+
+            checkpoint_provider = ImmutableArtifactBlobProvider(
+                Path(args.checkpoint_content_store).resolve()
+            )
         source_binding = (
             ContentBinding.model_validate(_read_json(args.checkpoint_source_binding))
             if args.checkpoint_source_binding

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import unicodedata
 from typing import Any, Literal, Protocol
 
@@ -424,6 +424,9 @@ class ContentRetentionIndex(StrictModel):
 class ArtifactBlobProvider(Protocol):
     """Scientific-core byte custody dependency supplied by a persistence adapter."""
 
+    @property
+    def root(self) -> Path: ...
+
     def store_bytes(
         self,
         data: bytes,
@@ -468,6 +471,18 @@ class ArtifactBlobProvider(Protocol):
     def renew_lease(self, lease_id: str, *, expires_at: datetime) -> ContentLeaseRecord: ...
 
     def release_lease(self, lease_id: str) -> ContentLeaseRecord: ...
+
+    def get_tree(self, tree_ref: ContentTreeRef) -> ContentTree: ...
+
+    def publish_rooted_tree(
+        self,
+        members: Mapping[str, Path | ContentObjectRef],
+        *,
+        root_id: str,
+        root_kind: Literal["logical-ref", "run", "export", "import", "migration"],
+        nonterminal: bool = False,
+        restartable: bool = False,
+    ) -> tuple[ContentTreeRef, ContentRootRecord]: ...
 
 
 class ImmutableArtifactBlobProviderConfig(StrictModel):

@@ -149,7 +149,6 @@ from feedbax.contracts.worker import (
     derive_consistency_predicate,
 )
 from feedbax.orchestration.events import normalize_serialized_metrics
-from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training.worker_validation import resolve_execution_mapping
 
 
@@ -665,7 +664,7 @@ class CheckpointForkResult:
 
 
 def _publish_checkpoint_content(
-    provider: "ImmutableArtifactBlobProvider",
+    provider: ArtifactBlobProvider,
     *,
     latest_pointer_path: Path,
     manifest_path: Path,
@@ -3199,7 +3198,7 @@ def write_checkpoint_transaction(
     segment_parent_checkpoint_set: CheckpointSet | None = None,
     metadata: Mapping[str, Any] | None = None,
     publish_latest: bool = True,
-    content_provider: ImmutableArtifactBlobProvider | None = None,
+    content_provider: ArtifactBlobProvider | None = None,
 ) -> CheckpointWriteResult:
     """Write one atomic multi-slot checkpoint transaction and publish latest.
 
@@ -3438,7 +3437,7 @@ def load_latest_checkpoint(
 def migrate_path_backed_checkpoint(
     source_root: str | Path,
     *,
-    content_provider: ImmutableArtifactBlobProvider,
+    content_provider: ArtifactBlobProvider,
 ) -> tuple[ContentBinding, ContentMigrationReceipt]:
     """Publish one existing path-backed checkpoint through canonical content custody."""
     source = Path(source_root).resolve()
@@ -4943,7 +4942,7 @@ def fork_checkpoint_plan(
     *,
     transform_registry: CheckpointForkTransformRegistry | None = None,
     tool_version: str | None = None,
-    content_provider: ImmutableArtifactBlobProvider | None = None,
+    content_provider: ArtifactBlobProvider | None = None,
     source_content_binding: ContentBinding | None = None,
 ) -> dict[str, CheckpointForkResult]:
     """Preflight and execute a portable multi-target checkpoint fork plan."""
@@ -5042,7 +5041,7 @@ def _fork_checkpoint_transaction_from_path(
     tool_version: str | None = None,
     metadata: Mapping[str, Any] | None = None,
     fork_provenance_metadata: Mapping[str, Any] | None = None,
-    content_provider: ImmutableArtifactBlobProvider | None = None,
+    content_provider: ArtifactBlobProvider | None = None,
     source_content_binding: ContentBinding | None = None,
 ) -> CheckpointForkResult:
     """Fork one valid custody checkpoint into a target run contract/root.
@@ -5639,7 +5638,7 @@ def fork_checkpoint_transaction(
     tool_version: str | None = None,
     metadata: Mapping[str, Any] | None = None,
     fork_provenance_metadata: Mapping[str, Any] | None = None,
-    content_provider: ImmutableArtifactBlobProvider | None = None,
+    content_provider: ArtifactBlobProvider | None = None,
     source_content_binding: ContentBinding | None = None,
 ) -> CheckpointForkResult:
     """Fork from a leased canonical projection when content custody is supplied."""
@@ -5692,7 +5691,7 @@ def fork_checkpoint_transaction(
 @contextmanager
 def materialize_checkpoint_content(
     binding: ContentBinding,
-    provider: ImmutableArtifactBlobProvider,
+    provider: ArtifactBlobProvider,
     *,
     owner: str,
 ) -> Iterator[Path]:

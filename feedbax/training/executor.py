@@ -23,7 +23,7 @@ from pydantic import ValidationError
 from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
 
 from feedbax.contracts.publication import CheckpointSet
-from feedbax.contracts.artifact_custody import ContentBinding
+from feedbax.contracts.artifact_custody import ArtifactBlobProvider, ContentBinding
 from feedbax.contracts.checkpoint_initialization import (
     CheckpointInitializationPlan,
     CheckpointInitializationRequest,
@@ -39,7 +39,6 @@ from feedbax.contracts.checkpoints import (
     CheckpointLineageRef,
     CheckpointTransactionManifest,
 )
-from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.base import (
     EntrypointRef,
     ParentRef,
@@ -454,7 +453,7 @@ class _ResolvedCheckpointInitialization:
     plan: CheckpointInitializationPlan | None = None
     transformation: Mapping[str, Any] | None = None
     source_content_binding: ContentBinding | None = None
-    content_provider: ImmutableArtifactBlobProvider | None = None
+    content_provider: ArtifactBlobProvider | None = None
 
     @property
     def provenance(self) -> dict[str, Any]:
@@ -504,7 +503,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
         run_event_emitter: RunEventEmitter | None = None,
         checkpoint_initialization: Mapping[str, Any] | None = None,
-        content_provider: ImmutableArtifactBlobProvider | None = None,
+        content_provider: ArtifactBlobProvider | None = None,
     ) -> None:
         super().__init__()
         self.root = Path(root)
@@ -660,7 +659,7 @@ def execute_training_run_spec(
     checkpoint_fork_plan: CheckpointForkPlan | None = None,
     checkpoint_fork_plan_bindings: CheckpointForkPlanBindings | None = None,
     checkpoint_fork_target_id: str | None = None,
-    checkpoint_content_provider: ImmutableArtifactBlobProvider | None = None,
+    checkpoint_content_provider: ArtifactBlobProvider | None = None,
     checkpoint_source_content_binding: ContentBinding | None = None,
     registry: TrainingProgramRegistry,
     loss_service: LossService | None = None,
@@ -2522,7 +2521,7 @@ def _resolve_checkpoint_fork_initialization(
     state_slots: Sequence[Any],
     run_spec: TrainingRunSpec,
     phase_program: Any,
-    content_provider: ImmutableArtifactBlobProvider,
+    content_provider: ArtifactBlobProvider,
 ) -> _ResolvedCheckpointInitialization:
     """Execute one explicit graph-changing fork and prepare its continuation."""
     if len(plan.targets) != 1 or plan.targets[0].target_id != target_id:
