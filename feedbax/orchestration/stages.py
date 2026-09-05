@@ -53,6 +53,7 @@ from feedbax.orchestration.bundle import (
     canonical_run_bundle_sha256,
     default_orchestration_root,
     mint_run_set_id,
+    orchestration_run_set_dir,
 )
 from feedbax.orchestration.conformance import (
     CheckRegistry,
@@ -177,8 +178,7 @@ RETRY_LIMITS = {
 
 def _request_run_set_dir(request: RunAssemblyRequest | None, run_set_id: str) -> Path:
     if request is not None and request.orchestration_root:
-        root = Path(request.orchestration_root).expanduser()
-        return root if root.name == run_set_id else root / run_set_id
+        return orchestration_run_set_dir(request.orchestration_root, run_set_id)
     return default_orchestration_root(run_set_id)
 
 

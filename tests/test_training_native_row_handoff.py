@@ -192,6 +192,7 @@ def _assemble_lowered_bundle(
     continuation: CheckpointContinuationRequest | None = None,
     progress_interval: int | None = None,
     input_kind: str = "registered-artifact",
+    orchestration_root: Path | None = None,
 ) -> RunBundle:
     matrix = TrainingRunMatrixSpecV5.model_validate(
         {
@@ -237,7 +238,7 @@ def _assemble_lowered_bundle(
         ],
         environment=EnvironmentDeclaration(python_version="3.13"),
         budget=BudgetPolicy(max_wall_clock_seconds=30),
-        orchestration_root=str(root / "orchestration"),
+        orchestration_root=str(orchestration_root or root / "orchestration"),
     )
 
     def lower(authored_row: Any, _context: Any) -> TrainingRowLoweringResult:
@@ -978,6 +979,67 @@ def test_one_update_shadow_collects_empty_declared_manifest_root(
     collected_manifest_root = Path(collected["manifests"])
     assert collected_manifest_root.is_dir()
     assert list(collected_manifest_root.iterdir()) == []
+
+
+def test_one_update_native_row_uses_physical_shared_orchestration_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
+    )
+    physical_root = tmp_path / "shared-artifacts"
+    physical_root.mkdir()
+    alias_root = tmp_path / "worktree-artifacts"
+    alias_root.symlink_to(physical_root, target_is_directory=True)
+    bundle = _without_resolved_inputs(
+        _assemble_lowered_bundle(
+            tmp_path / "shared-root-assembly",
+            gain=2,
+            progress_interval=1,
+            orchestration_root=alias_root,
+        )
+    )
+    slots_path = tmp_path / "shared-root-initial-slots.json"
+    slots_path.write_text(
+        json.dumps(
+            {
+                "model": 0,
+                "optimizer": {"count": 1},
+                "prng": [0, 1],
+                "batch_counter": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    row = bundle.rows[0]
+    row = row.model_copy(
+        update={
+            "launch": row.launch.model_copy(
+                update={
+                    "command": [
+                        *row.launch.command,
+                        "--initial-slots",
+                        str(slots_path),
+                        "--no-progress",
+                    ]
+                }
+            )
+        }
+    )
+    bundle = bundle.model_copy(update={"rows": [row]})
+
+    state = StageEngine(
+        bundle=bundle,
+        driver=LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[], update_budget=1),
+        poll_interval_seconds=0.01,
+    ).run(stop_after_stage="COLLECT")
+
+    assert bundle.orchestration_root == str(physical_root)
+    assert bundle.run_set_dir.is_relative_to(physical_root)
+    assert state.stage("COLLECT").status == "completed"
+    assert Path(state.rows[row.row_id].collected_outputs["manifest.json"]).is_file()
 
 
 def test_local_ordinary_runtime_binding_does_not_add_update_budget(
