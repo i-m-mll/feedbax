@@ -83,6 +83,49 @@ def test_role_free_objects_trees_and_bindings_share_one_canonical_identity(
     assert len(object_files) == 2  # one payload object plus one tree descriptor object
 
 
+def test_rooted_tree_publication_reuses_objects_and_commits_one_complete_root(
+    tmp_path: Path,
+) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
+    reused = provider.store_object(b"same bytes")
+    source = tmp_path / "source.json"
+    source.write_bytes(b'{"complete":true}\n')
+
+    tree_ref, root = provider.publish_rooted_tree(
+        {
+            "blobs/reused.pkl": reused,
+            "latest.json": source,
+        },
+        root_id="checkpoint:one",
+        root_kind="logical-ref",
+    )
+
+    tree = provider.get_tree(tree_ref)
+    by_path = {member.relative_path: member.object for member in tree.files}
+    assert tree.directories == ("blobs",)
+    assert by_path["blobs/reused.pkl"] == reused
+    assert provider.get_object(by_path["latest.json"]) == source.read_bytes()
+    report = provider.collect_garbage()
+    assert report.root_ids == (root.root_id,)
+    assert not [decision for decision in report.decisions if decision.decision != "live"]
+
+
+def test_invalid_rooted_tree_publication_leaves_no_partial_root(tmp_path: Path) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
+    valid = tmp_path / "valid"
+    valid.write_bytes(b"stored but never rooted")
+    missing = tmp_path / "missing"
+
+    with pytest.raises(ArtifactBlobContainmentError):
+        provider.publish_rooted_tree(
+            {"a": valid, "b": missing},
+            root_id="checkpoint:invalid",
+            root_kind="logical-ref",
+        )
+
+    assert provider.collect_garbage().root_ids == ()
+
+
 def test_concurrent_content_and_manifest_writers_converge_or_conflict(tmp_path: Path) -> None:
     provider = ImmutableArtifactBlobProvider(tmp_path / "custody")
     data = b"concurrent canonical object"
