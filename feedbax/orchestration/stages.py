@@ -1264,6 +1264,7 @@ class StageEngine:
         *,
         attempt_ordinal: int,
     ) -> tuple[RunSetState, Mapping[str, Any]]:
+        self._assert_provisioning_open(state)
         candidates = tuple(self.driver.acquisition_candidates(self.bundle))
         driver_name = self.driver.driver_name
         if not candidates:
@@ -1335,6 +1336,17 @@ class StageEngine:
                 failure_evidence = getattr(
                     self.driver, "acquisition_failure_evidence", lambda: {}
                 )()
+                if not isinstance(exc, Exception):
+                    # An operator signal (or another process-terminating exception)
+                    # makes the cleanup below terminal rather than a retryable failed
+                    # attempt. Persist the barrier before contacting the provider so a
+                    # restart cannot interpret successful teardown as permission to
+                    # acquire replacement capacity.
+                    state = self._stop_provisioning(
+                        state,
+                        list(state.provisioning_attempts),
+                        "interrupted-teardown",
+                    )
                 try:
                     cleanup = self.driver.teardown(self.bundle, state)
                 except Exception as teardown_exc:
@@ -1491,6 +1503,7 @@ class StageEngine:
 
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         """Provision RunPod through one durable, budget-governed retry authority."""
+        self._assert_provisioning_open(state)
         if self.driver.realized_capabilities.facts.retry is not RetrySemantics.DRIVER_GOVERNED:
             outputs = dict(self.driver.provision(self.bundle, state))
             state = state.model_copy(update={"provision_record": outputs, "updated_at": utc_now()})
@@ -1591,6 +1604,12 @@ class StageEngine:
                 }
             )
             return state, outputs
+
+    @staticmethod
+    def _assert_provisioning_open(state: RunSetState) -> None:
+        """Refuse acquisition after a durable terminal provisioning decision."""
+        if state.provisioning_stop_reason is not None:
+            raise OrchestrationStageError(f"provisioning stopped: {state.provisioning_stop_reason}")
 
     def _stop_provisioning(
         self,
