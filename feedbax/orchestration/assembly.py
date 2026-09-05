@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Callable, Mapping, Protocol
 
 from pydantic import Field, JsonValue, model_validator
 
+from feedbax.contracts.artifact_custody import ContentBinding
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
 from feedbax.contracts.evaluation_lifecycle import EvaluationMatrixBatchPlan
@@ -73,7 +74,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v3"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v4"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v5"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v6"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v7"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v7"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v8"
 
 
 class CompilerIdentity(StrictModel):
@@ -129,6 +131,7 @@ class RunAssemblyRequest(StrictModel):
     feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     inputs: list[AssemblyInputDeclaration] = Field(default_factory=list)
     training_row_parents: list[GovernedTrainingRowParentDeclaration] = Field(default_factory=list)
+    content_bindings: list[ContentBinding] = Field(default_factory=list)
     staged_roots: list[StagedRootCustody] = Field(default_factory=list)
     evaluation_batch_plan: EvaluationMatrixBatchPlan | None = None
     evaluation_output_preflight: EvaluationOutputPreflightPolicy | None = None
@@ -156,6 +159,15 @@ class RunAssemblyRequest(StrictModel):
             raise ValueError("staged_roots must be in canonical (root_kind, binding_name) order")
         if len(staged_root_keys) != len(set(staged_root_keys)):
             raise ValueError("staged_roots contain duplicate typed binding names")
+        content_keys = [(item.root_kind, item.binding_name) for item in self.content_bindings]
+        if content_keys != sorted(content_keys):
+            raise ValueError(
+                "content_bindings must be in canonical (root_kind, binding_name) order"
+            )
+        if len(content_keys) != len(set(content_keys)):
+            raise ValueError("content_bindings contain duplicate typed binding names")
+        if self.content_bindings and self.staged_roots:
+            raise ValueError("content_bindings and legacy staged_roots are mutually exclusive")
         return self
 
 
@@ -555,6 +567,7 @@ def _persist_prepared_run_bundle(
         launch_policy=request.launch_policy,
         budget=request.budget,
         resolved_inputs=resolved_input_records,
+        content_bindings=request.content_bindings,
         staged_roots=request.staged_roots,
         evaluation_output_preflight=prepared.evaluation_output_preflight,
         orchestration_root=request.orchestration_root,

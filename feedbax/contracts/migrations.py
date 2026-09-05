@@ -518,6 +518,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V9,
     RUN_BUNDLE_SCHEMA_VERSION_V10,
     RUN_BUNDLE_SCHEMA_VERSION_V11,
+    RUN_BUNDLE_SCHEMA_VERSION_V12,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
@@ -563,7 +564,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V3 = "feedbax.spec.run_assembly_request.v3"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = "feedbax.spec.run_assembly_request.v4"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5 = "feedbax.spec.run_assembly_request.v5"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6 = "feedbax.spec.run_assembly_request.v6"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v7"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7 = "feedbax.spec.run_assembly_request.v7"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v8"
 EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID = (
     "feedbax.manifest.evaluation_matrix_execution_capsule"
 )
@@ -3165,7 +3167,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.orchestration.assembly.RunAssemblyRequest",),
             consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
             description="Authored request resolved and compiled by persisted ASSEMBLE.",
-            stance="reject",
+            stance="migrate",
+            supported_old_versions=(RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7,),
             rejected_old_versions=(
                 f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1,
@@ -3181,7 +3184,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "v4 omitted the optional typed evaluation output preflight policy; "
                 "v5 nested an unmigrated deployment policy. No version below v7 "
                 "carries the required Feedbax revision authority, and a migrator "
-                "cannot invent one, so every earlier version now rejects."
+                "cannot invent one, so every version below v7 rejects. v7 migrates "
+                "only when it has no legacy staged_roots; migrated roots require the "
+                "explicit content-store migration command."
             ),
         ),
         _family(
@@ -4452,7 +4457,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             description="Durable run-set orchestration request bundle.",
             stance="migrate",
-            supported_old_versions=(RUN_BUNDLE_SCHEMA_VERSION_V11,),
+            supported_old_versions=(RUN_BUNDLE_SCHEMA_VERSION_V11, RUN_BUNDLE_SCHEMA_VERSION_V12),
             rejected_old_versions=(
                 "feedbax.orchestration.run_bundle.v0",
                 RUN_BUNDLE_SCHEMA_VERSION_V1,
@@ -5977,7 +5982,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     "RunAssemblyRequest v1 lacks explicit deployment review authorization, "
                     "and no version below v7 carries the required feedbax_revision "
                     "authority; a migrator cannot invent the revision a request was "
-                    "authored against, so re-author a current v7 request that names it "
+                    "authored against, so re-author a current v8 request that names it "
                     "explicitly."
                     if family.kind == "RunAssemblyRequest"
                     else (
@@ -6175,10 +6180,36 @@ def _migrate_run_bundle_v11_to_v12_payload(payload: dict[str, Any]) -> dict[str,
     """Lift the nested deployment policy to the registry-resolved schema."""
     migrated = dict(payload)
     migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
-    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION
+    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION_V12
     policy = migrated.get("deployment_policy")
     if isinstance(policy, Mapping):
         migrated["deployment_policy"] = _migrate_deployment_policy_v1_to_v2_payload(dict(policy))
+    return migrated
+
+
+def _migrate_run_bundle_v12_to_v13_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Admit path-free v12 bundles and require explicit migration for staged roots."""
+    if payload.get("staged_roots"):
+        raise ValueError(
+            "RunBundle v12 staged_roots require explicit offline content-store migration"
+        )
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
+    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION
+    migrated.setdefault("content_bindings", [])
+    return migrated
+
+
+def _migrate_run_assembly_request_v7_to_v8_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Admit path-free v7 requests and require explicit migration for staged roots."""
+    if payload.get("staged_roots"):
+        raise ValueError(
+            "RunAssemblyRequest v7 staged_roots require explicit offline content-store migration"
+        )
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    migrated.setdefault("content_bindings", [])
     return migrated
 
 
@@ -6368,10 +6399,36 @@ default_spec_registry.register_migration(
     "RunBundle",
     SchemaMigration(
         source_version=RUN_BUNDLE_SCHEMA_VERSION_V11,
-        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION_V12,
         migration_id="run-bundle-v11-to-v12-registry-driver",
         migrate=_migrate_run_bundle_v11_to_v12_payload,
         description="Lift the nested deployment policy to its registry-resolved schema.",
+    ),
+)
+default_spec_registry.register_migration(
+    "RunBundle",
+    SchemaMigration(
+        source_version=RUN_BUNDLE_SCHEMA_VERSION_V12,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        migration_id="run-bundle-v12-to-v13-content-bindings",
+        migrate=_migrate_run_bundle_v12_to_v13_payload,
+        description=(
+            "Add canonical content bindings to path-free bundles; legacy staged roots "
+            "require explicit offline migration."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RunAssemblyRequest",
+    SchemaMigration(
+        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+        migration_id="run-assembly-request-v7-to-v8-content-bindings",
+        migrate=_migrate_run_assembly_request_v7_to_v8_payload,
+        description=(
+            "Add canonical content bindings to path-free requests; legacy staged roots "
+            "require explicit offline migration."
+        ),
     ),
 )
 default_spec_registry.register_migration(

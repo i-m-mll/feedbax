@@ -210,6 +210,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V9,
     RUN_BUNDLE_SCHEMA_VERSION_V10,
     RUN_BUNDLE_SCHEMA_VERSION_V11,
+    RUN_BUNDLE_SCHEMA_VERSION_V12,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
@@ -406,7 +407,7 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
         (
             "RunAssemblyRequest",
             "feedbax.spec.run_assembly_request",
-            "feedbax.spec.run_assembly_request.v7",
+            "feedbax.spec.run_assembly_request.v8",
         ),
         (
             "DeploymentPolicy",
@@ -468,10 +469,11 @@ def test_default_registry_registers_assemble_contract_families(
     assert family.policy.stance == (
         "migrate"
         if kind
-        in {
-            "DeploymentPolicy",
-            "EvaluationOutputPreflightEvidence",
-        }
+            in {
+                "DeploymentPolicy",
+                "EvaluationOutputPreflightEvidence",
+                "RunAssemblyRequest",
+            }
         else "reject"
     )
     accepted = default_spec_registry.migrate(
@@ -764,7 +766,10 @@ def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
     assert family.current_version == RUN_BUNDLE_SCHEMA_VERSION
     assert family.policy is not None
     assert family.policy.stance == "migrate"
-    assert family.policy.supported_old_versions == (RUN_BUNDLE_SCHEMA_VERSION_V11,)
+    assert family.policy.supported_old_versions == (
+        RUN_BUNDLE_SCHEMA_VERSION_V11,
+        RUN_BUNDLE_SCHEMA_VERSION_V12,
+    )
     assert old_version in family.policy.rejected_old_versions
 
     with pytest.raises(UnsupportedSpecVersion) as excinfo:
@@ -789,6 +794,29 @@ def test_run_bundle_v7_rejection_requires_remote_smoke_policy() -> None:
         default_spec_registry.migrate("RunBundle", {"schema_version": RUN_BUNDLE_SCHEMA_VERSION_V7})
 
     assert "v7 lacks default pre-launch remote smoke policy" in str(excinfo.value)
+
+
+def test_run_bundle_v12_migrates_only_without_staged_roots() -> None:
+    migrated = default_spec_registry.migrate(
+        "RunBundle",
+        {
+            "schema_id": "feedbax.orchestration.run_bundle",
+            "schema_version": RUN_BUNDLE_SCHEMA_VERSION_V12,
+            "staged_roots": [],
+        },
+    )
+    assert migrated.target_version == RUN_BUNDLE_SCHEMA_VERSION
+    assert migrated.payload["content_bindings"] == []
+
+    with pytest.raises(ValueError, match="explicit offline content-store migration"):
+        default_spec_registry.migrate(
+            "RunBundle",
+            {
+                "schema_id": "feedbax.orchestration.run_bundle",
+                "schema_version": RUN_BUNDLE_SCHEMA_VERSION_V12,
+                "staged_roots": [{"legacy": True}],
+            },
+        )
 
 
 def test_staged_root_custody_registry_rejects_unknown_versions() -> None:
@@ -824,7 +852,7 @@ def test_remote_smoke_evidence_registry_explicitly_rejects_v0() -> None:
 
 
 def test_legacy_assembly_request_requires_reauthorization() -> None:
-    with pytest.raises(UnsupportedSpecVersion, match="re-author a current v7 request"):
+    with pytest.raises(UnsupportedSpecVersion, match="re-author a current v8 request"):
         default_spec_registry.migrate(
             "RunAssemblyRequest",
             {"schema_version": "feedbax.spec.run_assembly_request.v1"},
@@ -844,15 +872,33 @@ def test_run_assembly_request_v6_rejects_for_missing_revision_authority() -> Non
 
     message = str(excinfo.value)
     assert "feedbax.spec.run_assembly_request.v6" in message
-    assert "feedbax.spec.run_assembly_request.v7" in message
+    assert "feedbax.spec.run_assembly_request.v8" in message
     assert "migration_intentionally_absent=yes" in message
     assert "feedbax_revision" in message
-    assert "re-author a current v7 request" in message
+    assert "re-author a current v8 request" in message
 
 
-def test_no_run_assembly_request_migration_edge_reaches_the_revision_authority() -> None:
-    """Every earlier version rejects rather than reaching v7 through a chain."""
-    assert default_spec_registry.available_migrations("RunAssemblyRequest") == ()
+def test_run_assembly_request_v7_migrates_only_without_staged_roots() -> None:
+    migrated = default_spec_registry.migrate(
+        "RunAssemblyRequest",
+        {
+            "schema_id": "feedbax.spec.run_assembly_request",
+            "schema_version": "feedbax.spec.run_assembly_request.v7",
+            "staged_roots": [],
+        },
+    )
+    assert migrated.target_version == "feedbax.spec.run_assembly_request.v8"
+    assert migrated.payload["content_bindings"] == []
+
+    with pytest.raises(ValueError, match="explicit offline content-store migration"):
+        default_spec_registry.migrate(
+            "RunAssemblyRequest",
+            {
+                "schema_id": "feedbax.spec.run_assembly_request",
+                "schema_version": "feedbax.spec.run_assembly_request.v7",
+                "staged_roots": [{"legacy": True}],
+            },
+        )
 
 
 def test_deployment_policy_v0_is_explicitly_rejected() -> None:
