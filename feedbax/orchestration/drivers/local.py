@@ -65,15 +65,20 @@ from feedbax.orchestration.drivers.native_execution import (
 )
 from feedbax.orchestration.executor_family import executor_family_adapter
 from feedbax.orchestration.input_materialization import (
+    ContentLeaseManager,
     InputMaterializationError,
     InputProviderRootBinding,
+    acquire_content_projection_lease,
+    compile_content_input_projection,
     materialize_bundle_inputs,
+    materialize_content_input_projection,
     preflight_bundle_input_bindings,
     reclaim_materialized_staged_roots,
 )
 from feedbax.orchestration.repo_snapshot import git_common_dir
 from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
 from feedbax.orchestration.state import PreflightCheckEntry, ProcessIdentity, RunSetState
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training import publish_directory_no_replace
 
 
@@ -252,6 +257,8 @@ class LocalOrchestrationDriver:
         freeze_lines: Sequence[str] | None = None,
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
         staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
+        content_store_root: Path | str | None = None,
+        content_lease_manager: ContentLeaseManager | None = None,
         update_budget: int | None = None,
         realized_capabilities: RealizedDriverCapabilities | None = None,
     ) -> None:
@@ -261,17 +268,20 @@ class LocalOrchestrationDriver:
         self.freeze_lines = tuple(freeze_lines) if freeze_lines is not None else None
         self.input_provider_bindings = tuple(input_provider_bindings)
         self.staged_root_bindings = tuple(staged_root_bindings)
+        self.content_store_root = content_store_root
+        self.content_lease_manager = content_lease_manager
         self.update_budget = update_budget
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
 
     def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
         """Authenticate every local input binding before PROVISION."""
-        if not bundle.staged_roots:
+        if not bundle.staged_roots and not bundle.content_bindings:
             return []
         failures, observed = preflight_bundle_input_bindings(
             bundle,
             provider_bindings=self.input_provider_bindings,
             staged_root_bindings=self.staged_root_bindings,
+            content_store_root=self.content_store_root,
         )
         return [
             PreflightCheckEntry(
@@ -306,12 +316,38 @@ class LocalOrchestrationDriver:
             / (f"stage-inputs-{state.stage('STAGE_INPUTS').attempts}")
         )
         try:
+            content_projection = None
+            if bundle.content_bindings:
+                if self.content_store_root is None:
+                    raise InputMaterializationError(
+                        "content bindings require one explicit canonical store root"
+                    )
+                content_provider = ImmutableArtifactBlobProvider(self.content_store_root)
+                content_projection = compile_content_input_projection(
+                    bundle.content_bindings, content_provider
+                )
+                acquire_content_projection_lease(
+                    content_projection,
+                    self.content_lease_manager,
+                    lease_id=bundle.run_set_id,
+                )
             staged_inputs = materialize_bundle_inputs(
                 bundle,
                 destination_root=attempt_root,
                 provider_bindings=self.input_provider_bindings,
                 staged_root_bindings=self.staged_root_bindings,
+                content_store_root=self.content_store_root,
             )
+            if content_projection is not None:
+                staged_inputs = (
+                    *staged_inputs,
+                    *materialize_content_input_projection(
+                        content_projection,
+                        content_provider,
+                        destination_root=attempt_root / "inputs" / "content" / "trees",
+                        object_root=bundle.run_set_dir / ".content-cache" / "objects" / "sha256",
+                    ),
+                )
         except InputMaterializationError as exc:
             raise LocalDriverError(str(exc)) from exc
         payloads: list[dict[str, str]] = []
@@ -363,7 +399,9 @@ class LocalOrchestrationDriver:
             "inputs": [
                 {
                     "target_role": staged.target_role,
-                    "destination": str(inputs_dir / staged.target_role),
+                    "destination": str(
+                        inputs_dir / staged.destination.relative_to(attempt_root / "inputs")
+                    ),
                     "files": [asdict(item) for item in staged.files],
                 }
                 for staged in staged_inputs
@@ -657,6 +695,11 @@ class LocalOrchestrationDriver:
         return collected
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
+        result = dict(self._teardown_resources(bundle, state))
+        result["content_lease"] = self._release_content_lease(bundle)
+        return result
+
+    def _teardown_resources(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         if self.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED:
             return {
                 "driver": "local",
@@ -705,6 +748,14 @@ class LocalOrchestrationDriver:
             "successful_evaluation_reclamation": successful_evaluation_reclamation,
             "staged_root_reclamation": reclamation,
         }
+
+    def _release_content_lease(self, bundle: RunBundle) -> str:
+        if not bundle.content_bindings:
+            return "not-applicable"
+        if self.content_lease_manager is None:
+            raise LocalDriverError("content lease manager is unavailable at teardown")
+        self.content_lease_manager.release_lease(bundle.run_set_id)
+        return "released"
 
 
 def compute_environment_fingerprint(
@@ -1477,6 +1528,8 @@ def local_driver_registration() -> DriverRegistration:
             freeze_lines=runtime.get("freeze_lines"),
             input_provider_bindings=runtime.get("input_provider_bindings", ()),
             staged_root_bindings=runtime.get("staged_root_bindings", ()),
+            content_store_root=runtime.get("content_store_root"),
+            content_lease_manager=runtime.get("content_lease_manager"),
             update_budget=_optional_runtime_int(runtime, "native_update_budget"),
             realized_capabilities=realized,
         )

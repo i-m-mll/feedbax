@@ -92,9 +92,14 @@ from feedbax.orchestration.drivers.native_execution import (
 )
 from feedbax.orchestration.executor_family import executor_family_adapter
 from feedbax.orchestration.input_materialization import (
+    ContentInputProjection,
+    ContentLeaseManager,
     InputMaterializationError,
     InputProviderRootBinding,
+    acquire_content_projection_lease,
+    compile_content_input_projection,
     materialize_bundle_inputs,
+    materialize_content_input_projection,
     preflight_bundle_input_bindings,
 )
 from feedbax.orchestration.matrix_authority import (
@@ -132,6 +137,7 @@ from feedbax.training.checkpoint_custody import (
     load_checkpoint_custody_documents,
     validate_checkpoint_continuation_source_count,
 )
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training.diagnostics import NativeExecutionProducerContext
 
 
@@ -293,6 +299,78 @@ if renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
         raise FileExistsError(f"input publication target already exists: {destination}")
     raise OSError(error, os.strerror(error), destination)
 """
+
+_REMOTE_CONTENT_CACHE_INSPECT = r"""
+import hashlib,json,stat,sys
+from pathlib import Path
+root=Path(sys.argv[1]); refs=json.loads(sys.argv[2]); present=[]; missing=[]; conflicts=[]
+for ref in refs:
+    path=root/'objects'/'sha256'/ref['sha256'][:2]/ref['sha256']
+    if not path.exists(): missing.append(ref['sha256']); continue
+    if not stat.S_ISREG(path.lstat().st_mode): conflicts.append(ref['sha256']); continue
+    data=path.read_bytes()
+    if len(data)!=ref['size_bytes'] or hashlib.sha256(data).hexdigest()!=ref['sha256']:
+        conflicts.append(ref['sha256'])
+    else: present.append(ref['sha256'])
+print(json.dumps({'present':present,'missing':missing,'conflicts':conflicts},sort_keys=True))
+""".strip()
+
+_REMOTE_CONTENT_CACHE_PUBLISH = r"""
+import hashlib,json,os,stat,sys
+from pathlib import Path
+root=Path(sys.argv[1]); uploaded=Path(sys.argv[2]); refs=json.loads(sys.argv[3])
+for ref in refs:
+    digest=ref['sha256']; source=uploaded/digest; data=source.read_bytes()
+    if len(data)!=ref['size_bytes'] or hashlib.sha256(data).hexdigest()!=digest:
+        raise RuntimeError('uploaded content object mismatch: '+digest)
+    target=root/'objects'/'sha256'/digest[:2]/digest; target.parent.mkdir(parents=True,exist_ok=True)
+    try: os.link(source,target)
+    except FileExistsError: pass
+    if not stat.S_ISREG(target.lstat().st_mode):
+        raise RuntimeError('conflicting remote content object type: '+digest)
+    resident=target.read_bytes()
+    if len(resident)!=ref['size_bytes'] or hashlib.sha256(resident).hexdigest()!=digest:
+        raise RuntimeError('conflicting remote content object: '+digest)
+    source.unlink()
+""".strip()
+
+_REMOTE_CONTENT_TREE_PUBLISH = r"""
+import errno,hashlib,json,os,shutil,stat,sys,uuid
+from pathlib import Path
+root=Path(sys.argv[1]); trees=json.loads(sys.argv[2])
+def verify(target,tree):
+    if not stat.S_ISDIR(target.lstat().st_mode): raise RuntimeError('remote tree is not a directory')
+    members=list(target.rglob('*'))
+    if any(stat.S_ISLNK(p.lstat().st_mode) for p in members):
+        raise RuntimeError('remote content tree contains a symlink')
+    actual={p.relative_to(target).as_posix():p for p in members if stat.S_ISREG(p.lstat().st_mode)}
+    actual_dirs={p.relative_to(target).as_posix() for p in members if stat.S_ISDIR(p.lstat().st_mode)}
+    expected={item['relative_path']:item for item in tree['files']}
+    if set(actual)!=set(expected) or actual_dirs!=set(tree['directories']):
+        raise RuntimeError('remote content tree member set differs')
+    for name,item in expected.items():
+        data=actual[name].read_bytes()
+        if len(data)!=item['size_bytes'] or hashlib.sha256(data).hexdigest()!=item['sha256']:
+            raise RuntimeError('remote content tree object mismatch: '+name)
+for tree in trees:
+    target=root/'trees'/'sha256'/tree['sha256']; target.parent.mkdir(parents=True,exist_ok=True)
+    if target.exists(): verify(target,tree); continue
+    build=target.parent/('.tree-'+tree['sha256']+'-'+uuid.uuid4().hex); build.mkdir()
+    try:
+        for name in tree['directories']: (build/name).mkdir(parents=True,exist_ok=True)
+        for item in tree['files']:
+            source=root/'objects'/'sha256'/item['sha256'][:2]/item['sha256']
+            destination=build/item['relative_path']; destination.parent.mkdir(parents=True,exist_ok=True)
+            os.link(source,destination)
+        verify(build,tree)
+        try: build.rename(target)
+        except OSError as exc:
+            if exc.errno not in {errno.EEXIST,errno.ENOTEMPTY}: raise
+            shutil.rmtree(build); verify(target,tree)
+    except Exception:
+        if build.exists(): shutil.rmtree(build)
+        raise
+""".strip()
 
 
 class RunPodDriverError(RuntimeError):
@@ -874,6 +952,8 @@ class RunPodOrchestrationDriver:
         monotonic: Any = time.monotonic,
         input_provider_bindings: Sequence[InputProviderRootBinding] = (),
         staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
+        content_store_root: Path | str | None = None,
+        content_lease_manager: ContentLeaseManager | None = None,
         collection_recovery_bindings: Sequence[CollectionRecoveryBinding] = (),
         training_method_registry: TrainingProgramRegistry | None = None,
         realized_capabilities: RealizedDriverCapabilities | None = None,
@@ -887,6 +967,8 @@ class RunPodOrchestrationDriver:
         self._monotonic = monotonic
         self.input_provider_bindings = tuple(input_provider_bindings)
         self.staged_root_bindings = tuple(staged_root_bindings)
+        self.content_store_root = content_store_root
+        self.content_lease_manager = content_lease_manager
         self.collection_recovery_bindings = tuple(collection_recovery_bindings)
         self.training_method_registry = training_method_registry
         self._collection_recovery_evidence: dict[str, Mapping[str, object]] = {}
@@ -919,6 +1001,7 @@ class RunPodOrchestrationDriver:
             self.config,
             self.input_provider_bindings,
             self.staged_root_bindings,
+            self.content_store_root,
         )
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
@@ -1028,7 +1111,22 @@ class RunPodOrchestrationDriver:
             bundle,
             provider_bindings=self.input_provider_bindings,
             staged_root_bindings=self.staged_root_bindings,
+            content_store_root=self.content_store_root,
         )
+        if not failures and bundle.content_bindings:
+            try:
+                assert self.content_store_root is not None
+                projection = compile_content_input_projection(
+                    bundle.content_bindings,
+                    ImmutableArtifactBlobProvider(self.content_store_root),
+                )
+                acquire_content_projection_lease(
+                    projection,
+                    self.content_lease_manager,
+                    lease_id=bundle.run_set_id,
+                )
+            except Exception as exc:
+                failures.append(str(exc))
         checks_by_name["input-provider-bindings"] = _preflight_check(
             "input-provider-bindings",
             not failures,
@@ -1518,6 +1616,7 @@ class RunPodOrchestrationDriver:
             bundle,
             provider_bindings=self.input_provider_bindings,
             staged_root_bindings=self.staged_root_bindings,
+            content_store_root=self.content_store_root,
         )
         if failures:
             raise RunPodDriverError(
@@ -1701,12 +1800,36 @@ class RunPodOrchestrationDriver:
         attempt = state.stage("STAGE_INPUTS").attempts
         attempt_root = bundle.run_set_dir / ".stage-attempts" / f"stage-inputs-{attempt}"
         try:
+            content_projection = None
+            content_provider = None
+            if bundle.content_bindings:
+                if self.content_store_root is None:
+                    raise InputMaterializationError(
+                        "content bindings require one explicit canonical store root"
+                    )
+                content_provider = ImmutableArtifactBlobProvider(self.content_store_root)
+                content_projection = compile_content_input_projection(
+                    bundle.content_bindings, content_provider
+                )
+                acquire_content_projection_lease(
+                    content_projection,
+                    self.content_lease_manager,
+                    lease_id=bundle.run_set_id,
+                )
             staged_inputs = materialize_bundle_inputs(
                 bundle,
                 destination_root=attempt_root,
                 provider_bindings=self.input_provider_bindings,
                 staged_root_bindings=self.staged_root_bindings,
+                content_store_root=self.content_store_root,
             )
+            if content_projection is not None and content_provider is not None:
+                materialize_content_input_projection(
+                    content_projection,
+                    content_provider,
+                    destination_root=attempt_root / "inputs" / "content" / "trees",
+                    object_root=bundle.run_set_dir / ".content-cache" / "objects" / "sha256",
+                )
         except InputMaterializationError as exc:
             raise RunPodDriverError(str(exc)) from exc
         attempt_inputs = attempt_root / "inputs"
@@ -1755,10 +1878,21 @@ class RunPodOrchestrationDriver:
             f"mkdir -- {_sq(remote_attempt_root)}"
         )
         with self._stage_inputs_heartbeat(bundle, remote_attempt_root):
+            content_transfer = (
+                self._stage_content_projection(
+                    bundle,
+                    content_projection,
+                    content_provider,
+                    remote_attempt_root=remote_attempt_root,
+                )
+                if content_projection is not None and content_provider is not None
+                else None
+            )
             self.transport.rsync(
                 str(attempt_inputs) + "/",
                 remote_attempt_inputs + "/",
                 delete=True,
+                excludes=("content",) if content_projection is not None else (),
             ).check("stage authenticated input tree")
 
             transferred: list[dict[str, Any]] = []
@@ -1791,6 +1925,123 @@ class RunPodOrchestrationDriver:
             "inputs": transferred,
             "payload_count": len(payloads),
             "payloads": payloads,
+            "content_projection": content_transfer,
+        }
+
+    def _stage_content_projection(
+        self,
+        bundle: RunBundle,
+        projection: ContentInputProjection,
+        provider: ImmutableArtifactBlobProvider,
+        *,
+        remote_attempt_root: str,
+    ) -> Mapping[str, Any]:
+        """Negotiate one non-authoritative remote cache and publish shared tree views."""
+        del provider
+        refs = [
+            {"sha256": item.sha256, "size_bytes": item.size_bytes}
+            for item in projection.objects
+        ]
+        refs_json = json.dumps(refs, sort_keys=True, separators=(",", ":"))
+        cache_root = f"{self.config.volume_mount.rstrip('/')}/feedbax-content-cache/v1"
+        inspection = _json_object(
+            self._ssh(
+                f"python3 -c {_sq(_REMOTE_CONTENT_CACHE_INSPECT)} "
+                f"{_sq(cache_root)} {_sq(refs_json)}"
+            ).stdout
+        )
+        expected = {item["sha256"] for item in refs}
+        present = set(inspection.get("present", []))
+        missing = set(inspection.get("missing", []))
+        conflicts = set(inspection.get("conflicts", []))
+        if conflicts:
+            raise RunPodDriverError(
+                f"remote content cache conflicts for digests: {sorted(conflicts)!r}"
+            )
+        if present | missing != expected or present & missing:
+            raise RunPodDriverError("remote content cache inspection was incomplete or ambiguous")
+
+        # Every staged tree shares the same attempt-local object cache.
+        local_objects = bundle.run_set_dir / ".content-cache" / "objects" / "sha256"
+        remote_upload = f"{remote_attempt_root}/content-upload"
+        missing_refs = [item for item in refs if item["sha256"] in missing]
+        self._ssh(f"mkdir -p -- {_sq(remote_upload)}")
+        for item in missing_refs:
+            digest = item["sha256"]
+            source = local_objects / digest[:2] / digest
+            self.transport.rsync(str(source), f"{remote_upload}/{digest}").check(
+                f"upload immutable content object {digest}"
+            )
+        missing_json = json.dumps(missing_refs, sort_keys=True, separators=(",", ":"))
+        self._ssh(
+            f"python3 -c {_sq(_REMOTE_CONTENT_CACHE_PUBLISH)} "
+            f"{_sq(cache_root)} {_sq(remote_upload)} {_sq(missing_json)}"
+        )
+
+        trees = [
+            {
+                "sha256": tree_ref.descriptor.sha256,
+                "directories": list(tree.directories),
+                "files": [
+                    {
+                        "relative_path": member.relative_path,
+                        "sha256": member.object.sha256,
+                        "size_bytes": member.object.size_bytes,
+                    }
+                    for member in tree.files
+                ],
+            }
+            for tree_ref, tree in projection.trees
+        ]
+        trees_json = json.dumps(trees, sort_keys=True, separators=(",", ":"))
+        self._ssh(
+            f"python3 -c {_sq(_REMOTE_CONTENT_TREE_PUBLISH)} "
+            f"{_sq(cache_root)} {_sq(trees_json)}"
+        )
+        remote_content = f"{remote_attempt_root}/inputs/content"
+        clone_commands = [
+            f"mkdir -p -- {_sq(remote_content + '/trees')} "
+            f"{_sq(remote_content + '/descriptors')}"
+        ]
+        for tree_ref, _tree in projection.trees:
+            digest = tree_ref.descriptor.sha256
+            clone_commands.extend(
+                (
+                    f"cp -al -- {_sq(cache_root + '/trees/sha256/' + digest)} "
+                    f"{_sq(remote_content + '/trees/' + digest)}",
+                    f"ln -- {_sq(cache_root + '/objects/sha256/' + digest[:2] + '/' + digest)} "
+                    f"{_sq(remote_content + '/descriptors/' + digest)}",
+                )
+            )
+        self._ssh(" && ".join(clone_commands))
+        destinations = {
+            tree_ref.tree_id: (
+                f"{cache_root}/trees/sha256/{tree_ref.descriptor.sha256}"
+            )
+            for tree_ref, _tree in projection.trees
+        }
+        uploaded_bytes = sum(
+            item["size_bytes"] for item in missing_refs
+        )
+        return {
+            "unique_object_count": len(refs),
+            "unique_tree_count": len(trees),
+            "unique_bytes": projection.unique_bytes,
+            "uploaded_object_count": len(missing_refs),
+            "uploaded_bytes": uploaded_bytes,
+            "metadata_bytes": len(refs_json.encode()) + len(trees_json.encode()),
+            "transfer_bytes": (
+                uploaded_bytes + len(refs_json.encode()) + len(trees_json.encode())
+            ),
+            "bindings": [
+                {
+                    "binding_name": binding.binding_name,
+                    "root_kind": binding.root_kind,
+                    "tree_id": binding.tree.tree_id,
+                    "target": destinations[binding.tree.tree_id],
+                }
+                for binding in projection.bindings
+            ],
         }
 
     @contextmanager
@@ -1800,6 +2051,10 @@ class RunPodOrchestrationDriver:
         remote_attempt_root: str,
     ) -> Iterator[None]:
         """Keep the deadman informed only while this host actively stages inputs."""
+        if bundle.content_bindings:
+            if self.content_lease_manager is None:
+                raise RunPodDriverError("content lease manager is unavailable during transfer")
+            self.content_lease_manager.renew_lease(bundle.run_set_id)
         if not bundle.deadman_enabled:
             yield
             return
@@ -1818,6 +2073,9 @@ class RunPodOrchestrationDriver:
             while not stop.wait(interval):
                 try:
                     self._ssh(heartbeat_command)
+                    if bundle.content_bindings:
+                        assert self.content_lease_manager is not None
+                        self.content_lease_manager.renew_lease(bundle.run_set_id)
                 except Exception as exc:
                     failures.append(exc)
                     stop.set()
@@ -2345,6 +2603,19 @@ class RunPodOrchestrationDriver:
         )
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
+        result = dict(self._teardown_resources(bundle, state))
+        result["content_lease"] = self._release_content_lease(bundle)
+        return result
+
+    def _release_content_lease(self, bundle: RunBundle) -> str:
+        if not bundle.content_bindings:
+            return "not-applicable"
+        if self.content_lease_manager is None:
+            raise RunPodDriverError("content lease manager is unavailable at teardown")
+        self.content_lease_manager.release_lease(bundle.run_set_id)
+        return "released"
+
+    def _teardown_resources(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Boundedly remove a run-owned pod or record why it remains unresolved."""
         if self.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED:
             return {
@@ -4203,12 +4474,14 @@ def dry_run_launch_bundle(
     config: RunPodDriverConfig,
     input_provider_bindings: Sequence[InputProviderRootBinding] = (),
     staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
+    content_store_root: Path | str | None = None,
 ) -> tuple[str, ...]:
     """Bind all RunPod launch rows without constructing a transport."""
     failures, _ = preflight_bundle_input_bindings(
         bundle,
         provider_bindings=input_provider_bindings,
         staged_root_bindings=staged_root_bindings,
+        content_store_root=content_store_root,
     )
     if failures:
         raise RunPodDriverError("; ".join(failures))
@@ -4314,6 +4587,8 @@ def runpod_driver_registration() -> DriverRegistration:
             monotonic=runtime.get("monotonic", time.monotonic),
             input_provider_bindings=runtime.get("input_provider_bindings", ()),
             staged_root_bindings=runtime.get("staged_root_bindings", ()),
+            content_store_root=runtime.get("content_store_root"),
+            content_lease_manager=runtime.get("content_lease_manager"),
             collection_recovery_bindings=runtime.get("collection_recovery_bindings", ()),
             training_method_registry=runtime.get("training_method_registry"),
             realized_capabilities=realized,

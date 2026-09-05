@@ -120,22 +120,45 @@ Orchestration may additionally depend on the provider's `acquire_lease`,
 and recovery methods are store-administration surfaces; timing stays caller
 policy.
 
+## Execution projection
+
+`RunAssemblyRequest` v8 and `RunBundle` v13 carry canonically ordered
+`ContentBinding` rows. Path-free v7/v12 documents migrate by adding an empty
+binding list. A v7 request or v12 bundle carrying `staged_roots` must use the
+explicit offline migration because a registry migration has no source snapshot
+from which to authenticate and ingest the tree.
+
+Input preflight resolves every pinned descriptor and object before acquisition
+or output publication. The derived projection is ephemeral: it deduplicates
+trees and objects by digest, materializes one shared verified view per tree,
+and projects distinct runtime roles onto that view. RunPod keeps the same
+object/tree layout only as a non-authoritative cache, verifies resident digests,
+uploads each missing object once, and hard-links one attempt-local runtime view
+from the verified cache. Transfer evidence reports unique bytes, uploaded bytes,
+and canonical plan metadata bytes independently of role alias count.
+
+Nonterminal projections require a caller-supplied lease manager with exactly
+`acquire_lease`, `renew_lease`, and `release_lease`. Persistent lease records,
+retention decisions, and garbage collection remain owned by issue cb5ae8e.
+
 ## Protected-merge surface admission
 
 The candidate changes the five reviewed categories as follows:
 
 - Durable schema families: adds the six content schemas and five retention
-  schemas above and advances manifest packet v1 to v2 with offline-only
-  migration.
+  schemas above, advances manifest packet v1 to v2 with offline-only migration,
+  and advances the existing
+  `RunAssemblyRequest` v7 to v8 and `RunBundle` v12 to v13 families to carry
+  typed content bindings. No input-projection schema family is added.
 - Authoring grammar: no addition.
 - Guaranteed public surface: proposes the content and retention models,
   provider operations, migration functions, and
   `python -m feedbax migrate-content-store` command.
 - Plugin or provider families: no new family; the fixed
   `ImmutableArtifactBlobProvider` is extended in place.
-- Cloud lifecycle state machine: adds lease use for remote attempt-cache
-  transfers, without making that cache authoritative or choosing acquisition,
-  renewal, release, or GC timing.
+- Cloud lifecycle state machine: `STAGE_INPUTS` now negotiates a verified,
+  non-authoritative digest cache and holds it through explicit leases. This adds
+  no provider state and chooses no acquisition, renewal, release, or GC timing.
 
 These additions cannot be represented truthfully by `ArtifactRef` or
 staged-root v1: `ArtifactRef` couples object identity to logical presentation,

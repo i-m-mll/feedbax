@@ -12,7 +12,7 @@ from typing import Any, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
-from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.artifact_custody import ContentBinding, ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.evaluation_preflight import EvaluationOutputPreflightEvidence
 from feedbax.contracts.base import (
@@ -42,7 +42,8 @@ RUN_BUNDLE_SCHEMA_VERSION_V8 = "feedbax.orchestration.run_bundle.v8"
 RUN_BUNDLE_SCHEMA_VERSION_V9 = "feedbax.orchestration.run_bundle.v9"
 RUN_BUNDLE_SCHEMA_VERSION_V10 = "feedbax.orchestration.run_bundle.v10"
 RUN_BUNDLE_SCHEMA_VERSION_V11 = "feedbax.orchestration.run_bundle.v11"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v12"
+RUN_BUNDLE_SCHEMA_VERSION_V12 = "feedbax.orchestration.run_bundle.v12"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v13"
 DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
 DEPLOYMENT_POLICY_SCHEMA_VERSION_V1 = "feedbax.spec.deployment_policy.v1"
 DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v2"
@@ -493,7 +494,7 @@ class RunBundle(StrictModel):
     """
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v12"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v13"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
     feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     execution_family: ExecutionFamily = "native-training"
@@ -504,6 +505,7 @@ class RunBundle(StrictModel):
     launch_policy: LaunchPolicy = Field(default_factory=LaunchPolicy)
     budget: BudgetPolicy
     resolved_inputs: list[ResolvedAssemblyInput] = Field(default_factory=list)
+    content_bindings: list[ContentBinding] = Field(default_factory=list)
     staged_roots: list[StagedRootCustody] = Field(default_factory=list)
     evaluation_output_preflight: EvaluationOutputPreflightEvidence | None = None
     orchestration_root: str | None = None
@@ -559,6 +561,15 @@ class RunBundle(StrictModel):
             raise ValueError(
                 "resolved input target_role 'staged-roots' collides with staged-root custody"
             )
+        content_keys = [(item.root_kind, item.binding_name) for item in self.content_bindings]
+        if content_keys != sorted(content_keys):
+            raise ValueError(
+                "content_bindings must be in canonical (root_kind, binding_name) order"
+            )
+        if len(content_keys) != len(set(content_keys)):
+            raise ValueError("content_bindings contain duplicate typed binding names")
+        if self.content_bindings and self.staged_roots:
+            raise ValueError("content_bindings and legacy staged_roots are mutually exclusive")
         for row in self.rows:
             row_identities = canonicalize_immutable_input_identities(row.execution.immutable_inputs)
             if row_identities != canonical_identities:
