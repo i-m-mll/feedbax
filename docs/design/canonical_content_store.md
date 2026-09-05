@@ -22,6 +22,11 @@ binding name, root kind, or execution role.
 | Runtime role binding | `feedbax.spec.content_binding.v1` | staged-root custody v1 migrates offline |
 | Migration receipt | `feedbax.spec.content_migration_receipt.v1` | v0 and unknown reject |
 | Manifest packet | `feedbax.spec.manifest_packet.v2` | packet v1 migrates offline; runtime rejects it |
+| Retention root | `feedbax.spec.content_root_record.v1` | v0 and unknown reject |
+| Explicit lease | `feedbax.spec.content_lease_record.v1` | v0 and unknown reject |
+| Scientific/owner hold | `feedbax.spec.content_hold_record.v1` | v0 and unknown reject |
+| Retention index | `feedbax.spec.content_retention_index.v1` | v0 and unknown reject |
+| GC receipt | `feedbax.spec.content_gc_receipt.v1` | v0 and unknown reject |
 
 Tree identity is the SHA-256 of canonical `feedbax.spec.content_tree.v1` descriptor
 bytes. The descriptor contains only ordered directories and ordered
@@ -76,33 +81,69 @@ only inside the explicit migration functions. After a successful migration,
 resolution uses only store refs, so source paths may be removed from runtime
 configuration or made unavailable.
 
+## Retention and manual garbage collection
+
+Retention is part of the same `ImmutableArtifactBlobProvider` authority and the
+same object namespace. Callers explicitly register canonical logical, run,
+export, import, or migration roots. A tree root retains its descriptor and every
+object in its validated tree closure. Nonterminal or restartable run roots
+cannot be released. Scientific and owner holds are separate named records and
+also require explicit release.
+
+`acquire_lease`, `renew_lease`, and `release_lease` serialize against GC marking
+through the store lock. Lease expiry is diagnostic evidence only: an elapsed
+lease that has not been explicitly released makes collection a no-op. Remote
+attempt caches may hold leases through this same contract, but cannot register
+roots or holds and never become authoritative content custody.
+
+`collect_garbage()` is a manual dry run by default and does not write receipts,
+indexes, or object state. A destructive call must supply the exact generation
+from a clean dry-run receipt. It records the candidate generation, moves exact
+objects into a generation-specific quarantine, records that stage, verifies the
+complete quarantine set, and only then unlinks it. `recover_garbage_collection`
+resumes either a marked or quarantined generation idempotently. Unknown schema
+versions, corrupt indexes, missing live objects, unsafe filesystem entries,
+identity or generation drift, and expired-but-unreleased leases all return an
+error receipt and delete nothing.
+
+No automatic collector, schedule, or default time-to-live exists. A caller owns
+the decision to register and release roots, choose lease times, request a dry
+run, and authorize one exact destructive generation.
+
 ## Stable handoff APIs
 
 Projection and RunPod work may depend on `ContentBinding`, `ContentTreeRef`,
 `ContentObjectRef`, `ImmutableArtifactBlobProvider.get_tree`, `get_object`, and
 `resolve_manifest`. It must not build another CAS or search another root.
-Retention work may depend on the same refs and on the provider's canonical
-object closure; lease, hold, quarantine, and deletion policy remain outside
-this contract.
+Orchestration may additionally depend on the provider's `acquire_lease`,
+`renew_lease`, and `release_lease` methods. Root, hold, dry-run, destructive GC,
+and recovery methods are store-administration surfaces; timing stays caller
+policy.
 
 ## Protected-merge surface admission
 
 The candidate changes the five reviewed categories as follows:
 
-- Durable schema families: adds the six content schemas above and advances
-  manifest packet v1 to v2 with offline-only migration.
+- Durable schema families: adds the six content schemas and five retention
+  schemas above and advances manifest packet v1 to v2 with offline-only
+  migration.
 - Authoring grammar: no addition.
-- Guaranteed public surface: proposes the content models, provider operations,
-  migration functions, and `python -m feedbax migrate-content-store` command.
+- Guaranteed public surface: proposes the content and retention models,
+  provider operations, migration functions, and
+  `python -m feedbax migrate-content-store` command.
 - Plugin or provider families: no new family; the fixed
   `ImmutableArtifactBlobProvider` is extended in place.
-- Cloud lifecycle state machine: no change.
+- Cloud lifecycle state machine: adds lease use for remote attempt-cache
+  transfers, without making that cache authoritative or choosing acquisition,
+  renewal, release, or GC timing.
 
 These additions cannot be represented truthfully by `ArtifactRef` or
 staged-root v1: `ArtifactRef` couples object identity to logical presentation,
 and staged-root v1 hashes binding name and root kind into content identity.
 Owner ratification must approve the new durable schemas and public names for
 the Feedbax 0.2.0 boundary, plus packet-v1 and staged-root-v1 runtime rejection.
+It must also approve the remote attempt-cache lease lifecycle addition; ordinary
+merge approval is not sufficient for either surface increase.
 
 The repo-owned clean-install fixture is the relevant Feedbax compatibility
 corpus. Its focused `check_content_store_candidate_contract` case exercises the

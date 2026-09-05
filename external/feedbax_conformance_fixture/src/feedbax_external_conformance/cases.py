@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -167,7 +168,12 @@ from feedbax.training.preparation import ExecutionPreparationRequest
 from feedbax.training.row_lowering import TrainingRowLoweringContext
 from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence import ContentBinding, ContentManifestConflictError
+from feedbax.persistence import (
+    ContentBinding,
+    ContentLeaseRecord,
+    ContentManifestConflictError,
+    ContentRetentionTarget,
+)
 from feedbax.plugins import (
     COMPONENTS,
     DRIVERS,
@@ -1854,6 +1860,22 @@ def check_content_store_candidate_contract() -> bool:
             pass
         else:
             raise AssertionError("divergent bytes replaced one manifest kind/id")
+        provider.acquire_lease(
+            ContentLeaseRecord(
+                lease_id="external:attempt",
+                domain="remote-attempt-cache",
+                owner="external-fixture",
+                targets=(
+                    ContentRetentionTarget(ref_kind="tree", tree=tree),
+                    ContentRetentionTarget(ref_kind="manifest", manifest=manifest),
+                ),
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            )
+        )
+        receipt = provider.collect_garbage()
+        if receipt.stage != "reported" or receipt.lease_ids != ("external:attempt",):
+            raise AssertionError("external retention lease did not protect canonical closure")
+        provider.release_lease("external:attempt")
     return True
 
 
