@@ -2749,6 +2749,137 @@ def test_preflight_schedule_realization_defaults_fresh_controller_context_to_ori
     assert row_observed["observed_context"] == row_observed["expected_context"]
 
 
+def _trace_cardinality_bundle(
+    tmp_path: Path,
+    *,
+    progress_interval: int,
+    continuation: Mapping[str, Any] | None = None,
+) -> RunBundle:
+    run_spec = _identity_training_payload()
+    run_spec["training_config"]["n_batches"] = 500
+    run_spec["checkpoint_progress"]["progress_interval"] = progress_interval
+    if continuation is not None:
+        run_spec["checkpoint_progress"]["continuation"] = dict(continuation)
+        source = int(continuation["source_completed_batches"])
+        run_spec["metadata"]["resume_context"] = _schedule_context(
+            schedule_origin_step=source,
+            current_step=source,
+            optimizer_count_at_current_step=source,
+        )
+    return _bundle(tmp_path, rows=[_compiled_row("row-a", run_spec=run_spec)])
+
+
+def test_preflight_rejects_lr_trace_cardinality_before_driver(tmp_path: Path) -> None:
+    bundle = _trace_cardinality_bundle(tmp_path, progress_interval=500)
+    driver = FakeDriver()
+
+    with pytest.raises(PreflightFailed) as captured:
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            conformance_registry=build_core_check_registry(),
+        ).run(stop_after_stage=STAGE_PREFLIGHT)
+
+    state = RunSetStateStore(bundle.run_set_dir / "state.json").load()
+    check = {item.name: item for item in state.stage(STAGE_PREFLIGHT).checks}[
+        "conformance-trace-cardinality"
+    ]
+    evidence = check.observed["row-a"][0]
+    assert check.status == "fail"
+    assert evidence["assertion"] == "lr_trace"
+    assert evidence["required"] == 3
+    assert evidence["predicted"] == 1
+    assert evidence["terminal_horizon"] == {
+        "start_completed_batches": 0,
+        "segment_batches": 500,
+        "terminal_completed_batches": 500,
+    }
+    assert evidence["diagnostics_cadence"] == {
+        "progress_interval": 500,
+        "basis": "absolute_completed_batches",
+    }
+    assert evidence["terminal_flush"] == {
+        "enabled": True,
+        "predicted_to_emit": False,
+    }
+    assert evidence["schedule_origin_step"] == 0
+    assert evidence["continuation"] == {"enabled": False}
+    assert 'required": 3' in str(captured.value)
+    assert 'predicted": 1' in str(captured.value)
+    assert driver.calls == []
+
+
+@pytest.mark.parametrize(
+    ("continuation", "expected_horizon", "terminal_flush"),
+    [
+        (None, (0, 500), True),
+        (
+            {
+                "source_completed_batches": 250,
+                "additional_batches": 500,
+            },
+            (250, 750),
+            True,
+        ),
+    ],
+    ids=["fresh-terminal-remainder", "continuation-terminal-remainder"],
+)
+def test_preflight_accepts_exactly_three_lr_trace_samples(
+    tmp_path: Path,
+    continuation: Mapping[str, Any] | None,
+    expected_horizon: tuple[int, int],
+    terminal_flush: bool,
+) -> None:
+    bundle = _trace_cardinality_bundle(
+        tmp_path,
+        progress_interval=200,
+        continuation=continuation,
+    )
+
+    checks = {
+        check.name: check
+        for check in run_preflight_checks(
+            bundle,
+            FakeDriver.realized_capabilities,
+            enabled_conformance_checks=("lr_trace",),
+        )
+    }
+
+    check = checks["conformance-trace-cardinality"]
+    evidence = check.observed["row-a"][0]
+    assert check.status == "pass"
+    assert evidence["required"] == 3
+    assert evidence["predicted"] == 3
+    assert evidence["terminal_horizon"]["start_completed_batches"] == expected_horizon[0]
+    assert evidence["terminal_horizon"]["terminal_completed_batches"] == expected_horizon[1]
+    assert evidence["terminal_flush"]["predicted_to_emit"] is terminal_flush
+    assert evidence["continuation"]["enabled"] is (continuation is not None)
+
+
+def test_completed_preflight_without_trace_cardinality_is_rerun_before_launch(
+    tmp_path: Path,
+) -> None:
+    bundle = _trace_cardinality_bundle(tmp_path, progress_interval=200)
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    StageEngine(bundle=bundle, driver=FakeDriver(), store=store).run(
+        stop_after_stage=STAGE_PREFLIGHT
+    )
+    assert "conformance-trace-cardinality" not in {
+        check.name for check in store.load().stage(STAGE_PREFLIGHT).checks
+    }
+
+    resumed = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        store=store,
+        conformance_registry=build_core_check_registry(),
+    ).run(stop_after_stage=STAGE_PREFLIGHT)
+
+    assert "conformance-trace-cardinality" in {
+        check.name for check in resumed.stage(STAGE_PREFLIGHT).checks
+    }
+
+
 def test_preflight_schedule_realization_fails_miswired_resume_before_driver(
     tmp_path: Path,
 ) -> None:
