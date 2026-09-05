@@ -108,20 +108,28 @@ payload = {
     "process_group_id": os.getpgrp(),
 }
 data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+temporary_path = f"{identity_path}.{os.getpid()}.tmp"
 descriptor = os.open(
-    identity_path,
+    temporary_path,
     os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
     0o600,
 )
 try:
-    while data:
-        written = os.write(descriptor, data)
-        if written <= 0:
-            raise RuntimeError("process identity acknowledgement write made no progress")
-        data = data[written:]
-    os.fsync(descriptor)
+    try:
+        while data:
+            written = os.write(descriptor, data)
+            if written <= 0:
+                raise RuntimeError("process identity acknowledgement write made no progress")
+            data = data[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.link(temporary_path, identity_path, follow_symlinks=False)
 finally:
-    os.close(descriptor)
+    try:
+        os.unlink(temporary_path)
+    except FileNotFoundError:
+        pass
 os.execvpe(command[0], command, os.environ)
 """
 
