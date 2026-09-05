@@ -3982,11 +3982,93 @@ def test_runpod_remote_smoke_failed_probe_records_failure(tmp_path: Path) -> Non
     assert not any("os.killpg" in command for command in transport.ssh_commands)
 
 
-def test_runpod_remote_smoke_preserves_unverified_live_process(tmp_path: Path) -> None:
+def test_probe_keeps_started_row_pending_until_a_terminal_sentinel(tmp_path: Path) -> None:
+    sentinel_dir = tmp_path / "sentinels"
+    sentinel_dir.mkdir()
+    (sentinel_dir / "smoke-warm.started").touch()
+
+    completed = subprocess.run(
+        runpod_module.build_probe_command(str(sentinel_dir), "smoke-warm", "2026-01-02-deadbeef"),
+        shell=True,
+        executable="/bin/bash",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    report = runpod_module.parse_probe_report(completed.stdout)["rows"]["smoke-warm"]
+    assert report["status"] == "pending"
+    assert report["terminal_status"] is None
+    assert report["identity_status"] == "missing"
+    assert report["detail"] == "process identity record is missing"
+
+
+def test_remote_digest_excludes_only_the_current_smoke_sentinels(tmp_path: Path) -> None:
+    sentinel_dir = tmp_path / "sentinels"
+    sentinel_dir.mkdir()
+    scratch = sentinel_dir / "smoke-warm.started"
+    protected = sentinel_dir / "warm.done"
+    scratch.write_text("first", encoding="utf-8")
+    protected.write_text("stable", encoding="utf-8")
+
+    command = runpod_module.build_remote_content_digest_command(
+        {"sentinels": str(sentinel_dir)},
+        excluded_relative_paths={"sentinels": (scratch.name,)},
+    )
+
+    def digest() -> str:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            executable="/bin/bash",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)["sentinels"]
+
+    before = digest()
+    scratch.write_text("expected smoke lifecycle mutation", encoding="utf-8")
+    assert digest() == before
+    protected.write_text("unexpected protected mutation", encoding="utf-8")
+    assert digest() != before
+
+
+def test_runpod_remote_smoke_retries_transient_probe_and_preserves_failure_detail(
+    tmp_path: Path,
+) -> None:
+    class TransientThenFailedTransport(RemoteSmokeTransport):
+        probe_count = 0
+
+        def ssh(self, command: str) -> CommandResult:
+            if "reports={}" in command:
+                self.probe_count += 1
+                if self.probe_count == 1:
+                    self.ssh_commands.append(command)
+                    return CommandResult(
+                        0,
+                        json.dumps(
+                            {
+                                "rows": {
+                                    "smoke-warm": {
+                                        "status": "pending",
+                                        "terminal_status": None,
+                                        "pid": None,
+                                        "process_identity": None,
+                                        "identity_status": "missing",
+                                        "detail": "process identity record is missing",
+                                    }
+                                }
+                            }
+                        ),
+                    )
+            if command.startswith("tail -n 80 --"):
+                self.ssh_commands.append(command)
+                return CommandResult(0, "executor failed before its first completed batch")
+            return super().ssh(command)
+
     bundle = _native_smoke_bundle(tmp_path)
-    transport = RemoteSmokeTransport(probe_status="failed")
-    transport.identity_status = "mismatch"
-    transport.terminal_status = None
+    transport = TransientThenFailedTransport(probe_status="failed")
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             pod_id="pod-smoke",
@@ -3994,9 +4076,43 @@ def test_runpod_remote_smoke_preserves_unverified_live_process(tmp_path: Path) -
             local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
+        sleep=lambda _seconds: None,
     )
 
-    with pytest.raises(RunPodRemoteSmokeError) as raised:
+    with pytest.raises(
+        RunPodRemoteSmokeError,
+        match="executor failed before its first completed batch",
+    ) as raised:
+        driver.smoke_row(bundle, bundle.rows[0], _state(bundle))
+
+    assert transport.probe_count == 2
+    assert raised.value.evidence["cleanup_status"] == "removed"
+    assert (
+        raised.value.evidence["protected_paths_before"]
+        == raised.value.evidence["protected_paths_after"]
+    )
+    assert "protected launch paths" not in str(raised.value)
+    assert any("rm -rf" in command for command in transport.ssh_commands)
+
+
+def test_runpod_remote_smoke_preserves_unverified_live_process(tmp_path: Path) -> None:
+    bundle = _native_smoke_bundle(tmp_path, deadline_seconds=1)
+    transport = RemoteSmokeTransport(probe_status="failed")
+    transport.identity_status = "mismatch"
+    transport.terminal_status = None
+    clock = FakeClock()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-smoke",
+            remote_run_root="/remote/runs",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+
+    with pytest.raises(RunPodRemoteSmokeError, match="termination refused") as raised:
         driver.smoke_row(bundle, bundle.rows[0], _state(bundle))
 
     assert raised.value.evidence["cleanup_status"] == "failed"
