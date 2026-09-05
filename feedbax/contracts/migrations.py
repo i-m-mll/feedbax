@@ -57,6 +57,8 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
+    StructuralAbiFingerprint,
     structural_abi_content_sha256,
 )
 from feedbax.contracts.checkpoint_initialization import (
@@ -66,6 +68,9 @@ from feedbax.contracts.checkpoint_initialization import (
     CHECKPOINT_INITIALIZATION_SCHEMA_VERSION,
     CHECKPOINT_STRUCTURE_SCHEMA_ID,
     CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
+    CHECKPOINT_STRUCTURE_SCHEMA_VERSION_V1,
+    derive_checkpoint_semantic_abis,
+    derive_legacy_checkpoint_semantic_abi,
 )
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
@@ -1265,7 +1270,98 @@ def _migrate_checkpoint_semantic_state_roots_v8_to_v9_payload(
     """Retain legacy custody identities while marking semantic roots unavailable."""
     migrated = dict(payload)
     migrated["semantic_state_roots_status"] = "unavailable_legacy"
+    migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9
+    return migrated
+
+
+def _migrate_checkpoint_semantic_abi_v9_to_v10_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Derive named leaf ownership from authenticated slot and phase identities."""
+    migrated = deepcopy(dict(payload))
+    slots = list(migrated.get("slots") or ())
+    fingerprints: dict[str, StructuralAbiFingerprint] = {}
+    slot_roles: dict[str, str] = {}
+    for raw_slot in slots:
+        if not isinstance(raw_slot, Mapping):
+            continue
+        name = raw_slot.get("slot")
+        fingerprint = raw_slot.get("structural_abi_fingerprint")
+        if isinstance(name, str) and isinstance(fingerprint, Mapping):
+            fingerprints[name] = StructuralAbiFingerprint.model_validate(fingerprint)
+            slot_roles[name] = str(raw_slot.get("role", "auxiliary"))
+    binding = migrated.get("run_contract_binding")
+    projection = binding.get("canonical_projection") if isinstance(binding, Mapping) else None
+    phase_program = projection.get("phase_program") if isinstance(projection, Mapping) else None
+    optimizer_bindings = (
+        list(phase_program.get("optimizer_bindings") or ())
+        if isinstance(phase_program, Mapping)
+        else []
+    )
+    has_unbound_optimizer = not optimizer_bindings and any(
+        role == "optimizer" for role in slot_roles.values()
+    )
+    if not has_unbound_optimizer:
+        semantic_abis = derive_checkpoint_semantic_abis(
+            fingerprints,
+            slot_roles=slot_roles,
+            optimizer_bindings=optimizer_bindings,
+        )
+    else:
+        semantic_abis = {
+            slot: derive_legacy_checkpoint_semantic_abi(
+                slot=slot,
+                role=slot_roles.get(slot, "auxiliary"),
+                fingerprint=fingerprint,
+            )
+            for slot, fingerprint in fingerprints.items()
+        }
+        metadata = dict(migrated.get("metadata") or {})
+        metadata["semantic_abi_migration"] = {
+            "status": "legacy-path-identity",
+            "reason": "historical transaction has optimizer slots but no target bindings",
+        }
+        migrated["metadata"] = metadata
+    migrated["slots"] = [
+        {
+            **dict(raw_slot),
+            "semantic_abi": semantic_abis[str(raw_slot["slot"])].model_dump(
+                mode="json", exclude_none=True
+            ),
+        }
+        if isinstance(raw_slot, Mapping) and str(raw_slot.get("slot")) in semantic_abis
+        else raw_slot
+        for raw_slot in slots
+    ]
     migrated["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
+    return migrated
+
+
+def _migrate_checkpoint_structure_v1_to_v2_payload(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Map path-only structures to explicit semantic identities or legacy refusal IDs."""
+    migrated = deepcopy(dict(payload))
+    migrated_slots: list[Any] = []
+    for raw_slot in list(migrated.get("slots") or ()):
+        if not isinstance(raw_slot, Mapping):
+            migrated_slots.append(raw_slot)
+            continue
+        slot = dict(raw_slot)
+        fingerprint = StructuralAbiFingerprint(
+            treedef=str(slot.get("treedef", "legacy")),
+            leaf_count=len(list(slot.get("leaves") or ())),
+            leaves=list(slot.get("leaves") or ()),
+            fingerprint_sha256="0" * 64,
+        )
+        slot["semantic_abi"] = derive_legacy_checkpoint_semantic_abi(
+            slot=str(slot.get("slot")),
+            role=str(slot.get("role", "auxiliary")),
+            fingerprint=fingerprint,
+        ).model_dump(mode="json", exclude_none=True)
+        migrated_slots.append(slot)
+    migrated["slots"] = migrated_slots
+    migrated["schema_version"] = CHECKPOINT_STRUCTURE_SCHEMA_VERSION
     return migrated
 
 
@@ -4308,9 +4404,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             consumed_by=("checkpoint initialize/continue lowering",),
             description=(
-                "Exact canonical slot, PyTree-definition, and leaf structure for one side of "
-                "the closed checkpoint initialize/continue matching rule."
+                "Named semantic leaf ownership with raw PyTree integrity evidence for one "
+                "side of checkpoint initialize/continue matching."
             ),
+            stance="migrate",
+            supported_old_versions=(CHECKPOINT_STRUCTURE_SCHEMA_VERSION_V1,),
             required_tests=("tests/test_envelope_layer_contracts.py",),
         ),
         _family(
@@ -4471,6 +4569,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
                 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+                TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
             ),
             required_tests=(
                 "tests/test_checkpoint_custody.py",
@@ -6911,12 +7010,38 @@ default_spec_registry.register_migration(
     "TrainingCheckpointTransactionManifest",
     SchemaMigration(
         source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
-        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
         migration_id="training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
         migrate=_migrate_checkpoint_semantic_state_roots_v8_to_v9_payload,
         description=(
             "Preserve legacy content-integrity v1 custody hashes while marking semantic "
             "state roots unavailable."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "TrainingCheckpointTransactionManifest",
+    SchemaMigration(
+        source_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
+        target_version=TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION,
+        migration_id="training-checkpoint-transaction-v9-to-v10-semantic-abi",
+        migrate=_migrate_checkpoint_semantic_abi_v9_to_v10_payload,
+        description=(
+            "Derive stable component, parameter-role, and optimizer ownership identities "
+            "while retaining raw PyTree structure as integrity evidence."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "CheckpointStructure",
+    SchemaMigration(
+        source_version=CHECKPOINT_STRUCTURE_SCHEMA_VERSION_V1,
+        target_version=CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
+        migration_id="checkpoint-structure-v1-to-v2-semantic-ownership",
+        migrate=_migrate_checkpoint_structure_v1_to_v2_payload,
+        description=(
+            "Map model paths, including initial-hidden baseline and optional encoder roles, "
+            "to semantic identities; mark unbound historical optimizer paths as legacy."
         ),
     ),
 )

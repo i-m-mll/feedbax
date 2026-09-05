@@ -651,14 +651,31 @@ def _leaf(path: str, *, shape=(2, 3), dtype: str = "float32"):
 
 
 def _slot(name: str, role: str, paths, *, required: bool = True, treedef: str | None = None):
-    from feedbax.contracts.checkpoint_initialization import CheckpointSlotStructure
+    from feedbax.contracts.checkpoint_initialization import (
+        CheckpointSlotStructure,
+        derive_legacy_checkpoint_semantic_abi,
+    )
+    from feedbax.contracts.checkpoints import StructuralAbiFingerprint
+
+    leaves = [_leaf(path) for path in paths]
+    fingerprint = StructuralAbiFingerprint(
+        treedef=treedef or f"treedef:{name}",
+        leaf_count=len(leaves),
+        leaves=leaves,
+        fingerprint_sha256="a" * 64,
+    )
 
     return CheckpointSlotStructure(
         slot=name,
         role=role,
         required=required,
         treedef=treedef or f"treedef:{name}",
-        leaves=[_leaf(path) for path in paths],
+        leaves=leaves,
+        semantic_abi=derive_legacy_checkpoint_semantic_abi(
+            slot=name,
+            role=role,
+            fingerprint=fingerprint,
+        ),
     )
 
 
@@ -756,39 +773,46 @@ class TestCheckpointInitializationLowering:
         by_slot = {entry.slot: entry for entry in plan.slots}
         assert by_slot["adaptive_state"].fresh_reason == "absent_from_source"
 
-    def test_source_only_paths_and_slots_are_ignored(self) -> None:
-        from feedbax.contracts.checkpoint_initialization import lower_checkpoint_initialization
+    def test_unknown_required_source_identity_refuses(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import (
+            CheckpointInitializationErrorCode,
+            CheckpointInitializationRefused,
+            lower_checkpoint_initialization,
+        )
 
         source = _structure(
             _slot("model", "model", ("net.weight", "net.bias")),
-            _slot("legacy_extra", "auxiliary", ("dropped",)),
+            _slot("legacy_extra", "model", ("dropped",)),
         )
         target = _structure(_slot("model", "model", ("net.weight", "net.bias")))
-        plan = lower_checkpoint_initialization(
-            _request("initialize_from"), source=source, target=target
-        )
-        assert plan.ignored_source_slots == ["legacy_extra"]
-        assert plan.fresh_paths == ()
+        with pytest.raises(CheckpointInitializationRefused) as excinfo:
+            lower_checkpoint_initialization(
+                _request("initialize_from"), source=source, target=target
+            )
+        assert excinfo.value.code is CheckpointInitializationErrorCode.UNKNOWN_IDENTITY
 
-    def test_source_only_leaf_inside_a_matching_slot_is_ignored(self) -> None:
-        from feedbax.contracts.checkpoint_initialization import lower_checkpoint_initialization
+    def test_source_only_required_leaf_inside_a_matching_slot_refuses(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import (
+            CheckpointInitializationErrorCode,
+            CheckpointInitializationRefused,
+            lower_checkpoint_initialization,
+        )
 
         treedef = "treedef:model"
         source = _structure(
             _slot("model", "model", ("net.weight", "net.dropped"), treedef=treedef)
         )
         target = _structure(_slot("model", "model", ("net.weight",), treedef=treedef))
-        plan = lower_checkpoint_initialization(
-            _request("initialize_from"), source=source, target=target
-        )
-        assert plan.slots[0].ignored_source_paths == ["net.dropped"]
-        assert plan.restored_paths == ("model/net.weight",)
+        with pytest.raises(CheckpointInitializationRefused) as excinfo:
+            lower_checkpoint_initialization(
+                _request("initialize_from"), source=source, target=target
+            )
+        assert excinfo.value.code is CheckpointInitializationErrorCode.UNKNOWN_IDENTITY
 
     def test_present_path_shape_mismatch_refuses_and_names_the_paths(self) -> None:
         from feedbax.contracts.checkpoint_initialization import (
             CheckpointInitializationErrorCode,
             CheckpointInitializationRefused,
-            CheckpointSlotStructure,
             CheckpointStructure,
             lower_checkpoint_initialization,
         )
@@ -796,11 +820,8 @@ class TestCheckpointInitializationLowering:
         source = _structure(_slot("model", "model", ("net.weight",)))
         target = CheckpointStructure(
             slots=[
-                CheckpointSlotStructure(
-                    slot="model",
-                    role="model",
-                    treedef="treedef:model",
-                    leaves=[_leaf("net.weight", shape=(4, 3))],
+                _slot("model", "model", ("net.weight",)).model_copy(
+                    update={"leaves": [_leaf("net.weight", shape=(4, 3))]}
                 )
             ]
         )
@@ -816,7 +837,6 @@ class TestCheckpointInitializationLowering:
         from feedbax.contracts.checkpoint_initialization import (
             CheckpointInitializationErrorCode,
             CheckpointInitializationRefused,
-            CheckpointSlotStructure,
             CheckpointStructure,
             lower_checkpoint_initialization,
         )
@@ -824,11 +844,8 @@ class TestCheckpointInitializationLowering:
         source = _structure(_slot("model", "model", ("net.weight",)))
         target = CheckpointStructure(
             slots=[
-                CheckpointSlotStructure(
-                    slot="model",
-                    role="model",
-                    treedef="treedef:model",
-                    leaves=[_leaf("net.weight", dtype="float64")],
+                _slot("model", "model", ("net.weight",)).model_copy(
+                    update={"leaves": [_leaf("net.weight", dtype="float64")]}
                 )
             ]
         )
@@ -839,22 +856,115 @@ class TestCheckpointInitializationLowering:
         assert excinfo.value.code is CheckpointInitializationErrorCode.LEAF_MISMATCH
         assert "dtype" in str(excinfo.value)
 
-    def test_treedef_mismatch_refuses_without_structural_search(self) -> None:
-        from feedbax.contracts.checkpoint_initialization import (
-            CheckpointInitializationErrorCode,
-            CheckpointInitializationRefused,
-            lower_checkpoint_initialization,
-        )
+    def test_treedef_mismatch_is_integrity_diagnostic_not_copy_identity(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import lower_checkpoint_initialization
 
         source = _structure(_slot("model", "model", ("net.weight",), treedef="treedef:a"))
         target = _structure(_slot("model", "model", ("net.weight",), treedef="treedef:b"))
-        with pytest.raises(CheckpointInitializationRefused) as excinfo:
-            lower_checkpoint_initialization(
-                _request("initialize_from"), source=source, target=target
+        plan = lower_checkpoint_initialization(
+            _request("initialize_from"), source=source, target=target
+        )
+        assert plan.restored_paths == ("model/net.weight",)
+        assert [diagnostic.code for diagnostic in plan.diagnostics] == ["treedef-differs"]
+
+    def test_initial_hidden_encoder_is_optional_but_baseline_is_required(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import lower_checkpoint_initialization
+
+        source = _structure(
+            _slot(
+                "model",
+                "model",
+                ("/controller/initial_hidden/bias", "/controller/initial_hidden/weight"),
+                treedef="treedef:affine",
             )
-        assert excinfo.value.code is CheckpointInitializationErrorCode.SLOT_TREEDEF_MISMATCH
-        assert excinfo.value.slots == ("model",)
-        assert "does not search for structurally similar subtrees" in str(excinfo.value)
+        )
+        target = _structure(
+            _slot(
+                "model",
+                "model",
+                ("/controller/initial_hidden/bias",),
+                treedef="treedef:baseline-only",
+            )
+        )
+
+        plan = lower_checkpoint_initialization(
+            _request("initialize_from"), source=source, target=target
+        )
+
+        assert plan.restored_paths == ("model/controller/initial_hidden/bias",)
+        assert plan.slots[0].ignored_source_paths == ["/controller/initial_hidden/weight"]
+        assert [diagnostic.code for diagnostic in plan.diagnostics] == [
+            "treedef-differs",
+            "optional-source-only",
+        ]
+
+    def test_optimizer_moments_bind_to_model_identity_not_tuple_position(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import derive_checkpoint_semantic_abis
+        from feedbax.contracts.checkpoints import StructuralAbiFingerprint
+
+        def fingerprint(paths):
+            leaves = [_leaf(path) for path in paths]
+            return StructuralAbiFingerprint(
+                treedef="integrity-only",
+                leaf_count=len(leaves),
+                leaves=leaves,
+                fingerprint_sha256="a" * 64,
+            )
+
+        abis = derive_checkpoint_semantic_abis(
+            {
+                "model": fingerprint(("/nodes/controller/layer/weight",)),
+                "optimizer": fingerprint(
+                    (
+                        "/1/mu/nodes/controller/layer/weight",
+                        "/1/nu/nodes/controller/layer/weight",
+                        "/1/count",
+                    )
+                ),
+            },
+            slot_roles={"model": "model", "optimizer": "optimizer"},
+            optimizer_bindings=[
+                {
+                    "name": "optimizer_to_model",
+                    "optimizer_slot": "optimizer",
+                    "target_slot": "model",
+                }
+            ],
+        )
+
+        identities = {leaf.identity for leaf in abis["optimizer"].leaves}
+        assert any("role:mu:target:model:model:component:controller" in item for item in identities)
+        assert any("role:nu:target:model:model:component:controller" in item for item in identities)
+        assert "optimizer:optimizer_to_model:state:count" in identities
+
+    def test_ambiguous_optimizer_parameter_ownership_fails_closed(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import derive_checkpoint_semantic_abis
+        from feedbax.contracts.checkpoints import StructuralAbiFingerprint
+
+        def fingerprint(paths):
+            leaves = [_leaf(path) for path in paths]
+            return StructuralAbiFingerprint(
+                treedef="integrity-only",
+                leaf_count=len(leaves),
+                leaves=leaves,
+                fingerprint_sha256="a" * 64,
+            )
+
+        with pytest.raises(ValueError, match="ambiguously owns model identities"):
+            derive_checkpoint_semantic_abis(
+                {
+                    "model": fingerprint(("/weight", "/layer/weight")),
+                    "optimizer": fingerprint(("/mu/layer/weight",)),
+                },
+                slot_roles={"model": "model", "optimizer": "optimizer"},
+                optimizer_bindings=[
+                    {
+                        "name": "optimizer_to_model",
+                        "optimizer_slot": "optimizer",
+                        "target_slot": "model",
+                    }
+                ],
+            )
 
     def test_continue_from_refuses_when_required_state_is_absent(self) -> None:
         from feedbax.contracts.checkpoint_initialization import (
@@ -948,9 +1058,33 @@ class TestCheckpointInitializationLowering:
             with pytest.raises(UnsupportedSpecVersion):
                 default_spec_registry.migrate(kind, {"schema_version": f"{schema_id}.v0"})
 
+    def test_v1_structure_migrates_initial_hidden_roles_explicitly(self) -> None:
+        from feedbax.contracts.checkpoint_initialization import (
+            CHECKPOINT_STRUCTURE_SCHEMA_VERSION,
+            CHECKPOINT_STRUCTURE_SCHEMA_VERSION_V1,
+        )
+
+        legacy = _structure(
+            _slot(
+                "model",
+                "model",
+                ("/controller/initial_hidden/bias", "/controller/initial_hidden/weight"),
+            )
+        ).model_dump(mode="json", exclude={"slots": {"__all__": {"semantic_abi"}}})
+        legacy["schema_version"] = CHECKPOINT_STRUCTURE_SCHEMA_VERSION_V1
+
+        migrated = default_spec_registry.migrate("CheckpointStructure", legacy)
+
+        assert migrated.target_version == CHECKPOINT_STRUCTURE_SCHEMA_VERSION
+        leaves = migrated.payload["slots"][0]["semantic_abi"]["leaves"]
+        by_role = {leaf["parameter_role"]: leaf for leaf in leaves}
+        assert by_role["initial_hidden.baseline"]["required"] is True
+        assert by_role["initial_hidden.encoder"]["required"] is False
+
     def test_structure_projects_from_a_durable_checkpoint_transaction(self) -> None:
         from feedbax.contracts.checkpoint_initialization import (
             checkpoint_structure_from_manifest,
+            derive_legacy_checkpoint_semantic_abi,
         )
         from feedbax.contracts.checkpoints import (
             CheckpointSlotBlobRef,
@@ -1013,6 +1147,9 @@ class TestCheckpointInitializationLowering:
                         "program_step": 1,
                     },
                     structural_abi_fingerprint=fingerprint,
+                    semantic_abi=derive_legacy_checkpoint_semantic_abi(
+                        slot="model", role="model", fingerprint=fingerprint
+                    ),
                     content_digest=content_digest,
                 )
             ],

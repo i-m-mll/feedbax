@@ -65,6 +65,7 @@ from feedbax.contracts.checkpoints import (
     CheckpointForkTransformRecord,
     CheckpointForkTransformStep,
     CheckpointResumeResult,
+    CheckpointSemanticAbi,
     CheckpointSegmentLineage,
     CheckpointProvenanceNotice,
     CheckpointSlotBlobRef,
@@ -85,6 +86,10 @@ from feedbax.contracts.checkpoints import (
     structural_abi_content_projection,
     structural_abi_content_sha256,
     structural_abi_leaf_content_projection,
+)
+from feedbax.contracts.checkpoint_initialization import (
+    derive_checkpoint_semantic_abis,
+    validate_checkpoint_semantic_abi,
 )
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.contracts.base import (
@@ -2530,6 +2535,16 @@ def _validate_checkpoint_transaction_integrity_records(
     for name, slot in slots_by_name.items():
         digest = digests_by_name[name]
         fingerprint = slot.structural_abi_fingerprint
+        if slot.semantic_abi is None:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {name!r} semantic ABI ownership is missing"
+            )
+        try:
+            validate_checkpoint_semantic_abi(slot.semantic_abi)
+        except ValueError as exc:
+            raise CheckpointReferenceResolutionError(
+                f"checkpoint slot {name!r} semantic ABI fingerprint is stale"
+            ) from exc
         if fingerprint.schema_id != _STRUCTURAL_ABI_SCHEMA_ID:
             raise CheckpointReferenceResolutionError(
                 f"checkpoint slot {name!r} structural ABI schema_id is unsupported: "
@@ -3150,6 +3165,15 @@ def write_checkpoint_transaction(
         blob_dir = tmp_dir / "blobs"
         blob_dir.mkdir()
         slot_roles = _slot_roles(run_spec)
+        semantic_abis = derive_checkpoint_semantic_abis(
+            {
+                spec.slot: structural_abi_fingerprint(slots[spec.slot])
+                for spec in slot_specs
+                if spec.slot in slots
+            },
+            slot_roles=slot_roles,
+            optimizer_bindings=phase_program.optimizer_bindings,
+        )
         population_slots = _population_slot_names(run_spec)
         slot_records: list[CheckpointSlotBlobRef] = []
         slot_digests: list[SlotContentDigest] = []
@@ -3202,6 +3226,7 @@ def write_checkpoint_transaction(
                     resolved_axes,
                 ),
                 structural_abi_fingerprint=integrity.structural_abi_fingerprint,
+                semantic_abi=semantic_abis[spec.slot],
                 content_digest=content_digest,
                 materialized_axes=materialized_axes,
                 population=population,
@@ -3416,6 +3441,7 @@ def _load_checkpoint_from_pointer(
         manifest,
         expected_slots,
         loaded_slots,
+        expected_phase_program=expected_phase_program,
         loaded_fingerprints=loaded_fingerprints,
     )
     _validate_recorded_slot_axes(manifest, expected_axes, loaded_slots)
@@ -5068,6 +5094,15 @@ def fork_checkpoint_transaction(
         blob_dir = tmp_dir / "blobs"
         blob_dir.mkdir()
         slot_roles = _slot_roles(target_run_spec)
+        semantic_abis = derive_checkpoint_semantic_abis(
+            {
+                spec.slot: structural_abi_fingerprint(prepared_slots[spec.slot])
+                for spec in barrier.slots
+                if spec.slot in prepared_slots
+            },
+            slot_roles=slot_roles,
+            optimizer_bindings=phase_program.optimizer_bindings,
+        )
         population_slots = _population_slot_names(target_run_spec)
         source_slots_by_name = {slot.slot: slot for slot in source.manifest.slots}
         source_transaction_dir = source.manifest_path.parent
@@ -5140,6 +5175,7 @@ def fork_checkpoint_transaction(
                     population_slots=population_slots,
                     population_member_ids=expected_population_member_ids or {},
                     materialized_axes=expected_axes,
+                    semantic_abi=semantic_abis[spec.slot],
                 )
                 provenance = CheckpointForkSlotProvenance(
                     slot=spec.slot,
@@ -5228,6 +5264,7 @@ def fork_checkpoint_transaction(
                     size_bytes=source_slot.size_bytes,
                     coordinate=coordinate,
                     structural_abi_fingerprint=integrity.structural_abi_fingerprint,
+                    semantic_abi=semantic_abis[spec.slot],
                     content_digest=content_digest,
                     materialized_axes=expected_axes,
                     population=population,
@@ -5791,6 +5828,7 @@ def _write_fresh_slot_blob(
     slot_roles: Mapping[str, str],
     population_slots: set[str],
     population_member_ids: Mapping[str, Sequence[str]],
+    semantic_abi: CheckpointSemanticAbi,
     materialized_axes: tuple[MaterializedSlotAxisBinding, ...] | None = None,
 ) -> tuple[CheckpointSlotBlobRef, SlotContentDigest]:
     _validate_slot_axes(
@@ -5834,6 +5872,7 @@ def _write_fresh_slot_blob(
         size_bytes=blob_size_bytes,
         coordinate=coordinate,
         structural_abi_fingerprint=integrity.structural_abi_fingerprint,
+        semantic_abi=semantic_abi,
         content_digest=content_digest,
         materialized_axes=materialized_axes,
         population=population,
@@ -6247,34 +6286,119 @@ def _validate_structural_abi(
     expected_slots: Mapping[str, Any],
     loaded_slots: Mapping[str, Any],
     *,
+    expected_phase_program: PhaseProgramSpec,
     loaded_fingerprints: Mapping[str, StructuralAbiFingerprint] | None = None,
 ) -> None:
     loaded_fingerprints = loaded_fingerprints or {}
+    manifest_slots = {slot.slot for slot in manifest.slots}
+    expected_fingerprints = {
+        name: structural_abi_fingerprint(value)
+        for name, value in expected_slots.items()
+        if name in manifest_slots
+    }
+    actual_fingerprints = {
+        name: loaded_fingerprints.get(name) or structural_abi_fingerprint(value)
+        for name, value in loaded_slots.items()
+        if name in manifest_slots
+    }
+    expected_semantic = derive_checkpoint_semantic_abis(
+        expected_fingerprints,
+        slot_roles={slot.slot: slot.role for slot in manifest.slots},
+        optimizer_bindings=expected_phase_program.optimizer_bindings,
+    )
+    transformed_semantic = derive_checkpoint_semantic_abis(
+        actual_fingerprints,
+        slot_roles={slot.slot: slot.role for slot in manifest.slots},
+        optimizer_bindings=expected_phase_program.optimizer_bindings,
+    )
     for slot in manifest.slots:
         if slot.slot not in expected_slots:
             continue
         if slot.slot not in loaded_slots:
             continue
         loaded = loaded_slots[slot.slot]
-        loaded_fingerprint = loaded_fingerprints.get(slot.slot)
-        if loaded_fingerprint is None:
-            loaded_fingerprint = structural_abi_fingerprint(loaded)
-        expected = structural_abi_fingerprint(expected_slots[slot.slot])
-        if _semantic_structural_abi_sha256(
-            loaded_fingerprint,
-            value=loaded,
-        ) != _semantic_structural_abi_sha256(
-            expected,
-            value=expected_slots[slot.slot],
-        ):
-            diff_suffix = _format_structural_abi_diff(
-                expected,
-                loaded_fingerprint,
-                recorded_value=expected_slots[slot.slot],
-                actual_value=loaded,
+        loaded_fingerprint = actual_fingerprints[slot.slot]
+        expected = expected_fingerprints[slot.slot]
+        target_abi = expected_semantic[slot.slot]
+        source_abi = (
+            slot.semantic_abi
+            if slot.slot in loaded_fingerprints and slot.semantic_abi is not None
+            else transformed_semantic[slot.slot]
+        )
+        source_identities = {leaf.identity: leaf for leaf in source_abi.leaves}
+        target_identities = {leaf.identity: leaf for leaf in target_abi.leaves}
+        missing = sorted(
+            identity
+            for identity, leaf in target_identities.items()
+            if leaf.required and identity not in source_identities
+        )
+        unknown = sorted(
+            identity
+            for identity, leaf in source_identities.items()
+            if leaf.required and identity not in target_identities
+        )
+        if missing or unknown:
+            raise CheckpointCompatibilityError(
+                f"checkpoint slot {slot.slot!r} structural ABI mismatch: semantic identity; "
+                f"missing_required={missing!r} unknown_required={unknown!r}"
+            )
+        loaded_by_path = {leaf.path: leaf for leaf in loaded_fingerprint.leaves}
+        expected_by_path = {leaf.path: leaf for leaf in expected.leaves}
+        semantic_diffs: list[_StructuralAbiLeafDiff] = []
+        for identity in sorted(set(source_identities) & set(target_identities)):
+            source_identity = source_identities[identity]
+            target_identity = target_identities[identity]
+            source_leaf = loaded_by_path[source_identity.raw_path]
+            target_leaf = expected_by_path[target_identity.raw_path]
+            for field in _STRUCTURAL_ABI_DIFF_FIELDS:
+                source_value = getattr(source_leaf, field)
+                target_value = getattr(target_leaf, field)
+                if field == "leaf_type":
+                    source_value = _canonical_leaf_type(source_value)
+                    target_value = _canonical_leaf_type(target_value)
+                if source_value != target_value:
+                    semantic_diffs.append(
+                        _StructuralAbiLeafDiff(
+                            path=target_identity.raw_path,
+                            field=field,
+                            recorded=target_value,
+                            actual=source_value,
+                        )
+                    )
+        if semantic_diffs:
+            detail = "; ".join(
+                _format_structural_abi_leaf_diff(diff) for diff in semantic_diffs[:10]
+            )
+            treedef_equal = _canonical_structural_abi_treedef(
+                loaded_fingerprint.treedef,
+                value=loaded,
+            ) == _canonical_structural_abi_treedef(
+                expected.treedef,
+                value=expected_slots[slot.slot],
             )
             raise CheckpointCompatibilityError(
-                f"checkpoint slot {slot.slot!r} structural ABI mismatch{diff_suffix}"
+                f"checkpoint slot {slot.slot!r} structural ABI mismatch: semantic leaf; "
+                f"treedef_equal={treedef_equal}; "
+                f"leaf_count_delta={expected.leaf_count - loaded_fingerprint.leaf_count}; "
+                f"{detail}"
+            )
+        raw_paths_equal = {
+            identity: source_identities[identity].raw_path
+            for identity in set(source_identities) & set(target_identities)
+        } == {
+            identity: target_identities[identity].raw_path
+            for identity in set(source_identities) & set(target_identities)
+        }
+        if raw_paths_equal and _canonical_structural_abi_treedef(
+            loaded_fingerprint.treedef,
+            value=loaded,
+        ) != _canonical_structural_abi_treedef(
+            expected.treedef,
+            value=expected_slots[slot.slot],
+        ):
+            raise CheckpointCompatibilityError(
+                f"checkpoint slot {slot.slot!r} structural ABI mismatch: stable static "
+                "component metadata differs at unchanged semantic paths; treedef_equal=False"
             )
 
 
@@ -6309,7 +6433,40 @@ def _validate_manifest_structural_abi(
         if notice is not None:
             _LOGGER.warning(notice.message)
             notices.append(notice)
+    current_slots = {
+        slot.slot
+        for slot in manifest.slots
+        if slot.semantic_abi is not None
+        and slot.semantic_abi.algorithm_version
+        == "feedbax.training_checkpoint.semantic_abi.v1"
+    }
+    current_semantic = derive_checkpoint_semantic_abis(
+        {name: fingerprint for name, fingerprint in loaded_fingerprints.items() if name in current_slots},
+        slot_roles={slot.slot: slot.role for slot in manifest.slots if slot.slot in current_slots},
+        optimizer_bindings=_manifest_optimizer_bindings(manifest),
+    )
+    for slot in manifest.slots:
+        if slot.slot not in current_semantic or slot.semantic_abi is None:
+            continue
+        if slot.semantic_abi != current_semantic[slot.slot]:
+            raise CheckpointIntegrityError(
+                f"checkpoint slot {slot.slot!r} semantic ABI fingerprint is stale: "
+                "recorded ownership differs from decoded slot ownership"
+            )
     return notices, loaded_fingerprints
+
+
+def _manifest_optimizer_bindings(
+    manifest: CheckpointTransactionManifest,
+) -> Sequence[Mapping[str, Any]]:
+    projection = manifest.run_contract_binding.canonical_projection
+    if not isinstance(projection, Mapping):
+        return ()
+    phase_program = projection.get("phase_program")
+    if not isinstance(phase_program, Mapping):
+        return ()
+    bindings = phase_program.get("optimizer_bindings")
+    return tuple(binding for binding in bindings or () if isinstance(binding, Mapping))
 
 
 def _validate_contract_binding(
