@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import hashlib
-import errno
 import json
 import os
 import stat
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal, Protocol
+from typing import Literal
 
 from feedbax.contracts.artifact_custody import (
     ContentBinding,
+    ContentLeaseRecord,
     ContentObjectRef,
+    ContentRetentionTarget,
     ContentTree,
     ContentTreeRef,
     ImmutableArtifactBlobProviderSpec,
@@ -33,13 +35,11 @@ from feedbax.contracts.staged_execution import (
 )
 from feedbax.orchestration.bundle import ResolvedAssemblyInput, RunBundle
 from feedbax.orchestration.staged_root_custody import (
-    MaterializedStagedRoot,
     StagedExecutionRootBindings,
     StagedRootCustody,
     StagedRootCustodyError,
     StagedRootSnapshotBinding,
     materialize_staged_root_snapshot,
-    staged_execution_root_bindings,
     verify_staged_root_snapshot,
     verify_staged_root_snapshot_binding,
 )
@@ -91,28 +91,27 @@ class ContentInputProjection:
         return sum(item.size_bytes for item in self.objects)
 
 
-class ContentLeaseManager(Protocol):
-    """Narrow attempt-root lease seam implemented by the retention owner."""
-
-    def acquire_lease(self, lease_id: str, roots: Sequence[ContentTreeRef]) -> None: ...
-
-    def renew_lease(self, lease_id: str) -> None: ...
-
-    def release_lease(self, lease_id: str) -> None: ...
-
-
 def acquire_content_projection_lease(
     projection: ContentInputProjection,
-    manager: ContentLeaseManager | None,
+    provider: ImmutableArtifactBlobProvider,
     *,
     lease_id: str,
+    owner: str,
+    expires_at: datetime,
 ) -> None:
     """Bind a nonterminal attempt to its exact tree roots."""
     if not projection.bindings:
         return
-    if manager is None:
-        raise InputMaterializationError("content bindings require a content lease manager")
-    manager.acquire_lease(lease_id, tuple(ref for ref, _tree in projection.trees))
+    provider.acquire_lease(
+        ContentLeaseRecord(
+            lease_id=lease_id,
+            owner=owner,
+            expires_at=expires_at,
+            targets=tuple(
+                ContentRetentionTarget(ref_kind="tree", tree=ref) for ref, _tree in projection.trees
+            ),
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,15 +152,6 @@ def preflight_resolved_inputs(bundle: RunBundle) -> tuple[list[str], list[dict[s
                 "transaction_id": parent.id,
             }
         )
-    for custody in bundle.staged_roots:
-        observed.append(
-            {
-                "role": custody.binding_name,
-                "provider_binding": custody.root_kind,
-                "artifact_sha256": custody.content_sha256,
-                "transaction_id": custody.custody_ref,
-            }
-        )
     return failures, observed
 
 
@@ -183,42 +173,11 @@ def preflight_staged_root_bindings(
     bundle: RunBundle,
     bindings: Sequence[StagedRootSnapshotBinding],
 ) -> tuple[list[str], list[dict[str, str]]]:
-    """Authenticate exact sealed staged-root bindings without external effects."""
-    failures: list[str] = []
-    roots: dict[tuple[str, str], StagedRootSnapshotBinding] = {}
-    for binding in bindings:
-        try:
-            validate_staged_binding_name(binding.name)
-        except ValueError as exc:
-            failures.append(str(exc))
-            continue
-        key = (binding.kind, binding.name)
-        if key in roots:
-            failures.append(f"duplicate staged-root snapshot binding: {key!r}")
-        roots[key] = binding
-    expected = {
-        (custody.root_kind, custody.binding_name): custody for custody in bundle.staged_roots
-    }
-    missing = sorted(set(expected) - set(roots))
-    extra = sorted(set(roots) - set(expected))
-    if missing or extra:
-        failures.append(f"staged-root bindings differ; missing={missing!r} unexpected={extra!r}")
-    observed: list[dict[str, str]] = []
-    for key in sorted(set(expected) & set(roots)):
-        custody = expected[key]
-        try:
-            root = verify_staged_root_snapshot_binding(roots[key])
-            verify_staged_root_snapshot(custody, root)
-        except (OSError, StagedRootCustodyError) as exc:
-            failures.append(str(exc))
-        observed.append(
-            {
-                "binding_name": custody.binding_name,
-                "root_kind": custody.root_kind,
-                "custody_ref": custody.custody_ref,
-            }
-        )
-    return failures, observed
+    """Reject legacy runtime bindings at the successor-schema boundary."""
+    del bundle
+    if bindings:
+        return (["legacy staged roots require explicit offline content-store migration"], [])
+    return [], []
 
 
 def preflight_bundle_input_bindings(
@@ -232,7 +191,7 @@ def preflight_bundle_input_bindings(
     provider_failures, provider_observed = preflight_input_provider_bindings(
         bundle, provider_bindings
     )
-    staged_failures, staged_observed = preflight_staged_root_bindings(bundle, staged_root_bindings)
+    staged_failures, _staged_observed = preflight_staged_root_bindings(bundle, staged_root_bindings)
     content_observed: list[dict[str, object]] = []
     content_failures: list[str] = []
     if bundle.content_bindings:
@@ -255,10 +214,9 @@ def preflight_bundle_input_bindings(
             except Exception as exc:
                 content_failures.append(str(exc))
     observed: object = provider_observed
-    if bundle.staged_roots or bundle.content_bindings:
+    if bundle.content_bindings:
         observed = {
             "resolved_inputs": provider_observed,
-            "staged_roots": staged_observed,
             "content_bindings": content_observed,
         }
     return [*provider_failures, *staged_failures, *content_failures], observed
@@ -333,7 +291,7 @@ def materialize_content_input_projection(
         destination.parent.mkdir(parents=True, exist_ok=True)
         data = provider.get_object(object_ref)
         if os.path.lexists(destination):
-            if not destination.is_file() or destination.read_bytes() != data:
+            if _read_regular_no_follow(destination) != data:
                 raise InputMaterializationError(
                     f"conflicting local content object: {object_ref.sha256}"
                 )
@@ -347,12 +305,12 @@ def materialize_content_input_projection(
                     stream.flush()
                     os.fsync(stream.fileno())
                 try:
-                    os.link(temporary_name, destination)
+                    os.link(temporary_name, destination, follow_symlinks=False)
                 except FileExistsError:
                     pass
             finally:
                 Path(temporary_name).unlink(missing_ok=True)
-            if destination.read_bytes() != data:
+            if _read_regular_no_follow(destination) != provider.get_object(object_ref):
                 raise InputMaterializationError(
                     f"published local content object differs: {object_ref.sha256}"
                 )
@@ -363,10 +321,14 @@ def materialize_content_input_projection(
         descriptor = descriptors_root / tree_ref.descriptor.sha256
         if not os.path.lexists(descriptor):
             try:
-                os.link(local_objects[tree_ref.descriptor.sha256], descriptor)
+                os.link(
+                    local_objects[tree_ref.descriptor.sha256],
+                    descriptor,
+                    follow_symlinks=False,
+                )
             except FileExistsError:
                 pass
-        if descriptor.read_bytes() != provider.get_object(tree_ref.descriptor):
+        if _read_regular_no_follow(descriptor) != provider.get_object(tree_ref.descriptor):
             raise InputMaterializationError(
                 f"materialized content-tree descriptor differs: {tree_ref.tree_id}"
             )
@@ -383,13 +345,27 @@ def materialize_content_input_projection(
                 for member in tree.files:
                     target = build / member.relative_path
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    os.link(local_objects[member.object.sha256], target)
+                    os.link(local_objects[member.object.sha256], target, follow_symlinks=False)
                 files = _verify_content_tree_view(provider, tree, build, root)
                 try:
-                    build.rename(destination)
-                except OSError as exc:
-                    if exc.errno not in {errno.EEXIST, errno.ENOTEMPTY}:
-                        raise
+                    parent_descriptor = os.open(
+                        root,
+                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW,
+                    )
+                    try:
+                        publish_directory_no_replace(
+                            parent_descriptor,
+                            build.name,
+                            destination.name,
+                            expected_identity=os.stat(
+                                build.name,
+                                dir_fd=parent_descriptor,
+                                follow_symlinks=False,
+                            ),
+                        )
+                    finally:
+                        os.close(parent_descriptor)
+                except FileExistsError:
                     _remove_materialization_tree(build)
                     files = _verify_content_tree_view(provider, tree, destination, root)
             except Exception:
@@ -405,6 +381,30 @@ def materialize_content_input_projection(
         )
         for binding in projection.bindings
     )
+
+
+def _read_regular_no_follow(path: Path) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise InputMaterializationError(f"content projection member is not regular: {path}")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        current = path.lstat()
+        if (before.st_dev, before.st_ino, before.st_size) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+        ) or (after.st_dev, after.st_ino) != (current.st_dev, current.st_ino):
+            raise InputMaterializationError(
+                f"content projection member changed during read: {path}"
+            )
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
 
 
 def _verify_content_tree_view(
@@ -437,9 +437,7 @@ def _verify_content_tree_view(
             or hashlib.sha256(data).hexdigest() != object_ref.sha256
             or (provider is not None and data != provider.get_object(object_ref))
         ):
-            raise InputMaterializationError(
-                f"materialized content object differs: {relative_path}"
-            )
+            raise InputMaterializationError(f"materialized content object differs: {relative_path}")
         records.append(
             StagedInputFile(
                 relative_path=observed[relative_path].relative_to(root).as_posix(),
@@ -496,16 +494,10 @@ def materialize_bundle_inputs(
                 f"input {source.target_role!r} materialization failed: {exc}"
             ) from exc
         staged.append(StagedInput(source.target_role, destination, files))
-    try:
-        staged.extend(
-            _materialize_staged_roots(
-                bundle.staged_roots,
-                root=root,
-                bindings=staged_root_bindings,
-            )
+    if staged_root_bindings:
+        raise InputMaterializationError(
+            "legacy staged roots require explicit offline content-store migration"
         )
-    except StagedRootCustodyError as exc:
-        raise InputMaterializationError(str(exc)) from exc
     return tuple(staged)
 
 
@@ -516,14 +508,7 @@ def staged_execution_bindings_for_bundle(
 ) -> StagedExecutionRootBindings:
     """Authenticate materialized roots and project exact execution-context arguments."""
     root = _canonical_materialization_root(inputs_root)
-    if bundle.content_bindings:
-        return _content_execution_bindings(bundle.content_bindings, root)
-    materialized: list[MaterializedStagedRoot] = []
-    for custody in bundle.staged_roots:
-        destination = root / "staged-roots" / custody.root_kind / custody.binding_name
-        verify_staged_root_snapshot(custody, destination)
-        materialized.append(MaterializedStagedRoot(custody=custody, root=destination))
-    return staged_execution_root_bindings(materialized)
+    return _content_execution_bindings(bundle.content_bindings, root)
 
 
 def _content_execution_bindings(

@@ -27,7 +27,6 @@ from feedbax.contracts.spec_storage import (
     training_run_execution_hash,
     validate_sha256,
 )
-from feedbax.orchestration.staged_root_custody import StagedRootCustody
 
 
 RUN_BUNDLE_SCHEMA_ID = "feedbax.orchestration.run_bundle"
@@ -506,7 +505,6 @@ class RunBundle(StrictModel):
     budget: BudgetPolicy
     resolved_inputs: list[ResolvedAssemblyInput] = Field(default_factory=list)
     content_bindings: list[ContentBinding] = Field(default_factory=list)
-    staged_roots: list[StagedRootCustody] = Field(default_factory=list)
     evaluation_output_preflight: EvaluationOutputPreflightEvidence | None = None
     orchestration_root: str | None = None
     keep_alive: bool = False
@@ -516,6 +514,16 @@ class RunBundle(StrictModel):
     smoke_update_budget: int = Field(default=2, ge=1)
     smoke_deadline_seconds: int = Field(default=1800, ge=60)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_staged_roots(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "staged_roots" in value:
+            raise ValueError(
+                "RunBundle v13 does not admit staged_roots; run "
+                "python -m feedbax migrate-content-store --run-bundle-v12 ..."
+            )
+        return value
 
     @field_validator("smoke_update_budget", mode="before")
     @classmethod
@@ -552,15 +560,6 @@ class RunBundle(StrictModel):
                 "resolved input custody target roles collide with generated row payload "
                 f"filenames: {collisions!r}"
             )
-        staged_root_keys = [(item.root_kind, item.binding_name) for item in self.staged_roots]
-        if staged_root_keys != sorted(staged_root_keys):
-            raise ValueError("staged_roots must be in canonical (root_kind, binding_name) order")
-        if len(staged_root_keys) != len(set(staged_root_keys)):
-            raise ValueError("staged_roots contain duplicate typed binding names")
-        if self.staged_roots and "staged-roots" in target_roles:
-            raise ValueError(
-                "resolved input target_role 'staged-roots' collides with staged-root custody"
-            )
         content_keys = [(item.root_kind, item.binding_name) for item in self.content_bindings]
         if content_keys != sorted(content_keys):
             raise ValueError(
@@ -568,8 +567,6 @@ class RunBundle(StrictModel):
             )
         if len(content_keys) != len(set(content_keys)):
             raise ValueError("content_bindings contain duplicate typed binding names")
-        if self.content_bindings and self.staged_roots:
-            raise ValueError("content_bindings and legacy staged_roots are mutually exclusive")
         for row in self.rows:
             row_identities = canonicalize_immutable_input_identities(row.execution.immutable_inputs)
             if row_identities != canonical_identities:

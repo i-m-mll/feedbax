@@ -6259,6 +6259,7 @@ def _migrate_run_bundle_v12_to_v13_payload(payload: dict[str, Any]) -> dict[str,
     migrated = dict(payload)
     migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
     migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION
+    migrated.pop("staged_roots", None)
     migrated.setdefault("content_bindings", [])
     return migrated
 
@@ -6272,6 +6273,7 @@ def _migrate_run_assembly_request_v7_to_v8_payload(payload: dict[str, Any]) -> d
     migrated = dict(payload)
     migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
     migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    migrated.pop("staged_roots", None)
     migrated.setdefault("content_bindings", [])
     return migrated
 

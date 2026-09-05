@@ -180,6 +180,8 @@ def build_parser() -> argparse.ArgumentParser:
             default=[],
             metavar="KIND:NAME=ABSOLUTE_PATH",
         )
+        sub.add_argument("--content-store-root", metavar="ABSOLUTE_PATH")
+        sub.add_argument("--content-lease-seconds", type=int)
         sub.add_argument(
             "--feedbax-checkout",
             metavar="PATH",
@@ -197,6 +199,8 @@ def build_parser() -> argparse.ArgumentParser:
     shadow_launch.add_argument(
         "--assembly-request", required=True, help="RunAssemblyRequest JSON path"
     )
+    shadow_launch.add_argument("--content-store-root", metavar="ABSOLUTE_PATH")
+    shadow_launch.add_argument("--content-lease-seconds", type=int)
     shadow_launch.add_argument(
         "--input-provider", action="append", default=[], metavar="NAME=ABSOLUTE_PATH"
     )
@@ -244,11 +248,15 @@ def build_parser() -> argparse.ArgumentParser:
             )
         if name in {"certify", "resume"}:
             sub.add_argument("--input-provider", action="append", default=[])
+        sub.add_argument("--content-store-root", metavar="ABSOLUTE_PATH")
+        sub.add_argument("--content-lease-seconds", type=int)
         sub.set_defaults(func=globals()[f"cmd_{name}"])
 
     teardown = subparsers.add_parser("teardown", help="Tear down run-set resources")
     teardown.add_argument("--run-set", required=True, help="Run-set id")
     teardown.add_argument("--force", action="store_true", help="Break a stale state lock")
+    teardown.add_argument("--content-store-root", metavar="ABSOLUTE_PATH")
+    teardown.add_argument("--content-lease-seconds", type=int)
     teardown.set_defaults(func=cmd_teardown)
 
     return parser
@@ -312,6 +320,8 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         run_set_id=args.run_set_id,
         input_provider_bindings=_input_provider_bindings(args.input_provider),
         staged_root_bindings=_staged_root_bindings(args.staged_root),
+        content_store_root=args.content_store_root,
+        content_lease_seconds=args.content_lease_seconds,
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
         plugin_provenance=args.bootstrap_state.provenance,
         registry_bundle=args.bootstrap_state.bundle,
@@ -368,6 +378,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
             training_method_registry=args.bootstrap_state.bundle.training_programs,
             input_provider_bindings=input_provider_bindings,
             staged_root_bindings=staged_root_bindings,
+            content_store_root=args.content_store_root,
+            content_lease_seconds=args.content_lease_seconds,
             load_credentials=False,
         )
         if not driver.realized_capabilities.facts.supports(DriverHook.DRY_RUN_LAUNCH):
@@ -387,6 +399,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
             interruption_probe=interruption.poll,
             input_provider_bindings=input_provider_bindings,
             staged_root_bindings=staged_root_bindings,
+            content_store_root=args.content_store_root,
+            content_lease_seconds=args.content_lease_seconds,
             conformance_registry=args.bootstrap_state.bundle.conformance_checks,
             plugin_provenance=args.bootstrap_state.provenance,
             registry_bundle=args.bootstrap_state.bundle,
@@ -405,6 +419,8 @@ def cmd_shadow_launch(args: argparse.Namespace) -> int:
         request_path=request_path,
         input_provider_bindings=_input_provider_bindings(args.input_provider),
         staged_root_bindings=_staged_root_bindings(args.staged_root),
+        content_store_root=args.content_store_root,
+        content_lease_seconds=args.content_lease_seconds,
         native_update_budget=1,
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
         plugin_provenance=args.bootstrap_state.provenance,
@@ -578,6 +594,8 @@ def cmd_collect(args: argparse.Namespace) -> int:
         args.run_set,
         stop_after_stage="COLLECT",
         collection_recovery_bindings=_collection_recovery_bindings(args.recover_collected_root),
+        content_store_root=args.content_store_root,
+        content_lease_seconds=args.content_lease_seconds,
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
         training_method_registry=args.bootstrap_state.bundle.training_programs,
         driver_registry=args.bootstrap_state.bundle.drivers,
@@ -594,6 +612,10 @@ def cmd_certify(args: argparse.Namespace) -> int:
     input_bindings = _input_provider_bindings(args.input_provider)
     if input_bindings:
         run_options["input_provider_bindings"] = input_bindings
+    if args.content_store_root is not None:
+        run_options["content_store_root"] = args.content_store_root
+    if args.content_lease_seconds is not None:
+        run_options["content_lease_seconds"] = args.content_lease_seconds
     state = _run_existing(
         args.run_set,
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
@@ -612,6 +634,8 @@ def cmd_teardown(args: argparse.Namespace) -> int:
         args.run_set,
         stop_after_stage="TEARDOWN",
         break_stale_lock=args.force,
+        content_store_root=args.content_store_root,
+        content_lease_seconds=args.content_lease_seconds,
         conformance_registry=args.bootstrap_state.bundle.conformance_checks,
         training_method_registry=args.bootstrap_state.bundle.training_programs,
         driver_registry=args.bootstrap_state.bundle.drivers,
@@ -627,6 +651,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
             interruption_probe=interruption.poll,
             input_provider_bindings=_input_provider_bindings(args.input_provider),
             collection_recovery_bindings=_collection_recovery_bindings(args.recover_collected_root),
+            content_store_root=args.content_store_root,
+            content_lease_seconds=args.content_lease_seconds,
             conformance_registry=args.bootstrap_state.bundle.conformance_checks,
             training_method_registry=args.bootstrap_state.bundle.training_programs,
             driver_registry=args.bootstrap_state.bundle.drivers,
@@ -674,6 +700,8 @@ def _run_engine(
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
+    content_store_root: str | Path | None = None,
+    content_lease_seconds: int | None = None,
     conformance_registry: CheckRegistry,
     training_method_registry: TrainingProgramRegistry,
     driver_registry: DriverRegistry,
@@ -686,6 +714,8 @@ def _run_engine(
         input_provider_bindings=input_provider_bindings,
         collection_recovery_bindings=collection_recovery_bindings,
         staged_root_bindings=staged_root_bindings,
+        content_store_root=content_store_root,
+        content_lease_seconds=content_lease_seconds,
     )
     state = StageEngine(
         bundle=bundle,
@@ -716,6 +746,8 @@ def _run_existing(
     plugin_provenance: Sequence[Any],
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
+    content_store_root: str | Path | None = None,
+    content_lease_seconds: int | None = None,
 ) -> RunSetState:
     bundle = _load_existing_bundle(run_set_id)
     return _run_engine(
@@ -730,6 +762,8 @@ def _run_existing(
         plugin_provenance=plugin_provenance,
         input_provider_bindings=input_provider_bindings,
         collection_recovery_bindings=collection_recovery_bindings,
+        content_store_root=content_store_root,
+        content_lease_seconds=content_lease_seconds,
     )
 
 
@@ -742,6 +776,8 @@ def _construct_driver(
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
     native_update_budget: int | None = None,
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
+    content_store_root: str | Path | None = None,
+    content_lease_seconds: int | None = None,
     load_credentials: bool = True,
 ):
     return driver_registry.construct(
@@ -752,6 +788,8 @@ def _construct_driver(
             collection_recovery_bindings=collection_recovery_bindings,
             native_update_budget=native_update_budget,
             staged_root_bindings=staged_root_bindings,
+            content_store_root=content_store_root,
+            content_lease_seconds=content_lease_seconds,
             training_method_registry=training_method_registry,
             load_credentials=load_credentials,
         ),
@@ -765,6 +803,8 @@ def _driver_construction_context(
     collection_recovery_bindings: tuple[CollectionRecoveryBinding, ...] = (),
     native_update_budget: int | None = None,
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
+    content_store_root: str | Path | None = None,
+    content_lease_seconds: int | None = None,
     training_method_registry: TrainingProgramRegistry,
     load_credentials: bool = True,
 ) -> DriverConstructionContext:
@@ -779,6 +819,8 @@ def _driver_construction_context(
             "collection_recovery_bindings": collection_recovery_bindings,
             "native_update_budget": native_update_budget,
             "staged_root_bindings": staged_root_bindings,
+            "content_store_root": content_store_root,
+            "content_lease_seconds": content_lease_seconds,
             "training_method_registry": training_method_registry,
         },
         credentials=({"runpod_api_key": api_key} if api_key is not None else {}),
@@ -816,6 +858,8 @@ def _request_engine(
     input_provider_bindings: tuple[InputProviderRootBinding, ...] = (),
     native_update_budget: int | None = None,
     staged_root_bindings: tuple[StagedRootSnapshotBinding, ...] = (),
+    content_store_root: str | Path | None = None,
+    content_lease_seconds: int | None = None,
     conformance_registry: CheckRegistry,
     plugin_provenance: Sequence[Any],
     registry_bundle: Any,
@@ -839,6 +883,8 @@ def _request_engine(
             input_provider_bindings=input_provider_bindings,
             native_update_budget=native_update_budget,
             staged_root_bindings=staged_root_bindings,
+            content_store_root=content_store_root,
+            content_lease_seconds=content_lease_seconds,
             training_method_registry=registry_bundle.training_programs,
         ),
         run_set_id=run_set_id,

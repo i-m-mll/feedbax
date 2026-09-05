@@ -314,9 +314,11 @@ def acquire_lease(
         _validate_targets(provider, lease.targets)
         existing = next((item for item in index.leases if item.lease_id == lease.lease_id), None)
         if existing is not None and existing != lease:
-            raise ContentRetentionError(
-                f"lease ID already has different exact content: {lease.lease_id}"
-            )
+            same_owner = existing.model_copy(update={"expires_at": lease.expires_at}) == lease
+            if existing.released or not same_owner or lease.expires_at < existing.expires_at:
+                raise ContentRetentionError(
+                    f"lease ID already has different exact content: {lease.lease_id}"
+                )
         updated = _replace_record(index, "leases", lease, "lease_id")
         if updated != index:
             _write_index(provider, updated)

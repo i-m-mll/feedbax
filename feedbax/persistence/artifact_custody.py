@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import os
 import stat
+import threading
 import unicodedata
 import uuid
 from collections.abc import Mapping
@@ -80,6 +81,7 @@ _RESERVED_METADATA_KEYS = frozenset(
     }
 )
 _canonicalize_trusted_system_aliases = canonicalize_trusted_system_aliases
+_store_lock_state = threading.local()
 
 
 def _parse_content_object_id(object_id: object) -> str:
@@ -101,6 +103,15 @@ def _manifest_reference_key(kind: str, manifest_id: str) -> str:
 
 @contextmanager
 def _exclusive_store_lock(root: Path) -> Iterator[None]:
+    lock_key = str(root)
+    held = getattr(_store_lock_state, "held", {})
+    if lock_key in held:
+        held[lock_key] += 1
+        try:
+            yield
+        finally:
+            held[lock_key] -= 1
+        return
     root.mkdir(parents=True, exist_ok=True)
     lock_path = root / ".content-store.lock"
     descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -114,7 +125,12 @@ def _exclusive_store_lock(root: Path) -> Iterator[None]:
         ):
             raise ArtifactBlobContainmentError("content-store lock must be one stable regular file")
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
+        held[lock_key] = 1
+        _store_lock_state.held = held
+        try:
+            yield
+        finally:
+            del held[lock_key]
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
@@ -402,6 +418,13 @@ class ImmutableArtifactBlobProvider:
 
     def __post_init__(self) -> None:
         root_path = _validate_explicit_root(self.root)
+        try:
+            if stat.S_ISLNK(root_path.lstat().st_mode):
+                raise ArtifactBlobContainmentError(
+                    "immutable blob provider root must not be a symlink"
+                )
+        except FileNotFoundError:
+            pass
         if self.storage_backend != _STORAGE_BACKEND:
             raise ArtifactBlobReferenceError(
                 f"unsupported immutable blob storage backend: {self.storage_backend!r}"
@@ -501,17 +524,19 @@ class ImmutableArtifactBlobProvider:
         digest = hashlib.sha256(data).hexdigest()
         destination = self._canonical_path(digest)
         self._validate_store_target(destination)
-        written = _stage_blob_bytes(data, destination)
-        ref = ContentObjectRef(
-            object_id=f"{CONTENT_OBJECT_REF_PREFIX}{digest}",
-            sha256=digest,
-            size_bytes=written.st_size,
-        )
-        if self.get_object(ref) != data:
-            raise ArtifactBlobIntegrityError(
-                f"pre-existing content object differs from stored payload: {ref.object_id}"
+        with self._exclusive_lock():
+            self._validate_store_target(destination)
+            written = _stage_blob_bytes(data, destination)
+            ref = ContentObjectRef(
+                object_id=f"{CONTENT_OBJECT_REF_PREFIX}{digest}",
+                sha256=digest,
+                size_bytes=written.st_size,
             )
-        return ref
+            if self.get_object(ref) != data:
+                raise ArtifactBlobIntegrityError(
+                    f"pre-existing content object differs from stored payload: {ref.object_id}"
+                )
+            return ref
 
     def get_object(
         self,
@@ -549,6 +574,11 @@ class ImmutableArtifactBlobProvider:
 
     def ingest_tree(self, source_root: Path | str) -> ContentTreeRef:
         """Ingest a canonical regular-file tree with identity independent of its role."""
+        with self._exclusive_lock():
+            return self._ingest_tree_locked(source_root)
+
+    def _ingest_tree_locked(self, source_root: Path | str) -> ContentTreeRef:
+        """Ingest a tree while publication and GC share one store transaction."""
         source = _canonicalize_trusted_system_aliases(_validate_explicit_root(source_root))
         try:
             source_stat = source.stat(follow_symlinks=False)
@@ -620,8 +650,19 @@ class ImmutableArtifactBlobProvider:
         manifests: tuple[tuple[str, str, bytes], ...],
     ) -> tuple[ContentManifestRef, ...]:
         """Validate then publish a conflict-free batch of exact manifest references."""
-        if not manifests:
-            return ()
+        with self._exclusive_lock():
+            proposed = self._prepare_manifest_bindings(manifests)
+            if not proposed:
+                return ()
+            self._validate_manifest_bindings_locked(proposed)
+            self._publish_manifest_bindings_locked(proposed)
+        return tuple(ref for _key, ref, _bytes in proposed)
+
+    def _prepare_manifest_bindings(
+        self,
+        manifests: tuple[tuple[str, str, bytes], ...],
+    ) -> list[tuple[str, ContentManifestRef, bytes]]:
+        """Build and validate manifest-reference records without publishing them."""
         proposed: list[tuple[str, ContentManifestRef, bytes]] = []
         seen: dict[tuple[str, str], str] = {}
         for kind, manifest_id, raw_bytes in manifests:
@@ -662,20 +703,29 @@ class ImmutableArtifactBlobProvider:
             )
             proposed.append((key, ref, canonical_json_v1_bytes(ref.model_dump(mode="json"))))
 
-        with _exclusive_store_lock(self.root):
-            for key, ref, expected in proposed:
-                existing = self._read_manifest_reference(key, required=False)
-                if existing is not None and existing != expected:
-                    current = ContentManifestRef.model_validate(
-                        strict_json_loads(existing.decode("utf-8"), ref=ref.ref)
-                    )
-                    raise ContentManifestConflictError(
-                        f"manifest {(ref.kind, ref.id)!r} is already pinned to "
-                        f"{current.object.sha256}, not {ref.object.sha256}"
-                    )
-            for key, _ref, expected in proposed:
-                _stage_blob_bytes(expected, self._manifest_reference_path(key))
-        return tuple(ref for _key, ref, _bytes in proposed)
+        return proposed
+
+    def _validate_manifest_bindings_locked(
+        self,
+        proposed: list[tuple[str, ContentManifestRef, bytes]],
+    ) -> None:
+        for key, ref, expected in proposed:
+            existing = self._read_manifest_reference(key, required=False)
+            if existing is not None and existing != expected:
+                current = ContentManifestRef.model_validate(
+                    strict_json_loads(existing.decode("utf-8"), ref=ref.ref)
+                )
+                raise ContentManifestConflictError(
+                    f"manifest {(ref.kind, ref.id)!r} is already pinned to "
+                    f"{current.object.sha256}, not {ref.object.sha256}"
+                )
+
+    def _publish_manifest_bindings_locked(
+        self,
+        proposed: list[tuple[str, ContentManifestRef, bytes]],
+    ) -> None:
+        for key, _ref, expected in proposed:
+            _stage_blob_bytes(expected, self._manifest_reference_path(key))
 
     def resolve_manifest(
         self,

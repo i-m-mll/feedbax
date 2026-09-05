@@ -126,6 +126,8 @@ def test_content_tree_rejects_links_and_portable_name_collisions(tmp_path: Path)
                 ContentTreeFile(relative_path="name", object=object_ref),
             )
         )
+    with pytest.raises(ValueError, match="lacks explicit parent directory"):
+        ContentTree(files=(ContentTreeFile(relative_path="nested/value", object=object_ref),))
 
 
 def test_path_backed_import_migrates_with_receipt_and_no_source_dependency(
@@ -168,7 +170,10 @@ def test_store_uses_existing_suffixless_cas_and_round_trips_exact_binary_bytes(
     assert artifact.size_bytes == len(data)
     assert artifact.metadata == {"purpose": "round-trip"}
     assert canonical_path.read_bytes() == data
-    assert [path for path in root.rglob("*") if path.is_file()] == [canonical_path]
+    assert set(path for path in root.rglob("*") if path.is_file()) == {
+        root / ".content-store.lock",
+        canonical_path,
+    }
     assert provider.get_bytes(artifact) == data
     assert provider.get_bytes(artifact.artifact_id, size_bytes=len(data)) == data
 
@@ -355,10 +360,8 @@ def test_provider_rejects_arbitrary_explicit_root_symlink(tmp_path: Path) -> Non
     target.mkdir()
     root_alias = tmp_path / "custody-alias"
     root_alias.symlink_to(target, target_is_directory=True)
-    provider = ImmutableArtifactBlobProvider(root_alias)
-
     with pytest.raises(ArtifactBlobContainmentError):
-        provider.store_bytes(b"must-not-escape", role="payload", logical_name="blob")
+        ImmutableArtifactBlobProvider(root_alias)
 
     assert list(target.iterdir()) == []
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import stat
+import os
+import tempfile
 import unicodedata
 from collections import deque
 from collections.abc import Iterable, Mapping
@@ -405,34 +407,31 @@ def import_manifest_packet(
             "Manifest packet import failed before writing any files:\n- " + "\n- ".join(errors)
         )
 
-    for digest in sorted(packet_objects):
-        provider.store_object(packet_objects[digest])
-
-    try:
-        provider.bind_manifests(
-            tuple((entry.kind, entry.id, data) for entry, _target, data in manifest_writes)
-            + tuple(
-                (entry.kind, entry.id, packet_objects[entry.sha256])
-                for entry in index.manifests
-                if entry.id in target_records
-            )
-        )
-    except ContentManifestConflictError as exc:
-        raise ManifestPacketConflictError(str(exc)) from exc
-
-    for _entry, target, data in manifest_writes:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            if target.read_bytes() != data:
-                raise ManifestPacketConflictError(
-                    f"manifest target changed after validation: {target}"
-                )
-        else:
-            target.write_bytes(data)
-
+    bindings = tuple(
+        (entry.kind, entry.id, data) for entry, _target, data in manifest_writes
+    ) + tuple(
+        (entry.kind, entry.id, packet_objects[entry.sha256])
+        for entry in index.manifests
+        if entry.id in target_records
+    )
     from feedbax.persistence.manifest_index import rebuild_manifest_index
 
-    db_path = rebuild_manifest_index(root_path)
+    try:
+        with provider._exclusive_lock():
+            for digest in sorted(packet_objects):
+                provider.store_object(packet_objects[digest])
+            proposed = provider._prepare_manifest_bindings(bindings)
+            provider._validate_manifest_bindings_locked(proposed)
+            for _entry, target, data in manifest_writes:
+                _publish_packet_object(
+                    data,
+                    target,
+                    error_type=ManifestPacketConflictError,
+                )
+            db_path = rebuild_manifest_index(root_path)
+            provider._publish_manifest_bindings_locked(proposed)
+    except ContentManifestConflictError as exc:
+        raise ManifestPacketConflictError(str(exc)) from exc
     skipped = [
         entry.id
         for entry in index.manifests
@@ -806,15 +805,48 @@ def _packet_object_path(digest: str) -> Path:
     return Path("objects") / "sha256" / digest[:2] / digest
 
 
-def _publish_packet_object(data: bytes, target: Path) -> None:
+def _publish_packet_object(
+    data: bytes,
+    target: Path,
+    *,
+    error_type: type[ManifestPacketError] = ManifestPacketValidationError,
+) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        if not target.is_file() or target.read_bytes() != data:
-            raise ManifestPacketValidationError(
-                f"packet object path already contains conflicting bytes: {target}"
-            )
+    if os.path.lexists(target):
+        current = target.lstat()
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or target.read_bytes() != data
+        ):
+            raise error_type(f"packet object path already contains conflicting bytes: {target}")
         return
-    target.write_bytes(data)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, target, follow_symlinks=False)
+        except FileExistsError:
+            current = target.lstat()
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or current.st_nlink != 1
+                or target.read_bytes() != data
+            ):
+                raise error_type(f"packet object path already contains conflicting bytes: {target}")
+        directory = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _resolve_artifact_source_path(ref: Mapping[str, Any], *, root: Path) -> Path | None:

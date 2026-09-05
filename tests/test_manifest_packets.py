@@ -288,6 +288,41 @@ def test_manifest_packet_import_is_idempotent_and_rejects_divergent_id(
         import_manifest_packet(packet, root=target)
 
 
+def test_manifest_packet_import_publishes_references_only_after_complete_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    packet = tmp_path / "packet"
+    ids = _write_run_tree(source)
+    export_manifest_packet([ids["training"]], root=source, dest=packet)
+
+    original = ImmutableArtifactBlobProvider._publish_manifest_bindings_locked
+
+    def interrupt(_provider, _proposed):
+        raise OSError("simulated interruption before reference publication")
+
+    monkeypatch.setattr(
+        ImmutableArtifactBlobProvider, "_publish_manifest_bindings_locked", interrupt
+    )
+    with pytest.raises(OSError, match="simulated interruption"):
+        import_manifest_packet(packet, root=target)
+    provider = ImmutableArtifactBlobProvider(target)
+    for path in iter_manifest_files(target):
+        manifest = load_manifest(path)
+        with pytest.raises(FileNotFoundError):
+            provider.resolve_manifest(manifest.kind, manifest.id)
+
+    monkeypatch.setattr(
+        ImmutableArtifactBlobProvider, "_publish_manifest_bindings_locked", original
+    )
+    result = import_manifest_packet(packet, root=target)
+    assert set(result.skipped_manifest_ids) == set(ids.values())
+    for path in iter_manifest_files(target):
+        manifest = load_manifest(path)
+        assert provider.resolve_manifest(manifest.kind, manifest.id)[1] == path.read_bytes()
+
+
 def test_manifest_packet_import_fails_closed_for_tampered_manifest_and_artifact(
     tmp_path: Path,
 ) -> None:

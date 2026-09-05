@@ -53,7 +53,6 @@ from feedbax.orchestration.bundle import (
     default_orchestration_root,
 )
 from feedbax.orchestration.revision import FeedbaxRevisionError, check_feedbax_provenance
-from feedbax.orchestration.staged_root_custody import StagedRootCustody
 from feedbax.training.row_lowering import (
     GovernedTrainingRowParent,
     TrainingRowLoweringContext,
@@ -132,7 +131,6 @@ class RunAssemblyRequest(StrictModel):
     inputs: list[AssemblyInputDeclaration] = Field(default_factory=list)
     training_row_parents: list[GovernedTrainingRowParentDeclaration] = Field(default_factory=list)
     content_bindings: list[ContentBinding] = Field(default_factory=list)
-    staged_roots: list[StagedRootCustody] = Field(default_factory=list)
     evaluation_batch_plan: EvaluationMatrixBatchPlan | None = None
     evaluation_output_preflight: EvaluationOutputPreflightPolicy | None = None
     deployment_policy: DeploymentPolicy
@@ -145,6 +143,17 @@ class RunAssemblyRequest(StrictModel):
     deadman_silence_seconds: int = Field(default=1800, ge=60)
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_staged_roots(cls, value: Any) -> Any:
+        if isinstance(value, Mapping) and "staged_roots" in value:
+            raise ValueError(
+                "RunAssemblyRequest v8 does not admit staged_roots; run "
+                "python -m feedbax migrate-content-store --staged-root-v1 ... "
+                "and author canonical content_bindings"
+            )
+        return value
+
     @model_validator(mode="after")
     def _validate_schema(self) -> "RunAssemblyRequest":
         if self.schema_id != RUN_ASSEMBLY_REQUEST_SCHEMA_ID:
@@ -154,11 +163,6 @@ class RunAssemblyRequest(StrictModel):
         keys = [(item.parent.kind, item.parent.ref) for item in self.training_row_parents]
         if len(keys) != len(set(keys)):
             raise ValueError("training_row_parents contain ambiguous kind/ref declarations")
-        staged_root_keys = [(item.root_kind, item.binding_name) for item in self.staged_roots]
-        if staged_root_keys != sorted(staged_root_keys):
-            raise ValueError("staged_roots must be in canonical (root_kind, binding_name) order")
-        if len(staged_root_keys) != len(set(staged_root_keys)):
-            raise ValueError("staged_roots contain duplicate typed binding names")
         content_keys = [(item.root_kind, item.binding_name) for item in self.content_bindings]
         if content_keys != sorted(content_keys):
             raise ValueError(
@@ -166,8 +170,6 @@ class RunAssemblyRequest(StrictModel):
             )
         if len(content_keys) != len(set(content_keys)):
             raise ValueError("content_bindings contain duplicate typed binding names")
-        if self.content_bindings and self.staged_roots:
-            raise ValueError("content_bindings and legacy staged_roots are mutually exclusive")
         return self
 
 
@@ -261,7 +263,7 @@ class AssemblyContext:
     environment_digest: str | None = None
     authored_ref: SchemaArtifactRef | None = None
     resolved_inputs: tuple[ImmutableInputIdentity, ...] = ()
-    staged_roots: tuple[StagedRootCustody, ...] = ()
+    content_bindings: tuple[ContentBinding, ...] = ()
     evaluation_batch_plan: EvaluationMatrixBatchPlan | None = None
     training_row_lowering_context: Any | None = None
 
@@ -568,7 +570,6 @@ def _persist_prepared_run_bundle(
         budget=request.budget,
         resolved_inputs=resolved_input_records,
         content_bindings=request.content_bindings,
-        staged_roots=request.staged_roots,
         evaluation_output_preflight=prepared.evaluation_output_preflight,
         orchestration_root=request.orchestration_root,
         keep_alive=request.keep_alive,
@@ -604,7 +605,7 @@ def _prepare_run_assembly(
     compiler_context = replace(
         context,
         resolved_inputs=tuple(resolved_inputs),
-        staged_roots=tuple(request.staged_roots),
+        content_bindings=tuple(request.content_bindings),
         evaluation_batch_plan=request.evaluation_batch_plan,
         training_row_lowering_context=lowering_context,
     )

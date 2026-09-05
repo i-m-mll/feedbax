@@ -47,7 +47,12 @@ Manifest and artifact entries are logical references to those objects, so many
 logical references may share one object. Import validates the complete object
 table, canonical paths, object sizes and digests, logical-key uniqueness,
 manifest schemas, target-path collisions, and resident conflicts before it
-publishes any logical manifest reference. The user must choose included
+publishes any logical manifest reference. Import then holds the content-store
+transaction while it stores objects, atomically projects every manifest file,
+rebuilds the filesystem index, and publishes logical references last. An
+interruption can therefore leave only exact unreferenced objects or exact
+manifest files; retry validates and completes them, while no logical reference
+can name an incomplete projection. The user must choose included
 (self-contained) or external (references-only) artifacts explicitly; the
 former is the default command behavior and `auto` rejects.
 
@@ -123,8 +128,9 @@ policy.
 ## Execution projection
 
 `RunAssemblyRequest` v8 and `RunBundle` v13 carry canonically ordered
-`ContentBinding` rows. Path-free v7/v12 documents migrate by adding an empty
-binding list. A v7 request or v12 bundle carrying `staged_roots` must use the
+`ContentBinding` rows and do not contain a `staged_roots` field. Path-free
+v7/v12 documents migrate by removing an empty legacy field and adding an empty
+binding list. A v7 request or v12 bundle carrying non-empty `staged_roots` must use the
 explicit offline migration because a registry migration has no source snapshot
 from which to authenticate and ingest the tree.
 
@@ -137,9 +143,21 @@ uploads each missing object once, and hard-links one attempt-local runtime view
 from the verified cache. Transfer evidence reports unique bytes, uploaded bytes,
 and canonical plan metadata bytes independently of role alias count.
 
-Nonterminal projections require a caller-supplied lease manager with exactly
-`acquire_lease`, `renew_lease`, and `release_lease`. Persistent lease records,
-retention decisions, and garbage collection remain owned by issue cb5ae8e.
+Nonterminal projections require the canonical store root and an explicit lease
+duration. Drivers call the
+provider's durable `ContentLeaseRecord` API directly; no narrower adapter
+contract exists. The CLI exposes these runtime-only values as
+`--content-store-root` and `--content-lease-seconds`. Acquisition occurs once
+after input validation and before publication or remote transfer, renewals use
+the same durable owner and targets, and every staging failure releases the
+lease. Persistent lease records, retention decisions, and garbage collection
+remain owned by issue cb5ae8e.
+
+Object, tree, manifest-reference, retention, and garbage-collection publication
+all share one re-entrant process lock backed by the same OS file lock. Compound
+tree and packet operations hold it across their full publication boundary, so
+a GC generation cannot mark a half-published closure or miss a concurrently
+published object and then sweep it.
 
 ## Protected-merge surface admission
 

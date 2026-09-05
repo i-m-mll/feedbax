@@ -139,6 +139,13 @@ class ContentTree(StrictModel):
         if len(collision_keys) != len(set(collision_keys)):
             raise ValueError("content-tree paths collide after target-path normalization")
         file_set = set(files)
+        directory_set = set(directories)
+        for path in all_paths:
+            parent = PurePosixPath(path).parent
+            while parent != PurePosixPath("."):
+                if parent.as_posix() not in directory_set:
+                    raise ValueError(f"content-tree path lacks explicit parent directory: {path}")
+                parent = parent.parent
         for path in directories:
             if path in file_set:
                 raise ValueError("content-tree path is both a directory and a file")

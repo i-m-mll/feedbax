@@ -57,6 +57,7 @@ from feedbax.orchestration.assembly import _prepare_run_assembly
 from feedbax.orchestration.drivers.capabilities import DriverConstructionContext
 from feedbax.orchestration.staged_root_custody import (
     StagedRootSourceBinding,
+    migrate_staged_root_v1,
     seal_staged_root,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -710,7 +711,11 @@ def test_matrix_staged_parents_require_and_bind_exact_governed_root_custody(
         matrix,
         output_preflight=_output_preflight(expected_rows=2),
     )
-    with pytest.raises(ValueError, match="lack governed staged-root custody"):
+    legacy_request = request.model_dump(mode="json")
+    legacy_request["staged_roots"] = []
+    with pytest.raises(ValueError, match="RunAssemblyRequest v8 does not admit staged_roots"):
+        RunAssemblyRequest.model_validate(legacy_request)
+    with pytest.raises(ValueError, match="lack canonical content bindings"):
         _assemble(request, tmp_path)
 
     roots = tmp_path / "roots"
@@ -747,10 +752,23 @@ def test_matrix_staged_parents_require_and_bind_exact_governed_root_custody(
             snapshot_parent=tmp_path / "sealed",
         ),
     ]
-    governed = request.model_copy(update={"staged_roots": [item.custody for item in sealed]})
+    content_store = tmp_path / "content-store"
+    bindings = [
+        migrate_staged_root_v1(
+            item.custody,
+            source_root=item.staging_root,
+            destination_store=content_store,
+        )[0]
+        for item in sealed
+    ]
+    governed = request.model_copy(update={"content_bindings": bindings})
     bundle = _assemble(governed, tmp_path, run_set_id="governed")
+    legacy_bundle = bundle.model_dump(mode="json")
+    legacy_bundle["staged_roots"] = []
+    with pytest.raises(ValueError, match="RunBundle v13 does not admit staged_roots"):
+        type(bundle).model_validate(legacy_bundle)
 
-    assert [(item.root_kind, item.binding_name) for item in bundle.staged_roots] == [
+    assert [(item.root_kind, item.binding_name) for item in bundle.content_bindings] == [
         ("artifact-provider", "artifacts"),
         ("checkpoint-custody", "checkpoints"),
         ("manifest-store", "local"),
@@ -953,13 +971,22 @@ PLUGIN_REGISTRATION = PluginRegistration(
         )
         for leaf in ("trajectory", "velocity")
     )
+    content_store = tmp_path / "shadow-content-store"
+    bindings = [
+        migrate_staged_root_v1(
+            item.custody,
+            source_root=item.staging_root,
+            destination_store=content_store,
+        )[0]
+        for item in sealed
+    ]
     request = _request(
         tmp_path,
         shadow_matrix,
         output_preflight=_output_preflight(expected_rows=8),
     ).model_copy(
         update={
-            "staged_roots": [item.custody for item in sealed],
+            "content_bindings": bindings,
             "evaluation_batch_plan": EvaluationMatrixBatchPlan(
                 matrix_intent_hash=evaluation_matrix_intent_hash(shadow_matrix),
                 batches=tuple(
@@ -989,14 +1016,10 @@ PLUGIN_REGISTRATION = PluginRegistration(
         "shadow-launch",
         "--assembly-request",
         str(request_path),
-        *[
-            option
-            for item in sealed
-            for option in (
-                "--staged-root",
-                f"{item.custody.root_kind}:{item.custody.binding_name}={item.staging_root}",
-            )
-        ],
+        "--content-store-root",
+        str(content_store),
+        "--content-lease-seconds",
+        "3600",
     ]
     completed = subprocess.run(
         command,

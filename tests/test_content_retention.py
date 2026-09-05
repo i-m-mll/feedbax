@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -144,6 +145,37 @@ def test_lease_mutation_invalidates_a_reported_generation_and_preserves_content(
     )
     assert remote_result.stage == "swept"
     assert remote_result.domain == "remote-attempt-cache"
+
+
+def test_object_publication_serializes_against_destructive_gc_mark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "store")
+    old = provider.store_object(b"old candidate")
+    _initialize(provider, old)
+    report = provider.collect_garbage()
+    inventory_entered = threading.Event()
+    release_inventory = threading.Event()
+    original_inventory = retention_module._inventory
+
+    def blocked_inventory(current_provider):
+        inventory_entered.set()
+        assert release_inventory.wait(timeout=5)
+        return original_inventory(current_provider)
+
+    monkeypatch.setattr(retention_module, "_inventory", blocked_inventory)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        sweep = executor.submit(
+            provider.collect_garbage,
+            ContentGcRequest(destructive=True, expected_generation=report.generation),
+        )
+        assert inventory_entered.wait(timeout=5)
+        publication = executor.submit(provider.store_object, b"published after mark")
+        assert not publication.done()
+        release_inventory.set()
+        assert sweep.result().stage == "swept"
+        published = publication.result()
+    assert provider.get_object(published) == b"published after mark"
 
 
 def test_expired_lease_is_ambiguous_until_explicit_release(tmp_path: Path) -> None:

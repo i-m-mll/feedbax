@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import shlex
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -21,6 +22,7 @@ from feedbax.orchestration.drivers.runpod import (
 )
 from feedbax.orchestration.input_materialization import (
     InputProviderRootBinding,
+    acquire_content_projection_lease,
     compile_content_input_projection,
     materialize_content_input_projection,
     staged_execution_bindings_for_bundle,
@@ -28,6 +30,7 @@ from feedbax.orchestration.input_materialization import (
 from feedbax.orchestration.stages import run_preflight_checks
 from feedbax.orchestration.state import RowState, RunSetState
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.content_retention import ContentRetentionError
 from feedbax.training.checkpoint_custody import produce_checkpoint_custody_archive
 from tests.test_checkpoint_custody import _resolver_parent_ref, _write_resolver_checkpoint
 from tests.test_orchestration_core import _bundle
@@ -169,9 +172,8 @@ def test_content_aliases_share_one_local_projection_and_exclude_unselected_objec
     tmp_path: Path,
 ) -> None:
     bundle, store_root, unique_bytes = _content_bundle(tmp_path)
-    lease = _LeaseManager()
     driver = LocalOrchestrationDriver(
-        freeze_lines=[], content_store_root=store_root, content_lease_manager=lease
+        freeze_lines=[], content_store_root=store_root, content_lease_seconds=3600
     )
 
     result = driver.stage_inputs(bundle, _state(bundle))
@@ -190,7 +192,7 @@ def test_content_aliases_share_one_local_projection_and_exclude_unselected_objec
         if path.is_file()
     ]
     assert sum(path.stat().st_size for path in object_files) == unique_bytes
-    assert len(lease.acquired) == 1 and len(set(lease.acquired[0][1])) == 1
+    ImmutableArtifactBlobProvider(store_root).release_lease(bundle.run_set_id)
     runtime = staged_execution_bindings_for_bundle(
         bundle, inputs_root=bundle.run_set_dir / "inputs"
     )
@@ -200,12 +202,11 @@ def test_content_aliases_share_one_local_projection_and_exclude_unselected_objec
 
 def test_runpod_uploads_each_missing_digest_once_then_zero_bytes(tmp_path: Path) -> None:
     bundle, store_root, unique_bytes = _content_bundle(tmp_path)
-    lease = _LeaseManager()
     transport = _ContentCacheTransport()
     driver = RunPodOrchestrationDriver(
         transport=transport,
         content_store_root=store_root,
-        content_lease_manager=lease,
+        content_lease_seconds=3600,
     )
 
     first = driver.stage_inputs(bundle, _state(bundle, 1))["content_projection"]
@@ -218,7 +219,7 @@ def test_runpod_uploads_each_missing_digest_once_then_zero_bytes(tmp_path: Path)
     assert first_object_uploads == first["unique_object_count"]
     assert second["uploaded_bytes"] == 0 and second_object_uploads == 0
     assert first["bindings"][0]["target"] == first["bindings"][1]["target"]
-    assert lease.renewed == [bundle.run_set_id, bundle.run_set_id]
+    ImmutableArtifactBlobProvider(store_root).release_lease(bundle.run_set_id)
 
 
 def test_runpod_rejects_conflicting_remote_digest_before_upload(tmp_path: Path) -> None:
@@ -227,12 +228,17 @@ def test_runpod_rejects_conflicting_remote_digest_before_upload(tmp_path: Path) 
     driver = RunPodOrchestrationDriver(
         transport=transport,
         content_store_root=store_root,
-        content_lease_manager=_LeaseManager(),
+        content_lease_seconds=3600,
     )
 
     with pytest.raises(Exception, match="remote content cache conflicts"):
         driver.stage_inputs(bundle, _state(bundle))
     assert not transport.rsync_calls
+    with pytest.raises(ContentRetentionError, match="active lease is unavailable"):
+        ImmutableArtifactBlobProvider(store_root).renew_lease(
+            bundle.run_set_id,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+        )
 
 
 def test_content_source_mutation_fails_before_materialization(tmp_path: Path) -> None:
@@ -273,15 +279,22 @@ def test_interrupted_remote_object_upload_never_publishes_inputs(tmp_path: Path)
     driver = RunPodOrchestrationDriver(
         transport=transport,
         content_store_root=store_root,
-        content_lease_manager=_LeaseManager(),
+        content_lease_seconds=3600,
     )
 
     with pytest.raises(Exception, match="upload immutable content object.*interrupted"):
         driver.stage_inputs(bundle, _state(bundle))
-    assert not any("input publication target already exists" in cmd for cmd in transport.ssh_commands)
+    assert not any(
+        "input publication target already exists" in cmd for cmd in transport.ssh_commands
+    )
+    with pytest.raises(ContentRetentionError, match="active lease is unavailable"):
+        ImmutableArtifactBlobProvider(store_root).renew_lease(
+            bundle.run_set_id,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+        )
 
 
-def test_missing_content_lease_manager_fails_before_remote_contact(tmp_path: Path) -> None:
+def test_missing_explicit_content_lease_policy_fails_before_remote_contact(tmp_path: Path) -> None:
     bundle, store_root, _ = _content_bundle(tmp_path)
     transport = _ContentCacheTransport()
     driver = RunPodOrchestrationDriver(
@@ -289,24 +302,36 @@ def test_missing_content_lease_manager_fails_before_remote_contact(tmp_path: Pat
         content_store_root=store_root,
     )
 
-    with pytest.raises(Exception, match="content lease manager"):
+    with pytest.raises(Exception, match="explicit lease seconds"):
         driver.stage_inputs(bundle, _state(bundle))
     assert transport.operations == []
 
 
 def test_terminal_teardown_releases_content_lease(tmp_path: Path) -> None:
     bundle, store_root, _ = _content_bundle(tmp_path)
-    lease = _LeaseManager()
+    provider = ImmutableArtifactBlobProvider(store_root)
+    projection = compile_content_input_projection(bundle.content_bindings, provider)
+    acquire_content_projection_lease(
+        projection,
+        provider,
+        lease_id=bundle.run_set_id,
+        owner=f"runpod:{bundle.run_set_id}",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
     driver = RunPodOrchestrationDriver(
         transport=_ContentCacheTransport(),
         content_store_root=store_root,
-        content_lease_manager=lease,
+        content_lease_seconds=3600,
     )
 
     result = driver.teardown(bundle, _state(bundle))
 
     assert result["content_lease"] == "released"
-    assert lease.released == [bundle.run_set_id]
+    with pytest.raises(ContentRetentionError, match="active lease is unavailable"):
+        provider.renew_lease(
+            bundle.run_set_id,
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+        )
 
 
 def test_publication_collision_preserves_attempt_and_retry_publishes(
