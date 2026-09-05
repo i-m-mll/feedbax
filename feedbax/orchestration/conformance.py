@@ -1391,13 +1391,7 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
         expected = {}
         observed = {}
         segment_completed = _path(row.training_diagnostics, "segment_completed_batches")
-        minimum_samples = (
-            min(3, int(segment_completed))
-            if isinstance(segment_completed, int)
-            and not isinstance(segment_completed, bool)
-            and segment_completed > 0
-            else 3
-        )
+        minimum_samples = lr_trace_minimum_samples(segment_completed)
         for coordinates, coordinate_trace in trace.items():
             samples = _selected_lr_samples(
                 coordinate_trace,
@@ -1620,6 +1614,17 @@ def _exact_nonnegative_event_coordinate(value: Any, *, name: str) -> int:
     if value < 0:
         raise ValueError(f"run-event coordinate {name} must be non-negative")
     return value
+
+
+def lr_trace_minimum_samples(segment_completed_batches: Any) -> int:
+    """Return the observed-sample minimum enforced by ``lr_trace``."""
+    if (
+        isinstance(segment_completed_batches, int)
+        and not isinstance(segment_completed_batches, bool)
+        and segment_completed_batches > 0
+    ):
+        return min(3, segment_completed_batches)
+    return 3
 
 
 def _selected_lr_samples(

@@ -21,6 +21,8 @@ import pytest
 
 import feedbax.orchestration.collection_recovery as collection_recovery
 import feedbax.orchestration.drivers.runpod as runpod_module
+import feedbax.orchestration.stages as stages
+from feedbax._distribution_provenance import provenance_for_distribution_build
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.remote_smoke import RemoteSmokeEvidence
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
@@ -88,9 +90,11 @@ from feedbax.orchestration.drivers.base import (
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration.repo_realization import (
     EditableSourceResolution,
+    RepoRealizationEntry,
     RepoRealizationError,
     RepoRealizationPlan,
 )
+from feedbax.orchestration.repo_snapshot import RepoSnapshotManifest, RepoSnapshotRecord
 from feedbax.training.interruption import CancellationDecision
 from feedbax.orchestration.conformance import CheckEntry, CheckRegistry
 from feedbax.orchestration.stages import (
@@ -1183,6 +1187,60 @@ def test_post_provision_early_failure_retains_identity_and_verifies_teardown(
     assert intent.state == "resolved-torn-down"
     assert intent.pod_ids == ["pod-early-failure"]
     assert any(("remove", "pod", "pod-early-failure") == call for call in transport.runpodctl_calls)
+
+
+def test_interrupted_provision_teardown_blocks_reacquisition_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _bundle(tmp_path)
+    store = RunSetStateStore(bundle.run_set_dir / "interrupted-provision-state.json")
+
+    class TerminalBarrierTransport(AcquisitionLeaseTransport):
+        def runpodctl(
+            self,
+            *args: str,
+            timeout_seconds: float | None = None,
+        ) -> CommandResult:
+            if args[:2] == ("remove", "pod"):
+                assert self.store.load().provisioning_stop_reason == "interrupted-teardown"
+            return super().runpodctl(*args, timeout_seconds=timeout_seconds)
+
+    transport = TerminalBarrierTransport(store)
+    transport.create_results = [CommandResult(0, '{"id":"pod-interrupted"}')]
+    transport.register_on_create = [("pod-interrupted",)]
+    engine, driver, state = _acquisition_engine(bundle, store, transport, datacenters=("CA-MTL-1",))
+
+    def interrupt_during_provision(_pod_id: str) -> Any:
+        raise _DeferredOperatorSignal(signal.SIGTERM)
+
+    monkeypatch.setattr(driver, "_wait_for_endpoint", interrupt_during_provision)
+    with pytest.raises(_DeferredOperatorSignal):
+        engine._engine_owned_provision(state, attempt_ordinal=1)
+
+    interrupted = store.load()
+    intent = interrupted.acquisition_intents[0]
+    assert interrupted.provisioning_stop_reason == "interrupted-teardown"
+    assert intent.state == "resolved-torn-down"
+    assert intent.pod_ids == ["pod-interrupted"]
+    assert intent.teardown_evidence[-1]["pod_absence"]["verified"] is True
+    assert intent.teardown_evidence[-1]["final_pod_inventory"]["verified"] is True
+    assert transport.inventory == {}
+    assert len(transport.create_names) == 1
+
+    resumed_transport = AcquisitionLeaseTransport(store)
+    resumed_transport.create_results = [CommandResult(0, '{"id":"replacement"}')]
+    resumed_transport.register_on_create = [("replacement",)]
+    resumed_driver = RunPodOrchestrationDriver(config=driver.config, transport=resumed_transport)
+    resumed_driver._preflight_passed = True
+    resumed_engine = StageEngine(bundle=bundle, driver=resumed_driver, store=store)
+
+    with pytest.raises(OrchestrationStageError, match="interrupted-teardown"):
+        resumed_engine._stage_provision(interrupted)
+
+    assert resumed_transport.create_names == []
+    assert resumed_transport.inventory == {}
+    assert store.load().provisioning_stop_reason == "interrupted-teardown"
 
 
 def test_deadman_is_installed_after_endpoint_and_before_gpu_readiness(tmp_path: Path) -> None:
@@ -2410,6 +2468,37 @@ def test_runpod_snapshot_digest_changes_environment_reuse_key(tmp_path: Path) ->
     assert first_fingerprint != second_fingerprint
 
 
+def test_preflight_seals_editable_feedbax_with_distribution_provenance(
+    tmp_path: Path,
+) -> None:
+    consumer = tmp_path / "consumer"
+    feedbax_root = tmp_path / "feedbax"
+    package = feedbax_root / "feedbax"
+    package.mkdir(parents=True)
+    (feedbax_root / "pyproject.toml").write_text(
+        '[project]\nname = "feedbax"\nversion = "0.0.0"\n',
+        encoding="utf-8",
+    )
+    (package / "__init__.py").write_text('VALUE = "remote editable"\n', encoding="utf-8")
+    _git_seal_ready(feedbax_root, "pyproject.toml", "feedbax/__init__.py")
+    bundle, config = _layout_case(
+        tmp_path,
+        'version = 1\n[[package]]\nname = "feedbax"\nsource = { editable = "../feedbax" }\n',
+        local_repos={"consumer": consumer, "feedbax": feedbax_root},
+        remote_repos={"consumer": "/workspace/consumer", "feedbax": "/workspace/feedbax"},
+    )
+    driver = RunPodOrchestrationDriver(config=config, transport=FakeRunPodTransport())
+
+    plan = driver.seal_repo_realization_plan(bundle)
+    snapshot = driver._repo_snapshots.snapshots["feedbax"]
+    provenance = snapshot.staging_root / "feedbax" / "_distribution_provenance.json"
+
+    assert plan.editable_source_resolutions[0].target_repo == "feedbax"
+    assert not (snapshot.staging_root / ".git").exists()
+    assert provenance_for_distribution_build(snapshot.staging_root) == provenance.read_bytes()
+    assert json.loads(provenance.read_bytes())["revision"] == plan.repos["feedbax"].snapshot.commit
+
+
 def test_runpod_plan_root_and_resolution_changes_invalidate_reuse_key(
     tmp_path: Path,
 ) -> None:
@@ -3046,6 +3135,9 @@ def test_launch_row_command_returns_before_buffered_child_and_replaces_stale_pid
         "import os\n"
         "import sys\n"
         "assert sys.argv[1] == '-f'\n"
+        "token = os.environ.get('FEEDBAX_PROCESS_IDENTITY')\n"
+        "if token is None or len(token) != 64:\n"
+        "    raise SystemExit(42)\n"
         "if os.fork():\n"
         "    raise SystemExit(0)\n"
         "os.setsid()\n"
@@ -3107,6 +3199,168 @@ def test_launch_row_command_returns_before_buffered_child_and_replaces_stale_pid
             os.killpg(pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or shutil.which("setsid") is None,
+    reason="production process-group verification requires Linux /proc and setsid",
+)
+@pytest.mark.parametrize("tokenless_row", [None, "hot"])
+def test_concurrent_live_launch_groups_inherit_and_verify_identity_token(
+    tmp_path: Path,
+    tokenless_row: str | None,
+) -> None:
+    worker = tmp_path / "live-process-group.py"
+    worker.write_text(
+        """
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+report_root, child_mode = sys.argv[1:]
+child_source = '''
+import json
+import os
+from pathlib import Path
+import sys
+import time
+
+Path(sys.argv[1] + ".child.json").write_text(json.dumps({
+    "pid": os.getpid(),
+    "process_group_id": os.getpgid(0),
+    "launch_token": os.environ.get("FEEDBAX_PROCESS_IDENTITY"),
+}))
+time.sleep(30)
+'''
+child_environment = os.environ.copy()
+if child_mode == "tokenless":
+    child_environment.pop("FEEDBAX_PROCESS_IDENTITY", None)
+child = subprocess.Popen(
+    [sys.executable, "-c", child_source, report_root],
+    env=child_environment,
+)
+Path(report_root + ".parent.json").write_text(json.dumps({
+    "pid": os.getpid(),
+    "process_group_id": os.getpgid(0),
+    "launch_token": os.environ.get("FEEDBAX_PROCESS_IDENTITY"),
+}))
+Path(report_root + ".ready").touch()
+try:
+    time.sleep(30)
+finally:
+    child.terminate()
+    child.wait()
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    bundle = _bundle(tmp_path)
+    original = bundle.rows[0]
+    row_ids = ("warm", "cool", "hot")
+    rows = [
+        original.model_copy(
+            update={
+                "row_id": row_id,
+                "launch": RowLaunchSpec(
+                    command=[
+                        sys.executable,
+                        str(worker),
+                        str(tmp_path / f"member-{row_id}"),
+                        "tokenless" if row_id == tokenless_row else "owned",
+                    ]
+                ),
+            }
+        )
+        for row_id in row_ids
+    ]
+    bundle = bundle.model_copy(update={"rows": rows})
+    remote_run_dir = tmp_path / "run"
+    sentinel_dir = remote_run_dir / "sentinels"
+    namespaces = {
+        row.row_id: build_runpod_execution_namespace(
+            bundle=bundle,
+            row=row,
+            remote_run_dir=str(remote_run_dir),
+            remote_sentinel_dir=str(sentinel_dir),
+            env_fingerprint="fingerprint-123",
+        )
+        for row in rows
+    }
+    commands = [
+        build_launch_row_command(
+            bundle=bundle,
+            row=row,
+            workdir=str(tmp_path),
+            jax_cache_dir=str(tmp_path / "jax-cache"),
+            env_fingerprint="fingerprint-123",
+            execution_namespace=namespaces[row.row_id],
+        )
+        for row in rows
+    ]
+    launchers = [
+        subprocess.Popen(["bash", "-c", command], text=True, stderr=subprocess.PIPE)
+        for command in commands
+    ]
+    process_groups: set[int] = set()
+    try:
+        for launcher in launchers:
+            _, stderr = launcher.communicate(timeout=5)
+            assert launcher.returncode == 0, stderr
+        deadline = time.monotonic() + 5
+        while not all((tmp_path / f"member-{row_id}.ready").exists() for row_id in row_ids):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+        completed = subprocess.run(
+            [
+                "bash",
+                "-c",
+                runpod_module.build_probe_command(
+                    str(sentinel_dir), list(row_ids), bundle.run_set_id
+                ),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        reports = runpod_module.parse_probe_report(completed.stdout)["rows"]
+        for row_id in row_ids:
+            identity = json.loads(
+                (sentinel_dir / f"{row_id}.process.json").read_text(encoding="utf-8")
+            )
+            process_groups.add(identity["process_group_id"])
+            for role in ("parent", "child"):
+                member = json.loads(
+                    (tmp_path / f"member-{row_id}.{role}.json").read_text(encoding="utf-8")
+                )
+                assert member["process_group_id"] == identity["process_group_id"]
+                expected = (
+                    None
+                    if row_id == tokenless_row and role == "child"
+                    else identity["launch_token"]
+                )
+                assert member["launch_token"] == expected
+            if row_id == tokenless_row:
+                assert reports[row_id]["identity_status"] == "mismatch"
+                assert reports[row_id]["status"] == "pending"
+                assert "do not carry persisted launch identity" in reports[row_id]["detail"]
+            else:
+                assert reports[row_id]["identity_status"] == "owned"
+                assert reports[row_id]["status"] == "running"
+    finally:
+        for row_id in row_ids:
+            identity_path = sentinel_dir / f"{row_id}.process.json"
+            if identity_path.is_file():
+                identity = json.loads(identity_path.read_text(encoding="utf-8"))
+                process_groups.add(identity["process_group_id"])
+        for process_group_id in process_groups:
+            try:
+                os.killpg(process_group_id, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
 
 def test_launch_row_injects_native_execution_context_from_bundle_row(
@@ -3354,6 +3608,8 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
     watchdog = next(command for command in transport.ssh_commands if "deadman.pid" in command)
     assert "feedbax.orchestration.process_identity.v1" in watchdog
     assert "FEEDBAX_PROCESS_IDENTITY=" in watchdog
+    assert re.search(r"FEEDBAX_PROCESS_IDENTITY=[0-9a-f]{64} setsid -f", watchdog)
+    assert "export FEEDBAX_PROCESS_IDENTITY=" not in watchdog
     assert "setsid -f bash -lc" in watchdog
     assert "echo $$ >" in watchdog
     assert "deadman.installed" in watchdog
@@ -3950,11 +4206,93 @@ def test_runpod_remote_smoke_failed_probe_records_failure(tmp_path: Path) -> Non
     assert not any("os.killpg" in command for command in transport.ssh_commands)
 
 
-def test_runpod_remote_smoke_preserves_unverified_live_process(tmp_path: Path) -> None:
+def test_probe_keeps_started_row_pending_until_a_terminal_sentinel(tmp_path: Path) -> None:
+    sentinel_dir = tmp_path / "sentinels"
+    sentinel_dir.mkdir()
+    (sentinel_dir / "smoke-warm.started").touch()
+
+    completed = subprocess.run(
+        runpod_module.build_probe_command(str(sentinel_dir), "smoke-warm", "2026-01-02-deadbeef"),
+        shell=True,
+        executable="/bin/bash",
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    report = runpod_module.parse_probe_report(completed.stdout)["rows"]["smoke-warm"]
+    assert report["status"] == "pending"
+    assert report["terminal_status"] is None
+    assert report["identity_status"] == "missing"
+    assert report["detail"] == "process identity record is missing"
+
+
+def test_remote_digest_excludes_only_the_current_smoke_sentinels(tmp_path: Path) -> None:
+    sentinel_dir = tmp_path / "sentinels"
+    sentinel_dir.mkdir()
+    scratch = sentinel_dir / "smoke-warm.started"
+    protected = sentinel_dir / "warm.done"
+    scratch.write_text("first", encoding="utf-8")
+    protected.write_text("stable", encoding="utf-8")
+
+    command = runpod_module.build_remote_content_digest_command(
+        {"sentinels": str(sentinel_dir)},
+        excluded_relative_paths={"sentinels": (scratch.name,)},
+    )
+
+    def digest() -> str:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            executable="/bin/bash",
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return json.loads(completed.stdout)["sentinels"]
+
+    before = digest()
+    scratch.write_text("expected smoke lifecycle mutation", encoding="utf-8")
+    assert digest() == before
+    protected.write_text("unexpected protected mutation", encoding="utf-8")
+    assert digest() != before
+
+
+def test_runpod_remote_smoke_retries_transient_probe_and_preserves_failure_detail(
+    tmp_path: Path,
+) -> None:
+    class TransientThenFailedTransport(RemoteSmokeTransport):
+        probe_count = 0
+
+        def ssh(self, command: str) -> CommandResult:
+            if "reports={}" in command:
+                self.probe_count += 1
+                if self.probe_count == 1:
+                    self.ssh_commands.append(command)
+                    return CommandResult(
+                        0,
+                        json.dumps(
+                            {
+                                "rows": {
+                                    "smoke-warm": {
+                                        "status": "pending",
+                                        "terminal_status": None,
+                                        "pid": None,
+                                        "process_identity": None,
+                                        "identity_status": "missing",
+                                        "detail": "process identity record is missing",
+                                    }
+                                }
+                            }
+                        ),
+                    )
+            if command.startswith("tail -n 80 --"):
+                self.ssh_commands.append(command)
+                return CommandResult(0, "executor failed before its first completed batch")
+            return super().ssh(command)
+
     bundle = _native_smoke_bundle(tmp_path)
-    transport = RemoteSmokeTransport(probe_status="failed")
-    transport.identity_status = "mismatch"
-    transport.terminal_status = None
+    transport = TransientThenFailedTransport(probe_status="failed")
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
             pod_id="pod-smoke",
@@ -3962,9 +4300,43 @@ def test_runpod_remote_smoke_preserves_unverified_live_process(tmp_path: Path) -
             local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
+        sleep=lambda _seconds: None,
     )
 
-    with pytest.raises(RunPodRemoteSmokeError) as raised:
+    with pytest.raises(
+        RunPodRemoteSmokeError,
+        match="executor failed before its first completed batch",
+    ) as raised:
+        driver.smoke_row(bundle, bundle.rows[0], _state(bundle))
+
+    assert transport.probe_count == 2
+    assert raised.value.evidence["cleanup_status"] == "removed"
+    assert (
+        raised.value.evidence["protected_paths_before"]
+        == raised.value.evidence["protected_paths_after"]
+    )
+    assert "protected launch paths" not in str(raised.value)
+    assert any("rm -rf" in command for command in transport.ssh_commands)
+
+
+def test_runpod_remote_smoke_preserves_unverified_live_process(tmp_path: Path) -> None:
+    bundle = _native_smoke_bundle(tmp_path, deadline_seconds=1)
+    transport = RemoteSmokeTransport(probe_status="failed")
+    transport.identity_status = "mismatch"
+    transport.terminal_status = None
+    clock = FakeClock()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            pod_id="pod-smoke",
+            remote_run_root="/remote/runs",
+            local_repos={"feedbax": tmp_path},
+        ),
+        transport=transport,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+
+    with pytest.raises(RunPodRemoteSmokeError, match="termination refused") as raised:
         driver.smoke_row(bundle, bundle.rows[0], _state(bundle))
 
     assert raised.value.evidence["cleanup_status"] == "failed"
@@ -4446,6 +4818,112 @@ def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_p
     assert resumed.stage(STAGE_PROVISION).status == "completed"
     assert RestoredDriver.provision_calls == 1
     assert resume_transport.operations == []
+
+
+@pytest.mark.parametrize("resume", [False, True], ids=["initial", "resumed"])
+def test_live_preflight_rejects_report_only_descendant_science_checkout_before_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resume: bool,
+) -> None:
+    science_repo = tmp_path / "science"
+    _init_snapshot_repo(science_repo)
+    git = ["git", "-C", str(science_repo), "--no-optional-locks"]
+    expected = subprocess.run(
+        [*git, "rev-parse", "HEAD^{commit}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (science_repo / "report.md").write_text("report-only descendant\n", encoding="utf-8")
+    subprocess.run([*git, "add", "report.md"], check=True, capture_output=True)
+    subprocess.run(
+        [*git, "commit", "-m", "report only"],
+        check=True,
+        capture_output=True,
+    )
+    observed = subprocess.run(
+        [*git, "rev-parse", "HEAD^{commit}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert observed != expected
+
+    bundle_root = tmp_path / "bundle"
+    bundle_root.mkdir()
+    bundle = _bundle(bundle_root, baseline=False)
+    record = RepoSnapshotRecord(
+        commit=expected,
+        dirty=False,
+        content_sha256="1" * 64,
+        source_state_sha256="2" * 64,
+        file_count=2,
+    )
+    plan = RepoRealizationPlan.create(
+        primary_repo="rlrmp2",
+        repos={
+            "rlrmp2": RepoRealizationEntry(
+                local_root=str(science_repo),
+                staging_root=str(tmp_path / "sealed-science"),
+                remote_root="/workspace/rlrmp2",
+                snapshot=record,
+                sealed_lock_digests={},
+            )
+        },
+        editable_source_resolutions=[],
+        snapshot_manifest=RepoSnapshotManifest(repos={"rlrmp2": record}),
+    )
+    transport = FakeRunPodTransport()
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(
+            gpu_id="NVIDIA GeForce RTX 5090",
+            image=bundle.environment.image_id or "",
+        ),
+        transport=transport,
+    )
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    monkeypatch.setattr(
+        stages,
+        "resolve_science_repo_import_revisions",
+        lambda _plugin_provenance: {str(science_repo): observed},
+    )
+
+    if resume:
+        preflight = StageState(
+            status="completed", started_at=stages.utc_now(), completed_at=stages.utc_now()
+        )
+        store.save(
+            _state(bundle).model_copy(
+                update={
+                    "repo_realization_plan": plan,
+                    "stages": {STAGE_PREFLIGHT: preflight},
+                }
+            )
+        )
+        monkeypatch.setattr(driver, "restore_completed_preflight", lambda *_: True)
+    else:
+        monkeypatch.setattr(driver, "static_preflight_checks", lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(driver, "repo_realization_plan", lambda: plan)
+        monkeypatch.setattr(
+            driver,
+            "preflight_checks",
+            lambda _bundle: pytest.fail("provider preflight must not run after science mismatch"),
+        )
+
+    with pytest.raises(PreflightFailed) as captured:
+        StageEngine(
+            bundle=bundle,
+            driver=driver,
+            store=store,
+            plugin_provenance=(SimpleNamespace(entry_point_value="rlrmp2.plugin"),),
+        ).run(stop_after_stage=STAGE_PROVISION)
+
+    detail = str(captured.value)
+    assert expected in detail
+    assert observed in detail
+    assert str(science_repo) in detail
+    assert transport.operations == []
 
 
 def test_completed_preflight_without_schedule_check_is_rerun(tmp_path: Path) -> None:
@@ -5454,7 +5932,9 @@ def test_collect_recovery_rejects_destination_replacement_race(
         collection_recovery_bindings=[CollectionRecoveryBinding(row.row_id, preserved)],
     )
 
-    with pytest.raises(CollectionRecoveryError, match="attempt root identity changed while opening"):
+    with pytest.raises(
+        CollectionRecoveryError, match="attempt root identity changed while opening"
+    ):
         driver.collect(bundle, row, _completed_recovery_state(bundle))
 
 

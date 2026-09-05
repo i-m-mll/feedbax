@@ -55,6 +55,7 @@ from feedbax.orchestration.revision import (
     FeedbaxRevisionError,
     assert_feedbax_source_residence,
 )
+from feedbax.orchestration.stages import StageEngine
 
 
 FABRICATED_REVISION = "0123456789abcdef0123456789abcdef01234567"
@@ -235,6 +236,42 @@ def test_matching_clean_install_assembles_and_copies_the_authored_revision(
     # The negative cases below assert this same set is empty, so it must be
     # non-empty when the gate passes for those assertions to mean anything.
     assert fixture.output_paths()
+
+
+def test_declared_outer_symlink_is_canonical_before_state_and_bundle_custody(
+    tmp_path: Path,
+    clean_checkout: tuple[Path, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _package_root, head = clean_checkout
+    fixture = _assembly_fixture(tmp_path / "fixture", feedbax_revision=head)
+    physical_root = tmp_path / "shared-artifacts"
+    physical_root.mkdir()
+    alias_parent = tmp_path / "worktree"
+    alias_parent.mkdir()
+    alias_root = alias_parent / "_artifacts"
+    alias_root.symlink_to(physical_root, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    request = fixture.request.model_copy(
+        update={"orchestration_root": str(alias_root.relative_to(tmp_path))}
+    )
+    fixture = dataclasses.replace(fixture, request=request)
+    run_set_id = "2026-01-02-deadbeef"
+
+    engine = StageEngine(
+        request=request,
+        assembly_context=fixture.context,
+        assembly_registry=fixture.registry,
+        driver_registry=object(),  # type: ignore[arg-type]
+        driver_context=lambda _bundle: None,  # type: ignore[arg-type,return-value]
+        run_set_id=run_set_id,
+    )
+    bundle = _assemble(fixture)
+
+    expected_run_set_dir = physical_root / run_set_id
+    assert engine.store.path == expected_run_set_dir / "state.json"
+    assert bundle.orchestration_root == str(physical_root)
+    assert bundle.run_set_dir == expected_run_set_dir
 
 
 def test_wrong_authored_revision_fails_closed_before_any_output(

@@ -78,6 +78,29 @@ def default_orchestration_root(run_set_id: str) -> Path:
     return Path.home() / ".cache" / "feedbax" / "orchestration" / run_set_id
 
 
+def canonical_orchestration_root(root: Path | str) -> Path:
+    """Resolve one explicitly declared outer orchestration root.
+
+    The declaration is the trust boundary: policy-managed aliases may occur in
+    it, but all paths created below the returned physical root remain subject
+    to the immutable custody provider's no-follow containment checks.
+    """
+    root_path = Path(root).expanduser()
+    try:
+        return root_path.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(
+            f"orchestration_root cannot be resolved to one physical custody root: {root_path}"
+        ) from exc
+
+
+def orchestration_run_set_dir(root: Path | str, run_set_id: str) -> Path:
+    """Return the physical run-set directory below a declared outer root."""
+    declared_root = Path(root).expanduser()
+    canonical_root = canonical_orchestration_root(root)
+    return canonical_root if declared_root.name == run_set_id else canonical_root / run_set_id
+
+
 def canonical_run_bundle_sha256(bundle: "RunBundle") -> str:
     """Return the SHA-256 identity of the persisted run-bundle representation."""
     payload = bundle.model_dump(mode="json", exclude_none=True)
@@ -578,12 +601,7 @@ class RunBundle(StrictModel):
                 raise ValueError(
                     "evaluation_output_preflight is only valid for evaluation-matrix bundles"
                 )
-            root = (
-                Path(self.orchestration_root).expanduser()
-                if self.orchestration_root
-                else default_orchestration_root(self.run_set_id)
-            )
-            expected_output_root = root if root.name == self.run_set_id else root / self.run_set_id
+            expected_output_root = self.run_set_dir
             if Path(self.evaluation_output_preflight.output_root) != expected_output_root:
                 raise ValueError(
                     "evaluation_output_preflight output_root does not match the bundle run-set root"
@@ -594,8 +612,7 @@ class RunBundle(StrictModel):
     def run_set_dir(self) -> Path:
         """Return the local directory where orchestration state is stored."""
         if self.orchestration_root:
-            root = Path(self.orchestration_root).expanduser()
-            return root if root.name == self.run_set_id else root / self.run_set_id
+            return orchestration_run_set_dir(self.orchestration_root, self.run_set_id)
         return default_orchestration_root(self.run_set_id)
 
     def row(self, row_id: str) -> RunRowSpec:

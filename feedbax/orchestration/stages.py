@@ -34,6 +34,7 @@ from feedbax.contracts.spec_storage import (
     canonical_training_run_spec_bytes,
     training_spec_canonical_bytes,
 )
+from feedbax.contracts.training import TrainingRunSpec
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -52,6 +53,7 @@ from feedbax.orchestration.bundle import (
     canonical_run_bundle_sha256,
     default_orchestration_root,
     mint_run_set_id,
+    orchestration_run_set_dir,
 )
 from feedbax.orchestration.conformance import (
     CheckRegistry,
@@ -61,6 +63,7 @@ from feedbax.orchestration.conformance import (
     assert_certificate_allows_completed_registration,
     write_conformance_certificate,
     check_evaluation_lifecycle,
+    lr_trace_minimum_samples,
 )
 from feedbax.orchestration.drivers.base import (
     AcquisitionCreateError,
@@ -175,8 +178,7 @@ RETRY_LIMITS = {
 
 def _request_run_set_dir(request: RunAssemblyRequest | None, run_set_id: str) -> Path:
     if request is not None and request.orchestration_root:
-        root = Path(request.orchestration_root).expanduser()
-        return root if root.name == run_set_id else root / run_set_id
+        return orchestration_run_set_dir(request.orchestration_root, run_set_id)
     return default_orchestration_root(run_set_id)
 
 
@@ -990,6 +992,31 @@ class StageEngine:
         """Restore driver-local preflight authority before skipping a completed stage."""
         if state.stage(STAGE_PREFLIGHT).status != "completed":
             return state
+        enabled_checks = {check_id for check_id, _check in self.conformance_registry.items()}
+        required_core_checks = (
+            {"conformance-trace-cardinality"} if "lr_trace" in enabled_checks else set()
+        )
+        recorded_core_checks = {check.name for check in state.stage(STAGE_PREFLIGHT).checks}
+        missing_core_checks = sorted(required_core_checks - recorded_core_checks)
+        later_started = [
+            stage_id
+            for stage_id in STAGE_ORDER[STAGE_ORDER.index(STAGE_PREFLIGHT) + 1 :]
+            if state.stage(stage_id).status != "pending"
+        ]
+        if missing_core_checks and not later_started:
+            reset = state.stage(STAGE_PREFLIGHT).model_copy(
+                update={
+                    "status": "pending",
+                    "started_at": None,
+                    "completed_at": None,
+                    "outputs": {},
+                    "error": None,
+                    "checks": [],
+                }
+            )
+            state = state.with_stage(STAGE_PREFLIGHT, reset)
+            self.store.save(state)
+            return state
         restore = self._driver_hook(
             DriverHook.RESTORE_COMPLETED_PREFLIGHT,
             "restore_completed_preflight",
@@ -1024,10 +1051,23 @@ class StageEngine:
                 )
                 state = state.with_stage(STAGE_PREFLIGHT, reset)
                 self.store.save(state)
+        if state.stage(STAGE_PREFLIGHT).status == "completed":
+            try:
+                self._assert_science_repo_pin(state)
+            except FeedbaxRevisionError as exc:
+                raise PreflightFailed(
+                    "persisted PREFLIGHT science revision is invalid: " + str(exc)
+                ) from exc
         return state
 
     def _stage_preflight(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
-        checks = run_preflight_checks(self.bundle, self.driver.realized_capabilities)
+        checks = run_preflight_checks(
+            self.bundle,
+            self.driver.realized_capabilities,
+            enabled_conformance_checks=tuple(
+                check_id for check_id, _check in self.conformance_registry.items()
+            ),
+        )
         stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
         state = state.with_stage(STAGE_PREFLIGHT, stage)
         self.store.save(state)
@@ -1049,19 +1089,50 @@ class StageEngine:
                 self.store.save(state)
                 failed = [check for check in checks if check.status == "fail"]
             raise PreflightFailed(_format_preflight_failures(failed))
+
+        # RunPod's static preflight seals the complete local repo realization
+        # without querying the provider. When science plugins are imported, use
+        # that existing phase to reject a checkout mismatch before credentials,
+        # balance, image, or acquisition calls can occur.
+        imported_science_revisions = resolve_science_repo_import_revisions(self.plugin_provenance)
+        driver_static_preflight = self._driver_hook(
+            DriverHook.STATIC_PREFLIGHT_CHECKS,
+            "static_preflight_checks",
+        )
+        if imported_science_revisions and driver_static_preflight is not None:
+            provider_free_checks = driver_static_preflight(
+                self.bundle,
+                upstream_failures=(),
+            )
+            state = self._capture_repo_realization_plan(state)
+            provider_free_failed = [
+                check for check in provider_free_checks if check.status == "fail"
+            ]
+            science_check = self._science_repo_revision_preflight_check(
+                state,
+                imported_revisions=imported_science_revisions,
+            )
+            if science_check.status == "fail":
+                provider_free_failed.append(science_check)
+            if provider_free_failed:
+                checks.extend(provider_free_checks)
+                checks.append(science_check)
+                stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
+                state = state.with_stage(STAGE_PREFLIGHT, stage)
+                self.store.save(state)
+                raise PreflightFailed(_format_preflight_failures(provider_free_failed))
+
         driver_preflight = self._driver_hook(DriverHook.PREFLIGHT_CHECKS, "preflight_checks")
         if driver_preflight is not None:
             checks.extend(driver_preflight(self.bundle))
-        realization_plan = self._driver_hook(
-            DriverHook.REPO_REALIZATION_PLAN,
-            "repo_realization_plan",
-        )
-        if realization_plan is not None:
-            plan = realization_plan()
-            if plan is not None:
-                state = state.model_copy(
-                    update={"repo_realization_plan": plan, "updated_at": utc_now()}
+        state = self._capture_repo_realization_plan(state)
+        if imported_science_revisions:
+            checks.append(
+                self._science_repo_revision_preflight_check(
+                    state,
+                    imported_revisions=imported_science_revisions,
                 )
+            )
         stage = state.stage(STAGE_PREFLIGHT).model_copy(update={"checks": checks})
         state = state.with_stage(STAGE_PREFLIGHT, stage)
         self.store.save(state)
@@ -1080,6 +1151,64 @@ class StageEngine:
         if state.repo_realization_plan is not None:
             outputs["repo_realization_plan"] = state.repo_realization_plan.model_dump(mode="json")
         return state, outputs
+
+    def _capture_repo_realization_plan(self, state: RunSetState) -> RunSetState:
+        """Project the driver-owned provider-free repo plan into durable run state."""
+        realization_plan = self._driver_hook(
+            DriverHook.REPO_REALIZATION_PLAN,
+            "repo_realization_plan",
+        )
+        if realization_plan is None:
+            return state
+        plan = realization_plan()
+        if plan is None:
+            return state
+        return state.model_copy(update={"repo_realization_plan": plan, "updated_at": utc_now()})
+
+    def _science_repo_revision_preflight_check(
+        self,
+        state: RunSetState,
+        *,
+        imported_revisions: Mapping[str, str],
+    ) -> PreflightCheckEntry:
+        """Compare run-pinned science authority with local certification imports."""
+        plan = state.repo_realization_plan
+        if plan is None or plan.repos.get(plan.primary_repo) is None:
+            return _check(
+                "science-repo-revision-pin",
+                False,
+                detail=(
+                    "science repo revision pin cannot be checked before provider access: "
+                    "the run has no primary repo realization authority; imported checkouts="
+                    f"{sorted(imported_revisions)!r}"
+                ),
+            )
+        primary_entry = plan.repos[plan.primary_repo]
+        expected = primary_entry.snapshot.commit
+        try:
+            assert_science_repo_revision_pin(
+                primary_repo=plan.primary_repo,
+                realized_revision=expected,
+                imported_revisions=imported_revisions,
+            )
+        except FeedbaxRevisionError as exc:
+            return _check(
+                "science-repo-revision-pin",
+                False,
+                detail=str(exc),
+                observed={
+                    "expected_revision": expected,
+                    "imported_revisions": dict(sorted(imported_revisions.items())),
+                },
+            )
+        return _check(
+            "science-repo-revision-pin",
+            True,
+            observed={
+                "expected_revision": expected,
+                "imported_revisions": dict(sorted(imported_revisions.items())),
+            },
+        )
 
     def _uses_engine_acquisition(self) -> bool:
         if self.driver is None:
@@ -1135,6 +1264,7 @@ class StageEngine:
         *,
         attempt_ordinal: int,
     ) -> tuple[RunSetState, Mapping[str, Any]]:
+        self._assert_provisioning_open(state)
         candidates = tuple(self.driver.acquisition_candidates(self.bundle))
         driver_name = self.driver.driver_name
         if not candidates:
@@ -1206,6 +1336,17 @@ class StageEngine:
                 failure_evidence = getattr(
                     self.driver, "acquisition_failure_evidence", lambda: {}
                 )()
+                if not isinstance(exc, Exception):
+                    # An operator signal (or another process-terminating exception)
+                    # makes the cleanup below terminal rather than a retryable failed
+                    # attempt. Persist the barrier before contacting the provider so a
+                    # restart cannot interpret successful teardown as permission to
+                    # acquire replacement capacity.
+                    state = self._stop_provisioning(
+                        state,
+                        list(state.provisioning_attempts),
+                        "interrupted-teardown",
+                    )
                 try:
                     cleanup = self.driver.teardown(self.bundle, state)
                 except Exception as teardown_exc:
@@ -1362,6 +1503,7 @@ class StageEngine:
 
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         """Provision RunPod through one durable, budget-governed retry authority."""
+        self._assert_provisioning_open(state)
         if self.driver.realized_capabilities.facts.retry is not RetrySemantics.DRIVER_GOVERNED:
             outputs = dict(self.driver.provision(self.bundle, state))
             state = state.model_copy(update={"provision_record": outputs, "updated_at": utc_now()})
@@ -1462,6 +1604,12 @@ class StageEngine:
                 }
             )
             return state, outputs
+
+    @staticmethod
+    def _assert_provisioning_open(state: RunSetState) -> None:
+        """Refuse acquisition after a durable terminal provisioning decision."""
+        if state.provisioning_stop_reason is not None:
+            raise OrchestrationStageError(f"provisioning stopped: {state.provisioning_stop_reason}")
 
     def _stop_provisioning(
         self,
@@ -1854,15 +2002,15 @@ class StageEngine:
         return state, stage_outputs
 
     def _assert_science_repo_pin(self, state: RunSetState) -> None:
-        """Refuse CERTIFY payload derivation under a mis-pinned science repo.
+        """Refuse local science work under a mis-pinned imported checkout.
 
-        Runs for both the initial certification and every retry, before any
-        payload is derived or ``conformance.json`` is overwritten, so a
-        mis-pinned invocation is refused before it can consume or overwrite
-        governed evidence. The check is a no-op when the run carries no realized
-        repository snapshot or no science provider can be resolved; it never
-        weakens the existing Feedbax provenance or environment-fingerprint
-        checks.
+        PREFLIGHT calls the equivalent named check before provider access, and
+        completed-PREFLIGHT restore calls this assertion before any resumed
+        stage can acquire resources. CERTIFY retains this assertion for initial
+        certification and every retry, before payload derivation or overwrite.
+        The check is a no-op when the run carries no realized repository
+        snapshot or no science provider can be resolved; it never weakens the
+        existing Feedbax provenance or environment-fingerprint checks.
         """
         plan = state.repo_realization_plan
         if plan is None:
@@ -3003,6 +3151,8 @@ def _read_collected_regular_file(path: str | Path, *, context: str) -> bytes:
 def run_preflight_checks(
     bundle: RunBundle,
     realized_capabilities: RealizedDriverCapabilities,
+    *,
+    enabled_conformance_checks: Sequence[str] = (),
 ) -> list[PreflightCheckEntry]:
     """Run static preflight checks without driver calls or resource mutation."""
     return _run_static_preflight_checks(
@@ -3010,6 +3160,7 @@ def run_preflight_checks(
         realized_capabilities=realized_capabilities,
         include_deployment_policy=True,
         include_manifest_payload_normalization=True,
+        enabled_conformance_checks=enabled_conformance_checks,
     )
 
 
@@ -3020,6 +3171,7 @@ def run_authority_preflight_checks(bundle: RunBundle) -> list[PreflightCheckEntr
         realized_capabilities=None,
         include_deployment_policy=False,
         include_manifest_payload_normalization=False,
+        enabled_conformance_checks=(),
     )
 
 
@@ -3029,6 +3181,7 @@ def _run_static_preflight_checks(
     realized_capabilities: RealizedDriverCapabilities | None,
     include_deployment_policy: bool,
     include_manifest_payload_normalization: bool,
+    enabled_conformance_checks: Sequence[str],
 ) -> list[PreflightCheckEntry]:
     checks: list[PreflightCheckEntry] = []
     schema_current = bundle.schema_version == RUN_BUNDLE_SCHEMA_VERSION
@@ -3211,7 +3364,113 @@ def _run_static_preflight_checks(
             observed=schedule_observed or "no-inline-optimizer-specs",
         )
     )
+    if "lr_trace" in enabled_conformance_checks:
+        trace_failures, trace_observed, trace_skips = _preflight_conformance_trace_cardinality(
+            bundle,
+            row_payloads=row_payloads,
+            row_payload_errors=row_payload_errors,
+        )
+        trace_detail = "; ".join(trace_failures) if trace_failures else None
+        if trace_skips:
+            skip_detail = "skipped-due-to-dependency: " + ", ".join(trace_skips)
+            trace_detail = f"{trace_detail}; {skip_detail}" if trace_detail else skip_detail
+        checks.append(
+            _check(
+                "conformance-trace-cardinality",
+                not trace_failures,
+                detail=trace_detail,
+                observed=trace_observed or "no-inline-training-run-specs",
+            )
+        )
     return checks
+
+
+def _preflight_conformance_trace_cardinality(
+    bundle: RunBundle,
+    *,
+    row_payloads: Mapping[str, dict[str, Any] | None],
+    row_payload_errors: Mapping[str, str],
+) -> tuple[list[str], dict[str, Any], list[str]]:
+    """Predict whether authored progress cadence can satisfy enabled trace checks."""
+    failures: list[str] = []
+    observed: dict[str, Any] = {}
+    skipped: list[str] = []
+    for row in bundle.rows:
+        if row.row_id in row_payload_errors:
+            if row.execution.payload.schema_id == "feedbax.spec.training_run":
+                observed[row.row_id] = dependency_skip_observed("manifest-payload-normalization")
+                skipped.append(row.row_id)
+            continue
+        payload = row_payloads.get(row.row_id)
+        if not _is_training_run_payload(payload):
+            continue
+        try:
+            run_spec = TrainingRunSpec.model_validate(payload)
+        except Exception:
+            observed[row.row_id] = dependency_skip_observed("manifest-payload-normalization")
+            skipped.append(row.row_id)
+            continue
+
+        continuation = run_spec.checkpoint_progress.continuation
+        segment_batches = run_spec.training_config.n_batches
+        start_completed_batches = (
+            continuation.source_completed_batches if continuation is not None else 0
+        )
+        terminal_completed_batches = start_completed_batches + segment_batches
+        progress_interval = run_spec.checkpoint_progress.progress_interval
+        if progress_interval is None:
+            predicted = segment_batches
+            terminal_flush_emitted = False
+        else:
+            crossed_intervals = (
+                terminal_completed_batches // progress_interval
+                - start_completed_batches // progress_interval
+            )
+            terminal_flush_emitted = terminal_completed_batches % progress_interval != 0
+            predicted = crossed_intervals + int(terminal_flush_emitted)
+
+        required = lr_trace_minimum_samples(segment_batches)
+        resume_context = schedule_eval.extract_resume_context(payload)
+        raw_schedule_origin_step = resume_context.get("schedule_origin_step")
+        schedule_origin_step = (
+            raw_schedule_origin_step
+            if isinstance(raw_schedule_origin_step, int)
+            and not isinstance(raw_schedule_origin_step, bool)
+            else (0 if continuation is None else None)
+        )
+        evidence = {
+            "assertion": "lr_trace",
+            "required": required,
+            "predicted": predicted,
+            "terminal_horizon": {
+                "start_completed_batches": start_completed_batches,
+                "segment_batches": segment_batches,
+                "terminal_completed_batches": terminal_completed_batches,
+            },
+            "diagnostics_cadence": {
+                "progress_interval": progress_interval,
+                "basis": "absolute_completed_batches",
+            },
+            "terminal_flush": {
+                "enabled": True,
+                "predicted_to_emit": terminal_flush_emitted,
+            },
+            "schedule_origin_step": schedule_origin_step,
+            "continuation": (
+                {"enabled": False}
+                if continuation is None
+                else {
+                    "enabled": True,
+                    "source_completed_batches": continuation.source_completed_batches,
+                    "additional_batches": continuation.additional_batches,
+                    "self_contained": continuation.self_contained,
+                }
+            ),
+        }
+        observed[row.row_id] = [evidence]
+        if predicted < required:
+            failures.append(f"{row.row_id}: {json.dumps(evidence, sort_keys=True)}")
+    return failures, observed, skipped
 
 
 def _preflight_deployment_policy(

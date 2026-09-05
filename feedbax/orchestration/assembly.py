@@ -50,7 +50,9 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     RunRowSpec,
     SchemaArtifactRef,
+    canonical_orchestration_root,
     default_orchestration_root,
+    orchestration_run_set_dir,
 )
 from feedbax.orchestration.revision import FeedbaxRevisionError, check_feedbax_provenance
 from feedbax.training.row_lowering import (
@@ -571,7 +573,11 @@ def _persist_prepared_run_bundle(
         resolved_inputs=resolved_input_records,
         content_bindings=request.content_bindings,
         evaluation_output_preflight=prepared.evaluation_output_preflight,
-        orchestration_root=request.orchestration_root,
+        orchestration_root=(
+            str(canonical_orchestration_root(request.orchestration_root))
+            if request.orchestration_root
+            else None
+        ),
         keep_alive=request.keep_alive,
         deadman_enabled=request.deadman_enabled,
         deadman_silence_seconds=request.deadman_silence_seconds,
@@ -735,8 +741,7 @@ def _preflight_evaluation_output(
 
 def _evaluation_output_root(request: RunAssemblyRequest, *, run_set_id: str) -> Path:
     if request.orchestration_root:
-        root = Path(request.orchestration_root).expanduser()
-        return root if root.name == run_set_id else root / run_set_id
+        return orchestration_run_set_dir(request.orchestration_root, run_set_id)
     return default_orchestration_root(run_set_id)
 
 

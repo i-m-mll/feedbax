@@ -1395,6 +1395,18 @@ class RunPodOrchestrationDriver:
 
     def seal_repo_realization_plan(self, bundle: RunBundle) -> RepoRealizationPlan:
         """Build the complete provider-free realization authority before provisioning."""
+        if self._repo_realization_plan is not None and self._repo_snapshots is not None:
+            error, _observed = validate_runpod_repo_realization_plan(
+                bundle,
+                self.config,
+                self._repo_realization_plan,
+                self._repo_snapshots,
+            )
+            if error is not None:
+                raise RunPodDriverError(error)
+            return self._repo_realization_plan
+        if self._repo_realization_plan is not None or self._repo_snapshots is not None:
+            raise RunPodDriverError("repo realization plan cache is internally inconsistent")
         plan, snapshots = build_runpod_repo_realization_plan(
             bundle,
             self.config,
@@ -2242,17 +2254,27 @@ class RunPodOrchestrationDriver:
                     ).stdout
                 )
                 row_report = probe.get("rows", {}).get(namespace.sentinel_stem, {})
-                status = str(row_report.get("status", "pending"))
+                reported_status = str(row_report.get("status", "pending"))
+                terminal_status = row_report.get("terminal_status")
                 identity_status = str(row_report.get("identity_status", "missing"))
                 process_identity = _process_identity_from_report(row_report)
-                if status in {"completed", "failed"}:
-                    cleanup_authorized = row_report.get("terminal_status") == status
+                probe_detail = row_report.get("detail")
+                if isinstance(probe_detail, str) and probe_detail:
+                    detail = probe_detail
+                if terminal_status in {"completed", "failed"}:
+                    status = str(terminal_status)
+                    cleanup_authorized = True
                     break
+                status = (
+                    reported_status if reported_status not in {"completed", "failed"} else "pending"
+                )
                 remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     if process_identity is None or identity_status != "owned":
+                        suffix = f": {detail}" if detail else ""
                         raise RunPodDriverError(
                             "remote smoke termination refused: process identity is not verified"
+                            f"{suffix}"
                         )
                     termination = _json_object(
                         self._ssh(
@@ -2271,9 +2293,11 @@ class RunPodOrchestrationDriver:
             if status == "completed":
                 result = self._read_smoke_result(namespace)
             else:
-                detail = self.transport.ssh(
+                log_detail = self.transport.ssh(
                     f"tail -n 80 -- {_sq(namespace.log_path)}"
                 ).stdout.strip()
+                if log_detail:
+                    detail = log_detail
         except RunPodDriverError as exc:
             status = "failed"
             detail = str(exc)
@@ -2316,12 +2340,12 @@ class RunPodOrchestrationDriver:
                     f"remote smoke row {row.row_id!r} exceeded wall-clock deadline "
                     f"{bundle.smoke_deadline_seconds:g}s; failed sentinel recorded"
                 )
-            elif cleanup != "removed":
-                message = f"remote smoke cleanup failed for row {row.row_id!r}"
             else:
                 message = f"remote smoke row {row.row_id!r} failed"
                 if detail:
                     message += f": {detail}"
+            if cleanup != "removed":
+                message += "; scratch cleanup was not authorized or did not complete"
             raise RunPodRemoteSmokeError(message, evidence=evidence)
         return evidence
 
@@ -2402,7 +2426,18 @@ class RunPodOrchestrationDriver:
             "events": f"{remote_run_dir}/events",
             "sentinels": self._remote_sentinel_dir(bundle),
         }
-        result = self._ssh(build_remote_content_digest_command(paths))
+        scratch_sentinel_stem = f"smoke-{row.row_id}"
+        result = self._ssh(
+            build_remote_content_digest_command(
+                paths,
+                excluded_relative_paths={
+                    "sentinels": tuple(
+                        f"{scratch_sentinel_stem}.{suffix}"
+                        for suffix in ("started", "done", "failed", "pid", "process.json")
+                    )
+                },
+            )
+        )
         payload = _json_object(result.stdout)
         return {str(key): str(value) for key, value in payload.items()}
 
@@ -4287,7 +4322,6 @@ def build_launch_row_command(
         "trap 'signal_failed 129' HUP; "
         "export XLA_PYTHON_CLIENT_PREALLOCATE=false "
         f"JAX_COMPILATION_CACHE_DIR={_sq(jax_cache_dir)} "
-        f"FEEDBAX_PROCESS_IDENTITY={_sq(launch_token)} "
         + " ".join(f"{key}={_sq(value)}" for key, value in namespace.env_exports)
         + " && "
         f"{write_identity} && echo $$ > {_sq(pid_file)} && "
@@ -4315,6 +4349,7 @@ def build_launch_row_command(
         f"{seed_command}"
         f"rm -f {_sq(pid_file)} {_sq(process_identity_file)} && "
         f"touch {_sq(started_file)} && "
+        f"FEEDBAX_PROCESS_IDENTITY={_sq(launch_token)} "
         f"setsid -f bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 && "
         f"i=0; while {{ [ ! -s {_sq(pid_file)} ] || "
         f'[ ! -s {_sq(process_identity_file)} ]; }} && [ "$i" -lt 40 ]; do '
@@ -4422,13 +4457,18 @@ def build_bounded_remote_termination_command(
     )
 
 
-def build_remote_content_digest_command(paths: Mapping[str, str]) -> str:
+def build_remote_content_digest_command(
+    paths: Mapping[str, str],
+    *,
+    excluded_relative_paths: Mapping[str, Sequence[str]] | None = None,
+) -> str:
     """Hash path names, entry kinds, symlink targets, and file bytes, not metadata."""
     script = r"""
 import hashlib,json,os,sys
 # Trusted internal command argument serialized by build_remote_content_digest_command.
 paths=json.loads(sys.argv[1])
-def digest(root):
+excluded=json.loads(sys.argv[2])
+def digest(path_name,root):
     h=hashlib.sha256()
     if not os.path.lexists(root):
         h.update(b"missing\0")
@@ -4439,9 +4479,10 @@ def digest(root):
         entries=[]
         for base,dirs,files in os.walk(root,followlinks=False):
             dirs.sort(); files.sort()
-            for name in dirs+files:
-                path=os.path.join(base,name)
+            for entry_name in dirs+files:
+                path=os.path.join(base,entry_name)
                 rel=os.path.relpath(path,root)
+                if any(rel==item or rel.startswith(item+os.sep) for item in excluded.get(path_name,())): continue
                 kind="link" if os.path.islink(path) else ("dir" if os.path.isdir(path) else "file")
                 entries.append((kind,rel,path))
     for kind,rel,path in entries:
@@ -4452,10 +4493,15 @@ def digest(root):
         elif kind=="link": h.update(os.readlink(path).encode())
         h.update(b"\0")
     return h.hexdigest()
-print(json.dumps({name:digest(path) for name,path in paths.items()},sort_keys=True))
+print(json.dumps({name:digest(name,path) for name,path in paths.items()},sort_keys=True))
 """.strip()
     payload = json.dumps(dict(paths), sort_keys=True, separators=(",", ":"))
-    return f"python3 -c {_sq(script)} {_sq(payload)}"
+    exclusions = json.dumps(
+        {name: list(items) for name, items in (excluded_relative_paths or {}).items()},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"python3 -c {_sq(script)} {_sq(payload)} {_sq(exclusions)}"
 
 
 def build_remote_smoke_result_command(log_path: str) -> str:
@@ -4703,8 +4749,8 @@ def build_probe_command(
         "    if os.path.exists(base+'.done'): status=terminal_status='completed'\n"
         "    elif os.path.exists(base+'.failed'): status=terminal_status='failed'\n"
         "    elif os.path.exists(base+'.started'):\n"
-        "        status='running' if identity_status=='owned' else 'failed'\n"
-        "        if status=='failed': detail=identity_detail\n"
+        "        status='running' if identity_status=='owned' else 'pending'\n"
+        "        if status=='pending': detail=identity_detail\n"
         "    reports[row]={'status':status,'terminal_status':terminal_status,'pid':pid,'process_identity':identity,'identity_status':identity_status,'detail':detail}\n"
         "print(json.dumps({'gpu':gpu,'rows':reports}, sort_keys=True))\n"
         "PY"
@@ -4752,7 +4798,6 @@ def build_deadman_watchdog_command(
         f"{_sq(pid_file)} {_sq(run_set_id)} deadman"
     )
     script = (
-        f"export FEEDBAX_PROCESS_IDENTITY={_sq(launch_token)}; "
         f"{write_identity} && echo $$ > {_sq(pid_file)} || exit 1; "
         f": > {_sq(installed_file)}; "
         f"pod_id={_sq(pod_id)}; run_dir={_sq(remote_run_dir)}; "
@@ -4781,6 +4826,7 @@ def build_deadman_watchdog_command(
         f"pid_file={_sq(pid_file)}; "
         f"if {verify_identity}; then exit 0; fi; "
         f'rm -f "$pid_file" {_sq(identity_file)}; '
+        f"FEEDBAX_PROCESS_IDENTITY={_sq(launch_token)} "
         f"setsid -f bash -lc {_sq(script)} </dev/null "
         f">>{_sq(remote_run_dir + '/logs/deadman.log')} 2>&1; "
         'i=0; while [ ! -s "$pid_file" ] && [ "$i" -lt 40 ]; do '
