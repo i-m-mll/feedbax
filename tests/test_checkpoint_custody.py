@@ -46,6 +46,7 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
     structural_abi_content_projection,
     structural_abi_content_sha256,
 )
@@ -1019,6 +1020,7 @@ def test_checkpoint_transaction_schema_family_is_registered() -> None:
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
         TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
+        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
     )
 
 
@@ -1060,6 +1062,7 @@ def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody
         "training-checkpoint-transaction-v6-to-v7-segment-lineage",
         "training-checkpoint-transaction-v7-to-v8-mapped-axes",
         "training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
+        "training-checkpoint-transaction-v9-to-v10-semantic-abi",
     ]
     assert migrated.payload["metadata"]["batch_history_tree_migration"] == (
         "declared_paths_v5_to_v6"
@@ -3449,6 +3452,22 @@ def test_manifest_structural_abi_tamper_fails_closed(tmp_path: Path) -> None:
         )
 
 
+def test_manifest_semantic_abi_tamper_fails_closed(tmp_path: Path) -> None:
+    run_spec, program, result = _write_minimax_checkpoint(tmp_path)
+    payload = json.loads(result.manifest_path.read_text())
+    controller = next(slot for slot in payload["slots"] if slot["slot"] == "controller")
+    controller["semantic_abi"]["leaves"][0]["parameter_role"] = "unknown"
+    _rewrite_manifest_and_latest(result, payload)
+
+    with pytest.raises(CheckpointIntegrityError, match="semantic ABI fingerprint is stale"):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
+
+
 def test_manifest_structural_abi_x64_mismatch_reports_leaf_diff_and_hint(
     tmp_path: Path,
 ) -> None:
@@ -4221,7 +4240,7 @@ def test_changed_learning_rate_fails_closed_with_field_diff_unless_override(
     assert loaded.previous_transaction_id == loaded.manifest.transaction_id
 
 
-def test_legacy_absent_binding_projection_loads_and_reports_hash_field_diff(
+def test_legacy_absent_binding_projection_refuses_unbound_optimizer_and_reports_hash_diff(
     tmp_path: Path,
 ) -> None:
     run_spec = _run_spec(minimax=True)
@@ -4244,15 +4263,13 @@ def test_legacy_absent_binding_projection_loads_and_reports_hash_field_diff(
     binding.pop("canonical_projection_sha256")
     _rewrite_manifest_and_latest(result, payload)
 
-    loaded = load_latest_checkpoint(
-        tmp_path,
-        expected_run_spec=run_spec,
-        expected_phase_program=program,
-        expected_slots=_minimax_slots(),
-    )
-
-    assert loaded.manifest.run_contract_binding.canonical_projection is None
-    assert loaded.manifest.run_contract_binding.metadata["projection_status"] == ("legacy_absent")
+    with pytest.raises(CheckpointCompatibilityError, match="legacy:optimizer"):
+        load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=_minimax_slots(),
+        )
 
     changed = run_spec.model_copy(deep=True)
     changed.training_config.learning_rate = 0.5
@@ -4925,6 +4942,7 @@ def test_checkpoint_custody_ref_resolver_uses_registered_manifest_migration(
         "training-checkpoint-transaction-v6-to-v7-segment-lineage",
         "training-checkpoint-transaction-v7-to-v8-mapped-axes",
         "training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
+        "training-checkpoint-transaction-v9-to-v10-semantic-abi",
     ]
 
 
@@ -4961,6 +4979,7 @@ def test_checkpoint_custody_ref_resolver_v5_migration_keeps_raw_slot_tree(
         "training-checkpoint-transaction-v6-to-v7-segment-lineage",
         "training-checkpoint-transaction-v7-to-v8-mapped-axes",
         "training-checkpoint-transaction-v8-to-v9-semantic-state-roots",
+        "training-checkpoint-transaction-v9-to-v10-semantic-abi",
     ]
 
 
