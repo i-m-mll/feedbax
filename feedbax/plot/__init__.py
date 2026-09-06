@@ -16,6 +16,7 @@ _default_template_applied = False
 _PUBLIC_ATTR_MODULES = {
     "AxesLabels": ".misc",
     "adjust_color_brightness": ".colors",
+    "calculate_array_minmax": ".utils",
     "constructor_catalog": ".constructors",
     "get_figure_constructor": ".constructors",
     "get_figure_piece": ".constructors",

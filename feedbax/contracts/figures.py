@@ -68,6 +68,12 @@ from, so a figure destined for a static page fixes its own orientation instead
 of inheriting the renderer's default. The field is an optional None-default and
 an omitted camera leaves the renderer's default in place, so existing panel and
 figure identity bytes are unchanged.
+
+Additive changelog, 2026-09-06: ``PanelAxis.derived_range`` accepts the
+versioned ``DataDerivedAxisRange`` declaration. Axes carrying the same group
+derive one finite union range from their rendered trace coordinates and apply
+the same authored proportional padding. The field is an optional None-default,
+so existing panel and figure identity bytes are unchanged.
 """
 
 from __future__ import annotations
@@ -125,6 +131,8 @@ PERTURBATION_TIMING_SCHEMA_ID = "feedbax.spec.perturbation_timing"
 PERTURBATION_TIMING_SCHEMA_VERSION = "feedbax.spec.perturbation_timing.v1"
 EQUAL_DATA_ASPECT_SCHEMA_ID = "feedbax.spec.equal_data_aspect"
 EQUAL_DATA_ASPECT_SCHEMA_VERSION = "feedbax.spec.equal_data_aspect.v1"
+DATA_DERIVED_AXIS_RANGE_SCHEMA_ID = "feedbax.spec.data_derived_axis_range"
+DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION = "feedbax.spec.data_derived_axis_range.v1"
 SCENE_CAMERA_SCHEMA_ID = "feedbax.spec.scene_camera"
 SCENE_CAMERA_SCHEMA_VERSION = "feedbax.spec.scene_camera.v1"
 # Declaration-side identity for PanelSpec objects added beneath FigureSpec v2.
@@ -222,11 +230,43 @@ class AxisLabels(StrictModel):
     z: str | None = None
 
 
+class DataDerivedAxisRange(StrictModel):
+    """One rendered-data range shared by a named group of panel axes."""
+
+    schema_id: str = DATA_DERIVED_AXIS_RANGE_SCHEMA_ID
+    schema_version: str = DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION
+    group: str = Field(min_length=1)
+    padding_fraction: float = Field(ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_declaration(self) -> "DataDerivedAxisRange":
+        if self.schema_id != DATA_DERIVED_AXIS_RANGE_SCHEMA_ID:
+            raise ValueError(f"unsupported DataDerivedAxisRange schema_id: {self.schema_id!r}")
+        if self.schema_version != DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported DataDerivedAxisRange schema_version: {self.schema_version!r}"
+            )
+        if self.group != self.group.strip():
+            raise ValueError("DataDerivedAxisRange group must not have surrounding whitespace")
+        if not math.isfinite(self.padding_fraction):
+            raise ValueError("DataDerivedAxisRange padding_fraction must be finite")
+        return self
+
+
 class PanelAxis(StrictModel):
     """Declarative settings for one panel axis."""
 
     type: Literal["linear", "log"] | None = None
     range: tuple[float, float] | None = None
+    derived_range: DataDerivedAxisRange | None = None
+
+    @model_validator(mode="after")
+    def _validate_range_authority(self) -> "PanelAxis":
+        if self.derived_range is not None and self.range is not None:
+            raise ValueError("PanelAxis cannot declare both range and derived_range")
+        if self.derived_range is not None and self.type == "log":
+            raise ValueError("PanelAxis derived_range requires a linear axis")
+        return self
 
 
 class EqualDataAspect(StrictModel):
@@ -898,6 +938,25 @@ class PanelSpec(StrictModel):
     row_span: int | None = Field(default=None, ge=1)
     col_span: int | None = Field(default=None, ge=1)
     camera: SceneCamera | None = None
+
+    @model_validator(mode="after")
+    def _validate_data_derived_axis_ranges(self) -> "PanelSpec":
+        if self.z_axis is not None and self.z_axis.derived_range is not None:
+            raise ValueError("PanelSpec data-derived ranges support only x_axis and y_axis")
+        declarations = [
+            name
+            for name, axis in (
+                ("x_axis", self.x_axis),
+                ("y_axis", self.y_axis),
+            )
+            if axis is not None and axis.derived_range is not None
+        ]
+        if declarations and self.panel_type == "scene":
+            raise ValueError(
+                "PanelSpec data-derived axis ranges require Cartesian panels; "
+                f"scene declarations: {declarations}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_equal_data_aspect(self) -> "PanelSpec":

@@ -240,6 +240,8 @@ from feedbax.contracts.spec_storage import (
 from feedbax.contracts.figures import (
     COLORBAR_PANEL_PLACEMENT_SCHEMA_ID,
     COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION,
+    DATA_DERIVED_AXIS_RANGE_SCHEMA_ID,
+    DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION,
     EQUAL_DATA_ASPECT_SCHEMA_ID,
     EQUAL_DATA_ASPECT_SCHEMA_VERSION,
     FIGURE_COMPOSITION_PROVENANCE_SCHEMA_ID,
@@ -3634,6 +3636,17 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=("feedbax.plot.constructors._comparison_grid",),
             description="Exact 1:1 linear data-unit scaling for one figure panel.",
             rejected_old_versions=("feedbax.spec.equal_data_aspect.v0",),
+            required_tests=("tests/test_declarative_figures.py",),
+        ),
+        _family(
+            "DataDerivedAxisRange",
+            DATA_DERIVED_AXIS_RANGE_SCHEMA_ID,
+            DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.panels.x_axis/y_axis.derived_range",),
+            consumed_by=("feedbax.plot.constructors._grid_figure",),
+            description="Finite rendered-data range shared by named Cartesian panel axes.",
+            rejected_old_versions=("feedbax.spec.data_derived_axis_range.v0",),
             required_tests=("tests/test_declarative_figures.py",),
         ),
         _family(

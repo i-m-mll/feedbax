@@ -25,6 +25,8 @@ from feedbax.analysis.figures import (
 )
 from feedbax.analysis.bundles import AnalysisBundleSpec, BundleStageSpec, StageArtifactDependency
 from feedbax.contracts.figures import (
+    DATA_DERIVED_AXIS_RANGE_SCHEMA_ID,
+    DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION,
     EQUAL_DATA_ASPECT_SCHEMA_ID,
     EQUAL_DATA_ASPECT_SCHEMA_VERSION,
     FIGURE_SPEC_SCHEMA_ID,
@@ -70,6 +72,7 @@ from feedbax.plot.constructors import (
     register_default_figure_constructors,
 )
 from feedbax.plot.colors import adjust_color_brightness
+from feedbax.plot import calculate_array_minmax
 from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
@@ -273,8 +276,8 @@ def test_constructor_versions_are_reported_in_catalog_and_manifest(tmp_path: Pat
     expected = {
         "feedbax.profile_band": "v2",
         "feedbax.profile_curves": "v1",
-        "feedbax.comparison_grid": "v5",
-        "feedbax.grid_figure": "v5",
+        "feedbax.comparison_grid": "v6",
+        "feedbax.grid_figure": "v6",
     }
     registry = _figure_registry()
     catalog_versions = {
@@ -752,6 +755,226 @@ def test_panel_axis_rejects_invalid_type_and_range_shape() -> None:
         )
 
 
+def test_data_derived_axis_range_is_versioned_and_strict() -> None:
+    spec = FigureSpec(
+        name="derived-range-schema",
+        assembler="feedbax.grid_figure",
+        panels=[
+            {
+                "name": "main",
+                "y_axis": {"derived_range": {"group": "velocity", "padding_fraction": 0.05}},
+            }
+        ],
+    )
+    declaration = spec.panels[0].y_axis.derived_range
+
+    assert declaration is not None
+    assert declaration.schema_id == DATA_DERIVED_AXIS_RANGE_SCHEMA_ID
+    assert declaration.schema_version == DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION
+    assert (
+        default_spec_registry.current_version("DataDerivedAxisRange")
+        == DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION
+    )
+
+    invalid_axes = [
+        {"range": [0, 1], "derived_range": {"group": "g", "padding_fraction": 0.05}},
+        {"type": "log", "derived_range": {"group": "g", "padding_fraction": 0.05}},
+        {"derived_range": {"group": "g", "padding_fraction": -0.01}},
+        {"derived_range": {"group": "g", "padding_fraction": float("inf")}},
+    ]
+    for axis in invalid_axes:
+        with pytest.raises(ValidationError):
+            FigureSpec(
+                name="invalid-derived-range",
+                assembler="feedbax.grid_figure",
+                panels=[{"name": "main", "y_axis": axis}],
+            )
+
+    with pytest.raises(ValidationError, match="support only x_axis and y_axis"):
+        FigureSpec(
+            name="invalid-z-derived-range",
+            assembler="feedbax.grid_figure",
+            panels=[{"name": "main", "z_axis": {"derived_range": {"group": "g", "padding_fraction": 0.05}}}],
+        )
+
+    with pytest.raises(ValidationError, match="unsupported DataDerivedAxisRange schema_version"):
+        FigureSpec(
+            name="old-derived-range",
+            assembler="feedbax.grid_figure",
+            panels=[
+                {
+                    "name": "main",
+                    "y_axis": {
+                        "derived_range": {
+                            "schema_id": DATA_DERIVED_AXIS_RANGE_SCHEMA_ID,
+                            "schema_version": "feedbax.spec.data_derived_axis_range.v0",
+                            "group": "velocity",
+                            "padding_fraction": 0.05,
+                        }
+                    },
+                }
+            ],
+        )
+
+
+def test_grid_figure_derives_one_range_from_all_rendered_group_traces(
+    tmp_path: Path, figure_registry
+) -> None:
+    declaration = {"group": "velocity", "padding_fraction": 0.05}
+    spec = FigureSpec(
+        name="finite-shared-range",
+        assembler="feedbax.grid_figure",
+        assembler_params={"shared_yaxes": "all"},
+        panels=[
+            {"name": "trained", "row": 1, "col": 1, "y_axis": {"derived_range": declaration}},
+            {
+                "name": "comparator",
+                "row": 1,
+                "col": 2,
+                "y_axis": {"derived_range": declaration},
+            },
+        ],
+        traces=[
+            TraceBinding(
+                name="trained-band",
+                constructor="feedbax.profile_band",
+                panel="trained",
+                data={"x": [0, 1], "mean": [1.0, 2.0], "std": [0.5, 0.5]},
+            ),
+            TraceBinding(
+                name="comparator-band",
+                constructor="feedbax.profile_band",
+                panel="comparator",
+                data={"x": [0, 1], "mean": [-2.0, 0.0], "std": [0.5, 0.25]},
+            ),
+        ],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    assert rendered is not None
+    assert rendered["layout"]["yaxis"]["range"] == [-2.75, 2.75]
+    assert rendered["layout"]["yaxis2"]["range"] == [-2.75, 2.75]
+    assert manifest.constructor_versions["feedbax.grid_figure"] == "v6"
+
+
+def test_data_derived_ranges_fail_closed_for_ambiguous_or_empty_groups(
+    tmp_path: Path, figure_registry
+) -> None:
+    declaration = {"group": "velocity", "padding_fraction": 0.05}
+    ambiguous = FigureSpec(
+        name="ambiguous-derived-range",
+        assembler="feedbax.grid_figure",
+        assembler_params={"shared_yaxes": "all"},
+        panels=[
+            {"name": "derived", "row": 1, "col": 1, "y_axis": {"derived_range": declaration}},
+            {"name": "explicit", "row": 1, "col": 2, "y_axis": {"range": [-1, 1]}},
+        ],
+    )
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(ambiguous, root=tmp_path / "ambiguous", registry=figure_registry)
+    assert "conflicts with explicit ranges" in exc_info.value.manifest.failure["message"]
+
+    empty = FigureSpec(
+        name="empty-derived-range",
+        assembler="feedbax.grid_figure",
+        panels=[
+            {"name": "left", "row": 1, "col": 1, "y_axis": {"derived_range": declaration}},
+            {"name": "right", "row": 1, "col": 2, "y_axis": {"derived_range": declaration}},
+        ],
+    )
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(empty, root=tmp_path / "empty", registry=figure_registry)
+    assert "at least one finite value" in exc_info.value.manifest.failure["message"]
+
+    incomplete_match = FigureSpec(
+        name="incomplete-matched-derived-range",
+        assembler="feedbax.grid_figure",
+        assembler_params={"shared_yaxes": "all"},
+        panels=[
+            {"name": "declared", "row": 1, "col": 1, "y_axis": {"derived_range": declaration}},
+            {"name": "undeclared", "row": 1, "col": 2},
+        ],
+    )
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(
+            incomplete_match,
+            root=tmp_path / "incomplete-match",
+            registry=figure_registry,
+        )
+    assert "ambiguous" in exc_info.value.manifest.failure["message"]
+
+    conflicting_padding = FigureSpec(
+        name="conflicting-derived-range-padding",
+        assembler="feedbax.grid_figure",
+        panels=[
+            {"name": "left", "row": 1, "col": 1, "y_axis": {"derived_range": declaration}},
+            {
+                "name": "right",
+                "row": 1,
+                "col": 2,
+                "y_axis": {"derived_range": {"group": "velocity", "padding_fraction": 0.1}},
+            },
+        ],
+    )
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(
+            conflicting_padding,
+            root=tmp_path / "conflicting-padding",
+            registry=figure_registry,
+        )
+    assert "conflicting padding fractions" in exc_info.value.manifest.failure["message"]
+
+
+def test_data_derived_range_rejects_unsupported_assembler(tmp_path: Path, figure_registry) -> None:
+    register_figure_constructor(
+        "feedbax.test_custom_figure_without_derived_ranges",
+        tier="custom_figure",
+        constructor=lambda _items, _params: go.Figure(),
+        description="Custom figure without data-derived range support.",
+        registry=figure_registry,
+    )
+    spec = FigureSpec(
+        name="unsupported-derived-range",
+        assembler="feedbax.test_custom_figure_without_derived_ranges",
+        panels=[
+            {
+                "name": "left",
+                "y_axis": {"derived_range": {"group": "velocity", "padding_fraction": 0.05}},
+            },
+            {
+                "name": "right",
+                "y_axis": {"derived_range": {"group": "velocity", "padding_fraction": 0.05}},
+            },
+        ],
+    )
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
+    assert (
+        "requires the feedbax.comparison_grid/feedbax.grid_figure"
+        in (exc_info.value.manifest.failure["message"])
+    )
+
+
+def test_calculate_array_minmax_is_the_public_finite_range_core() -> None:
+    assert calculate_array_minmax(
+        {"a": np.asarray([np.nan, -2.0]), "b": np.asarray([2.0, np.inf])},
+        padding=0.05,
+    ) == (-2.2, 2.2)
+    assert calculate_array_minmax([np.asarray([0.0, 0.0])], padding=0.05) == (-0.05, 0.05)
+    assert calculate_array_minmax(
+        {"matrix": np.asarray([[0.0, 2.0], [1.0, 3.0]])},
+        indices=[1],
+        padding=0.0,
+    ) == (2.0, 3.0)
+    with pytest.raises(ValueError, match="finite non-negative"):
+        calculate_array_minmax([np.asarray([1.0])], padding=float("nan"))
+    with pytest.raises(ValueError, match="at least one finite"):
+        calculate_array_minmax([np.asarray([np.nan])])
+
+
 def test_equal_data_aspect_has_explicit_schema_identity() -> None:
     spec = FigureSpec(
         name="equal-data-aspect-schema",
@@ -809,7 +1032,7 @@ def test_equal_data_aspect_renders_exactly_in_placed_grid_panel(
     assert "scaleanchor" not in rendered["layout"]["yaxis"]
     assert rendered["layout"]["yaxis2"]["scaleanchor"] == "x2"
     assert rendered["layout"]["yaxis2"]["scaleratio"] == 1
-    assert manifest.constructor_versions["feedbax.comparison_grid"] == "v5"
+    assert manifest.constructor_versions["feedbax.comparison_grid"] == "v6"
 
 
 def test_equal_data_aspect_rejects_inconsistent_axis_declaration() -> None:
