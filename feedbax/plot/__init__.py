@@ -16,7 +16,7 @@ _default_template_applied = False
 _PUBLIC_ATTR_MODULES = {
     "AxesLabels": ".misc",
     "adjust_color_brightness": ".colors",
-    "calculate_array_minmax": ".utils",
+    "calculate_array_minmax": ".ranges",
     "constructor_catalog": ".constructors",
     "get_figure_constructor": ".constructors",
     "get_figure_piece": ".constructors",
@@ -40,7 +40,6 @@ _PUBLIC_ATTR_MODULES = {
     "unregister_figure_piece": ".constructors",
     "unregister_figure_template": ".constructors",
 }
-
 
 def apply_default_template() -> str:
     """Install the Feedbax default Plotly template, once, on first use of the plot surface.
@@ -78,7 +77,10 @@ def __getattr__(name: str):
         module_name = _PUBLIC_ATTR_MODULES[name]
     except KeyError as exc:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
-    apply_default_template()
+    # Numeric range primitives are part of the analysis surface and deliberately
+    # avoid importing or mutating either plotting backend.
+    if module_name != ".ranges":
+        apply_default_template()
     value = getattr(import_module(module_name, __name__), name)
     globals()[name] = value
     return value

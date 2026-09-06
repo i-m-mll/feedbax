@@ -959,6 +959,9 @@ def test_data_derived_range_rejects_unsupported_assembler(tmp_path: Path, figure
 
 
 def test_calculate_array_minmax_is_the_public_finite_range_core() -> None:
+    from feedbax.plot.utils import calculate_array_minmax as plotting_utils_range
+
+    assert plotting_utils_range is calculate_array_minmax
     assert calculate_array_minmax(
         {"a": np.asarray([np.nan, -2.0]), "b": np.asarray([2.0, np.inf])},
         padding=0.05,

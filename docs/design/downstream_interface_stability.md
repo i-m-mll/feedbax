@@ -234,7 +234,7 @@ The ratified semantics are deliberately narrow:
 - MatrixCompositionDelta acknowledgement must overlap both the ancestor-written path and the current patch path
 - FigureCompositionSpec v2 owns FigureCompositionDelta structural declarations and migrates v1 without changing resolved semantics
 - SameSchemaStructuralAddition declarations must exactly cover every typed path introduced by an add subtree; feedbax.spec.figure_panel.v1 is declaration-side identity only and never changes resolved PanelSpec bytes
-- calculate_array_minmax filters nonfinite values, applies symmetric authored padding to the finite union, and uses a deterministic zero-span scale; PanelAxis data-derived groups apply that exact public computation to every declared member
+- calculate_array_minmax imports without matplotlib or Plotly, filters nonfinite values, applies symmetric authored padding to the finite union, and uses a deterministic zero-span scale; PanelAxis data-derived groups apply that exact public computation to every declared member
 
 The versioned fixture-policy manifest is
 `external/feedbax_conformance_fixture/src/feedbax_external_conformance/policy_manifest.v2.json`.

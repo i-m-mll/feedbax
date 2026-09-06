@@ -23,7 +23,7 @@ from feedbax.contracts.figures import (
 from feedbax.contracts.base import StrictModel
 from feedbax.plot import apply_default_template
 from feedbax.plot.colors import color_add_alpha, sample_colorscale_unique
-from feedbax.plot.utils import calculate_array_minmax
+from feedbax.plot.ranges import calculate_array_minmax
 
 ConstructorTier = Literal["trace", "panel", "figure", "custom_figure"]
 
