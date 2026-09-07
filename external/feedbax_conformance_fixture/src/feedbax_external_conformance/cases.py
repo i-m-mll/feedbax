@@ -194,6 +194,7 @@ from feedbax.plugins import (
     discover_plugin_registrations,
     new_registration_context,
 )
+from feedbax.plot import calculate_array_minmax
 from feedbax.plugins.composition import compose_application
 from feedbax.orchestration.drivers import (
     DriverConstructionContext,
@@ -1452,6 +1453,14 @@ def check_figure_composition_public_contract() -> bool:
                 "installed feedbax-figure failed: "
                 f"returncode={exc.returncode}, stderr={exc.stderr!r}"
             ) from exc
+
+    if calculate_array_minmax(
+        {"left": np.asarray([np.nan, -2.0]), "right": np.asarray([2.0, np.inf])},
+        padding=0.05,
+    ) != (-2.2, 2.2):
+        raise AssertionError("public finite union range semantics drifted")
+    if calculate_array_minmax([np.asarray([0.0, 0.0])], padding=0.05) != (-0.05, 0.05):
+        raise AssertionError("public zero-span range semantics drifted")
 
     with TemporaryDirectory() as directory:
         root = Path(directory).resolve()

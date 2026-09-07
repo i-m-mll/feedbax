@@ -571,6 +571,54 @@ def test_figure_composition_case_uses_public_installed_contract(fixture_package)
     assert cases.check_figure_composition_public_contract()
 
 
+def test_public_range_core_imports_without_matplotlib_or_plotly() -> None:
+    source = r"""
+import importlib.abc
+import sys
+
+class NoMatplotlib(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "matplotlib" or fullname.startswith("matplotlib."):
+            raise ModuleNotFoundError("matplotlib is deliberately unavailable")
+        return None
+
+sys.meta_path.insert(0, NoMatplotlib())
+from feedbax.plot import calculate_array_minmax
+
+assert calculate_array_minmax({"left": [-2.0], "right": [2.0]}) == (-2.2, 2.2)
+assert "matplotlib" not in sys.modules
+assert "plotly" not in sys.modules
+"""
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(ROOT)
+
+    subprocess.run([sys.executable, "-c", source], env=environment, check=True)
+
+
+def test_analysis_figure_surface_imports_without_matplotlib() -> None:
+    source = r"""
+import importlib.abc
+import sys
+
+class NoMatplotlib(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "matplotlib" or fullname.startswith("matplotlib."):
+            raise ModuleNotFoundError("matplotlib is deliberately unavailable")
+        return None
+
+sys.meta_path.insert(0, NoMatplotlib())
+import feedbax.analysis.figures
+from feedbax.plot import calculate_array_minmax
+
+assert calculate_array_minmax({"left": [-2.0], "right": [2.0]}) == (-2.2, 2.2)
+assert "matplotlib" not in sys.modules
+"""
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(ROOT)
+
+    subprocess.run([sys.executable, "-c", source], env=environment, check=True)
+
+
 def test_figure_role_reference_case_uses_public_installed_contract(fixture_package) -> None:
     cases = importlib.import_module(f"{fixture_package.__name__}.cases")
 
@@ -635,6 +683,21 @@ def test_fixture_declares_only_the_unified_plugin_entry_point_group() -> None:
             "feedbax_external_conformance.plugin:FOUNDATION_PLUGIN_REGISTRATION"
         ),
     }
+
+
+def test_fixture_analysis_dependency_does_not_require_matplotlib() -> None:
+    feedbax_payload = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    fixture_payload = tomllib.loads(
+        (ROOT / "external" / "feedbax_conformance_fixture" / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert fixture_payload["project"]["dependencies"] == ["feedbax[analysis]==0.2.0"]
+    assert not any(
+        dependency.startswith("matplotlib")
+        for dependency in feedbax_payload["project"]["optional-dependencies"]["analysis"]
+    )
 
 
 def test_fixture_import_does_not_load_its_plugin_entry_point() -> None:

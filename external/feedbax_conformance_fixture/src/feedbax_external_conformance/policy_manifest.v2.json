@@ -890,6 +890,12 @@
             ]
           },
           {
+            "namespace": "feedbax.plot",
+            "public_names": [
+              "calculate_array_minmax"
+            ]
+          },
+          {
             "namespace": "feedbax.analysis.figures",
             "public_names": [
               "resolve_figure_spec",
@@ -935,7 +941,8 @@
         "ContentPinnedJsonBase payload_path and SourceDocumentInheritance share canonical list-index rules and graft only absent targets",
         "MatrixCompositionDelta acknowledgement must overlap both the ancestor-written path and the current patch path",
         "FigureCompositionSpec v2 owns FigureCompositionDelta structural declarations and migrates v1 without changing resolved semantics",
-        "SameSchemaStructuralAddition declarations must exactly cover every typed path introduced by an add subtree; feedbax.spec.figure_panel.v1 is declaration-side identity only and never changes resolved PanelSpec bytes"
+        "SameSchemaStructuralAddition declarations must exactly cover every typed path introduced by an add subtree; feedbax.spec.figure_panel.v1 is declaration-side identity only and never changes resolved PanelSpec bytes",
+        "calculate_array_minmax imports without matplotlib or Plotly, filters nonfinite values, applies symmetric authored padding to the finite union, and uses a deterministic zero-span scale; PanelAxis data-derived groups apply that exact public computation to every declared member"
       ],
       "schemas": {
         "current": [
@@ -943,6 +950,7 @@
           "feedbax.spec.figure_composition.v2",
           "feedbax.spec.figure_composition_provenance.v1",
           "feedbax.spec.figure_runtime_binding.v2",
+          "feedbax.spec.data_derived_axis_range.v1",
           "feedbax.spec.analysis_bundle.v6",
           "feedbax.spec.source_document_inheritance.v1"
         ],
@@ -956,6 +964,7 @@
           "feedbax.spec.figure_composition.v0",
           "feedbax.spec.figure_composition_provenance.v0",
           "feedbax.spec.figure_runtime_binding.v0",
+          "feedbax.spec.data_derived_axis_range.v0",
           "feedbax.spec.source_document_inheritance.v0",
           "unknown"
         ]
