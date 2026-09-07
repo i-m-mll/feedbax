@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from pathlib import Path
+from typing import Literal
 
+from pydantic import Field
 import pytest
 
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expressions import Coalesce, ValueQuery
 from feedbax.contracts.matrix_core import apply_override_patches as matrix_core_apply_override_patches
 from feedbax.contracts.spec_storage import training_spec_sha256
@@ -21,18 +24,23 @@ from feedbax.contracts.run_matrix import (
     apply_composition_deltas,
     apply_override_patches,
 )
+from feedbax.contracts.run_composition import CompositionNode, InlineIntentParent
 from feedbax.contracts.training import (
     LossTermSpec,
     ObjectiveSlotSpec,
+    StandardSupervisedMethodPayload,
     TaskSpec,
     TrainingConfig,
+    TrainingProgramRegistry,
     TrainingRunSpec,
     WorkerExecutionSpec,
+    declare_training_program,
     default_training_program_registry,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
+    standard_supervised_update_kernels,
 )
 from feedbax.training.run_matrix import (
     RunMatrixError,
@@ -107,6 +115,103 @@ def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:
             ],
         }
     )
+
+
+class _DeclaredLeaf(StrictModel):
+    schema_id: Literal["example.declared_leaf"] = "example.declared_leaf"
+    schema_version: Literal["example.declared_leaf.v1"] = "example.declared_leaf.v1"
+    value: int
+
+
+class _DeclaredMetadata(StrictModel):
+    component: _DeclaredLeaf | None = None
+
+
+class _DeclaredStandardPayload(StandardSupervisedMethodPayload):
+    metadata: _DeclaredMetadata = Field(default_factory=_DeclaredMetadata)
+
+
+def _declared_standard_registry() -> TrainingProgramRegistry:
+    envelope = standard_supervised_method_payload()
+    registry = TrainingProgramRegistry()
+    registry.register_program(
+        declare_training_program(
+            method_ref=standard_supervised_method_ref().key,
+            payload_schema_id=envelope.schema_id,
+            payload_schema_version=envelope.schema_version,
+            payload_model=_DeclaredStandardPayload,
+            contract_compiler=lambda _payload: standard_supervised_method_contract(),
+            update_kernels_factory=standard_supervised_update_kernels,
+        )
+    )
+    return registry
+
+
+def _typed_composition_matrix(tmp_path: Path, *, leaf_version: str) -> TrainingRunMatrixSpec:
+    payload = _training_run_payload()
+    composition = CompositionNode(
+        name="typed target",
+        parent=InlineIntentParent(
+            payload=payload,
+            schema_id=str(payload["schema_id"]),
+            schema_version=str(payload["schema_version"]),
+        ),
+        deltas=[
+            {
+                "layer_id": "component",
+                "patches": [
+                    {
+                        "op": "add",
+                        "path": "method_payload.payload.metadata.component",
+                        "value": {
+                            "schema_id": "example.declared_leaf",
+                            "schema_version": leaf_version,
+                            "value": 2,
+                        },
+                    }
+                ],
+            }
+        ],
+    )
+    document = composition.model_dump(mode="json", exclude_none=True)
+    (tmp_path / "typed-composition.json").write_text(json.dumps(document), encoding="utf-8")
+    return TrainingRunMatrixSpec.model_validate(
+        {
+            "name": "typed composition",
+            "base": {
+                "kind": "authored_intent",
+                "ref": "typed-composition.json",
+                "content_hash": training_spec_sha256(document),
+            },
+            "rows": [{"row_id": "typed", "overrides": []}],
+        }
+    )
+
+
+def test_training_declaration_validates_typed_composition_before_materialization(
+    tmp_path: Path,
+) -> None:
+    materialized = materialize_run_matrix(
+        _typed_composition_matrix(tmp_path, leaf_version="example.declared_leaf.v1"),
+        repo_root=tmp_path,
+        method_registry=_declared_standard_registry(),
+    )
+
+    component = materialized.rows[0].payload["method_payload"]["payload"]["metadata"][
+        "component"
+    ]
+    assert component["value"] == 2
+
+
+def test_training_declaration_rejects_invalid_typed_composition_before_materialization(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(RunMatrixError, match=r"(?s)authoritative target.*declared_leaf.v1"):
+        materialize_run_matrix(
+            _typed_composition_matrix(tmp_path, leaf_version="example.declared_leaf.v2"),
+            repo_root=tmp_path,
+            method_registry=_declared_standard_registry(),
+        )
 
 
 def test_matrix_v5_object_materializes_without_v6_reinterpretation(tmp_path: Path) -> None:

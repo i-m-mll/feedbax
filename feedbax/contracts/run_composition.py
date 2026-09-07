@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 import json
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -20,7 +20,7 @@ from feedbax.contracts.run_matrix import (
     MatrixCompositionDelta,
     StoppedRowStatus as StoppedRowStatus,
     TaskIdentityGate as TaskIdentityGate,
-    apply_composition_deltas,
+    _apply_composition_deltas,
 )
 from feedbax.contracts.spec_storage import training_spec_sha256, validate_sha256
 from feedbax.contracts.strict_json import strict_json_loads
@@ -248,9 +248,13 @@ def parse_composition_node(document: Mapping[str, Any]) -> CompositionDocument:
 
 
 def flatten_composition(
-    node: CompositionDocument, resolve_parent: ParentResolver
+    node: CompositionDocument,
+    resolve_parent: ParentResolver,
+    *,
+    _target_validator: Callable[[dict[str, Any]], object] | None = None,
+    _terminal_deltas: Sequence[CompositionDelta] = (),
 ) -> FlattenedIntent:
-    """Flatten root-to-child, checking pins and cross-layer override acknowledgements."""
+    """Flatten root-to-child and validate only the completed target when typed."""
     layers: list[CompositionDocument] = []
     seen: set[str] = set()
     current = node
@@ -289,15 +293,16 @@ def flatten_composition(
         payload = dict(resolved)
         break
 
-    attribution: dict[str, str] = {}
-    written: set[str] = set()
-    hashes: list[str] = []
-    for layer in reversed(layers):
-        hashes.append(authored_envelope_hash(layer))
-        payload, local_attribution, written = apply_composition_deltas(
-            payload, layer.deltas, ancestor_written_paths=written
-        )
-        attribution.update(local_attribution)
+    ordered_layers = list(reversed(layers))
+    hashes = [authored_envelope_hash(layer) for layer in ordered_layers]
+    payload, attribution, _written = _apply_composition_deltas(
+        payload,
+        [
+            *[delta for layer in ordered_layers for delta in layer.deltas],
+            *_terminal_deltas,
+        ],
+        target_validator=_target_validator,
+    )
     return FlattenedIntent(payload=payload, attribution=attribution, layer_hashes=hashes)
 
 
