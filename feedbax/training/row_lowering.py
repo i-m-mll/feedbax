@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import inspect
 from pathlib import Path
@@ -22,6 +22,7 @@ from feedbax.contracts.run_matrix import (
 )
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
+    CompiledTrainingRowParent,
     CompositionDocument,
     ResolvedOutputParent,
     authored_envelope_hash,
@@ -81,11 +82,22 @@ class GovernedTrainingRowParent:
         return payload
 
 
+_CompiledTrainingRowResolver = Callable[
+    [CompiledTrainingRowParent, "TrainingRowLoweringContext"],
+    dict[str, Any],
+]
+
+
 @dataclass(frozen=True)
 class TrainingRowLoweringContext:
     """Exact, copy-isolated resolver for parents declared by ASSEMBLE."""
 
     parents: tuple[GovernedTrainingRowParent, ...] = ()
+    compiled_training_row_resolver: _CompiledTrainingRowResolver | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         keys = [(item.provenance.parent_kind, item.provenance.ref) for item in self.parents]
@@ -111,9 +123,16 @@ class TrainingRowLoweringContext:
         ]
 
     def resolve_parent(
-        self, parent: AuthoredIntentParent | ResolvedOutputParent
+        self,
+        parent: AuthoredIntentParent | ResolvedOutputParent | CompiledTrainingRowParent,
     ) -> CompositionDocument | dict[str, Any]:
         """Resolve one exact declaration and recheck its semantic content pin."""
+        if isinstance(parent, CompiledTrainingRowParent):
+            if self.compiled_training_row_resolver is None:
+                raise TrainingRowLowererRegistryError(
+                    "compiled training-row parent resolution requires an explicit repository root"
+                )
+            return self.compiled_training_row_resolver(parent, self)
         matches = [
             item
             for item in self.parents

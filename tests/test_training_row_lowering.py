@@ -14,6 +14,13 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.bin import orchestrate
+from feedbax.contracts.authored_canonical import canonical_sha256
+from feedbax.contracts.experiment_compile_lock import (
+    CompileLockInputs,
+    CompilerContract,
+    CompilerImplementation,
+    build_compile_lock,
+)
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.run_matrix import (
     AuthoredTrainingRow,
@@ -23,6 +30,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TrainingRowLowererRef,
     TrainingRowLoweringResult,
+    TrainingRunMatrixSpec,
 )
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
@@ -759,14 +767,44 @@ def test_assembly_rejects_unauthenticated_untyped_parent_states(
         )
 
 
-def _governed_compiled_row_parent() -> CompositionNodeV2:
+def _governed_compiled_row_parent(root: Path) -> CompositionNodeV2:
     """One composition-v2 parent whose own parent is a governed compiled row."""
-    pin = training_spec_sha256({"pin": "governed"})
+    matrix = TrainingRunMatrixSpec.model_validate(
+        {
+            "name": "governed-parent",
+            "base": {"kind": "inline", "inline": _execution_payload()},
+            "rows": [{"row_id": "governed-row"}],
+        }
+    )
+    matrix_document = matrix.model_dump(mode="json", exclude_none=True)
+    lock = build_compile_lock(
+        CompileLockInputs(
+            envelope_ref="governed/envelope.json",
+            envelope_document={"schema": "feedbax.experiment_envelope.v3"},
+            envelope_schema="feedbax.experiment_envelope.v3",
+            name="governed-parent",
+            family="training_run_matrix",
+            compiled_document=matrix_document,
+            contract=CompilerContract("test", "test.v1"),
+            implementation=CompilerImplementation(code_unit="tests.test_training_row_lowering"),
+            identity_contributions={
+                "training_root": {"kind": "composition", "rows": [{"id": "governed-row"}]}
+            },
+        )
+    )
+    governed = root / "governed"
+    governed.mkdir()
+    (governed / "matrix.json").write_bytes(training_spec_canonical_bytes(matrix_document))
+    (governed / "compile.lock.json").write_bytes(training_spec_canonical_bytes(lock))
     return CompositionNodeV2(
         name="parent",
         parent=CompiledTrainingRowParent(
-            matrix=CanonicalJsonDocumentPin(ref="governed/matrix.json", sha256=pin),
-            compile_lock=CanonicalJsonDocumentPin(ref="governed/compile.lock.json", sha256=pin),
+            matrix=CanonicalJsonDocumentPin(
+                ref="governed/matrix.json", sha256=canonical_sha256(matrix_document)
+            ),
+            compile_lock=CanonicalJsonDocumentPin(
+                ref="governed/compile.lock.json", sha256=canonical_sha256(lock)
+            ),
             row_id="governed-row",
         ),
     )
@@ -780,7 +818,6 @@ def _assemble_governed_parent(
     run_set_id: str,
 ):
     """Assemble one row whose declared governed parent is ``parent_document``."""
-    terminal = _execution_payload()
     child_parent = AuthoredIntentParent(ref="parent", content_hash=content_hash)
     child = CompositionNode(name="child", parent=child_parent)
 
@@ -788,17 +825,12 @@ def _assemble_governed_parent(
         row: AuthoredTrainingRow,
         context: TrainingRowLoweringContext,
     ) -> TrainingRowLoweringResult:
-        def resolve(parent):
-            if isinstance(parent, CompiledTrainingRowParent):
-                return dict(terminal)
-            return context.resolve_parent(parent)
-
         resolved_parent = context.resolve_parent(child_parent)
         assert isinstance(resolved_parent, CompositionNodeV2)
         assert isinstance(resolved_parent.parent, CompiledTrainingRowParent)
         flattened = flatten_composition(
             CompositionNode.model_validate(row.payload["composition"]),
-            resolve,
+            context.resolve_parent,
         )
         return TrainingRowLoweringResult(
             execution_payload=flattened.payload,
@@ -897,7 +929,7 @@ def _assemble_governed_parent(
 
 
 def test_assembly_accepts_compiled_training_row_governed_parent(tmp_path: Path) -> None:
-    parent = _governed_compiled_row_parent()
+    parent = _governed_compiled_row_parent(tmp_path)
     bundle = _assemble_governed_parent(
         tmp_path,
         parent_document=parent.model_dump(mode="json", exclude_none=True),
@@ -915,7 +947,7 @@ def test_assembly_accepts_compiled_training_row_governed_parent(tmp_path: Path) 
 def test_assembly_rejects_unsupported_governed_parent_composition_version(
     tmp_path: Path,
 ) -> None:
-    parent = _governed_compiled_row_parent()
+    parent = _governed_compiled_row_parent(tmp_path)
     document = {
         **parent.model_dump(mode="json", exclude_none=True),
         "schema_version": "feedbax.spec.training_run_composition.v3",
@@ -931,7 +963,7 @@ def test_assembly_rejects_unsupported_governed_parent_composition_version(
 
 
 def test_assembly_rejects_unknown_governed_parent_kind(tmp_path: Path) -> None:
-    parent = _governed_compiled_row_parent()
+    parent = _governed_compiled_row_parent(tmp_path)
     document = parent.model_dump(mode="json", exclude_none=True)
     document["parent"] = {**document["parent"], "kind": "no_such_parent_kind"}
 

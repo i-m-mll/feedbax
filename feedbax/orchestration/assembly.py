@@ -21,6 +21,7 @@ from feedbax.contracts.evaluation_preflight import (
 )
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
+    CompiledTrainingRowParent,
     ResolvedOutputParent,
 )
 from feedbax.contracts.run_matrix import TrainingRowParentProvenance, TrainingRowProvenance
@@ -761,7 +762,7 @@ def _resolve_training_row_parents(
     declarations: list[GovernedTrainingRowParentDeclaration],
     *,
     context: AssemblyContext,
-) -> Any:
+) -> TrainingRowLoweringContext:
     parents: list[GovernedTrainingRowParent] = []
     for declaration in declarations:
         authenticated = _load_training_row_parent_artifact(
@@ -775,7 +776,28 @@ def _resolve_training_row_parents(
                 payload_bytes=authenticated.payload_bytes,
             )
         )
-    return TrainingRowLoweringContext(tuple(parents))
+    compiled_training_row_resolver = None
+    if context.repo_root is not None:
+        repo_root = context.repo_root.resolve()
+
+        def resolve_compiled_training_row_parent(
+            parent: CompiledTrainingRowParent,
+            lowering_context: TrainingRowLoweringContext,
+        ) -> dict[str, Any]:
+            from feedbax.training.run_matrix import _resolve_compiled_training_row_parent
+
+            return _resolve_compiled_training_row_parent(
+                parent,
+                repo_root=repo_root,
+                row_lowering_context=lowering_context,
+            )
+
+        compiled_training_row_resolver = resolve_compiled_training_row_parent
+
+    return TrainingRowLoweringContext(
+        tuple(parents),
+        compiled_training_row_resolver=compiled_training_row_resolver,
+    )
 
 
 def _load_training_row_parent_artifact(
