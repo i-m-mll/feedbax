@@ -6,7 +6,7 @@ from copy import deepcopy
 import math
 from pathlib import Path
 import re
-from typing import Annotated, Any, Literal, Mapping, TypeAlias
+from typing import Annotated, Any, Callable, Literal, Mapping, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
@@ -910,6 +910,32 @@ def apply_composition_deltas(
     ) = None,
 ) -> tuple[dict[str, Any], dict[str, str], set[str]]:
     """Apply ordered layers and fail closed on unacknowledged ancestor overrides."""
+    return _apply_composition_deltas(
+        payload,
+        deltas,
+        ancestor_written_paths=ancestor_written_paths,
+        allowed_same_schema_structural_additions_by_layer=(
+            allowed_same_schema_structural_additions_by_layer
+        ),
+    )
+
+
+def _apply_composition_deltas(
+    payload: dict[str, Any],
+    deltas: list[MatrixCompositionDelta],
+    *,
+    ancestor_written_paths: set[str] | None = None,
+    target_validator: Callable[[dict[str, Any]], object] | None = None,
+    allowed_same_schema_structural_additions_by_layer: (
+        Mapping[str, Mapping[str, tuple[str, str]]] | None
+    ) = None,
+) -> tuple[dict[str, Any], dict[str, str], set[str]]:
+    """Apply ordered layers, then optionally validate the complete typed target.
+
+    A target validator replaces nested identity policing, not root-transition,
+    patch-precondition, conflict, or attribution checks. Without one, recursive
+    schema identities retain the conservative exact-match behavior.
+    """
     result = deepcopy(payload)
     written = set(ancestor_written_paths or ())
     attribution: dict[str, str] = {}
@@ -979,6 +1005,13 @@ def apply_composition_deltas(
                     f"/deltas/{delta.layer_id} declares schema boundary {declared_boundary!r} "
                     f"but flattened payload has identity {resulting_schema!r}"
                 )
+        elif target_validator is not None:
+            if resulting_schema != current_schema:
+                raise ValueError(
+                    f"/deltas/{delta.layer_id} changes the active root identity from "
+                    f"{current_schema!r} to {resulting_schema!r} without a declared "
+                    "schema_id/schema_version boundary"
+                )
         elif declared_additions:
             if resulting_schema != current_schema:
                 raise ValueError(
@@ -1027,6 +1060,13 @@ def apply_composition_deltas(
                 "schema_id/schema_version boundary"
             )
         current_schema = resulting_schema
+    if target_validator is not None:
+        try:
+            target_validator(deepcopy(result))
+        except Exception as error:
+            raise ValueError(
+                f"composed payload does not match the authoritative target: {error}"
+            ) from error
     return result, attribution, written
 
 

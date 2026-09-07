@@ -1,5 +1,9 @@
+from typing import Literal
+
+from pydantic import model_validator
 import pytest
 
+from feedbax.contracts.base import StrictModel
 from feedbax.contracts.intent_diff import detect_near_duplicate_lanes, layered_semantic_diff
 from feedbax.contracts.lineage import LineageDag, LineageEvent, LineageParentRef
 from feedbax.contracts.run_composition import (
@@ -14,7 +18,7 @@ from feedbax.contracts.run_composition import (
     composed_intent_hash,
     flatten_composition,
 )
-from feedbax.contracts.run_matrix import apply_composition_deltas
+from feedbax.contracts.run_matrix import _apply_composition_deltas, apply_composition_deltas
 
 
 def _hash(char: str) -> str:
@@ -27,6 +31,57 @@ def _replace(layer: str, path: str, value: object, **kwargs: object) -> Composit
         patches=[{"op": "replace", "path": path, "value": value}],
         **kwargs,
     )
+
+
+class _LeafA(StrictModel):
+    schema_id: Literal["example.leaf.a"] = "example.leaf.a"
+    schema_version: Literal["example.leaf.a.v1"] = "example.leaf.a.v1"
+    value: int
+
+
+class _LeafB(StrictModel):
+    schema_id: Literal["example.leaf.b"] = "example.leaf.b"
+    schema_version: Literal["example.leaf.b.v1"] = "example.leaf.b.v1"
+    label: str
+
+
+class _TypedPayload(StrictModel):
+    schema_id: Literal["example.payload"] = "example.payload"
+    schema_version: Literal["example.payload.v1"] = "example.payload.v1"
+    mode: Literal["a", "b"]
+    component: _LeafA | _LeafB
+    optional_component: _LeafA | None = None
+
+    @model_validator(mode="after")
+    def _matching_mode(self) -> "_TypedPayload":
+        expected = "a" if isinstance(self.component, _LeafA) else "b"
+        if self.mode != expected:
+            raise ValueError("mode must match the selected component variant")
+        return self
+
+
+def _leaf_a(value: int = 1, *, version: str = "example.leaf.a.v1") -> dict[str, object]:
+    return {"schema_id": "example.leaf.a", "schema_version": version, "value": value}
+
+
+def _leaf_b() -> dict[str, object]:
+    return {
+        "schema_id": "example.leaf.b",
+        "schema_version": "example.leaf.b.v1",
+        "label": "replacement",
+    }
+
+
+def _typed_payload(*, optional: bool = False) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_id": "example.payload",
+        "schema_version": "example.payload.v1",
+        "mode": "a",
+        "component": _leaf_a(),
+    }
+    if optional:
+        payload["optional_component"] = _leaf_a(2)
+    return payload
 
 
 def test_synthetic_six_wave_program_has_real_schema_boundary() -> None:
@@ -122,6 +177,64 @@ def test_nested_identity_bearing_subtree_change_requires_boundary() -> None:
             "path": "worker",
             "value": {"schema_id": "worker.b", "schema_version": "worker.b.v1"},
         }])])
+
+
+@pytest.mark.parametrize(
+    ("optional_base", "patches", "expected"),
+    [
+        (
+            False,
+            [{"op": "add", "path": "optional_component", "value": _leaf_a(2)}],
+            "optional_component",
+        ),
+        (
+            False,
+            [
+                {"op": "replace", "path": "component", "value": _leaf_b()},
+                {"op": "replace", "path": "mode", "value": "b"},
+            ],
+            "component",
+        ),
+        (
+            True,
+            [{"op": "remove", "path": "optional_component"}],
+            "optional_component",
+        ),
+    ],
+)
+def test_typed_composition_accepts_target_valid_structural_changes(
+    optional_base: bool,
+    patches: list[dict[str, object]],
+    expected: str,
+) -> None:
+    resolved, attribution, _written = _apply_composition_deltas(
+        _typed_payload(optional=optional_base),
+        [CompositionDelta(layer_id="typed", patches=patches)],
+        target_validator=_TypedPayload.model_validate,
+    )
+
+    assert expected in attribution
+    _TypedPayload.model_validate(resolved)
+
+
+@pytest.mark.parametrize(
+    "patches",
+    [
+        [{"op": "add", "path": "unknown", "value": 1}],
+        [{"op": "replace", "path": "component", "value": _leaf_a(version="v2")}],
+        [{"op": "replace", "path": "component.schema_id", "value": "example.leaf.c"}],
+        [{"op": "replace", "path": "component", "value": _leaf_b()}],
+    ],
+)
+def test_typed_composition_rejects_invalid_complete_target(
+    patches: list[dict[str, object]],
+) -> None:
+    with pytest.raises(ValueError, match="authoritative target"):
+        _apply_composition_deltas(
+            _typed_payload(),
+            [CompositionDelta(layer_id="invalid", patches=patches)],
+            target_validator=_TypedPayload.model_validate,
+        )
 
 
 @pytest.mark.parametrize(
