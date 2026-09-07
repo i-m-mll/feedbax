@@ -24,7 +24,9 @@ from feedbax.contracts.experiment_compile_lock import (
     build_compile_lock,
 )
 from feedbax.contracts.run_matrix import (
+    RowLowererIdentity,
     TrainingRowParentProvenance,
+    TrainingRowLoweringResult,
     TrainingRunMatrixSpec,
     apply_composition_deltas,
 )
@@ -440,11 +442,28 @@ def test_v2_compiled_row_parent_materializes_exact_effective_payload(tmp_path: P
             "rows": [{"row_id": "outer-row"}],
         }
     )
+    governed_payload = {"gain": 7}
+    governed_parent = ResolvedOutputParent(
+        ref="artifact-blob:governed",
+        resolved_root_hash=training_spec_sha256(governed_payload),
+    )
+    calls = []
+
+    def lower(authored_row, context):
+        calls.append(authored_row)
+        return TrainingRowLoweringResult(
+            execution_payload={
+                **authored_row.payload,
+                "governed_gain": context.resolve_parent(governed_parent)["gain"],
+            },
+            lowerer_identities=[RowLowererIdentity(lowerer_id="test", lowerer_version="v1")],
+        )
 
     materialized = materialize_adapted_run_matrix(
         outer,
         repo_root=tmp_path,
-        row_validator=lambda _payload, _row_id: None,
+        row_lowerer=lower,
+        row_lowering_context=_resolved_context(governed_parent, governed_payload),
     )
 
     expected = {
@@ -455,6 +474,8 @@ def test_v2_compiled_row_parent_materializes_exact_effective_payload(tmp_path: P
     }
     assert direct == {**expected, "gain": 4}
     assert materialized.rows[0].authored_payload == expected
+    assert materialized.rows[0].payload == {**expected, "governed_gain": 7}
+    assert [(call.row_id, call.payload["gain"]) for call in calls] == [("outer-row", 5)]
 
     normalized_direct = {**direct, "graph": {"metadata": {}, "schema_id": None}}
     normalized_selected = {

@@ -233,16 +233,14 @@ def _resolve_compiled_training_row_parent(
     parent: CompiledTrainingRowParent,
     *,
     repo_root: Path,
-    row_lowerer: TrainingRowLowerer | None = None,
     row_lowering_context: Any | None = None,
 ) -> dict[str, Any]:
-    """Materialize and select one governed effective matrix-v6 row payload."""
+    """Materialize and select one governed authored matrix-v6 row payload."""
     matrix = verify_compiled_training_row_parent(parent, repo_root=repo_root)
     materialized = materialize_adapted_run_matrix(
         matrix,
         repo_root=repo_root,
         row_validator=lambda _payload, _row_id: None,
-        row_lowerer=row_lowerer,
         row_lowering_context=row_lowering_context,
     )
     rows = [row for row in materialized.rows if row.row_id == parent.row_id]
@@ -1364,7 +1362,6 @@ def _resolve_composed_base(
                         return _resolve_compiled_training_row_parent(
                             parent,
                             repo_root=root,
-                            row_lowerer=row_lowerer,
                             row_lowering_context=row_lowering_context,
                         )
                     if isinstance(parent, ResolvedOutputParent):
