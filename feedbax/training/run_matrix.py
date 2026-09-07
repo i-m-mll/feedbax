@@ -60,7 +60,7 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
     TrainingRunMatrixSpecV5,
     TaskIdentityGate,
-    apply_composition_deltas,
+    _apply_composition_deltas,
     apply_override_patches,
 )
 from feedbax.contracts.run_composition import (
@@ -233,16 +233,14 @@ def _resolve_compiled_training_row_parent(
     parent: CompiledTrainingRowParent,
     *,
     repo_root: Path,
-    row_lowerer: TrainingRowLowerer | None = None,
     row_lowering_context: Any | None = None,
 ) -> dict[str, Any]:
-    """Materialize and select one governed effective matrix-v6 row payload."""
+    """Materialize and select one governed authored matrix-v6 row payload."""
     matrix = verify_compiled_training_row_parent(parent, repo_root=repo_root)
     materialized = materialize_adapted_run_matrix(
         matrix,
         repo_root=repo_root,
         row_validator=lambda _payload, _row_id: None,
-        row_lowerer=row_lowerer,
         row_lowering_context=row_lowering_context,
     )
     rows = [row for row in materialized.rows if row.row_id == parent.row_id]
@@ -322,6 +320,7 @@ class LrContinuationReporter(Protocol):
 
 
 RowPayloadValidator = Callable[[dict[str, Any], str], TrainingRunSpec | None]
+CompositionTargetValidator = Callable[[dict[str, Any]], object]
 
 
 def _validate_matrix_checkpoint_fork_plan(
@@ -547,6 +546,13 @@ def materialize_run_matrix(
     row_lowerer: TrainingRowLowerer | None = None,
 ) -> MaterializedRunMatrix:
     """Materialize a ``TrainingRunMatrixSpec`` into validated row specs."""
+    def target_validator(payload: dict[str, Any]) -> TrainingRunSpec:
+        return _validate_training_payload(
+            payload,
+            row_id="composed-base",
+            method_registry=method_registry,
+        )
+
     return _materialize_run_matrix(
         spec,
         repo_root=repo_root,
@@ -556,6 +562,7 @@ def materialize_run_matrix(
             method_registry=method_registry,
         ),
         row_lowerer=row_lowerer,
+        composition_target_validator=target_validator,
     )
 
 
@@ -592,6 +599,7 @@ def _materialize_run_matrix(
     row_validator: RowPayloadValidator | None,
     row_lowerer: TrainingRowLowerer | None = None,
     row_lowering_context: Any | None = None,
+    composition_target_validator: CompositionTargetValidator | None = None,
 ) -> MaterializedRunMatrix:
     if isinstance(spec, (TrainingRunMatrixSpecV5, TrainingRunMatrixSpec)):
         matrix = spec
@@ -603,6 +611,7 @@ def _materialize_run_matrix(
         repo_root=repo_root,
         row_lowerer=row_lowerer,
         row_lowering_context=row_lowering_context,
+        composition_target_validator=composition_target_validator,
     )
     source_context = (
         load_expression_context(matrix.sources, repo_root)
@@ -1264,12 +1273,14 @@ def _resolve_base_payload(
     repo_root: Path,
     row_lowerer: TrainingRowLowerer | None = None,
     row_lowering_context: Any | None = None,
+    composition_target_validator: CompositionTargetValidator | None = None,
 ) -> dict[str, Any]:
-    resolved, _ = resolve_base_payload_with_attribution(
+    resolved, _ = _resolve_base_payload_with_attribution(
         spec,
         repo_root=repo_root,
         row_lowerer=row_lowerer,
         row_lowering_context=row_lowering_context,
+        composition_target_validator=composition_target_validator,
     )
     return resolved
 
@@ -1282,12 +1293,29 @@ def resolve_base_payload_with_attribution(
     row_lowering_context: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Resolve composed intent and retain the last-writing layer for each patched path."""
+    return _resolve_base_payload_with_attribution(
+        spec,
+        repo_root=repo_root,
+        row_lowerer=row_lowerer,
+        row_lowering_context=row_lowering_context,
+    )
+
+
+def _resolve_base_payload_with_attribution(
+    spec: TrainingRunMatrixSpec,
+    *,
+    repo_root: Path,
+    row_lowerer: TrainingRowLowerer | None = None,
+    row_lowering_context: Any | None = None,
+    composition_target_validator: CompositionTargetValidator | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
     resolved, attribution, _ = _resolve_composed_base(
         spec,
         repo_root=repo_root,
         resolving=set(),
         row_lowerer=row_lowerer,
         row_lowering_context=row_lowering_context,
+        composition_target_validator=composition_target_validator,
     )
     graph_source = resolved.get("graph")
     if isinstance(graph_source, Mapping) and isinstance(graph_source.get("inline"), Mapping):
@@ -1306,6 +1334,7 @@ def _resolve_composed_base(
     resolving: set[Path],
     row_lowerer: TrainingRowLowerer | None = None,
     row_lowering_context: Any | None = None,
+    composition_target_validator: CompositionTargetValidator | None = None,
 ) -> tuple[dict[str, Any], dict[str, str], set[str]]:
     if isinstance(spec.base, InlineMatrixBaseSpec):
         document = copy.deepcopy(spec.base.inline)
@@ -1336,13 +1365,15 @@ def _resolve_composed_base(
                     resolving=resolving,
                     row_lowerer=row_lowerer,
                     row_lowering_context=row_lowering_context,
+                    composition_target_validator=composition_target_validator,
                 )
             finally:
                 resolving.remove(canonical_path)
-            resolved, local_attribution, written = apply_composition_deltas(
+            resolved, local_attribution, written = _apply_composition_deltas(
                 parent_payload,
                 spec.deltas,
                 ancestor_written_paths=written,
+                target_validator=composition_target_validator,
             )
             attribution.update(local_attribution)
             return resolved, attribution, written
@@ -1364,7 +1395,6 @@ def _resolve_composed_base(
                         return _resolve_compiled_training_row_parent(
                             parent,
                             repo_root=root,
-                            row_lowerer=row_lowerer,
                             row_lowering_context=row_lowering_context,
                         )
                     if isinstance(parent, ResolvedOutputParent):
@@ -1391,17 +1421,15 @@ def _resolve_composed_base(
                         ) from exc
                     return parse_composition_node(parent_document)
 
-                flattened = flatten_composition(parse_composition_node(document), resolve_parent)
-                resolved, local_attribution, written = apply_composition_deltas(
-                    flattened.payload,
-                    spec.deltas,
-                    ancestor_written_paths=set(flattened.attribution),
+                flattened = flatten_composition(
+                    parse_composition_node(document),
+                    resolve_parent,
+                    _target_validator=composition_target_validator,
+                    _terminal_deltas=spec.deltas,
                 )
             except ValueError as exc:
                 raise RunMatrixError(f"/base/ref composition resolution failed: {exc}") from exc
-            attribution = dict(flattened.attribution)
-            attribution.update(local_attribution)
-            return resolved, attribution, written
+            return flattened.payload, dict(flattened.attribution), set(flattened.attribution)
         else:
             payload_path = spec.base.payload_path
     else:
@@ -1434,7 +1462,11 @@ def _resolve_composed_base(
     if not isinstance(payload, dict):
         raise RunMatrixError("/base payload must resolve to an object")
     resolved = copy.deepcopy(payload)
-    resolved, attribution, written = apply_composition_deltas(resolved, spec.deltas)
+    resolved, attribution, written = _apply_composition_deltas(
+        resolved,
+        spec.deltas,
+        target_validator=composition_target_validator,
+    )
     return resolved, attribution, written
 
 

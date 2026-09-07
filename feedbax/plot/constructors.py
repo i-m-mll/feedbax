@@ -15,6 +15,7 @@ from plotly.subplots import make_subplots
 
 from feedbax.contracts.figures import (
     ColorscaleSpec,
+    DataDerivedAxisRange,
     FigureColorbar,
     PerturbationTiming,
     SceneCamera,
@@ -22,6 +23,7 @@ from feedbax.contracts.figures import (
 from feedbax.contracts.base import StrictModel
 from feedbax.plot import apply_default_template
 from feedbax.plot.colors import color_add_alpha, sample_colorscale_unique
+from feedbax.plot.ranges import calculate_array_minmax
 
 ConstructorTier = Literal["trace", "panel", "figure", "custom_figure"]
 
@@ -1290,9 +1292,13 @@ def _update_cartesian_panel(fig: go.Figure, panel: PanelContent, *, row: int, co
         fig.update_xaxes(title_text=panel.axes_labels.get("x"), row=row, col=col)
         fig.update_yaxes(title_text=panel.axes_labels.get("y"), row=row, col=col)
     if panel.x_axis:
-        fig.update_xaxes(**panel.x_axis, row=row, col=col)
+        axis_layout = {key: value for key, value in panel.x_axis.items() if key != "derived_range"}
+        if axis_layout:
+            fig.update_xaxes(**axis_layout, row=row, col=col)
     if panel.y_axis:
-        fig.update_yaxes(**panel.y_axis, row=row, col=col)
+        axis_layout = {key: value for key, value in panel.y_axis.items() if key != "derived_range"}
+        if axis_layout:
+            fig.update_yaxes(**axis_layout, row=row, col=col)
     if panel.equal_data_aspect:
         subplot = fig.get_subplot(row, col)
         if subplot is None or not hasattr(subplot, "xaxis"):
@@ -1469,8 +1475,126 @@ def _panel_colorbar_layout(
     }
 
 
+def _apply_data_derived_axis_ranges(fig: go.Figure, panels: Sequence[PanelContent]) -> None:
+    """Resolve every declared axis group from the traces rendered into its panels."""
+    axes: dict[str, dict[str, Any]] = {}
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for index, panel in enumerate(panels):
+        if panel.panel_type == "scene":
+            continue
+        row, col = _panel_cell(panel, index)
+        subplot = fig.get_subplot(row, col)
+        if subplot is None or not hasattr(subplot, "xaxis") or not hasattr(subplot, "yaxis"):
+            continue
+        for dimension, settings, layout_axis in (
+            ("x", panel.x_axis, subplot.xaxis),
+            ("y", panel.y_axis, subplot.yaxis),
+        ):
+            axis_ref = layout_axis.plotly_name.replace("axis", "", 1)
+            declaration = None
+            if settings is not None and settings.get("derived_range") is not None:
+                declaration = DataDerivedAxisRange.model_validate(settings["derived_range"])
+                if settings.get("type") == "log":
+                    raise ValueError(
+                        f"data-derived axis range group {declaration.group!r} requires "
+                        f"a linear {dimension} axis on panel {panel.name!r}"
+                    )
+                if settings.get("range") is not None:
+                    raise ValueError(
+                        f"data-derived axis range group {declaration.group!r} conflicts with "
+                        f"an explicit range on panel {panel.name!r} {dimension} axis"
+                    )
+            member = {
+                "axis_ref": axis_ref,
+                "col": col,
+                "declaration": declaration,
+                "dimension": dimension,
+                "matches": layout_axis.matches,
+                "panel": panel,
+                "range": settings.get("range") if settings is not None else None,
+                "row": row,
+            }
+            axes[axis_ref] = member
+            if declaration is not None:
+                groups.setdefault(declaration.group, []).append(member)
+
+    if not groups:
+        return
+
+    graph = {axis_ref: set() for axis_ref in axes}
+    for axis_ref, member in axes.items():
+        matched_ref = member["matches"]
+        if matched_ref is not None and matched_ref in graph:
+            graph[axis_ref].add(matched_ref)
+            graph[matched_ref].add(axis_ref)
+    remaining = set(graph)
+    while remaining:
+        component = set()
+        pending = [remaining.pop()]
+        while pending:
+            axis_ref = pending.pop()
+            component.add(axis_ref)
+            neighbours = graph[axis_ref] & remaining
+            remaining -= neighbours
+            pending.extend(neighbours)
+        component_members = [axes[axis_ref] for axis_ref in component]
+        declared = [member for member in component_members if member["declaration"] is not None]
+        if not declared:
+            continue
+        component_groups = {member["declaration"].group for member in declared}
+        if len(component_groups) != 1:
+            raise ValueError(
+                "a Plotly shared-axis match spans multiple data-derived range groups: "
+                f"{sorted(component_groups)}"
+            )
+        group = next(iter(component_groups))
+        undeclared = [member for member in component_members if member["declaration"] is None]
+        explicit = [member for member in undeclared if member["range"] is not None]
+        if explicit:
+            panels_with_ranges = sorted(member["panel"].name for member in explicit)
+            raise ValueError(
+                f"data-derived axis range group {group!r} conflicts with explicit ranges "
+                f"on matched panels {panels_with_ranges}"
+            )
+        if undeclared:
+            panels_without_groups = sorted(member["panel"].name for member in undeclared)
+            raise ValueError(
+                f"data-derived axis range group {group!r} is ambiguous because its Plotly "
+                f"axis match includes undeclared panels {panels_without_groups}"
+            )
+
+    for group, members in groups.items():
+        if len(members) < 2:
+            raise ValueError(
+                f"data-derived axis range group {group!r} requires at least two panel axes"
+            )
+        dimensions = {member["dimension"] for member in members}
+        if len(dimensions) != 1:
+            raise ValueError(
+                f"data-derived axis range group {group!r} ambiguously mixes x and y axes"
+            )
+        paddings = {member["declaration"].padding_fraction for member in members}
+        if len(paddings) != 1:
+            raise ValueError(
+                f"data-derived axis range group {group!r} declares conflicting padding fractions"
+            )
+        dimension = next(iter(dimensions))
+        coordinates: dict[str, Any] = {}
+        for member in members:
+            panel = member["panel"]
+            for trace_index, trace in enumerate(panel.traces):
+                coordinate = getattr(trace, dimension, None)
+                if coordinate is not None:
+                    coordinates[f"{panel.name}:{trace_index}"] = coordinate
+        axis_range = calculate_array_minmax(coordinates, padding=next(iter(paddings)))
+        for member in members:
+            updater = fig.update_xaxes if dimension == "x" else fig.update_yaxes
+            updater(range=axis_range, row=member["row"], col=member["col"])
+
+
 def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
     p = GridFigureParams.model_validate(params.model_dump())
+    _apply_data_derived_axis_ranges(fig, panels)
     updates: dict[str, Any] = {}
     if p.width is not None:
         updates["width"] = p.width
@@ -1594,8 +1718,8 @@ def register_default_figure_constructors(registry: FigureRegistry) -> None:
         "feedbax.endpoint_markers": "v3",
         "feedbax.hline": "v2",
         "feedbax.vrect": "v3",
-        "feedbax.comparison_grid": "v5",
-        "feedbax.grid_figure": "v5",
+        "feedbax.comparison_grid": "v6",
+        "feedbax.grid_figure": "v6",
     }
     for key, tier, constructor, params_model, description in defaults:
         registry.register_constructor(

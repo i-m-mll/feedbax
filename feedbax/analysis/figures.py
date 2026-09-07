@@ -1157,6 +1157,14 @@ def _panel_grid_declarations(spec: FigureSpec) -> list[str]:
     return declarations
 
 
+def _declares_data_derived_axis_range(spec: FigureSpec) -> bool:
+    return any(
+        axis is not None and axis.derived_range is not None
+        for panel in spec.panels
+        for axis in (panel.x_axis, panel.y_axis)
+    )
+
+
 def _build_figures(
     spec: FigureSpec,
     context: ExpressionContext,
@@ -1180,6 +1188,12 @@ def _build_figures(
     custom_registration = get_figure_constructor(assembler_key, registry=registry)
     if custom_registration.tier == "custom_figure":
         exec_trace.constructor_versions[assembler_key] = custom_registration.version
+        if _declares_data_derived_axis_range(spec):
+            raise ValueError(
+                "FigureSpec declares a data-derived axis range, which requires the "
+                "feedbax.comparison_grid/feedbax.grid_figure assembler pair; "
+                f"{assembler_key!r} is a custom_figure assembler"
+            )
         if any(panel.equal_data_aspect is not None for panel in spec.panels):
             raise ValueError(
                 "FigureSpec declares equal_data_aspect, which requires a registered "
@@ -1238,6 +1252,15 @@ def _build_figures(
         )
     figure_registration = get_figure_constructor(assembler_key, registry=registry, tier="figure")
     exec_trace.constructor_versions[assembler_key] = figure_registration.version
+    if _declares_data_derived_axis_range(spec) and (
+        panel_registration.key != "feedbax.comparison_grid"
+        or figure_registration.key != "feedbax.grid_figure"
+    ):
+        raise ValueError(
+            "FigureSpec data-derived axis ranges require the "
+            "feedbax.comparison_grid/feedbax.grid_figure assembler pair; got "
+            f"{panel_registration.key!r}/{figure_registration.key!r}"
+        )
     panel_values, figure_values = _route_assembler_params(
         assembler_params,
         panel_registration=panel_registration,

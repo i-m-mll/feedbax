@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 import json
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypeAlias
@@ -20,7 +20,7 @@ from feedbax.contracts.run_matrix import (
     MatrixCompositionDelta,
     StoppedRowStatus as StoppedRowStatus,
     TaskIdentityGate as TaskIdentityGate,
-    apply_composition_deltas,
+    _apply_composition_deltas,
 )
 from feedbax.contracts.spec_storage import training_spec_sha256, validate_sha256
 from feedbax.contracts.strict_json import strict_json_loads
@@ -102,10 +102,7 @@ class CompiledTrainingRowParent(StrictModel):
 
 
 CompositionParentV2: TypeAlias = Annotated[
-    InlineIntentParent
-    | AuthoredIntentParent
-    | ResolvedOutputParent
-    | CompiledTrainingRowParent,
+    InlineIntentParent | AuthoredIntentParent | ResolvedOutputParent | CompiledTrainingRowParent,
     Field(discriminator="kind"),
 ]
 
@@ -250,8 +247,14 @@ def parse_composition_node(document: Mapping[str, Any]) -> CompositionDocument:
     )
 
 
-def flatten_composition(node: CompositionDocument, resolve_parent: ParentResolver) -> FlattenedIntent:
-    """Flatten root-to-child, checking pins and cross-layer override acknowledgements."""
+def flatten_composition(
+    node: CompositionDocument,
+    resolve_parent: ParentResolver,
+    *,
+    _target_validator: Callable[[dict[str, Any]], object] | None = None,
+    _terminal_deltas: Sequence[CompositionDelta] = (),
+) -> FlattenedIntent:
+    """Flatten root-to-child and validate only the completed target when typed."""
     layers: list[CompositionDocument] = []
     seen: set[str] = set()
     current = node
@@ -290,29 +293,36 @@ def flatten_composition(node: CompositionDocument, resolve_parent: ParentResolve
         payload = dict(resolved)
         break
 
-    attribution: dict[str, str] = {}
-    written: set[str] = set()
-    hashes: list[str] = []
-    for layer in reversed(layers):
-        hashes.append(authored_envelope_hash(layer))
-        payload, local_attribution, written = apply_composition_deltas(
-            payload, layer.deltas, ancestor_written_paths=written
-        )
-        attribution.update(local_attribution)
+    ordered_layers = list(reversed(layers))
+    hashes = [authored_envelope_hash(layer) for layer in ordered_layers]
+    payload, attribution, _written = _apply_composition_deltas(
+        payload,
+        [
+            *[delta for layer in ordered_layers for delta in layer.deltas],
+            *_terminal_deltas,
+        ],
+        target_validator=_target_validator,
+    )
     return FlattenedIntent(payload=payload, attribution=attribution, layer_hashes=hashes)
 
 
 def flatten_repo_composition(
-    node: CompositionNode,
+    node: CompositionDocument,
     *,
     repo_root: Path,
     source_ref: str | None = None,
+    resolved_output_resolver: Callable[[ResolvedOutputParent], Mapping[str, Any]] | None = None,
 ) -> FlattenedIntent:
-    """Flatten a composition whose parent refs name JSON beneath ``repo_root``.
+    """Flatten a composition using repository and explicit custody authorities.
 
     ``source_ref`` identifies the already-loaded child document, when known, so
     a child that points back to itself fails as a reference cycle before any
     misleading hash-drift diagnosis.
+
+    Authored parents are always resolved beneath ``repo_root``. When supplied,
+    ``resolved_output_resolver`` is the explicit custody dependency also used by
+    compiled row lowering. Omitting it preserves this helper's repository-backed
+    resolved-output mode.
     """
     root = repo_root.resolve()
     resolved_refs: set[Path] = set()
@@ -321,7 +331,12 @@ def flatten_repo_composition(
 
     def resolve_parent(
         parent: AuthoredIntentParent | ResolvedOutputParent,
-    ) -> CompositionNode | dict[str, Any]:
+    ) -> CompositionDocument | dict[str, Any]:
+        if isinstance(parent, ResolvedOutputParent) and resolved_output_resolver is not None:
+            resolved = resolved_output_resolver(parent)
+            if not isinstance(resolved, Mapping):
+                raise ValueError(f"/parent resolved_output must resolve to a mapping: {parent.ref}")
+            return dict(resolved)
         path = _repo_json_path(root, parent.ref)
         if path in resolved_refs:
             raise ValueError(f"/parent/ref authored composition cycle: {parent.ref}")
@@ -333,7 +348,7 @@ def flatten_repo_composition(
         if not isinstance(document, dict):
             raise ValueError(f"/parent/ref must resolve to a JSON object: {parent.ref}")
         if isinstance(parent, AuthoredIntentParent):
-            return CompositionNode.model_validate(document)
+            return parse_composition_node(document)
         return document
 
     return flatten_composition(node, resolve_parent)

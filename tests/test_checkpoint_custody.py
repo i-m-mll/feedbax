@@ -5095,6 +5095,66 @@ def test_checkpoint_custody_ref_resolver_uses_registered_manifest_migration(
     ]
 
 
+def test_nested_optimizer_members_write_and_migrate_with_unique_semantic_identities(
+    tmp_path: Path,
+) -> None:
+    run_spec = _run_spec()
+    slots = {
+        "model": {
+            "weight": jnp.ones((2,), dtype=jnp.float32),
+            "bias": jnp.zeros((2,), dtype=jnp.float32),
+        },
+        "optimizer": {
+            "inner_state": {
+                "mu": [jnp.zeros((2,), dtype=jnp.float32)] * 2,
+                "nu": [jnp.zeros((2,), dtype=jnp.float32)] * 2,
+            }
+        },
+        "prng": jnp.array([1, 2], dtype=jnp.uint32),
+        "batch_counter": jnp.array(1, dtype=jnp.int32),
+    }
+    result = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=run_spec.worker_execution.method_contract.phase_program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="run-1",
+            phase="train_batch",
+            program_step=1,
+            completed_barrier="after_train_batch",
+        ),
+        slots=slots,
+    )
+    optimizer_slot = next(slot for slot in result.manifest.slots if slot.slot == "optimizer")
+    assert optimizer_slot.semantic_abi is not None
+    assert {leaf.identity for leaf in optimizer_slot.semantic_abi.leaves} == {
+        "optimizer:optimizer_to_model:state:inner_state/mu/member/2=0",
+        "optimizer:optimizer_to_model:state:inner_state/mu/member/2=1",
+        "optimizer:optimizer_to_model:state:inner_state/nu/member/2=0",
+        "optimizer:optimizer_to_model:state:inner_state/nu/member/2=1",
+    }
+
+    payload = result.manifest.model_dump(mode="json", exclude_none=True)
+    payload["schema_version"] = TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9
+    for slot in payload["slots"]:
+        slot.pop("semantic_abi", None)
+    _rewrite_manifest_and_latest(result, payload)
+
+    resolved = resolve_checkpoint_custody_ref(
+        _resolver_parent_ref(result),
+        allowed_root=tmp_path,
+        slot_names=["model"],
+    )
+
+    assert resolved.slots["model"]["weight"].tolist() == [1.0, 1.0]
+    migrated_optimizer = next(slot for slot in resolved.manifest.slots if slot.slot == "optimizer")
+    assert migrated_optimizer.semantic_abi == optimizer_slot.semantic_abi
+    assert [record.migration_id for record in resolved.migration_records] == [
+        "training-checkpoint-transaction-v9-to-v10-semantic-abi"
+    ]
+
+
 def test_checkpoint_custody_ref_resolver_v5_migration_keeps_raw_slot_tree(
     tmp_path: Path,
 ) -> None:
