@@ -5,17 +5,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
 from feedbax.contracts.intent_diff import StalenessReport, staleness_report
 from feedbax.contracts.run_composition import (
-    AuthoredIntentParent,
-    CompositionNode,
-    CompositionParent,
-    flatten_composition,
+    ResolvedOutputParent,
+    flatten_repo_composition,
+    parse_composition_node,
 )
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.manifest_index import rebuild_manifest_index
 from feedbax.integrations.provider import (
     health,
@@ -24,6 +27,10 @@ from feedbax.integrations.provider import (
     validate_spec,
 )
 from feedbax.plugins.composition import compose_application
+
+
+class ProviderStalenessResolutionError(ValueError):
+    """Raised when composed-spec staleness lacks exact parent authority."""
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -72,6 +79,12 @@ def main(argv: list[str] | None = None) -> int:
         "staleness", help="Report stale contract identities in a composed spec"
     )
     staleness_parser.add_argument("path", help="CompositionNode JSON path, or '-' for stdin")
+    staleness_parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path.cwd(),
+        help="Project root for repository-relative authored parents (default: cwd)",
+    )
     staleness_parser.add_argument("--json", action="store_true", help="Emit report JSON")
     staleness_parser.add_argument(
         "--strict", action="store_true", help="Exit nonzero when stale identities are found"
@@ -112,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         _write_json({"index_path": str(rebuild_manifest_index(args.root))})
         return 0
     if args.command == "staleness":
-        report = _composition_staleness_report(args.path)
+        report = _composition_staleness_report(args.path, repo_root=args.repo_root)
         if args.json:
             _write_json(report)
         else:
@@ -123,17 +136,94 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
-def _composition_staleness_report(path: str) -> StalenessReport:
-    root = Path.cwd() if path == "-" else Path(path).resolve().parent
-    node = CompositionNode.model_validate(_read_json(path))
+def _composition_staleness_report(
+    path: str,
+    *,
+    repo_root: Path | None = None,
+    resolved_output_resolver: Callable[[ResolvedOutputParent], Mapping[str, Any]] | None = None,
+) -> StalenessReport:
+    root = (repo_root or Path.cwd()).resolve()
+    source_ref: str | None = None
+    if path != "-":
+        source_path = Path(path).resolve()
+        try:
+            source_ref = source_path.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise ProviderStalenessResolutionError(
+                f"composition document is outside repository root {root}: {source_path}"
+            ) from exc
+    try:
+        node = parse_composition_node(_read_json(path))
+        flattened = flatten_repo_composition(
+            node,
+            repo_root=root,
+            source_ref=source_ref,
+            resolved_output_resolver=(
+                resolved_output_resolver or _resolve_mandible_artifact_parent
+            ),
+        )
+    except ProviderStalenessResolutionError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ProviderStalenessResolutionError(
+            f"composition staleness parent resolution failed: {exc}"
+        ) from exc
+    return staleness_report(flattened)
 
-    def resolve_parent(parent: CompositionParent) -> CompositionNode | dict[str, Any]:
-        payload = _read_json(str(root / parent.ref))
-        if isinstance(parent, AuthoredIntentParent):
-            return CompositionNode.model_validate(payload)
+
+def _resolve_mandible_artifact_parent(parent: ResolvedOutputParent) -> dict[str, Any]:
+    if not re.fullmatch(r"artifact-blob:[0-9a-f]{64}", parent.ref):
+        raise ProviderStalenessResolutionError(
+            "resolved-output staleness requires an exact artifact-blob:<sha256> "
+            f"custody ref; got {parent.ref!r}"
+        )
+    with tempfile.TemporaryDirectory(prefix="feedbax-staleness-") as temporary:
+        output = Path(temporary) / "parent.json"
+        command = [
+            "mandible",
+            "artifact",
+            "content",
+            parent.ref,
+            "--output",
+            str(output),
+            "--json",
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except FileNotFoundError as exc:
+            raise ProviderStalenessResolutionError(
+                f"Mandible custody provider is unavailable for {parent.ref!r}"
+            ) from exc
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ProviderStalenessResolutionError(
+                f"Mandible custody provider failed for {parent.ref!r}: {exc}"
+            ) from exc
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip() or "no provider detail"
+            raise ProviderStalenessResolutionError(
+                f"Mandible custody could not resolve {parent.ref!r}: {detail[:1000]}"
+            )
+        if not output.is_file():
+            raise ProviderStalenessResolutionError(
+                f"Mandible custody returned no bytes for {parent.ref!r}"
+            )
+        try:
+            payload = strict_json_loads(output.read_bytes(), ref=parent.ref)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise ProviderStalenessResolutionError(
+                f"Mandible custody bytes are not strict JSON for {parent.ref!r}: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ProviderStalenessResolutionError(
+                f"Mandible custody bytes are not a JSON object for {parent.ref!r}"
+            )
         return payload
-
-    return staleness_report(flatten_composition(node, resolve_parent))
 
 
 def _write_staleness_report(report: StalenessReport) -> None:

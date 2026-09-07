@@ -102,10 +102,7 @@ class CompiledTrainingRowParent(StrictModel):
 
 
 CompositionParentV2: TypeAlias = Annotated[
-    InlineIntentParent
-    | AuthoredIntentParent
-    | ResolvedOutputParent
-    | CompiledTrainingRowParent,
+    InlineIntentParent | AuthoredIntentParent | ResolvedOutputParent | CompiledTrainingRowParent,
     Field(discriminator="kind"),
 ]
 
@@ -250,7 +247,9 @@ def parse_composition_node(document: Mapping[str, Any]) -> CompositionDocument:
     )
 
 
-def flatten_composition(node: CompositionDocument, resolve_parent: ParentResolver) -> FlattenedIntent:
+def flatten_composition(
+    node: CompositionDocument, resolve_parent: ParentResolver
+) -> FlattenedIntent:
     """Flatten root-to-child, checking pins and cross-layer override acknowledgements."""
     layers: list[CompositionDocument] = []
     seen: set[str] = set()
@@ -303,16 +302,22 @@ def flatten_composition(node: CompositionDocument, resolve_parent: ParentResolve
 
 
 def flatten_repo_composition(
-    node: CompositionNode,
+    node: CompositionDocument,
     *,
     repo_root: Path,
     source_ref: str | None = None,
+    resolved_output_resolver: Callable[[ResolvedOutputParent], Mapping[str, Any]] | None = None,
 ) -> FlattenedIntent:
-    """Flatten a composition whose parent refs name JSON beneath ``repo_root``.
+    """Flatten a composition using repository and explicit custody authorities.
 
     ``source_ref`` identifies the already-loaded child document, when known, so
     a child that points back to itself fails as a reference cycle before any
     misleading hash-drift diagnosis.
+
+    Authored parents are always resolved beneath ``repo_root``. When supplied,
+    ``resolved_output_resolver`` is the explicit custody dependency also used by
+    compiled row lowering. Omitting it preserves this helper's repository-backed
+    resolved-output mode.
     """
     root = repo_root.resolve()
     resolved_refs: set[Path] = set()
@@ -321,7 +326,12 @@ def flatten_repo_composition(
 
     def resolve_parent(
         parent: AuthoredIntentParent | ResolvedOutputParent,
-    ) -> CompositionNode | dict[str, Any]:
+    ) -> CompositionDocument | dict[str, Any]:
+        if isinstance(parent, ResolvedOutputParent) and resolved_output_resolver is not None:
+            resolved = resolved_output_resolver(parent)
+            if not isinstance(resolved, Mapping):
+                raise ValueError(f"/parent resolved_output must resolve to a mapping: {parent.ref}")
+            return dict(resolved)
         path = _repo_json_path(root, parent.ref)
         if path in resolved_refs:
             raise ValueError(f"/parent/ref authored composition cycle: {parent.ref}")
@@ -333,7 +343,7 @@ def flatten_repo_composition(
         if not isinstance(document, dict):
             raise ValueError(f"/parent/ref must resolve to a JSON object: {parent.ref}")
         if isinstance(parent, AuthoredIntentParent):
-            return CompositionNode.model_validate(document)
+            return parse_composition_node(document)
         return document
 
     return flatten_composition(node, resolve_parent)
