@@ -377,6 +377,40 @@ def _optimizer_leaf_identity(
     )
 
 
+def _disambiguate_optimizer_state_leaves(
+    leaves: Sequence[CheckpointSemanticLeafIdentity],
+) -> list[CheckpointSemanticLeafIdentity]:
+    """Retain numeric member identity only where opaque optimizer state needs it."""
+    identity_counts: dict[str, int] = {}
+    for leaf in leaves:
+        identity_counts[leaf.identity] = identity_counts.get(leaf.identity, 0) + 1
+
+    disambiguated: list[CheckpointSemanticLeafIdentity] = []
+    for leaf in leaves:
+        if identity_counts[leaf.identity] == 1 or leaf.component_slot != "optimizer-state":
+            disambiguated.append(leaf)
+            continue
+        member_path = "/".join(
+            f"{index}={part}"
+            for index, part in enumerate(_path_parts(leaf.raw_path))
+            if part.isdigit()
+        )
+        if not member_path or leaf.optimizer_binding is None or leaf.optimizer_role is None:
+            disambiguated.append(leaf)
+            continue
+        optimizer_role = f"{leaf.optimizer_role}/member/{member_path}"
+        disambiguated.append(
+            leaf.model_copy(
+                update={
+                    "identity": (f"optimizer:{leaf.optimizer_binding}:state:{optimizer_role}"),
+                    "parameter_role": optimizer_role,
+                    "optimizer_role": optimizer_role,
+                }
+            )
+        )
+    return disambiguated
+
+
 def derive_checkpoint_semantic_abis(
     fingerprints: Mapping[str, StructuralAbiFingerprint],
     *,
@@ -428,15 +462,17 @@ def derive_checkpoint_semantic_abis(
                     f"checkpoint optimizer binding {binding.name!r} targets unknown model slot "
                     f"{binding.target_slot!r}"
                 )
-            identities[slot] = [
-                _optimizer_leaf_identity(
-                    slot=slot,
-                    path=leaf.path,
-                    binding=binding,
-                    target_leaves=target,
-                )
-                for leaf in fingerprint.leaves
-            ]
+            identities[slot] = _disambiguate_optimizer_state_leaves(
+                [
+                    _optimizer_leaf_identity(
+                        slot=slot,
+                        path=leaf.path,
+                        binding=binding,
+                        target_leaves=target,
+                    )
+                    for leaf in fingerprint.leaves
+                ]
+            )
             continue
         identities[slot] = [
             CheckpointSemanticLeafIdentity(
