@@ -413,7 +413,7 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
         (
             "RunAssemblyRequest",
             "feedbax.spec.run_assembly_request",
-            "feedbax.spec.run_assembly_request.v8",
+            "feedbax.spec.run_assembly_request.v9",
         ),
         (
             "DeploymentPolicy",
@@ -935,7 +935,7 @@ def test_run_assembly_request_v7_migrates_only_without_staged_roots() -> None:
             "staged_roots": [],
         },
     )
-    assert migrated.target_version == "feedbax.spec.run_assembly_request.v8"
+    assert migrated.target_version == "feedbax.spec.run_assembly_request.v9"
     assert migrated.payload["content_bindings"] == []
 
     with pytest.raises(ValueError, match="explicit offline content-store migration"):
