@@ -5098,7 +5098,7 @@ def test_monitor_reconciles_terminal_event_before_local_sentinel(
     [
         ("ready", "launched", None, "launch:second"),
         ("completed", "launched", None, "launch:second"),
-        ("failed", "stopped", "warm-first-failed", "stop:second"),
+        ("failed", "stopped", "warm-first-failed", None),
     ],
 )
 def test_warm_first_gate_releases_ready_and_completed_first_rows(
@@ -5106,7 +5106,7 @@ def test_warm_first_gate_releases_ready_and_completed_first_rows(
     first_status: str,
     second_status: str,
     abort_reason: str | None,
-    expected_call: str,
+    expected_call: str | None,
 ) -> None:
     rows = [
         _compiled_row("warm"),
@@ -5130,7 +5130,10 @@ def test_warm_first_gate_releases_ready_and_completed_first_rows(
 
     assert updated.rows["second"].status == second_status
     assert updated.abort_reason == abort_reason
-    assert expected_call in driver.calls
+    if expected_call is None:
+        assert "stop:second" not in driver.calls
+    else:
+        assert expected_call in driver.calls
 
 
 @pytest.mark.parametrize(
@@ -5293,7 +5296,10 @@ def test_ordered_launch_group_failure_or_cancellation_blocks_later_groups(
     updated = StageEngine(bundle=bundle, driver=driver)._launch_pending_if_allowed(state)
 
     assert updated.abort_reason == "ordered-launch-group-blocked"
+    assert updated.rows["b"].status == "stopped"
     assert updated.rows["later"].status == "stopped"
+    assert "stop:b" in driver.calls
+    assert "stop:later" not in driver.calls
     assert "launch:later" not in driver.calls
 
 

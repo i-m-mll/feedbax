@@ -3079,7 +3079,8 @@ class StageEngine:
             row_state = state.rows[row.row_id]
             if row_state.status in ("completed", "failed", "stopped"):
                 continue
-            self.driver.stop_row(self.bundle, row, state)
+            if row_state.status != "pending":
+                self.driver.stop_row(self.bundle, row, state)
             updated = row_state.model_copy(
                 update={"status": "stopped", "completed_at": utc_now(), "error": reason}
             )
