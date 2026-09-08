@@ -77,7 +77,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v4"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v5"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v6"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v7"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v8"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8 = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v8"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v9"
 
 
 class CompilerIdentity(StrictModel):
@@ -151,7 +152,7 @@ class RunAssemblyRequest(StrictModel):
     def _reject_legacy_staged_roots(cls, value: Any) -> Any:
         if isinstance(value, Mapping) and "staged_roots" in value:
             raise ValueError(
-                "RunAssemblyRequest v8 does not admit staged_roots; run "
+                "RunAssemblyRequest v9 does not admit staged_roots; run "
                 "python -m feedbax migrate-content-store --staged-root-v1 ... "
                 "and author canonical content_bindings"
             )

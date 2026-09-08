@@ -713,7 +713,7 @@ def test_matrix_staged_parents_require_and_bind_exact_governed_root_custody(
     )
     legacy_request = request.model_dump(mode="json")
     legacy_request["staged_roots"] = []
-    with pytest.raises(ValueError, match="RunAssemblyRequest v8 does not admit staged_roots"):
+    with pytest.raises(ValueError, match="RunAssemblyRequest v9 does not admit staged_roots"):
         RunAssemblyRequest.model_validate(legacy_request)
     with pytest.raises(ValueError, match="lack canonical content bindings"):
         _assemble(request, tmp_path)
@@ -765,7 +765,7 @@ def test_matrix_staged_parents_require_and_bind_exact_governed_root_custody(
     bundle = _assemble(governed, tmp_path, run_set_id="governed")
     legacy_bundle = bundle.model_dump(mode="json")
     legacy_bundle["staged_roots"] = []
-    with pytest.raises(ValueError, match="RunBundle v13 does not admit staged_roots"):
+    with pytest.raises(ValueError, match="RunBundle v14 does not admit staged_roots"):
         type(bundle).model_validate(legacy_bundle)
 
     assert [(item.root_kind, item.binding_name) for item in bundle.content_bindings] == [

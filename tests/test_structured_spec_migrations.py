@@ -212,6 +212,11 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V10,
     RUN_BUNDLE_SCHEMA_VERSION_V11,
     RUN_BUNDLE_SCHEMA_VERSION_V12,
+    RUN_BUNDLE_SCHEMA_VERSION_V13,
+)
+from feedbax.orchestration.assembly import (
+    RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+    RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
@@ -770,6 +775,7 @@ def test_run_bundle_old_versions_require_reassembly(old_version: str) -> None:
     assert family.policy.supported_old_versions == (
         RUN_BUNDLE_SCHEMA_VERSION_V11,
         RUN_BUNDLE_SCHEMA_VERSION_V12,
+        RUN_BUNDLE_SCHEMA_VERSION_V13,
     )
     assert old_version in family.policy.rejected_old_versions
 
@@ -820,6 +826,47 @@ def test_run_bundle_v12_migrates_only_without_staged_roots() -> None:
         )
 
 
+def test_legacy_orchestration_specs_migrate_only_as_ungrouped() -> None:
+    bundle = default_spec_registry.migrate(
+        "RunBundle",
+        {
+            "schema_id": "feedbax.orchestration.run_bundle",
+            "schema_version": RUN_BUNDLE_SCHEMA_VERSION_V13,
+            "launch_policy": {"max_parallel_rows": 2},
+        },
+    )
+    request = default_spec_registry.migrate(
+        "RunAssemblyRequest",
+        {
+            "schema_id": "feedbax.spec.run_assembly_request",
+            "schema_version": RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8,
+            "launch_policy": {"max_parallel_rows": 2},
+        },
+    )
+
+    assert bundle.target_version == RUN_BUNDLE_SCHEMA_VERSION
+    assert bundle.payload["launch_policy"]["groups"] is None
+    assert request.target_version == RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    assert request.payload["launch_policy"]["groups"] is None
+
+    with pytest.raises(ValueError, match="v13 cannot declare ordered launch groups"):
+        default_spec_registry.migrate(
+            "RunBundle",
+            {
+                "schema_version": RUN_BUNDLE_SCHEMA_VERSION_V13,
+                "launch_policy": {"groups": [{"row_ids": ["row-a"], "max_concurrent": 1}]},
+            },
+        )
+    with pytest.raises(ValueError, match="v8 cannot declare ordered launch groups"):
+        default_spec_registry.migrate(
+            "RunAssemblyRequest",
+            {
+                "schema_version": RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8,
+                "launch_policy": {"groups": [{"row_ids": ["row-a"], "max_concurrent": 1}]},
+            },
+        )
+
+
 def test_staged_root_custody_registry_rejects_unknown_versions() -> None:
     family = default_spec_registry.resolve("StagedRootCustody")
     assert family.identity == STAGED_ROOT_CUSTODY_SCHEMA_ID
@@ -853,7 +900,7 @@ def test_remote_smoke_evidence_registry_explicitly_rejects_v0() -> None:
 
 
 def test_legacy_assembly_request_requires_reauthorization() -> None:
-    with pytest.raises(UnsupportedSpecVersion, match="re-author a current v8 request"):
+    with pytest.raises(UnsupportedSpecVersion, match="re-author a current v9 request"):
         default_spec_registry.migrate(
             "RunAssemblyRequest",
             {"schema_version": "feedbax.spec.run_assembly_request.v1"},
@@ -873,10 +920,10 @@ def test_run_assembly_request_v6_rejects_for_missing_revision_authority() -> Non
 
     message = str(excinfo.value)
     assert "feedbax.spec.run_assembly_request.v6" in message
-    assert "feedbax.spec.run_assembly_request.v8" in message
+    assert "feedbax.spec.run_assembly_request.v9" in message
     assert "migration_intentionally_absent=yes" in message
     assert "feedbax_revision" in message
-    assert "re-author a current v8 request" in message
+    assert "re-author a current v9 request" in message
 
 
 def test_run_assembly_request_v7_migrates_only_without_staged_roots() -> None:

@@ -42,7 +42,8 @@ RUN_BUNDLE_SCHEMA_VERSION_V9 = "feedbax.orchestration.run_bundle.v9"
 RUN_BUNDLE_SCHEMA_VERSION_V10 = "feedbax.orchestration.run_bundle.v10"
 RUN_BUNDLE_SCHEMA_VERSION_V11 = "feedbax.orchestration.run_bundle.v11"
 RUN_BUNDLE_SCHEMA_VERSION_V12 = "feedbax.orchestration.run_bundle.v12"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v13"
+RUN_BUNDLE_SCHEMA_VERSION_V13 = "feedbax.orchestration.run_bundle.v13"
+RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v14"
 DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
 DEPLOYMENT_POLICY_SCHEMA_VERSION_V1 = "feedbax.spec.deployment_policy.v1"
 DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v2"
@@ -362,12 +363,41 @@ class DeploymentPolicy(StrictModel):
     resources: DeploymentResourceRequest = Field(default_factory=DeploymentResourceRequest)
 
 
+class LaunchRowGroup(StrictModel):
+    """One ordered row group and its in-group concurrency ceiling."""
+
+    row_ids: list[str] = Field(min_length=1)
+    max_concurrent: int = Field(ge=1)
+
+    @field_validator("row_ids")
+    @classmethod
+    def _validate_row_ids(cls, value: list[str]) -> list[str]:
+        for row_id in value:
+            if not ROW_ID_RE.fullmatch(row_id):
+                raise ValueError(f"invalid launch-group row_id: {row_id!r}")
+        if len(value) != len(set(value)):
+            raise ValueError("launch group contains duplicate row IDs")
+        return value
+
+
 class LaunchPolicy(StrictModel):
-    """Row launch concurrency policy."""
+    """Row launch concurrency policy with optional ordered group barriers."""
 
     max_parallel_rows: int = Field(default=1, ge=1)
     warm_first: bool = False
     stagger_seconds: float = Field(default=0.0, ge=0.0)
+    groups: list[LaunchRowGroup] | None = None
+
+    @model_validator(mode="after")
+    def _validate_groups(self) -> "LaunchPolicy":
+        if self.groups is None:
+            return self
+        if not self.groups:
+            raise ValueError("launch policy groups must be non-empty when declared")
+        row_ids = [row_id for group in self.groups for row_id in group.row_ids]
+        if len(row_ids) != len(set(row_ids)):
+            raise ValueError("launch policy groups contain duplicate row membership")
+        return self
 
 
 class BudgetPolicy(StrictModel):
@@ -516,7 +546,7 @@ class RunBundle(StrictModel):
     """
 
     schema_id: Literal["feedbax.orchestration.run_bundle"] = RUN_BUNDLE_SCHEMA_ID
-    schema_version: Literal["feedbax.orchestration.run_bundle.v13"] = RUN_BUNDLE_SCHEMA_VERSION
+    schema_version: Literal["feedbax.orchestration.run_bundle.v14"] = RUN_BUNDLE_SCHEMA_VERSION
     run_set_id: str = Field(default_factory=mint_run_set_id)
     feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
     execution_family: ExecutionFamily = "native-training"
@@ -543,7 +573,7 @@ class RunBundle(StrictModel):
     def _reject_legacy_staged_roots(cls, value: Any) -> Any:
         if isinstance(value, dict) and "staged_roots" in value:
             raise ValueError(
-                "RunBundle v13 does not admit staged_roots; run "
+                "RunBundle v14 does not admit staged_roots; run "
                 "python -m feedbax migrate-content-store --run-bundle-v12 ..."
             )
         return value
@@ -564,6 +594,16 @@ class RunBundle(StrictModel):
             if row.execution_family != self.execution_family:
                 raise ValueError(f"row {row.row_id!r} execution_family does not match the bundle")
             seen.add(row.row_id)
+        if self.launch_policy.groups is not None:
+            grouped = {
+                row_id for group in self.launch_policy.groups for row_id in group.row_ids
+            }
+            unknown = sorted(grouped - seen)
+            omitted = sorted(seen - grouped)
+            if unknown:
+                raise ValueError(f"launch policy groups contain unknown row IDs: {unknown!r}")
+            if omitted:
+                raise ValueError(f"launch policy groups omit bundle row IDs: {omitted!r}")
         canonical_identities = canonicalize_immutable_input_identities(
             [item.identity for item in self.resolved_inputs]
         )
