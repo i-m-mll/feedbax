@@ -15,6 +15,11 @@ Producer contract:
 4. Recipes are deterministic for the same ``EvaluationRunSpec``, avoid durable
    writes inside the recipe, do not depend on ambient CWD or global config, and
    access model/artifact inputs only through resolved ``ParentRef`` inputs.
+5. A ``batch_recipe`` receives the ordered ``EvaluationBatchItem`` rows and one
+   preflighted ``StagedExecutionContext``. It may resolve a shared authenticated
+   parent once, validate a plugin-owned typed source from that parent, and reuse
+   the resulting object across the batch. Inapplicable result fields stay absent;
+   they are not filled with sentinel values by the executor.
 """
 
 from __future__ import annotations

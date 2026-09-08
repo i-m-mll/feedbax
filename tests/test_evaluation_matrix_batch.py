@@ -3,12 +3,13 @@ from __future__ import annotations
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 from unittest.mock import patch
 
 import jax.tree as jt
 import numpy as np
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 import feedbax.analysis.evaluation as evaluation_module
 import feedbax.analysis.execution_context as execution_context_module
@@ -40,6 +41,7 @@ from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     OverridePatch,
     StagedEvaluationPrerequisite,
+    TrainingRunManifest,
     load_manifest,
     spec_payload,
     write_manifest,
@@ -82,6 +84,17 @@ def _result(gain: float) -> EvaluationRecipeResult:
 
 class TypedRowStates(NamedTuple):
     value: object
+
+
+class TypedPerturbationSource(BaseModel):
+    """Plugin-owned typed source retained inside an authenticated training parent."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_id: Literal["example.spec.perturbation_source"]
+    schema_version: Literal["example.spec.perturbation_source.v1"]
+    trial_ids: tuple[str, ...]
+    draw: tuple[float, ...]
 
 
 def _typed_result(gain: float) -> EvaluationRecipeResult:
@@ -167,6 +180,96 @@ def test_matrix_recipes_receive_one_resolved_repo_root_for_scalar_and_batch(
 
     assert scalar_roots == [repo_root.resolve()] * 3
     assert batch_roots == [repo_root.resolve()]
+
+
+def test_batch_recipe_reuses_typed_source_from_authenticated_parent(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    parent_root = tmp_path / "parents"
+    parent_root.mkdir()
+    source_payload = {
+        "schema_id": "example.spec.perturbation_source",
+        "schema_version": "example.spec.perturbation_source.v1",
+        "trial_ids": ["trial-0", "trial-1"],
+        "draw": [0.25, -0.5],
+    }
+    training = TrainingRunManifest(
+        id="feedbax-training-run:typed-perturbation-source",
+        status="completed",
+        training_spec=spec_payload(
+            "TrainingRunSpec",
+            {"task": {"params": {"perturbation": source_payload}}},
+        ),
+    )
+    training_path = write_manifest(training, root=parent_root, index=False)
+    training_ref = authenticated_manifest_ref(training, training_path, "training_run")
+    prerequisite = StagedEvaluationPrerequisite(parent=training_ref)
+    conditions = ("clean", "bank", "sisu", "bank-plus-sisu")
+    matrix = EvaluationRunMatrixSpec(
+        base=EvaluationRunSpec(
+            evaluation_type=EVALUATION_TYPE,
+            inputs=[training_ref],
+            params={"condition": "clean", "states_custody": "durable"},
+        ),
+        rows=[
+            MatrixRow(
+                row_id=condition,
+                deltas=[OverridePatch(path="params.condition", value=condition)],
+            )
+            for condition in conditions
+        ],
+        staged_parents={"training": prerequisite},
+    )
+    parsed_sources: list[TypedPerturbationSource] = []
+    source_object_ids: list[int] = []
+
+    def batch_recipe(items, context):
+        resolved = context.resolve_manifest_input(items[0].spec.inputs[0])
+        source = TypedPerturbationSource.model_validate(
+            resolved.manifest.training_spec.inline["task"]["params"]["perturbation"]
+        )
+        parsed_sources.append(source)
+        results = []
+        for item in items:
+            source_object_ids.append(id(source))
+            states = {"trial_ids": source.trial_ids}
+            if item.spec.params["condition"] in {"bank", "bank-plus-sisu"}:
+                states["ordinary_bank_draw"] = source.draw
+            results.append(
+                EvaluationRecipeResult(
+                    states=states,
+                    metadata={"states_schema": "example.evaluation.interaction_cells.v1"},
+                )
+            )
+        return results
+
+    application_registry_bundle.evaluation_recipes.register(
+        EVALUATION_TYPE,
+        lambda *_args: pytest.fail("typed shared source requires batch execution"),
+        batch_recipe=batch_recipe,
+    )
+    root = tmp_path / "evaluation"
+    batch = execute_evaluation_run_matrix(
+        matrix,
+        root=root,
+        parent_manifest_root=parent_root,
+        batch=EvaluationBatchExecution(),
+        registry=application_registry_bundle.evaluation_recipes,
+    )
+
+    assert len(parsed_sources) == 1
+    assert len(set(source_object_ids)) == 1
+    assert [row.row_id for row in batch.rows] == list(conditions)
+    for row in batch.rows:
+        assert row.result.input_training_runs == [training_ref]
+        assert row.result.provenance.parents == [training_ref]
+        states = load_evaluation_states(row.result, root=root)
+        assert states["trial_ids"] == tuple(source_payload["trial_ids"])
+        if row.row_id in {"bank", "bank-plus-sisu"}:
+            assert states["ordinary_bank_draw"] == tuple(source_payload["draw"])
+        else:
+            assert "ordinary_bank_draw" not in states
 
 
 def _staged_matrix(tmp_path: Path, states):
