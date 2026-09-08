@@ -29,7 +29,13 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleEvidence
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.spec_storage import canonicalize_immutable_input_identities
-from feedbax.contracts.training import OptimizerSpec
+from feedbax.contracts.training import (
+    TRAINING_RUN_SPEC_SCHEMA_ID,
+    OptimizerSpec,
+    TrainingProgramRegistry,
+    TrainingRunSpec,
+    validate_training_run_spec_semantics,
+)
 from feedbax.orchestration.bundle import (
     ExecutionIdentityEnvelope,
     SchemaArtifactRef,
@@ -297,6 +303,7 @@ class ConformanceRowArtifacts:
     execution: ExecutionIdentityEnvelope | None = None
     execution_identity_adapter: Any = None
     schema_registry: Any = None
+    training_method_registry: TrainingProgramRegistry | None = None
     authored_repo_root: Path | str | None = None
     manifest_path: Path | str | None = None
     row_status: str | None = None
@@ -1062,7 +1069,7 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
 
 
 def check_seeds(row: ConformanceRowArtifacts) -> CheckEntry:
-    """Verify realized seeds equal declared seeds."""
+    """Verify declared seeds or the authenticated executed configuration."""
     check_id = "seeds"
     bundle_seed = _first_present(
         _path(row.bundle_row_spec, "seeds"),
@@ -1086,19 +1093,97 @@ def check_seeds(row: ConformanceRowArtifacts) -> CheckEntry:
             detail="declared seeds disagree between bundle row and execution provenance",
         )
     expected = _first_present(bundle_seed, provenance_seed)
-    observed = _first_present(
-        _path(row.training_diagnostics, "seeds"),
-        _path(row.training_diagnostics, "seed"),
-        _path(_manifest_payload(row), "metadata", "seeds"),
-        _path(_manifest_payload(row), "metadata", "seed"),
-    )
+    try:
+        observed = _first_present(
+            _path(row.training_diagnostics, "seeds"),
+            _path(row.training_diagnostics, "seed"),
+            _path(_manifest_payload(row), "metadata", "seeds"),
+            _path(_manifest_payload(row), "metadata", "seed"),
+        )
+    except Exception as exc:
+        return fail_check(
+            check_id,
+            expected=(
+                "authenticated executed TrainingRunSpec" if expected is _MISSING else expected
+            ),
+            observed=type(exc).__name__,
+            detail=f"seed conformance manifest evidence failed: {exc}",
+        )
     if expected is _MISSING:
+        if _is_empty_seed_observation(observed):
+            return _check_executed_configuration(row)
         return missing_input_check(check_id, "bundle_row_spec.seeds")
     if observed is _MISSING:
         return missing_input_check(check_id, "manifest/training_diagnostics.seeds")
     if _canonical(_seed_sequence(expected)) == _canonical(_seed_sequence(observed)):
         return pass_check(check_id, expected=expected, observed=observed)
     return fail_check(check_id, expected=expected, observed=observed)
+
+
+def _check_executed_configuration(row: ConformanceRowArtifacts) -> CheckEntry:
+    """Certify seed-bearing typed payloads without inventing realized seed evidence."""
+    check_id = "seeds"
+    identity = check_execution_identity(row)
+    if identity.status != CHECK_STATUS_PASS:
+        return fail_check(
+            check_id,
+            expected="authenticated executed TrainingRunSpec",
+            observed=identity.observed,
+            detail=f"executed configuration identity failed: {identity.detail or identity.status}",
+        )
+    manifest_validity = check_manifest_valid(row)
+    if manifest_validity.status != CHECK_STATUS_PASS:
+        return fail_check(
+            check_id,
+            expected="manifest matching the authenticated executed TrainingRunSpec",
+            observed=manifest_validity.observed,
+            detail=(
+                "executed configuration manifest validation failed: "
+                f"{manifest_validity.detail or manifest_validity.status}"
+            ),
+        )
+    if row.training_method_registry is None:
+        return missing_input_check(check_id, "training_method_registry")
+
+    try:
+        envelope = ExecutionIdentityEnvelope.model_validate(row.execution)
+        if envelope.payload.schema_id != TRAINING_RUN_SPEC_SCHEMA_ID:
+            raise ValueError(
+                "executed configuration seed conformance requires a TrainingRunSpec payload"
+            )
+        payload = _load_schema_artifact(envelope.payload, registry=row.schema_registry)
+        manifest_spec = _training_spec_payload(_manifest_payload(row, force_load=True))
+        if manifest_spec is _MISSING:
+            raise ValueError("manifest.training_spec.inline is missing")
+        if _canonical_training_payload(manifest_spec) != _canonical_training_payload(payload):
+            raise ValueError(
+                "manifest.training_spec.inline does not match the authenticated execution payload"
+            )
+        spec = TrainingRunSpec.model_validate(payload)
+        validate_training_run_spec_semantics(spec, row.training_method_registry)
+    except Exception as exc:
+        return fail_check(
+            check_id,
+            expected="authenticated supported executed TrainingRunSpec",
+            observed=type(exc).__name__,
+            detail=str(exc),
+        )
+
+    evidence = {
+        "schema_id": envelope.payload.schema_id,
+        "schema_version": envelope.payload.schema_version,
+        "execution_payload_sha256": envelope.payload.sha256,
+    }
+    return CheckEntry(
+        check_id=check_id,
+        status=CHECK_STATUS_PASS,
+        expected=evidence,
+        observed=evidence,
+        detail=(
+            "seed conformance is established by the authenticated executed configuration; "
+            "no realized replica seeds were observed"
+        ),
+    )
 
 
 def check_environment_fingerprint(row: ConformanceRowArtifacts) -> CheckEntry:
@@ -1138,22 +1223,7 @@ def check_manifest_valid(row: ConformanceRowArtifacts) -> CheckEntry:
     expected_spec = dict(row.preflight_normalized_payload)
     if observed_spec is _MISSING:
         return missing_input_check(check_id, "manifest.training_spec.inline")
-    # Trusted internal normalization: both JSON texts are serialized from admitted mappings here.
-    if _canonical(
-        json.loads(
-            json.dumps(observed_spec),
-            object_pairs_hook=lambda pairs: {
-                key: value for key, value in pairs if value is not None
-            },
-        )
-    ) == _canonical(
-        json.loads(
-            json.dumps(expected_spec),
-            object_pairs_hook=lambda pairs: {
-                key: value for key, value in pairs if value is not None
-            },
-        )
-    ):
+    if _canonical_training_payload(observed_spec) == _canonical_training_payload(expected_spec):
         return pass_check(check_id, expected=expected_spec, observed=observed_spec)
     return fail_check(check_id, expected=expected_spec, observed=observed_spec)
 
@@ -1971,6 +2041,19 @@ def _first_present(*values: Any) -> Any:
 
 def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _canonical_training_payload(value: Any) -> str:
+    """Canonicalize admitted payloads while treating optional nulls as absent."""
+    normalized = json.loads(
+        json.dumps(value),
+        object_pairs_hook=lambda pairs: {key: item for key, item in pairs if item is not None},
+    )
+    return _canonical(normalized)
+
+
+def _is_empty_seed_observation(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) == 0
 
 
 def _seed_sequence(value: Any) -> Any:

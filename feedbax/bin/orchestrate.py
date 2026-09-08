@@ -721,6 +721,7 @@ def _run_engine(
         bundle=bundle,
         driver=driver,
         conformance_registry=conformance_registry,
+        training_method_registry=training_method_registry,
         plugin_provenance=plugin_provenance,
         interruption_probe=interruption_probe,
     ).run(
@@ -889,6 +890,7 @@ def _request_engine(
         ),
         run_set_id=run_set_id,
         conformance_registry=conformance_registry,
+        training_method_registry=registry_bundle.training_programs,
         plugin_provenance=plugin_provenance,
         interruption_probe=interruption_probe,
     )

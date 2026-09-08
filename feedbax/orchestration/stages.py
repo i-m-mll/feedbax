@@ -34,7 +34,7 @@ from feedbax.contracts.spec_storage import (
     canonical_training_run_spec_bytes,
     training_spec_canonical_bytes,
 )
-from feedbax.contracts.training import TrainingRunSpec
+from feedbax.contracts.training import TrainingProgramRegistry, TrainingRunSpec
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -379,6 +379,7 @@ class StageEngine:
         run_set_id: str | None = None,
         store: RunSetStateStore | None = None,
         conformance_registry: CheckRegistry | None = None,
+        training_method_registry: TrainingProgramRegistry | None = None,
         row_conformance_inputs: Mapping[str, RowConformanceRuntimeInputs | Mapping[str, Any]]
         | None = None,
         poll_interval_seconds: float | None = None,
@@ -419,6 +420,7 @@ class StageEngine:
         )
         self.store = store or RunSetStateStore(run_set_dir / "state.json")
         self.conformance_registry = conformance_registry or CheckRegistry()
+        self.training_method_registry = training_method_registry
         self.row_conformance_inputs = {
             row_id: RowConformanceRuntimeInputs.model_validate(inputs)
             for row_id, inputs in (row_conformance_inputs or {}).items()
@@ -2177,6 +2179,7 @@ class StageEngine:
             schema_registry=(
                 self.assembly_context.schema_registry if self.assembly_context is not None else None
             ),
+            training_method_registry=self.training_method_registry,
             authored_repo_root=(
                 self.assembly_context.repo_root if self.assembly_context is not None else None
             ),
