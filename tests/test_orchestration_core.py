@@ -13,6 +13,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -93,6 +94,7 @@ from feedbax.orchestration.bundle import (
     InputCustodySource,
     InputFormatIdentity,
     LaunchPolicy,
+    LaunchRowGroup,
     RepoRevision,
     ResolvedAssemblyInput,
     RunBundle,
@@ -191,7 +193,11 @@ from feedbax.orchestration.state import (
     StateLockError,
 )
 from feedbax.training.diagnostics import TRAINING_DIAGNOSTICS_SCHEMA_ID, TrainingDiagnostics
-from feedbax.training.interruption import CancellationAction, CancellationDecision
+from feedbax.training.interruption import (
+    CancellationAction,
+    CancellationDecision,
+    RunInterruptionController,
+)
 from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
 from feedbax.training.spec_storage import TrainingRunIdentityAdapter
 from feedbax.contracts.remote_smoke import RemoteSmokeEvidence
@@ -3492,27 +3498,44 @@ while True:
         run_set_id="checkpoint-stop",
     )
     event_path = bundle.run_set_dir / "events" / "row.events.jsonl"
-    decision = CancellationDecision("stop", "test", 123.0)
-    dispatched = False
+    driver = LocalOrchestrationDriver(cwd=Path.cwd(), freeze_lines=("feedbax==test",))
+    original_probe = driver.probe
+    signalled = False
 
-    def interruption_probe() -> CancellationDecision | None:
-        nonlocal dispatched
-        if not dispatched and event_path.exists() and '"type":"ready"' in event_path.read_text():
-            dispatched = True
-            return decision
-        return None
+    def signal_during_probe(
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> DriverRowProbe:
+        nonlocal signalled
+        result = original_probe(bundle, row, state)
+        if not signalled and event_path.exists() and '"type":"ready"' in event_path.read_text():
+            signalled = True
+            signal.raise_signal(signal.SIGINT)
+        return result
 
-    state = StageEngine(
-        bundle=bundle,
-        driver=LocalOrchestrationDriver(cwd=Path.cwd(), freeze_lines=("feedbax==test",)),
-        poll_interval_seconds=0.01,
-        interruption_probe=interruption_probe,
-    ).run(stop_after_stage="MONITOR")
+    driver.probe = signal_during_probe  # type: ignore[method-assign]
+    controller = RunInterruptionController(
+        interactive=False,
+        output=StringIO(),
+        now=lambda: 123.0,
+    )
+    with controller:
+        state = StageEngine(
+            bundle=bundle,
+            driver=driver,
+            poll_interval_seconds=0.01,
+            interruption_probe=controller.poll,
+        ).run(stop_after_stage="MONITOR")
 
-    assert dispatched
+    assert signalled
     assert state.abort_reason == "operator-stop-after-checkpoint"
     assert state.rows["row"].status == "stopped"
-    assert state.budget_counters["cancellation"] == decision.as_provenance()
+    assert state.budget_counters["cancellation"] == {
+        "action": "stop",
+        "source": "non_interactive",
+        "requested_at_unix_seconds": 123.0,
+    }
 
 
 def test_failed_local_collection_does_not_copy_raw_directories_and_teardown_reclaims(
@@ -5097,7 +5120,7 @@ def test_monitor_reconciles_terminal_event_before_local_sentinel(
     [
         ("ready", "launched", None, "launch:second"),
         ("completed", "launched", None, "launch:second"),
-        ("failed", "stopped", "warm-first-failed", "stop:second"),
+        ("failed", "stopped", "warm-first-failed", None),
     ],
 )
 def test_warm_first_gate_releases_ready_and_completed_first_rows(
@@ -5105,7 +5128,7 @@ def test_warm_first_gate_releases_ready_and_completed_first_rows(
     first_status: str,
     second_status: str,
     abort_reason: str | None,
-    expected_call: str,
+    expected_call: str | None,
 ) -> None:
     rows = [
         _compiled_row("warm"),
@@ -5129,7 +5152,227 @@ def test_warm_first_gate_releases_ready_and_completed_first_rows(
 
     assert updated.rows["second"].status == second_status
     assert updated.abort_reason == abort_reason
-    assert expected_call in driver.calls
+    if expected_call is None:
+        assert "stop:second" not in driver.calls
+    else:
+        assert expected_call in driver.calls
+
+
+@pytest.mark.parametrize(
+    ("groups", "match"),
+    [
+        ([LaunchRowGroup(row_ids=["row-a", "unknown"], max_concurrent=1)], "unknown"),
+        ([LaunchRowGroup(row_ids=["row-a"], max_concurrent=1)], "omit"),
+    ],
+)
+def test_ordered_launch_groups_require_exact_bundle_row_membership(
+    tmp_path: Path,
+    groups: list[LaunchRowGroup],
+    match: str,
+) -> None:
+    with pytest.raises(ValidationError, match=match):
+        _bundle(
+            tmp_path,
+            rows=[_compiled_row("row-a"), _compiled_row("row-b")],
+            launch_policy=LaunchPolicy(max_parallel_rows=2, groups=groups),
+        )
+
+    with pytest.raises(ValidationError, match="duplicate row membership"):
+        LaunchPolicy(
+            groups=[
+                LaunchRowGroup(row_ids=["row-a"], max_concurrent=1),
+                LaunchRowGroup(row_ids=["row-a"], max_concurrent=1),
+            ]
+        )
+
+
+def test_ordered_launch_group_refills_then_crosses_authenticated_barrier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(stages, "assert_feedbax_revision_exact", lambda _revision: None)
+    monkeypatch.setattr(stages, "uses_registered_native_execution", lambda _row: True)
+    verified: list[str] = []
+
+    def verify(row: RunRowSpec, outputs: Mapping[str, str]) -> Mapping[str, Any]:
+        verified.append(row.row_id)
+        assert outputs == {
+            "payload": str(bundle.run_set_dir / row.row_id / "payload.json")
+        }
+        return {"transaction_id": f"checkpoint-{row.row_id}"}
+
+    monkeypatch.setattr(stages, "_verify_collected_native_checkpoint_custody", verify)
+    rows = [_compiled_row(row_id) for row_id in ("a", "b", "c", "d")]
+    bundle = _bundle(
+        tmp_path,
+        rows=rows,
+        launch_policy=LaunchPolicy(
+            max_parallel_rows=3,
+            groups=[
+                LaunchRowGroup(row_ids=["a", "b", "c"], max_concurrent=2),
+                LaunchRowGroup(row_ids=["d"], max_concurrent=1),
+            ],
+        ),
+    )
+    driver = FakeDriver()
+    engine = StageEngine(bundle=bundle, driver=driver)
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={row.row_id: RowState() for row in bundle.rows},
+    )
+
+    state = engine._launch_pending_if_allowed(state)
+    assert [call for call in driver.calls if call.startswith("launch:")] == ["launch:a", "launch:b"]
+    state = state.with_row("a", state.rows["a"].model_copy(update={"status": "completed"}))
+    state = state.with_row("b", state.rows["b"].model_copy(update={"status": "running"}))
+    state = engine._launch_pending_if_allowed(state)
+    assert [call for call in driver.calls if call.startswith("launch:")] == [
+        "launch:a",
+        "launch:b",
+        "launch:c",
+    ]
+    assert "launch:d" not in driver.calls
+
+    for row_id in ("b", "c"):
+        state = state.with_row(
+            row_id, state.rows[row_id].model_copy(update={"status": "completed"})
+        )
+    state = engine._launch_pending_if_allowed(state)
+    assert verified == ["a", "b", "c"]
+    assert driver.calls[-1] == "launch:d"
+    assert set(state.stage(STAGE_COLLECT).outputs["checkpoint_custody"]) == {"a", "b", "c"}
+
+    collection_calls = [call for call in driver.calls if call.startswith("collect:")]
+    state = engine._launch_pending_if_allowed(state)
+    assert [call for call in driver.calls if call.startswith("collect:")] == collection_calls
+
+    restored = RunSetState.model_validate_json(state.model_dump_json())
+    resumed_driver = FakeDriver()
+    verified.clear()
+    StageEngine(bundle=bundle, driver=resumed_driver)._launch_pending_if_allowed(restored)
+    assert verified == ["a", "b", "c"]
+    assert not [call for call in resumed_driver.calls if call.startswith("collect:")]
+
+
+def test_ordered_launch_group_does_not_advance_when_custody_authentication_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(stages, "uses_registered_native_execution", lambda _row: True)
+
+    def reject_custody(_row: RunRowSpec, _outputs: Mapping[str, str]) -> Mapping[str, Any]:
+        raise OrchestrationStageError("terminal checkpoint custody rejected")
+
+    monkeypatch.setattr(
+        stages, "_verify_collected_native_checkpoint_custody", reject_custody
+    )
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("first"), _compiled_row("later")],
+        launch_policy=LaunchPolicy(
+            max_parallel_rows=1,
+            groups=[
+                LaunchRowGroup(row_ids=["first"], max_concurrent=1),
+                LaunchRowGroup(row_ids=["later"], max_concurrent=1),
+            ],
+        ),
+    )
+    driver = FakeDriver()
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"first": RowState(status="completed"), "later": RowState()},
+    )
+
+    with pytest.raises(OrchestrationStageError, match="terminal checkpoint custody rejected"):
+        StageEngine(bundle=bundle, driver=driver)._launch_pending_if_allowed(state)
+
+    assert "launch:later" not in driver.calls
+
+
+@pytest.mark.parametrize("terminal_status", ["failed", "stopped"])
+def test_ordered_launch_group_failure_or_cancellation_blocks_later_groups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_status: str,
+) -> None:
+    monkeypatch.setattr(stages, "assert_feedbax_revision_exact", lambda _revision: None)
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row(row_id) for row_id in ("a", "b", "later")],
+        launch_policy=LaunchPolicy(
+            max_parallel_rows=2,
+            groups=[
+                LaunchRowGroup(row_ids=["a", "b"], max_concurrent=2),
+                LaunchRowGroup(row_ids=["later"], max_concurrent=1),
+            ],
+        ),
+    )
+    driver = FakeDriver()
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={
+            "a": RowState(status=terminal_status),
+            "b": RowState(status="running"),
+            "later": RowState(status="pending"),
+        },
+    )
+
+    updated = StageEngine(bundle=bundle, driver=driver)._launch_pending_if_allowed(state)
+
+    assert updated.abort_reason == "ordered-launch-group-blocked"
+    assert updated.rows["b"].status == "stopped"
+    assert updated.rows["later"].status == "stopped"
+    assert "stop:b" in driver.calls
+    assert "stop:later" not in driver.calls
+    assert "launch:later" not in driver.calls
+
+
+def test_grouped_warm_first_uses_first_scheduled_row_not_bundle_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(stages, "assert_feedbax_revision_exact", lambda _revision: None)
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row(row_id) for row_id in ("bundle-first", "scheduled-first", "later")],
+        launch_policy=LaunchPolicy(
+            max_parallel_rows=2,
+            warm_first=True,
+            groups=[
+                LaunchRowGroup(
+                    row_ids=["scheduled-first", "bundle-first"], max_concurrent=2
+                ),
+                LaunchRowGroup(row_ids=["later"], max_concurrent=1),
+            ],
+        ),
+    )
+    driver = FakeDriver()
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={row.row_id: RowState() for row in bundle.rows},
+    )
+
+    state = StageEngine(bundle=bundle, driver=driver)._launch_pending_if_allowed(state)
+    assert [call for call in driver.calls if call.startswith("launch:")] == [
+        "launch:scheduled-first"
+    ]
+
+
+def test_ungrouped_warm_first_failure_still_stops_running_rows_without_pending_rows(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(
+        tmp_path,
+        rows=[_compiled_row("warm"), _compiled_row("running")],
+        launch_policy=LaunchPolicy(max_parallel_rows=2, warm_first=True),
+    )
+    driver = FakeDriver()
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"warm": RowState(status="failed"), "running": RowState(status="running")},
+    )
+
+    updated = StageEngine(bundle=bundle, driver=driver)._launch_pending_if_allowed(state)
+
+    assert updated.abort_reason == "warm-first-failed"
+    assert updated.rows["running"].status == "stopped"
 
 
 def test_fingerprint_stability_package_changes_and_dirty_policy(tmp_path: Path) -> None:

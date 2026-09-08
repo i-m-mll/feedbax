@@ -34,7 +34,7 @@ from feedbax.contracts.spec_storage import (
     canonical_training_run_spec_bytes,
     training_spec_canonical_bytes,
 )
-from feedbax.contracts.training import TrainingRunSpec
+from feedbax.contracts.training import TrainingProgramRegistry, TrainingRunSpec
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -290,14 +290,17 @@ class _DeferredOperatorSignal(BaseException):
 
 
 class _ScopedSignalSupervisor:
-    """Convert SIGINT/SIGTERM into an orderly abort for one run boundary.
+    """Convert hard-abort signals into orderly cleanup for one run boundary.
 
     Python only permits signal-handler installation on the main thread. Off the
     main thread this context is intentionally a no-op, so callers retain normal
-    thread-level cancellation semantics instead of failing during setup.
+    thread-level cancellation semantics instead of failing during setup. When a
+    cooperative interruption probe owns SIGINT, this supervisor retains the
+    caller's handler and continues to supervise SIGTERM as a hard abort.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, cooperative_sigint: bool = False) -> None:
+        self._cooperative_sigint = cooperative_sigint
         self._installed = False
         self._previous: dict[int, Any] = {}
         self._received: int | None = None
@@ -306,7 +309,10 @@ class _ScopedSignalSupervisor:
     def __enter__(self) -> "_ScopedSignalSupervisor":
         if threading.current_thread() is not threading.main_thread():
             return self
-        for signum in (signal.SIGINT, signal.SIGTERM):
+        supervised_signals = (
+            (signal.SIGTERM,) if self._cooperative_sigint else (signal.SIGINT, signal.SIGTERM)
+        )
+        for signum in supervised_signals:
             self._previous[signum] = signal.getsignal(signum)
             signal.signal(signum, self._handle)
         self._installed = True
@@ -373,6 +379,7 @@ class StageEngine:
         run_set_id: str | None = None,
         store: RunSetStateStore | None = None,
         conformance_registry: CheckRegistry | None = None,
+        training_method_registry: TrainingProgramRegistry | None = None,
         row_conformance_inputs: Mapping[str, RowConformanceRuntimeInputs | Mapping[str, Any]]
         | None = None,
         poll_interval_seconds: float | None = None,
@@ -413,6 +420,7 @@ class StageEngine:
         )
         self.store = store or RunSetStateStore(run_set_dir / "state.json")
         self.conformance_registry = conformance_registry or CheckRegistry()
+        self.training_method_registry = training_method_registry
         self.row_conformance_inputs = {
             row_id: RowConformanceRuntimeInputs.model_validate(inputs)
             for row_id, inputs in (row_conformance_inputs or {}).items()
@@ -431,6 +439,7 @@ class StageEngine:
         self.plugin_provenance = tuple(plugin_provenance)
         self._signal_supervisor: _ScopedSignalSupervisor | None = None
         self._prepared_request: _PreparedRunAssembly | None = None
+        self._validated_group_collection_rows: set[str] = set()
 
     @classmethod
     def from_request(
@@ -464,11 +473,13 @@ class StageEngine:
     ) -> RunSetState:
         """Run or resume the bundle through all stages.
 
-        Main-thread SIGINT/SIGTERM handling is scoped to this call. Observable
-        exits run bounded cleanup before the original exception or signal is
-        re-raised. The durable acquisition intent is the only automatic coverage
-        for SIGKILL before an acquired pod's SSH endpoint becomes available; a
-        later local process or operator must reconcile it.
+        Main-thread hard-abort handling is scoped to this call. A supplied
+        interruption probe retains SIGINT for cooperative stop decisions while
+        SIGTERM remains supervised. Observable exits run bounded cleanup before
+        the original exception or signal is re-raised. The durable acquisition
+        intent is the only automatic coverage for SIGKILL before an acquired
+        pod's SSH endpoint becomes available; a later local process or operator
+        must reconcile it.
         """
         if self.request is not None:
             # The stale-install gate. ASSEMBLE runs it too, but running it here
@@ -479,7 +490,9 @@ class StageEngine:
         self._preflight_request_before_output()
         self.store.preflight_and_reserve()
         initial = self._initial_state()
-        with _ScopedSignalSupervisor() as signal_supervisor:
+        with _ScopedSignalSupervisor(
+            cooperative_sigint=self._interruption_probe is not None
+        ) as signal_supervisor:
             self._signal_supervisor = signal_supervisor
             with self.store.lock(break_stale=break_stale_lock):
                 state = self.store.initialize(initial)
@@ -1781,14 +1794,13 @@ class StageEngine:
         self.store.save(state)
         if spend_exceeded:
             raise BudgetExceeded("max_spend_usd reached before LAUNCH")
-        launched: list[str] = []
-        for row in self._launchable_rows(state):
-            state = self._launch_one(row, state)
-            launched.append(row.row_id)
-            if self.bundle.launch_policy.warm_first:
-                break
-            if len(launched) >= self.bundle.launch_policy.max_parallel_rows:
-                break
+        before = {row_id: row.started_at for row_id, row in state.rows.items()}
+        state = self._launch_pending_if_allowed(state)
+        launched = [
+            row.row_id
+            for row in self._launch_order_rows()
+            if before[row.row_id] is None and state.rows[row.row_id].started_at is not None
+        ]
         return state, {"launched_rows": launched}
 
     def _stage_monitor(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
@@ -1805,15 +1817,14 @@ class StageEngine:
                 budget_exceeded = True
                 state = self._stop_unfinished(state, reason="budget-exceeded")
                 break
-            decision = self._interruption_probe() if self._interruption_probe is not None else None
-            if decision is not None and decision.action != "continue":
-                state = self._apply_interruption(state, decision)
+            state = self._apply_pending_interruption(state)
             state = self._refresh_rows(state)
             state, spend_exceeded = self._apply_spend_budget(state)
             if spend_exceeded:
                 budget_exceeded = True
                 state = self._stop_unfinished(state, reason="budget-exceeded")
                 break
+            state = self._apply_pending_interruption(state)
             if self._all_terminal(state):
                 break
             if self._wall_time() - started_at > self.bundle.budget.max_wall_clock_seconds:
@@ -1841,6 +1852,12 @@ class StageEngine:
             return state, counters
         state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
         return state, counters
+
+    def _apply_pending_interruption(self, state: RunSetState) -> RunSetState:
+        decision = self._interruption_probe() if self._interruption_probe is not None else None
+        if decision is None or decision.action == "continue":
+            return state
+        return self._apply_interruption(state, decision)
 
     def _apply_spend_budget(self, state: RunSetState) -> tuple[RunSetState, bool]:
         """Record and enforce capped spend using only observed provider facts."""
@@ -1895,8 +1912,7 @@ class StageEngine:
         return state, exceeded
 
     def _stage_collect(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
-        collected: dict[str, Mapping[str, str]] = {}
-        checkpoint_custody: dict[str, Mapping[str, Any]] = {}
+        collected, checkpoint_custody = self._group_collection_maps(state)
         collection_recovery: dict[str, Mapping[str, Any]] = {}
         executor_failures = [
             {
@@ -1911,7 +1927,11 @@ class StageEngine:
         for row in self.bundle.rows:
             row_state = state.rows[row.row_id]
             try:
-                outputs = dict(self.driver.collect(self.bundle, row, state))
+                outputs = (
+                    dict(collected[row.row_id])
+                    if row.row_id in collected
+                    else dict(self.driver.collect(self.bundle, row, state))
+                )
             except Exception as exc:
                 if not preserve_executor_failure:
                     raise
@@ -2159,6 +2179,7 @@ class StageEngine:
             schema_registry=(
                 self.assembly_context.schema_registry if self.assembly_context is not None else None
             ),
+            training_method_registry=self.training_method_registry,
             authored_repo_root=(
                 self.assembly_context.repo_root if self.assembly_context is not None else None
             ),
@@ -2825,6 +2846,118 @@ class StageEngine:
     def _launchable_rows(self, state: RunSetState) -> list[RunRowSpec]:
         return [row for row in self.bundle.rows if state.rows[row.row_id].status == "pending"]
 
+    def _launch_order_rows(self) -> list[RunRowSpec]:
+        groups = self.bundle.launch_policy.groups
+        if groups is None:
+            return list(self.bundle.rows)
+        rows = {row.row_id: row for row in self.bundle.rows}
+        return [rows[row_id] for group in groups for row_id in group.row_ids]
+
+    def _group_collection_maps(
+        self, state: RunSetState
+    ) -> tuple[dict[str, Mapping[str, str]], dict[str, Mapping[str, Any]]]:
+        outputs = state.stage(STAGE_COLLECT).outputs
+        raw_rows = outputs.get("rows", {})
+        raw_custody = outputs.get("checkpoint_custody", {})
+        if not isinstance(raw_rows, Mapping) or not isinstance(raw_custody, Mapping):
+            raise OrchestrationStageError("persisted grouped collection evidence is malformed")
+        rows: dict[str, Mapping[str, str]] = {}
+        custody: dict[str, Mapping[str, Any]] = {}
+        for row_id, value in raw_rows.items():
+            if not isinstance(row_id, str) or not isinstance(value, Mapping):
+                raise OrchestrationStageError("persisted grouped row collection is malformed")
+            rows[row_id] = dict(value)
+        for row_id, value in raw_custody.items():
+            if not isinstance(row_id, str) or not isinstance(value, Mapping):
+                raise OrchestrationStageError("persisted grouped checkpoint custody is malformed")
+            custody[row_id] = dict(value)
+        return rows, custody
+
+    def _ensure_group_collection(
+        self, state: RunSetState, rows: Sequence[RunRowSpec]
+    ) -> RunSetState:
+        """Persist the existing collection/custody boundary before group advancement."""
+        collected, checkpoint_custody = self._group_collection_maps(state)
+        for row in rows:
+            if row.row_id in self._validated_group_collection_rows:
+                continue
+            has_outputs = row.row_id in collected
+            outputs = (
+                dict(collected[row.row_id])
+                if has_outputs
+                else dict(self.driver.collect(self.bundle, row, state))
+            )
+            missing_outputs = executor_family_adapter(
+                row.execution_family
+            ).missing_collection_outputs(self.bundle, row, outputs)
+            if missing_outputs:
+                raise OrchestrationStageError(
+                    f"declared collection outputs are absent for row "
+                    f"{row.row_id!r}: {missing_outputs!r}"
+                )
+            if uses_registered_native_execution(row):
+                checkpoint_custody[row.row_id] = _verify_collected_native_checkpoint_custody(
+                    row, outputs
+                )
+            collected[row.row_id] = outputs
+            collect_stage = state.stage(STAGE_COLLECT)
+            collect_outputs = dict(collect_stage.outputs)
+            collect_outputs["rows"] = collected
+            if checkpoint_custody:
+                collect_outputs["checkpoint_custody"] = checkpoint_custody
+            row_state = state.rows[row.row_id].model_copy(
+                update={"collected_outputs": outputs}
+            )
+            state = state.model_copy(
+                update={
+                    "rows": {**state.rows, row.row_id: row_state},
+                    "stages": {
+                        **state.stages,
+                        STAGE_COLLECT: collect_stage.model_copy(
+                            update={"outputs": collect_outputs}
+                        ),
+                    },
+                    "updated_at": utc_now(),
+                }
+            )
+            self.store.save(state)
+            self._validated_group_collection_rows.add(row.row_id)
+        return state
+
+    def _active_launch_group(
+        self, state: RunSetState
+    ) -> tuple[RunSetState, list[RunRowSpec], int]:
+        groups = self.bundle.launch_policy.groups
+        if groups is None:
+            return state, self._launchable_rows(state), self.bundle.launch_policy.max_parallel_rows
+        rows_by_id = {row.row_id: row for row in self.bundle.rows}
+        for index, group in enumerate(groups):
+            rows = [rows_by_id[row_id] for row_id in group.row_ids]
+            statuses = {state.rows[row.row_id].status for row in rows}
+            if statuses == {"completed"}:
+                state = self._ensure_group_collection(state, rows)
+                continue
+            later_ids = [
+                row_id for later_group in groups[index + 1 :] for row_id in later_group.row_ids
+            ]
+            if any(state.rows[row_id].status != "pending" for row_id in later_ids):
+                raise OrchestrationStageError(
+                    "ordered launch state is invalid: a later group became active before "
+                    "the current group crossed its collection/custody barrier"
+                )
+            if statuses & {"failed", "stopped"}:
+                return (
+                    self._stop_unfinished(state, reason="ordered-launch-group-blocked"),
+                    [],
+                    0,
+                )
+            return (
+                state,
+                [row for row in rows if state.rows[row.row_id].status == "pending"],
+                min(self.bundle.launch_policy.max_parallel_rows, group.max_concurrent),
+            )
+        return state, [], 0
+
     def _launch_one(self, row: RunRowSpec, state: RunSetState) -> RunSetState:
         try:
             assert_feedbax_revision_exact(self.bundle.feedbax_revision)
@@ -2857,22 +2990,28 @@ class StageEngine:
         return state
 
     def _launch_pending_if_allowed(self, state: RunSetState) -> RunSetState:
+        state, launchable, concurrency = self._active_launch_group(state)
         if self.bundle.launch_policy.warm_first:
-            first_id = self.bundle.rows[0].row_id
+            first_id = self._launch_order_rows()[0].row_id
             first_status = state.rows[first_id].status
             if first_status == "failed":
                 return self._stop_unfinished(state, reason="warm-first-failed")
-            if first_status not in ("ready", "completed"):
+            if first_status == "pending":
+                launchable = [row for row in launchable if row.row_id == first_id]
+                concurrency = 1
+            elif first_status not in ("ready", "completed"):
                 return state
+        if not launchable or concurrency <= 0:
+            return state
         active = sum(
             1
             for row_state in state.rows.values()
             if row_state.status in ("launched", "ready", "running")
         )
-        slots = self.bundle.launch_policy.max_parallel_rows - active
+        slots = concurrency - active
         if slots <= 0:
             return state
-        for row in self._launchable_rows(state)[:slots]:
+        for row in launchable[:slots]:
             state = self._launch_one(row, state)
             if self.bundle.launch_policy.stagger_seconds > 0:
                 self._sleep(self.bundle.launch_policy.stagger_seconds)
@@ -2958,7 +3097,8 @@ class StageEngine:
             row_state = state.rows[row.row_id]
             if row_state.status in ("completed", "failed", "stopped"):
                 continue
-            self.driver.stop_row(self.bundle, row, state)
+            if row_state.status != "pending":
+                self.driver.stop_row(self.bundle, row, state)
             updated = row_state.model_copy(
                 update={"status": "stopped", "completed_at": utc_now(), "error": reason}
             )

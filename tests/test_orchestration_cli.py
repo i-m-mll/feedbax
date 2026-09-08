@@ -1005,7 +1005,7 @@ def test_load_assembly_request_rejects_v1_without_review_authorization(tmp_path:
     path = tmp_path / "request-v1.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="re-author a current v8 request"):
+    with pytest.raises(ValueError, match="re-author a current v9 request"):
         orchestrate._load_assembly_request(path)
 
 

@@ -536,6 +536,7 @@ from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION_V10,
     RUN_BUNDLE_SCHEMA_VERSION_V11,
     RUN_BUNDLE_SCHEMA_VERSION_V12,
+    RUN_BUNDLE_SCHEMA_VERSION_V13,
 )
 from feedbax.orchestration.staged_root_custody import (
     STAGED_ROOT_CUSTODY_SCHEMA_ID,
@@ -583,7 +584,8 @@ RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V4 = "feedbax.spec.run_assembly_request.v4"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V5 = "feedbax.spec.run_assembly_request.v5"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6 = "feedbax.spec.run_assembly_request.v6"
 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7 = "feedbax.spec.run_assembly_request.v7"
-RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v8"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8 = "feedbax.spec.run_assembly_request.v8"
+RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION = "feedbax.spec.run_assembly_request.v9"
 EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID = (
     "feedbax.manifest.evaluation_matrix_execution_capsule"
 )
@@ -3330,7 +3332,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=("feedbax.orchestration.assembly.assemble_run_bundle",),
             description="Authored request resolved and compiled by persisted ASSEMBLE.",
             stance="migrate",
-            supported_old_versions=(RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7,),
+            supported_old_versions=(
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7,
+                RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8,
+            ),
             rejected_old_versions=(
                 f"{RUN_ASSEMBLY_REQUEST_SCHEMA_ID}.v0",
                 RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V1,
@@ -4633,7 +4638,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
             description="Durable run-set orchestration request bundle.",
             stance="migrate",
-            supported_old_versions=(RUN_BUNDLE_SCHEMA_VERSION_V11, RUN_BUNDLE_SCHEMA_VERSION_V12),
+            supported_old_versions=(
+                RUN_BUNDLE_SCHEMA_VERSION_V11,
+                RUN_BUNDLE_SCHEMA_VERSION_V12,
+                RUN_BUNDLE_SCHEMA_VERSION_V13,
+            ),
             rejected_old_versions=(
                 "feedbax.orchestration.run_bundle.v0",
                 RUN_BUNDLE_SCHEMA_VERSION_V1,
@@ -6159,7 +6168,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     "RunAssemblyRequest v1 lacks explicit deployment review authorization, "
                     "and no version below v7 carries the required feedbax_revision "
                     "authority; a migrator cannot invent the revision a request was "
-                    "authored against, so re-author a current v8 request that names it "
+                    "authored against, so re-author a current v9 request that names it "
                     "explicitly."
                     if family.kind == "RunAssemblyRequest"
                     else (
@@ -6372,9 +6381,22 @@ def _migrate_run_bundle_v12_to_v13_payload(payload: dict[str, Any]) -> dict[str,
         )
     migrated = dict(payload)
     migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
-    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION
+    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION_V13
     migrated.pop("staged_roots", None)
     migrated.setdefault("content_bindings", [])
+    return migrated
+
+
+def _migrate_run_bundle_v13_to_v14_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Preserve ungrouped launch behavior without interpreting newer policy fields."""
+    launch_policy = payload.get("launch_policy")
+    if isinstance(launch_policy, Mapping) and "groups" in launch_policy:
+        raise ValueError("RunBundle v13 cannot declare ordered launch groups")
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_BUNDLE_SCHEMA_ID
+    migrated["schema_version"] = RUN_BUNDLE_SCHEMA_VERSION
+    if isinstance(launch_policy, Mapping):
+        migrated["launch_policy"] = {**launch_policy, "groups": None}
     return migrated
 
 
@@ -6386,9 +6408,22 @@ def _migrate_run_assembly_request_v7_to_v8_payload(payload: dict[str, Any]) -> d
         )
     migrated = dict(payload)
     migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
-    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8
     migrated.pop("staged_roots", None)
     migrated.setdefault("content_bindings", [])
+    return migrated
+
+
+def _migrate_run_assembly_request_v8_to_v9_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Preserve ungrouped launch behavior without interpreting newer policy fields."""
+    launch_policy = payload.get("launch_policy")
+    if isinstance(launch_policy, Mapping) and "groups" in launch_policy:
+        raise ValueError("RunAssemblyRequest v8 cannot declare ordered launch groups")
+    migrated = dict(payload)
+    migrated["schema_id"] = RUN_ASSEMBLY_REQUEST_SCHEMA_ID
+    migrated["schema_version"] = RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION
+    if isinstance(launch_policy, Mapping):
+        migrated["launch_policy"] = {**launch_policy, "groups": None}
     return migrated
 
 
@@ -6588,7 +6623,7 @@ default_spec_registry.register_migration(
     "RunBundle",
     SchemaMigration(
         source_version=RUN_BUNDLE_SCHEMA_VERSION_V12,
-        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION_V13,
         migration_id="run-bundle-v12-to-v13-content-bindings",
         migrate=_migrate_run_bundle_v12_to_v13_payload,
         description=(
@@ -6598,16 +6633,36 @@ default_spec_registry.register_migration(
     ),
 )
 default_spec_registry.register_migration(
+    "RunBundle",
+    SchemaMigration(
+        source_version=RUN_BUNDLE_SCHEMA_VERSION_V13,
+        target_version=RUN_BUNDLE_SCHEMA_VERSION,
+        migration_id="run-bundle-v13-to-v14-ordered-launch-groups",
+        migrate=_migrate_run_bundle_v13_to_v14_payload,
+        description="Preserve legacy ungrouped launch behavior with no ordered groups.",
+    ),
+)
+default_spec_registry.register_migration(
     "RunAssemblyRequest",
     SchemaMigration(
         source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V7,
-        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8,
         migration_id="run-assembly-request-v7-to-v8-content-bindings",
         migrate=_migrate_run_assembly_request_v7_to_v8_payload,
         description=(
             "Add canonical content bindings to path-free requests; legacy staged roots "
             "require explicit offline migration."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "RunAssemblyRequest",
+    SchemaMigration(
+        source_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V8,
+        target_version=RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION,
+        migration_id="run-assembly-request-v8-to-v9-ordered-launch-groups",
+        migrate=_migrate_run_assembly_request_v8_to_v9_payload,
+        description="Preserve legacy ungrouped launch behavior with no ordered groups.",
     ),
 )
 default_spec_registry.register_migration(
