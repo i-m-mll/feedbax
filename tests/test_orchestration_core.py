@@ -13,6 +13,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -192,7 +193,11 @@ from feedbax.orchestration.state import (
     StateLockError,
 )
 from feedbax.training.diagnostics import TRAINING_DIAGNOSTICS_SCHEMA_ID, TrainingDiagnostics
-from feedbax.training.interruption import CancellationAction, CancellationDecision
+from feedbax.training.interruption import (
+    CancellationAction,
+    CancellationDecision,
+    RunInterruptionController,
+)
 from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
 from feedbax.training.spec_storage import TrainingRunIdentityAdapter
 from feedbax.contracts.remote_smoke import RemoteSmokeEvidence
@@ -3493,27 +3498,44 @@ while True:
         run_set_id="checkpoint-stop",
     )
     event_path = bundle.run_set_dir / "events" / "row.events.jsonl"
-    decision = CancellationDecision("stop", "test", 123.0)
-    dispatched = False
+    driver = LocalOrchestrationDriver(cwd=Path.cwd(), freeze_lines=("feedbax==test",))
+    original_probe = driver.probe
+    signalled = False
 
-    def interruption_probe() -> CancellationDecision | None:
-        nonlocal dispatched
-        if not dispatched and event_path.exists() and '"type":"ready"' in event_path.read_text():
-            dispatched = True
-            return decision
-        return None
+    def signal_during_probe(
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> DriverRowProbe:
+        nonlocal signalled
+        result = original_probe(bundle, row, state)
+        if not signalled and event_path.exists() and '"type":"ready"' in event_path.read_text():
+            signalled = True
+            signal.raise_signal(signal.SIGINT)
+        return result
 
-    state = StageEngine(
-        bundle=bundle,
-        driver=LocalOrchestrationDriver(cwd=Path.cwd(), freeze_lines=("feedbax==test",)),
-        poll_interval_seconds=0.01,
-        interruption_probe=interruption_probe,
-    ).run(stop_after_stage="MONITOR")
+    driver.probe = signal_during_probe  # type: ignore[method-assign]
+    controller = RunInterruptionController(
+        interactive=False,
+        output=StringIO(),
+        now=lambda: 123.0,
+    )
+    with controller:
+        state = StageEngine(
+            bundle=bundle,
+            driver=driver,
+            poll_interval_seconds=0.01,
+            interruption_probe=controller.poll,
+        ).run(stop_after_stage="MONITOR")
 
-    assert dispatched
+    assert signalled
     assert state.abort_reason == "operator-stop-after-checkpoint"
     assert state.rows["row"].status == "stopped"
-    assert state.budget_counters["cancellation"] == decision.as_provenance()
+    assert state.budget_counters["cancellation"] == {
+        "action": "stop",
+        "source": "non_interactive",
+        "requested_at_unix_seconds": 123.0,
+    }
 
 
 def test_failed_local_collection_does_not_copy_raw_directories_and_teardown_reclaims(

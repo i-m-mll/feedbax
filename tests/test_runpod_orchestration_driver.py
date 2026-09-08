@@ -3024,6 +3024,8 @@ def test_launch_row_exports_contract_env_without_per_row_deadman(tmp_path: Path)
     assert "FEEDBAX_PROCESS_IDENTITY=" in launch_command
     assert "feedbax.orchestration.process_identity.v1" in launch_command
     assert "refusing to adopt started row without verified process identity" in launch_command
+    assert "trap checkpoint_stop_requested INT" in launch_command
+    assert "signal_failed 130" not in launch_command
     assert outputs["process_identity"]["run_set_id"] == bundle.run_set_id
     assert "rm -f" in launch_command
     assert all("deadman" not in command for command in transport.ssh_commands)
@@ -3108,6 +3110,16 @@ def test_runpod_stop_requires_and_checks_durable_process_identity(tmp_path: Path
     assert "process group member" in command
     assert identity.launch_token in command
 
+    transport.queue_ssh(CommandResult(0, json.dumps({"status": "stop-requested"})))
+
+    requested = driver.request_stop_at_checkpoint(bundle, row, owned)
+
+    assert requested["status"] == "stop-requested"
+    checkpoint_command = transport.ssh_commands[-1]
+    assert "checkpoint-stop <<'PY'" in checkpoint_command
+    assert "os.killpg(process_group_id, signal.SIGINT)" in checkpoint_command
+    assert identity.launch_token in checkpoint_command
+
 
 def test_remote_sentinel_uses_session_detacher_instead_of_background_shell() -> None:
     command = build_remote_nohup_sentinel_command(
@@ -3147,13 +3159,33 @@ def test_launch_row_command_returns_before_buffered_child_and_replaces_stale_pid
     setsid.chmod(0o755)
     bundle = _bundle(tmp_path)
     original = bundle.rows[0]
+    ready_path = tmp_path / "worker.ready"
+    checkpoint_path = tmp_path / "worker.checkpoint"
+    worker_source = f"""
+import signal
+import time
+from pathlib import Path
+
+ready = Path({str(ready_path)!r})
+checkpoint = Path({str(checkpoint_path)!r})
+
+def stop_at_checkpoint(_signum, _frame):
+    checkpoint.write_text("durable", encoding="utf-8")
+    raise SystemExit(0)
+
+signal.signal(signal.SIGINT, stop_at_checkpoint)
+print("buffered", end="")
+ready.write_text("ready", encoding="utf-8")
+while True:
+    time.sleep(0.01)
+""".strip()
     row = original.model_copy(
         update={
             "launch": RowLaunchSpec(
                 command=[
                     sys.executable,
                     "-c",
-                    "import time; print('buffered', end=''); time.sleep(10)",
+                    worker_source,
                 ]
             )
         }
@@ -3194,6 +3226,20 @@ def test_launch_row_command_returns_before_buffered_child_and_replaces_stale_pid
         assert elapsed < 2
         assert pid != 999999
         os.kill(pid, 0)
+        deadline = time.monotonic() + 2
+        while not ready_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready_path.exists()
+
+        os.killpg(pid, signal.SIGINT)
+
+        done_path = sentinel_dir / "warm.done"
+        deadline = time.monotonic() + 2
+        while not done_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert checkpoint_path.read_text(encoding="utf-8") == "durable"
+        assert done_path.exists()
+        assert not (sentinel_dir / "warm.failed").exists()
     finally:
         try:
             os.killpg(pid, signal.SIGTERM)

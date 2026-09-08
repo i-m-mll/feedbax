@@ -290,14 +290,17 @@ class _DeferredOperatorSignal(BaseException):
 
 
 class _ScopedSignalSupervisor:
-    """Convert SIGINT/SIGTERM into an orderly abort for one run boundary.
+    """Convert hard-abort signals into orderly cleanup for one run boundary.
 
     Python only permits signal-handler installation on the main thread. Off the
     main thread this context is intentionally a no-op, so callers retain normal
-    thread-level cancellation semantics instead of failing during setup.
+    thread-level cancellation semantics instead of failing during setup. When a
+    cooperative interruption probe owns SIGINT, this supervisor retains the
+    caller's handler and continues to supervise SIGTERM as a hard abort.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, cooperative_sigint: bool = False) -> None:
+        self._cooperative_sigint = cooperative_sigint
         self._installed = False
         self._previous: dict[int, Any] = {}
         self._received: int | None = None
@@ -306,7 +309,10 @@ class _ScopedSignalSupervisor:
     def __enter__(self) -> "_ScopedSignalSupervisor":
         if threading.current_thread() is not threading.main_thread():
             return self
-        for signum in (signal.SIGINT, signal.SIGTERM):
+        supervised_signals = (
+            (signal.SIGTERM,) if self._cooperative_sigint else (signal.SIGINT, signal.SIGTERM)
+        )
+        for signum in supervised_signals:
             self._previous[signum] = signal.getsignal(signum)
             signal.signal(signum, self._handle)
         self._installed = True
@@ -465,11 +471,13 @@ class StageEngine:
     ) -> RunSetState:
         """Run or resume the bundle through all stages.
 
-        Main-thread SIGINT/SIGTERM handling is scoped to this call. Observable
-        exits run bounded cleanup before the original exception or signal is
-        re-raised. The durable acquisition intent is the only automatic coverage
-        for SIGKILL before an acquired pod's SSH endpoint becomes available; a
-        later local process or operator must reconcile it.
+        Main-thread hard-abort handling is scoped to this call. A supplied
+        interruption probe retains SIGINT for cooperative stop decisions while
+        SIGTERM remains supervised. Observable exits run bounded cleanup before
+        the original exception or signal is re-raised. The durable acquisition
+        intent is the only automatic coverage for SIGKILL before an acquired
+        pod's SSH endpoint becomes available; a later local process or operator
+        must reconcile it.
         """
         if self.request is not None:
             # The stale-install gate. ASSEMBLE runs it too, but running it here
@@ -480,7 +488,9 @@ class StageEngine:
         self._preflight_request_before_output()
         self.store.preflight_and_reserve()
         initial = self._initial_state()
-        with _ScopedSignalSupervisor() as signal_supervisor:
+        with _ScopedSignalSupervisor(
+            cooperative_sigint=self._interruption_probe is not None
+        ) as signal_supervisor:
             self._signal_supervisor = signal_supervisor
             with self.store.lock(break_stale=break_stale_lock):
                 state = self.store.initialize(initial)
@@ -1805,15 +1815,14 @@ class StageEngine:
                 budget_exceeded = True
                 state = self._stop_unfinished(state, reason="budget-exceeded")
                 break
-            decision = self._interruption_probe() if self._interruption_probe is not None else None
-            if decision is not None and decision.action != "continue":
-                state = self._apply_interruption(state, decision)
+            state = self._apply_pending_interruption(state)
             state = self._refresh_rows(state)
             state, spend_exceeded = self._apply_spend_budget(state)
             if spend_exceeded:
                 budget_exceeded = True
                 state = self._stop_unfinished(state, reason="budget-exceeded")
                 break
+            state = self._apply_pending_interruption(state)
             if self._all_terminal(state):
                 break
             if self._wall_time() - started_at > self.bundle.budget.max_wall_clock_seconds:
@@ -1841,6 +1850,12 @@ class StageEngine:
             return state, counters
         state = state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
         return state, counters
+
+    def _apply_pending_interruption(self, state: RunSetState) -> RunSetState:
+        decision = self._interruption_probe() if self._interruption_probe is not None else None
+        if decision is None or decision.action == "continue":
+            return state
+        return self._apply_interruption(state, decision)
 
     def _apply_spend_budget(self, state: RunSetState) -> tuple[RunSetState, bool]:
         """Record and enforce capped spend using only observed provider facts."""
