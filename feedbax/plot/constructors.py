@@ -6,18 +6,19 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from importlib import resources
+import json
 import re
 from typing import Any, Literal
 
 import numpy as np
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
+from pydantic import Field, field_validator
 
 from feedbax.contracts.figures import (
     ColorscaleSpec,
     DataDerivedAxisRange,
     FigureColorbar,
-    FigureGridLayoutDefaults,
     PerturbationTiming,
     SceneCamera,
     SemanticAxisRangePolicy,
@@ -200,12 +201,26 @@ class GridFigureParams(StrictModel):
     legend_yanchor: Literal["auto", "top", "middle", "bottom"] | None = None
     margin: FigureMarginParams | None = None
     hovermode: Literal["x", "y", "closest", "x unified", "y unified", False] | None = None
-    template: str | None = None
-    layout_defaults: FigureGridLayoutDefaults | None = None
+    template: str | dict[str, Any] | None = None
+    row_label_gutter: float | None = Field(default=None, ge=0.0, le=256.0)
+    legend_gutter: float | None = Field(default=None, ge=0.0, le=512.0)
     # Resolved by figure execution from FigureSpec.colorbar; not authored here.
     colorbar: FigureColorbar | None = None
     # Resolved by figure execution from FigureSpec.semantic_range_policy.
     semantic_range_policy: SemanticAxisRangePolicy | None = None
+
+    @field_validator("template")
+    @classmethod
+    def _validate_serialized_template(
+        cls, template: str | dict[str, Any] | None
+    ) -> str | dict[str, Any] | None:
+        if isinstance(template, dict):
+            try:
+                json.dumps(template, allow_nan=False)
+                go.layout.Template(template)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid serialized Plotly template: {exc}") from exc
+        return template
 
 
 class Trajectories2DRowParams(StrictModel):
@@ -1516,9 +1531,22 @@ def _panel_colorbar_layout(
     }
 
 
-def _semantic_group_name(quantity: str, unit: str) -> str:
-    """Return an internal readable group key for one exact semantic class."""
-    return f"semantic[quantity={quantity!r},unit={unit!r}]"
+def _semantic_group_name(
+    dimension: str,
+    quantity: str,
+    unit: str,
+    *,
+    used_names: set[str],
+) -> str:
+    """Allocate a deterministic semantic group disjoint from authored names."""
+    base = f"feedbax.semantic[{dimension=},{quantity=},{unit=}]"
+    candidate = base
+    suffix = 1
+    while candidate in used_names:
+        candidate = f"{base}#{suffix}"
+        suffix += 1
+    used_names.add(candidate)
+    return candidate
 
 
 def _lower_semantic_axis_ranges(
@@ -1531,8 +1559,13 @@ def _lower_semantic_axis_ranges(
     selected = (
         None if policy.classes == "all" else {(item.quantity, item.unit) for item in policy.classes}
     )
-    encountered: set[tuple[str, str]] = set()
-    eligible: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    used_group_names = {
+        DataDerivedAxisRange.model_validate(settings["derived_range"]).group
+        for panel in panels
+        for settings in (panel.x_axis, panel.y_axis)
+        if settings is not None and settings.get("derived_range") is not None
+    }
+    eligible: dict[tuple[str, str, str], list[tuple[int, str]]] = {}
     for panel_index, panel in enumerate(panels):
         if panel.panel_type == "scene":
             continue
@@ -1544,7 +1577,6 @@ def _lower_semantic_axis_ranges(
             if quantity is None or unit is None:
                 continue
             semantic_class = (str(quantity), str(unit))
-            encountered.add(semantic_class)
             if selected is not None and semantic_class not in selected:
                 continue
             # Explicit range authority and explicit named groups are the bounded
@@ -1556,21 +1588,19 @@ def _lower_semantic_axis_ranges(
                     "semantic axis range policy requires linear axes; "
                     f"panel {panel.name!r} {dimension} axis declares {semantic_class!r} as log"
                 )
-            eligible.setdefault(semantic_class, []).append((panel_index, dimension))
-    if selected is not None:
-        missing = sorted(selected - encountered)
-        if missing:
-            raise ValueError(
-                "semantic axis range policy selected classes not declared by any "
-                f"Cartesian axis: {missing}"
-            )
+            eligible.setdefault((dimension, *semantic_class), []).append((panel_index, dimension))
 
     lowered = list(panels)
-    for (quantity, unit), members in eligible.items():
+    for (dimension, quantity, unit), members in eligible.items():
         if len(members) < 2:
             continue
         declaration = DataDerivedAxisRange(
-            group=_semantic_group_name(quantity, unit),
+            group=_semantic_group_name(
+                dimension,
+                quantity,
+                unit,
+                used_names=used_group_names,
+            ),
             padding_fraction=policy.padding_fraction,
         ).model_dump(exclude_none=True)
         for panel_index, dimension in members:
@@ -1699,40 +1729,47 @@ def _apply_data_derived_axis_ranges(fig: go.Figure, panels: Sequence[PanelConten
             updater(range=axis_range, row=member["row"], col=member["col"])
 
 
-def _apply_grid_layout_defaults(
+def _apply_grid_gutters(
     fig: go.Figure,
-    defaults: FigureGridLayoutDefaults | None,
     *,
+    row_label_gutter: float | None,
+    legend_gutter: float | None,
     width: int | None,
     explicit_legend_x: float | None,
 ) -> None:
-    """Fill omitted native Plotly geometry without overriding authored axes."""
-    if defaults is None:
+    """Place native row labels and legends in explicit pixel gutters."""
+    if row_label_gutter is None and legend_gutter is None:
         return
-    for axis in (*fig.select_xaxes(), *fig.select_yaxes()):
-        updates: dict[str, Any] = {}
-        if defaults.axis_automargin is not None and axis.automargin is None:
-            updates["automargin"] = defaults.axis_automargin
-        if defaults.axis_title_standoff is not None and axis.title.standoff is None:
-            updates["title_standoff"] = defaults.axis_title_standoff
-        if updates:
-            axis.update(**updates)
-
     row_annotations = [
         annotation
         for annotation in fig.layout.annotations or ()
         if (annotation.name or "").startswith("feedbax.row_label.")
     ]
-    if defaults.row_label_gutter is not None:
+    if row_annotations and row_label_gutter is None and legend_gutter is not None:
+        raise ValueError("legend_gutter with row labels requires row_label_gutter")
+    if row_label_gutter is not None:
         for annotation in row_annotations:
-            annotation.update(x=1.0, xshift=defaults.row_label_gutter)
+            annotation.update(x=1.0, xanchor="center", xshift=row_label_gutter / 2.0)
 
-    if defaults.legend_gutter is None or explicit_legend_x is not None:
+    if legend_gutter is None or explicit_legend_x is not None:
         return
     if width is None:
-        raise ValueError("FigureGridLayoutDefaults.legend_gutter requires an explicit figure width")
-    row_offset = defaults.row_label_gutter if row_annotations else 0.0
-    fig.update_layout(legend_x=1.0 + (row_offset or 0.0) / width + defaults.legend_gutter / width)
+        raise ValueError("legend_gutter requires an explicit figure width")
+    margin = fig.layout.margin
+    template_margin = fig.layout.template.layout.margin
+
+    def margin_pixels(side: str) -> float:
+        explicit = getattr(margin, side)
+        inherited = getattr(template_margin, side)
+        return float(
+            explicit if explicit is not None else inherited if inherited is not None else 80
+        )
+
+    plot_width = width - margin_pixels("l") - margin_pixels("r")
+    if plot_width <= 0:
+        raise ValueError("figure width must exceed its left and right margins")
+    reserved_row_space = row_label_gutter if row_annotations else 0.0
+    fig.update_layout(legend_x=1.0 + (reserved_row_space + legend_gutter) / plot_width)
 
 
 def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
@@ -1764,9 +1801,10 @@ def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictM
         updates["template"] = p.template
     if updates:
         fig.update_layout(**updates)
-    _apply_grid_layout_defaults(
+    _apply_grid_gutters(
         fig,
-        p.layout_defaults,
+        row_label_gutter=p.row_label_gutter,
+        legend_gutter=p.legend_gutter,
         width=p.width,
         explicit_legend_x=p.legend_x,
     )

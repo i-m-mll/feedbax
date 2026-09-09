@@ -132,39 +132,45 @@ list of at most 64 exact pairs and supplies one finite nonnegative
 `padding_fraction`. During grid assembly, every selected class with at least two
 eligible Cartesian axes is lowered to the existing `DataDerivedAxisRange`
 reducer. An explicit axis `range` or `derived_range` is an exception and always
-wins; no units are converted.
+wins; a selected class absent from one figure is a no-op. Generated groups are
+separate for x and y and are allocated away from every authored group name. No
+units are converted.
 
-Grid figures may carry versioned `layout_defaults` in `assembler_params`:
+Grid figures accept serialized Plotly templates through their existing
+`assembler_params.template` input. Plotly validates the template, and the
+ordinary appearance values remain inheritable and pinnable through the existing
+`FigureTemplate` composition path:
 
 ```json
 {
   "width": 720,
-  "layout_defaults": {
-    "schema_id": "feedbax.spec.figure_grid_layout_defaults",
-    "schema_version": "feedbax.spec.figure_grid_layout_defaults.v1",
-    "axis_automargin": true,
-    "axis_title_standoff": 14,
-    "row_label_gutter": 12,
-    "legend_gutter": 32
-  }
+  "margin": {"l": 80, "r": 140},
+  "template": {
+    "layout": {
+      "xaxis": {"automargin": true, "title": {"standoff": 14}},
+      "yaxis": {"automargin": true, "title": {"standoff": 14}},
+      "legend": {"xanchor": "left"}
+    }
+  },
+  "row_label_gutter": 28,
+  "legend_gutter": 32
 }
 ```
 
-Axis defaults fill only omitted native Plotly properties. `PanelSpec.row_label`
-uses Plotly's native row-title annotation, separately from the panel title.
-Gutters are pixel distances and therefore retain their authored spacing when
-the figure width changes; deriving a legend gutter requires an explicit width.
-An explicit per-axis value or `legend_x` wins over its corresponding default.
-Colors, fonts, line styles, and other ordinary appearance remain in Plotly
-templates.
+`PanelSpec.row_label` uses Plotly's native row-title annotation, separately from
+the panel title. `row_label_gutter` reserves a pixel-wide strip outside the plot
+area and centres row labels in it; `legend_gutter` places the legend that many
+pixels beyond the reserved strip. Legend placement is calculated from the
+actual plot width after left and right margins. An explicit `legend_x` wins.
+Axis automargin, title standoff, fonts, colors, and other ordinary appearance
+remain native Plotly-template values and are never injected afterward.
 
 ## Identity and migration rules
 
 - `feedbax.spec.figure.v2` remains the unchanged ordinary resolved schema, with
   its existing validation, migration, and rejection policy.
-- `feedbax.spec.semantic_axis_range_policy.v1` and
-  `feedbax.spec.figure_grid_layout_defaults.v1` are the only supported versions
-  of their optional nested declarations; v0 and unknown versions reject.
+- `feedbax.spec.semantic_axis_range_policy.v1` is the only supported version of
+  its optional nested declaration; v0 and unknown versions reject.
 - `feedbax.spec.figure_composition.v2` is authored lineage, not resolved figure
   semantics. Its v1 predecessor migrates without semantic change to v2, which
   scopes structural addition declarations to `FigureCompositionDelta`.

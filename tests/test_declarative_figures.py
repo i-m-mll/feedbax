@@ -29,8 +29,6 @@ from feedbax.contracts.figures import (
     DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION,
     EQUAL_DATA_ASPECT_SCHEMA_ID,
     EQUAL_DATA_ASPECT_SCHEMA_VERSION,
-    FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_ID,
-    FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_VERSION,
     FIGURE_SPEC_SCHEMA_ID,
     FIGURE_SPEC_SCHEMA_VERSION,
     PERTURBATION_TIMING_SCHEMA_ID,
@@ -41,6 +39,7 @@ from feedbax.contracts.figures import (
     FigureSpec,
     FigureTemplate,
     PerturbationTiming,
+    SemanticAxisRangePolicy,
     SlotSpec,
     TraceBinding,
 )
@@ -74,6 +73,7 @@ from feedbax.plot.constructors import (
     register_figure_template,
     registered_figure_constructors,
     register_default_figure_constructors,
+    _lower_semantic_axis_ranges,
 )
 from feedbax.plot.colors import adjust_color_brightness
 from feedbax.plot import calculate_array_minmax
@@ -706,6 +706,7 @@ def test_execute_figure_spec_emits_panel_axes_and_figure_chrome(
         ({"legend_xanchor": "outside"}, "legend_xanchor"),
         ({"hovermode": "diagonal"}, "hovermode"),
         ({"margin": {"top": 10}}, "margin.top"),
+        ({"template": {"layout": {"not_a_plotly_key": True}}}, "invalid serialized Plotly"),
     ],
 )
 def test_grid_figure_rejects_invalid_typed_chrome(params, match: str, figure_registry) -> None:
@@ -1053,28 +1054,72 @@ def test_semantic_axis_range_selection_and_explicit_axis_exceptions(
         "padding_fraction": 0.0,
     }
     missing = FigureSpec.model_validate(missing_payload)
-    with pytest.raises(FigureSpecExecutionError) as exc_info:
-        execute_figure_spec(missing, root=tmp_path / "missing", registry=figure_registry)
-    assert "selected classes not declared" in exc_info.value.manifest.failure["message"]
+    missing_manifest, _path = execute_figure_spec(
+        missing,
+        root=tmp_path / "missing",
+        registry=figure_registry,
+    )
+    missing_layout = figure_manifest_plotly_json(missing_manifest)["layout"]
+    assert "range" not in missing_layout["yaxis"]
+    assert missing_layout["yaxis2"]["range"] == [-1.0, 1.0]
+    assert "range" not in missing_layout["yaxis3"]
+
+
+def test_semantic_axis_groups_separate_dimensions_and_avoid_authored_names() -> None:
+    authored_group = "feedbax.semantic[dimension='y',quantity='force',unit='N']"
+    panels = [
+        PanelContent(name="x-a", x_axis={"quantity": "position", "unit": "m"}),
+        PanelContent(name="x-b", x_axis={"quantity": "position", "unit": "m"}),
+        PanelContent(name="y-a", y_axis={"quantity": "position", "unit": "m"}),
+        PanelContent(name="y-b", y_axis={"quantity": "position", "unit": "m"}),
+        PanelContent(name="force-a", y_axis={"quantity": "force", "unit": "N"}),
+        PanelContent(name="force-b", y_axis={"quantity": "force", "unit": "N"}),
+        PanelContent(
+            name="authored",
+            y_axis={"derived_range": {"group": authored_group, "padding_fraction": 0}},
+        ),
+    ]
+    lowered = _lower_semantic_axis_ranges(
+        panels,
+        SemanticAxisRangePolicy(classes="all", padding_fraction=0),
+    )
+
+    x_group = lowered[0].x_axis["derived_range"]["group"]
+    y_group = lowered[2].y_axis["derived_range"]["group"]
+    force_group = lowered[4].y_axis["derived_range"]["group"]
+    assert lowered[1].x_axis["derived_range"]["group"] == x_group
+    assert lowered[3].y_axis["derived_range"]["group"] == y_group
+    assert lowered[5].y_axis["derived_range"]["group"] == force_group
+    assert x_group != y_group
+    assert force_group != authored_group
+    assert lowered[6].y_axis["derived_range"]["group"] == authored_group
 
 
 @pytest.mark.parametrize("width", [480, 1200])
-def test_grid_layout_defaults_keep_native_row_and_legend_gutters_at_delivery_widths(
+def test_grid_template_and_gutters_render_populated_delivery_widths(
     tmp_path: Path, figure_registry, width: int
 ) -> None:
-    layout_defaults = {
-        "axis_automargin": True,
-        "axis_title_standoff": 14,
-        "row_label_gutter": 12,
-        "legend_gutter": 32,
+    plotly_template = {
+        "layout": {
+            "xaxis": {"automargin": True, "title": {"standoff": 17}},
+            "yaxis": {"automargin": True, "title": {"standoff": 23}},
+            "legend": {"xanchor": "left", "y": 0.5},
+        }
     }
-    template_name = f"feedbax.layout_defaults_{width}"
+    template_name = f"feedbax.native_grid_layout_{width}"
     register_figure_template(
         FigureTemplate(
             name=template_name,
-            description="Reusable native grid geometry defaults.",
+            description="Reusable native Plotly appearance and explicit grid gutters.",
             assembler="feedbax.grid_figure",
-            assembler_params={"width": width, "layout_defaults": layout_defaults},
+            assembler_params={
+                "width": width,
+                "height": 520,
+                "margin": {"l": 80, "r": 140, "t": 60, "b": 60},
+                "template": plotly_template,
+                "row_label_gutter": 28,
+                "legend_gutter": 32,
+            },
         ),
         registry=figure_registry,
     )
@@ -1089,7 +1134,6 @@ def test_grid_layout_defaults_keep_native_row_and_legend_gutters_at_delivery_wid
                 "col": 1,
                 "row_label": "Delay 0",
                 "axes_labels": {"x": "Time", "y": "Force"},
-                "y_axis": {"automargin": False, "title_standoff": 3},
             },
             {
                 "name": "late",
@@ -1099,45 +1143,50 @@ def test_grid_layout_defaults_keep_native_row_and_legend_gutters_at_delivery_wid
                 "axes_labels": {"x": "Time", "y": "Force"},
             },
         ],
+        traces=[
+            TraceBinding(
+                name=f"visible-{row}",
+                constructor="feedbax.profile_band",
+                panel=panel,
+                data={"x": [0, 1, 2], "mean": [row, row + 1, row + 2], "std": [0, 0, 0]},
+                params={"label": f"Series {row}", "show_band": False, "showlegend": True},
+            )
+            for row, panel in enumerate(("early", "late"), start=1)
+        ],
     )
 
     round_trip = FigureSpec.model_validate(spec.model_dump(mode="json"))
     assert round_trip == spec
-    defaults = (
-        get_figure_constructor("feedbax.grid_figure", tier="figure", registry=figure_registry)
-        .params(
-            {
-                "width": width,
-                "layout_defaults": layout_defaults,
-            }
-        )
-        .layout_defaults
-    )
-    assert defaults is not None
-    assert defaults.schema_id == FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_ID
-    assert defaults.schema_version == FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_VERSION
-    assert (
-        default_spec_registry.current_version("FigureGridLayoutDefaults")
-        == FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_VERSION
-    )
 
     manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
-    layout = figure_manifest_plotly_json(manifest)["layout"]
+    rendered = figure_manifest_plotly_json(manifest)
+    layout = rendered["layout"]
 
-    assert layout["yaxis"]["automargin"] is False
-    assert layout["yaxis"]["title"]["standoff"] == 3.0
-    assert layout["xaxis"]["automargin"] is True
-    assert layout["xaxis"]["title"]["standoff"] == 14.0
-    assert layout["yaxis2"]["automargin"] is True
-    assert layout["yaxis2"]["title"]["standoff"] == 14.0
+    assert len(rendered["data"]) == 2
+    assert all(trace["showlegend"] for trace in rendered["data"])
+    template_layout = layout["template"]["layout"]
+    assert template_layout["xaxis"]["automargin"] is True
+    assert template_layout["xaxis"]["title"]["standoff"] == 17
+    assert template_layout["yaxis"]["automargin"] is True
+    assert template_layout["yaxis"]["title"]["standoff"] == 23
+    assert template_layout["legend"]["y"] == 0.5
+    assert template_layout["legend"]["xanchor"] == "left"
+    assert layout["xaxis"]["title"]["text"] == "Time"
+    assert layout["yaxis"]["title"]["text"] == "Force"
     row_labels = [
         annotation
         for annotation in layout["annotations"]
         if annotation.get("name", "").startswith("feedbax.row_label.")
     ]
     assert [annotation["text"] for annotation in row_labels] == ["Delay 0", "Delay 5"]
-    assert all(annotation["x"] == 1.0 and annotation["xshift"] == 12.0 for annotation in row_labels)
-    assert (layout["legend"]["x"] - 1.0) * width == pytest.approx(44.0)
+    assert all(
+        annotation["x"] == 1.0
+        and annotation["xanchor"] == "center"
+        and annotation["xshift"] == 14.0
+        for annotation in row_labels
+    )
+    plot_width = width - layout["margin"]["l"] - layout["margin"]["r"]
+    assert (layout["legend"]["x"] - 1.0) * plot_width == pytest.approx(60.0)
 
 
 def test_data_derived_ranges_fail_closed_for_ambiguous_or_empty_groups(

@@ -94,7 +94,6 @@ from feedbax.contracts.figures import (
     FigureCompositionProvenance,
     FigureCompositionSourceRecord,
     FigureCompositionSpec,
-    FigureGridLayoutDefaults,
     FigureRuntimeBindingSpec,
     FigureSpec,
     PanelSpec,
@@ -1466,16 +1465,21 @@ def check_figure_composition_public_contract() -> bool:
         raise AssertionError("public zero-span range semantics drifted")
     semantic_class = AxisSemanticClass(quantity="force", unit="N")
     semantic_policy = SemanticAxisRangePolicy(classes=[semantic_class], padding_fraction=0.05)
-    layout_defaults = FigureGridLayoutDefaults(
-        axis_automargin=True,
-        axis_title_standoff=14,
-        row_label_gutter=12,
-        legend_gutter=32,
-    )
     semantic_figure = FigureSpec(
         name="semantic-layout",
         assembler="feedbax.grid_figure",
-        assembler_params={"width": 720, "layout_defaults": layout_defaults.model_dump()},
+        assembler_params={
+            "width": 720,
+            "margin": {"l": 80, "r": 140},
+            "template": {
+                "layout": {
+                    "xaxis": {"automargin": True, "title": {"standoff": 14}},
+                    "yaxis": {"automargin": True, "title": {"standoff": 14}},
+                }
+            },
+            "row_label_gutter": 28,
+            "legend_gutter": 32,
+        },
         semantic_range_policy=semantic_policy,
         panels=[
             PanelSpec(

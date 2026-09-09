@@ -146,8 +146,6 @@ DATA_DERIVED_AXIS_RANGE_SCHEMA_ID = "feedbax.spec.data_derived_axis_range"
 DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION = "feedbax.spec.data_derived_axis_range.v1"
 SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_ID = "feedbax.spec.semantic_axis_range_policy"
 SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_VERSION = "feedbax.spec.semantic_axis_range_policy.v1"
-FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_ID = "feedbax.spec.figure_grid_layout_defaults"
-FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_VERSION = "feedbax.spec.figure_grid_layout_defaults.v1"
 SCENE_CAMERA_SCHEMA_ID = "feedbax.spec.scene_camera"
 SCENE_CAMERA_SCHEMA_VERSION = "feedbax.spec.scene_camera.v1"
 # Declaration-side identity for PanelSpec objects added beneath FigureSpec v2.
@@ -313,43 +311,6 @@ class SemanticAxisRangePolicy(StrictModel):
         return self
 
 
-class FigureGridLayoutDefaults(StrictModel):
-    """Reproducible Plotly-native grid geometry defaults.
-
-    Axis defaults fill only properties an individual axis omitted. Gutter
-    distances are pixels: row labels remain native Plotly annotations, while
-    the legend remains a native Plotly legend whose paper-coordinate offset is
-    derived from the authored figure width. No appearance cascade is implied.
-    """
-
-    schema_id: str = FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_ID
-    schema_version: str = FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_VERSION
-    axis_automargin: bool | None = None
-    axis_title_standoff: float | None = Field(default=None, ge=0.0, le=256.0)
-    row_label_gutter: float | None = Field(default=None, ge=0.0, le=256.0)
-    legend_gutter: float | None = Field(default=None, ge=0.0, le=512.0)
-
-    @model_validator(mode="after")
-    def _validate_defaults(self) -> "FigureGridLayoutDefaults":
-        if self.schema_id != FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_ID:
-            raise ValueError(f"unsupported FigureGridLayoutDefaults schema_id: {self.schema_id!r}")
-        if self.schema_version != FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_VERSION:
-            raise ValueError(
-                f"unsupported FigureGridLayoutDefaults schema_version: {self.schema_version!r}"
-            )
-        if all(
-            value is None
-            for value in (
-                self.axis_automargin,
-                self.axis_title_standoff,
-                self.row_label_gutter,
-                self.legend_gutter,
-            )
-        ):
-            raise ValueError("FigureGridLayoutDefaults must declare at least one default")
-        return self
-
-
 class PanelAxis(StrictModel):
     """Declarative settings for one panel axis."""
 
@@ -358,8 +319,6 @@ class PanelAxis(StrictModel):
     derived_range: DataDerivedAxisRange | None = None
     quantity: str | None = Field(default=None, min_length=1, max_length=128)
     unit: str | None = Field(default=None, min_length=1, max_length=128)
-    automargin: bool | None = None
-    title_standoff: float | None = Field(default=None, ge=0.0, le=256.0)
 
     @model_validator(mode="after")
     def _validate_range_authority(self) -> "PanelAxis":
