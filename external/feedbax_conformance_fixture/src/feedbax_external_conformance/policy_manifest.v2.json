@@ -879,8 +879,10 @@
           {
             "namespace": "feedbax.contracts.figures",
             "public_names": [
+              "AxisSemanticClass",
               "FigureCompositionDelta",
               "SameSchemaStructuralAddition",
+              "SemanticAxisRangePolicy",
               "FigureCompositionSpec",
               "FigureCompositionProvenance",
               "FigureCompositionSourceRecord",
