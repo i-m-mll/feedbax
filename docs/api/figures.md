@@ -31,6 +31,44 @@ document and selected payload in root-to-leaf order, so regeneration does not
 depend on the original files remaining present. Lineage remains visible without
 entering the resolved semantic identity.
 
+## How the figure layers fit together
+
+Each layer has one job. Keeping those jobs separate prevents a house style from
+silently changing scientific meaning, while still allowing figures to reuse
+almost everything:
+
+| Layer | Owns | Does not own |
+| --- | --- | --- |
+| Analysis output | Values and their scientific meaning | Plot layout or styling |
+| Figure composition | Pinned reusable figure structure and acknowledged overrides | Arbitrary code executed after rendering |
+| `FigureSpec` | Inputs, panels, traces, axis meaning, and explicit exceptions | Project discovery or process-global defaults |
+| `FigureTemplate` | Reusable figure-family slots and assembler defaults | Scientific transformations of input values |
+| Plotly template | Fonts, colors, title spacing, automargins, and other appearance | Which axes are scientifically comparable |
+| Grid assembler | Panel geometry and row-label or legend gutters Plotly cannot infer | A second styling system |
+
+An analysis should compute and retain scientific results; an authored figure
+root should describe how those results become a durable figure. Native Plotly
+templates remain the appearance authority. Feedbax contracts add scientific
+meaning, reproducible composition, validation, identity, and provenance around
+that rendering path.
+
+Two boundaries are important in the current API:
+
+- Axis `quantity` and `unit` are currently declared by the `FigureSpec`. They do
+  not yet propagate automatically from analysis-result metadata. Authors must
+  not infer them from field names or display labels.
+- A reusable template or composition affects only figures that explicitly
+  reference it. Feedbax does not currently discover a project-wide policy from
+  the working directory or apply a process-global Plotly setting. Applying one
+  policy to every governed figure therefore requires each figure root to share
+  that pinned authority.
+
+The intended direction is for scientific descriptors to travel with exact
+analysis-result bindings and for an explicit project declaration to select a
+bounded figure policy before figure identity and rendering are computed. Such a
+policy would support reproducible regeneration from retained data; it would not
+mutate existing artifacts or admit arbitrary post-render callbacks.
+
 ## Compact runnable example
 
 Run this from a repository root. It writes a shared base and one child envelope,
@@ -135,6 +173,11 @@ reducer. An explicit axis `range` or `derived_range` is an exception and always
 wins; a selected class absent from one figure is a no-op. Generated groups are
 separate for x and y and are allocated away from every authored group name. No
 units are converted.
+
+The semantic class describes the *plotted coordinate*, not the intervention or
+source experiment. For example, a response to a force perturbation may still
+plot position error in metres. Quantity and unit must therefore agree with the
+values bound to that axis.
 
 Grid figures accept serialized Plotly templates through their existing
 `assembler_params.template` input. Plotly validates the template, and the
