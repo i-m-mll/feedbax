@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
 import re
 from typing import Any, Literal
@@ -17,8 +17,10 @@ from feedbax.contracts.figures import (
     ColorscaleSpec,
     DataDerivedAxisRange,
     FigureColorbar,
+    FigureGridLayoutDefaults,
     PerturbationTiming,
     SceneCamera,
+    SemanticAxisRangePolicy,
 )
 from feedbax.contracts.base import StrictModel
 from feedbax.plot import apply_default_template
@@ -199,8 +201,11 @@ class GridFigureParams(StrictModel):
     margin: FigureMarginParams | None = None
     hovermode: Literal["x", "y", "closest", "x unified", "y unified", False] | None = None
     template: str | None = None
+    layout_defaults: FigureGridLayoutDefaults | None = None
     # Resolved by figure execution from FigureSpec.colorbar; not authored here.
     colorbar: FigureColorbar | None = None
+    # Resolved by figure execution from FigureSpec.semantic_range_policy.
+    semantic_range_policy: SemanticAxisRangePolicy | None = None
 
 
 class Trajectories2DRowParams(StrictModel):
@@ -229,6 +234,7 @@ class PanelContent:
     name: str
     traces: tuple[Any, ...] = ()
     title: str | None = None
+    row_label: str | None = None
     row: int | None = None
     col: int | None = None
     axes_labels: Mapping[str, str | None] | None = None
@@ -1274,7 +1280,11 @@ def _update_scene_panel(fig: go.Figure, panel: PanelContent, *, row: int, col: i
         ("z", panel.z_axis),
     ):
         if axis:
-            scene[f"{name}axis"] = dict(axis)
+            scene[f"{name}axis"] = {
+                key: value
+                for key, value in axis.items()
+                if key not in {"derived_range", "quantity", "unit"}
+            }
     if panel.equal_data_aspect:
         # A scene has no per-axis scale anchor; equal data units are its aspect mode.
         scene["aspectmode"] = "data"
@@ -1292,11 +1302,19 @@ def _update_cartesian_panel(fig: go.Figure, panel: PanelContent, *, row: int, co
         fig.update_xaxes(title_text=panel.axes_labels.get("x"), row=row, col=col)
         fig.update_yaxes(title_text=panel.axes_labels.get("y"), row=row, col=col)
     if panel.x_axis:
-        axis_layout = {key: value for key, value in panel.x_axis.items() if key != "derived_range"}
+        axis_layout = {
+            key: value
+            for key, value in panel.x_axis.items()
+            if key not in {"derived_range", "quantity", "unit"}
+        }
         if axis_layout:
             fig.update_xaxes(**axis_layout, row=row, col=col)
     if panel.y_axis:
-        axis_layout = {key: value for key, value in panel.y_axis.items() if key != "derived_range"}
+        axis_layout = {
+            key: value
+            for key, value in panel.y_axis.items()
+            if key not in {"derived_range", "quantity", "unit"}
+        }
         if axis_layout:
             fig.update_yaxes(**axis_layout, row=row, col=col)
     if panel.equal_data_aspect:
@@ -1337,16 +1355,39 @@ def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.
     )
     max_col = max((panel.col or 1) + (panel.col_span or 1) - 1 for panel in panel_list)
     titles = [panel.title or panel.name for panel in panel_list]
+    row_titles: list[str | None] = [None] * max_row
+    for index, panel in enumerate(panel_list):
+        if panel.row_label is None:
+            continue
+        row, _col = _panel_cell(panel, index)
+        if (panel.row_span or 1) != 1:
+            raise ValueError(f"panel {panel.name!r} cannot declare a row_label while spanning rows")
+        prior = row_titles[row - 1]
+        if prior is not None and prior != panel.row_label:
+            raise ValueError(
+                f"grid row {row} declares conflicting row labels {prior!r} and {panel.row_label!r}"
+            )
+        row_titles[row - 1] = panel.row_label
     fig = make_subplots(
         rows=max_row,
         cols=max_col,
         subplot_titles=titles,
+        row_titles=row_titles if any(label is not None for label in row_titles) else None,
         shared_xaxes=p.shared_xaxes,
         shared_yaxes=p.shared_yaxes,
         horizontal_spacing=p.horizontal_spacing,
         vertical_spacing=p.vertical_spacing,
         specs=_subplot_specs(panel_list, rows=max_row, cols=max_col),
     )
+    populated_row_titles = [
+        (row, label) for row, label in enumerate(row_titles, start=1) if label is not None
+    ]
+    if populated_row_titles:
+        row_annotations = fig.layout.annotations[-len(populated_row_titles) :]
+        for annotation, (row, label) in zip(row_annotations, populated_row_titles, strict=True):
+            if annotation.text != label:
+                raise ValueError("Plotly row-title assembly did not preserve authored row labels")
+            annotation.name = f"feedbax.row_label.{row}"
     for index, panel in enumerate(panel_list):
         row, col = _panel_cell(panel, index)
         for trace in panel.traces:
@@ -1475,6 +1516,72 @@ def _panel_colorbar_layout(
     }
 
 
+def _semantic_group_name(quantity: str, unit: str) -> str:
+    """Return an internal readable group key for one exact semantic class."""
+    return f"semantic[quantity={quantity!r},unit={unit!r}]"
+
+
+def _lower_semantic_axis_ranges(
+    panels: Sequence[PanelContent],
+    policy: SemanticAxisRangePolicy | None,
+) -> tuple[PanelContent, ...]:
+    """Lower eligible semantic axes to the existing named-group declaration."""
+    if policy is None:
+        return tuple(panels)
+    selected = (
+        None if policy.classes == "all" else {(item.quantity, item.unit) for item in policy.classes}
+    )
+    encountered: set[tuple[str, str]] = set()
+    eligible: dict[tuple[str, str], list[tuple[int, str]]] = {}
+    for panel_index, panel in enumerate(panels):
+        if panel.panel_type == "scene":
+            continue
+        for dimension, settings in (("x", panel.x_axis), ("y", panel.y_axis)):
+            if settings is None:
+                continue
+            quantity = settings.get("quantity")
+            unit = settings.get("unit")
+            if quantity is None or unit is None:
+                continue
+            semantic_class = (str(quantity), str(unit))
+            encountered.add(semantic_class)
+            if selected is not None and semantic_class not in selected:
+                continue
+            # Explicit range authority and explicit named groups are the bounded
+            # per-axis exception mechanism; policy never overwrites either.
+            if settings.get("range") is not None or settings.get("derived_range") is not None:
+                continue
+            if settings.get("type") == "log":
+                raise ValueError(
+                    "semantic axis range policy requires linear axes; "
+                    f"panel {panel.name!r} {dimension} axis declares {semantic_class!r} as log"
+                )
+            eligible.setdefault(semantic_class, []).append((panel_index, dimension))
+    if selected is not None:
+        missing = sorted(selected - encountered)
+        if missing:
+            raise ValueError(
+                "semantic axis range policy selected classes not declared by any "
+                f"Cartesian axis: {missing}"
+            )
+
+    lowered = list(panels)
+    for (quantity, unit), members in eligible.items():
+        if len(members) < 2:
+            continue
+        declaration = DataDerivedAxisRange(
+            group=_semantic_group_name(quantity, unit),
+            padding_fraction=policy.padding_fraction,
+        ).model_dump(exclude_none=True)
+        for panel_index, dimension in members:
+            panel = lowered[panel_index]
+            field = f"{dimension}_axis"
+            settings = dict(getattr(panel, field) or {})
+            settings["derived_range"] = declaration
+            lowered[panel_index] = replace(panel, **{field: settings})
+    return tuple(lowered)
+
+
 def _apply_data_derived_axis_ranges(fig: go.Figure, panels: Sequence[PanelContent]) -> None:
     """Resolve every declared axis group from the traces rendered into its panels."""
     axes: dict[str, dict[str, Any]] = {}
@@ -1592,9 +1699,46 @@ def _apply_data_derived_axis_ranges(fig: go.Figure, panels: Sequence[PanelConten
             updater(range=axis_range, row=member["row"], col=member["col"])
 
 
+def _apply_grid_layout_defaults(
+    fig: go.Figure,
+    defaults: FigureGridLayoutDefaults | None,
+    *,
+    width: int | None,
+    explicit_legend_x: float | None,
+) -> None:
+    """Fill omitted native Plotly geometry without overriding authored axes."""
+    if defaults is None:
+        return
+    for axis in (*fig.select_xaxes(), *fig.select_yaxes()):
+        updates: dict[str, Any] = {}
+        if defaults.axis_automargin is not None and axis.automargin is None:
+            updates["automargin"] = defaults.axis_automargin
+        if defaults.axis_title_standoff is not None and axis.title.standoff is None:
+            updates["title_standoff"] = defaults.axis_title_standoff
+        if updates:
+            axis.update(**updates)
+
+    row_annotations = [
+        annotation
+        for annotation in fig.layout.annotations or ()
+        if (annotation.name or "").startswith("feedbax.row_label.")
+    ]
+    if defaults.row_label_gutter is not None:
+        for annotation in row_annotations:
+            annotation.update(x=1.0, xshift=defaults.row_label_gutter)
+
+    if defaults.legend_gutter is None or explicit_legend_x is not None:
+        return
+    if width is None:
+        raise ValueError("FigureGridLayoutDefaults.legend_gutter requires an explicit figure width")
+    row_offset = defaults.row_label_gutter if row_annotations else 0.0
+    fig.update_layout(legend_x=1.0 + (row_offset or 0.0) / width + defaults.legend_gutter / width)
+
+
 def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
     p = GridFigureParams.model_validate(params.model_dump())
-    _apply_data_derived_axis_ranges(fig, panels)
+    lowered_panels = _lower_semantic_axis_ranges(panels, p.semantic_range_policy)
+    _apply_data_derived_axis_ranges(fig, lowered_panels)
     updates: dict[str, Any] = {}
     if p.width is not None:
         updates["width"] = p.width
@@ -1620,6 +1764,12 @@ def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictM
         updates["template"] = p.template
     if updates:
         fig.update_layout(**updates)
+    _apply_grid_layout_defaults(
+        fig,
+        p.layout_defaults,
+        width=p.width,
+        explicit_legend_x=p.legend_x,
+    )
     if p.colorbar is not None:
         fig.add_trace(
             _colorbar_carrier(
@@ -1718,8 +1868,8 @@ def register_default_figure_constructors(registry: FigureRegistry) -> None:
         "feedbax.endpoint_markers": "v3",
         "feedbax.hline": "v2",
         "feedbax.vrect": "v3",
-        "feedbax.comparison_grid": "v6",
-        "feedbax.grid_figure": "v6",
+        "feedbax.comparison_grid": "v7",
+        "feedbax.grid_figure": "v7",
     }
     for key, tier, constructor, params_model, description in defaults:
         registry.register_constructor(

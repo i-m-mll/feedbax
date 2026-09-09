@@ -122,10 +122,49 @@ The Studio API deliberately rejects `FigureCompositionSpec` with the typed
 `figure_composition_not_supported_in_studio` error. Studio accepts a resolved
 ordinary FigureSpec v2 and never accepts a client-controlled filesystem root.
 
+## Semantic ranges and grid layout
+
+An axis may declare an exact `quantity` and `unit` pair. Both are opaque
+scientific identities, not display labels: `{"quantity": "force", "unit":
+"N"}` matches only that exact pair, and an axis for torque in `N` is a different
+class. A figure's optional `semantic_range_policy` selects either `"all"` or a
+list of at most 64 exact pairs and supplies one finite nonnegative
+`padding_fraction`. During grid assembly, every selected class with at least two
+eligible Cartesian axes is lowered to the existing `DataDerivedAxisRange`
+reducer. An explicit axis `range` or `derived_range` is an exception and always
+wins; no units are converted.
+
+Grid figures may carry versioned `layout_defaults` in `assembler_params`:
+
+```json
+{
+  "width": 720,
+  "layout_defaults": {
+    "schema_id": "feedbax.spec.figure_grid_layout_defaults",
+    "schema_version": "feedbax.spec.figure_grid_layout_defaults.v1",
+    "axis_automargin": true,
+    "axis_title_standoff": 14,
+    "row_label_gutter": 12,
+    "legend_gutter": 32
+  }
+}
+```
+
+Axis defaults fill only omitted native Plotly properties. `PanelSpec.row_label`
+uses Plotly's native row-title annotation, separately from the panel title.
+Gutters are pixel distances and therefore retain their authored spacing when
+the figure width changes; deriving a legend gutter requires an explicit width.
+An explicit per-axis value or `legend_x` wins over its corresponding default.
+Colors, fonts, line styles, and other ordinary appearance remain in Plotly
+templates.
+
 ## Identity and migration rules
 
 - `feedbax.spec.figure.v2` remains the unchanged ordinary resolved schema, with
   its existing validation, migration, and rejection policy.
+- `feedbax.spec.semantic_axis_range_policy.v1` and
+  `feedbax.spec.figure_grid_layout_defaults.v1` are the only supported versions
+  of their optional nested declarations; v0 and unknown versions reject.
 - `feedbax.spec.figure_composition.v2` is authored lineage, not resolved figure
   semantics. Its v1 predecessor migrates without semantic change to v2, which
   scopes structural addition declarations to `FigureCompositionDelta`.

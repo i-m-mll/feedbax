@@ -1139,18 +1139,20 @@ def _route_assembler_params(
 
 
 def _panel_grid_declarations(spec: FigureSpec) -> list[str]:
-    """Return the grid-shape panel fields a spec declares, in stable order.
+    """Return grid-owned panel fields a spec declares, in stable order.
 
-    These are the declarations only a panel assembler that composes an explicit
-    subplot grid can honor: a non-Cartesian panel type and multi-cell spans. A
-    spec that declares one against an assembler that ignores it would render a
-    figure that quietly disagrees with what was authored.
+    These are declarations only a panel assembler that composes an explicit
+    subplot grid can honor: a non-Cartesian panel type, multi-cell spans, and a
+    native grid-row label. A spec that declares one against an assembler that
+    ignores it would render a figure that quietly disagrees with what was
+    authored.
     """
     declarations: list[str] = []
     for field_name, declared in (
         ("panel_type", lambda panel: panel.panel_type is not None),
         ("row_span", lambda panel: panel.row_span is not None),
         ("col_span", lambda panel: panel.col_span is not None),
+        ("row_label", lambda panel: panel.row_label is not None),
     ):
         if any(declared(panel) for panel in spec.panels):
             declarations.append(field_name)
@@ -1158,7 +1160,7 @@ def _panel_grid_declarations(spec: FigureSpec) -> list[str]:
 
 
 def _declares_data_derived_axis_range(spec: FigureSpec) -> bool:
-    return any(
+    return spec.semantic_range_policy is not None or any(
         axis is not None and axis.derived_range is not None
         for panel in spec.panels
         for axis in (panel.x_axis, panel.y_axis)
@@ -1182,6 +1184,11 @@ def _build_figures(
         raise ValueError(
             "a colorbar is declared by FigureSpec.colorbar, not by assembler_params, so that "
             "its binding to a trace family is validated with the rest of the spec"
+        )
+    if "semantic_range_policy" in assembler_params:
+        raise ValueError(
+            "semantic_range_policy is declared by FigureSpec.semantic_range_policy, "
+            "not by assembler_params"
         )
 
     facet_combinations = _facet_combinations(spec, template, context)
@@ -1283,6 +1290,16 @@ def _build_figures(
                 f"{panel_registration.key!r}/{figure_registration.key!r}"
             )
         figure_values = {**figure_values, "colorbar": colorbar}
+    if spec.semantic_range_policy is not None:
+        if "semantic_range_policy" not in figure_registration.params_model.model_fields:
+            raise ValueError(
+                "FigureSpec declares semantic_range_policy, which requires a figure "
+                f"assembler that lowers it; {assembler_key!r} declares no such parameter"
+            )
+        figure_values = {
+            **figure_values,
+            "semantic_range_policy": spec.semantic_range_policy,
+        }
     panel_params = panel_registration.params(panel_values)
     figure_params = figure_registration.params(figure_values)
 
@@ -1665,6 +1682,7 @@ def _panel_contents(
         panel = panel_map.get(panel_name)
         title = _evaluate_panel_title(panel.title, context) if panel is not None else panel_name
         axes_labels = panel.axes_labels.model_dump() if panel and panel.axes_labels else None
+        row_label = _evaluate_panel_title(panel.row_label, context) if panel is not None else None
         x_axis = panel.x_axis.model_dump(exclude_none=True) if panel and panel.x_axis else None
         y_axis = panel.y_axis.model_dump(exclude_none=True) if panel and panel.y_axis else None
         z_axis = panel.z_axis.model_dump(exclude_none=True) if panel and panel.z_axis else None
@@ -1678,6 +1696,7 @@ def _panel_contents(
                 name=panel_name,
                 traces=tuple(traces),
                 title=title,
+                row_label=row_label,
                 row=panel.row if panel else index + 1,
                 col=panel.col if panel else 1,
                 axes_labels=axes_labels,
@@ -1729,6 +1748,11 @@ def _facet_panel_contents(
                 name=combination.label,
                 traces=tuple(traces),
                 title=title,
+                row_label=(
+                    _evaluate_panel_title(base_panel.row_label, facet_context)
+                    if base_panel is not None
+                    else None
+                ),
                 row=index + 1,
                 col=1,
                 axes_labels=(

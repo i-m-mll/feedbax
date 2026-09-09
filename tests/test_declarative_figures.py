@@ -29,10 +29,14 @@ from feedbax.contracts.figures import (
     DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION,
     EQUAL_DATA_ASPECT_SCHEMA_ID,
     EQUAL_DATA_ASPECT_SCHEMA_VERSION,
+    FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_ID,
+    FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_VERSION,
     FIGURE_SPEC_SCHEMA_ID,
     FIGURE_SPEC_SCHEMA_VERSION,
     PERTURBATION_TIMING_SCHEMA_ID,
     PERTURBATION_TIMING_SCHEMA_VERSION,
+    SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_ID,
+    SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_VERSION,
     FigurePiece,
     FigureSpec,
     FigureTemplate,
@@ -276,8 +280,8 @@ def test_constructor_versions_are_reported_in_catalog_and_manifest(tmp_path: Pat
     expected = {
         "feedbax.profile_band": "v2",
         "feedbax.profile_curves": "v1",
-        "feedbax.comparison_grid": "v6",
-        "feedbax.grid_figure": "v6",
+        "feedbax.comparison_grid": "v7",
+        "feedbax.grid_figure": "v7",
     }
     registry = _figure_registry()
     catalog_versions = {
@@ -794,7 +798,12 @@ def test_data_derived_axis_range_is_versioned_and_strict() -> None:
         FigureSpec(
             name="invalid-z-derived-range",
             assembler="feedbax.grid_figure",
-            panels=[{"name": "main", "z_axis": {"derived_range": {"group": "g", "padding_fraction": 0.05}}}],
+            panels=[
+                {
+                    "name": "main",
+                    "z_axis": {"derived_range": {"group": "g", "padding_fraction": 0.05}},
+                }
+            ],
         )
 
     with pytest.raises(ValidationError, match="unsupported DataDerivedAxisRange schema_version"):
@@ -856,7 +865,279 @@ def test_grid_figure_derives_one_range_from_all_rendered_group_traces(
     assert rendered is not None
     assert rendered["layout"]["yaxis"]["range"] == [-2.75, 2.75]
     assert rendered["layout"]["yaxis2"]["range"] == [-2.75, 2.75]
-    assert manifest.constructor_versions["feedbax.grid_figure"] == "v6"
+    assert manifest.constructor_versions["feedbax.grid_figure"] == "v7"
+
+
+def test_semantic_axis_range_policy_is_exact_versioned_and_bounded() -> None:
+    spec = FigureSpec(
+        name="semantic-range-schema",
+        assembler="feedbax.grid_figure",
+        semantic_range_policy={
+            "classes": [{"quantity": "force", "unit": "N"}],
+            "padding_fraction": 0.05,
+        },
+        panels=[
+            {
+                "name": "main",
+                "y_axis": {"quantity": "force", "unit": "N"},
+            }
+        ],
+    )
+    policy = spec.semantic_range_policy
+
+    assert policy is not None
+    assert policy.schema_id == SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_ID
+    assert policy.schema_version == SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_VERSION
+    assert (
+        default_spec_registry.current_version("SemanticAxisRangePolicy")
+        == SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_VERSION
+    )
+    assert FigureSpec.model_validate(spec.model_dump(mode="json")) == spec
+
+    invalid_policy = [
+        {"classes": [], "padding_fraction": 0.05},
+        {
+            "classes": [
+                {"quantity": "force", "unit": "N"},
+                {"quantity": "force", "unit": "N"},
+            ],
+            "padding_fraction": 0.05,
+        },
+        {
+            "classes": [{"quantity": f"quantity-{index}", "unit": "N"} for index in range(65)],
+            "padding_fraction": 0.05,
+        },
+        {"classes": "all", "padding_fraction": float("inf")},
+    ]
+    for policy_value in invalid_policy:
+        with pytest.raises(ValidationError):
+            FigureSpec(
+                name="invalid-semantic-policy",
+                assembler="feedbax.grid_figure",
+                semantic_range_policy=policy_value,
+            )
+
+    for axis in (
+        {"quantity": "force"},
+        {"unit": "N"},
+        {"quantity": " force", "unit": "N"},
+    ):
+        with pytest.raises(ValidationError):
+            FigureSpec(
+                name="invalid-semantic-axis",
+                assembler="feedbax.grid_figure",
+                panels=[{"name": "main", "y_axis": axis}],
+            )
+
+
+def test_semantic_axis_range_policy_shares_exact_classes_without_unit_aliasing(
+    tmp_path: Path, figure_registry
+) -> None:
+    panels = [
+        {
+            "name": "force-a",
+            "row": 1,
+            "col": 1,
+            "y_axis": {"quantity": "force", "unit": "N"},
+        },
+        {
+            "name": "force-b",
+            "row": 1,
+            "col": 2,
+            "y_axis": {"quantity": "force", "unit": "N"},
+        },
+        {
+            "name": "torque-a",
+            "row": 2,
+            "col": 1,
+            "y_axis": {"quantity": "torque", "unit": "N"},
+        },
+        {
+            "name": "torque-b",
+            "row": 2,
+            "col": 2,
+            "y_axis": {"quantity": "torque", "unit": "N"},
+        },
+    ]
+    values = ([1.0, 2.0], [-4.0, 3.0], [10.0, 12.0], [18.0, 20.0])
+    spec = FigureSpec(
+        name="exact-semantic-classes",
+        assembler="feedbax.grid_figure",
+        assembler_params={"shared_yaxes": False},
+        semantic_range_policy={"classes": "all", "padding_fraction": 0.0},
+        panels=panels,
+        traces=[
+            TraceBinding(
+                name=f"trace-{index}",
+                constructor="feedbax.profile_band",
+                panel=panel["name"],
+                data={"x": [0, 1], "mean": value, "std": [0.0, 0.0]},
+            )
+            for index, (panel, value) in enumerate(zip(panels, values, strict=True))
+        ],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
+    layout = figure_manifest_plotly_json(manifest)["layout"]
+
+    assert layout["yaxis"]["range"] == [-4.0, 3.0]
+    assert layout["yaxis2"]["range"] == [-4.0, 3.0]
+    assert layout["yaxis3"]["range"] == [10.0, 20.0]
+    assert layout["yaxis4"]["range"] == [10.0, 20.0]
+
+
+def test_semantic_axis_range_selection_and_explicit_axis_exceptions(
+    tmp_path: Path, figure_registry
+) -> None:
+    spec = FigureSpec(
+        name="selected-semantic-class",
+        assembler="feedbax.grid_figure",
+        assembler_params={"shared_yaxes": False},
+        semantic_range_policy={
+            "classes": [{"quantity": "force", "unit": "N"}],
+            "padding_fraction": 0.0,
+        },
+        panels=[
+            {
+                "name": "force-a",
+                "row": 1,
+                "col": 1,
+                "y_axis": {"quantity": "force", "unit": "N"},
+            },
+            {
+                "name": "force-explicit",
+                "row": 1,
+                "col": 2,
+                "y_axis": {"quantity": "force", "unit": "N", "range": [-1, 1]},
+            },
+            {
+                "name": "force-b",
+                "row": 1,
+                "col": 3,
+                "y_axis": {"quantity": "force", "unit": "N"},
+            },
+            {
+                "name": "velocity",
+                "row": 1,
+                "col": 4,
+                "y_axis": {"quantity": "velocity", "unit": "m/s"},
+            },
+        ],
+        traces=[
+            TraceBinding(
+                name="force-a-trace",
+                constructor="feedbax.profile_band",
+                panel="force-a",
+                data={"mean": [2.0, 3.0], "std": [0.0, 0.0]},
+            ),
+            TraceBinding(
+                name="force-b-trace",
+                constructor="feedbax.profile_band",
+                panel="force-b",
+                data={"mean": [6.0, 8.0], "std": [0.0, 0.0]},
+            ),
+        ],
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
+    layout = figure_manifest_plotly_json(manifest)["layout"]
+
+    assert layout["yaxis"]["range"] == [2.0, 8.0]
+    assert layout["yaxis2"]["range"] == [-1.0, 1.0]
+    assert layout["yaxis3"]["range"] == [2.0, 8.0]
+    assert "range" not in layout["yaxis4"]
+
+    missing_payload = spec.model_dump(mode="json")
+    missing_payload["semantic_range_policy"] = {
+        "classes": [{"quantity": "acceleration", "unit": "m/s^2"}],
+        "padding_fraction": 0.0,
+    }
+    missing = FigureSpec.model_validate(missing_payload)
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(missing, root=tmp_path / "missing", registry=figure_registry)
+    assert "selected classes not declared" in exc_info.value.manifest.failure["message"]
+
+
+@pytest.mark.parametrize("width", [480, 1200])
+def test_grid_layout_defaults_keep_native_row_and_legend_gutters_at_delivery_widths(
+    tmp_path: Path, figure_registry, width: int
+) -> None:
+    layout_defaults = {
+        "axis_automargin": True,
+        "axis_title_standoff": 14,
+        "row_label_gutter": 12,
+        "legend_gutter": 32,
+    }
+    template_name = f"feedbax.layout_defaults_{width}"
+    register_figure_template(
+        FigureTemplate(
+            name=template_name,
+            description="Reusable native grid geometry defaults.",
+            assembler="feedbax.grid_figure",
+            assembler_params={"width": width, "layout_defaults": layout_defaults},
+        ),
+        registry=figure_registry,
+    )
+    spec = FigureSpec(
+        name=f"layout-defaults-{width}",
+        template=template_name,
+        assembler_params={"shared_yaxes": False},
+        panels=[
+            {
+                "name": "early",
+                "row": 1,
+                "col": 1,
+                "row_label": "Delay 0",
+                "axes_labels": {"x": "Time", "y": "Force"},
+                "y_axis": {"automargin": False, "title_standoff": 3},
+            },
+            {
+                "name": "late",
+                "row": 2,
+                "col": 1,
+                "row_label": "Delay 5",
+                "axes_labels": {"x": "Time", "y": "Force"},
+            },
+        ],
+    )
+
+    round_trip = FigureSpec.model_validate(spec.model_dump(mode="json"))
+    assert round_trip == spec
+    defaults = (
+        get_figure_constructor("feedbax.grid_figure", tier="figure", registry=figure_registry)
+        .params(
+            {
+                "width": width,
+                "layout_defaults": layout_defaults,
+            }
+        )
+        .layout_defaults
+    )
+    assert defaults is not None
+    assert defaults.schema_id == FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_ID
+    assert defaults.schema_version == FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_VERSION
+    assert (
+        default_spec_registry.current_version("FigureGridLayoutDefaults")
+        == FIGURE_GRID_LAYOUT_DEFAULTS_SCHEMA_VERSION
+    )
+
+    manifest, _path = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
+    layout = figure_manifest_plotly_json(manifest)["layout"]
+
+    assert layout["yaxis"]["automargin"] is False
+    assert layout["yaxis"]["title"]["standoff"] == 3.0
+    assert layout["xaxis"]["automargin"] is True
+    assert layout["xaxis"]["title"]["standoff"] == 14.0
+    assert layout["yaxis2"]["automargin"] is True
+    assert layout["yaxis2"]["title"]["standoff"] == 14.0
+    row_labels = [
+        annotation
+        for annotation in layout["annotations"]
+        if annotation.get("name", "").startswith("feedbax.row_label.")
+    ]
+    assert [annotation["text"] for annotation in row_labels] == ["Delay 0", "Delay 5"]
+    assert all(annotation["x"] == 1.0 and annotation["xshift"] == 12.0 for annotation in row_labels)
+    assert (layout["legend"]["x"] - 1.0) * width == pytest.approx(44.0)
 
 
 def test_data_derived_ranges_fail_closed_for_ambiguous_or_empty_groups(
@@ -1035,7 +1316,7 @@ def test_equal_data_aspect_renders_exactly_in_placed_grid_panel(
     assert "scaleanchor" not in rendered["layout"]["yaxis"]
     assert rendered["layout"]["yaxis2"]["scaleanchor"] == "x2"
     assert rendered["layout"]["yaxis2"]["scaleratio"] == 1
-    assert manifest.constructor_versions["feedbax.comparison_grid"] == "v6"
+    assert manifest.constructor_versions["feedbax.comparison_grid"] == "v7"
 
 
 def test_equal_data_aspect_rejects_inconsistent_axis_declaration() -> None:
