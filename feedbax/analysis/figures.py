@@ -48,6 +48,7 @@ from feedbax.contracts.figures import (
     FigureDataProductArtifactPayload,
     FigureInputAuthority,
     FigureInputAuthoritySpec,
+    ProjectFigurePolicyProvenance,
     FigureRuntimeArtifactProviderBinding,
     FigureRuntimeBindingSpec,
     FigureSpec,
@@ -57,10 +58,12 @@ from feedbax.contracts.figures import (
     ResolvedFigureSpec,
     TraceBinding,
     TraceFamily,
+    apply_project_figure_policy,
     figure_composition_payload_identity_sha256,
     substitute_index,
 )
 from feedbax.contracts.matrix_core import (
+    ContentPinnedJsonBase,
     SOURCE_DOCUMENT_INHERITANCE_KEY,
     SourceDocumentInheritance,
     load_content_pinned_json_document,
@@ -303,6 +306,9 @@ def resolve_figure_spec(
     *,
     repo_root: Path | str | None = None,
     registry: FigureRegistry | None = None,
+    project_figure_policy: ContentPinnedJsonBase | None = None,
+    figure_templates: Sequence[FigureTemplate] = (),
+    recorded_project_figure_policy: ProjectFigurePolicyProvenance | None = None,
 ) -> ResolvedFigureSpec:
     """Resolve direct or composed authoring to one ordinary current FigureSpec.
 
@@ -322,6 +328,18 @@ def resolve_figure_spec(
     if authored_schema_id != FIGURE_COMPOSITION_SPEC_SCHEMA_ID:
         figure_spec = _current_figure_spec(authored)
         authored_identity = sha256_bytes(canonical_json_bytes(authored))
+        templates = tuple(figure_templates) or (
+            registry.templates()
+            if registry is not None and project_figure_policy is not None
+            else ()
+        )
+        figure_spec, policy_provenance = apply_project_figure_policy(
+            figure_spec,
+            policy_source=project_figure_policy,
+            repo_root=repo_root,
+            figure_templates=templates,
+            recorded=recorded_project_figure_policy,
+        )
         resolved_identity = sha256_bytes(
             canonical_json_bytes(figure_spec.model_dump(mode="json", exclude_none=True))
         )
@@ -332,6 +350,7 @@ def resolve_figure_spec(
             authored_identity_sha256=authored_identity,
             resolved_identity_sha256=resolved_identity,
             figure_spec=figure_spec,
+            project_figure_policy=policy_provenance,
         )
 
     spec = _current_figure_composition_spec(authored)
@@ -443,8 +462,8 @@ def resolve_figure_spec(
             )
         )
     figure_spec = FigureSpec.model_validate(payload)
-    resolved_payload = figure_spec.model_dump(mode="json", exclude_none=True)
-    resolved_identity = sha256_bytes(canonical_json_bytes(resolved_payload))
+    authored_resolved_payload = figure_spec.model_dump(mode="json", exclude_none=True)
+    authored_resolved_identity = sha256_bytes(canonical_json_bytes(authored_resolved_payload))
     custody_documents: list[FigureCompositionDocument] = []
     for order, (document, selected, parent) in enumerate(reversed(loaded_documents)):
         custody_documents.append(
@@ -500,8 +519,21 @@ def resolve_figure_spec(
         documents=custody_documents,
         inherited_documents=inherited_custody,
         attribution=attribution,
-        resolved_figure_spec_sha256=resolved_identity,
+        resolved_figure_spec_sha256=authored_resolved_identity,
         source_inheritance=source_inheritance,
+    )
+    templates = tuple(figure_templates) or (
+        registry.templates() if registry is not None and project_figure_policy is not None else ()
+    )
+    figure_spec, policy_provenance = apply_project_figure_policy(
+        figure_spec,
+        policy_source=project_figure_policy,
+        repo_root=repo_root,
+        figure_templates=templates,
+        recorded=recorded_project_figure_policy,
+    )
+    resolved_identity = sha256_bytes(
+        canonical_json_bytes(figure_spec.model_dump(mode="json", exclude_none=True))
     )
     _validate_resolved_template(figure_spec, registry)
     return ResolvedFigureSpec(
@@ -511,6 +543,7 @@ def resolve_figure_spec(
         resolved_identity_sha256=resolved_identity,
         figure_spec=figure_spec,
         composition=provenance,
+        project_figure_policy=policy_provenance,
     )
 
 
@@ -575,7 +608,7 @@ def _validate_resolved_template(
     spec: FigureSpec,
     registry: FigureRegistry | None,
 ) -> None:
-    if spec.template is None or registry is None:
+    if spec.template is None or isinstance(spec.template, FigureTemplate) or registry is None:
         return
     try:
         get_figure_template(spec.template, registry=registry)
@@ -588,9 +621,15 @@ def coerce_figure_spec(
     *,
     repo_root: Path | str | None = None,
     registry: FigureRegistry | None = None,
+    project_figure_policy: ContentPinnedJsonBase | None = None,
 ) -> FigureSpec:
     """Resolve any supported authoring root to one ordinary current FigureSpec."""
-    return resolve_figure_spec(value, repo_root=repo_root, registry=registry).figure_spec
+    return resolve_figure_spec(
+        value,
+        repo_root=repo_root,
+        registry=registry,
+        project_figure_policy=project_figure_policy,
+    ).figure_spec
 
 
 def resolve_figure_inputs(
@@ -799,6 +838,7 @@ class FigureExecutionPlan:
     composition_payloads: tuple[SpecPayload, ...]
     runtime_binding_payload: SpecPayload | None
     runtime_overlay: bool
+    project_figure_policy: ProjectFigurePolicyProvenance | None
 
 
 def plan_figure_execution(
@@ -810,13 +850,21 @@ def plan_figure_execution(
     repo_root: Path | str | None = None,
     execution_context: StagedExecutionContext | None = None,
     registry: FigureRegistry,
+    project_figure_policy: ContentPinnedJsonBase | None = None,
+    recorded_project_figure_policy: ProjectFigurePolicyProvenance | None = None,
 ) -> FigureExecutionPlan:
     """Derive one figure's identity, embedded spec, and runtime binding record.
 
     This is an internal Feedbax helper shared by figure execution and figure
     receipt admission. It performs no filesystem effects.
     """
-    resolution = resolve_figure_spec(spec, repo_root=repo_root, registry=registry)
+    resolution = resolve_figure_spec(
+        spec,
+        repo_root=repo_root,
+        registry=registry,
+        project_figure_policy=project_figure_policy,
+        recorded_project_figure_policy=recorded_project_figure_policy,
+    )
     resolved_spec = resolution.figure_spec
     runtime_update: dict[str, Any] = {}
     if runtime_inputs is not None:
@@ -845,7 +893,7 @@ def plan_figure_execution(
             ) from exc
     semantic_payload = (
         resolved_spec.model_dump(mode="json", exclude_none=True)
-        if resolution.composition is not None
+        if resolution.composition is not None or resolution.project_figure_policy is not None
         else resolution.authored
     )
     resolved_payload = spec_payload("FigureSpec", semantic_payload)
@@ -875,6 +923,7 @@ def plan_figure_execution(
         composition_payloads=composition_payloads,
         runtime_binding_payload=runtime_binding_payload,
         runtime_overlay=bool(runtime_update),
+        project_figure_policy=resolution.project_figure_policy,
     )
 
 
@@ -891,6 +940,8 @@ def execute_figure_spec(
     metadata: dict[str, Any] | None = None,
     execution_context: StagedExecutionContext | None = None,
     registry: FigureRegistry,
+    project_figure_policy: ContentPinnedJsonBase | None = None,
+    recorded_project_figure_policy: ProjectFigurePolicyProvenance | None = None,
 ) -> tuple[FigureManifest, Path]:
     """Resolve and execute exactly the ordinary FigureSpec exposed by display."""
     plan = plan_figure_execution(
@@ -901,6 +952,8 @@ def execute_figure_spec(
         repo_root=repo_root,
         execution_context=execution_context,
         registry=registry,
+        project_figure_policy=project_figure_policy,
+        recorded_project_figure_policy=recorded_project_figure_policy,
     )
     resolved_spec = plan.resolved_spec
     figure_spec = plan.execution_spec
@@ -915,6 +968,10 @@ def execute_figure_spec(
         prov.issues.extend(issue for issue in issues if issue not in prov.issues)
     if prov.entrypoint is None:
         prov.entrypoint = EntrypointRef(kind="feedbax-figure-spec", name=resolved_spec.name)
+    if plan.project_figure_policy is not None:
+        prov.metadata["project_figure_policy"] = plan.project_figure_policy.model_dump(
+            mode="json", exclude_none=True
+        )
 
     exec_trace = FigureExecutionTrace()
     resolved_inputs = resolve_figure_inputs(
@@ -1198,10 +1255,20 @@ def _build_figures(
     root: Path,
     registry: FigureRegistry,
 ) -> list[RenderedFigure]:
-    template = get_figure_template(spec.template, registry=registry) if spec.template else None
+    template = (
+        spec.template
+        if isinstance(spec.template, FigureTemplate)
+        else get_figure_template(spec.template, registry=registry)
+        if spec.template
+        else None
+    )
     assembler_key = spec.assembler or template.assembler
     assembler_params = {
-        **(getattr(template, "assembler_params", {}) if template is not None else {}),
+        **(
+            getattr(template, "assembler_params", {})
+            if template is not None and not isinstance(spec.template, FigureTemplate)
+            else {}
+        ),
         **spec.assembler_params,
     }
     if "colorbar" in assembler_params:
@@ -2287,7 +2354,11 @@ def _build_figure_manifest(
         resolved_inputs=[item.ref for item in resolved_inputs if item.manifest is not None],
         resolved_pieces=list(execution_trace.resolved_pieces),
         constructor_versions=dict(execution_trace.constructor_versions),
-        template_name=resolved_spec.template,
+        template_name=(
+            resolved_spec.template.name
+            if isinstance(resolved_spec.template, FigureTemplate)
+            else resolved_spec.template
+        ),
         binding_records=list(execution_trace.binding_records),
         expression_results_digest=sha256_bytes(canonical_json_bytes(binding_payload)),
         provenance=provenance,

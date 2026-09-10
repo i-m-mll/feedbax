@@ -723,6 +723,11 @@ def _lower_figure(node: "PreparedOperation", *, binding: "NodeBinding") -> NodeR
     )
     if overlay is not None:
         parents = (*parents, *overlay.inputs)
+    policy_payload = node.compiled.lock.get("identity_contributions", {}).get(
+        "project_figure_policy"
+    )
+    from feedbax.contracts.figures import ProjectFigurePolicyProvenance
+
     return FigureNodeRequest(
         node_key=node.key.text,
         spec=document,
@@ -733,6 +738,11 @@ def _lower_figure(node: "PreparedOperation", *, binding: "NodeBinding") -> NodeR
             node,
             binding=binding,
             extra_parents=overlay.inputs if overlay is not None else (),
+        ),
+        project_figure_policy=(
+            ProjectFigurePolicyProvenance.model_validate(policy_payload)
+            if policy_payload is not None
+            else None
         ),
     )
 
@@ -754,12 +764,22 @@ def _lower_figure_composition(node: "PreparedOperation", *, binding: "NodeBindin
     document = _document(node)
     _validated_document(FigureCompositionSpec, document, ref=str(node.compiled.document_path))
     parents, _roles = bound_parents(node, binding=binding)
+    policy_payload = node.compiled.lock.get("identity_contributions", {}).get(
+        "project_figure_policy"
+    )
+    from feedbax.contracts.figures import ProjectFigurePolicyProvenance
+
     return FigureNodeRequest(
         node_key=node.key.text,
         spec=document,
         runtime_inputs=parents if parents else None,
         order=node.order,
         execution_context=_node_execution_context(node, binding=binding),
+        project_figure_policy=(
+            ProjectFigurePolicyProvenance.model_validate(policy_payload)
+            if policy_payload is not None
+            else None
+        ),
     )
 
 

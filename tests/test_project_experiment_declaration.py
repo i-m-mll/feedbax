@@ -33,6 +33,7 @@ from feedbax.contracts.project_experiment import (
     PROJECT_DECLARATION_FILENAME,
     PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
     PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
+    PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION_V1,
     AuthoringBudgetResource,
     ProjectExperimentDeclaration,
     ProjectExperimentDeclarationError,
@@ -86,7 +87,7 @@ def _write_declaration(root: Path, document: Any) -> Path:
 # --- the declaration is data ------------------------------------------------
 
 
-def test_the_declaration_is_six_data_fields_and_no_callables() -> None:
+def test_the_declaration_is_data_fields_and_no_callables() -> None:
     declaration = fixture.PROJECT_DECLARATION
 
     assert declaration.schema_id == PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID
@@ -101,6 +102,7 @@ def test_the_declaration_is_six_data_fields_and_no_callables() -> None:
         "envelope_directory",
         "output_directory",
         "authoring_budget",
+        "figure_policy",
         "schema_id",
         "schema_version",
     }
@@ -150,7 +152,7 @@ def test_envelopes_and_compiled_output_may_not_share_a_home(tmp_path: Path) -> N
 
 def test_declaration_rejects_an_unsupported_schema_version(tmp_path: Path) -> None:
     with pytest.raises(ProjectExperimentDeclarationError, match="unsupported"):
-        _declaration(tmp_path, schema_version="feedbax.project_experiment.v2")
+        _declaration(tmp_path, schema_version="feedbax.project_experiment.v3")
 
 
 def test_a_budget_resource_names_one_document_by_bare_filename(tmp_path: Path) -> None:
@@ -233,7 +235,7 @@ def test_an_unknown_schema_id_is_refused_rather_than_interpreted(tmp_path: Path)
 
 
 @pytest.mark.parametrize(
-    "version", ["feedbax.project_experiment.v0", "feedbax.project_experiment.v2", None]
+    "version", ["feedbax.project_experiment.v0", "feedbax.project_experiment.v3", None]
 )
 def test_an_unsupported_schema_version_refuses_with_migration_absent(
     tmp_path: Path, version: str | None
@@ -244,6 +246,37 @@ def test_an_unsupported_schema_version_refuses_with_migration_absent(
         ProjectExperimentDeclarationError, match="migration_intentionally_absent"
     ):
         load_project_declaration(tmp_path)
+
+
+def test_v1_remains_the_exact_declaration_without_figure_policy(tmp_path: Path) -> None:
+    document = _document(schema_version=PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION_V1)
+    _write_declaration(tmp_path, document)
+
+    declaration = load_project_declaration(tmp_path)
+
+    assert declaration.schema_version == PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION_V1
+    assert declaration.figure_policy is None
+
+
+def test_v1_refuses_the_v2_figure_policy_field(tmp_path: Path) -> None:
+    document = _document(
+        schema_version=PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION_V1,
+        figure_policy={"ref": "figure-policy.json", "sha256": "0" * 64},
+    )
+    _write_declaration(tmp_path, document)
+
+    with pytest.raises(ProjectExperimentDeclarationError, match="does not define"):
+        load_project_declaration(tmp_path)
+
+
+def test_v2_parses_one_optional_content_pinned_figure_policy(tmp_path: Path) -> None:
+    policy = {"ref": "figure-policy.json", "sha256": "1" * 64}
+    _write_declaration(tmp_path, _document(figure_policy=policy))
+
+    declaration = load_project_declaration(tmp_path)
+
+    assert declaration.figure_policy is not None
+    assert declaration.figure_policy.model_dump(mode="json", exclude_none=True) == policy
 
 
 @pytest.mark.parametrize(

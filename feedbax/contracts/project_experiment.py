@@ -1,8 +1,9 @@
 """What a project declares about its authored experiments: data, and only data.
 
-A project tells Feedbax three things — where its envelopes live, where its
-compiled outputs go, and where its authoring budgets are. That is the whole
-declaration. It binds no callable, names no layer, claims no envelope family,
+A project tells Feedbax where its envelopes live, where its compiled outputs
+go, where its authoring budgets are, and optionally which exact figure-policy
+bytes govern presentation. That is the whole declaration. It binds no callable,
+names no layer, claims no envelope family,
 and states no compiler contract, because under the single
 ``feedbax.experiment_envelope.v1`` dialect there is nothing left for a project
 to decide about *how* compilation works:
@@ -16,11 +17,9 @@ to decide about *how* compilation works:
 * applicability is authored in the envelope or decided by a versioned Feedbax
   structural rule, so there is no applicability callback.
 
-What remains is repository layout and one budget resource, which are facts about
-where a project keeps its files. A declaration is therefore inert: nothing in it
-can change what a compiled document *means*, only which directory it is read
-from and written to. That is the property that makes two projects' corpora
-comparable.
+What remains is repository layout, one budget resource, and an optional
+content-pinned figure policy. The policy is inert data resolved by Feedbax's
+figure contract; it cannot register code or change scientific inputs.
 
 Because the declaration is data and nothing else, it is *read* as data. One
 project root holds one :data:`PROJECT_DECLARATION_FILENAME` file, and
@@ -40,15 +39,18 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, runtime_checkable
 
+from feedbax.contracts.matrix_core import ContentPinnedJsonBase
 from feedbax.contracts.strict_json import strict_json_loads
 
 PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID = "feedbax.project_experiment"
-PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION = "feedbax.project_experiment.v1"
+PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION_V1 = "feedbax.project_experiment.v1"
+PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION = "feedbax.project_experiment.v2"
 
 #: Every declaration schema version this Feedbax admits. One entry means one
 #: shape; a second version arrives with a migration rule or an explicit refusal,
 #: never with a silent reinterpretation of the version it replaces.
 PROJECT_EXPERIMENT_DECLARATION_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
+    PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION_V1,
     PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
 )
 
@@ -58,7 +60,7 @@ PROJECT_DECLARATION_FILENAME = "feedbax.project.json"
 #: The exact key set an admitted declaration document states. An absent key is
 #: incomplete and an unknown key is a misunderstanding; both fail closed rather
 #: than being defaulted or ignored.
-PROJECT_DECLARATION_DOCUMENT_KEYS: frozenset[str] = frozenset(
+PROJECT_DECLARATION_DOCUMENT_KEYS_V1: frozenset[str] = frozenset(
     {
         "schema_id",
         "schema_version",
@@ -67,6 +69,9 @@ PROJECT_DECLARATION_DOCUMENT_KEYS: frozenset[str] = frozenset(
         "output_directory",
         "authoring_budget",
     }
+)
+PROJECT_DECLARATION_DOCUMENT_KEYS: frozenset[str] = frozenset(
+    {*PROJECT_DECLARATION_DOCUMENT_KEYS_V1, "figure_policy"}
 )
 
 
@@ -169,6 +174,7 @@ class ProjectExperimentDeclaration:
     envelope_directory: str
     output_directory: str
     authoring_budget: AuthoringBudgetResource
+    figure_policy: ContentPinnedJsonBase | None = None
     schema_id: str = PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID
     schema_version: str = PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION
 
@@ -204,6 +210,19 @@ class ProjectExperimentDeclaration:
         if not isinstance(self.authoring_budget, AuthoringBudgetResource):
             raise ProjectExperimentDeclarationError(
                 f"project {self.project!r} must declare an AuthoringBudgetResource"
+            )
+        if self.figure_policy is not None and not isinstance(
+            self.figure_policy, ContentPinnedJsonBase
+        ):
+            raise ProjectExperimentDeclarationError(
+                f"project {self.project!r} figure_policy must be a ContentPinnedJsonBase"
+            )
+        if (
+            self.schema_version == PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION_V1
+            and self.figure_policy is not None
+        ):
+            raise ProjectExperimentDeclarationError(
+                "project experiment declaration v1 cannot carry figure_policy"
             )
 
     def owns_envelope_ref(self, envelope_ref: str) -> bool:
@@ -295,15 +314,32 @@ def parse_project_declaration(
             f"{list(PROJECT_EXPERIMENT_DECLARATION_SUPPORTED_SCHEMA_VERSIONS)}; "
             "migration_intentionally_absent"
         )
+    expected_keys = PROJECT_DECLARATION_DOCUMENT_KEYS_V1
+    allowed_keys = (
+        PROJECT_DECLARATION_DOCUMENT_KEYS_V1
+        if found_version == PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION_V1
+        else PROJECT_DECLARATION_DOCUMENT_KEYS
+    )
     present = set(document)
-    missing = sorted(PROJECT_DECLARATION_DOCUMENT_KEYS - present)
+    missing = sorted(expected_keys - present)
     if missing:
         raise ProjectExperimentDeclarationError(f"{source} omits required keys: {missing}")
-    unknown = sorted(present - PROJECT_DECLARATION_DOCUMENT_KEYS)
+    unknown = sorted(present - allowed_keys)
     if unknown:
         raise ProjectExperimentDeclarationError(
             f"{source} states keys this declaration schema does not define: {unknown}"
         )
+    raw_figure_policy = document.get("figure_policy")
+    try:
+        figure_policy = (
+            None
+            if raw_figure_policy is None
+            else ContentPinnedJsonBase.model_validate(raw_figure_policy)
+        )
+    except ValueError as exc:
+        raise ProjectExperimentDeclarationError(
+            f"{source}#figure_policy is not a valid content-pinned JSON reference: {exc}"
+        ) from exc
     return ProjectExperimentDeclaration(
         project=_required_string(document, "project", source),
         declaration_source=source,
@@ -312,6 +348,7 @@ def parse_project_declaration(
         authoring_budget=_budget_resource(
             _required_string(document, "authoring_budget", source), budget_root, source
         ),
+        figure_policy=figure_policy,
         schema_id=str(found_id),
         schema_version=str(found_version),
     )
@@ -340,6 +377,7 @@ __all__ = [
     "PROJECT_DECLARATION_FILENAME",
     "PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID",
     "PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION",
+    "PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION_V1",
     "PROJECT_EXPERIMENT_DECLARATION_SUPPORTED_SCHEMA_VERSIONS",
     "AuthoringBudgetResource",
     "AuthoringBudgetRoot",

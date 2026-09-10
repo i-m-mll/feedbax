@@ -11,6 +11,7 @@ from typing import Any
 from feedbax.analysis.figures import execute_figure_spec, resolve_figure_spec
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.plugins.composition import compose_application
+from feedbax.contracts.project_experiment import load_project_declaration
 from feedbax.plot.constructors import (
     constructor_catalog,
     registered_figure_pieces,
@@ -36,12 +37,22 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("spec", type=Path)
     run_parser.add_argument("--root", type=Path, default=None)
     run_parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    run_parser.add_argument(
+        "--project-root",
+        type=Path,
+        help="Explicit project root whose content-pinned figure policy applies",
+    )
 
     resolve_parser = subparsers.add_parser(
         "resolve", help="Print the ordinary FigureSpec resolved from direct or composed authoring"
     )
     resolve_parser.add_argument("spec", type=Path)
     resolve_parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    resolve_parser.add_argument(
+        "--project-root",
+        type=Path,
+        help="Explicit project root whose content-pinned figure policy applies",
+    )
     resolve_parser.add_argument(
         "--with-lineage",
         action="store_true",
@@ -53,9 +64,18 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     registry = asyncio.run(compose_application()).bundle.figures
+    declaration = (
+        load_project_declaration(args.project_root)
+        if getattr(args, "project_root", None) is not None
+        else None
+    )
+    repo_root = args.project_root if declaration is not None else getattr(args, "repo_root", None)
     if args.command == "resolve":
         resolved = resolve_figure_spec(
-            _load_spec(args.spec), repo_root=args.repo_root, registry=registry
+            _load_spec(args.spec),
+            repo_root=repo_root,
+            registry=registry,
+            project_figure_policy=(declaration.figure_policy if declaration is not None else None),
         )
         if args.with_lineage:
             _print_json(resolved.model_dump(mode="json", exclude_none=True))
@@ -66,8 +86,9 @@ def main(argv: list[str] | None = None) -> int:
         manifest, path = execute_figure_spec(
             _load_spec(args.spec),
             root=args.root,
-            repo_root=args.repo_root,
+            repo_root=repo_root,
             registry=registry,
+            project_figure_policy=(declaration.figure_policy if declaration is not None else None),
         )
         _print_json(
             {
