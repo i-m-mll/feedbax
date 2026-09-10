@@ -26,6 +26,7 @@ class ValueSchema(BaseModel):
     dtype: str | None = None
     shape: list[Any] | None = None
     rank: int | None = None
+    quantity: str | None = Field(default=None, exclude_if=lambda value: value is None)
     units: str | None = None
     frame: str | None = None
     origin: SchemaOrigin = "unknown"

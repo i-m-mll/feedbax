@@ -27,6 +27,7 @@ from feedbax.contracts.base import (
     ParentRef,
 )
 from feedbax.contracts.manifest import (
+    AnalysisOutputDescriptor,
     AnalysisRunSpec,
     DataProductParentRef,
     REGENERATION_SPEC_SCHEMA_ID,
@@ -35,6 +36,7 @@ from feedbax.contracts.manifest import (
     analysis_run_manifest_id,
     load_manifest,
 )
+from feedbax.contracts.value_schema import ValueSchema
 from feedbax.persistence.manifest_index import rebuild_manifest_index
 from feedbax.persistence.artifact_custody import (
     ArtifactBlobIntegrityError,
@@ -442,6 +444,20 @@ def test_record_data_product_custodies_payload_and_finalizes_exact_record(
         artifact_logical_name="scalars/peak_velocity.json",
         parameters={"cohort": "discrete"},
         materialization={"scalar_path": "value"},
+        output_descriptors=[
+            AnalysisOutputDescriptor(
+                path="value",
+                value_schema=ValueSchema(
+                    id="science.peak_velocity",
+                    label="Peak velocity",
+                    kind="scalar",
+                    quantity="velocity",
+                    units="m/s",
+                    frame="world",
+                    origin="declared",
+                ),
+            )
+        ],
     )
 
     assert context.produced_data == (product,)
@@ -469,6 +485,37 @@ def test_record_data_product_custodies_payload_and_finalizes_exact_record(
     assert manifest.produced_data == [product]
     assert loaded.produced_data == [product]
     assert loaded.produced_data[0].artifacts == [payload_ref]
+    assert loaded.produced_data[0].output_descriptors == product.output_descriptors
+
+
+def test_record_data_product_rejects_descriptor_for_missing_payload_path(tmp_path: Path) -> None:
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(analysis_type="toy_scalar_projection"),
+        root=tmp_path,
+        index_manifest=False,
+    )
+
+    with pytest.raises(ValueError, match="does not name an existing exact payload path"):
+        context.record_data_product(
+            {"value": 1.25},
+            product_schema_id="downstream.scalar_projection",
+            product_schema_version="downstream.scalar_projection.v1",
+            role="peak_velocity_scalar",
+            logical_name="peak_velocity_scalar",
+            output_descriptors=[
+                AnalysisOutputDescriptor(
+                    path="missing",
+                    value_schema=ValueSchema(
+                        id="science.velocity",
+                        label="Velocity",
+                        kind="scalar",
+                        quantity="velocity",
+                        units="m/s",
+                        origin="declared",
+                    ),
+                )
+            ],
+        )
 
 
 def test_record_data_product_rejects_partial_authenticated_parent_profile(
@@ -680,9 +727,12 @@ def test_context_materializer_records_embedded_refs_groups_and_regeneration_spec
     existing_ref = artifacts_by_role["toy_existing_summary"]
     bulk_ref = artifacts_by_role["toy_bulk_arrays"]
 
-    assert json.loads(ImmutableArtifactBlobProvider(tmp_path).get_bytes(payload_ref))["nested"][
-        "refs"
-    ][0]["artifact_id"] == external_ref.artifact_id
+    assert (
+        json.loads(ImmutableArtifactBlobProvider(tmp_path).get_bytes(payload_ref))["nested"][
+            "refs"
+        ][0]["artifact_id"]
+        == external_ref.artifact_id
+    )
     assert Path(existing_ref.uri).exists()
     assert Path(bulk_ref.uri).exists()
     assert bulk_ref.metadata["artifact_group"]["id"] == "toy_bulk_group"

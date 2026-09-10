@@ -278,8 +278,8 @@ def test_constructor_registry_validates_tiers_and_duplicates() -> None:
 
 def test_constructor_versions_are_reported_in_catalog_and_manifest(tmp_path: Path) -> None:
     expected = {
-        "feedbax.profile_band": "v2",
-        "feedbax.profile_curves": "v1",
+        "feedbax.profile_band": "v3",
+        "feedbax.profile_curves": "v2",
         "feedbax.comparison_grid": "v7",
         "feedbax.grid_figure": "v7",
     }
@@ -939,24 +939,28 @@ def test_semantic_axis_range_policy_shares_exact_classes_without_unit_aliasing(
             "name": "force-a",
             "row": 1,
             "col": 1,
+            "x_axis": {"quantity": "sample", "unit": "index"},
             "y_axis": {"quantity": "force", "unit": "N"},
         },
         {
             "name": "force-b",
             "row": 1,
             "col": 2,
+            "x_axis": {"quantity": "sample", "unit": "index"},
             "y_axis": {"quantity": "force", "unit": "N"},
         },
         {
             "name": "torque-a",
             "row": 2,
             "col": 1,
+            "x_axis": {"quantity": "sample", "unit": "index"},
             "y_axis": {"quantity": "torque", "unit": "N"},
         },
         {
             "name": "torque-b",
             "row": 2,
             "col": 2,
+            "x_axis": {"quantity": "sample", "unit": "index"},
             "y_axis": {"quantity": "torque", "unit": "N"},
         },
     ]
@@ -1003,24 +1007,28 @@ def test_semantic_axis_range_selection_and_explicit_axis_exceptions(
                 "name": "force-a",
                 "row": 1,
                 "col": 1,
+                "x_axis": {"quantity": "sample", "unit": "index"},
                 "y_axis": {"quantity": "force", "unit": "N"},
             },
             {
                 "name": "force-explicit",
                 "row": 1,
                 "col": 2,
+                "x_axis": {"quantity": "sample", "unit": "index"},
                 "y_axis": {"quantity": "force", "unit": "N", "range": [-1, 1]},
             },
             {
                 "name": "force-b",
                 "row": 1,
                 "col": 3,
+                "x_axis": {"quantity": "sample", "unit": "index"},
                 "y_axis": {"quantity": "force", "unit": "N"},
             },
             {
                 "name": "velocity",
                 "row": 1,
                 "col": 4,
+                "x_axis": {"quantity": "sample", "unit": "index"},
                 "y_axis": {"quantity": "velocity", "unit": "m/s"},
             },
         ],
@@ -1837,7 +1845,7 @@ def test_endpoint_markers_derive_curved_reach_guides_from_trajectory(figure_regi
     endpoint_constructor = get_figure_constructor(
         "feedbax.endpoint_markers", tier="trace", registry=figure_registry
     )
-    assert endpoint_constructor.version == "v3"
+    assert endpoint_constructor.version == "v4"
     curved = [[[2, 3], [3, 7], [5, 8]]]
     endpoint_traces = endpoint_constructor.callable(
         {"trajectories": curved},
@@ -2083,7 +2091,7 @@ def test_trajectory_2d_default_params_leave_style_and_markers_untouched(figure_r
     constructor = get_figure_constructor(
         "feedbax.trajectory_2d", tier="trace", registry=figure_registry
     )
-    assert constructor.version == "v5"
+    assert constructor.version == "v6"
     params = constructor.params()
     assert params.line_dash is None
     assert params.start_marker is None

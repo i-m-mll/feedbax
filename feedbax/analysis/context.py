@@ -25,6 +25,7 @@ from feedbax.contracts.artifact_store import (
     store_artifact,
 )
 from feedbax.contracts.manifest import (
+    AnalysisOutputDescriptor,
     AnalysisDataProduct,
     AnalysisEvaluationStateResolutionDiagnostic,
     AnalysisEvaluationStateSource,
@@ -39,6 +40,13 @@ from feedbax.contracts.manifest import (
     safe_manifest_key,
     spec_payload,
     write_manifest,
+)
+from feedbax.contracts.expressions import (
+    ContextItem,
+    ExpressionContext,
+    ExpressionEvaluationError,
+    ValueQuery,
+    evaluate_query,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from jax_cookbook import arrays_to_lists
@@ -221,6 +229,7 @@ class AnalysisRunContext:
         rollout_policy: dict[str, Any] | None = None,
         parameters: dict[str, Any] | None = None,
         descriptor_basis_hash: str | None = None,
+        output_descriptors: Sequence[AnalysisOutputDescriptor] | None = None,
         materialization: dict[str, Any] | None = None,
         regeneration: Sequence[RegenerationSpec | ParentRef | ArtifactRef] = (),
         metadata: dict[str, Any] | None = None,
@@ -231,6 +240,24 @@ class AnalysisRunContext:
         provider. Product identity and output-binding collisions fail before a
         second product is recorded.
         """
+        normalized_payload = arrays_to_lists(payload)
+        for descriptor in output_descriptors or ():
+            try:
+                evaluate_query(
+                    ValueQuery(item="output", path=descriptor.path),
+                    ExpressionContext(
+                        items={
+                            "output": ContextItem(
+                                kind="analysis_output", payload=normalized_payload
+                            )
+                        }
+                    ),
+                )
+            except ExpressionEvaluationError as exc:
+                raise ValueError(
+                    "AnalysisDataProduct output descriptor does not name an existing exact "
+                    f"payload path: {descriptor.path!r}"
+                ) from exc
         parents = (
             list(parent_manifests)
             if parent_manifests is not None
@@ -249,6 +276,9 @@ class AnalysisRunContext:
             "rollout_policy": dict(rollout_policy or {}),
             "parameters": arrays_to_lists(dict(parameters or {})),
             "descriptor_basis_hash": descriptor_basis_hash,
+            "output_descriptors": (
+                list(output_descriptors) if output_descriptors is not None else None
+            ),
             "materialization": arrays_to_lists(dict(materialization or {})),
             "regeneration": list(regeneration),
             "metadata": arrays_to_lists(dict(metadata or {})),
@@ -262,7 +292,7 @@ class AnalysisRunContext:
         self._reject_data_product_collision(candidate)
 
         artifact = self._store_json_artifact(
-            payload,
+            normalized_payload,
             role=artifact_role or role,
             logical_name=artifact_logical_name or f"{logical_name}.json",
             metadata=artifact_metadata,

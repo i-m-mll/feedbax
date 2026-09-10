@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from feedbax.contracts.artifact_store import (
     _retention_artifact_payload,
@@ -28,6 +28,7 @@ from feedbax.contracts.base import (
 from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION as AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
 )
+from feedbax.contracts.value_schema import ValueSchema
 from feedbax.contracts.base import (
     ArrayStoreRef,
     ArtifactMigrationRecord,
@@ -207,6 +208,47 @@ class DataProductParentRef(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class AnalysisOutputDescriptorSource(StrictModel):
+    """Exact source of a semantics-preserving output descriptor."""
+
+    product_identity_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    path: str
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        return _validate_output_descriptor_path(value)
+
+
+class AnalysisOutputDescriptor(StrictModel):
+    """Scientific meaning of one exact field in an analysis product payload."""
+
+    path: str
+    value_schema: ValueSchema
+    origin: Literal["declared", "preserved"] = "declared"
+    preserved_from: AnalysisOutputDescriptorSource | None = None
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        return _validate_output_descriptor_path(value)
+
+    @model_validator(mode="after")
+    def _validate_origin(self) -> "AnalysisOutputDescriptor":
+        if (self.origin == "preserved") != (self.preserved_from is not None):
+            raise ValueError(
+                "AnalysisOutputDescriptor origin='preserved' requires preserved_from, "
+                "and origin='declared' forbids it"
+            )
+        return self
+
+
+def _validate_output_descriptor_path(value: str) -> str:
+    if value != value.strip() or not value or any(not part for part in value.split(".")):
+        raise ValueError(f"analysis output descriptor path is not an exact dotted path: {value!r}")
+    return value
+
+
 class AnalysisDataProduct(StrictModel):
     """Typed semantic product emitted by an analysis or materialization step.
 
@@ -229,6 +271,10 @@ class AnalysisDataProduct(StrictModel):
     rollout_policy: dict[str, Any] = Field(default_factory=dict)
     parameters: dict[str, Any] = Field(default_factory=dict)
     descriptor_basis_hash: Optional[str] = None
+    output_descriptors: list[AnalysisOutputDescriptor] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     materialization: dict[str, Any] = Field(default_factory=dict)
     regeneration: list[RegenerationSpec | ParentRef | ArtifactRef] = Field(default_factory=list)
@@ -262,6 +308,14 @@ class AnalysisDataProduct(StrictModel):
             raise ValueError("AnalysisDataProduct logical_name must not be empty")
         if not self.producer_manifest_id.strip():
             raise ValueError("AnalysisDataProduct producer_manifest_id must not be empty")
+        if self.output_descriptors is not None:
+            if not self.output_descriptors:
+                raise ValueError(
+                    "AnalysisDataProduct output_descriptors must be omitted rather than empty"
+                )
+            paths = [descriptor.path for descriptor in self.output_descriptors]
+            if len(paths) != len(set(paths)):
+                raise ValueError("AnalysisDataProduct output descriptor paths must be unique")
 
         expected_hash = analysis_data_product_identity_hash(self)
         if self.product_identity_hash is not None and self.product_identity_hash != expected_hash:
@@ -1171,6 +1225,10 @@ class FigureBindingRecord(StrictModel):
     panel: Optional[str] = None
     constructor: Optional[str] = None
     expression_hashes: list[str] = Field(default_factory=list)
+    coordinate_descriptors: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+    )
 
 
 class FigurePieceResolution(StrictModel):
@@ -1287,7 +1345,7 @@ def analysis_data_product_identity_envelope(product: AnalysisDataProduct) -> dic
             "metadata": artifact.metadata,
         }
 
-    return {
+    envelope = {
         "schema_id": product.schema_id,
         "schema_version": product.schema_version,
         "product_schema_id": product.product_schema_id,
@@ -1309,6 +1367,43 @@ def analysis_data_product_identity_envelope(product: AnalysisDataProduct) -> dic
             item.model_dump(mode="json", exclude_none=True) for item in product.regeneration
         ],
     }
+    if product.output_descriptors is not None:
+        envelope["output_descriptors"] = [
+            descriptor.model_dump(mode="json", exclude_none=True)
+            for descriptor in product.output_descriptors
+        ]
+    return envelope
+
+
+def preserve_analysis_output_descriptor(
+    product: AnalysisDataProduct,
+    *,
+    input_path: str,
+    output_path: str,
+) -> AnalysisOutputDescriptor:
+    """Preserve one exact input descriptor for a semantics-preserving output field."""
+    input_path = _validate_output_descriptor_path(input_path)
+    output_path = _validate_output_descriptor_path(output_path)
+    matches = [
+        descriptor
+        for descriptor in product.output_descriptors or ()
+        if descriptor.path == input_path
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            "descriptor preservation requires exactly one named input descriptor: "
+            f"path={input_path!r}, matches={len(matches)}"
+        )
+    assert product.product_identity_hash is not None
+    return AnalysisOutputDescriptor(
+        path=output_path,
+        value_schema=matches[0].value_schema.model_copy(deep=True),
+        origin="preserved",
+        preserved_from=AnalysisOutputDescriptorSource(
+            product_identity_hash=product.product_identity_hash,
+            path=input_path,
+        ),
+    )
 
 
 def analysis_data_product_identity_hash(product: AnalysisDataProduct) -> str:

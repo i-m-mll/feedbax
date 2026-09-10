@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from importlib import resources
 import json
 import re
@@ -279,6 +279,7 @@ class FigureConstructorRegistration:
     params_model: type[StrictModel] = EmptyParams
     description: str = ""
     version: str = "v1"
+    coordinate_roles: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def params(self, value: Mapping[str, Any] | None = None) -> StrictModel:
         return self.params_model.model_validate(dict(value or {}))
@@ -322,14 +323,23 @@ class FigureRegistry:
         params_model: type[StrictModel] = EmptyParams,
         description: str,
         version: str = "v1",
+        coordinate_roles: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         if self._sealed:
             raise RuntimeError("figure registry is sealed")
         key = _validate_namespaced_type_key(key, field="figure constructor")
         if key in self._constructors:
             raise ValueError(f"Figure constructor {key!r} is already registered")
+        normalized_roles = {
+            dimension: tuple(names) for dimension, names in (coordinate_roles or {}).items()
+        }
+        invalid_dimensions = sorted(set(normalized_roles) - {"x", "y", "z"})
+        if invalid_dimensions:
+            raise ValueError(
+                f"figure constructor {key!r} has invalid coordinate roles: {invalid_dimensions}"
+            )
         self._constructors[key] = FigureConstructorRegistration(
-            key, tier, constructor, params_model, description, version
+            key, tier, constructor, params_model, description, version, normalized_roles
         )
 
     def register_template(self, template: Any) -> None:
@@ -392,6 +402,7 @@ def register_figure_constructor(
     params_model: type[StrictModel] = EmptyParams,
     description: str,
     version: str = "v1",
+    coordinate_roles: Mapping[str, Sequence[str]] | None = None,
     replace: bool = False,
 ) -> None:
     """Register a constructor under a stable namespaced key."""
@@ -404,6 +415,7 @@ def register_figure_constructor(
         params_model=params_model,
         description=description,
         version=version,
+        coordinate_roles=coordinate_roles,
     )
 
 
@@ -569,6 +581,9 @@ def constructor_catalog(*, registry: FigureRegistry) -> list[dict[str, Any]]:
             "tier": item.tier,
             "description": item.description,
             "version": item.version,
+            "coordinate_roles": {
+                dimension: list(names) for dimension, names in item.coordinate_roles.items()
+            },
             "params_schema": item.params_model.model_json_schema(),
         }
         for item in registered_figure_constructors(registry=registry)
@@ -1298,7 +1313,7 @@ def _update_scene_panel(fig: go.Figure, panel: PanelContent, *, row: int, col: i
             scene[f"{name}axis"] = {
                 key: value
                 for key, value in axis.items()
-                if key not in {"derived_range", "quantity", "unit"}
+                if key not in {"derived_range", "quantity", "unit", "frame"}
             }
     if panel.equal_data_aspect:
         # A scene has no per-axis scale anchor; equal data units are its aspect mode.
@@ -1320,7 +1335,7 @@ def _update_cartesian_panel(fig: go.Figure, panel: PanelContent, *, row: int, co
         axis_layout = {
             key: value
             for key, value in panel.x_axis.items()
-            if key not in {"derived_range", "quantity", "unit"}
+            if key not in {"derived_range", "quantity", "unit", "frame"}
         }
         if axis_layout:
             fig.update_xaxes(**axis_layout, row=row, col=col)
@@ -1328,7 +1343,7 @@ def _update_cartesian_panel(fig: go.Figure, panel: PanelContent, *, row: int, co
         axis_layout = {
             key: value
             for key, value in panel.y_axis.items()
-            if key not in {"derived_range", "quantity", "unit"}
+            if key not in {"derived_range", "quantity", "unit", "frame"}
         }
         if axis_layout:
             fig.update_yaxes(**axis_layout, row=row, col=col)
@@ -1535,11 +1550,14 @@ def _semantic_group_name(
     dimension: str,
     quantity: str,
     unit: str,
+    frame: str | None,
     *,
     used_names: set[str],
 ) -> str:
     """Allocate a deterministic semantic group disjoint from authored names."""
     base = f"feedbax.semantic[{dimension=},{quantity=},{unit=}]"
+    if frame is not None:
+        base = f"{base[:-1]},{frame=}]"
     candidate = base
     suffix = 1
     while candidate in used_names:
@@ -1557,7 +1575,9 @@ def _lower_semantic_axis_ranges(
     if policy is None:
         return tuple(panels)
     selected = (
-        None if policy.classes == "all" else {(item.quantity, item.unit) for item in policy.classes}
+        None
+        if policy.classes == "all"
+        else {(item.quantity, item.unit, item.frame) for item in policy.classes}
     )
     used_group_names = {
         DataDerivedAxisRange.model_validate(settings["derived_range"]).group
@@ -1565,7 +1585,7 @@ def _lower_semantic_axis_ranges(
         for settings in (panel.x_axis, panel.y_axis)
         if settings is not None and settings.get("derived_range") is not None
     }
-    eligible: dict[tuple[str, str, str], list[tuple[int, str]]] = {}
+    eligible: dict[tuple[str, str, str, str | None], list[tuple[int, str]]] = {}
     for panel_index, panel in enumerate(panels):
         if panel.panel_type == "scene":
             continue
@@ -1574,9 +1594,10 @@ def _lower_semantic_axis_ranges(
                 continue
             quantity = settings.get("quantity")
             unit = settings.get("unit")
+            frame = settings.get("frame")
             if quantity is None or unit is None:
                 continue
-            semantic_class = (str(quantity), str(unit))
+            semantic_class = (str(quantity), str(unit), str(frame) if frame is not None else None)
             if selected is not None and semantic_class not in selected:
                 continue
             # Explicit range authority and explicit named groups are the bounded
@@ -1591,7 +1612,7 @@ def _lower_semantic_axis_ranges(
             eligible.setdefault((dimension, *semantic_class), []).append((panel_index, dimension))
 
     lowered = list(panels)
-    for (dimension, quantity, unit), members in eligible.items():
+    for (dimension, quantity, unit, frame), members in eligible.items():
         if len(members) < 2:
             continue
         declaration = DataDerivedAxisRange(
@@ -1599,6 +1620,7 @@ def _lower_semantic_axis_ranges(
                 dimension,
                 quantity,
                 unit,
+                frame,
                 used_names=used_group_names,
             ),
             padding_fraction=policy.padding_fraction,
@@ -1901,13 +1923,33 @@ def register_default_figure_constructors(registry: FigureRegistry) -> None:
         ),
     ]
     changed_versions = {
-        "feedbax.profile_band": "v2",
-        "feedbax.trajectory_2d": "v5",
-        "feedbax.endpoint_markers": "v3",
-        "feedbax.hline": "v2",
-        "feedbax.vrect": "v3",
+        "feedbax.profile_band": "v3",
+        "feedbax.profile_curves": "v2",
+        "feedbax.trajectory_2d": "v6",
+        "feedbax.trajectory_3d": "v2",
+        "feedbax.endpoint_markers": "v4",
+        "feedbax.scalar_scatter": "v2",
+        "feedbax.hline": "v3",
+        "feedbax.vrect": "v4",
         "feedbax.comparison_grid": "v7",
         "feedbax.grid_figure": "v7",
+    }
+    coordinate_roles = {
+        "feedbax.profile_band": {"x": ("x",), "y": ("mean", "y", "values", "upper", "lower")},
+        "feedbax.profile_curves": {"x": ("x",), "y": ("y", "values")},
+        "feedbax.trajectory_2d": {"x": ("trajectories",), "y": ("trajectories",)},
+        "feedbax.trajectory_3d": {
+            "x": ("trajectories",),
+            "y": ("trajectories",),
+            "z": ("trajectories",),
+        },
+        "feedbax.endpoint_markers": {
+            "x": ("trajectories", "starts", "endpoints"),
+            "y": ("trajectories", "starts", "endpoints"),
+        },
+        "feedbax.scalar_scatter": {"x": ("x",), "y": ("y", "y_err")},
+        "feedbax.hline": {"y": ("y",)},
+        "feedbax.vrect": {"x": ("x", "x0", "x1")},
     }
     for key, tier, constructor, params_model, description in defaults:
         registry.register_constructor(
@@ -1917,4 +1959,5 @@ def register_default_figure_constructors(registry: FigureRegistry) -> None:
             params_model=params_model,
             description=description,
             version=changed_versions.get(key, "v1"),
+            coordinate_roles=coordinate_roles.get(key),
         )

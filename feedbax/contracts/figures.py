@@ -264,7 +264,7 @@ class DataDerivedAxisRange(StrictModel):
 
 
 class AxisSemanticClass(StrictModel):
-    """One exact plotted-quantity and unit identity pair.
+    """One exact plotted-quantity, unit, and optional frame identity.
 
     These are opaque canonical identities supplied by the scientific author,
     never display labels and never a request for unit conversion. Equality is
@@ -273,10 +273,22 @@ class AxisSemanticClass(StrictModel):
 
     quantity: str = Field(min_length=1, max_length=128)
     unit: str = Field(min_length=1, max_length=128)
+    frame: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def _validate_identities(self) -> "AxisSemanticClass":
-        for name, value in (("quantity", self.quantity), ("unit", self.unit)):
+        for name, value in (
+            ("quantity", self.quantity),
+            ("unit", self.unit),
+            ("frame", self.frame),
+        ):
+            if value is None:
+                continue
             if value != value.strip():
                 raise ValueError(f"AxisSemanticClass {name} must not have surrounding whitespace")
         return self
@@ -305,7 +317,7 @@ class SemanticAxisRangePolicy(StrictModel):
                 raise ValueError("selected SemanticAxisRangePolicy classes must not be empty")
             if len(self.classes) > 64:
                 raise ValueError("SemanticAxisRangePolicy accepts at most 64 selected classes")
-            identities = [(item.quantity, item.unit) for item in self.classes]
+            identities = [(item.quantity, item.unit, item.frame) for item in self.classes]
             if len(identities) != len(set(identities)):
                 raise ValueError("SemanticAxisRangePolicy selected classes must be unique")
         return self
@@ -319,6 +331,12 @@ class PanelAxis(StrictModel):
     derived_range: DataDerivedAxisRange | None = None
     quantity: str | None = Field(default=None, min_length=1, max_length=128)
     unit: str | None = Field(default=None, min_length=1, max_length=128)
+    frame: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def _validate_range_authority(self) -> "PanelAxis":
@@ -328,9 +346,11 @@ class PanelAxis(StrictModel):
             raise ValueError("PanelAxis derived_range requires a linear axis")
         if (self.quantity is None) != (self.unit is None):
             raise ValueError("PanelAxis quantity and unit must be declared together")
+        if self.frame is not None and self.quantity is None:
+            raise ValueError("PanelAxis frame requires quantity and unit")
         if self.quantity is not None:
             assert self.unit is not None
-            AxisSemanticClass(quantity=self.quantity, unit=self.unit)
+            AxisSemanticClass(quantity=self.quantity, unit=self.unit, frame=self.frame)
         return self
 
 
