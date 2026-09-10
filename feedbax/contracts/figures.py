@@ -2108,7 +2108,7 @@ def apply_project_figure_policy(
                 "semantic_range_policy": semantic_range_policy,
             },
             deep=True,
-        ).model_dump(mode="python", exclude_none=False)
+        ).model_dump(mode="python", exclude_unset=True)
     )
     effective_sha256 = sha256_bytes(
         canonical_json_bytes(effective.model_dump(mode="json", exclude_none=True))

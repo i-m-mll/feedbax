@@ -12,7 +12,15 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.analysis import figures as figure_execution
-from feedbax.analysis.figures import coerce_figure_spec, execute_figure_spec, resolve_figure_spec
+from feedbax.analysis.figures import (
+    _exact_value_descriptor,
+    coerce_figure_spec,
+    execute_figure_spec,
+    expand_trace_families,
+    plan_figure_execution,
+    resolve_figure_spec,
+)
+from feedbax.contracts.expressions import ContextItem, ExpressionContext, ValueQuery, evaluate_query
 from feedbax.contracts.figures import (
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
@@ -40,6 +48,7 @@ from feedbax.contracts.base import (
     sha256_bytes,
 )
 from feedbax.contracts.manifest import (
+    AnalysisOutputDescriptor,
     OverridePatch,
     figure_manifest_id,
 )
@@ -50,6 +59,7 @@ from feedbax.contracts.matrix_core import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.plot.constructors import FigureRegistry
+from feedbax.contracts.value_schema import ValueSchema
 
 pytestmark = [pytest.mark.feedbax_contract]
 
@@ -226,6 +236,64 @@ def test_one_project_policy_applies_bounded_precedence_to_unrelated_figures(
     assert isinstance(resolved_first.figure_spec.template, FigureTemplate)
     assert resolved_first.project_figure_policy is not None
     assert resolved_first.project_figure_policy.consumed_template == template
+
+
+@pytest.mark.parametrize("explicit_null", [False, True], ids=["omitted", "explicit-null"])
+def test_composed_project_policy_preserves_value_query_default_presence(
+    tmp_path: Path,
+    explicit_null: bool,
+    application_registry_bundle,
+) -> None:
+    base = _base_spec().model_dump(mode="json", exclude_none=True)
+    query = {
+        "item": "analysis",
+        "path": "artifact_payloads.payload.force.{index}",
+    }
+    if explicit_null:
+        query["default"] = None
+    base["trace_families"][0]["trace"]["data"]["y"] = query
+    composition = _composition(
+        _write_payload(tmp_path, "base.json", base),
+        _replace("compose", "metadata.variant", "composed"),
+    )
+    policy = _write_payload(
+        tmp_path,
+        "figure-policy.json",
+        {"defaults": {"assembler_params": {"height": 480}}},
+    )
+
+    plan = plan_figure_execution(
+        composition,
+        runtime_metadata={"overlay": True},
+        repo_root=tmp_path,
+        registry=application_registry_bundle.figures,
+        project_figure_policy=policy,
+    )
+    expanded_query = expand_trace_families(plan.execution_spec)[0].members[0].binding.data["y"]
+    assert isinstance(expanded_query, ValueQuery)
+
+    descriptor = AnalysisOutputDescriptor(
+        path="force.0",
+        value_schema=ValueSchema(
+            id="science.force",
+            label="Force",
+            kind="array",
+            quantity="force",
+            units="N",
+            frame="body",
+            origin="declared",
+        ),
+    )
+    context = ExpressionContext(
+        items={"analysis": ContextItem(kind="analysis", payload={})},
+        descriptors={"analysis": {expanded_query.path: descriptor}},
+    )
+    assert ("default" in expanded_query.model_fields_set) is explicit_null
+    if explicit_null:
+        assert _exact_value_descriptor(expanded_query, context) is None
+        assert evaluate_query(expanded_query, context) is None
+    else:
+        assert _exact_value_descriptor(expanded_query, context) == descriptor
 
 
 def test_project_policy_rejects_scientific_or_constructor_fields(tmp_path: Path) -> None:
