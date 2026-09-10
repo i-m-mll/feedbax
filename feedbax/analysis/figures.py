@@ -408,7 +408,7 @@ def resolve_figure_spec(
                 materialize_inherited_document_with_custody(parent_payload, repo_root=repo_root)
             )
             parent_payload.pop(SOURCE_DOCUMENT_INHERITANCE_KEY, None)
-        payload = _current_figure_spec(parent_payload).model_dump(mode="json", exclude_none=True)
+        payload = _current_figure_spec(parent_payload).model_dump(mode="json", exclude_unset=True)
         root_parent = current.parent
         break
 
