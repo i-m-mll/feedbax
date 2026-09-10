@@ -94,7 +94,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -108,7 +108,11 @@ from feedbax.contracts.base import (
     sha256_bytes,
 )
 from feedbax.contracts.manifest import SpecPayload
-from feedbax.contracts.matrix_core import ContentPinnedJsonBase, SourceDocumentInheritance
+from feedbax.contracts.matrix_core import (
+    ContentPinnedJsonBase,
+    SourceDocumentInheritance,
+    load_content_pinned_json_document,
+)
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.selection import ManifestPredicate
 
@@ -1302,6 +1306,103 @@ class FigureTemplate(StrictModel):
         return self
 
 
+PROJECT_FIGURE_POLICY_ORDER: tuple[str, str, str] = (
+    "project_defaults",
+    "authored_figure",
+    "project_overrides",
+)
+PROJECT_FIGURE_LAYOUT_FIELDS: frozenset[str] = frozenset(
+    {
+        "width",
+        "height",
+        "title",
+        "legend_tracegroupgap",
+        "legend_x",
+        "legend_y",
+        "legend_xanchor",
+        "legend_yanchor",
+        "margin",
+        "hovermode",
+        "template",
+        "row_label_gutter",
+        "legend_gutter",
+    }
+)
+
+
+class ProjectFigurePolicyLayer(StrictModel):
+    """One bounded project layer over presentation-only FigureSpec fields."""
+
+    assembler_params: dict[str, Any] = Field(default_factory=dict)
+    semantic_range_policy: SemanticAxisRangePolicy | None = None
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "ProjectFigurePolicyLayer":
+        forbidden = sorted(set(self.assembler_params) - PROJECT_FIGURE_LAYOUT_FIELDS)
+        if forbidden:
+            raise ValueError(
+                "project figure policy assembler_params may change only native Plotly "
+                f"appearance and existing layout/gutters; forbidden fields: {forbidden}"
+            )
+        return self
+
+
+class ProjectFigurePolicy(StrictModel):
+    """The figure-policy payload owned by project declaration schema v2."""
+
+    defaults: ProjectFigurePolicyLayer = Field(default_factory=ProjectFigurePolicyLayer)
+    overrides: ProjectFigurePolicyLayer = Field(default_factory=ProjectFigurePolicyLayer)
+
+
+class ProjectFigurePolicyProvenance(StrictModel):
+    """Frozen policy and consumed template data used for one effective figure."""
+
+    source: ContentPinnedJsonBase
+    document_sha256: str
+    selected_sha256: str
+    document: dict[str, Any]
+    selected: dict[str, Any]
+    order: tuple[Literal["project_defaults", "authored_figure", "project_overrides"], ...]
+    consumed_template: FigureTemplate | None = None
+    effective_figure_spec_sha256: str
+
+    @model_validator(mode="after")
+    def _validate_custody(self) -> "ProjectFigurePolicyProvenance":
+        if tuple(self.order) != PROJECT_FIGURE_POLICY_ORDER:
+            raise ValueError("project figure policy precedence order is not canonical")
+        for field_name in (
+            "document_sha256",
+            "selected_sha256",
+            "effective_figure_spec_sha256",
+        ):
+            if not re.fullmatch(r"[0-9a-f]{64}", getattr(self, field_name)):
+                raise ValueError(
+                    f"ProjectFigurePolicyProvenance {field_name} must be lowercase sha256"
+                )
+        if sha256_bytes(canonical_json_bytes(self.document)) != self.document_sha256:
+            raise ValueError("project figure policy document hash disagrees with retained bytes")
+        if self.source.sha256 != self.document_sha256:
+            raise ValueError("project figure policy source pin disagrees with retained bytes")
+        if sha256_bytes(canonical_json_bytes(self.selected)) != self.selected_sha256:
+            raise ValueError("project figure policy selected hash disagrees with retained bytes")
+        selected: Any = self.document
+        for segment in self.source.payload_path or ():
+            if isinstance(selected, Mapping):
+                if segment not in selected:
+                    raise ValueError("project figure policy payload_path is absent from retained bytes")
+                selected = selected[segment]
+            elif isinstance(selected, list) and segment.isdecimal():
+                index = int(segment)
+                if index >= len(selected):
+                    raise ValueError("project figure policy payload_path exceeds retained bytes")
+                selected = selected[index]
+            else:
+                raise ValueError("project figure policy payload_path cannot traverse retained bytes")
+        if selected != self.selected:
+            raise ValueError("project figure policy selection disagrees with retained bytes")
+        return self
+
+
 class ComparisonSourceRole(StrictModel):
     """One typed source role admitted by a comparison policy."""
 
@@ -1456,7 +1557,7 @@ class FigureSpec(StrictModel):
     schema_id: str = FIGURE_SPEC_SCHEMA_ID
     schema_version: str = FIGURE_SPEC_SCHEMA_VERSION
     name: str
-    template: str | None = None
+    template: str | FigureTemplate | None = None
     assembler: str | None = None
     assembler_params: dict[str, Any] = Field(default_factory=dict)
     inputs: list[ParentRef] = Field(default_factory=list)
@@ -1898,3 +1999,110 @@ class ResolvedFigureSpec(StrictModel):
     resolved_identity_sha256: str
     figure_spec: FigureSpec
     composition: FigureCompositionProvenance | None = None
+    project_figure_policy: ProjectFigurePolicyProvenance | None = None
+
+
+def _overlay_mapping(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    """Recursively overlay JSON objects while replacing non-object leaves."""
+    result = deepcopy(dict(base))
+    for key, value in overlay.items():
+        current = result.get(key)
+        result[key] = (
+            _overlay_mapping(current, value)
+            if isinstance(current, Mapping) and isinstance(value, Mapping)
+            else deepcopy(value)
+        )
+    return result
+
+
+def apply_project_figure_policy(
+    figure_spec: FigureSpec,
+    *,
+    policy_source: ContentPinnedJsonBase | None = None,
+    repo_root: Path | str | None = None,
+    figure_templates: Sequence[FigureTemplate] = (),
+    recorded: ProjectFigurePolicyProvenance | None = None,
+) -> tuple[FigureSpec, ProjectFigurePolicyProvenance | None]:
+    """Resolve one explicit pinned project policy before figure identity.
+
+    A recorded selection is used for replay and never re-reads the project file.
+    A fresh selection verifies the content pin beneath the explicitly supplied
+    project root. Exactly one consumed named template is frozen inline; unrelated
+    registry definitions never enter the result or provenance.
+    """
+    if policy_source is not None and recorded is not None:
+        raise ValueError("project figure policy accepts either a fresh source or recorded custody")
+    if policy_source is None and recorded is None:
+        return figure_spec, None
+    if recorded is None:
+        assert policy_source is not None
+        document, selected = load_content_pinned_json_document(policy_source, repo_root=repo_root)
+        source = policy_source
+    else:
+        document = deepcopy(recorded.document)
+        selected = deepcopy(recorded.selected)
+        source = recorded.source
+    policy = ProjectFigurePolicy.model_validate(selected)
+
+    consumed_template: FigureTemplate | None
+    if isinstance(figure_spec.template, FigureTemplate):
+        consumed_template = figure_spec.template
+    elif isinstance(figure_spec.template, str):
+        matches = [
+            template for template in figure_templates if template.name == figure_spec.template
+        ]
+        if recorded is not None and recorded.consumed_template is not None:
+            if recorded.consumed_template.name != figure_spec.template:
+                raise ValueError(
+                    "recorded project figure template does not match the authored template name"
+                )
+            matches = [recorded.consumed_template]
+        if len(matches) != 1:
+            raise ValueError(
+                f"governed project figure requires one frozen FigureTemplate "
+                f"definition for {figure_spec.template!r}; found {len(matches)}"
+            )
+        consumed_template = matches[0].model_copy(deep=True)
+    else:
+        consumed_template = None
+
+    assembler_params = _overlay_mapping({}, policy.defaults.assembler_params)
+    if consumed_template is not None:
+        assembler_params = _overlay_mapping(assembler_params, consumed_template.assembler_params)
+    assembler_params = _overlay_mapping(assembler_params, figure_spec.assembler_params)
+    assembler_params = _overlay_mapping(assembler_params, policy.overrides.assembler_params)
+
+    semantic_range_policy = None
+    if "semantic_range_policy" in policy.defaults.model_fields_set:
+        semantic_range_policy = policy.defaults.semantic_range_policy
+    if figure_spec.semantic_range_policy is not None:
+        semantic_range_policy = figure_spec.semantic_range_policy
+    if "semantic_range_policy" in policy.overrides.model_fields_set:
+        semantic_range_policy = policy.overrides.semantic_range_policy
+
+    effective = FigureSpec.model_validate(
+        figure_spec.model_copy(
+            update={
+                "template": consumed_template,
+                "assembler_params": assembler_params,
+                "semantic_range_policy": semantic_range_policy,
+            },
+            deep=True,
+        ).model_dump(mode="python", exclude_none=False)
+    )
+    effective_sha256 = sha256_bytes(
+        canonical_json_bytes(effective.model_dump(mode="json", exclude_none=True))
+    )
+    provenance = ProjectFigurePolicyProvenance(
+        source=source,
+        document_sha256=sha256_bytes(canonical_json_bytes(document)),
+        selected_sha256=sha256_bytes(canonical_json_bytes(selected)),
+        document=document,
+        selected=selected,
+        order=PROJECT_FIGURE_POLICY_ORDER,
+        consumed_template=consumed_template,
+        effective_figure_spec_sha256=effective_sha256,
+    )
+    if recorded is not None and provenance != recorded:
+        raise ValueError("recorded project figure policy does not reproduce effective FigureSpec")
+    return effective, provenance

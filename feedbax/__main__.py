@@ -277,7 +277,7 @@ def _execute_experiment_workflow(args: argparse.Namespace, registries: Any) -> i
     return 0
 
 
-def _preflight_experiment_envelope(args: argparse.Namespace) -> int:
+def _preflight_experiment_envelope(args: argparse.Namespace, registries) -> int:
     """Compile one authored envelope with the single built-in dialect compiler.
 
     Exit codes are the documented authoring contract: 0 accepted, 2 rejected
@@ -331,6 +331,7 @@ def _preflight_experiment_envelope(args: argparse.Namespace) -> int:
             repo_root=repo_root,
             out_dir=out_dir,
             project_declaration=declaration,
+            figure_templates=registries.figures.templates(),
         )
     except ExperimentEnvelopeRejection as rejection:
         print(rejection.render(), file=sys.stderr)
@@ -821,7 +822,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             harness_argv.append("--allow-large-per-row")
         return harness_main(harness_argv, bootstrap_state=bootstrap_state)
     if args.command == "preflight-experiment-envelope":
-        return _preflight_experiment_envelope(args)
+        return _preflight_experiment_envelope(args, registries)
     if args.command == "execute-experiment-workflow":
         return _execute_experiment_workflow(args, registries)
     if args.command == "execute-training-run-spec":

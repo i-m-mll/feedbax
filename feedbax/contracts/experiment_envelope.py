@@ -32,6 +32,7 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.figures import FigureTemplate
 from feedbax.contracts.project_experiment import ProjectExperimentDeclaration
 from feedbax.contracts.run_composition import AuthoredIntentParent, ResolvedOutputParent
 from feedbax.contracts.run_matrix import TrainingRowParentProvenance
@@ -172,6 +173,7 @@ class ExperimentEnvelopeCompileRequest:
     out_dir: Path
     project_declaration: ProjectExperimentDeclaration | None = None
     parent_authorities: tuple[ExperimentEnvelopeParentAuthority, ...] = ()
+    figure_templates: tuple[FigureTemplate, ...] = ()
 
 
 class ExperimentEnvelopeCompileResult(StrictModel):
@@ -264,6 +266,7 @@ def dispatch_experiment_envelope(
     out_dir: Path,
     project_declaration: ProjectExperimentDeclaration | None = None,
     parent_authorities: Sequence[ExperimentEnvelopeParentAuthority] = (),
+    figure_templates: Sequence[FigureTemplate] = (),
 ) -> ExperimentEnvelopeCompileResult:
     """Compile one authored envelope with the single built-in dialect compiler."""
     schema = envelope_schema_of(envelope)
@@ -280,6 +283,7 @@ def dispatch_experiment_envelope(
             out_dir=out_dir,
             project_declaration=project_declaration,
             parent_authorities=tuple(parent_authorities),
+            figure_templates=tuple(figure_templates),
         )
     )
     if result.envelope_schema != schema:

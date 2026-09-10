@@ -64,6 +64,7 @@ from feedbax.contracts.applicability_rules import (
     certify_not_applicable,
 )
 from feedbax.contracts.authoring_budget import AuthoringBudgets
+from feedbax.contracts.figures import FigureTemplate
 from feedbax.contracts.experiment_compile_lock import (
     AnalysisInputBinding,
     AnalysisReceiptSetBinding,
@@ -2715,12 +2716,16 @@ class EnvelopeKernel:
         budgets: AuthoringBudgets,
         implementation: CompilerImplementation,
         parent_authorities: Sequence[ExperimentEnvelopeParentAuthority] = (),
+        figure_templates: Sequence[FigureTemplate] = (),
     ) -> None:
         self.declaration = declaration
         self.layout = EnvelopeLayout.of(declaration)
         self.budgets = budgets
         self.implementation = implementation
         self.parent_authorities = tuple(parent_authorities)
+        self.figure_templates = tuple(
+            template.model_copy(deep=True) for template in figure_templates
+        )
 
     # -- envelope reading ------------------------------------------------
 
@@ -2942,6 +2947,31 @@ class EnvelopeKernel:
         )
         document = self._compose(context, lowered)
 
+        references = list(lowered.references)
+        identity_contributions = dict(lowered.identity_contributions)
+        if layer is ExperimentEnvelopeLayer.FIGURE and self.declaration.figure_policy is not None:
+            # The application boundary supplies immutable template data. The compiler
+            # freezes only the definition selected by this figure; unrelated registry
+            # contents therefore cannot perturb identity or replay.
+            from feedbax.analysis.figures import resolve_figure_spec
+
+            resolution = resolve_figure_spec(
+                document,
+                repo_root=repo_root,
+                project_figure_policy=self.declaration.figure_policy,
+                figure_templates=self.figure_templates,
+            )
+            assert resolution.project_figure_policy is not None
+            identity_contributions["project_figure_policy"] = (
+                resolution.project_figure_policy.model_dump(mode="json", exclude_none=True)
+            )
+            references.append(
+                ContentPinReference(
+                    ref=self.declaration.figure_policy.ref,
+                    content_hash=self.declaration.figure_policy.sha256,
+                )
+            )
+
         lock = build_compile_lock(
             CompileLockInputs(
                 envelope_ref=envelope_ref,
@@ -2960,10 +2990,10 @@ class EnvelopeKernel:
                     delta.layer_id: delta.model_dump(mode="json", exclude_none=True)
                     for delta in (lowered.lock_deltas or lowered.deltas)
                 },
-                references=lowered.references,
+                references=references,
                 row_provenance=lowered.row_provenance,
                 assertions=assertion_records,
-                identity_contributions=lowered.identity_contributions,
+                identity_contributions=identity_contributions,
                 issue=envelope.issue,
             )
         )

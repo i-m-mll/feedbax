@@ -16,6 +16,8 @@ in on the request. Nothing about the compile is decided by a project name.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from feedbax.contracts.authoring_budget import (
     AuthoringBudgets,
     load_authoring_budget_document,
@@ -28,6 +30,7 @@ from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeParentAuthority,
 )
 from feedbax.contracts.experiment_envelope_dialect import ExperimentEnvelopeLayer
+from feedbax.contracts.figures import FigureTemplate
 from feedbax.contracts.project_experiment import ProjectExperimentDeclaration
 from feedbax.envelope.compile import EnvelopeKernel
 
@@ -58,6 +61,7 @@ def kernel_for(
     declaration: ProjectExperimentDeclaration,
     *,
     parent_authorities: tuple[ExperimentEnvelopeParentAuthority, ...] = (),
+    figure_templates: Sequence[FigureTemplate] = (),
 ) -> EnvelopeKernel:
     """Return the one compiler bound to one project's data declaration."""
     return EnvelopeKernel(
@@ -65,6 +69,7 @@ def kernel_for(
         budgets=load_project_budgets(declaration),
         implementation=EXPERIMENT_ENVELOPE_IMPLEMENTATION,
         parent_authorities=parent_authorities,
+        figure_templates=figure_templates,
     )
 
 
@@ -85,7 +90,11 @@ def compile_experiment_envelope(
             "compiling an experiment envelope needs the declaration of the project whose "
             "envelope directory holds it; resolve it before dispatch"
         )
-    kernel = kernel_for(declaration, parent_authorities=request.parent_authorities)
+    kernel = kernel_for(
+        declaration,
+        parent_authorities=request.parent_authorities,
+        figure_templates=request.figure_templates,
+    )
     kernel.refuse_duplicate_output_addresses(request.repo_root, out_dir=request.out_dir)
     outcome = kernel.compile_envelope_file(request.envelope_path, repo_root=request.repo_root)
     paths = kernel.write_outputs(outcome, request.out_dir)

@@ -41,6 +41,7 @@ almost everything:
 | --- | --- | --- |
 | Analysis output | Values and their scientific meaning | Plot layout or styling |
 | Figure composition | Pinned reusable figure structure and acknowledged overrides | Arbitrary code executed after rendering |
+| Project figure policy | Content-pinned presentation defaults and overrides | Inputs, traces, constructors, scientific descriptors, or explicit axis ranges |
 | `FigureSpec` | Inputs, panels, traces, axis meaning, and explicit exceptions | Project discovery or process-global defaults |
 | `FigureTemplate` | Reusable figure-family slots and assembler defaults | Scientific transformations of input values |
 | Plotly template | Fonts, colors, title spacing, automargins, and other appearance | Which axes are scientifically comparable |
@@ -52,22 +53,29 @@ templates remain the appearance authority. Feedbax contracts add scientific
 meaning, reproducible composition, validation, identity, and provenance around
 that rendering path.
 
-Two boundaries are important in the current API:
+Three boundaries are important in the current API:
 
 - Axis `quantity` and `unit` are currently declared by the `FigureSpec`. They do
   not yet propagate automatically from analysis-result metadata. Authors must
   not infer them from field names or display labels.
-- A reusable template or composition affects only figures that explicitly
-  reference it. Feedbax does not currently discover a project-wide policy from
-  the working directory or apply a process-global Plotly setting. Applying one
-  policy to every governed figure therefore requires each figure root to share
-  that pinned authority.
+- A project declaration v2 may name one `figure_policy` as a
+  `ContentPinnedJsonBase`. Resolution is always rooted at the explicitly supplied
+  project root; Feedbax never walks from the working directory and never mutates
+  Plotly process globals. A declaration with no policy, and projectless figure
+  execution, keep the existing bytes and behavior.
+- Policy precedence is deterministic: project defaults, then the frozen named
+  `FigureTemplate` and authored figure/composition values, then explicit project
+  overrides. Existing explicit per-axis ranges remain the final scientific
+  exception. The policy admits native Plotly appearance, existing layout and
+  gutter fields, and `semantic_range_policy`; scientific data expressions,
+  traces, constructors, descriptors, and explicit scientific ranges are refused.
 
-The intended direction is for scientific descriptors to travel with exact
-analysis-result bindings and for an explicit project declaration to select a
-bounded figure policy before figure identity and rendering are computed. Such a
-policy would support reproducible regeneration from retained data; it would not
-mutate existing artifacts or admit arbitrary post-render callbacks.
+The governed compiler freezes the exact policy bytes and only the named template
+definition actually consumed by a figure before it computes effective figure
+identity. Planning, execution, receipt admission, and regeneration replay that
+record instead of consulting a live registry or policy file, so an older pin is
+reproducible while a newly authored pin deliberately changes figure identity
+without changing training artifacts.
 
 ## Compact runnable example
 
