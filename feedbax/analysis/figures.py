@@ -885,7 +885,7 @@ def plan_figure_execution(
     if runtime_update:
         try:
             figure_spec = FigureSpec.model_validate(
-                figure_spec.model_dump(mode="python", exclude_none=False)
+                figure_spec.model_dump(mode="python", exclude_unset=True)
             )
         except ValidationError as exc:
             raise FigureInputAuthorityError(
