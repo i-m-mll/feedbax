@@ -31,6 +31,76 @@ document and selected payload in root-to-leaf order, so regeneration does not
 depend on the original files remaining present. Lineage remains visible without
 entering the resolved semantic identity.
 
+## How the figure layers fit together
+
+Each layer has one job. Keeping those jobs separate prevents a house style from
+silently changing scientific meaning, while still allowing figures to reuse
+almost everything:
+
+| Layer | Owns | Does not own |
+| --- | --- | --- |
+| Analysis output | Values and their scientific meaning | Plot layout or styling |
+| Figure composition | Pinned reusable figure structure and acknowledged overrides | Arbitrary code executed after rendering |
+| Project figure policy | Content-pinned presentation defaults and overrides | Inputs, traces, constructors, scientific descriptors, or explicit axis ranges |
+| `FigureSpec` | Inputs, panels, traces, axis meaning, and explicit exceptions | Project discovery or process-global defaults |
+| `FigureTemplate` | Reusable figure-family slots and assembler defaults | Scientific transformations of input values |
+| Plotly template | Fonts, colors, title spacing, automargins, and other appearance | Which axes are scientifically comparable |
+| Grid assembler | Panel geometry and row-label or legend gutters Plotly cannot infer | A second styling system |
+
+An analysis should compute and retain scientific results; an authored figure
+root should describe how those results become a durable figure. Native Plotly
+templates remain the appearance authority. Feedbax contracts add scientific
+meaning, reproducible composition, validation, identity, and provenance around
+that rendering path.
+
+Scientific meaning follows the same authenticated path as the plotted value:
+
+1. An analysis records an exact `AnalysisOutputDescriptor` for each described
+   product field. Its `ValueSchema` owns `quantity`, `units`, and optional
+   `frame`; those fields are scientific content in the
+   `AnalysisDataProduct` identity, not arbitrary metadata.
+2. A semantics-preserving operation uses
+   `preserve_analysis_output_descriptor` to name one exact source product and
+   path and one exact output path. A meaning-changing operation declares its
+   output descriptor. Feedbax does not inspect Python or infer unit algebra.
+3. `FigureDataProductArtifactPayload` selects the exact authenticated product.
+   A direct `ValueQuery` into that selected payload carries the matching
+   descriptor with the value. Filtering, coercion, defaults, and other
+   meaning-changing expressions do not inherit it implicitly.
+4. Each registered trace constructor declares which data arguments contribute
+   to each coordinate. Compatible contributions derive the panel's axis class;
+   quantity, unit, and frame must all agree. The existing semantic range
+   reducer then groups only equal classes.
+
+An explicit `FigureSpec` axis quantity, unit, or frame is an assertion when a
+descriptor exists, and a disagreement fails before the constructor renders.
+For descriptor-free retained products or literal values, an explicit axis is
+the recorded source of otherwise missing meaning. Under a semantic range
+policy, any data-bearing axis that remains unknown fails clearly. Omitting
+`output_descriptors` keeps existing product identity bytes unchanged and means
+unknown; no field-name or display-label inference occurs.
+
+The current API keeps these boundaries explicit:
+
+- A project declaration v2 may name one `figure_policy` as a
+  `ContentPinnedJsonBase`. Resolution is always rooted at the explicitly supplied
+  project root; Feedbax never walks from the working directory and never mutates
+  Plotly process globals. A declaration with no policy, and projectless figure
+  execution, keep the existing bytes and behavior.
+- Policy precedence is deterministic: project defaults, then the frozen named
+  `FigureTemplate` and authored figure/composition values, then explicit project
+  overrides. Existing explicit per-axis ranges remain the final scientific
+  exception. The policy admits native Plotly appearance, existing layout and
+  gutter fields, and `semantic_range_policy`; scientific data expressions,
+  traces, constructors, descriptors, and explicit scientific ranges are refused.
+
+The governed compiler freezes the exact policy bytes and only the named template
+definition actually consumed by a figure before it computes effective figure
+identity. Planning, execution, receipt admission, and regeneration replay that
+record instead of consulting a live registry or policy file, so an older pin is
+reproducible while a newly authored pin deliberately changes figure identity
+without changing training artifacts.
+
 ## Compact runnable example
 
 Run this from a repository root. It writes a shared base and one child envelope,
@@ -122,10 +192,60 @@ The Studio API deliberately rejects `FigureCompositionSpec` with the typed
 `figure_composition_not_supported_in_studio` error. Studio accepts a resolved
 ordinary FigureSpec v2 and never accepts a client-controlled filesystem root.
 
+## Semantic ranges and grid layout
+
+An axis may declare an exact `quantity` and `unit` pair. Both are opaque
+scientific identities, not display labels: `{"quantity": "force", "unit":
+"N"}` matches only that exact pair, and an axis for torque in `N` is a different
+class. A figure's optional `semantic_range_policy` selects either `"all"` or a
+list of at most 64 exact pairs and supplies one finite nonnegative
+`padding_fraction`. During grid assembly, every selected class with at least two
+eligible Cartesian axes is lowered to the existing `DataDerivedAxisRange`
+reducer. An explicit axis `range` or `derived_range` is an exception and always
+wins; a selected class absent from one figure is a no-op. Generated groups are
+separate for x and y and are allocated away from every authored group name. No
+units are converted.
+
+The semantic class describes the *plotted coordinate*, not the intervention or
+source experiment. For example, a response to a force perturbation may still
+plot position error in metres. Quantity and unit must therefore agree with the
+values bound to that axis.
+
+Grid figures accept serialized Plotly templates through their existing
+`assembler_params.template` input. Plotly validates the template, and the
+ordinary appearance values remain inheritable and pinnable through the existing
+`FigureTemplate` composition path:
+
+```json
+{
+  "width": 720,
+  "margin": {"l": 80, "r": 140},
+  "template": {
+    "layout": {
+      "xaxis": {"automargin": true, "title": {"standoff": 14}},
+      "yaxis": {"automargin": true, "title": {"standoff": 14}},
+      "legend": {"xanchor": "left"}
+    }
+  },
+  "row_label_gutter": 28,
+  "legend_gutter": 32
+}
+```
+
+`PanelSpec.row_label` uses Plotly's native row-title annotation, separately from
+the panel title. `row_label_gutter` reserves a pixel-wide strip outside the plot
+area and centres row labels in it; `legend_gutter` places the legend that many
+pixels beyond the reserved strip. Legend placement is calculated from the
+actual plot width after left and right margins. An explicit `legend_x` wins.
+Axis automargin, title standoff, fonts, colors, and other ordinary appearance
+remain native Plotly-template values and are never injected afterward.
+
 ## Identity and migration rules
 
 - `feedbax.spec.figure.v2` remains the unchanged ordinary resolved schema, with
   its existing validation, migration, and rejection policy.
+- `feedbax.spec.semantic_axis_range_policy.v1` is the only supported version of
+  its optional nested declaration; v0 and unknown versions reject.
 - `feedbax.spec.figure_composition.v2` is authored lineage, not resolved figure
   semantics. Its v1 predecessor migrates without semantic change to v2, which
   scopes structural addition declarations to `FigureCompositionDelta`.

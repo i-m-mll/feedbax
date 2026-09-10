@@ -66,6 +66,8 @@ from feedbax.contracts.experiment_envelope_dialect import (
 )
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.matrix_core import ContentPinnedJsonBase
+from feedbax.contracts.project_experiment import ProjectExperimentDeclaration
 from feedbax.contracts.run_composition import (
     CompositionNode,
     InlineIntentParent,
@@ -3991,6 +3993,51 @@ def test_row_expansion_derives_the_multi_row_figure_from_the_row_index(
     assert document["assembler_params"]["height"] == 600
     pins = [item for item in outcome.compile_lock["references"] if item["kind"] == "content_pin"]
     assert [pin["ref"] for pin in pins] == [ROW_INDEX_BASE]
+
+
+def test_figure_compile_freezes_project_policy_before_execution_identity(repo: Path) -> None:
+    policy_document = {
+        "defaults": {"assembler_params": {"width": 640}},
+        "overrides": {"assembler_params": {"height": 720}},
+    }
+    policy_path = repo / "figure-policy.json"
+    policy_path.write_text(
+        json.dumps(policy_document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    declaration = ProjectExperimentDeclaration(
+        project=PROJECT_DECLARATION.project,
+        declaration_source=PROJECT_DECLARATION.declaration_source,
+        envelope_directory=PROJECT_DECLARATION.envelope_directory,
+        output_directory=PROJECT_DECLARATION.output_directory,
+        authoring_budget=PROJECT_DECLARATION.authoring_budget,
+        figure_policy=ContentPinnedJsonBase(
+            ref="figure-policy.json", sha256=canonical_sha256(policy_document)
+        ),
+    )
+
+    outcome = kernel_for(declaration).compile_envelope_file(
+        envelope_path(repo, "widened-plot"), repo_root=repo
+    )
+
+    policy = outcome.compile_lock["identity_contributions"]["project_figure_policy"]
+    assert policy["order"] == [
+        "project_defaults",
+        "authored_figure",
+        "project_overrides",
+    ]
+    assert (
+        policy["effective_figure_spec_sha256"]
+        != outcome.compile_lock["compiled_document"]["content_hash"]
+    )
+    pins = [item for item in outcome.compile_lock["references"] if item["kind"] == "content_pin"]
+    assert {pin["ref"] for pin in pins} == {
+        "figure-policy.json",
+        "bases/quillon.row_index.json",
+    }
+    assert (
+        "identity_contributions.project_figure_policy"
+        in outcome.compile_lock["execution_identity"]["inputs"]
+    )
 
 
 def test_row_expansion_names_no_produced_data_in_the_compiled_plan(repo: Path) -> None:

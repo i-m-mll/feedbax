@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from importlib import resources
+import json
 import re
 from typing import Any, Literal
 
 import numpy as np
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
+from pydantic import Field, field_validator
 
 from feedbax.contracts.figures import (
     ColorscaleSpec,
@@ -19,6 +21,7 @@ from feedbax.contracts.figures import (
     FigureColorbar,
     PerturbationTiming,
     SceneCamera,
+    SemanticAxisRangePolicy,
 )
 from feedbax.contracts.base import StrictModel
 from feedbax.plot import apply_default_template
@@ -198,9 +201,26 @@ class GridFigureParams(StrictModel):
     legend_yanchor: Literal["auto", "top", "middle", "bottom"] | None = None
     margin: FigureMarginParams | None = None
     hovermode: Literal["x", "y", "closest", "x unified", "y unified", False] | None = None
-    template: str | None = None
+    template: str | dict[str, Any] | None = None
+    row_label_gutter: float | None = Field(default=None, ge=0.0, le=256.0)
+    legend_gutter: float | None = Field(default=None, ge=0.0, le=512.0)
     # Resolved by figure execution from FigureSpec.colorbar; not authored here.
     colorbar: FigureColorbar | None = None
+    # Resolved by figure execution from FigureSpec.semantic_range_policy.
+    semantic_range_policy: SemanticAxisRangePolicy | None = None
+
+    @field_validator("template")
+    @classmethod
+    def _validate_serialized_template(
+        cls, template: str | dict[str, Any] | None
+    ) -> str | dict[str, Any] | None:
+        if isinstance(template, dict):
+            try:
+                json.dumps(template, allow_nan=False)
+                go.layout.Template(template)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid serialized Plotly template: {exc}") from exc
+        return template
 
 
 class Trajectories2DRowParams(StrictModel):
@@ -229,6 +249,7 @@ class PanelContent:
     name: str
     traces: tuple[Any, ...] = ()
     title: str | None = None
+    row_label: str | None = None
     row: int | None = None
     col: int | None = None
     axes_labels: Mapping[str, str | None] | None = None
@@ -258,6 +279,7 @@ class FigureConstructorRegistration:
     params_model: type[StrictModel] = EmptyParams
     description: str = ""
     version: str = "v1"
+    coordinate_roles: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     def params(self, value: Mapping[str, Any] | None = None) -> StrictModel:
         return self.params_model.model_validate(dict(value or {}))
@@ -301,14 +323,23 @@ class FigureRegistry:
         params_model: type[StrictModel] = EmptyParams,
         description: str,
         version: str = "v1",
+        coordinate_roles: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         if self._sealed:
             raise RuntimeError("figure registry is sealed")
         key = _validate_namespaced_type_key(key, field="figure constructor")
         if key in self._constructors:
             raise ValueError(f"Figure constructor {key!r} is already registered")
+        normalized_roles = {
+            dimension: tuple(names) for dimension, names in (coordinate_roles or {}).items()
+        }
+        invalid_dimensions = sorted(set(normalized_roles) - {"x", "y", "z"})
+        if invalid_dimensions:
+            raise ValueError(
+                f"figure constructor {key!r} has invalid coordinate roles: {invalid_dimensions}"
+            )
         self._constructors[key] = FigureConstructorRegistration(
-            key, tier, constructor, params_model, description, version
+            key, tier, constructor, params_model, description, version, normalized_roles
         )
 
     def register_template(self, template: Any) -> None:
@@ -371,6 +402,7 @@ def register_figure_constructor(
     params_model: type[StrictModel] = EmptyParams,
     description: str,
     version: str = "v1",
+    coordinate_roles: Mapping[str, Sequence[str]] | None = None,
     replace: bool = False,
 ) -> None:
     """Register a constructor under a stable namespaced key."""
@@ -383,6 +415,7 @@ def register_figure_constructor(
         params_model=params_model,
         description=description,
         version=version,
+        coordinate_roles=coordinate_roles,
     )
 
 
@@ -548,6 +581,9 @@ def constructor_catalog(*, registry: FigureRegistry) -> list[dict[str, Any]]:
             "tier": item.tier,
             "description": item.description,
             "version": item.version,
+            "coordinate_roles": {
+                dimension: list(names) for dimension, names in item.coordinate_roles.items()
+            },
             "params_schema": item.params_model.model_json_schema(),
         }
         for item in registered_figure_constructors(registry=registry)
@@ -1274,7 +1310,11 @@ def _update_scene_panel(fig: go.Figure, panel: PanelContent, *, row: int, col: i
         ("z", panel.z_axis),
     ):
         if axis:
-            scene[f"{name}axis"] = dict(axis)
+            scene[f"{name}axis"] = {
+                key: value
+                for key, value in axis.items()
+                if key not in {"derived_range", "quantity", "unit", "frame"}
+            }
     if panel.equal_data_aspect:
         # A scene has no per-axis scale anchor; equal data units are its aspect mode.
         scene["aspectmode"] = "data"
@@ -1292,11 +1332,19 @@ def _update_cartesian_panel(fig: go.Figure, panel: PanelContent, *, row: int, co
         fig.update_xaxes(title_text=panel.axes_labels.get("x"), row=row, col=col)
         fig.update_yaxes(title_text=panel.axes_labels.get("y"), row=row, col=col)
     if panel.x_axis:
-        axis_layout = {key: value for key, value in panel.x_axis.items() if key != "derived_range"}
+        axis_layout = {
+            key: value
+            for key, value in panel.x_axis.items()
+            if key not in {"derived_range", "quantity", "unit", "frame"}
+        }
         if axis_layout:
             fig.update_xaxes(**axis_layout, row=row, col=col)
     if panel.y_axis:
-        axis_layout = {key: value for key, value in panel.y_axis.items() if key != "derived_range"}
+        axis_layout = {
+            key: value
+            for key, value in panel.y_axis.items()
+            if key not in {"derived_range", "quantity", "unit", "frame"}
+        }
         if axis_layout:
             fig.update_yaxes(**axis_layout, row=row, col=col)
     if panel.equal_data_aspect:
@@ -1337,16 +1385,39 @@ def _comparison_grid(panels: Sequence[PanelContent], params: StrictModel) -> go.
     )
     max_col = max((panel.col or 1) + (panel.col_span or 1) - 1 for panel in panel_list)
     titles = [panel.title or panel.name for panel in panel_list]
+    row_titles: list[str | None] = [None] * max_row
+    for index, panel in enumerate(panel_list):
+        if panel.row_label is None:
+            continue
+        row, _col = _panel_cell(panel, index)
+        if (panel.row_span or 1) != 1:
+            raise ValueError(f"panel {panel.name!r} cannot declare a row_label while spanning rows")
+        prior = row_titles[row - 1]
+        if prior is not None and prior != panel.row_label:
+            raise ValueError(
+                f"grid row {row} declares conflicting row labels {prior!r} and {panel.row_label!r}"
+            )
+        row_titles[row - 1] = panel.row_label
     fig = make_subplots(
         rows=max_row,
         cols=max_col,
         subplot_titles=titles,
+        row_titles=row_titles if any(label is not None for label in row_titles) else None,
         shared_xaxes=p.shared_xaxes,
         shared_yaxes=p.shared_yaxes,
         horizontal_spacing=p.horizontal_spacing,
         vertical_spacing=p.vertical_spacing,
         specs=_subplot_specs(panel_list, rows=max_row, cols=max_col),
     )
+    populated_row_titles = [
+        (row, label) for row, label in enumerate(row_titles, start=1) if label is not None
+    ]
+    if populated_row_titles:
+        row_annotations = fig.layout.annotations[-len(populated_row_titles) :]
+        for annotation, (row, label) in zip(row_annotations, populated_row_titles, strict=True):
+            if annotation.text != label:
+                raise ValueError("Plotly row-title assembly did not preserve authored row labels")
+            annotation.name = f"feedbax.row_label.{row}"
     for index, panel in enumerate(panel_list):
         row, col = _panel_cell(panel, index)
         for trace in panel.traces:
@@ -1475,6 +1546,94 @@ def _panel_colorbar_layout(
     }
 
 
+def _semantic_group_name(
+    dimension: str,
+    quantity: str,
+    unit: str,
+    frame: str | None,
+    *,
+    used_names: set[str],
+) -> str:
+    """Allocate a deterministic semantic group disjoint from authored names."""
+    base = f"feedbax.semantic[{dimension=},{quantity=},{unit=}]"
+    if frame is not None:
+        base = f"{base[:-1]},{frame=}]"
+    candidate = base
+    suffix = 1
+    while candidate in used_names:
+        candidate = f"{base}#{suffix}"
+        suffix += 1
+    used_names.add(candidate)
+    return candidate
+
+
+def _lower_semantic_axis_ranges(
+    panels: Sequence[PanelContent],
+    policy: SemanticAxisRangePolicy | None,
+) -> tuple[PanelContent, ...]:
+    """Lower eligible semantic axes to the existing named-group declaration."""
+    if policy is None:
+        return tuple(panels)
+    selected = (
+        None
+        if policy.classes == "all"
+        else {(item.quantity, item.unit, item.frame) for item in policy.classes}
+    )
+    used_group_names = {
+        DataDerivedAxisRange.model_validate(settings["derived_range"]).group
+        for panel in panels
+        for settings in (panel.x_axis, panel.y_axis)
+        if settings is not None and settings.get("derived_range") is not None
+    }
+    eligible: dict[tuple[str, str, str, str | None], list[tuple[int, str]]] = {}
+    for panel_index, panel in enumerate(panels):
+        if panel.panel_type == "scene":
+            continue
+        for dimension, settings in (("x", panel.x_axis), ("y", panel.y_axis)):
+            if settings is None:
+                continue
+            quantity = settings.get("quantity")
+            unit = settings.get("unit")
+            frame = settings.get("frame")
+            if quantity is None or unit is None:
+                continue
+            semantic_class = (str(quantity), str(unit), str(frame) if frame is not None else None)
+            if selected is not None and semantic_class not in selected:
+                continue
+            # Explicit range authority and explicit named groups are the bounded
+            # per-axis exception mechanism; policy never overwrites either.
+            if settings.get("range") is not None or settings.get("derived_range") is not None:
+                continue
+            if settings.get("type") == "log":
+                raise ValueError(
+                    "semantic axis range policy requires linear axes; "
+                    f"panel {panel.name!r} {dimension} axis declares {semantic_class!r} as log"
+                )
+            eligible.setdefault((dimension, *semantic_class), []).append((panel_index, dimension))
+
+    lowered = list(panels)
+    for (dimension, quantity, unit, frame), members in eligible.items():
+        if len(members) < 2:
+            continue
+        declaration = DataDerivedAxisRange(
+            group=_semantic_group_name(
+                dimension,
+                quantity,
+                unit,
+                frame,
+                used_names=used_group_names,
+            ),
+            padding_fraction=policy.padding_fraction,
+        ).model_dump(exclude_none=True)
+        for panel_index, dimension in members:
+            panel = lowered[panel_index]
+            field = f"{dimension}_axis"
+            settings = dict(getattr(panel, field) or {})
+            settings["derived_range"] = declaration
+            lowered[panel_index] = replace(panel, **{field: settings})
+    return tuple(lowered)
+
+
 def _apply_data_derived_axis_ranges(fig: go.Figure, panels: Sequence[PanelContent]) -> None:
     """Resolve every declared axis group from the traces rendered into its panels."""
     axes: dict[str, dict[str, Any]] = {}
@@ -1592,9 +1751,53 @@ def _apply_data_derived_axis_ranges(fig: go.Figure, panels: Sequence[PanelConten
             updater(range=axis_range, row=member["row"], col=member["col"])
 
 
+def _apply_grid_gutters(
+    fig: go.Figure,
+    *,
+    row_label_gutter: float | None,
+    legend_gutter: float | None,
+    width: int | None,
+    explicit_legend_x: float | None,
+) -> None:
+    """Place native row labels and legends in explicit pixel gutters."""
+    if row_label_gutter is None and legend_gutter is None:
+        return
+    row_annotations = [
+        annotation
+        for annotation in fig.layout.annotations or ()
+        if (annotation.name or "").startswith("feedbax.row_label.")
+    ]
+    if row_annotations and row_label_gutter is None and legend_gutter is not None:
+        raise ValueError("legend_gutter with row labels requires row_label_gutter")
+    if row_label_gutter is not None:
+        for annotation in row_annotations:
+            annotation.update(x=1.0, xanchor="center", xshift=row_label_gutter / 2.0)
+
+    if legend_gutter is None or explicit_legend_x is not None:
+        return
+    if width is None:
+        raise ValueError("legend_gutter requires an explicit figure width")
+    margin = fig.layout.margin
+    template_margin = fig.layout.template.layout.margin
+
+    def margin_pixels(side: str) -> float:
+        explicit = getattr(margin, side)
+        inherited = getattr(template_margin, side)
+        return float(
+            explicit if explicit is not None else inherited if inherited is not None else 80
+        )
+
+    plot_width = width - margin_pixels("l") - margin_pixels("r")
+    if plot_width <= 0:
+        raise ValueError("figure width must exceed its left and right margins")
+    reserved_row_space = row_label_gutter if row_annotations else 0.0
+    fig.update_layout(legend_x=1.0 + (reserved_row_space + legend_gutter) / plot_width)
+
+
 def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictModel) -> go.Figure:
     p = GridFigureParams.model_validate(params.model_dump())
-    _apply_data_derived_axis_ranges(fig, panels)
+    lowered_panels = _lower_semantic_axis_ranges(panels, p.semantic_range_policy)
+    _apply_data_derived_axis_ranges(fig, lowered_panels)
     updates: dict[str, Any] = {}
     if p.width is not None:
         updates["width"] = p.width
@@ -1620,6 +1823,13 @@ def _grid_figure(fig: go.Figure, panels: Sequence[PanelContent], params: StrictM
         updates["template"] = p.template
     if updates:
         fig.update_layout(**updates)
+    _apply_grid_gutters(
+        fig,
+        row_label_gutter=p.row_label_gutter,
+        legend_gutter=p.legend_gutter,
+        width=p.width,
+        explicit_legend_x=p.legend_x,
+    )
     if p.colorbar is not None:
         fig.add_trace(
             _colorbar_carrier(
@@ -1713,13 +1923,33 @@ def register_default_figure_constructors(registry: FigureRegistry) -> None:
         ),
     ]
     changed_versions = {
-        "feedbax.profile_band": "v2",
-        "feedbax.trajectory_2d": "v5",
-        "feedbax.endpoint_markers": "v3",
-        "feedbax.hline": "v2",
-        "feedbax.vrect": "v3",
-        "feedbax.comparison_grid": "v6",
-        "feedbax.grid_figure": "v6",
+        "feedbax.profile_band": "v3",
+        "feedbax.profile_curves": "v2",
+        "feedbax.trajectory_2d": "v6",
+        "feedbax.trajectory_3d": "v2",
+        "feedbax.endpoint_markers": "v4",
+        "feedbax.scalar_scatter": "v2",
+        "feedbax.hline": "v3",
+        "feedbax.vrect": "v4",
+        "feedbax.comparison_grid": "v7",
+        "feedbax.grid_figure": "v7",
+    }
+    coordinate_roles = {
+        "feedbax.profile_band": {"x": ("x",), "y": ("mean", "y", "values", "upper", "lower")},
+        "feedbax.profile_curves": {"x": ("x",), "y": ("y", "values")},
+        "feedbax.trajectory_2d": {"x": ("trajectories",), "y": ("trajectories",)},
+        "feedbax.trajectory_3d": {
+            "x": ("trajectories",),
+            "y": ("trajectories",),
+            "z": ("trajectories",),
+        },
+        "feedbax.endpoint_markers": {
+            "x": ("trajectories", "starts", "endpoints"),
+            "y": ("trajectories", "starts", "endpoints"),
+        },
+        "feedbax.scalar_scatter": {"x": ("x",), "y": ("y", "y_err")},
+        "feedbax.hline": {"y": ("y",)},
+        "feedbax.vrect": {"x": ("x", "x0", "x1")},
     }
     for key, tier, constructor, params_model, description in defaults:
         registry.register_constructor(
@@ -1729,4 +1959,5 @@ def register_default_figure_constructors(registry: FigureRegistry) -> None:
             params_model=params_model,
             description=description,
             version=changed_versions.get(key, "v1"),
+            coordinate_roles=coordinate_roles.get(key),
         )

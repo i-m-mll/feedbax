@@ -90,6 +90,7 @@ from feedbax.contracts import (
     value_identity_record,
 )
 from feedbax.contracts.figures import (
+    AxisSemanticClass,
     FigureCompositionProvenance,
     FigureCompositionSourceRecord,
     FigureCompositionSpec,
@@ -97,6 +98,7 @@ from feedbax.contracts.figures import (
     FigureSpec,
     PanelSpec,
     ResolvedFigureSpec,
+    SemanticAxisRangePolicy,
     TraceBinding,
     TraceFamily,
     TraceFamilyIndex,
@@ -1461,6 +1463,35 @@ def check_figure_composition_public_contract() -> bool:
         raise AssertionError("public finite union range semantics drifted")
     if calculate_array_minmax([np.asarray([0.0, 0.0])], padding=0.05) != (-0.05, 0.05):
         raise AssertionError("public zero-span range semantics drifted")
+    semantic_class = AxisSemanticClass(quantity="force", unit="N")
+    semantic_policy = SemanticAxisRangePolicy(classes=[semantic_class], padding_fraction=0.05)
+    semantic_figure = FigureSpec(
+        name="semantic-layout",
+        assembler="feedbax.grid_figure",
+        assembler_params={
+            "width": 720,
+            "margin": {"l": 80, "r": 140},
+            "template": {
+                "layout": {
+                    "xaxis": {"automargin": True, "title": {"standoff": 14}},
+                    "yaxis": {"automargin": True, "title": {"standoff": 14}},
+                }
+            },
+            "row_label_gutter": 28,
+            "legend_gutter": 32,
+        },
+        semantic_range_policy=semantic_policy,
+        panels=[
+            PanelSpec(
+                name="force",
+                row_label="Delay 0",
+                y_axis={"quantity": "force", "unit": "N"},
+            )
+        ],
+    )
+    round_trip = FigureSpec.model_validate(semantic_figure.model_dump(mode="json"))
+    if round_trip != semantic_figure:
+        raise AssertionError("semantic figure layout declarations do not round-trip")
 
     with TemporaryDirectory() as directory:
         root = Path(directory).resolve()

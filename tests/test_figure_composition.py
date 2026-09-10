@@ -12,7 +12,15 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.analysis import figures as figure_execution
-from feedbax.analysis.figures import coerce_figure_spec, execute_figure_spec, resolve_figure_spec
+from feedbax.analysis.figures import (
+    _exact_value_descriptor,
+    coerce_figure_spec,
+    execute_figure_spec,
+    expand_trace_families,
+    plan_figure_execution,
+    resolve_figure_spec,
+)
+from feedbax.contracts.expressions import ContextItem, ExpressionContext, ValueQuery, evaluate_query
 from feedbax.contracts.figures import (
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID,
     FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION,
@@ -27,6 +35,7 @@ from feedbax.contracts.figures import (
     FigureCompositionProvenance,
     FigureCompositionSpec,
     FigureSpec,
+    FigureTemplate,
     PanelSpec,
     SameSchemaStructuralAddition,
     TraceBinding,
@@ -39,6 +48,7 @@ from feedbax.contracts.base import (
     sha256_bytes,
 )
 from feedbax.contracts.manifest import (
+    AnalysisOutputDescriptor,
     OverridePatch,
     figure_manifest_id,
 )
@@ -49,6 +59,7 @@ from feedbax.contracts.matrix_core import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.plot.constructors import FigureRegistry
+from feedbax.contracts.value_schema import ValueSchema
 
 pytestmark = [pytest.mark.feedbax_contract]
 
@@ -171,6 +182,173 @@ def test_ordinary_figure_v2_is_unchanged_and_composition_v0_rejects() -> None:
                 kind,
                 {"schema_id": schema_id, "schema_version": f"{schema_id}.v0"},
             )
+
+
+def test_one_project_policy_applies_bounded_precedence_to_unrelated_figures(
+    tmp_path: Path,
+) -> None:
+    policy = _write_payload(
+        tmp_path,
+        "figure-policy.json",
+        {
+            "defaults": {"assembler_params": {"height": 480, "margin": {"l": 20}}},
+            "overrides": {"assembler_params": {"margin": {"r": 12}}},
+        },
+    )
+    template = FigureTemplate(
+        name="probe.shared",
+        description="Frozen presentation defaults",
+        assembler="feedbax.grid_figure",
+        assembler_params={"margin": {"l": 30, "t": 8}, "legend_x": 1.0},
+    )
+    first = _base_spec(name="first").model_copy(
+        update={
+            "template": "probe.shared",
+            "assembler": None,
+            "assembler_params": {"margin": {"l": 40}},
+        }
+    )
+    second = _base_spec(name="second")
+
+    resolved_first = resolve_figure_spec(
+        first,
+        repo_root=tmp_path,
+        project_figure_policy=policy,
+        figure_templates=[template],
+    )
+    resolved_second = resolve_figure_spec(
+        second,
+        repo_root=tmp_path,
+        project_figure_policy=policy,
+    )
+
+    assert resolved_first.figure_spec.assembler_params == {
+        "height": 480,
+        "margin": {"l": 40, "t": 8, "r": 12},
+        "legend_x": 1.0,
+    }
+    assert resolved_second.figure_spec.assembler_params == {
+        "height": 480,
+        "margin": {"l": 20, "r": 12},
+        "rows": 1,
+        "cols": 1,
+    }
+    assert isinstance(resolved_first.figure_spec.template, FigureTemplate)
+    assert resolved_first.project_figure_policy is not None
+    assert resolved_first.project_figure_policy.consumed_template == template
+
+
+@pytest.mark.parametrize("explicit_null", [False, True], ids=["omitted", "explicit-null"])
+def test_composed_project_policy_preserves_value_query_default_presence(
+    tmp_path: Path,
+    explicit_null: bool,
+    application_registry_bundle,
+) -> None:
+    base = _base_spec().model_dump(mode="json", exclude_none=True)
+    query = {
+        "item": "analysis",
+        "path": "artifact_payloads.payload.force.{index}",
+    }
+    if explicit_null:
+        query["default"] = None
+    base["trace_families"][0]["trace"]["data"]["y"] = query
+    composition = _composition(
+        _write_payload(tmp_path, "base.json", base),
+        _replace("compose", "metadata.variant", "composed"),
+    )
+    policy = _write_payload(
+        tmp_path,
+        "figure-policy.json",
+        {"defaults": {"assembler_params": {"height": 480}}},
+    )
+
+    plan = plan_figure_execution(
+        composition,
+        runtime_metadata={"overlay": True},
+        repo_root=tmp_path,
+        registry=application_registry_bundle.figures,
+        project_figure_policy=policy,
+    )
+    expanded_query = expand_trace_families(plan.execution_spec)[0].members[0].binding.data["y"]
+    assert isinstance(expanded_query, ValueQuery)
+
+    descriptor = AnalysisOutputDescriptor(
+        path="force.0",
+        value_schema=ValueSchema(
+            id="science.force",
+            label="Force",
+            kind="array",
+            quantity="force",
+            units="N",
+            frame="body",
+            origin="declared",
+        ),
+    )
+    context = ExpressionContext(
+        items={"analysis": ContextItem(kind="analysis", payload={})},
+        descriptors={"analysis": {expanded_query.path: descriptor}},
+    )
+    assert ("default" in expanded_query.model_fields_set) is explicit_null
+    if explicit_null:
+        assert _exact_value_descriptor(expanded_query, context) is None
+        assert evaluate_query(expanded_query, context) is None
+    else:
+        assert _exact_value_descriptor(expanded_query, context) == descriptor
+
+
+def test_project_policy_rejects_scientific_or_constructor_fields(tmp_path: Path) -> None:
+    policy = _write_payload(
+        tmp_path,
+        "figure-policy.json",
+        {"overrides": {"assembler_params": {"traces": [{"data": [1, 2]}]}}},
+    )
+
+    with pytest.raises(ValidationError, match="forbidden fields"):
+        resolve_figure_spec(_base_spec(), repo_root=tmp_path, project_figure_policy=policy)
+
+
+def test_recorded_project_policy_replays_without_live_policy_or_template_lookup(
+    tmp_path: Path,
+) -> None:
+    original = {
+        "defaults": {"assembler_params": {"height": 400}},
+        "overrides": {"assembler_params": {"legend_y": 0.25}},
+    }
+    old_pin = _write_payload(tmp_path, "figure-policy.json", original)
+    template = FigureTemplate(
+        name="probe.shared",
+        description="Frozen presentation defaults",
+        assembler="feedbax.grid_figure",
+        assembler_params={"width": 700},
+    )
+    authored = _base_spec().model_copy(update={"template": "probe.shared", "assembler": None})
+    initial = resolve_figure_spec(
+        authored,
+        repo_root=tmp_path,
+        project_figure_policy=old_pin,
+        figure_templates=[template],
+    )
+    assert initial.project_figure_policy is not None
+
+    new_pin = _write_payload(
+        tmp_path,
+        "figure-policy.json",
+        {"defaults": {"assembler_params": {"height": 900}}},
+    )
+    replay = resolve_figure_spec(
+        authored,
+        recorded_project_figure_policy=initial.project_figure_policy,
+    )
+    changed = resolve_figure_spec(
+        authored,
+        repo_root=tmp_path,
+        project_figure_policy=new_pin,
+        figure_templates=[template],
+    )
+
+    assert replay.resolved_identity_sha256 == initial.resolved_identity_sha256
+    assert replay.figure_spec == initial.figure_spec
+    assert changed.resolved_identity_sha256 != initial.resolved_identity_sha256
 
 
 def test_optional_metadata_carrier_accepts_absence_round_trips_and_stays_strict() -> None:
@@ -1197,6 +1375,44 @@ def test_figure_cli_resolve_prints_ordinary_spec_and_optional_lineage(
     lineage = json.loads(capsys.readouterr().out)
     assert lineage["figure_spec"] == ordinary
     assert lineage["composition"]["authored_envelope_sha256"] == lineage["authored_identity_sha256"]
+
+
+def test_figure_cli_applies_policy_only_from_an_explicit_project_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from feedbax.bin import figure as figure_cli
+
+    policy = _write_payload(
+        tmp_path,
+        "figure-policy.json",
+        {"overrides": {"assembler_params": {"width": 812}}},
+    )
+    (tmp_path / "feedbax.project.json").write_text(
+        json.dumps(
+            {
+                "schema_id": "feedbax.project_experiment",
+                "schema_version": "feedbax.project_experiment.v2",
+                "project": "probe",
+                "envelope_directory": "studies",
+                "output_directory": "compiled",
+                "authoring_budget": "authoring-budget.json",
+                "figure_policy": policy.model_dump(mode="json", exclude_none=True),
+            }
+        ),
+        encoding="utf-8",
+    )
+    spec_path = tmp_path / "figure.json"
+    spec_path.write_text(
+        json.dumps(_base_spec().model_dump(mode="json", exclude_none=True)), encoding="utf-8"
+    )
+
+    assert figure_cli.main(["resolve", str(spec_path), "--repo-root", str(tmp_path)]) == 0
+    projectless = json.loads(capsys.readouterr().out)
+    assert "width" not in projectless["assembler_params"]
+
+    assert figure_cli.main(["resolve", str(spec_path), "--project-root", str(tmp_path)]) == 0
+    governed = json.loads(capsys.readouterr().out)
+    assert governed["assembler_params"]["width"] == 812
 
 
 def test_composition_authoring_reference_is_indexed_and_names_public_surfaces() -> None:

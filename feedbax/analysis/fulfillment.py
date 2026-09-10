@@ -1179,6 +1179,20 @@ def admit_figure_receipt(
             requested_spec=FigureSpec.model_validate(plan.authored_payload.inline),
         )
         _check_figure_runtime_bindings(collector, found, plan=plan)
+        expected_policy = (
+            None
+            if plan.project_figure_policy is None
+            else plan.project_figure_policy.model_dump(mode="json", exclude_none=True)
+        )
+        observed_policy = found.provenance.metadata.get("project_figure_policy")
+        if canonical_json_bytes(observed_policy) != canonical_json_bytes(expected_policy):
+            collector.add(
+                "project_figure_policy_match",
+                "project_figure_policy_mismatch",
+                "cached figure project policy provenance does not equal the requested policy",
+                expected=expected_policy,
+                observed=observed_policy,
+            )
     _check_parents(
         collector,
         found,

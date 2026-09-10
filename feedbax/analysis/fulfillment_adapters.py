@@ -80,7 +80,7 @@ from feedbax.analysis.reports import (
     execute_report_spec,
 )
 from feedbax.analysis.specs import execute_analysis_run_spec
-from feedbax.contracts.figures import FigureInputAuthoritySpec
+from feedbax.contracts.figures import FigureInputAuthoritySpec, ProjectFigurePolicyProvenance
 from feedbax.contracts.base import (
     ParentRef,
     Provenance,
@@ -232,6 +232,7 @@ class FigureNodeRequest:
     #: ``None`` means the run declared no staged bindings, and execution then
     #: takes the environment's own context — which is the empty one.
     execution_context: StagedExecutionContext | None = None
+    project_figure_policy: ProjectFigurePolicyProvenance | None = None
 
     node_kind: ClassVar[FulfillmentNodeKind] = "figure"
 
@@ -659,6 +660,7 @@ def figure_execution_plan(
         repo_root=environment.repo_root,
         execution_context=_figure_execution_context(request, environment),
         registry=environment.registries.figures,
+        recorded_project_figure_policy=request.project_figure_policy,
     )
 
 

@@ -14,13 +14,17 @@ from feedbax.contracts.manifest import (
     ANALYSIS_DATA_PRODUCT_SCHEMA_ID,
     ANALYSIS_DATA_PRODUCT_SCHEMA_VERSION,
     AnalysisDataProduct,
+    AnalysisOutputDescriptor,
     AnalysisRunManifest,
     AnalysisRunSpec,
     load_manifest,
+    analysis_data_product_identity_envelope,
+    preserve_analysis_output_descriptor,
     spec_payload,
     write_manifest,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
+from feedbax.contracts.value_schema import ValueSchema
 from feedbax.integrations import provider as provider_module
 from feedbax.integrations.provider import provider_manifest, validate_analysis_spec
 
@@ -164,6 +168,99 @@ def test_product_identity_hash_covers_semantic_envelope_not_mutable_uri_or_label
     assert changed_semantics.product_identity_hash != product.product_identity_hash
 
 
+def _output_descriptor(
+    path: str,
+    *,
+    quantity: str,
+    units: str,
+    frame: str | None = None,
+) -> AnalysisOutputDescriptor:
+    return AnalysisOutputDescriptor(
+        path=path,
+        value_schema=ValueSchema(
+            id=f"science.{quantity}",
+            label=quantity.title(),
+            kind="array",
+            quantity=quantity,
+            units=units,
+            frame=frame,
+            origin="declared",
+        ),
+    )
+
+
+def test_output_descriptors_are_identity_bearing_and_absence_preserves_old_envelope() -> None:
+    legacy = _product()
+    described = _product(
+        output_descriptors=[
+            _output_descriptor("profiles.force", quantity="force", units="N", frame="body")
+        ]
+    )
+
+    assert "output_descriptors" not in analysis_data_product_identity_envelope(legacy)
+    assert "output_descriptors" not in legacy.model_dump(mode="json", exclude_none=True)
+    assert described.product_identity_hash != legacy.product_identity_hash
+    assert (
+        analysis_data_product_identity_envelope(described)["output_descriptors"][0]["value_schema"][
+            "quantity"
+        ]
+        == "force"
+    )
+
+
+@pytest.mark.parametrize(
+    ("quantity", "units"),
+    [("force", "N"), ("position", "m")],
+)
+def test_semantics_preserving_operation_reuses_exact_input_descriptor_generically(
+    quantity: str,
+    units: str,
+) -> None:
+    source = _product(
+        output_descriptors=[
+            _output_descriptor("samples.value", quantity=quantity, units=units, frame="body")
+        ]
+    )
+
+    preserved = preserve_analysis_output_descriptor(
+        source,
+        input_path="samples.value",
+        output_path="aligned.value",
+    )
+    changed = _output_descriptor("aligned.value", quantity="time", units="s")
+
+    assert preserved.value_schema.quantity == quantity
+    assert preserved.value_schema.units == units
+    assert preserved.origin == "preserved"
+    assert preserved.preserved_from is not None
+    assert preserved.preserved_from.product_identity_hash == source.product_identity_hash
+    assert preserved.preserved_from.path == "samples.value"
+    assert changed.origin == "declared"
+    assert changed.preserved_from is None
+
+
+def test_output_descriptor_round_trips_with_saved_product(tmp_path) -> None:
+    product = _product(
+        output_descriptors=[
+            _output_descriptor("profiles.force", quantity="force", units="N", frame="body")
+        ]
+    )
+    manifest = AnalysisRunManifest(
+        id="analysis-run:described-output",
+        status="completed",
+        analysis_spec=spec_payload(
+            "AnalysisRunSpec",
+            {"analysis_type": "feedbax.test", "inputs": []},
+        ),
+        produced_data=[product],
+    )
+
+    loaded = load_manifest(write_manifest(manifest, root=tmp_path))
+
+    assert isinstance(loaded, AnalysisRunManifest)
+    assert loaded.produced_data[0] == product
+
+
 def test_analysis_data_product_requirement_validates_resolved_manifest_success(
     application_registry_bundle,
 ) -> None:
@@ -243,7 +340,9 @@ def test_context_recorded_product_satisfies_public_consumer_requirement(
         ),
         (
             "wrong-checkpoint",
-            _product(checkpoint_policy={"selection": "validation_selected", "checkpoint_id": "other"}),
+            _product(
+                checkpoint_policy={"selection": "validation_selected", "checkpoint_id": "other"}
+            ),
             "wrong-checkpoint",
         ),
         (
@@ -330,7 +429,9 @@ def test_data_product_schema_version_range_and_old_version_rejection(
     assert result.valid is True
 
     incompatible = validate_analysis_spec(
-        _analysis_payload(_requirement(exact_product_schema_version="rlrmp.controller_feedback_scales.v2")),
+        _analysis_payload(
+            _requirement(exact_product_schema_version="rlrmp.controller_feedback_scales.v2")
+        ),
         resolved_manifests=[
             {
                 "kind": "AnalysisRunManifest",

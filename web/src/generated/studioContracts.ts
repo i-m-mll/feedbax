@@ -413,6 +413,7 @@ export interface ValueSchema {
   dtype?: string | null;
   shape?: unknown[] | null;
   rank?: number | null;
+  quantity?: string | null;
   units?: string | null;
   frame?: string | null;
   origin?: "declared" | "inferred_static" | "runtime_sample" | "curated_fallback" | "unknown";
@@ -2696,6 +2697,7 @@ export const ValueSchemaSchema: z.ZodType<ValueSchema> = z.lazy(() =>
       "dtype": z.string().nullable().optional(),
       "shape": z.array(z.unknown()).nullable().optional(),
       "rank": z.number().int().safe().nullable().optional(),
+      "quantity": z.string().nullable().optional(),
       "units": z.string().nullable().optional(),
       "frame": z.string().nullable().optional(),
       "origin": z.union([z.literal("declared"), z.literal("inferred_static"), z.literal("runtime_sample"), z.literal("curated_fallback"), z.literal("unknown")]).optional(),

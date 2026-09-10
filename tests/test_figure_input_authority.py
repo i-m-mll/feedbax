@@ -26,9 +26,11 @@ from feedbax.analysis.execution_context import (
 )
 from feedbax.analysis.figures import (
     FigureInputAuthorityError,
+    FigureSpecExecutionError,
     RenderedFigure,
     _figure_expression_context,
     execute_figure_spec,
+    figure_manifest_plotly_json,
     resolve_figure_inputs,
 )
 from feedbax.analysis.manifest_inputs import (
@@ -47,6 +49,9 @@ from feedbax.contracts.figures import (
     FigureInputAuthority,
     FigureInputRoleAuthority,
     FigureSpec,
+    TraceBinding,
+    TraceFamily,
+    TraceFamilyIndex,
 )
 from feedbax.contracts.base import (
     ParentRef,
@@ -55,10 +60,12 @@ from feedbax.contracts.base import (
 )
 from feedbax.contracts.manifest import (
     AnalysisDataProduct,
+    AnalysisOutputDescriptor,
     AnalysisRunManifest,
     AnalysisRunSpec,
     spec_payload,
 )
+from feedbax.contracts.value_schema import ValueSchema
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.selection import ManifestPredicate
@@ -436,6 +443,332 @@ def test_invalid_authored_mapping_is_validated_before_figure_effects(
         )
 
     assert not output_root.exists()
+
+
+def _described_figure_case(
+    tmp_path: Path,
+    *,
+    include_force_descriptor: bool = True,
+) -> tuple[FigureSpec, StagedExecutionContext]:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "provider")
+    payload = {
+        "time": [0.0, 1.0, 2.0],
+        "force": [1.0, 2.0, 3.0],
+        "world_force": [2.0, 3.0, 4.0],
+    }
+    artifact = provider.store_bytes(
+        json.dumps(payload).encode(),
+        role="figure_payload",
+        logical_name="figure-payload.json",
+        media_type="application/json",
+    )
+
+    def descriptor(path: str, quantity: str, units: str, frame: str | None = None):
+        return AnalysisOutputDescriptor(
+            path=path,
+            value_schema=ValueSchema(
+                id=f"science.{path}",
+                label=path.replace("_", " ").title(),
+                kind="array",
+                quantity=quantity,
+                units=units,
+                frame=frame,
+                origin="declared",
+            ),
+        )
+
+    descriptors = [descriptor("time", "time", "s")]
+    if include_force_descriptor:
+        descriptors.extend(
+            [
+                descriptor("force", "force", "N", "body"),
+                descriptor("world_force", "force", "N", "world"),
+            ]
+        )
+    product = AnalysisDataProduct(
+        product_schema_id="science.figure.product",
+        product_schema_version="science.figure.product.v1",
+        role="figure_product",
+        logical_name="figure-product",
+        producer_manifest_id="feedbax-analysis-run:described",
+        output_descriptors=descriptors,
+        artifacts=[artifact],
+    )
+    analysis = AnalysisRunManifest(
+        id="feedbax-analysis-run:described",
+        status="completed",
+        analysis_spec=spec_payload(
+            "AnalysisRunSpec",
+            {"analysis_type": "test.described", "inputs": [], "params": {}},
+        ),
+        produced_data=[product],
+    )
+    raw = canonical_json_bytes(analysis)
+    manifest_artifact = provider.store_bytes(
+        raw,
+        role="analysis_manifest",
+        logical_name="analysis-manifest.json",
+        media_type="application/json",
+    )
+    parent = ParentRef(
+        kind=analysis.kind,
+        id=analysis.id,
+        role="analysis",
+        metadata={
+            "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+            "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+            "manifest_sha256": sha256_bytes(raw),
+            "size_bytes": len(raw),
+        },
+    )
+    context = StagedExecutionContext(
+        descriptor=None,
+        opened_artifact_providers={"retained": provider},
+        checkpoint_custody_roots={},
+        parent_execution_locations=(
+            StagedParentExecutionLocation(
+                parent=parent,
+                root=provider.root,
+                execution_uri=str(provider.canonical_relative_path(manifest_artifact)),
+                artifact_provider="retained",
+            ),
+        ),
+        parent_artifact_provider_bindings=(
+            StagedParentArtifactProviderBinding(parent, "results", "retained"),
+        ),
+    )
+    selector = FigureDataProductArtifactPayload(
+        name="payload",
+        manifest_role="analysis",
+        product_role="figure_product",
+        product_schema_id="science.figure.product",
+        product_schema_version="science.figure.product.v1",
+        artifact_role="figure_payload",
+        artifact_provider="results",
+    )
+
+    def query(path: str) -> dict[str, str]:
+        return {"item": "analysis", "path": f"artifact_payloads.payload.{path}"}
+
+    spec = FigureSpec(
+        name="described-figure",
+        assembler="feedbax.grid_figure",
+        assembler_params={"shared_xaxes": False, "shared_yaxes": False},
+        semantic_range_policy={"classes": "all", "padding_fraction": 0.0},
+        inputs=[parent],
+        input_authorities=[FigureInputAuthority(parent=parent, artifact_payloads=[selector])],
+        panels=[
+            {"name": "first", "row": 1, "col": 1},
+            {"name": "second", "row": 1, "col": 2},
+        ],
+        traces=[
+            TraceBinding(
+                name=f"force-{panel}",
+                constructor="feedbax.profile_band",
+                panel=panel,
+                data={"x": query("time"), "mean": query("force"), "std": [0, 0, 0]},
+            )
+            for panel in ("first", "second")
+        ],
+    )
+    return spec, context
+
+
+def test_exact_product_binding_derives_axis_classes_and_records_descriptor_source(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    spec, context = _described_figure_case(tmp_path)
+
+    manifest, _path = execute_figure_spec(
+        spec,
+        root=tmp_path / "outputs",
+        execution_context=context,
+        registry=application_registry_bundle.figures,
+    )
+
+    assert manifest.status == "completed"
+    y_descriptor = manifest.binding_records[0].coordinate_descriptors["y"][0]
+    assert y_descriptor["path"] == "force"
+    assert y_descriptor["value_schema"] == {
+        "id": "science.force",
+        "label": "Force",
+        "kind": "array",
+        "quantity": "force",
+        "units": "N",
+        "frame": "body",
+        "origin": "declared",
+        "metadata": {},
+    }
+    layout = figure_manifest_plotly_json(manifest)["layout"]
+    assert layout["xaxis"]["range"] == [0.0, 2.0]
+    assert layout["xaxis2"]["range"] == [0.0, 2.0]
+    assert layout["yaxis"]["range"] == [1.0, 3.0]
+    assert layout["yaxis2"]["range"] == [1.0, 3.0]
+
+
+def test_runtime_overlay_preserves_trace_family_descriptor_inheritance(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    spec, context = _described_figure_case(tmp_path)
+
+    def query(path: str) -> dict[str, str]:
+        return {
+            "item": "analysis",
+            "path": f"artifact_payloads.payload.{path}",
+        }
+
+    family_spec = spec.model_copy(
+        update={
+            "traces": [],
+            "trace_families": [
+                TraceFamily(
+                    name="forces",
+                    index=TraceFamilyIndex(values=["first", "second"]),
+                    trace=TraceBinding(
+                        name="force-{index}",
+                        constructor="feedbax.profile_band",
+                        panel="{index}",
+                        data={
+                            "x": query("time"),
+                            "mean": query("force"),
+                            "std": [0, 0, 0],
+                        },
+                    ),
+                )
+            ],
+        },
+        deep=True,
+    )
+    assert all(panel.x_axis is None and panel.y_axis is None for panel in family_spec.panels)
+
+    manifest, _path = execute_figure_spec(
+        family_spec,
+        runtime_inputs=family_spec.inputs,
+        runtime_input_authorities=family_spec.input_authorities,
+        root=tmp_path / "outputs",
+        execution_context=context,
+        registry=application_registry_bundle.figures,
+    )
+
+    assert manifest.status == "completed"
+    assert [
+        record.coordinate_descriptors["y"][0]["path"] for record in manifest.binding_records
+    ] == ["force", "force"]
+    layout = figure_manifest_plotly_json(manifest)["layout"]
+    assert layout["xaxis"]["range"] == layout["xaxis2"]["range"] == [0.0, 2.0]
+    assert layout["yaxis"]["range"] == layout["yaxis2"]["range"] == [1.0, 3.0]
+
+
+def test_runtime_overlay_preserves_explicit_null_value_query_default(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    spec = FigureSpec(
+        name="explicit-null-default",
+        assembler="feedbax.grid_figure",
+        panels=[{"name": "main"}],
+        traces=[
+            TraceBinding(
+                name="profile",
+                constructor="feedbax.profile_band",
+                panel="main",
+                data={
+                    "x": [0, 1],
+                    "mean": [1, 2],
+                    "std": [0, 0],
+                    "label": {"item": "params", "path": "missing", "default": None},
+                },
+            )
+        ],
+    )
+    authored = spec.model_dump(mode="json", exclude_none=True)
+    authored["traces"][0]["data"]["label"]["default"] = None
+
+    manifest, _path = execute_figure_spec(
+        authored,
+        runtime_metadata={"overlay": True},
+        root=tmp_path / "outputs",
+        registry=application_registry_bundle.figures,
+    )
+
+    assert manifest.status == "completed"
+    assert [record.status for record in manifest.binding_records] == ["included"]
+    assert figure_manifest_plotly_json(manifest)["data"][0]["name"] == "None"
+
+
+def test_explicit_axis_assertion_supplies_missing_legacy_descriptor(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    spec, context = _described_figure_case(tmp_path, include_force_descriptor=False)
+    payload = spec.model_dump(mode="json", exclude_none=True)
+    for panel in payload["panels"]:
+        panel["y_axis"] = {"quantity": "force", "unit": "N", "frame": "body"}
+    asserted_spec = FigureSpec.model_validate(payload)
+
+    manifest, _path = execute_figure_spec(
+        asserted_spec,
+        root=tmp_path / "outputs",
+        execution_context=context,
+        registry=application_registry_bundle.figures,
+    )
+
+    assert manifest.status == "completed"
+    assert "y" not in manifest.binding_records[0].coordinate_descriptors
+    layout = figure_manifest_plotly_json(manifest)["layout"]
+    assert layout["yaxis"]["range"] == [1.0, 3.0]
+    assert layout["yaxis2"]["range"] == [1.0, 3.0]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("false_assertion", "axis assertion disagrees"),
+        ("frame_conflict", "coordinate descriptors conflict"),
+        ("unknown", "requires an output descriptor or explicit axis assertion"),
+    ],
+)
+def test_descriptor_axis_conflicts_and_unknowns_fail_before_rendering(
+    tmp_path: Path,
+    mutation: str,
+    message: str,
+    application_registry_bundle,
+) -> None:
+    spec, context = _described_figure_case(
+        tmp_path,
+        include_force_descriptor=mutation != "unknown",
+    )
+    if mutation == "false_assertion":
+        panels = [
+            panel.model_copy(update={"y_axis": {"quantity": "velocity", "unit": "m/s"}})
+            if panel.name == "first"
+            else panel
+            for panel in spec.panels
+        ]
+        spec = spec.model_copy(update={"panels": panels}, deep=True)
+    elif mutation == "frame_conflict":
+        trace = spec.traces[0].model_copy(
+            update={
+                "data": {
+                    **spec.traces[0].data,
+                    "upper": {"item": "analysis", "path": "artifact_payloads.payload.world_force"},
+                }
+            },
+            deep=True,
+        )
+        spec = spec.model_copy(update={"traces": [trace]}, deep=True)
+
+    with pytest.raises(FigureSpecExecutionError) as exc_info:
+        execute_figure_spec(
+            spec,
+            root=tmp_path / "outputs",
+            execution_context=context,
+            registry=application_registry_bundle.figures,
+        )
+
+    assert message in exc_info.value.manifest.failure["message"]
 
 
 def test_multi_root_runtime_bindings_preserve_authored_figure_identity(

@@ -74,6 +74,17 @@ versioned ``DataDerivedAxisRange`` declaration. Axes carrying the same group
 derive one finite union range from their rendered trace coordinates and apply
 the same authored proportional padding. The field is an optional None-default,
 so existing panel and figure identity bytes are unchanged.
+
+Additive changelog, 2026-09-09: ``PanelAxis`` accepts optional exact plotted
+``quantity`` and ``unit`` identities, and ``FigureSpec.semantic_range_policy``
+can select all or an explicit bounded list of those exact pairs. The policy is
+lowered to ``DataDerivedAxisRange`` before its existing reducer runs. Explicit
+axis ranges and explicit range groups remain authoritative exceptions. Both
+additions are optional None-defaults, so existing figure bytes are unchanged.
+
+Additive changelog, 2026-09-09: ``PanelSpec.row_label`` carries native Plotly
+row-title content separately from a panel title. It is an optional None-default,
+so existing panel and figure identity bytes are unchanged.
 """
 
 from __future__ import annotations
@@ -83,7 +94,7 @@ import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -97,7 +108,11 @@ from feedbax.contracts.base import (
     sha256_bytes,
 )
 from feedbax.contracts.manifest import SpecPayload
-from feedbax.contracts.matrix_core import ContentPinnedJsonBase, SourceDocumentInheritance
+from feedbax.contracts.matrix_core import (
+    ContentPinnedJsonBase,
+    SourceDocumentInheritance,
+    load_content_pinned_json_document,
+)
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.selection import ManifestPredicate
 
@@ -133,6 +148,8 @@ EQUAL_DATA_ASPECT_SCHEMA_ID = "feedbax.spec.equal_data_aspect"
 EQUAL_DATA_ASPECT_SCHEMA_VERSION = "feedbax.spec.equal_data_aspect.v1"
 DATA_DERIVED_AXIS_RANGE_SCHEMA_ID = "feedbax.spec.data_derived_axis_range"
 DATA_DERIVED_AXIS_RANGE_SCHEMA_VERSION = "feedbax.spec.data_derived_axis_range.v1"
+SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_ID = "feedbax.spec.semantic_axis_range_policy"
+SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_VERSION = "feedbax.spec.semantic_axis_range_policy.v1"
 SCENE_CAMERA_SCHEMA_ID = "feedbax.spec.scene_camera"
 SCENE_CAMERA_SCHEMA_VERSION = "feedbax.spec.scene_camera.v1"
 # Declaration-side identity for PanelSpec objects added beneath FigureSpec v2.
@@ -189,14 +206,11 @@ class PerturbationTiming(StrictModel):
             raise ValueError(f"unsupported PerturbationTiming schema_id: {self.schema_id!r}")
         if self.schema_version != PERTURBATION_TIMING_SCHEMA_VERSION:
             raise ValueError(
-                "unsupported PerturbationTiming schema_version: "
-                f"{self.schema_version!r}"
+                f"unsupported PerturbationTiming schema_version: {self.schema_version!r}"
             )
         if self.applicability == "bounded":
             if self.start_index is None or self.duration is None:
-                raise ValueError(
-                    "bounded PerturbationTiming requires start_index and duration"
-                )
+                raise ValueError("bounded PerturbationTiming requires start_index and duration")
             if self.start_index + self.duration > self.sample_count:
                 raise ValueError(
                     "bounded PerturbationTiming exceeds sample_count: "
@@ -253,12 +267,80 @@ class DataDerivedAxisRange(StrictModel):
         return self
 
 
+class AxisSemanticClass(StrictModel):
+    """One exact plotted-quantity, unit, and optional frame identity.
+
+    These are opaque canonical identities supplied by the scientific author,
+    never display labels and never a request for unit conversion. Equality is
+    exact equality of both strings, so a shared unit alone has no meaning.
+    """
+
+    quantity: str = Field(min_length=1, max_length=128)
+    unit: str = Field(min_length=1, max_length=128)
+    frame: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def _validate_identities(self) -> "AxisSemanticClass":
+        for name, value in (
+            ("quantity", self.quantity),
+            ("unit", self.unit),
+            ("frame", self.frame),
+        ):
+            if value is None:
+                continue
+            if value != value.strip():
+                raise ValueError(f"AxisSemanticClass {name} must not have surrounding whitespace")
+        return self
+
+
+class SemanticAxisRangePolicy(StrictModel):
+    """Share rendered ranges for all or selected exact semantic classes."""
+
+    schema_id: str = SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_ID
+    schema_version: str = SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_VERSION
+    classes: Literal["all"] | list[AxisSemanticClass] = "all"
+    padding_fraction: float = Field(ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_policy(self) -> "SemanticAxisRangePolicy":
+        if self.schema_id != SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_ID:
+            raise ValueError(f"unsupported SemanticAxisRangePolicy schema_id: {self.schema_id!r}")
+        if self.schema_version != SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported SemanticAxisRangePolicy schema_version: {self.schema_version!r}"
+            )
+        if not math.isfinite(self.padding_fraction):
+            raise ValueError("SemanticAxisRangePolicy padding_fraction must be finite")
+        if isinstance(self.classes, list):
+            if not self.classes:
+                raise ValueError("selected SemanticAxisRangePolicy classes must not be empty")
+            if len(self.classes) > 64:
+                raise ValueError("SemanticAxisRangePolicy accepts at most 64 selected classes")
+            identities = [(item.quantity, item.unit, item.frame) for item in self.classes]
+            if len(identities) != len(set(identities)):
+                raise ValueError("SemanticAxisRangePolicy selected classes must be unique")
+        return self
+
+
 class PanelAxis(StrictModel):
     """Declarative settings for one panel axis."""
 
     type: Literal["linear", "log"] | None = None
     range: tuple[float, float] | None = None
     derived_range: DataDerivedAxisRange | None = None
+    quantity: str | None = Field(default=None, min_length=1, max_length=128)
+    unit: str | None = Field(default=None, min_length=1, max_length=128)
+    frame: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def _validate_range_authority(self) -> "PanelAxis":
@@ -266,6 +348,13 @@ class PanelAxis(StrictModel):
             raise ValueError("PanelAxis cannot declare both range and derived_range")
         if self.derived_range is not None and self.type == "log":
             raise ValueError("PanelAxis derived_range requires a linear axis")
+        if (self.quantity is None) != (self.unit is None):
+            raise ValueError("PanelAxis quantity and unit must be declared together")
+        if self.frame is not None and self.quantity is None:
+            raise ValueError("PanelAxis frame requires quantity and unit")
+        if self.quantity is not None:
+            assert self.unit is not None
+            AxisSemanticClass(quantity=self.quantity, unit=self.unit, frame=self.frame)
         return self
 
 
@@ -279,14 +368,9 @@ class EqualDataAspect(StrictModel):
     @model_validator(mode="after")
     def _validate_schema_identity(self) -> "EqualDataAspect":
         if self.schema_id != EQUAL_DATA_ASPECT_SCHEMA_ID:
-            raise ValueError(
-                f"unsupported EqualDataAspect schema_id: {self.schema_id!r}"
-            )
+            raise ValueError(f"unsupported EqualDataAspect schema_id: {self.schema_id!r}")
         if self.schema_version != EQUAL_DATA_ASPECT_SCHEMA_VERSION:
-            raise ValueError(
-                "unsupported EqualDataAspect schema_version: "
-                f"{self.schema_version!r}"
-            )
+            raise ValueError(f"unsupported EqualDataAspect schema_version: {self.schema_version!r}")
         return self
 
 
@@ -341,9 +425,7 @@ class SceneCamera(StrictModel):
         if self.schema_id != SCENE_CAMERA_SCHEMA_ID:
             raise ValueError(f"unsupported SceneCamera schema_id: {self.schema_id!r}")
         if self.schema_version != SCENE_CAMERA_SCHEMA_VERSION:
-            raise ValueError(
-                f"unsupported SceneCamera schema_version: {self.schema_version!r}"
-            )
+            raise ValueError(f"unsupported SceneCamera schema_version: {self.schema_version!r}")
         nonfinite = [
             name
             for name, value in (("azimuth", self.azimuth), ("distance", self.distance))
@@ -830,14 +912,10 @@ class ColorbarPanelPlacement(StrictModel):
     @model_validator(mode="after")
     def _validate_placement(self) -> "ColorbarPanelPlacement":
         if self.schema_id != COLORBAR_PANEL_PLACEMENT_SCHEMA_ID:
-            raise ValueError(
-                "unsupported ColorbarPanelPlacement schema_id: "
-                f"{self.schema_id!r}"
-            )
+            raise ValueError(f"unsupported ColorbarPanelPlacement schema_id: {self.schema_id!r}")
         if self.schema_version != COLORBAR_PANEL_PLACEMENT_SCHEMA_VERSION:
             raise ValueError(
-                "unsupported ColorbarPanelPlacement schema_version: "
-                f"{self.schema_version!r}"
+                f"unsupported ColorbarPanelPlacement schema_version: {self.schema_version!r}"
             )
         half_length = self.length_fraction / 2.0
         if not half_length <= self.center_fraction <= 1.0 - half_length:
@@ -884,9 +962,7 @@ class FigureColorbar(StrictModel):
         if self.schema_id != FIGURE_COLORBAR_SCHEMA_ID:
             raise ValueError(f"unsupported FigureColorbar schema_id: {self.schema_id!r}")
         if self.schema_version != FIGURE_COLORBAR_SCHEMA_VERSION:
-            raise ValueError(
-                f"unsupported FigureColorbar schema_version: {self.schema_version!r}"
-            )
+            raise ValueError(f"unsupported FigureColorbar schema_version: {self.schema_version!r}")
         if self.family is None:
             if self.colorscale is None or self.range is None:
                 raise ValueError(
@@ -927,6 +1003,7 @@ class PanelSpec(StrictModel):
 
     name: str
     title: str | ValueExpr | None = None
+    row_label: str | ValueExpr | None = None
     axes_labels: AxisLabels | None = None
     x_axis: PanelAxis | None = None
     y_axis: PanelAxis | None = None
@@ -1047,8 +1124,7 @@ class FigureDataProductArtifactPayload(StrictModel):
     def _validate_identity(self) -> "FigureDataProductArtifactPayload":
         if self.schema_id != FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_ID:
             raise ValueError(
-                "unsupported FigureDataProductArtifactPayload schema_id: "
-                f"{self.schema_id!r}"
+                f"unsupported FigureDataProductArtifactPayload schema_id: {self.schema_id!r}"
             )
         if self.schema_version != FIGURE_DATA_PRODUCT_PAYLOAD_SCHEMA_VERSION:
             raise ValueError(
@@ -1062,15 +1138,11 @@ class FigureDataProductArtifactPayload(StrictModel):
             "artifact_provider",
         ):
             if not getattr(self, field_name):
-                raise ValueError(
-                    f"FigureDataProductArtifactPayload {field_name} must be nonempty"
-                )
+                raise ValueError(f"FigureDataProductArtifactPayload {field_name} must be nonempty")
         return self
 
 
-FigureArtifactPayloadSpec: TypeAlias = (
-    FigureArtifactPayload | FigureDataProductArtifactPayload
-)
+FigureArtifactPayloadSpec: TypeAlias = FigureArtifactPayload | FigureDataProductArtifactPayload
 
 
 class FigureInputAuthority(StrictModel):
@@ -1087,8 +1159,7 @@ class FigureInputAuthority(StrictModel):
             raise ValueError(f"unsupported FigureInputAuthority schema_id: {self.schema_id!r}")
         if self.schema_version != FIGURE_INPUT_AUTHORITY_SCHEMA_VERSION:
             raise ValueError(
-                "unsupported FigureInputAuthority schema_version: "
-                f"{self.schema_version!r}"
+                f"unsupported FigureInputAuthority schema_version: {self.schema_version!r}"
             )
         names = [payload.name for payload in self.artifact_payloads]
         if len(names) != len(set(names)):
@@ -1107,13 +1178,10 @@ class FigureInputRoleAuthority(StrictModel):
     @model_validator(mode="after")
     def _validate_identity(self) -> "FigureInputRoleAuthority":
         if self.schema_id != FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_ID:
-            raise ValueError(
-                f"unsupported FigureInputRoleAuthority schema_id: {self.schema_id!r}"
-            )
+            raise ValueError(f"unsupported FigureInputRoleAuthority schema_id: {self.schema_id!r}")
         if self.schema_version != FIGURE_INPUT_ROLE_AUTHORITY_SCHEMA_VERSION:
             raise ValueError(
-                "unsupported FigureInputRoleAuthority schema_version: "
-                f"{self.schema_version!r}"
+                f"unsupported FigureInputRoleAuthority schema_version: {self.schema_version!r}"
             )
         if not self.input_role:
             raise ValueError("FigureInputRoleAuthority input_role must be nonempty")
@@ -1125,9 +1193,7 @@ class FigureInputRoleAuthority(StrictModel):
     def resolve_parent(self, inputs: Sequence[ParentRef]) -> ParentRef:
         """Resolve this selector to one exact declared parent or fail closed."""
         matches_by_ref = {
-            parent.model_dump_json(): parent
-            for parent in inputs
-            if parent.role == self.input_role
+            parent.model_dump_json(): parent for parent in inputs if parent.role == self.input_role
         }
         matches = list(matches_by_ref.values())
         if not matches:
@@ -1178,13 +1244,10 @@ class FigureRuntimeBindingSpec(StrictModel):
     @model_validator(mode="after")
     def _validate_identity(self) -> "FigureRuntimeBindingSpec":
         if self.schema_id != FIGURE_RUNTIME_BINDING_SCHEMA_ID:
-            raise ValueError(
-                f"unsupported FigureRuntimeBindingSpec schema_id: {self.schema_id!r}"
-            )
+            raise ValueError(f"unsupported FigureRuntimeBindingSpec schema_id: {self.schema_id!r}")
         if self.schema_version != FIGURE_RUNTIME_BINDING_SCHEMA_VERSION:
             raise ValueError(
-                "unsupported FigureRuntimeBindingSpec schema_version: "
-                f"{self.schema_version!r}"
+                f"unsupported FigureRuntimeBindingSpec schema_version: {self.schema_version!r}"
             )
         if (self.authored_figure_source_sha256 is None) != (
             self.authored_identity_unavailable_reason is not None
@@ -1197,9 +1260,7 @@ class FigureRuntimeBindingSpec(StrictModel):
             value = getattr(self, field_name)
             if value is not None and not re.fullmatch(r"[0-9a-f]{64}", value):
                 raise ValueError(f"FigureRuntimeBindingSpec {field_name} must be lowercase sha256")
-        input_keys = {
-            parent.model_dump_json(exclude_none=False) for parent in self.inputs
-        }
+        input_keys = {parent.model_dump_json(exclude_none=False) for parent in self.inputs}
         binding_keys: set[tuple[str, str]] = set()
         for binding in self.artifact_provider_bindings:
             parent_key = binding.parent.model_dump_json(exclude_none=False)
@@ -1262,6 +1323,103 @@ class FigureTemplate(StrictModel):
             raise ValueError(
                 "FigureTemplate per_facet slots require at least one facet_by dimension"
             )
+        return self
+
+
+PROJECT_FIGURE_POLICY_ORDER: tuple[str, str, str] = (
+    "project_defaults",
+    "authored_figure",
+    "project_overrides",
+)
+PROJECT_FIGURE_LAYOUT_FIELDS: frozenset[str] = frozenset(
+    {
+        "width",
+        "height",
+        "title",
+        "legend_tracegroupgap",
+        "legend_x",
+        "legend_y",
+        "legend_xanchor",
+        "legend_yanchor",
+        "margin",
+        "hovermode",
+        "template",
+        "row_label_gutter",
+        "legend_gutter",
+    }
+)
+
+
+class ProjectFigurePolicyLayer(StrictModel):
+    """One bounded project layer over presentation-only FigureSpec fields."""
+
+    assembler_params: dict[str, Any] = Field(default_factory=dict)
+    semantic_range_policy: SemanticAxisRangePolicy | None = None
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "ProjectFigurePolicyLayer":
+        forbidden = sorted(set(self.assembler_params) - PROJECT_FIGURE_LAYOUT_FIELDS)
+        if forbidden:
+            raise ValueError(
+                "project figure policy assembler_params may change only native Plotly "
+                f"appearance and existing layout/gutters; forbidden fields: {forbidden}"
+            )
+        return self
+
+
+class ProjectFigurePolicy(StrictModel):
+    """The figure-policy payload owned by project declaration schema v2."""
+
+    defaults: ProjectFigurePolicyLayer = Field(default_factory=ProjectFigurePolicyLayer)
+    overrides: ProjectFigurePolicyLayer = Field(default_factory=ProjectFigurePolicyLayer)
+
+
+class ProjectFigurePolicyProvenance(StrictModel):
+    """Frozen policy and consumed template data used for one effective figure."""
+
+    source: ContentPinnedJsonBase
+    document_sha256: str
+    selected_sha256: str
+    document: dict[str, Any]
+    selected: dict[str, Any]
+    order: tuple[Literal["project_defaults", "authored_figure", "project_overrides"], ...]
+    consumed_template: FigureTemplate | None = None
+    effective_figure_spec_sha256: str
+
+    @model_validator(mode="after")
+    def _validate_custody(self) -> "ProjectFigurePolicyProvenance":
+        if tuple(self.order) != PROJECT_FIGURE_POLICY_ORDER:
+            raise ValueError("project figure policy precedence order is not canonical")
+        for field_name in (
+            "document_sha256",
+            "selected_sha256",
+            "effective_figure_spec_sha256",
+        ):
+            if not re.fullmatch(r"[0-9a-f]{64}", getattr(self, field_name)):
+                raise ValueError(
+                    f"ProjectFigurePolicyProvenance {field_name} must be lowercase sha256"
+                )
+        if sha256_bytes(canonical_json_bytes(self.document)) != self.document_sha256:
+            raise ValueError("project figure policy document hash disagrees with retained bytes")
+        if self.source.sha256 != self.document_sha256:
+            raise ValueError("project figure policy source pin disagrees with retained bytes")
+        if sha256_bytes(canonical_json_bytes(self.selected)) != self.selected_sha256:
+            raise ValueError("project figure policy selected hash disagrees with retained bytes")
+        selected: Any = self.document
+        for segment in self.source.payload_path or ():
+            if isinstance(selected, Mapping):
+                if segment not in selected:
+                    raise ValueError("project figure policy payload_path is absent from retained bytes")
+                selected = selected[segment]
+            elif isinstance(selected, list) and segment.isdecimal():
+                index = int(segment)
+                if index >= len(selected):
+                    raise ValueError("project figure policy payload_path exceeds retained bytes")
+                selected = selected[index]
+            else:
+                raise ValueError("project figure policy payload_path cannot traverse retained bytes")
+        if selected != self.selected:
+            raise ValueError("project figure policy selection disagrees with retained bytes")
         return self
 
 
@@ -1419,7 +1577,7 @@ class FigureSpec(StrictModel):
     schema_id: str = FIGURE_SPEC_SCHEMA_ID
     schema_version: str = FIGURE_SPEC_SCHEMA_VERSION
     name: str
-    template: str | None = None
+    template: str | FigureTemplate | None = None
     assembler: str | None = None
     assembler_params: dict[str, Any] = Field(default_factory=dict)
     inputs: list[ParentRef] = Field(default_factory=list)
@@ -1433,6 +1591,7 @@ class FigureSpec(StrictModel):
     # exact canonical JSON, spec payload, and figure-manifest identity bytes.
     trace_families: list[TraceFamily] | None = None
     colorbar: FigureColorbar | None = None
+    semantic_range_policy: SemanticAxisRangePolicy | None = None
     panels: list[PanelSpec] = Field(default_factory=list)
     pieces: list[str] = Field(default_factory=list)
     exclude_pieces: list[str] = Field(default_factory=list)
@@ -1463,13 +1622,15 @@ class FigureSpec(StrictModel):
             )
             for authority in self.input_authorities
         ]
-        if len(authority_parents) != len({parent.model_dump_json() for parent in authority_parents}):
-            raise ValueError(
-                "FigureSpec input_authorities resolve to a duplicate exact ParentRef"
-            )
+        if len(authority_parents) != len(
+            {parent.model_dump_json() for parent in authority_parents}
+        ):
+            raise ValueError("FigureSpec input_authorities resolve to a duplicate exact ParentRef")
         unknown = [parent for parent in authority_parents if parent not in self.inputs]
         if unknown:
-            raise ValueError("FigureSpec input authority parent must exactly match a declared input")
+            raise ValueError(
+                "FigureSpec input authority parent must exactly match a declared input"
+            )
         self._validate_slot_families()
         self._validate_trace_families()
         self._validate_trace_names()
@@ -1601,9 +1762,7 @@ class FigureCompositionDelta(MatrixCompositionDelta):
 
     @model_validator(mode="after")
     def _validate_structural_additions(self) -> "FigureCompositionDelta":
-        paths = [
-            addition.path for addition in (self.same_schema_structural_additions or [])
-        ]
+        paths = [addition.path for addition in (self.same_schema_structural_additions or [])]
         if len(paths) != len(set(paths)):
             raise ValueError(
                 "FigureCompositionDelta same-schema structural addition paths must be unique"
@@ -1673,9 +1832,7 @@ class FigureCompositionSpec(StrictModel):
             "schema_id": self.schema_id,
             "schema_version": self.schema_version,
             "parent": parent,
-            "deltas": [
-                delta.model_dump(mode="json", exclude_none=True) for delta in self.deltas
-            ],
+            "deltas": [delta.model_dump(mode="json", exclude_none=True) for delta in self.deltas],
         }
 
     def identity_sha256(self) -> str:
@@ -1698,8 +1855,7 @@ def figure_composition_payload_identity_sha256(payload: Mapping[str, Any]) -> st
             )
         ContentPinnedJsonBase.model_validate(payload.get("parent"))
         deltas = [
-            MatrixCompositionDelta.model_validate(delta)
-            for delta in payload.get("deltas", [])
+            MatrixCompositionDelta.model_validate(delta) for delta in payload.get("deltas", [])
         ]
         if not deltas:
             raise ValueError("FigureCompositionSpec v1 deltas must be nonempty")
@@ -1820,9 +1976,7 @@ class FigureCompositionProvenance(StrictModel):
             )
         if [document.order for document in self.inherited_documents] != list(
             range(len(self.inherited_documents))
-        ) or any(
-            document.role != "inherited_source" for document in self.inherited_documents
-        ):
+        ) or any(document.role != "inherited_source" for document in self.inherited_documents):
             raise ValueError(
                 "FigureCompositionProvenance inherited documents must be ordered sources"
             )
@@ -1847,9 +2001,7 @@ class FigureCompositionProvenance(StrictModel):
                 )
             envelope_document = self.documents[index + 1]
             if (
-                figure_composition_payload_identity_sha256(
-                    envelope_document.selected_inline
-                )
+                figure_composition_payload_identity_sha256(envelope_document.selected_inline)
                 != layer.envelope_sha256
             ):
                 raise ValueError(
@@ -1867,3 +2019,110 @@ class ResolvedFigureSpec(StrictModel):
     resolved_identity_sha256: str
     figure_spec: FigureSpec
     composition: FigureCompositionProvenance | None = None
+    project_figure_policy: ProjectFigurePolicyProvenance | None = None
+
+
+def _overlay_mapping(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    """Recursively overlay JSON objects while replacing non-object leaves."""
+    result = deepcopy(dict(base))
+    for key, value in overlay.items():
+        current = result.get(key)
+        result[key] = (
+            _overlay_mapping(current, value)
+            if isinstance(current, Mapping) and isinstance(value, Mapping)
+            else deepcopy(value)
+        )
+    return result
+
+
+def apply_project_figure_policy(
+    figure_spec: FigureSpec,
+    *,
+    policy_source: ContentPinnedJsonBase | None = None,
+    repo_root: Path | str | None = None,
+    figure_templates: Sequence[FigureTemplate] = (),
+    recorded: ProjectFigurePolicyProvenance | None = None,
+) -> tuple[FigureSpec, ProjectFigurePolicyProvenance | None]:
+    """Resolve one explicit pinned project policy before figure identity.
+
+    A recorded selection is used for replay and never re-reads the project file.
+    A fresh selection verifies the content pin beneath the explicitly supplied
+    project root. Exactly one consumed named template is frozen inline; unrelated
+    registry definitions never enter the result or provenance.
+    """
+    if policy_source is not None and recorded is not None:
+        raise ValueError("project figure policy accepts either a fresh source or recorded custody")
+    if policy_source is None and recorded is None:
+        return figure_spec, None
+    if recorded is None:
+        assert policy_source is not None
+        document, selected = load_content_pinned_json_document(policy_source, repo_root=repo_root)
+        source = policy_source
+    else:
+        document = deepcopy(recorded.document)
+        selected = deepcopy(recorded.selected)
+        source = recorded.source
+    policy = ProjectFigurePolicy.model_validate(selected)
+
+    consumed_template: FigureTemplate | None
+    if isinstance(figure_spec.template, FigureTemplate):
+        consumed_template = figure_spec.template
+    elif isinstance(figure_spec.template, str):
+        matches = [
+            template for template in figure_templates if template.name == figure_spec.template
+        ]
+        if recorded is not None and recorded.consumed_template is not None:
+            if recorded.consumed_template.name != figure_spec.template:
+                raise ValueError(
+                    "recorded project figure template does not match the authored template name"
+                )
+            matches = [recorded.consumed_template]
+        if len(matches) != 1:
+            raise ValueError(
+                f"governed project figure requires one frozen FigureTemplate "
+                f"definition for {figure_spec.template!r}; found {len(matches)}"
+            )
+        consumed_template = matches[0].model_copy(deep=True)
+    else:
+        consumed_template = None
+
+    assembler_params = _overlay_mapping({}, policy.defaults.assembler_params)
+    if consumed_template is not None:
+        assembler_params = _overlay_mapping(assembler_params, consumed_template.assembler_params)
+    assembler_params = _overlay_mapping(assembler_params, figure_spec.assembler_params)
+    assembler_params = _overlay_mapping(assembler_params, policy.overrides.assembler_params)
+
+    semantic_range_policy = None
+    if "semantic_range_policy" in policy.defaults.model_fields_set:
+        semantic_range_policy = policy.defaults.semantic_range_policy
+    if figure_spec.semantic_range_policy is not None:
+        semantic_range_policy = figure_spec.semantic_range_policy
+    if "semantic_range_policy" in policy.overrides.model_fields_set:
+        semantic_range_policy = policy.overrides.semantic_range_policy
+
+    effective = FigureSpec.model_validate(
+        figure_spec.model_copy(
+            update={
+                "template": consumed_template,
+                "assembler_params": assembler_params,
+                "semantic_range_policy": semantic_range_policy,
+            },
+            deep=True,
+        ).model_dump(mode="python", exclude_unset=True)
+    )
+    effective_sha256 = sha256_bytes(
+        canonical_json_bytes(effective.model_dump(mode="json", exclude_none=True))
+    )
+    provenance = ProjectFigurePolicyProvenance(
+        source=source,
+        document_sha256=sha256_bytes(canonical_json_bytes(document)),
+        selected_sha256=sha256_bytes(canonical_json_bytes(selected)),
+        document=document,
+        selected=selected,
+        order=PROJECT_FIGURE_POLICY_ORDER,
+        consumed_template=consumed_template,
+        effective_figure_spec_sha256=effective_sha256,
+    )
+    if recorded is not None and provenance != recorded:
+        raise ValueError("recorded project figure policy does not reproduce effective FigureSpec")
+    return effective, provenance

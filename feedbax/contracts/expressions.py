@@ -110,6 +110,10 @@ class ExpressionContext(StrictModel):
     """Host-agnostic expression bindings."""
 
     items: dict[str, ContextItem] = Field(default_factory=dict)
+    descriptors: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+    )
 
 
 class Compare(StrictModel):
@@ -351,13 +355,11 @@ def evaluate_expr(
         return result
     if isinstance(expr, AllOf):
         return all(
-            evaluate_expr(child, ctx, named_predicates=named_predicates)
-            for child in expr.exprs
+            evaluate_expr(child, ctx, named_predicates=named_predicates) for child in expr.exprs
         )
     if isinstance(expr, AnyOf):
         return any(
-            evaluate_expr(child, ctx, named_predicates=named_predicates)
-            for child in expr.exprs
+            evaluate_expr(child, ctx, named_predicates=named_predicates) for child in expr.exprs
         )
     if isinstance(expr, Not):
         return not evaluate_expr(expr.expr, ctx, named_predicates=named_predicates)
@@ -473,9 +475,7 @@ def _expr_depth(expr: Expr | Select | Filter | ValueQuery | Coalesce | MapObject
         return 1 + _expr_depth(expr.where)
     if isinstance(expr, ValueQuery):
         child_depths = [
-            _expr_depth(child)
-            for child in (expr.select, expr.filter)
-            if child is not None
+            _expr_depth(child) for child in (expr.select, expr.filter) if child is not None
         ]
         return 1 + (max(child_depths) if child_depths else 0)
     if isinstance(expr, Coalesce):
@@ -643,9 +643,7 @@ def _select_one(
     if len(matches) != 1:
         if not matches:
             raise _ExpressionAbsenceMiss("Select expected exactly one match, found 0")
-        raise ExpressionSelectAmbiguous(
-            f"Select expected exactly one match, found {len(matches)}"
-        )
+        raise ExpressionSelectAmbiguous(f"Select expected exactly one match, found {len(matches)}")
     return matches[0]
 
 
@@ -683,17 +681,13 @@ def _coerce(value: Any, coerce: Coerce) -> Any:
         elif coerce.to == "bool":
             result = _coerce_bool(result)
     except (TypeError, ValueError) as exc:
-        raise ExpressionTypeError(
-            f"cannot coerce {type(value).__name__} to {coerce.to!r}"
-        ) from exc
+        raise ExpressionTypeError(f"cannot coerce {type(value).__name__} to {coerce.to!r}") from exc
 
     if coerce.scale is not None:
         try:
             result = result * coerce.scale
         except TypeError as exc:
-            raise ExpressionTypeError(
-                f"cannot apply scale to {type(result).__name__}"
-            ) from exc
+            raise ExpressionTypeError(f"cannot apply scale to {type(result).__name__}") from exc
     return result
 
 

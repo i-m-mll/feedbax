@@ -268,6 +268,8 @@ from feedbax.contracts.figures import (
     PERTURBATION_TIMING_SCHEMA_VERSION,
     SCENE_CAMERA_SCHEMA_ID,
     SCENE_CAMERA_SCHEMA_VERSION,
+    SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_ID,
+    SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_VERSION,
 )
 from feedbax.contracts.figure_roles import (
     FIGURE_ROW_CUSTODY_LOCATOR_SCHEMA_ID,
@@ -3647,6 +3649,17 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             consumed_by=("feedbax.plot.constructors._grid_figure",),
             description="Finite rendered-data range shared by named Cartesian panel axes.",
             rejected_old_versions=("feedbax.spec.data_derived_axis_range.v0",),
+            required_tests=("tests/test_declarative_figures.py",),
+        ),
+        _family(
+            "SemanticAxisRangePolicy",
+            SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_ID,
+            SEMANTIC_AXIS_RANGE_POLICY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.figures",
+            emitted_by=("FigureSpec.semantic_range_policy",),
+            consumed_by=("feedbax.plot.constructors._grid_figure",),
+            description=("Bounded all-or-exact semantic-class lowering to DataDerivedAxisRange."),
+            rejected_old_versions=("feedbax.spec.semantic_axis_range_policy.v0",),
             required_tests=("tests/test_declarative_figures.py",),
         ),
         _family(
