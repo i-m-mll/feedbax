@@ -52,22 +52,40 @@ templates remain the appearance authority. Feedbax contracts add scientific
 meaning, reproducible composition, validation, identity, and provenance around
 that rendering path.
 
-Two boundaries are important in the current API:
+Scientific meaning follows the same authenticated path as the plotted value:
 
-- Axis `quantity` and `unit` are currently declared by the `FigureSpec`. They do
-  not yet propagate automatically from analysis-result metadata. Authors must
-  not infer them from field names or display labels.
+1. An analysis records an exact `AnalysisOutputDescriptor` for each described
+   product field. Its `ValueSchema` owns `quantity`, `units`, and optional
+   `frame`; those fields are scientific content in the
+   `AnalysisDataProduct` identity, not arbitrary metadata.
+2. A semantics-preserving operation uses
+   `preserve_analysis_output_descriptor` to name one exact source product and
+   path and one exact output path. A meaning-changing operation declares its
+   output descriptor. Feedbax does not inspect Python or infer unit algebra.
+3. `FigureDataProductArtifactPayload` selects the exact authenticated product.
+   A direct `ValueQuery` into that selected payload carries the matching
+   descriptor with the value. Filtering, coercion, defaults, and other
+   meaning-changing expressions do not inherit it implicitly.
+4. Each registered trace constructor declares which data arguments contribute
+   to each coordinate. Compatible contributions derive the panel's axis class;
+   quantity, unit, and frame must all agree. The existing semantic range
+   reducer then groups only equal classes.
+
+An explicit `FigureSpec` axis quantity, unit, or frame is an assertion when a
+descriptor exists, and a disagreement fails before the constructor renders.
+For descriptor-free retained products or literal values, an explicit axis is
+the recorded source of otherwise missing meaning. Under a semantic range
+policy, any data-bearing axis that remains unknown fails clearly. Omitting
+`output_descriptors` keeps existing product identity bytes unchanged and means
+unknown; no field-name or display-label inference occurs.
+
+One other boundary remains important in the current API:
+
 - A reusable template or composition affects only figures that explicitly
   reference it. Feedbax does not currently discover a project-wide policy from
   the working directory or apply a process-global Plotly setting. Applying one
   policy to every governed figure therefore requires each figure root to share
   that pinned authority.
-
-The intended direction is for scientific descriptors to travel with exact
-analysis-result bindings and for an explicit project declaration to select a
-bounded figure policy before figure identity and rendering are computed. Such a
-policy would support reproducible regeneration from retained data; it would not
-mutate existing artifacts or admit arbitrary post-render callbacks.
 
 ## Compact runnable example
 

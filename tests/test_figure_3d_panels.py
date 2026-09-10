@@ -130,7 +130,7 @@ def test_trajectory_3d_default_params_leave_style_and_markers_untouched(
     application_registry_bundle,
 ) -> None:
     constructor = _trajectory_3d(figure_registry=application_registry_bundle.figures)
-    assert constructor.version == "v1"
+    assert constructor.version == "v2"
     params = constructor.params()
     assert params.line_dash is None
     assert params.start_marker is None
@@ -295,7 +295,7 @@ def test_scene_panel_renders_a_3d_trace_with_axis_titles_and_data_aspect(
     assert scene["zaxis"]["title"]["text"] == "PC3"
     # The spanning scene owns the whole second row of the paper.
     assert tuple(scene["domain"]["x"]) == (0.0, 1.0)
-    assert manifest.constructor_versions["feedbax.trajectory_3d"] == "v1"
+    assert manifest.constructor_versions["feedbax.trajectory_3d"] == "v2"
 
 
 def _scene_camera_spec(camera: Any | None) -> FigureSpec:

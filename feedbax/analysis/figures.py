@@ -52,6 +52,7 @@ from feedbax.contracts.figures import (
     FigureRuntimeBindingSpec,
     FigureSpec,
     FigureTemplate,
+    AxisSemanticClass,
     PanelSpec,
     ResolvedFigureSpec,
     TraceBinding,
@@ -84,6 +85,7 @@ from feedbax.contracts.artifact_store import (
     store_json_artifact,
 )
 from feedbax.contracts.manifest import (
+    AnalysisOutputDescriptor,
     AnyManifest,
     FigureBindingRecord,
     FigureManifest,
@@ -125,6 +127,9 @@ class ResolvedFigureInput:
     manifest: AnyManifest | None
     path: Path | None
     artifact_payloads: Mapping[str, Any] = field(default_factory=dict)
+    artifact_descriptors: Mapping[str, tuple[AnalysisOutputDescriptor, ...]] = field(
+        default_factory=dict
+    )
     artifact_refs: tuple[ArtifactRef, ...] = ()
 
 
@@ -139,6 +144,8 @@ class FigureExecutionTrace:
     binding_records: list[FigureBindingRecord] = field(default_factory=list)
     constructor_versions: dict[str, str] = field(default_factory=dict)
     resolved_pieces: list[FigurePieceResolution] = field(default_factory=list)
+    axis_semantics: dict[tuple[str, str], AxisSemanticClass] = field(default_factory=dict)
+    axis_unknown_sources: dict[tuple[str, str], list[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -627,7 +634,7 @@ def resolve_figure_inputs(
                 ) from exc
             manifest, manifest_path = contained.manifest, contained.path
         authority = _authority_for_parent(spec, ref)
-        payloads, artifact_refs = _resolve_authority_payloads(
+        payloads, descriptors, artifact_refs = _resolve_authority_payloads(
             authority, ref, manifest, execution_context
         )
         resolved.append(
@@ -636,6 +643,7 @@ def resolve_figure_inputs(
                 manifest=manifest,
                 path=manifest_path,
                 artifact_payloads=payloads,
+                artifact_descriptors=descriptors,
                 artifact_refs=artifact_refs,
             )
         )
@@ -665,14 +673,19 @@ def _resolve_authority_payloads(
     parent: ParentRef,
     manifest: AnyManifest | None,
     execution_context: StagedExecutionContext | None,
-) -> tuple[dict[str, Any], tuple[ArtifactRef, ...]]:
+) -> tuple[
+    dict[str, Any],
+    dict[str, tuple[AnalysisOutputDescriptor, ...]],
+    tuple[ArtifactRef, ...],
+]:
     if authority is None or not authority.artifact_payloads:
-        return {}, ()
+        return {}, {}, ()
     if manifest is None:
         raise FigureInputAuthorityError("figure artifact payload parent manifest is unavailable")
     if manifest.status != "completed":
         raise FigureInputAuthorityError("figure artifact payload parent status mismatch")
     resolved: dict[str, Any] = {}
+    resolved_descriptors: dict[str, tuple[AnalysisOutputDescriptor, ...]] = {}
     resolved_refs: list[ArtifactRef] = []
     for selector in authority.artifact_payloads:
         if parent.role != selector.manifest_role:
@@ -702,6 +715,7 @@ def _resolve_authority_payloads(
                     f"figure data product schema mismatch for selector {selector.name!r}"
                 )
             artifacts = list(product.artifacts)
+            resolved_descriptors[selector.name] = tuple(product.output_descriptors or ())
         else:
             # The v1 selector deliberately covers the manifest's historical
             # top-level-plus-produced artifact namespace. Typed product
@@ -763,7 +777,7 @@ def _resolve_authority_payloads(
             )
         resolved[selector.name] = payload
         resolved_refs.append(artifact)
-    return resolved, tuple(resolved_refs)
+    return resolved, resolved_descriptors, tuple(resolved_refs)
 
 
 @dataclass(frozen=True)
@@ -1019,20 +1033,28 @@ def _figure_expression_context(
     items: dict[str, ContextItem] = {
         "params": ContextItem(kind="params", payload=dict(spec.metadata)),
     }
+    descriptors: dict[str, dict[str, AnalysisOutputDescriptor]] = {}
     for resolved in resolved_inputs:
         manifest_payload = _manifest_payload(resolved.manifest, resolved.ref)
         if resolved.artifact_payloads:
             manifest_payload["artifact_payloads"] = dict(resolved.artifact_payloads)
         payloads.append(manifest_payload)
+        descriptor_paths = {
+            f"artifact_payloads.{payload_name}.{descriptor.path}": descriptor
+            for payload_name, output_descriptors in resolved.artifact_descriptors.items()
+            for descriptor in output_descriptors
+        }
         role = resolved.ref.role
         if role:
             existing = items.get(role)
             if existing is None:
                 items[role] = ContextItem(kind="parent_role", payload=manifest_payload)
+                descriptors[role] = descriptor_paths
             else:
                 if not isinstance(existing.payload, list):
                     existing.payload = [existing.payload]
                 existing.payload.append(manifest_payload)
+                descriptors.pop(role, None)
         # The id-addressed entry names one manifest. Two inputs sharing an id
         # but not a payload cannot both be that one manifest, and a silent
         # last-win here would hand every expression the second one without
@@ -1048,10 +1070,12 @@ def _figure_expression_context(
             kind="manifest",
             payload=manifest_payload,
         )
+        descriptors[manifest_key] = descriptor_paths
     items["manifests"] = ContextItem(kind="manifests", payload=payloads)
     if len(payloads) == 1:
         items["manifest"] = ContextItem(kind="manifest", payload=payloads[0])
-    return ExpressionContext(items=items)
+        descriptors["manifest"] = descriptor_paths
+    return ExpressionContext(items=items, descriptors=descriptors)
 
 
 def _manifest_payload(manifest: AnyManifest | None, ref: ParentRef) -> dict[str, Any]:
@@ -1675,6 +1699,8 @@ def _panel_contents(
             root,
             registry,
             panel_name=panel_name,
+            panel=panel_map.get(panel_name),
+            semantic_policy_enabled=spec.semantic_range_policy is not None,
         )
         traces_by_panel.setdefault(panel_name, []).extend(traces)
     contents: list[PanelContent] = []
@@ -1683,9 +1709,9 @@ def _panel_contents(
         title = _evaluate_panel_title(panel.title, context) if panel is not None else panel_name
         axes_labels = panel.axes_labels.model_dump() if panel and panel.axes_labels else None
         row_label = _evaluate_panel_title(panel.row_label, context) if panel is not None else None
-        x_axis = panel.x_axis.model_dump(exclude_none=True) if panel and panel.x_axis else None
-        y_axis = panel.y_axis.model_dump(exclude_none=True) if panel and panel.y_axis else None
-        z_axis = panel.z_axis.model_dump(exclude_none=True) if panel and panel.z_axis else None
+        x_axis = _resolved_axis_settings(panel, "x", panel_name, exec_trace)
+        y_axis = _resolved_axis_settings(panel, "y", panel_name, exec_trace)
+        z_axis = _resolved_axis_settings(panel, "z", panel_name, exec_trace)
         equal_data_aspect = (
             panel.equal_data_aspect.model_dump(exclude_none=True)
             if panel and panel.equal_data_aspect
@@ -1711,6 +1737,141 @@ def _panel_contents(
             )
         )
     return contents
+
+
+def _resolved_axis_settings(
+    panel: PanelSpec | None,
+    dimension: str,
+    panel_name: str,
+    exec_trace: FigureExecutionTrace,
+) -> dict[str, Any] | None:
+    declared = getattr(panel, f"{dimension}_axis", None) if panel is not None else None
+    settings = declared.model_dump(exclude_none=True) if declared is not None else {}
+    semantic_class = exec_trace.axis_semantics.get((panel_name, dimension))
+    if semantic_class is not None:
+        settings.update(semantic_class.model_dump(exclude_none=True))
+    return settings or None
+
+
+def _exact_value_descriptor(
+    value: Any,
+    context: ExpressionContext,
+) -> AnalysisOutputDescriptor | None:
+    query: ValueQuery | None = None
+    if isinstance(value, ValueQuery):
+        query = value
+    elif isinstance(value, Mapping) and "item" in value:
+        query = ValueQuery.model_validate(value)
+    if query is None:
+        return None
+    if (
+        query.select is not None
+        or query.filter is not None
+        or query.coerce is not None
+        or "default" in query.model_fields_set
+    ):
+        return None
+    descriptor = context.descriptors.get(query.item, {}).get(query.path)
+    return descriptor if isinstance(descriptor, AnalysisOutputDescriptor) else None
+
+
+def _descriptor_semantic_class(
+    descriptor: AnalysisOutputDescriptor,
+) -> AxisSemanticClass | None:
+    schema = descriptor.value_schema
+    if schema.quantity is None or schema.units is None:
+        return None
+    return AxisSemanticClass(quantity=schema.quantity, unit=schema.units, frame=schema.frame)
+
+
+def _axis_assertion(panel: PanelSpec | None, dimension: str) -> AxisSemanticClass | None:
+    axis = getattr(panel, f"{dimension}_axis", None) if panel is not None else None
+    if axis is None or axis.quantity is None:
+        return None
+    assert axis.unit is not None
+    return AxisSemanticClass(quantity=axis.quantity, unit=axis.unit, frame=axis.frame)
+
+
+def _record_binding_axis_semantics(
+    *,
+    binding: TraceBinding,
+    registration: FigureConstructorRegistration,
+    context: ExpressionContext,
+    exec_trace: FigureExecutionTrace,
+    panel_name: str,
+    panel: PanelSpec | None,
+    semantic_policy_enabled: bool,
+) -> dict[str, list[dict[str, Any]]]:
+    recorded: dict[str, list[dict[str, Any]]] = {}
+    for dimension, data_roles in registration.coordinate_roles.items():
+        bound_roles = [role for role in data_roles if role in binding.data]
+        key = (panel_name, dimension)
+        assertion = _axis_assertion(panel, dimension)
+        authoritative: list[tuple[str, AnalysisOutputDescriptor, AxisSemanticClass]] = []
+        unknown: list[str] = [] if bound_roles else ["<implicit>"]
+        for role in bound_roles:
+            descriptor = _exact_value_descriptor(binding.data[role], context)
+            if descriptor is None:
+                unknown.append(role)
+                continue
+            semantic_class = _descriptor_semantic_class(descriptor)
+            if semantic_class is None:
+                unknown.append(role)
+                continue
+            authoritative.append((role, descriptor, semantic_class))
+            recorded.setdefault(dimension, []).append(
+                {
+                    "data_role": role,
+                    **descriptor.model_dump(mode="json", exclude_none=True),
+                }
+            )
+        classes = {
+            (item[2].quantity, item[2].unit, item[2].frame): item[2] for item in authoritative
+        }
+        if len(classes) > 1:
+            raise ValueError(
+                "figure coordinate descriptors conflict before rendering: "
+                f"panel={panel_name!r}, axis={dimension!r}, classes="
+                f"{[item.model_dump(exclude_none=True) for item in classes.values()]!r}"
+            )
+        authoritative_class = next(iter(classes.values()), None)
+        if assertion is not None and authoritative_class is not None:
+            if (
+                assertion.quantity != authoritative_class.quantity
+                or assertion.unit != authoritative_class.unit
+                or (assertion.frame is not None and assertion.frame != authoritative_class.frame)
+            ):
+                raise ValueError(
+                    "figure axis assertion disagrees with authoritative output descriptor: "
+                    f"panel={panel_name!r}, axis={dimension!r}, "
+                    f"assertion={assertion.model_dump(exclude_none=True)!r}, "
+                    "descriptor="
+                    f"{authoritative_class.model_dump(exclude_none=True)!r}"
+                )
+        resolved = authoritative_class or assertion
+        if authoritative_class is not None and assertion is not None and assertion.frame is None:
+            resolved = authoritative_class
+        previous = exec_trace.axis_semantics.get(key)
+        if previous is not None and resolved is not None and previous != resolved:
+            raise ValueError(
+                "figure coordinate frames or semantic classes conflict before rendering: "
+                f"panel={panel_name!r}, axis={dimension!r}, "
+                f"first={previous.model_dump(exclude_none=True)!r}, "
+                f"next={resolved.model_dump(exclude_none=True)!r}"
+            )
+        if resolved is not None:
+            exec_trace.axis_semantics[key] = resolved
+        if unknown:
+            exec_trace.axis_unknown_sources.setdefault(key, []).extend(
+                f"{binding.name}.{role}" for role in unknown
+            )
+            if semantic_policy_enabled and assertion is None:
+                raise ValueError(
+                    "semantic axis range policy requires an output descriptor or explicit "
+                    f"axis assertion for data-bearing panel={panel_name!r}, "
+                    f"axis={dimension!r}; unknown bindings={unknown!r}"
+                )
+    return recorded
 
 
 def _facet_panel_contents(
@@ -1797,6 +1958,8 @@ def _execute_trace_binding(
     registry: FigureRegistry,
     *,
     panel_name: str | None = None,
+    panel: PanelSpec | None = None,
+    semantic_policy_enabled: bool = False,
 ) -> list[Any]:
     expression_hashes = _binding_expression_hashes(binding)
     if binding.include_when is not None and not evaluate_expr(binding.include_when, context):
@@ -1852,6 +2015,16 @@ def _execute_trace_binding(
 
     registration = get_figure_constructor(binding.constructor, registry=registry, tier="trace")
     exec_trace.constructor_versions[binding.constructor] = registration.version
+    resolved_panel_name = panel_name or binding.panel or "main"
+    coordinate_descriptors = _record_binding_axis_semantics(
+        binding=binding,
+        registration=registration,
+        context=context,
+        exec_trace=exec_trace,
+        panel_name=resolved_panel_name,
+        panel=panel,
+        semantic_policy_enabled=semantic_policy_enabled,
+    )
     params = registration.params(binding.params)
     traces = list(registration.callable(data, params))  # type: ignore[misc]
     exec_trace.binding_records.append(
@@ -1861,6 +2034,7 @@ def _execute_trace_binding(
             panel=panel_name or binding.panel,
             constructor=binding.constructor,
             expression_hashes=expression_hashes,
+            coordinate_descriptors=coordinate_descriptors,
         )
     )
     return traces
