@@ -80,7 +80,7 @@ TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
     ("feedbax/analysis/harness.py", "_execute_evaluation_batch_partition"): (
         "Deep copy of in-memory declaration parameters through json.dumps output."
     ),
-    ("feedbax/orchestration/conformance.py", "check_manifest_valid"): (
+    ("feedbax/orchestration/conformance.py", "_canonical_training_payload"): (
         "Normalization round-trips of the in-memory observed and expected mappings through "
         "json.dumps output."
     ),

@@ -705,6 +705,7 @@ class RunPodOrchestrationDriver:
             DriverHook.COLLECT_FAILURE_LOGS,
             DriverHook.TEARDOWN_OWNERSHIP,
             DriverHook.BATCH_PROBE,
+            DriverHook.CHECKPOINT_STOP,
             DriverHook.DRY_RUN_LAUNCH,
         }
     )
@@ -2521,6 +2522,50 @@ class RunPodOrchestrationDriver:
         state: RunSetState,
     ) -> Mapping[str, Any]:
         """Stop one row only after verifying its durable process-group identity."""
+        namespace, process_identity = self._durable_signal_target(bundle, row, state)
+        command = build_bounded_remote_termination_command(namespace, process_identity)
+        result = self._ssh(command)
+        outcome = _json_object(result.stdout)
+        if outcome.get("status") not in {"stopped", "already-exited"}:
+            raise RunPodDriverError(
+                f"refusing to signal remote row {row.row_id!r}: "
+                f"{outcome.get('detail', 'process identity verification failed')}"
+            )
+        return {
+            "row_id": row.row_id,
+            "pid": process_identity.pid,
+            "status": "stopped",
+            "process_identity": process_identity.model_dump(mode="json"),
+        }
+
+    def request_stop_at_checkpoint(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> Mapping[str, Any]:
+        """Ask a verified remote row to stop at its next durable checkpoint."""
+        namespace, process_identity = self._durable_signal_target(bundle, row, state)
+        command = build_remote_checkpoint_stop_command(namespace, process_identity)
+        outcome = _json_object(self._ssh(command).stdout)
+        if outcome.get("status") not in {"stop-requested", "already-exited"}:
+            raise RunPodDriverError(
+                f"refusing to signal remote row {row.row_id!r}: "
+                f"{outcome.get('detail', 'process identity verification failed')}"
+            )
+        return {
+            "row_id": row.row_id,
+            "pid": process_identity.pid,
+            "status": str(outcome["status"]),
+            "process_identity": process_identity.model_dump(mode="json"),
+        }
+
+    def _durable_signal_target(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> tuple[RunPodExecutionNamespace, ProcessIdentity]:
         row_state = state.rows.get(row.row_id)
         if row_state is None or row_state.process_identity is None:
             raise RunPodDriverError(
@@ -2533,20 +2578,7 @@ class RunPodOrchestrationDriver:
             remote_sentinel_dir=self._remote_sentinel_dir(bundle),
             env_fingerprint=state.environment_fingerprint or "",
         )
-        command = build_bounded_remote_termination_command(namespace, row_state.process_identity)
-        result = self._ssh(command)
-        outcome = _json_object(result.stdout)
-        if outcome.get("status") not in {"stopped", "already-exited"}:
-            raise RunPodDriverError(
-                f"refusing to signal remote row {row.row_id!r}: "
-                f"{outcome.get('detail', 'process identity verification failed')}"
-            )
-        return {
-            "row_id": row.row_id,
-            "pid": row_state.process_identity.pid,
-            "status": "stopped",
-            "process_identity": row_state.process_identity.model_dump(mode="json"),
-        }
+        return namespace, row_state.process_identity
 
     def collect(
         self,
@@ -4318,14 +4350,17 @@ def build_launch_row_command(
         f'if [ "$success" -ne 1 ]; then touch {_sq(failed_file)}; fi; exit "$rc"; }}; '
         'signal_failed() { rc=$1; if [ -n "$child" ]; then kill "$child" 2>/dev/null || true; fi; '
         f'touch {_sq(failed_file)}; exit "$rc"; }}; '
-        "trap mark_failed EXIT; trap 'signal_failed 130' INT; trap 'signal_failed 143' TERM; "
+        "checkpoint_stop=0; checkpoint_stop_requested() { checkpoint_stop=1; }; "
+        "trap mark_failed EXIT; trap checkpoint_stop_requested INT; trap 'signal_failed 143' TERM; "
         "trap 'signal_failed 129' HUP; "
         "export XLA_PYTHON_CLIENT_PREALLOCATE=false "
         f"JAX_COMPILATION_CACHE_DIR={_sq(jax_cache_dir)} "
         + " ".join(f"{key}={_sq(value)}" for key, value in namespace.env_exports)
         + " && "
         f"{write_identity} && echo $$ > {_sq(pid_file)} && "
-        f'( {command} ) & child=$!; wait "$child"; rc=$?; child=; '
+        f'( {command} ) & child=$!; wait "$child"; rc=$?; '
+        'if [ "$checkpoint_stop" -eq 1 ]; then wait "$child"; resumed_rc=$?; '
+        'if [ "$resumed_rc" -ne 127 ]; then rc=$resumed_rc; fi; fi; child=; '
         f'if [ "$rc" -eq 0 ]; then success=1; touch {_sq(done_file)}; '
         f'else touch {_sq(failed_file)}; exit "$rc"; fi'
     )
@@ -4358,18 +4393,22 @@ def build_launch_row_command(
     )
 
 
-_REMOTE_PROCESS_GROUP_STOP_SCRIPT = """
+_REMOTE_PROCESS_GROUP_SIGNAL_SCRIPT = """
 import json
 import os
 import signal
 import sys
 import time
 
-identity_path, failed_path, expected_json = sys.argv[1:]
+identity_path, failed_path, expected_json, action = sys.argv[1:]
 expected = json.loads(expected_json)
 
 def emit(status, detail=None):
     print(json.dumps({"status": status, "detail": detail}, sort_keys=True))
+
+if action not in {"checkpoint-stop", "terminate"}:
+    emit("refused", f"unsupported process-group action: {action}")
+    raise SystemExit(0)
 
 try:
     with open(identity_path, encoding="utf-8") as handle:
@@ -4406,7 +4445,8 @@ try:
         except (FileNotFoundError, ProcessLookupError, PermissionError):
             continue
     if not members:
-        open(failed_path, "a").close()
+        if action == "terminate":
+            open(failed_path, "a").close()
         emit("already-exited")
         raise SystemExit(0)
     for member_pid in members:
@@ -4418,6 +4458,14 @@ try:
             )
 except Exception as exc:
     emit("refused", str(exc))
+    raise SystemExit(0)
+if action == "checkpoint-stop":
+    try:
+        os.killpg(process_group_id, signal.SIGINT)
+    except ProcessLookupError:
+        emit("already-exited")
+        raise SystemExit(0)
+    emit("stop-requested")
     raise SystemExit(0)
 try:
     os.killpg(process_group_id, signal.SIGTERM)
@@ -4442,18 +4490,39 @@ emit("stopped")
 """.strip()
 
 
+def _build_verified_remote_process_signal_command(
+    namespace: RunPodExecutionNamespace,
+    process_identity: ProcessIdentity,
+    *,
+    action: Literal["checkpoint-stop", "terminate"],
+) -> str:
+    stem = f"{namespace.sentinel_dir}/{namespace.sentinel_stem}"
+    return (
+        f"python - {_sq(_remote_process_identity_path(namespace))} "
+        f"{_sq(stem + '.failed')} "
+        f"{_sq(process_identity.model_dump_json())} {_sq(action)} <<'PY'\n"
+        f"{_REMOTE_PROCESS_GROUP_SIGNAL_SCRIPT}\n"
+        "PY"
+    )
+
+
 def build_bounded_remote_termination_command(
     namespace: RunPodExecutionNamespace,
     process_identity: ProcessIdentity,
 ) -> str:
     """Build bounded process-group TERM-to-KILL escalation for a smoke deadline."""
-    stem = f"{namespace.sentinel_dir}/{namespace.sentinel_stem}"
-    return (
-        f"python - {_sq(_remote_process_identity_path(namespace))} "
-        f"{_sq(stem + '.failed')} "
-        f"{_sq(process_identity.model_dump_json())} <<'PY'\n"
-        f"{_REMOTE_PROCESS_GROUP_STOP_SCRIPT}\n"
-        "PY"
+    return _build_verified_remote_process_signal_command(
+        namespace, process_identity, action="terminate"
+    )
+
+
+def build_remote_checkpoint_stop_command(
+    namespace: RunPodExecutionNamespace,
+    process_identity: ProcessIdentity,
+) -> str:
+    """Build a verified cooperative checkpoint-stop request for one remote row."""
+    return _build_verified_remote_process_signal_command(
+        namespace, process_identity, action="checkpoint-stop"
     )
 
 

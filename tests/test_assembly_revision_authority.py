@@ -395,7 +395,7 @@ def test_v6_request_is_explicitly_rejected_with_a_reauthoring_instruction(
     message = str(excinfo.value)
     assert RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION_V6 in message
     assert RUN_ASSEMBLY_REQUEST_SCHEMA_VERSION in message
-    assert "re-author a current v8 request" in message
+    assert "re-author a current v9 request" in message
 
 
 def test_orchestrate_cli_rejects_a_v6_assembly_request_file(
@@ -411,5 +411,5 @@ def test_orchestrate_cli_rejects_a_v6_assembly_request_file(
     path = tmp_path / "request-v6.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(UnsupportedSpecVersion, match="re-author a current v8 request"):
+    with pytest.raises(UnsupportedSpecVersion, match="re-author a current v9 request"):
         orchestrate._load_assembly_request(path)

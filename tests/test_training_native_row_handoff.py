@@ -71,6 +71,7 @@ from feedbax.orchestration.conformance import (
     check_environment_fingerprint,
     check_execution_identity,
     check_lr_trace,
+    check_manifest_valid,
     check_seeds,
 )
 from feedbax.orchestration.drivers.local import LocalDriverError, LocalOrchestrationDriver
@@ -141,6 +142,8 @@ def _training_spec(
     completed_batches: int = 1,
     continuation: CheckpointContinuationRequest | None = None,
     progress_interval: int | None = None,
+    controller_seed: int | None = None,
+    batch_seed: int | None = None,
 ) -> TrainingRunSpec:
     method_payload = standard_supervised_method_payload()
     method_payload.payload = StandardSupervisedMethodPayload(
@@ -149,9 +152,14 @@ def _training_spec(
             params={"learning_rate": 0.001},
         )
     ).model_dump(mode="json")
+    task_params: dict[str, Any] = {"n_steps": 1}
+    if controller_seed is not None:
+        task_params["controller"] = {"seed": controller_seed}
+    if batch_seed is not None:
+        task_params["training"] = {"batch_seed": batch_seed}
     return TrainingRunSpec(
         graph={"inline": _minimal_graph(gain)},
-        task=TaskSpec(type="ToyTask", params={"n_steps": 1}),
+        task=TaskSpec(type="ToyTask", params=task_params),
         training_config=TrainingConfig(n_batches=completed_batches, batch_size=1),
         objective=ObjectiveSlotSpec(
             loss=LossTermSpec(
@@ -193,14 +201,20 @@ def _assemble_lowered_bundle(
     progress_interval: int | None = None,
     input_kind: str = "registered-artifact",
     orchestration_root: Path | None = None,
+    row_seed: int | None = 7,
+    controller_seed: int | None = None,
+    batch_seed: int | None = None,
 ) -> RunBundle:
+    row_declaration: dict[str, Any] = {"row_id": "science-row", "overrides": []}
+    if row_seed is not None:
+        row_declaration["seed"] = row_seed
     matrix = TrainingRunMatrixSpecV5.model_validate(
         {
             "schema_id": "feedbax.spec.training_run_matrix",
             "schema_version": "feedbax.spec.training_run_matrix.v5",
             "name": "native row handoff",
             "base": {"kind": "inline", "inline": {"compact": {"gain": gain}}},
-            "rows": [{"row_id": "science-row", "seed": 7, "overrides": []}],
+            "rows": [row_declaration],
         }
     )
     authored = matrix.model_dump(mode="json", exclude_none=True)
@@ -249,6 +263,8 @@ def _assemble_lowered_bundle(
                 completed_batches=completed_batches,
                 continuation=continuation,
                 progress_interval=progress_interval,
+                controller_seed=controller_seed,
+                batch_seed=batch_seed,
             ).model_dump(mode="json", exclude_none=True),
             lowerer_identities=[
                 RowLowererIdentity(
@@ -338,6 +354,7 @@ def _native_context(
     *,
     collection_root: Path,
     current_step: int = 0,
+    seeds: list[int] | None = None,
 ) -> NativeExecutionProducerContext:
     row = bundle.rows[0]
     assert row.execution.row_provenance is not None
@@ -351,7 +368,7 @@ def _native_context(
         environment_fingerprint="environment:integrated-row",
         collection_root=str(collection_root),
         diagnostics=NativeTrainingDiagnosticsInput(
-            seeds=[7],
+            seeds=[7] if seeds is None else seeds,
             lr_trace=[
                 LearningRateDiagnostic(step=step, learning_rate=0.001)
                 for step in range(current_step, current_step + 3)
@@ -548,6 +565,103 @@ def test_authored_row_changes_propagate_through_assembly_identity_and_custody(
     assert decoded["payload"] == lowered_payload
     assert decoded["planned_run_id"] == first_provenance.planned_run_id
     assert decoded["row_provenance"] == first_provenance.model_dump(mode="json", exclude_none=True)
+
+
+def _executed_configuration_seed_row(root: Path) -> ConformanceRowArtifacts:
+    registries = new_application_registry_bundle(local_component_source=None)
+    bundle = _assemble_lowered_bundle(
+        root,
+        gain=2,
+        row_seed=None,
+        controller_seed=42,
+        batch_seed=42,
+    )
+    row = bundle.rows[0]
+    provenance = row.execution.row_provenance
+    assert provenance is not None
+    assert provenance.seed is None
+    payload = json.loads(Path(row.execution.payload.uri).read_text(encoding="utf-8"))
+    assert payload["task"]["params"]["controller"]["seed"] == 42
+    assert payload["task"]["params"]["training"]["batch_seed"] == 42
+    collection_root = bundle.run_set_dir / "rows" / row.row_id
+    result = execute_training_run_spec(
+        payload,
+        initial_slots=_initial_slots(),
+        manifest_root=collection_root / "manifests",
+        checkpoint_root=collection_root / "checkpoints",
+        execution_context=_native_context(bundle, collection_root=collection_root, seeds=[]),
+        registry=registries.training_programs,
+    )
+    diagnostics = result.diagnostics.model_dump(mode="json", exclude_none=True)
+    assert diagnostics["seeds"] == []
+    return ConformanceRowArtifacts(
+        row_id=row.row_id,
+        execution=row.execution,
+        execution_identity_adapter=TrainingRunIdentityAdapter(),
+        training_method_registry=registries.training_programs,
+        manifest_path=result.manifest_path,
+        training_diagnostics=diagnostics,
+        bundle_row_spec=payload,
+        preflight_normalized_payload=payload,
+    )
+
+
+def test_seed_conformance_accepts_authenticated_executed_configuration(
+    tmp_path: Path,
+) -> None:
+    row = _executed_configuration_seed_row(tmp_path / "executed-configuration")
+
+    assert check_execution_identity(row).status == "pass"
+    assert check_manifest_valid(row).status == "pass"
+    check = check_seeds(row)
+
+    assert check.status == "pass"
+    assert check.expected == check.observed
+    assert check.expected["execution_payload_sha256"] == row.execution.payload.sha256
+    assert check.detail == (
+        "seed conformance is established by the authenticated executed configuration; "
+        "no realized replica seeds were observed"
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_evidence",
+    ["missing-payload", "tampered-payload", "mismatched-manifest", "unsupported-schema"],
+)
+def test_seed_conformance_rejects_invalid_executed_configuration_evidence(
+    tmp_path: Path,
+    invalid_evidence: str,
+) -> None:
+    row = _executed_configuration_seed_row(tmp_path / invalid_evidence)
+    payload_path = Path(row.execution.payload.uri)
+    if invalid_evidence == "missing-payload":
+        payload_path.unlink()
+    elif invalid_evidence == "tampered-payload":
+        payload_path.write_bytes(payload_path.read_bytes() + b"\n")
+    elif invalid_evidence == "mismatched-manifest":
+        manifest_path = Path(row.manifest_path)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["training_spec"]["inline"]["task"]["params"]["training"]["batch_seed"] = 41
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    else:
+        payload_ref = row.execution.payload.model_copy(
+            update={"schema_version": "feedbax.spec.training_run.v999"}
+        )
+        row = replace(
+            row,
+            execution=row.execution.model_copy(update={"payload": payload_ref}),
+        )
+
+    check = check_seeds(row)
+
+    assert check.status == "fail"
+    expected_detail = {
+        "missing-payload": "executed configuration identity failed",
+        "tampered-payload": "executed configuration identity failed",
+        "mismatched-manifest": "seed conformance manifest evidence failed",
+        "unsupported-schema": "executed configuration identity failed",
+    }[invalid_evidence]
+    assert expected_detail in (check.detail or "")
 
 
 def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(

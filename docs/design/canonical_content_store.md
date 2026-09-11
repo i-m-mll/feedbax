@@ -127,12 +127,13 @@ policy.
 
 ## Execution projection
 
-`RunAssemblyRequest` v8 and `RunBundle` v13 carry canonically ordered
+`RunAssemblyRequest` v9 and `RunBundle` v14 carry canonically ordered
 `ContentBinding` rows and do not contain a `staged_roots` field. Path-free
 v7/v12 documents migrate by removing an empty legacy field and adding an empty
-binding list. A v7 request or v12 bundle carrying non-empty `staged_roots` must use the
-explicit offline migration because a registry migration has no source snapshot
-from which to authenticate and ingest the tree.
+binding list, then migrate through the later ordered-launch schema versions with
+groups absent. A v7 request or v12 bundle carrying non-empty `staged_roots` must
+use the explicit offline migration because a registry migration has no source
+snapshot from which to authenticate and ingest the tree.
 
 Input preflight resolves every pinned descriptor and object before acquisition
 or output publication. The derived projection is ephemeral: it deduplicates
