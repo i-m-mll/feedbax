@@ -501,6 +501,17 @@ class ImmutableArtifactBlobProvider:
 
         return release_lease(self, lease_id)
 
+    def schedule_lease_release(
+        self,
+        lease_id: str,
+        *,
+        expires_at: datetime,
+    ) -> ContentLeaseRecord:
+        """Convert one in-flight lease to bounded automatic-release semantics."""
+        from feedbax.persistence.content_retention import schedule_lease_release
+
+        return schedule_lease_release(self, lease_id, expires_at=expires_at)
+
     def collect_garbage(
         self,
         request: ContentGcRequest | None = None,

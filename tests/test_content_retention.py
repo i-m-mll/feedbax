@@ -201,6 +201,82 @@ def test_expired_lease_is_ambiguous_until_explicit_release(tmp_path: Path) -> No
     assert provider.get_object(reference) == b"expired-but-live"
 
 
+def test_release_on_expiry_lease_becomes_collectable_but_an_explicit_hold_wins(
+    tmp_path: Path,
+) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "store")
+    reference = provider.store_object(b"bounded-intermediate")
+    target = _object_target(reference)
+    now = datetime.now(timezone.utc)
+    provider.acquire_lease(
+        ContentLeaseRecord(
+            lease_id="lease:bounded",
+            owner="evaluation",
+            targets=(target,),
+            expires_at=now - timedelta(seconds=1),
+            expiry_disposition="release",
+        )
+    )
+    provider.place_hold(
+        ContentHoldRecord(
+            hold_id="hold:review",
+            hold_kind="scientific",
+            reason="review is incomplete",
+            targets=(target,),
+        )
+    )
+
+    held = provider.collect_garbage(now=now)
+    assert held.stage == "reported"
+    assert held.decisions[0].decision == "live"
+
+    provider.release_hold("hold:review")
+    report = provider.collect_garbage(now=now)
+    assert report.stage == "reported"
+    assert report.decisions[0].decision == "candidate"
+    assert report.decisions[0].reason == "time-bounded lease expired"
+    swept = provider.collect_garbage(
+        ContentGcRequest(destructive=True, expected_generation=report.generation),
+        now=now,
+    )
+    assert swept.stage == "swept"
+    assert not _path(provider, reference.sha256).exists()
+    after = provider.collect_garbage(now=now)
+    assert after.stage == "reported"
+    assert not after.errors
+    assert not after.decisions
+
+
+def test_scheduled_release_is_idempotent_and_cannot_be_extended_by_retry(
+    tmp_path: Path,
+) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "store")
+    reference = provider.store_object(b"retry-stable")
+    now = datetime.now(timezone.utc)
+    provider.acquire_lease(
+        ContentLeaseRecord(
+            lease_id="lease:retry",
+            owner="evaluation",
+            targets=(_object_target(reference),),
+            expires_at=now + timedelta(hours=1),
+        )
+    )
+    first = provider.schedule_lease_release("lease:retry", expires_at=now + timedelta(minutes=5))
+    retried = provider.schedule_lease_release("lease:retry", expires_at=now + timedelta(hours=2))
+    reacquired = provider.acquire_lease(
+        ContentLeaseRecord(
+            lease_id="lease:retry",
+            owner="evaluation",
+            targets=(_object_target(reference),),
+            expires_at=now + timedelta(hours=3),
+        )
+    )
+
+    assert retried == first
+    assert reacquired == first
+    assert first.expiry_disposition == "release"
+
+
 def test_nonterminal_restartable_run_requires_durable_terminal_release(tmp_path: Path) -> None:
     provider = ImmutableArtifactBlobProvider(tmp_path / "store")
     reference = provider.store_object(b"checkpoint")
