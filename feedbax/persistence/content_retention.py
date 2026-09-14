@@ -71,10 +71,17 @@ def _read_index(provider: ImmutableArtifactBlobProvider) -> ContentRetentionInde
         raise ContentRetentionError("retention index identity changed during read")
     try:
         payload = strict_json_loads(raw.decode("utf-8"), ref=str(path))
-        index = ContentRetentionIndex.model_validate(payload)
+        from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+        migrated = migrate_structured_spec_payload(
+            "ContentRetentionIndex",
+            payload,
+            path=str(path),
+        )
+        index = ContentRetentionIndex.model_validate(migrated.payload)
     except Exception as exc:
         raise ContentRetentionError(f"retention index is corrupt or unsupported: {exc}") from exc
-    if raw != canonical_json_v1_bytes(index.model_dump(mode="json")):
+    if raw != canonical_json_v1_bytes(payload):
         raise ContentRetentionError("retention index is not canonical")
     return index
 
@@ -314,6 +321,17 @@ def acquire_lease(
         _validate_targets(provider, lease.targets)
         existing = next((item for item in index.leases if item.lease_id == lease.lease_id), None)
         if existing is not None and existing != lease:
+            same_identity = (
+                existing.model_copy(
+                    update={
+                        "expires_at": lease.expires_at,
+                        "expiry_disposition": lease.expiry_disposition,
+                    }
+                )
+                == lease
+            )
+            if not existing.released and same_identity and existing.expiry_disposition == "release":
+                return existing
             same_owner = existing.model_copy(update={"expires_at": lease.expires_at}) == lease
             if existing.released or not same_owner or lease.expires_at < existing.expires_at:
                 raise ContentRetentionError(
@@ -346,6 +364,38 @@ def renew_lease(
         if updated != index:
             _write_index(provider, updated)
         return renewed
+
+
+def schedule_lease_release(
+    provider: ImmutableArtifactBlobProvider,
+    lease_id: str,
+    *,
+    expires_at: datetime,
+) -> ContentLeaseRecord:
+    """Atomically turn one blocking in-flight lease into a bounded grace lease."""
+    if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+        raise ContentRetentionError("lease expiry must be timezone-aware")
+    with provider._exclusive_lock():
+        index = _read_index(provider)
+        if index.pending_gc is not None:
+            raise ContentRetentionError(
+                "recover the pending GC generation before scheduling a lease release"
+            )
+        current = next((item for item in index.leases if item.lease_id == lease_id), None)
+        if current is None or current.released:
+            raise ContentRetentionError(f"active lease is unavailable: {lease_id}")
+        if current.expiry_disposition == "release":
+            return current
+        scheduled = current.model_copy(
+            update={
+                "expires_at": expires_at.astimezone(timezone.utc),
+                "expiry_disposition": "release",
+            }
+        )
+        updated = _replace_record(index, "leases", scheduled, "lease_id")
+        if updated != index:
+            _write_index(provider, updated)
+        return scheduled
 
 
 def release_lease(provider: ImmutableArtifactBlobProvider, lease_id: str) -> ContentLeaseRecord:
@@ -412,11 +462,26 @@ def _live_closure(
     index: ContentRetentionIndex,
     *,
     now: datetime,
-) -> tuple[set[str], tuple[str, ...], tuple[str, ...], tuple[str, ...], list[str]]:
+) -> tuple[
+    set[str],
+    set[str],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    list[str],
+]:
     live: set[str] = set()
+    expired_release: set[str] = set()
+    expired_lease_ids: list[str] = []
     errors: list[str] = []
     roots = tuple(item.root_id for item in index.roots if not item.released)
-    leases = tuple(item.lease_id for item in index.leases if not item.released)
+    leases = tuple(
+        item.lease_id
+        for item in index.leases
+        if not item.released
+        and not (item.expiry_disposition == "release" and item.expires_at <= now)
+    )
     holds = tuple(item.hold_id for item in index.holds if not item.released)
     for record in (*index.roots, *index.leases, *index.holds):
         if record.released:
@@ -427,12 +492,28 @@ def _live_closure(
             if record.root_kind == "migration":
                 errors.append(f"migration root remains incomplete: {record.root_id}")
         if isinstance(record, ContentLeaseRecord) and record.expires_at <= now:
-            errors.append(f"lease expired without explicit release: {record.lease_id}")
+            if record.expiry_disposition == "block":
+                errors.append(f"lease expired without explicit release: {record.lease_id}")
+            else:
+                expired_lease_ids.append(record.lease_id)
+                try:
+                    expired_release.update(_validate_targets(provider, record.targets))
+                except Exception as exc:
+                    errors.append(f"invalid expired retention record {record!r}: {exc}")
+                continue
         try:
             live.update(_validate_targets(provider, record.targets))
         except Exception as exc:
             errors.append(f"invalid live retention record {record!r}: {exc}")
-    return live, roots, leases, holds, errors
+    return (
+        live,
+        expired_release,
+        tuple(sorted(expired_lease_ids)),
+        roots,
+        leases,
+        holds,
+        errors,
+    )
 
 
 def _receipt(
@@ -518,7 +599,19 @@ def collect_garbage(
                 )
             return _recover_locked(provider, index)
         objects, errors = _inventory(provider)
-        live, roots, leases, holds, live_errors = _live_closure(provider, index, now=observed_at)
+        (
+            live,
+            expired_release,
+            expired_lease_ids,
+            roots,
+            leases,
+            holds,
+            live_errors,
+        ) = _live_closure(
+            provider,
+            index,
+            now=observed_at,
+        )
         errors.extend(live_errors)
         decisions = tuple(
             ContentGcDecision(
@@ -526,7 +619,15 @@ def collect_garbage(
                 sha256=digest,
                 size_bytes=size,
                 decision="live" if digest in live else "candidate",
-                reason="reachable from explicit custody" if digest in live else "unreferenced",
+                reason=(
+                    "reachable from explicit custody"
+                    if digest in live
+                    else (
+                        "time-bounded lease expired"
+                        if digest in expired_release
+                        else "unreferenced"
+                    )
+                ),
             )
             for digest, size in sorted(objects.items())
         )
@@ -573,6 +674,7 @@ def collect_garbage(
             stage="marked",
             root_ids=roots,
             lease_ids=leases,
+            expired_lease_ids=expired_lease_ids,
             hold_ids=holds,
             decisions=candidates,
         )
@@ -697,7 +799,18 @@ def _recover_locked(
                     update={"decision": "deleted", "reason": "quarantine identity verified"}
                 )
             )
-        completed = quarantined_index.model_copy(update={"pending_gc": None})
+        expired_lease_ids = set(quarantined_pending.expired_lease_ids)
+        completed = quarantined_index.model_copy(
+            update={
+                "leases": tuple(
+                    lease.model_copy(update={"released": True})
+                    if lease.lease_id in expired_lease_ids
+                    else lease
+                    for lease in quarantined_index.leases
+                ),
+                "pending_gc": None,
+            }
+        )
         _write_index(provider, completed)
         receipt = _receipt(
             receipt_id=pending.receipt_id,
@@ -736,5 +849,6 @@ __all__ = [
     "release_lease",
     "release_root",
     "renew_lease",
+    "schedule_lease_release",
     "set_run_state",
 ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,16 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationBatchReclamationEvidence,
     EvaluationLifecycleRowOutcome,
     EvaluationMatrixBatchUnit,
+    EvaluationPayloadRetentionEvidence,
+    EvaluationPayloadRetentionPolicy,
+    EvaluationReplayIdentity,
+)
+from feedbax.contracts.artifact_custody import (
+    CONTENT_OBJECT_REF_PREFIX,
+    ContentLeaseRecord,
+    ContentObjectRef,
+    ContentRetentionTarget,
+    ContentRootRecord,
 )
 from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
@@ -34,6 +45,9 @@ from feedbax.contracts.base import (
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
+    EvaluationRunManifest,
+    RegenerationCommand,
+    RegenerationSpec,
     evaluation_states_cache_path,
     load_manifest,
     safe_manifest_key,
@@ -152,6 +166,7 @@ def compact_evaluation_batch(
     *,
     registry: EvaluationBatchConsumerRegistry,
     custody_root: Path,
+    retention_policy: EvaluationPayloadRetentionPolicy | None = None,
 ) -> ArtifactRef:
     """Run one compact callback and verify its content-addressed fragment."""
     _validate_callback_input(declaration, consumer_input)
@@ -190,6 +205,17 @@ def compact_evaluation_batch(
         },
     )
     provider.get_bytes(ref)
+    _acquire_intermediate_lease(
+        provider,
+        ref,
+        lease_id=_intermediate_lease_id(
+            consumer_input.matrix_intent_hash,
+            declaration.leaf_id,
+            consumer_input.batch.batch_id,
+            "fragment",
+        ),
+        policy=retention_policy or EvaluationPayloadRetentionPolicy(),
+    )
     return ref
 
 
@@ -204,6 +230,7 @@ def merge_evaluation_batch_fragment(
     prior_merge_state: ArtifactRef | None,
     custody_root: Path,
     execution_context: StagedExecutionContext,
+    retention_policy: EvaluationPayloadRetentionPolicy | None = None,
 ) -> EvaluationBatchLeafAcknowledgement:
     """Verify and apply one fragment exactly once in authored batch order."""
     _require_execution_context(execution_context)
@@ -222,6 +249,17 @@ def merge_evaluation_batch_fragment(
         or fragment.metadata.get("consumer_parameters_sha256") != _parameters_sha256(declaration)
     ):
         raise ValueError(f"consumer leaf {declaration.leaf_id!r} fragment identity drifted")
+    _acquire_intermediate_lease(
+        provider,
+        fragment,
+        lease_id=_intermediate_lease_id(
+            matrix_intent_hash,
+            declaration.leaf_id,
+            batch.batch_id,
+            "fragment",
+        ),
+        policy=retention_policy or EvaluationPayloadRetentionPolicy(),
+    )
     fragment_payload = strict_json_loads(provider.get_bytes(fragment))
     expected_parent_authorities = _merge_parent_authorities(
         prior_merge_state,
@@ -283,6 +321,17 @@ def merge_evaluation_batch_fragment(
             parent_authorities=expected_parent_authorities,
         )
         provider.get_bytes(acknowledgement.merge_state)
+        _acquire_intermediate_lease(
+            provider,
+            acknowledgement.merge_state,
+            lease_id=_intermediate_lease_id(
+                matrix_intent_hash,
+                declaration.leaf_id,
+                batch.batch_id,
+                "merge",
+            ),
+            policy=retention_policy or EvaluationPayloadRetentionPolicy(),
+        )
         return acknowledgement.model_copy(update={"reused_verified_fragment": True})
     if prior_merge_state is not None:
         _validate_merge_state_ref(
@@ -339,6 +388,17 @@ def merge_evaluation_batch_fragment(
         },
     )
     provider.get_bytes(state_ref)
+    _acquire_intermediate_lease(
+        provider,
+        state_ref,
+        lease_id=_intermediate_lease_id(
+            matrix_intent_hash,
+            declaration.leaf_id,
+            batch.batch_id,
+            "merge",
+        ),
+        policy=retention_policy or EvaluationPayloadRetentionPolicy(),
+    )
     acknowledgement = EvaluationBatchLeafAcknowledgement(
         leaf_id=declaration.leaf_id,
         consumer_id=declaration.consumer_id,
@@ -377,6 +437,8 @@ def reclaim_evaluation_batch_caches(
     required_declarations: Sequence[EvaluationBatchConsumerDeclaration],
     custody_root: Path,
     execution_context: StagedExecutionContext,
+    retention_policy: EvaluationPayloadRetentionPolicy | None = None,
+    evaluation_custody_root: Path | None = None,
 ) -> EvaluationBatchReclamationEvidence:
     """Remove only authenticated row state caches after every leaf acknowledged."""
     _require_execution_context(execution_context)
@@ -401,6 +463,7 @@ def reclaim_evaluation_batch_caches(
     ):
         raise ValueError("raw cache reclamation requires every declared leaf acknowledgement")
     provider = ImmutableArtifactBlobProvider(custody_root)
+    policy = retention_policy or EvaluationPayloadRetentionPolicy()
     for acknowledgement in acknowledgements:
         declaration = declarations_by_leaf[acknowledgement.leaf_id]
         _validate_fragment_ref(
@@ -422,6 +485,36 @@ def reclaim_evaluation_batch_caches(
         )
         provider.get_bytes(acknowledgement.fragment)
         provider.get_bytes(acknowledgement.merge_state)
+    retention_record_ids: tuple[str, ...] = ()
+    if evaluation_custody_root is not None:
+        from feedbax.analysis.evaluation import finalize_evaluation_batch_retention
+
+        evaluation_manifests = tuple(
+            EvaluationRunManifest.model_validate(
+                strict_json_loads(Path(outcome.manifest_path).read_text(encoding="utf-8"))
+            )
+            for outcome in outcomes
+        )
+        retention_record_ids = finalize_evaluation_batch_retention(
+            evaluation_manifests,
+            root=evaluation_custody_root,
+            retain_intermediates=policy.retain_intermediates,
+            grace_expires_at=datetime.now(timezone.utc)
+            + timedelta(seconds=policy.intermediate_grace_seconds),
+            manifest_sha256s=tuple(
+                sha256_bytes(Path(outcome.manifest_path).read_bytes()) for outcome in outcomes
+            ),
+        )
+    if policy.retain_intermediates:
+        return EvaluationBatchReclamationEvidence(
+            batch_id=batch.batch_id,
+            batch_index=batch_index,
+            ordered_row_ids=batch.ordered_row_ids,
+            leaf_acknowledgements=tuple(acknowledgements),
+            retained_cache_manifest_ids=manifest_ids,
+            retention_record_ids=retention_record_ids,
+            removed_cache_bytes=0,
+        )
     checkpoint = custody_root / "reclamation-checkpoints" / f"{batch.batch_id}.json"
     if checkpoint.is_file():
         evidence = EvaluationBatchReclamationEvidence.model_validate(
@@ -533,6 +626,7 @@ def reclaim_evaluation_batch_caches(
         ordered_row_ids=batch.ordered_row_ids,
         leaf_acknowledgements=tuple(acknowledgements),
         removed_cache_manifest_ids=manifest_ids,
+        retention_record_ids=retention_record_ids,
         removed_cache_bytes=removed_bytes,
     )
     _atomic_write_json(checkpoint, evidence.model_dump(mode="json"))
@@ -547,6 +641,7 @@ def publish_evaluation_compaction_products(
     registry: EvaluationBatchConsumerRegistry,
     custody_root: Path,
     execution_context: StagedExecutionContext,
+    replay: EvaluationReplayIdentity | None = None,
 ) -> tuple[ArtifactRef, ...]:
     """Publish terminal compact leaves through ``AnalysisRunManifest`` custody."""
     _require_execution_context(execution_context)
@@ -642,6 +737,21 @@ def publish_evaluation_compaction_products(
                 "consumer_parameters_sha256": _parameters_sha256(declaration),
             },
         )
+        if replay is not None:
+            context.record_regeneration_spec(
+                RegenerationSpec(
+                    command=RegenerationCommand(
+                        argv=["python", "-m", "feedbax", "matrix-harness"],
+                        metadata={"executor_family": "evaluation-matrix"},
+                    ),
+                    parameters={
+                        "matrix_intent_hash": state_ref.metadata["matrix_intent_hash"],
+                        "replay_identity": replay.model_dump(mode="json"),
+                    },
+                    inputs=list(parents or ()),
+                    provenance=Provenance(metadata={"batch_compaction": lineage}),
+                )
+            )
         manifest_path = (
             context.root_path
             / "manifests"
@@ -673,6 +783,7 @@ def publish_evaluation_compaction_products(
                 ),
                 artifacts=list(context.artifacts),
                 produced_data=list(context.produced_data),
+                regeneration_specs=list(context.regeneration_specs),
             )
             if not isinstance(manifest, AnalysisRunManifest) or canonical_json_bytes(
                 manifest
@@ -699,6 +810,156 @@ def publish_evaluation_compaction_products(
             )
         )
     return tuple(manifest_refs)
+
+
+def apply_evaluation_payload_retention(
+    declarations: Sequence[EvaluationBatchConsumerDeclaration],
+    terminal_products: Sequence[ArtifactRef],
+    acknowledgements: Sequence[EvaluationBatchLeafAcknowledgement],
+    *,
+    policy: EvaluationPayloadRetentionPolicy,
+    replay: EvaluationReplayIdentity,
+    custody_root: Path,
+    completed_at: datetime | None = None,
+) -> EvaluationPayloadRetentionEvidence:
+    """Commit terminal output and intermediate custody after successful publication."""
+    if len(declarations) != len(terminal_products):
+        raise ValueError("terminal products must preserve declared leaf order")
+    if completed_at is None:
+        completed_at = datetime.now(timezone.utc)
+    if completed_at.tzinfo is None or completed_at.utcoffset() is None:
+        raise ValueError("evaluation retention completion time must be timezone-aware")
+    expires_at = completed_at.astimezone(timezone.utc) + timedelta(
+        seconds=policy.intermediate_grace_seconds
+    )
+    provider = ImmutableArtifactBlobProvider(custody_root)
+    analysis_provider = ImmutableArtifactBlobProvider((custody_root / "analysis").absolute())
+    retained_outputs: list[str] = []
+    disposable_outputs: list[str] = []
+    temporary_leases: list[str] = []
+    retained_intermediates: list[str] = []
+
+    for declaration, terminal_ref in zip(declarations, terminal_products, strict=True):
+        manifest_bytes = provider.get_bytes(terminal_ref)
+        manifest = AnalysisRunManifest.model_validate(strict_json_loads(manifest_bytes))
+        if (
+            manifest.status != "completed"
+            or manifest.analysis_spec.inline.get("analysis_type")
+            != declaration.terminal_analysis_type
+        ):
+            raise ValueError(
+                f"consumer leaf {declaration.leaf_id!r} terminal manifest identity drifted"
+            )
+        provider.register_root(
+            ContentRootRecord(
+                root_id=f"evaluation-replay:{replay.execution_hash}:{declaration.leaf_id}",
+                root_kind="logical-ref",
+                targets=(_artifact_target(terminal_ref),),
+            )
+        )
+        output_id = declaration.leaf_id
+        disposition = policy.disposition_for(output_id)
+        if disposition == "keep":
+            analysis_provider.register_root(
+                ContentRootRecord(
+                    root_id=f"evaluation-output:{replay.execution_hash}:{output_id}",
+                    root_kind="logical-ref",
+                    targets=tuple(_artifact_target(artifact) for artifact in manifest.artifacts),
+                )
+            )
+            retained_outputs.append(output_id)
+        else:
+            lease_id = f"evaluation-output-grace:{replay.execution_hash}:{output_id}"
+            analysis_provider.acquire_lease(
+                ContentLeaseRecord(
+                    lease_id=lease_id,
+                    owner="feedbax.evaluation.compaction",
+                    targets=tuple(_artifact_target(artifact) for artifact in manifest.artifacts),
+                    expires_at=expires_at,
+                    expiry_disposition="release",
+                )
+            )
+            disposable_outputs.append(output_id)
+            temporary_leases.append(f"analysis/{lease_id}")
+
+    seen_intermediates: set[str] = set()
+    for acknowledgement in acknowledgements:
+        for kind, artifact in (
+            ("fragment", acknowledgement.fragment),
+            ("merge", acknowledgement.merge_state),
+        ):
+            lease_id = _intermediate_lease_id(
+                artifact.metadata["matrix_intent_hash"],
+                acknowledgement.leaf_id,
+                artifact.metadata["batch_id"],
+                kind,
+            )
+            if lease_id in seen_intermediates:
+                continue
+            seen_intermediates.add(lease_id)
+            if policy.retain_intermediates:
+                provider.register_root(
+                    ContentRootRecord(
+                        root_id=f"evaluation-intermediate:{lease_id}",
+                        root_kind="logical-ref",
+                        targets=(_artifact_target(artifact),),
+                    )
+                )
+                provider.release_lease(lease_id)
+                retained_intermediates.append(lease_id)
+            else:
+                provider.schedule_lease_release(lease_id, expires_at=expires_at)
+                temporary_leases.append(lease_id)
+
+    return EvaluationPayloadRetentionEvidence(
+        policy=policy,
+        replay=replay,
+        retained_output_ids=tuple(retained_outputs),
+        disposable_output_ids=tuple(disposable_outputs),
+        retained_intermediate_ids=tuple(retained_intermediates),
+        temporary_lease_ids=tuple(temporary_leases),
+    )
+
+
+def _artifact_target(artifact: ArtifactRef) -> ContentRetentionTarget:
+    if artifact.sha256 is None or artifact.size_bytes is None:
+        raise ValueError("evaluation payload lacks exact content identity")
+    return ContentRetentionTarget(
+        ref_kind="object",
+        object=ContentObjectRef(
+            object_id=f"{CONTENT_OBJECT_REF_PREFIX}{artifact.sha256}",
+            sha256=artifact.sha256,
+            size_bytes=artifact.size_bytes,
+        ),
+    )
+
+
+def _intermediate_lease_id(
+    matrix_intent_hash: str,
+    leaf_id: str,
+    batch_id: str,
+    kind: str,
+) -> str:
+    return f"evaluation-intermediate:{matrix_intent_hash}:{leaf_id}:{batch_id}:{kind}"
+
+
+def _acquire_intermediate_lease(
+    provider: ImmutableArtifactBlobProvider,
+    artifact: ArtifactRef,
+    *,
+    lease_id: str,
+    policy: EvaluationPayloadRetentionPolicy,
+) -> None:
+    provider.acquire_lease(
+        ContentLeaseRecord(
+            lease_id=lease_id,
+            owner="feedbax.evaluation.compaction",
+            targets=(_artifact_target(artifact),),
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(seconds=policy.intermediate_grace_seconds),
+            expiry_disposition="block",
+        )
+    )
 
 
 def _resolve_consumer(
@@ -966,6 +1227,7 @@ __all__ = [
     "EvaluationBatchMergeInput",
     "EvaluationBatchMergeState",
     "EvaluationBatchConsumerRegistry",
+    "apply_evaluation_payload_retention",
     "compact_evaluation_batch",
     "merge_evaluation_batch_fragment",
     "publish_evaluation_compaction_products",

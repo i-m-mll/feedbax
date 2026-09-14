@@ -34,9 +34,11 @@ CONTENT_ROOT_RECORD_SCHEMA_VERSION = "feedbax.spec.content_root_record.v1"
 CONTENT_HOLD_RECORD_SCHEMA_ID = "feedbax.spec.content_hold_record"
 CONTENT_HOLD_RECORD_SCHEMA_VERSION = "feedbax.spec.content_hold_record.v1"
 CONTENT_LEASE_RECORD_SCHEMA_ID = "feedbax.spec.content_lease_record"
-CONTENT_LEASE_RECORD_SCHEMA_VERSION = "feedbax.spec.content_lease_record.v1"
+CONTENT_LEASE_RECORD_SCHEMA_VERSION_V1 = "feedbax.spec.content_lease_record.v1"
+CONTENT_LEASE_RECORD_SCHEMA_VERSION = "feedbax.spec.content_lease_record.v2"
 CONTENT_RETENTION_INDEX_SCHEMA_ID = "feedbax.spec.content_retention_index"
-CONTENT_RETENTION_INDEX_SCHEMA_VERSION = "feedbax.spec.content_retention_index.v1"
+CONTENT_RETENTION_INDEX_SCHEMA_VERSION_V1 = "feedbax.spec.content_retention_index.v1"
+CONTENT_RETENTION_INDEX_SCHEMA_VERSION = "feedbax.spec.content_retention_index.v2"
 CONTENT_GC_RECEIPT_SCHEMA_ID = "feedbax.spec.content_gc_receipt"
 CONTENT_GC_RECEIPT_SCHEMA_VERSION = "feedbax.spec.content_gc_receipt.v1"
 CONTENT_OBJECT_REF_PREFIX = "content-object://sha256/"
@@ -302,7 +304,7 @@ class ContentHoldRecord(StrictModel):
 
 
 class ContentLeaseRecord(StrictModel):
-    """Explicit renewable lease; elapsed time never releases it implicitly."""
+    """Explicit renewable lease with an authored expiry disposition."""
 
     schema_id: Literal[CONTENT_LEASE_RECORD_SCHEMA_ID] = CONTENT_LEASE_RECORD_SCHEMA_ID
     schema_version: Literal[CONTENT_LEASE_RECORD_SCHEMA_VERSION] = (
@@ -313,6 +315,7 @@ class ContentLeaseRecord(StrictModel):
     owner: str = Field(min_length=1)
     targets: tuple[ContentRetentionTarget, ...] = Field(min_length=1)
     expires_at: datetime
+    expiry_disposition: Literal["block", "release"] = "block"
     released: bool = False
 
     _utc_expiry = field_validator("expires_at")(_require_utc)
@@ -385,6 +388,7 @@ class ContentPendingGc(StrictModel):
     stage: Literal["marked", "quarantined"]
     root_ids: tuple[str, ...] = ()
     lease_ids: tuple[str, ...] = ()
+    expired_lease_ids: tuple[str, ...] = ()
     hold_ids: tuple[str, ...] = ()
     decisions: tuple[ContentGcDecision, ...]
 
@@ -393,7 +397,7 @@ class ContentRetentionIndex(StrictModel):
     """Canonical mutable index for retention state under one content store."""
 
     schema_id: Literal[CONTENT_RETENTION_INDEX_SCHEMA_ID] = CONTENT_RETENTION_INDEX_SCHEMA_ID
-    schema_version: Literal[CONTENT_RETENTION_INDEX_SCHEMA_VERSION] = (
+    schema_version: Literal["feedbax.spec.content_retention_index.v2"] = (
         CONTENT_RETENTION_INDEX_SCHEMA_VERSION
     )
     generation: int = Field(default=0, ge=0)
@@ -472,6 +476,13 @@ class ArtifactBlobProvider(Protocol):
 
     def release_lease(self, lease_id: str) -> ContentLeaseRecord: ...
 
+    def schedule_lease_release(
+        self,
+        lease_id: str,
+        *,
+        expires_at: datetime,
+    ) -> ContentLeaseRecord: ...
+
     def get_tree(self, tree_ref: ContentTreeRef) -> ContentTree: ...
 
     def publish_rooted_tree(
@@ -520,8 +531,10 @@ __all__ = [
     "CONTENT_HOLD_RECORD_SCHEMA_VERSION",
     "CONTENT_LEASE_RECORD_SCHEMA_ID",
     "CONTENT_LEASE_RECORD_SCHEMA_VERSION",
+    "CONTENT_LEASE_RECORD_SCHEMA_VERSION_V1",
     "CONTENT_RETENTION_INDEX_SCHEMA_ID",
     "CONTENT_RETENTION_INDEX_SCHEMA_VERSION",
+    "CONTENT_RETENTION_INDEX_SCHEMA_VERSION_V1",
     "CONTENT_GC_RECEIPT_SCHEMA_ID",
     "CONTENT_GC_RECEIPT_SCHEMA_VERSION",
     "CONTENT_OBJECT_REF_PREFIX",

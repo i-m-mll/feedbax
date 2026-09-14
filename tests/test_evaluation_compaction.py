@@ -30,6 +30,8 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationLifecycleRowOutcome,
     EvaluationMatrixBatchPlan,
     EvaluationMatrixBatchUnit,
+    EvaluationPayloadRetentionPolicy,
+    EvaluationReplayIdentity,
 )
 from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
@@ -197,6 +199,46 @@ def test_downstream_inventory_dag_covers_all_16200_rows_without_retained_authori
     }
     assert "g1_induced_gain_projection_scalar" not in plan.model_dump_json()
     assert "s1_goal_hidden_map_radius_scalar" not in plan.model_dump_json()
+
+
+def test_retention_policy_defaults_outputs_to_keep_and_bounds_disposable_grace() -> None:
+    declaration = _declaration("velocity")
+    plan = EvaluationMatrixBatchPlan(
+        matrix_intent_hash="a" * 64,
+        batches=(
+            EvaluationMatrixBatchUnit(
+                batch_id="whole",
+                ordered_row_ids=("row",),
+                required_leaf_ids=("velocity",),
+            ),
+        ),
+        consumers=(declaration,),
+        retention=EvaluationPayloadRetentionPolicy(
+            output_dispositions={"velocity": "discard"},
+            intermediate_grace_seconds=60,
+        ),
+    )
+
+    assert plan.retention.disposition_for("velocity") == "discard"
+    assert plan.retention.disposition_for("other") == "keep"
+    with pytest.raises(ValidationError, match="undeclared terminal leaves"):
+        EvaluationMatrixBatchPlan.model_validate(
+            {
+                **plan.model_dump(mode="json"),
+                "retention": {
+                    **plan.retention.model_dump(mode="json"),
+                    "output_dispositions": {"unknown": "discard"},
+                },
+            }
+        )
+    with pytest.raises(ValidationError, match="less than or equal to 604800"):
+        EvaluationPayloadRetentionPolicy(intermediate_grace_seconds=604801)
+    with pytest.raises(ValidationError, match="execution_envelope"):
+        EvaluationReplayIdentity.model_validate(
+            {
+                "feedbax_revision": "a" * 40,
+            }
+        )
 
 
 def test_consumer_parameters_are_canonical_and_exactly_bound_to_callback_context(

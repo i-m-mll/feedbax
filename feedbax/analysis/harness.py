@@ -442,6 +442,7 @@ def _execute_evaluation_batch_partition(
         EvaluationBatchConsumerDeclaration,
         EvaluationLifecycleRowOutcome,
         EvaluationMatrixBatchUnit,
+        EvaluationPayloadRetentionPolicy,
     )
     from feedbax.contracts.base import ArtifactRef
     from feedbax.contracts.base import (
@@ -476,6 +477,7 @@ def _execute_evaluation_batch_partition(
     execution_context = with_staged_repo_root(execution_context, task["repo_root"])
     payload = _read_json_object(task["payload_path"], description="evaluation matrix spec")
     batch = EvaluationMatrixBatchUnit.model_validate(task["batch"])
+    retention_policy = EvaluationPayloadRetentionPolicy.model_validate(task["retention_policy"])
     checkpoint_identity = {
         "matrix_intent_hash": task["matrix_intent_hash"],
         "batch": batch.model_dump(mode="json", exclude_none=True),
@@ -595,6 +597,7 @@ def _execute_evaluation_batch_partition(
                 ),
                 registry=registries.evaluation_batch_consumers,
                 custody_root=Path(task["compaction_root"]),
+                retention_policy=retention_policy,
             )
         )
     completed = {
@@ -993,6 +996,7 @@ def main(
         EvaluationLifecycleEvidence,
         EvaluationLifecycleRowOutcome,
         EvaluationMatrixBatchPlan,
+        EvaluationReplayIdentity,
         EvaluationWorkerProcessEvidence,
         EvaluationWorkerTopologyEvidence,
     )
@@ -1094,6 +1098,7 @@ def main(
     resolved_context = None
     orchestration_batch_plan = None
     orchestration_worker_count = None
+    orchestration_replay = None
     if args.orchestration_bundle is not None:
         if (
             args.execution_descriptor is not None
@@ -1124,6 +1129,11 @@ def main(
         orchestration_worker_count = min(
             bundle.launch_policy.max_parallel_rows,
             len(orchestration_batch_plan.batches),
+        )
+        execution = matching_rows[0].execution
+        orchestration_replay = EvaluationReplayIdentity(
+            feedbax_revision=bundle.feedbax_revision,
+            execution_envelope=execution.model_dump(mode="json", exclude_none=True),
         )
         projected = staged_execution_bindings_for_bundle(
             bundle,
@@ -1167,8 +1177,10 @@ def main(
                     "repo_root": args.repo_root,
                     "matrix_intent_hash": orchestration_batch_plan.matrix_intent_hash,
                     "compaction_root": str(compaction_root),
+                    "retention_policy": orchestration_batch_plan.retention.model_dump(mode="json"),
                 }
                 from feedbax.analysis.evaluation_compaction import (
+                    apply_evaluation_payload_retention,
                     merge_evaluation_batch_fragment,
                     publish_evaluation_compaction_products,
                     reclaim_evaluation_batch_caches,
@@ -1177,6 +1189,7 @@ def main(
 
                 prior_states: dict[str, ArtifactRef] = {}
                 reclamations = []
+                all_acknowledgements = []
                 completed_batches = []
                 timing_origin_ns = time.monotonic_ns()
                 tasks = [
@@ -1260,9 +1273,11 @@ def main(
                             prior_merge_state=prior_states.get(declaration.leaf_id),
                             custody_root=compaction_root,
                             execution_context=resolved_context,
+                            retention_policy=orchestration_batch_plan.retention,
                         )
                         prior_states[declaration.leaf_id] = acknowledgement.merge_state
                         acknowledgements.append(acknowledgement)
+                        all_acknowledgements.append(acknowledgement)
                     if orchestration_batch_plan.consumers:
                         reclamations.append(
                             reclaim_evaluation_batch_caches(
@@ -1275,6 +1290,8 @@ def main(
                                 required_declarations=applicable_declarations,
                                 custody_root=compaction_root,
                                 execution_context=resolved_context,
+                                retention_policy=orchestration_batch_plan.retention,
+                                evaluation_custody_root=Path(args.manifest_root),
                             )
                         )
                 outcomes = tuple(
@@ -1311,6 +1328,54 @@ def main(
                         for pid in dict.fromkeys(item["pid"] for item in completed_batches)
                     ),
                 )
+                terminal_products = (
+                    publish_evaluation_compaction_products(
+                        orchestration_batch_plan.consumers,
+                        prior_states,
+                        outcomes,
+                        registry=bootstrap_state.bundle.evaluation_batch_consumers,
+                        custody_root=compaction_root,
+                        execution_context=resolved_context,
+                        replay=orchestration_replay,
+                    )
+                    if orchestration_batch_plan.consumers
+                    else ()
+                )
+                retention = None
+                if terminal_products:
+                    if orchestration_replay is None:
+                        raise ValueError("evaluation payload replay identity is unavailable")
+                    retention = apply_evaluation_payload_retention(
+                        orchestration_batch_plan.consumers,
+                        terminal_products,
+                        all_acknowledgements,
+                        policy=orchestration_batch_plan.retention,
+                        replay=orchestration_replay,
+                        custody_root=compaction_root,
+                    )
+                    evaluation_records = tuple(
+                        record_id
+                        for reclamation in reclamations
+                        for record_id in reclamation.retention_record_ids
+                    )
+                    if orchestration_batch_plan.retention.retain_intermediates:
+                        retention = retention.model_copy(
+                            update={
+                                "retained_intermediate_ids": (
+                                    *retention.retained_intermediate_ids,
+                                    *evaluation_records,
+                                )
+                            }
+                        )
+                    else:
+                        retention = retention.model_copy(
+                            update={
+                                "temporary_lease_ids": (
+                                    *retention.temporary_lease_ids,
+                                    *evaluation_records,
+                                )
+                            }
+                        )
                 compaction = EvaluationBatchCompactionEvidence(
                     matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
                     ordered_batch_ids=tuple(
@@ -1324,18 +1389,8 @@ def main(
                         for batch in orchestration_batch_plan.batches
                     },
                     reclamations=tuple(reclamations),
-                    terminal_products=(
-                        publish_evaluation_compaction_products(
-                            orchestration_batch_plan.consumers,
-                            prior_states,
-                            outcomes,
-                            registry=bootstrap_state.bundle.evaluation_batch_consumers,
-                            custody_root=compaction_root,
-                            execution_context=resolved_context,
-                        )
-                        if orchestration_batch_plan.consumers
-                        else ()
-                    ),
+                    terminal_products=terminal_products,
+                    retention=retention,
                 )
                 Path(args.lifecycle_result).write_text(
                     json.dumps(evidence.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
