@@ -399,8 +399,11 @@ def test_delta_authored_execution_records_authored_and_flattened_identities(
     assert result.metadata["axis_expansion"]["authored_matrix_sha256"] == sha256_bytes(
         canonical_json_bytes(flattened_matrix)
     )
-    manifest_metadata = result.rows[0].result.metadata["matrix_harness"]
-    assert manifest_metadata["matrix_composition"] == composition
+    regeneration = harness.resolve_manifest_regeneration(
+        result.rows[0].result,
+        root=tmp_path / "runs",
+    )
+    assert regeneration.metadata["matrix_composition"] == composition
 
 
 def test_direct_matrix_execution_is_unchanged(tmp_path: Path, application_registry_bundle) -> None:

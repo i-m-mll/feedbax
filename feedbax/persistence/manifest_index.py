@@ -72,9 +72,12 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(manifests)")}
-    if "payload_json" in columns:
+    migrated = "payload_json" in columns
+    if migrated:
         conn.execute("ALTER TABLE manifests DROP COLUMN payload_json")
-    conn.execute("PRAGMA user_version = 2")
+    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if migrated or current_version < 2:
+        conn.execute("PRAGMA user_version = 2")
     conn.commit()
 
 
