@@ -24,6 +24,7 @@ from feedbax.analysis.evaluation import (
     resolve_staged_evaluation_prerequisite,
 )
 from feedbax.analysis.execution_context import StagedExecutionContextError
+from feedbax.analysis.harness import resolve_manifest_regeneration
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.analysis.specs import (
     resolve_analysis_inputs,
@@ -33,6 +34,7 @@ from feedbax.contracts.evaluation_states import (
     EvaluationStatesCustodyUnavailable,
     store_evaluation_states_artifact,
 )
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
@@ -488,7 +490,10 @@ def test_batched_matrix_matches_default_and_round_trips_require_durable(
         default_artifacts = {artifact.role: artifact for artifact in default_row.result.artifacts}
         batch_artifacts = {artifact.role: artifact for artifact in batched_row.result.artifacts}
         assert set(default_artifacts) == set(batch_artifacts)
-        for role in set(batch_artifacts) - {"regeneration_spec"}:
+        for role in set(batch_artifacts) - {
+            "regeneration_spec",
+            "shared_regeneration_context",
+        }:
             assert default_artifacts[role].artifact_id == batch_artifacts[role].artifact_id
             assert default_artifacts[role].metadata == batch_artifacts[role].metadata
         assert default_artifacts["regeneration_spec"].artifact_id != (
@@ -496,7 +501,18 @@ def test_batched_matrix_matches_default_and_round_trips_require_durable(
         )
         for artifact in batch_artifacts.values():
             if artifact.uri is not None:
-                assert Path(artifact.uri).exists()
+                if artifact.uri.startswith("artifact://sha256/"):
+                    assert artifact.sha256 is not None
+                    assert (
+                        tmp_path
+                        / "batched"
+                        / "artifacts"
+                        / "sha256"
+                        / artifact.sha256[:2]
+                        / artifact.sha256
+                    ).exists()
+                else:
+                    assert Path(artifact.uri).exists()
         default_cache = default_row.result.metadata["cache"]
         batch_cache = batched_row.result.metadata["cache"]
         assert {key: value for key, value in default_cache.items() if key != "states_path"} == {
@@ -506,15 +522,16 @@ def test_batched_matrix_matches_default_and_round_trips_require_durable(
         # Shared store: every row's durable state cache lives in the one store
         # root, not a per-row subtree.
         assert Path(batch_cache["states_path"]).is_relative_to(tmp_path / "batched" / "cache")
-        default_harness = dict(default_row.result.metadata["matrix_harness"])
-        batch_harness = dict(batched_row.result.metadata["matrix_harness"])
-        assert batch_harness.pop("batch_execution") == {"row_ids": ["row-0", "row-1", "row-2"]}
-        default_regeneration = default_harness.pop("regeneration_spec")
-        batch_regeneration = batch_harness.pop("regeneration_spec")
-        assert default_harness == batch_harness
+        default_harness = default_row.result.metadata["matrix_harness"]
+        batch_harness = batched_row.result.metadata["matrix_harness"]
+        assert {key: value for key, value in default_harness.items() if value is not None} == (
+            {key: value for key, value in batch_harness.items() if value is not None}
+        )
+        assert "axis_expansion" not in batch_harness
+        assert "regeneration_spec" not in batch_harness
         assert (
-            default_regeneration["parameters"]["resolved"]
-            == (batch_regeneration["parameters"]["resolved"])
+            resolve_manifest_regeneration(batched_row.result, root=tmp_path / "batched")
+            == batched_row.regeneration
         )
         assert load_manifest(batched_row.manifest_path) == batched_row.result
         default_states = load_evaluation_states(
@@ -552,6 +569,16 @@ def test_batched_matrix_matches_default_and_round_trips_require_durable(
         )
 
     staging_bytes = str(staging_paths[0]).encode()
+    shared_ids = {
+        artifact.artifact_id
+        for row in batched.rows
+        for artifact in row.result.artifacts
+        if artifact.role == "shared_regeneration_context"
+    }
+    assert len(shared_ids) == 1
+    gc = ImmutableArtifactBlobProvider((tmp_path / "batched").absolute()).collect_garbage()
+    assert gc.stage == "reported"
+    assert all(decision.decision == "live" for decision in gc.decisions)
     assert str(staging_paths[0]) not in repr(batched)
     assert all(
         staging_bytes not in path.read_bytes()
@@ -749,7 +776,7 @@ def test_batched_matrix_fixed_store_overhead_independent_of_row_count(
     assert len(small_indexes) == len(large_indexes) == 1
     # Per-row mode would have paid one index per row (2 vs 16). The shared store
     # holds total index overhead essentially flat: the single index grows only
-    # by per-row payload rows, nowhere near a whole extra index per row. Assert
+    # by compact per-row metadata, nowhere near a whole extra index per row. Assert
     # the total index bytes for the 16-row store stay well under what even two
     # per-row indexes of the 2-row store would cost.
     small_index_bytes = small_indexes[0].stat().st_size

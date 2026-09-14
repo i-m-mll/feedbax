@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -105,6 +106,8 @@ ANALYSIS_EVALUATION_STATE_RESOLUTION_DIAGNOSTIC_SCHEMA_VERSION = (
 )
 ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1 = SCHEMA_VERSION
 ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.analysis_run.v2"
+EVALUATION_RUN_MANIFEST_SCHEMA_VERSION_V1 = SCHEMA_VERSION
+EVALUATION_RUN_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.evaluation_run.v2"
 FIGURE_MANIFEST_SCHEMA_ID = "feedbax.manifest.figure"
 FIGURE_MANIFEST_SCHEMA_VERSION = "feedbax.manifest.figure.v1"
 TRAINING_MANIFEST_METADATA_PROJECTION_CUSTODY_SCHEMA_ID = (
@@ -807,9 +810,11 @@ EVALUATION_MATRIX_COMPOSITION_PROVENANCE_SCHEMA_VERSION = (
 
 class EvaluationRunManifest(BaseManifest):
     kind: Literal["EvaluationRunManifest"] = "EvaluationRunManifest"
+    schema_version: str = EVALUATION_RUN_MANIFEST_SCHEMA_VERSION
     evaluation_spec: SpecPayload
     input_training_runs: list[ParentRef] = Field(default_factory=list)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
+    migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1752,6 +1757,20 @@ def _normalize_analysis_run_manifest_data(data: dict[str, Any]) -> dict[str, Any
     return result.payload
 
 
+def _normalize_evaluation_run_manifest_data(data: dict[str, Any]) -> dict[str, Any]:
+    if data.get("kind") != "EvaluationRunManifest":
+        return data
+    from feedbax.contracts.migrations import default_spec_registry
+
+    schema_version = data.get("schema_version", EVALUATION_RUN_MANIFEST_SCHEMA_VERSION_V1)
+    result = default_spec_registry.migrate(
+        "EvaluationRunManifest",
+        data,
+        source_version=schema_version if isinstance(schema_version, str) else None,
+    )
+    return result.payload
+
+
 def normalize_manifest_spec_payloads(manifest: AnyManifest) -> AnyManifest:
     """Return a copy with embedded spec payloads registry-stamped and migrated."""
     fields = SPEC_PAYLOAD_FIELDS_BY_MANIFEST_KIND.get(manifest.kind)
@@ -2008,10 +2027,23 @@ def write_manifest(
     manifest_dir = _manifest_dir(root_path, manifest.kind)
     manifest_dir.mkdir(parents=True, exist_ok=True)
     path = manifest_dir / _safe_manifest_filename(manifest.id)
-    path.write_text(
-        manifest.model_dump_json(indent=2, exclude_none=True) + "\n",
-        encoding="utf-8",
+    serialized = (
+        manifest.model_dump_json(exclude_none=True)
+        if isinstance(manifest, EvaluationRunManifest)
+        and manifest.schema_version == EVALUATION_RUN_MANIFEST_SCHEMA_VERSION
+        else manifest.model_dump_json(indent=2, exclude_none=True)
     )
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write(serialized)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
     if index:
         from feedbax.persistence.manifest_index import index_manifest_file
 
@@ -2024,6 +2056,7 @@ def load_manifest_bytes(raw: bytes) -> AnyManifest:
     data = strict_json_loads(raw, ref="manifest document")
     data = _normalize_training_run_set_manifest_data(data)
     data = _normalize_analysis_run_manifest_data(data)
+    data = _normalize_evaluation_run_manifest_data(data)
     data = _normalize_report_manifest_data(data)
     data = _normalize_manifest_data_spec_payloads(data)
     data = _validate_retention_artifact_ref_metadata(data)

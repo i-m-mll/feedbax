@@ -44,8 +44,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             source_repo TEXT,
             source_branch TEXT,
             source_commit TEXT,
-            dirty INTEGER,
-            payload_json TEXT NOT NULL
+            dirty INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS artifacts (
@@ -72,6 +71,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(manifests)")}
+    if "payload_json" in columns:
+        conn.execute("ALTER TABLE manifests DROP COLUMN payload_json")
+    conn.execute("PRAGMA user_version = 2")
     conn.commit()
 
 
@@ -95,15 +98,14 @@ def index_manifest(
     *,
     path: Path | str,
 ) -> None:
-    payload = manifest.model_dump_json(exclude_none=True)
     prov = manifest.provenance
     with conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO manifests (
                 id, kind, schema_version, provider_version, created_at, status, path,
-                source_repo, source_branch, source_commit, dirty, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_repo, source_branch, source_commit, dirty
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 manifest.id,
@@ -117,7 +119,6 @@ def index_manifest(
                 prov.source_branch,
                 prov.source_commit,
                 int(prov.dirty) if prov.dirty is not None else None,
-                payload,
             ),
         )
         conn.execute("DELETE FROM artifacts WHERE manifest_id = ?", (manifest.id,))
@@ -182,6 +183,26 @@ def find_manifest_paths_by_id(
     return [Path(row[0]) for row in rows]
 
 
+def _record_with_payload(row: tuple[Any, ...]) -> dict[str, Any]:
+    path = Path(row[6])
+    manifest = load_manifest(path)
+    if (manifest.id, manifest.kind) != (row[0], row[1]):
+        raise ValueError(
+            "manifest index identity disagrees with canonical file: "
+            f"index={(row[1], row[0])!r}, file={(manifest.kind, manifest.id)!r}, path={path}"
+        )
+    return {
+        "id": row[0],
+        "kind": row[1],
+        "schema_version": row[2],
+        "provider_version": row[3],
+        "created_at": row[4],
+        "status": row[5],
+        "path": row[6],
+        "payload": manifest.model_dump(mode="json", exclude_none=True),
+    }
+
+
 def get_indexed_manifest_record(
     manifest_id: str,
     *,
@@ -198,7 +219,7 @@ def get_indexed_manifest_record(
         row = conn.execute(
             """
             SELECT id, kind, schema_version, provider_version, created_at, status,
-                   path, payload_json
+                   path
             FROM manifests
             WHERE id = ?
             """,
@@ -208,16 +229,7 @@ def get_indexed_manifest_record(
         conn.close()
     if row is None:
         return None
-    return {
-        "id": row[0],
-        "kind": row[1],
-        "schema_version": row[2],
-        "provider_version": row[3],
-        "created_at": row[4],
-        "status": row[5],
-        "path": row[6],
-        "payload_json": row[7],
-    }
+    return _record_with_payload(row)
 
 
 def iter_indexed_manifest_records_by_kind(
@@ -236,7 +248,7 @@ def iter_indexed_manifest_records_by_kind(
         rows = conn.execute(
             """
             SELECT id, kind, schema_version, provider_version, created_at, status,
-                   path, payload_json
+                   path
             FROM manifests
             WHERE kind = ?
             ORDER BY created_at DESC, path DESC
@@ -245,19 +257,7 @@ def iter_indexed_manifest_records_by_kind(
         ).fetchall()
     finally:
         conn.close()
-    return [
-        {
-            "id": row[0],
-            "kind": row[1],
-            "schema_version": row[2],
-            "provider_version": row[3],
-            "created_at": row[4],
-            "status": row[5],
-            "path": row[6],
-            "payload_json": row[7],
-        }
-        for row in rows
-    ]
+    return [_record_with_payload(row) for row in rows]
 
 
 def remove_manifest_from_index(
