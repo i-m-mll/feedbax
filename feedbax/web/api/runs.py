@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import json
 from pathlib import Path
 from typing import Any, Optional
 
@@ -300,7 +299,7 @@ def _local_path_from_uri(uri: Any) -> Path | None:
 
 
 def _training_summary_from_index_row(row: dict[str, Any]) -> TrainingRunInfo:
-    payload = json.loads(row["payload_json"])
+    payload = row["payload"]
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     studio = _studio_metadata(payload)
     metrics = payload.get("summary_metrics")
@@ -333,7 +332,7 @@ def _compare_row_from_index_row(
     param_fields: list[str],
     metric_fields: list[str],
 ) -> TrainingRunCompareRow:
-    payload = json.loads(row["payload_json"])
+    payload = row["payload"]
     studio = _studio_metadata(payload)
     hyperparams = _training_hyperparams(payload)
     axis_coordinates = studio.get("axis_coordinates")
@@ -352,7 +351,7 @@ def _compare_row_from_index_row(
 
 
 def _eval_summary_from_index_row(row: dict[str, Any]) -> EvalRunInfo:
-    payload = json.loads(row["payload_json"])
+    payload = row["payload"]
     spec = _payload_inline(payload, "evaluation_spec")
     input_runs = [
         ref.get("id")

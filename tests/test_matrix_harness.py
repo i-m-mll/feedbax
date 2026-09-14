@@ -27,7 +27,19 @@ def test_harness_owns_row_paths_custody_replay_and_note(tmp_path: Path) -> None:
     assert seen == [tmp_path / "control", tmp_path / "treatment"]
     assert [row.row_id for row in result.rows] == ["control", "treatment"]
     assert all(row.regeneration is not None for row in result.rows)
-    assert all(len(row.artifacts) == 2 for row in result.rows)
+    assert all(
+        {artifact.role for artifact in row.artifacts}
+        == {"resolved_row_spec", "shared_regeneration_context", "regeneration_spec"}
+        for row in result.rows
+    )
+    assert len(
+        {
+            artifact.artifact_id
+            for row in result.rows
+            for artifact in row.artifacts
+            if artifact.role == "shared_regeneration_context"
+        }
+    ) == 1
     assert "| Conditions | 2 |" in result.note
 
 
