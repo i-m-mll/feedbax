@@ -693,7 +693,11 @@ def execute_evaluation_run_matrix(
             metadata={
                 "matrix_harness": {
                     "row_id": row_id,
-                    "escape_hatch_reason": escape_hatch_reason,
+                    **(
+                        {"escape_hatch_reason": escape_hatch_reason}
+                        if escape_hatch_reason is not None
+                        else {}
+                    ),
                 }
             },
             execution_context=execution_context,
@@ -807,7 +811,6 @@ def _execute_evaluation_batch_rows(
                     metadata={
                         "matrix_harness": {
                             "row_id": item.row_id,
-                            "batch_execution": batch_metadata,
                         }
                     },
                 )
@@ -823,7 +826,7 @@ def _execute_evaluation_batch_rows(
             command=["python", "-m", "feedbax", "matrix-harness"],
             title="Evaluation run matrix",
             source="EvaluationRunMatrixSpec",
-            matrix_metadata=matrix_metadata,
+            matrix_metadata={**matrix_metadata, "batch_execution": batch_metadata},
             regeneration_parameters=regeneration_parameters,
         )
         # Publish into one shared physical store: every row's manifest lands in
@@ -860,11 +863,63 @@ def _execute_evaluation_batch_rows(
                 )
         finally:
             index.close()
+        _register_evaluation_batch_retention_root(
+            [row.result for row in published_rows],
+            root=staging,
+        )
         staging.rename(root)
         return replace(result, rows=tuple(published_rows))
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def _register_evaluation_batch_retention_root(
+    manifests: Sequence[EvaluationRunManifest],
+    *,
+    root: Path,
+) -> None:
+    """Root every exact CAS object referenced by one terminal evaluation batch."""
+    from feedbax.contracts.artifact_custody import (
+        CONTENT_OBJECT_REF_PREFIX,
+        ContentObjectRef,
+        ContentRetentionTarget,
+        ContentRootRecord,
+    )
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+    provider = ImmutableArtifactBlobProvider(root.absolute())
+    objects: dict[str, ContentObjectRef] = {}
+    manifest_versions: list[tuple[str, str]] = []
+    for manifest in manifests:
+        manifest_path = canonical_manifest_path(manifest.kind, manifest.id, root=root)
+        manifest_versions.append((manifest.id, sha256_bytes(manifest_path.read_bytes())))
+        for artifact in manifest.artifacts:
+            if artifact.sha256 is None or artifact.size_bytes is None:
+                raise ValueError(
+                    f"evaluation artifact lacks exact retention identity: {artifact.logical_name!r}"
+                )
+            object_ref = ContentObjectRef(
+                object_id=f"{CONTENT_OBJECT_REF_PREFIX}{artifact.sha256}",
+                sha256=artifact.sha256,
+                size_bytes=artifact.size_bytes,
+            )
+            provider.get_object(object_ref)
+            previous = objects.get(object_ref.sha256)
+            if previous is not None and previous != object_ref:
+                raise ValueError(f"conflicting artifact sizes for SHA-256 {object_ref.sha256}")
+            objects[object_ref.sha256] = object_ref
+    root_digest = sha256_bytes(canonical_json_bytes(sorted(manifest_versions)))
+    provider.register_root(
+        ContentRootRecord(
+            root_id=f"evaluation-batch:{root_digest}",
+            root_kind="run",
+            targets=tuple(
+                ContentRetentionTarget(ref_kind="object", object=objects[digest])
+                for digest in sorted(objects)
+            ),
+        )
+    )
 
 
 def _store_batched_evaluation_result(

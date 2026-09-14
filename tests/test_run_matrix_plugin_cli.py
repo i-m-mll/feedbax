@@ -263,9 +263,8 @@ def test_top_level_matrix_harness_executes_v3_axis_matrix(monkeypatch, tmp_path:
         (tmp_path / "runs" / "gain-one" / "manifests" / "evaluation_runs").glob("*.json")
     )
     manifest = load_manifest(manifest_path)
-    assert manifest.metadata["matrix_harness"]["axis_expansion"]["pinned_base"]["ref"] == (
-        "base.json"
-    )
+    regeneration = harness.resolve_manifest_regeneration(manifest, root=tmp_path / "runs")
+    assert regeneration.metadata["axis_expansion"]["pinned_base"]["ref"] == ("base.json")
 
 
 def test_top_level_harness_cli_forwards_explicit_staged_runtime_bindings(
@@ -622,9 +621,8 @@ def test_harness_cli_persists_execution_policy_evidence(
         "execution_mode": execution_mode,
         "explicit_override_used": explicit_override_used,
     }
-    harness_metadata = manifest.metadata["matrix_harness"]
-    assert harness_metadata["execution_policy"] == expected
-    assert harness_metadata["regeneration_spec"]["metadata"]["execution_policy"] == expected
+    regeneration = harness.resolve_manifest_regeneration(manifest, root=manifest_root)
+    assert regeneration.metadata["execution_policy"] == expected
 
 
 def test_harness_cli_without_policy_omits_policy_evidence(tmp_path: Path) -> None:
@@ -638,9 +636,9 @@ def test_harness_cli_without_policy_omits_policy_evidence(tmp_path: Path) -> Non
 
     assert result == 0
     manifest_path = next((manifest_root / "one" / "manifests" / "evaluation_runs").glob("*.json"))
-    harness_metadata = load_manifest(manifest_path).metadata["matrix_harness"]
-    assert "execution_policy" not in harness_metadata
-    assert "execution_policy" not in harness_metadata["regeneration_spec"]["metadata"]
+    manifest = load_manifest(manifest_path)
+    regeneration = harness.resolve_manifest_regeneration(manifest, root=manifest_root)
+    assert "execution_policy" not in regeneration.metadata
 
 
 @pytest.mark.parametrize(

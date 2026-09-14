@@ -26,6 +26,7 @@ from feedbax.analysis.execution_context import (
     StagedExecutionContextError,
 )
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
+from feedbax.analysis.harness import resolve_manifest_regeneration
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.evaluation_states import (
     EvaluationStatesProvenanceMismatch,
@@ -288,7 +289,9 @@ def test_evaluation_matrix_executes_through_harness(tmp_path: Path, evaluation_r
     assert [row.row_id for row in result.rows] == ["control", "treatment"]
     assert all(row.manifest_path is not None and row.manifest_path.exists() for row in result.rows)
     assert result.rows[0].result.metadata["matrix_harness"]["row_id"] == "control"
-    assert "regeneration_spec" in result.rows[0].result.metadata["matrix_harness"]
+    assert resolve_manifest_regeneration(result.rows[0].result, root=tmp_path) == (
+        result.rows[0].regeneration
+    )
     assert {artifact.role for artifact in result.rows[0].result.artifacts} >= {
         "regeneration_spec",
         "resolved_row_spec",
@@ -440,7 +443,10 @@ def test_generator_axis_manifest_records_generator_as_expansion_authority(
     )
 
     for row in result.rows:
-        provenance = load_manifest(row.manifest_path).metadata["matrix_harness"]["axis_expansion"]
+        manifest = load_manifest(row.manifest_path)
+        provenance = resolve_manifest_regeneration(manifest, root=tmp_path / "runs").metadata[
+            "axis_expansion"
+        ]
         assert provenance["ordered_axes"] == [
             {
                 "axis_id": "target",
@@ -518,7 +524,9 @@ def test_axis_product_manifest_records_canonical_expansion_provenance(
     ]
     for row in result.rows:
         manifest = load_manifest(row.manifest_path)
-        provenance = manifest.metadata["matrix_harness"]["axis_expansion"]
+        provenance = resolve_manifest_regeneration(manifest, root=tmp_path / "runs").metadata[
+            "axis_expansion"
+        ]
         assert provenance["schema_id"] == EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID
         assert provenance["schema_version"] == EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION
         assert provenance["canonical_row_order"] == expected_order
@@ -999,11 +1007,9 @@ def test_matrix_resolves_shared_local_parents_across_trial_bank_role_transition(
     )
     for row in result.rows:
         assert row.result.provenance.parents == [training_ref, bank_ref]
-        assert (
-            row.result.metadata["matrix_harness"]["staged_parents"]
-            == (result.metadata["staged_parents"])
-        )
-        axis_provenance = row.result.metadata["matrix_harness"]["axis_expansion"]
+        resolved_regeneration = resolve_manifest_regeneration(row.result, root=tmp_path / "rows")
+        assert resolved_regeneration.metadata["staged_parents"] == result.metadata["staged_parents"]
+        axis_provenance = resolved_regeneration.metadata["axis_expansion"]
         assert axis_provenance["authored_matrix_sha256"] == sha256_bytes(
             canonical_json_bytes(matrix.model_dump(mode="json", exclude_none=True))
         )
@@ -1018,9 +1024,7 @@ def test_matrix_resolves_shared_local_parents_across_trial_bank_role_transition(
         assert row.regeneration.parameters["artifact_provider_bindings"] == []
         assert row.regeneration.parameters["checkpoint_custody_bindings"] == []
         assert row.regeneration.parameters["staged_parents"] == result.metadata["staged_parents"]
-        assert row.result.metadata["matrix_harness"]["regeneration_spec"] == (
-            row.regeneration.model_dump(mode="json", exclude_none=True)
-        )
+        assert resolved_regeneration == row.regeneration
 
 
 @pytest.mark.parametrize(

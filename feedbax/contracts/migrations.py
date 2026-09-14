@@ -400,6 +400,8 @@ from feedbax.contracts.manifest import (
     EVALUATION_RUN_SPEC_SCHEMA_ID,
     EVALUATION_RUN_SPEC_SCHEMA_VERSION,
     EVALUATION_RUN_SPEC_UNVERSIONED_BASELINE,
+    EVALUATION_RUN_MANIFEST_SCHEMA_VERSION,
+    EVALUATION_RUN_MANIFEST_SCHEMA_VERSION_V1,
     REPORT_MANIFEST_SCHEMA_ID,
     REPORT_SPEC_SCHEMA_ID,
     REPORT_SPEC_SCHEMA_VERSION,
@@ -2763,6 +2765,11 @@ def _migrate_analysis_run_manifest_v1(payload: dict[str, Any]) -> dict[str, Any]
     migrated.setdefault("evaluation_state_sources", [])
     migrated.setdefault("evaluation_state_resolution_diagnostics", [])
     return migrated
+
+
+def _migrate_evaluation_run_manifest_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Admit inline historical manifests for explicit shared-content conversion."""
+    return dict(payload)
 
 
 def _migrate_training_run_matrix_v1_to_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -5579,11 +5586,18 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     if kind == "TrainingRunSetManifest"
                     else ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION
                     if kind == "AnalysisRunManifest"
+                    else EVALUATION_RUN_MANIFEST_SCHEMA_VERSION
+                    if kind == "EvaluationRunManifest"
                     else MANIFEST_SCHEMA_VERSION
                 ),
                 stance=(
                     "migrate"
-                    if kind in {"TrainingRunSetManifest", "AnalysisRunManifest"}
+                    if kind
+                    in {
+                        "TrainingRunSetManifest",
+                        "AnalysisRunManifest",
+                        "EvaluationRunManifest",
+                    }
                     else "reject"
                 ),
                 supported_old_versions=(
@@ -5591,6 +5605,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     if kind == "TrainingRunSetManifest"
                     else (ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION_V1,)
                     if kind == "AnalysisRunManifest"
+                    else (EVALUATION_RUN_MANIFEST_SCHEMA_VERSION_V1,)
+                    if kind == "EvaluationRunManifest"
                     else ()
                 ),
                 owner_module="feedbax.contracts.manifest",
@@ -7252,6 +7268,19 @@ default_spec_registry.register_migration(
         description=(
             "Accept historical analysis manifests with explicitly unavailable state-source "
             "evidence."
+        ),
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationRunManifest",
+    SchemaMigration(
+        source_version=EVALUATION_RUN_MANIFEST_SCHEMA_VERSION_V1,
+        target_version=EVALUATION_RUN_MANIFEST_SCHEMA_VERSION,
+        migration_id="evaluation-run-manifest-v1-to-v2-shared-content",
+        migrate=_migrate_evaluation_run_manifest_v1,
+        description=(
+            "Admit historical inline matrix context without changing its bytes; explicit "
+            "storage normalization externalizes shared content through the normal publisher."
         ),
     ),
 )
