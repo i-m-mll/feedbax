@@ -12,6 +12,7 @@ from feedbax.analysis.evaluation_compaction import (
     EvaluationBatchFragment,
     EvaluationBatchMergeInput,
     EvaluationBatchMergeState,
+    apply_evaluation_payload_retention,
     compact_evaluation_batch,
     merge_evaluation_batch_fragment,
     publish_evaluation_compaction_products,
@@ -31,6 +32,8 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationBatchConsumerDeclaration,
     EvaluationLifecycleRowOutcome,
     EvaluationMatrixBatchUnit,
+    EvaluationPayloadRetentionPolicy,
+    EvaluationReplayIdentity,
 )
 from feedbax.contracts.evaluation_product_union import (
     EVALUATION_COMPACT_PRODUCT_UNION_EVIDENCE_SCHEMA_ID,
@@ -50,6 +53,14 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.contracts.spec_storage import training_run_execution_hash
+from feedbax.orchestration.bundle import (
+    AuthoredIntentRef,
+    ExecutionCapsuleRef,
+    ExecutionIdentityEnvelope,
+    ResolvedSnapshotRef,
+    SchemaArtifactRef,
+)
 
 
 _CONSUMER_ID = "tests.cross-matrix"
@@ -76,6 +87,30 @@ def _declaration() -> EvaluationBatchConsumerDeclaration:
         compact_product_role="cohort_product",
         merge_state_schema_id="tests.cohort.merge",
         merge_state_schema_version="tests.cohort.merge.v1",
+    )
+
+
+def _replay_identity() -> EvaluationReplayIdentity:
+    root_hash = "a" * 64
+    common = {
+        "schema_id": "feedbax.test",
+        "schema_version": "feedbax.test.v1",
+        "artifact_id": "artifact:test",
+        "sha256": "b" * 64,
+    }
+    envelope = ExecutionIdentityEnvelope(
+        payload=SchemaArtifactRef(**common),
+        authored_intent=AuthoredIntentRef(**common, intent_hash="c" * 64),
+        resolved_snapshot=ResolvedSnapshotRef(**common, root_hash=root_hash),
+        execution_capsule=ExecutionCapsuleRef(
+            **common,
+            execution_hash=training_run_execution_hash(root_hash, []),
+        ),
+        immutable_inputs=[],
+    )
+    return EvaluationReplayIdentity(
+        feedbax_revision="d" * 40,
+        execution_envelope=envelope.model_dump(mode="json", exclude_none=True),
     )
 
 
@@ -234,6 +269,7 @@ def _source_fixture(
         custody_root=custody_root,
         execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
     )
+    replay = _replay_identity()
     terminal_manifest = publish_evaluation_compaction_products(
         (declaration,),
         {_LEAF_ID: acknowledgement.merge_state},
@@ -241,7 +277,16 @@ def _source_fixture(
         registry=consumer_registry,
         custody_root=custody_root,
         execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+        replay=replay,
     )[0]
+    retention = apply_evaluation_payload_retention(
+        (declaration,),
+        (terminal_manifest,),
+        (acknowledgement,),
+        policy=EvaluationPayloadRetentionPolicy(),
+        replay=replay,
+        custody_root=custody_root,
+    )
     compaction = EvaluationBatchCompactionEvidence(
         matrix_intent_hash=matrix_intent_hash,
         ordered_batch_ids=(batch.batch_id,),
@@ -249,6 +294,7 @@ def _source_fixture(
         required_leaf_ids_by_batch={batch.batch_id: (_LEAF_ID,)},
         reclamations=(reclamation,),
         terminal_products=(terminal_manifest,),
+        retention=retention,
     )
     compaction_path = root / "evaluation-batch-compaction.json"
     compaction_path.write_text(

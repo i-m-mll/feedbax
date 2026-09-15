@@ -17,6 +17,7 @@ from feedbax.contracts.artifact_custody import (
     CONTENT_HOLD_RECORD_SCHEMA_VERSION,
     CONTENT_LEASE_RECORD_SCHEMA_ID,
     CONTENT_LEASE_RECORD_SCHEMA_VERSION,
+    CONTENT_LEASE_RECORD_SCHEMA_VERSION_V1,
     CONTENT_MANIFEST_REF_SCHEMA_ID,
     CONTENT_MANIFEST_REF_SCHEMA_VERSION,
     CONTENT_MIGRATION_RECEIPT_SCHEMA_ID,
@@ -25,6 +26,7 @@ from feedbax.contracts.artifact_custody import (
     CONTENT_OBJECT_REF_SCHEMA_VERSION,
     CONTENT_RETENTION_INDEX_SCHEMA_ID,
     CONTENT_RETENTION_INDEX_SCHEMA_VERSION,
+    CONTENT_RETENTION_INDEX_SCHEMA_VERSION_V1,
     CONTENT_ROOT_RECORD_SCHEMA_ID,
     CONTENT_ROOT_RECORD_SCHEMA_VERSION,
     CONTENT_TREE_REF_SCHEMA_ID,
@@ -167,6 +169,7 @@ from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1,
     EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V2,
+    EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V3,
     EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID,
     EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION,
     EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1,
@@ -178,8 +181,11 @@ from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2,
     EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3,
+    EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V4,
     EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_ID,
     EVALUATION_MATRIX_ORDERED_UNION_EVIDENCE_SCHEMA_VERSION,
+    EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_ID,
+    EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_VERSION,
     EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_ID,
     EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION,
     EVALUATION_SHADOW_LAUNCH_EVIDENCE_SCHEMA_VERSION_V1,
@@ -2998,6 +3004,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 emitted_by=(emitter,),
                 consumed_by=("canonical content-store retention and manual GC",),
                 description=description,
+                stance=(
+                    "migrate"
+                    if kind in {"ContentLeaseRecord", "ContentRetentionIndex"}
+                    else "reject"
+                ),
+                supported_old_versions=(
+                    (CONTENT_LEASE_RECORD_SCHEMA_VERSION_V1,)
+                    if kind == "ContentLeaseRecord"
+                    else (
+                        (CONTENT_RETENTION_INDEX_SCHEMA_VERSION_V1,)
+                        if kind == "ContentRetentionIndex"
+                        else ()
+                    )
+                ),
                 rejected_old_versions=(f"{schema_id}.v0",),
                 required_tests=(
                     "tests/test_content_retention.py",
@@ -3017,7 +3037,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     CONTENT_LEASE_RECORD_SCHEMA_ID,
                     CONTENT_LEASE_RECORD_SCHEMA_VERSION,
                     "ImmutableArtifactBlobProvider.acquire_lease",
-                    "Explicit renewable lease whose expiry never implies release.",
+                    "Explicit renewable lease with authored blocking or release expiry.",
                 ),
                 (
                     "ContentHoldRecord",
@@ -4215,6 +4235,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 f"{EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID}.v0",
                 EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1,
                 EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V2,
+                EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V3,
             ),
             required_tests=("tests/test_evaluation_compaction.py",),
         ),
@@ -4268,6 +4289,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "compile_evaluation_run_matrix_for_orchestration",
             ),
             description=("Ordered matrix subsets assigned inside the governed public harness."),
+            stance="migrate",
+            supported_old_versions=(EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V4,),
             rejected_old_versions=(
                 f"{EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID}.v0",
                 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1,
@@ -4275,6 +4298,20 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3,
             ),
             required_tests=("tests/test_evaluation_orchestration.py",),
+        ),
+        _family(
+            "EvaluationPayloadRetentionPolicy",
+            EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_ID,
+            EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.evaluation_lifecycle",
+            emitted_by=("evaluation matrix orchestration authors",),
+            consumed_by=("feedbax.analysis.evaluation_compaction",),
+            description=(
+                "Final-leaf disposition and bounded intermediate lifetime for one "
+                "evaluation matrix."
+            ),
+            rejected_old_versions=(f"{EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_ID}.v0",),
+            required_tests=("tests/test_evaluation_compaction.py",),
         ),
         _family(
             "EvaluationOutputPreflightPolicy",
@@ -6477,6 +6514,21 @@ def _migrate_evaluation_matrix_batch_plan_v2(payload: dict[str, Any]) -> dict[st
     return migrated
 
 
+def _migrate_evaluation_matrix_batch_plan_v4(payload: dict[str, Any]) -> dict[str, Any]:
+    """Preserve retain-all semantics for plans authored before disposal existed."""
+    migrated = deepcopy(payload)
+    migrated["schema_version"] = EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION
+    migrated["retention"] = {
+        "schema_id": EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_ID,
+        "schema_version": EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_VERSION,
+        "default_output_disposition": "keep",
+        "output_dispositions": {},
+        "intermediate_disposition": "keep",
+        "intermediate_grace_seconds": None,
+    }
+    return migrated
+
+
 def _parameter_free_acknowledgement_v2(payload: Mapping[str, Any]) -> dict[str, Any]:
     migrated = deepcopy(dict(payload))
     migrated.setdefault("parameters", {})
@@ -6488,6 +6540,24 @@ def _parameter_free_acknowledgement_v2(payload: Mapping[str, Any]) -> dict[str, 
             metadata.setdefault("consumer_parameters", migrated["parameters"])
             metadata.setdefault("consumer_parameters_sha256", parameters_sha256)
             artifact["metadata"] = metadata
+    return migrated
+
+
+def _migrate_content_lease_record_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Preserve historical leases as explicit-release safety barriers."""
+    migrated = deepcopy(payload)
+    migrated["schema_version"] = CONTENT_LEASE_RECORD_SCHEMA_VERSION
+    migrated["expiry_disposition"] = "block"
+    return migrated
+
+
+def _migrate_content_retention_index_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    """Preserve v1 retention state while typing every nested lease expiry."""
+    migrated = deepcopy(payload)
+    migrated["schema_version"] = CONTENT_RETENTION_INDEX_SCHEMA_VERSION
+    migrated["leases"] = [
+        _migrate_content_lease_record_v1(lease) for lease in migrated.get("leases", [])
+    ]
     return migrated
 
 
@@ -6542,6 +6612,26 @@ def _migrate_evaluation_output_preflight_evidence_v1(
 
 default_spec_registry = SpecSchemaRegistry()
 _register_default_spec_families(default_spec_registry)
+default_spec_registry.register_migration(
+    "ContentLeaseRecord",
+    SchemaMigration(
+        source_version=CONTENT_LEASE_RECORD_SCHEMA_VERSION_V1,
+        target_version=CONTENT_LEASE_RECORD_SCHEMA_VERSION,
+        migration_id="content-lease-record-v1-to-v2-expiry-disposition",
+        migrate=_migrate_content_lease_record_v1,
+        description="Preserve historical lease expiry as an explicit-release safety barrier.",
+    ),
+)
+default_spec_registry.register_migration(
+    "ContentRetentionIndex",
+    SchemaMigration(
+        source_version=CONTENT_RETENTION_INDEX_SCHEMA_VERSION_V1,
+        target_version=CONTENT_RETENTION_INDEX_SCHEMA_VERSION,
+        migration_id="content-retention-index-v1-to-v2-expiry-disposition",
+        migrate=_migrate_content_retention_index_v1,
+        description="Type nested lease expiry without changing historical retention meaning.",
+    ),
+)
 default_spec_registry.register_migration(
     "ExperimentCompileLock",
     SchemaMigration(
@@ -6606,6 +6696,16 @@ default_spec_registry.register_migration(
         migration_id="evaluation-matrix-batch-plan-v1-to-v2-consumers",
         migrate=_migrate_evaluation_matrix_batch_plan_v1,
         description="Preserve v1 plans with no declared compact terminal consumers.",
+    ),
+)
+default_spec_registry.register_migration(
+    "EvaluationMatrixBatchPlan",
+    SchemaMigration(
+        source_version=EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V4,
+        target_version=EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION,
+        migration_id="evaluation-matrix-batch-plan-v4-to-v5-payload-retention",
+        migrate=_migrate_evaluation_matrix_batch_plan_v4,
+        description="Adopt keep-final and bounded-intermediate retention defaults.",
     ),
 )
 default_spec_registry.register_migration(

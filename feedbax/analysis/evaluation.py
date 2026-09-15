@@ -27,6 +27,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 import json
 from math import prod
 from pathlib import Path
@@ -879,7 +880,7 @@ def _register_evaluation_batch_retention_root(
     *,
     root: Path,
 ) -> None:
-    """Root every exact CAS object referenced by one terminal evaluation batch."""
+    """Separate retained products from disposable batch evaluation states."""
     from feedbax.contracts.artifact_custody import (
         CONTENT_OBJECT_REF_PREFIX,
         ContentObjectRef,
@@ -889,7 +890,8 @@ def _register_evaluation_batch_retention_root(
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
     provider = ImmutableArtifactBlobProvider(root.absolute())
-    objects: dict[str, ContentObjectRef] = {}
+    product_objects: dict[str, ContentObjectRef] = {}
+    state_objects: dict[str, ContentObjectRef] = {}
     manifest_versions: list[tuple[str, str]] = []
     for manifest in manifests:
         manifest_path = canonical_manifest_path(manifest.kind, manifest.id, root=root)
@@ -905,21 +907,100 @@ def _register_evaluation_batch_retention_root(
                 size_bytes=artifact.size_bytes,
             )
             provider.get_object(object_ref)
+            objects = state_objects if artifact.role == "evaluation_states" else product_objects
             previous = objects.get(object_ref.sha256)
             if previous is not None and previous != object_ref:
                 raise ValueError(f"conflicting artifact sizes for SHA-256 {object_ref.sha256}")
             objects[object_ref.sha256] = object_ref
     root_digest = sha256_bytes(canonical_json_bytes(sorted(manifest_versions)))
-    provider.register_root(
-        ContentRootRecord(
-            root_id=f"evaluation-batch:{root_digest}",
-            root_kind="run",
-            targets=tuple(
-                ContentRetentionTarget(ref_kind="object", object=objects[digest])
-                for digest in sorted(objects)
+    if product_objects:
+        provider.register_root(
+            ContentRootRecord(
+                root_id=f"evaluation-products:{root_digest}",
+                root_kind="logical-ref",
+                targets=tuple(
+                    ContentRetentionTarget(ref_kind="object", object=product_objects[digest])
+                    for digest in sorted(product_objects)
+                ),
+            )
+        )
+    if state_objects:
+        provider.register_root(
+            ContentRootRecord(
+                root_id=f"evaluation-intermediates:{root_digest}",
+                root_kind="run",
+                targets=tuple(
+                    ContentRetentionTarget(ref_kind="object", object=state_objects[digest])
+                    for digest in sorted(state_objects)
+                ),
+            )
+        )
+
+
+def finalize_evaluation_batch_retention(
+    manifests: Sequence[EvaluationRunManifest],
+    *,
+    root: Path,
+    retain_intermediates: bool,
+    grace_expires_at: datetime,
+    manifest_sha256s: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Finish restart custody and retain or time-bound durable evaluation states."""
+    from feedbax.contracts.artifact_custody import (
+        CONTENT_OBJECT_REF_PREFIX,
+        ContentLeaseRecord,
+        ContentObjectRef,
+        ContentRetentionTarget,
+    )
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+    if manifest_sha256s is None:
+        manifest_sha256s = tuple(
+            sha256_bytes(
+                canonical_manifest_path(manifest.kind, manifest.id, root=root).read_bytes()
+            )
+            for manifest in manifests
+        )
+    if len(manifest_sha256s) != len(manifests):
+        raise ValueError("evaluation manifest retention identities are incomplete")
+    manifest_versions = [
+        (manifest.id, digest) for manifest, digest in zip(manifests, manifest_sha256s, strict=True)
+    ]
+    root_digest = sha256_bytes(canonical_json_bytes(sorted(manifest_versions)))
+    root_id = f"evaluation-intermediates:{root_digest}"
+    targets = tuple(
+        ContentRetentionTarget(
+            ref_kind="object",
+            object=ContentObjectRef(
+                object_id=f"{CONTENT_OBJECT_REF_PREFIX}{artifact.sha256}",
+                sha256=artifact.sha256,
+                size_bytes=artifact.size_bytes,
             ),
         )
+        for manifest in manifests
+        for artifact in manifest.artifacts
+        if artifact.role == "evaluation_states"
+        and artifact.sha256 is not None
+        and artifact.size_bytes is not None
     )
+    if not targets:
+        return ()
+    provider = ImmutableArtifactBlobProvider(root.absolute())
+    provider.set_run_state(root_id, nonterminal=False, restartable=False)
+    if retain_intermediates:
+        return (root_id,)
+    lease_id = f"evaluation-intermediates-release:{root_digest}"
+    provider.acquire_lease(
+        ContentLeaseRecord(
+            lease_id=lease_id,
+            owner="evaluation-compaction",
+            expires_at=grace_expires_at,
+            expiry_disposition="release",
+            targets=targets,
+        )
+    )
+    provider.release_root(root_id)
+    return (lease_id,)
 
 
 def _store_batched_evaluation_result(

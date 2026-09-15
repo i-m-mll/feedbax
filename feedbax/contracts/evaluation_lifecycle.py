@@ -34,7 +34,13 @@ EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID = "feedbax.spec.evaluation_matrix_batch_p
 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1 = "feedbax.spec.evaluation_matrix_batch_plan.v1"
 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2 = "feedbax.spec.evaluation_matrix_batch_plan.v2"
 EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3 = "feedbax.spec.evaluation_matrix_batch_plan.v3"
-EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION = "feedbax.spec.evaluation_matrix_batch_plan.v4"
+EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V4 = "feedbax.spec.evaluation_matrix_batch_plan.v4"
+EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION = "feedbax.spec.evaluation_matrix_batch_plan.v5"
+EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_ID = "feedbax.spec.evaluation_payload_retention_policy"
+EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_VERSION = (
+    "feedbax.spec.evaluation_payload_retention_policy.v1"
+)
+MAX_EVALUATION_INTERMEDIATE_GRACE_SECONDS = 7 * 24 * 60 * 60
 EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID = (
     "feedbax.orchestration.evaluation_batch_compaction_evidence"
 )
@@ -44,8 +50,17 @@ EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1 = (
 EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V2 = (
     "feedbax.orchestration.evaluation_batch_compaction_evidence.v2"
 )
-EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION = (
+EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V3 = (
     "feedbax.orchestration.evaluation_batch_compaction_evidence.v3"
+)
+EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION = (
+    "feedbax.orchestration.evaluation_batch_compaction_evidence.v4"
+)
+EVALUATION_PAYLOAD_RETENTION_EVIDENCE_SCHEMA_ID = (
+    "feedbax.orchestration.evaluation_payload_retention_evidence"
+)
+EVALUATION_PAYLOAD_RETENTION_EVIDENCE_SCHEMA_VERSION = (
+    "feedbax.orchestration.evaluation_payload_retention_evidence.v1"
 )
 EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID = (
     "feedbax.orchestration.evaluation_batch_merge_checkpoint"
@@ -172,18 +187,69 @@ class EvaluationBatchConsumerDeclaration(StrictModel):
         return self
 
 
+class EvaluationPayloadRetentionPolicy(StrictModel):
+    """Authored disposition for final leaves and consumed intermediates."""
+
+    schema_id: Literal["feedbax.spec.evaluation_payload_retention_policy"] = (
+        EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.spec.evaluation_payload_retention_policy.v1"] = (
+        EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_VERSION
+    )
+    default_output_disposition: Literal["keep", "discard"] = "keep"
+    output_dispositions: dict[str, Literal["keep", "discard"]] = Field(default_factory=dict)
+    intermediate_disposition: Literal["immediate", "grace", "keep"] = "immediate"
+    intermediate_grace_seconds: int | None = Field(
+        default=None,
+        ge=60,
+        le=MAX_EVALUATION_INTERMEDIATE_GRACE_SECONDS,
+        strict=True,
+    )
+
+    @model_validator(mode="after")
+    def _validate_output_ids(self) -> "EvaluationPayloadRetentionPolicy":
+        if any(
+            not output_id
+            or output_id != output_id.strip()
+            or any(character.isspace() for character in output_id)
+            for output_id in self.output_dispositions
+        ):
+            raise ValueError(
+                "evaluation retention output IDs must be non-empty and whitespace-free"
+            )
+        if (self.intermediate_disposition == "grace") != (
+            self.intermediate_grace_seconds is not None
+        ):
+            raise ValueError(
+                "intermediate_grace_seconds is required only for grace disposition"
+            )
+        return self
+
+    @property
+    def retain_intermediates(self) -> bool:
+        """Return whether consumed intermediates remain durably rooted."""
+        return self.intermediate_disposition == "keep"
+
+    def disposition_for(self, output_id: str) -> Literal["keep", "discard"]:
+        """Return one declared leaf's explicit override or the authored default."""
+        return self.output_dispositions.get(output_id, self.default_output_disposition)
+
+
 class EvaluationMatrixBatchPlan(StrictModel):
     """Versioned partition of one matrix identity across persistent workers."""
 
     schema_id: Literal["feedbax.spec.evaluation_matrix_batch_plan"] = (
         EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.spec.evaluation_matrix_batch_plan.v4"] = (
+    schema_version: Literal["feedbax.spec.evaluation_matrix_batch_plan.v5"] = (
         EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION
     )
     matrix_intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     batches: tuple[EvaluationMatrixBatchUnit, ...] = Field(min_length=1)
     consumers: tuple[EvaluationBatchConsumerDeclaration, ...] = ()
+    retention: EvaluationPayloadRetentionPolicy = Field(
+        default_factory=EvaluationPayloadRetentionPolicy
+    )
 
     @model_validator(mode="after")
     def _unique_batches_and_rows(self) -> "EvaluationMatrixBatchPlan":
@@ -212,6 +278,12 @@ class EvaluationMatrixBatchPlan(StrictModel):
         unused = declared - used
         if unused:
             raise ValueError(f"evaluation batch consumer leaves are unused: {sorted(unused)!r}")
+        unknown_retention_outputs = set(self.retention.output_dispositions) - declared
+        if unknown_retention_outputs:
+            raise ValueError(
+                "evaluation retention names undeclared terminal leaves: "
+                f"{sorted(unknown_retention_outputs)!r}"
+            )
         return self
 
 
@@ -281,8 +353,7 @@ class EvaluationBatchMergeCheckpoint(StrictModel):
             acknowledgement.leaf_id != self.declaration.leaf_id
             or acknowledgement.consumer_id != self.declaration.consumer_id
             or acknowledgement.consumer_version != self.declaration.consumer_version
-            or acknowledgement.terminal_analysis_type
-            != self.declaration.terminal_analysis_type
+            or acknowledgement.terminal_analysis_type != self.declaration.terminal_analysis_type
             or canonical_json_bytes(acknowledgement.parameters)
             != canonical_json_bytes(self.declaration.parameters)
             or acknowledgement.compact_product_schema_id
@@ -302,8 +373,79 @@ class EvaluationBatchReclamationEvidence(StrictModel):
     batch_index: int = Field(ge=0)
     ordered_row_ids: tuple[str, ...] = Field(min_length=1)
     leaf_acknowledgements: tuple[EvaluationBatchLeafAcknowledgement, ...] = Field(min_length=1)
-    removed_cache_manifest_ids: tuple[str, ...] = Field(min_length=1)
+    removed_cache_manifest_ids: tuple[str, ...] = ()
+    retained_cache_manifest_ids: tuple[str, ...] = ()
+    retention_record_ids: tuple[str, ...] = ()
     removed_cache_bytes: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _validate_cache_disposition(self) -> "EvaluationBatchReclamationEvidence":
+        observed = (*self.removed_cache_manifest_ids, *self.retained_cache_manifest_ids)
+        if len(observed) != len(set(observed)):
+            raise ValueError("evaluation cache disposition must be unique and unambiguous")
+        if not observed:
+            raise ValueError("evaluation cache disposition must name at least one manifest")
+        if self.removed_cache_manifest_ids and self.retained_cache_manifest_ids:
+            raise ValueError("one evaluation batch cannot both retain and remove raw caches")
+        if self.retained_cache_manifest_ids and self.removed_cache_bytes:
+            raise ValueError("retained evaluation caches cannot report removed bytes")
+        return self
+
+
+class EvaluationReplayIdentity(StrictModel):
+    """Exact execution identity required to regenerate an evicted payload."""
+
+    canonical_executor: Literal["python -m feedbax matrix-harness"] = (
+        "python -m feedbax matrix-harness"
+    )
+    feedbax_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    execution_envelope: dict[str, JsonValue]
+
+    @model_validator(mode="after")
+    def _validate_execution_envelope(self) -> "EvaluationReplayIdentity":
+        from feedbax.orchestration.bundle import ExecutionIdentityEnvelope
+
+        envelope = ExecutionIdentityEnvelope.model_validate(self.execution_envelope)
+        if canonical_json_bytes(self.execution_envelope) != canonical_json_bytes(
+            envelope.model_dump(mode="json", exclude_none=True)
+        ):
+            raise ValueError("evaluation replay execution envelope is not canonical")
+        return self
+
+    @property
+    def execution_hash(self) -> str:
+        """Return the validated execution identity used in retention record IDs."""
+        value = self.execution_envelope["execution_capsule"]
+        if not isinstance(value, dict) or not isinstance(value.get("execution_hash"), str):
+            raise ValueError("evaluation replay execution hash is unavailable")
+        return value["execution_hash"]
+
+
+class EvaluationPayloadRetentionEvidence(StrictModel):
+    """Terminal custody decision for retained outputs and disposable payloads."""
+
+    schema_id: Literal["feedbax.orchestration.evaluation_payload_retention_evidence"] = (
+        EVALUATION_PAYLOAD_RETENTION_EVIDENCE_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.evaluation_payload_retention_evidence.v1"] = (
+        EVALUATION_PAYLOAD_RETENTION_EVIDENCE_SCHEMA_VERSION
+    )
+    policy: EvaluationPayloadRetentionPolicy
+    replay: EvaluationReplayIdentity
+    retained_output_ids: tuple[str, ...] = ()
+    disposable_output_ids: tuple[str, ...] = ()
+    retained_intermediate_ids: tuple[str, ...] = ()
+    temporary_lease_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_dispositions(self) -> "EvaluationPayloadRetentionEvidence":
+        outputs = (*self.retained_output_ids, *self.disposable_output_ids)
+        if len(outputs) != len(set(outputs)):
+            raise ValueError("evaluation output retention decisions must be unique")
+        intermediates = (*self.retained_intermediate_ids, *self.temporary_lease_ids)
+        if len(intermediates) != len(set(intermediates)):
+            raise ValueError("evaluation intermediate retention decisions must be unique")
+        return self
 
 
 class EvaluationBatchCompactionEvidence(StrictModel):
@@ -312,7 +454,7 @@ class EvaluationBatchCompactionEvidence(StrictModel):
     schema_id: Literal["feedbax.orchestration.evaluation_batch_compaction_evidence"] = (
         EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID
     )
-    schema_version: Literal["feedbax.orchestration.evaluation_batch_compaction_evidence.v3"] = (
+    schema_version: Literal["feedbax.orchestration.evaluation_batch_compaction_evidence.v4"] = (
         EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION
     )
     matrix_intent_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -321,6 +463,7 @@ class EvaluationBatchCompactionEvidence(StrictModel):
     required_leaf_ids_by_batch: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     reclamations: tuple[EvaluationBatchReclamationEvidence, ...] = ()
     terminal_products: tuple[ArtifactRef, ...] = ()
+    retention: EvaluationPayloadRetentionEvidence | None = None
 
     @model_validator(mode="after")
     def _validate_complete_order(self) -> "EvaluationBatchCompactionEvidence":
@@ -338,6 +481,8 @@ class EvaluationBatchCompactionEvidence(StrictModel):
                     raise ValueError("each reclaimed batch must acknowledge every declared leaf")
         elif self.reclamations or self.terminal_products:
             raise ValueError("compaction output requires declared terminal leaves")
+        if self.terminal_products and self.retention is None:
+            raise ValueError("terminal compaction products require retention evidence")
         return self
 
 
@@ -383,9 +528,10 @@ class EvaluationWorkerProcessEvidence(StrictModel):
 
     @model_validator(mode="after")
     def _bind_timings(self) -> "EvaluationWorkerProcessEvidence":
-        if self.batch_timings and tuple(
-            item.batch_id for item in self.batch_timings
-        ) != self.ordered_batch_ids:
+        if (
+            self.batch_timings
+            and tuple(item.batch_id for item in self.batch_timings) != self.ordered_batch_ids
+        ):
             raise ValueError("evaluation batch timings must preserve worker batch order")
         return self
 
@@ -445,9 +591,18 @@ __all__ = [
     "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION",
     "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V1",
     "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V2",
+    "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V3",
+    "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V4",
+    "EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_ID",
+    "EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_VERSION",
+    "MAX_EVALUATION_INTERMEDIATE_GRACE_SECONDS",
     "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID",
     "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION",
     "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V1",
+    "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V2",
+    "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION_V3",
+    "EVALUATION_PAYLOAD_RETENTION_EVIDENCE_SCHEMA_ID",
+    "EVALUATION_PAYLOAD_RETENTION_EVIDENCE_SCHEMA_VERSION",
     "EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_ID",
     "EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION",
     "EVALUATION_BATCH_MERGE_CHECKPOINT_SCHEMA_VERSION_V1",
@@ -463,10 +618,13 @@ __all__ = [
     "EvaluationBatchLeafAcknowledgement",
     "EvaluationBatchMergeCheckpoint",
     "EvaluationBatchReclamationEvidence",
+    "EvaluationPayloadRetentionEvidence",
+    "EvaluationReplayIdentity",
     "EvaluationLifecycleEvidence",
     "EvaluationLifecycleRowOutcome",
     "EvaluationMatrixBatchPlan",
     "EvaluationMatrixBatchUnit",
+    "EvaluationPayloadRetentionPolicy",
     "EvaluationMatrixOrderedUnionEvidence",
     "EvaluationShadowLaunchEvidence",
     "EvaluationWorkerProcessEvidence",

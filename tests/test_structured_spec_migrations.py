@@ -4,6 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.contracts.artifact_custody import (
+    CONTENT_LEASE_RECORD_SCHEMA_ID,
+    CONTENT_LEASE_RECORD_SCHEMA_VERSION_V1,
+    CONTENT_RETENTION_INDEX_SCHEMA_ID,
+    CONTENT_RETENTION_INDEX_SCHEMA_VERSION_V1,
+    ContentLeaseRecord,
+    ContentRetentionIndex,
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_ID,
     IMMUTABLE_ARTIFACT_BLOB_PROVIDER_SCHEMA_VERSION,
 )
@@ -134,6 +140,11 @@ from feedbax.contracts.evaluation_preflight import (
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V1,
     EVALUATION_OUTPUT_PREFLIGHT_POLICY_SCHEMA_VERSION_V2,
     EvaluationOutputPreflightPolicy,
+)
+from feedbax.contracts.evaluation_lifecycle import (
+    EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID,
+    EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V4,
+    EvaluationMatrixBatchPlan,
 )
 from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
@@ -428,7 +439,7 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
         (
             "EvaluationBatchCompactionEvidence",
             "feedbax.orchestration.evaluation_batch_compaction_evidence",
-            "feedbax.orchestration.evaluation_batch_compaction_evidence.v3",
+            "feedbax.orchestration.evaluation_batch_compaction_evidence.v4",
         ),
         (
             "EvaluationBatchMergeCheckpoint",
@@ -438,7 +449,7 @@ def test_shadow_launch_evidence_registry_explicitly_rejects_v0() -> None:
         (
             "EvaluationMatrixBatchPlan",
             "feedbax.spec.evaluation_matrix_batch_plan",
-            "feedbax.spec.evaluation_matrix_batch_plan.v4",
+            "feedbax.spec.evaluation_matrix_batch_plan.v5",
         ),
         (
             "EvaluationOutputPreflightPolicy",
@@ -475,11 +486,12 @@ def test_default_registry_registers_assemble_contract_families(
     assert family.policy.stance == (
         "migrate"
         if kind
-            in {
-                "DeploymentPolicy",
-                "EvaluationOutputPreflightEvidence",
-                "RunAssemblyRequest",
-            }
+        in {
+            "DeploymentPolicy",
+            "EvaluationOutputPreflightEvidence",
+            "EvaluationMatrixBatchPlan",
+            "RunAssemblyRequest",
+        }
         else "reject"
     )
     accepted = default_spec_registry.migrate(
@@ -522,6 +534,70 @@ def test_default_registry_registers_assemble_contract_families(
                     "schema_version": previous_terminal_identity_versions[kind],
                 },
             )
+
+
+def test_evaluation_batch_plan_v4_migrates_to_explicit_retention_defaults() -> None:
+    migrated = default_spec_registry.migrate(
+        "EvaluationMatrixBatchPlan",
+        {
+            "schema_id": EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_ID,
+            "schema_version": EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V4,
+            "matrix_intent_hash": "a" * 64,
+            "batches": [
+                {
+                    "batch_id": "whole",
+                    "ordered_row_ids": ["row"],
+                    "required_leaf_ids": [],
+                }
+            ],
+            "consumers": [],
+        },
+    )
+    plan = EvaluationMatrixBatchPlan.model_validate(migrated.payload)
+
+    assert plan.retention.default_output_disposition == "keep"
+    assert plan.retention.intermediate_grace_seconds is None
+    assert plan.retention.intermediate_disposition == "keep"
+    assert plan.retention.retain_intermediates
+    assert [record.migration_id for record in migrated.migration_records] == [
+        "evaluation-matrix-batch-plan-v4-to-v5-payload-retention"
+    ]
+
+
+def test_retention_v1_migration_preserves_expiry_as_fail_closed() -> None:
+    digest = "a" * 64
+    lease = {
+        "schema_id": CONTENT_LEASE_RECORD_SCHEMA_ID,
+        "schema_version": CONTENT_LEASE_RECORD_SCHEMA_VERSION_V1,
+        "lease_id": "legacy",
+        "owner": "worker",
+        "expires_at": "2026-09-15T00:00:00Z",
+        "targets": [
+            {
+                "ref_kind": "object",
+                "object": {
+                    "object_id": f"content-object://sha256/{digest}",
+                    "sha256": digest,
+                    "size_bytes": 1,
+                },
+            }
+        ],
+    }
+    migrated_lease = default_spec_registry.migrate("ContentLeaseRecord", lease).payload
+    assert ContentLeaseRecord.model_validate(migrated_lease).expiry_disposition == "block"
+
+    migrated_index = default_spec_registry.migrate(
+        "ContentRetentionIndex",
+        {
+            "schema_id": CONTENT_RETENTION_INDEX_SCHEMA_ID,
+            "schema_version": CONTENT_RETENTION_INDEX_SCHEMA_VERSION_V1,
+            "generation": 0,
+            "leases": [lease],
+        },
+    ).payload
+    assert (
+        ContentRetentionIndex.model_validate(migrated_index).leases[0].expiry_disposition == "block"
+    )
 
 
 def test_evaluation_output_policy_v3_requires_reauthoring_v1_and_v2() -> None:

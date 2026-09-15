@@ -1076,6 +1076,10 @@ PLUGIN_REGISTRATION = PluginRegistration(
     assert compaction_paths
     assert len({path.read_bytes() for path in compaction_paths}) == 1
     compaction = json.loads(compaction_paths[0].read_text())
+    assert (
+        compaction["schema_version"]
+        == "feedbax.orchestration.evaluation_batch_compaction_evidence.v4"
+    )
     assert compaction["declared_leaf_ids"] == ["trajectory", "velocity"]
     assert [item["batch_id"] for item in compaction["reclamations"]] == [
         f"{index:04d}" for index in range(8)
@@ -1084,6 +1088,31 @@ PLUGIN_REGISTRATION = PluginRegistration(
         "tests.trajectory.analysis",
         "tests.velocity.analysis",
     ]
+    assert compaction["retention"]["retained_output_ids"] == ["trajectory", "velocity"]
+    assert compaction["retention"]["disposable_output_ids"] == []
+    assert compaction["retention"]["temporary_lease_ids"]
+    evaluation_leases = []
+    for index_path in run_root.rglob("retention/index.json"):
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        provider_root = index_path.parents[1]
+        for lease in index["leases"]:
+            if lease["owner"] not in {
+                "feedbax.evaluation.compaction",
+                "evaluation-compaction",
+            }:
+                continue
+            evaluation_leases.append(lease)
+            assert lease["released"] is True
+            for target in lease["targets"]:
+                digest = target["object"]["sha256"]
+                assert not (
+                    provider_root / "artifacts" / "sha256" / digest[:2] / digest
+                ).exists()
+    assert evaluation_leases
+    replay = compaction["retention"]["replay"]
+    assert replay["canonical_executor"] == "python -m feedbax matrix-harness"
+    run_bundle = json.loads((run_root / "bundle.json").read_text(encoding="utf-8"))
+    assert replay["execution_envelope"] == run_bundle["rows"][0]["execution"]
 
 
 def test_runpod_dry_run_keeps_the_same_public_matrix_executor(

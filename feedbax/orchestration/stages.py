@@ -93,6 +93,7 @@ from feedbax.orchestration.drivers.native_execution import (
 from feedbax.orchestration.executor_family import (
     evaluation_lifecycle_payload,
     evaluation_matrix_ordered_union,
+    finalize_evaluation_payload_retention,
     executor_family_adapter,
 )
 from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleEvidence
@@ -2786,6 +2787,22 @@ class StageEngine:
                     failure_log_collection = {"status": "failed", "error": str(exc)}
             try:
                 outputs = dict(self.driver.teardown(self.bundle, state))
+                if not abort and self.bundle.execution_family == "evaluation-matrix":
+                    certificate_ref = state.stage(STAGE_CERTIFY).outputs.get("certificate_ref")
+                    if not isinstance(certificate_ref, str):
+                        raise OrchestrationStageError(
+                            "evaluation payload disposal requires completed certification"
+                        )
+                    certificate_payload = strict_json_loads(
+                        Path(certificate_ref).read_text(encoding="utf-8")
+                    )
+                    assert_certificate_allows_completed_registration(certificate_payload)
+                    for row in self.bundle.rows:
+                        finalize_evaluation_payload_retention(
+                            self.bundle,
+                            row,
+                            state.rows[row.row_id].collected_outputs,
+                        )
                 status = "completed"
                 error = None
             except Exception as exc:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime, timedelta, timezone
 import multiprocessing
 from pathlib import Path
 from typing import Literal, NamedTuple
@@ -20,6 +21,7 @@ from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
     EvaluationRunMatrixSpec,
     execute_evaluation_run_matrix,
+    finalize_evaluation_batch_retention,
     load_evaluation_states,
     resolve_staged_evaluation_prerequisite,
 )
@@ -35,6 +37,7 @@ from feedbax.contracts.evaluation_states import (
     store_evaluation_states_artifact,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3,
@@ -321,6 +324,41 @@ def test_batched_typed_v3_outputs_round_trip_through_require_durable(
         artifact = next(a for a in row.result.artifacts if a.role == "evaluation_states")
         assert artifact.metadata["schema_version"] == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
         np.testing.assert_array_equal(states.value, np.asarray([gain, gain + 1]))
+
+
+def test_consumed_durable_batch_states_become_bounded_gc_candidates(
+    tmp_path: Path, application_registry_bundle
+) -> None:
+    root = tmp_path / "batched"
+    batch = _execute_typed_batch(
+        _matrix(), root, application_registry_bundle=application_registry_bundle
+    )
+    now = datetime.now(timezone.utc)
+    record_ids = finalize_evaluation_batch_retention(
+        [row.result for row in batch.rows],
+        root=root,
+        retain_intermediates=False,
+        grace_expires_at=now + timedelta(minutes=5),
+        manifest_sha256s=[sha256_bytes(row.manifest_path.read_bytes()) for row in batch.rows],
+    )
+
+    assert len(record_ids) == 1
+    assert record_ids[0].startswith("evaluation-intermediates-release:")
+    provider = ImmutableArtifactBlobProvider(root)
+    before = provider.collect_garbage(now=now)
+    assert before.stage == "reported"
+    assert all(decision.decision == "live" for decision in before.decisions)
+    after = provider.collect_garbage(now=now + timedelta(minutes=6))
+    assert after.stage == "reported"
+    state_digests = {
+        artifact.sha256
+        for row in batch.rows
+        for artifact in row.result.artifacts
+        if artifact.role == "evaluation_states"
+    }
+    assert {
+        decision.sha256 for decision in after.decisions if decision.decision == "candidate"
+    } == state_digests
 
 
 def test_batched_typed_v3_outputs_accept_normalized_staged_v2_parent(

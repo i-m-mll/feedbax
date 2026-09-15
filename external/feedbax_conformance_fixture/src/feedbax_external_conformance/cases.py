@@ -43,6 +43,7 @@ from feedbax.analysis.evaluation import (
 )
 from feedbax.analysis.evaluation_compaction import (
     EvaluationBatchConsumerInput,
+    apply_evaluation_payload_retention,
     compact_evaluation_batch,
     merge_evaluation_batch_fragment,
     publish_evaluation_compaction_products,
@@ -151,6 +152,8 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationBatchConsumerDeclaration,
     EvaluationLifecycleRowOutcome,
     EvaluationMatrixBatchUnit,
+    EvaluationPayloadRetentionPolicy,
+    EvaluationReplayIdentity,
 )
 from feedbax.contracts.evaluation_product_union import (
     EvaluationCompactProductUnion,
@@ -163,13 +166,20 @@ from feedbax.contracts.run_matrix import (
     TrainingRowLowererRef,
     apply_composition_deltas,
 )
-from feedbax.contracts.spec_storage import training_spec_sha256
+from feedbax.contracts.spec_storage import training_run_execution_hash, training_spec_sha256
 from feedbax.contracts.training import MethodPayloadEnvelope, MethodRefSpec
 from feedbax.training.authoring import compile_training_method_authoring
 from feedbax.training.preparation import ExecutionPreparationRequest
 from feedbax.training.row_lowering import TrainingRowLoweringContext
 from feedbax.contracts.evaluation_states import store_evaluation_states_artifact
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.orchestration.bundle import (
+    AuthoredIntentRef,
+    ExecutionCapsuleRef,
+    ExecutionIdentityEnvelope,
+    ResolvedSnapshotRef,
+    SchemaArtifactRef,
+)
 from feedbax.persistence import (
     ContentBinding,
     ContentLeaseRecord,
@@ -286,6 +296,30 @@ class _RegistrationEntryPoint:
 
     def load(self) -> PluginRegistration:
         return self._registration
+
+
+def _fixture_evaluation_replay_identity() -> EvaluationReplayIdentity:
+    root_hash = "a" * 64
+    common = {
+        "schema_id": "feedbax_external_conformance.test",
+        "schema_version": "feedbax_external_conformance.test.v1",
+        "artifact_id": "artifact:external-conformance",
+        "sha256": "b" * 64,
+    }
+    envelope = ExecutionIdentityEnvelope(
+        payload=SchemaArtifactRef(**common),
+        authored_intent=AuthoredIntentRef(**common, intent_hash="c" * 64),
+        resolved_snapshot=ResolvedSnapshotRef(**common, root_hash=root_hash),
+        execution_capsule=ExecutionCapsuleRef(
+            **common,
+            execution_hash=training_run_execution_hash(root_hash, []),
+        ),
+        immutable_inputs=[],
+    )
+    return EvaluationReplayIdentity(
+        feedbax_revision="d" * 40,
+        execution_envelope=envelope.model_dump(mode="json", exclude_none=True),
+    )
 
 
 def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = None) -> bool:
@@ -625,6 +659,7 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
                 custody_root=custody_root,
                 execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
             )
+            replay = _fixture_evaluation_replay_identity()
             (terminal_manifest,) = publish_evaluation_compaction_products(
                 (declaration,),
                 {declaration.leaf_id: acknowledgement.merge_state},
@@ -632,6 +667,15 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
                 registry=state.registry(EVALUATION_BATCH_CONSUMERS),
                 custody_root=custody_root,
                 execution_context=EMPTY_STAGED_EXECUTION_CONTEXT,
+                replay=replay,
+            )
+            retention = apply_evaluation_payload_retention(
+                (declaration,),
+                (terminal_manifest,),
+                (acknowledgement,),
+                policy=EvaluationPayloadRetentionPolicy(),
+                replay=replay,
+                custody_root=custody_root,
             )
             compaction = EvaluationBatchCompactionEvidence(
                 matrix_intent_hash=cohort_hash,
@@ -640,6 +684,7 @@ def check_unified_plugin_bootstrap(*, entry_points: Iterable[object] | None = No
                 required_leaf_ids_by_batch={cohort_batch.batch_id: (declaration.leaf_id,)},
                 reclamations=(reclamation,),
                 terminal_products=(terminal_manifest,),
+                retention=retention,
             )
             compaction_path = cohort_root / "evaluation-batch-compaction.json"
             compaction_path.parent.mkdir(parents=True, exist_ok=True)

@@ -376,6 +376,46 @@ def evaluation_matrix_ordered_union(
     )
 
 
+def finalize_evaluation_payload_retention(
+    bundle: RunBundle,
+    row: RunRowSpec,
+    collected: Mapping[str, str],
+) -> None:
+    """Activate opted-in payload disposal after successful terminal registration."""
+    from feedbax.analysis.evaluation_compaction import activate_evaluation_payload_collection
+
+    if row.execution_family != "evaluation-matrix":
+        return
+    compaction_path = Path(collected["evaluation-batch-compaction.json"])
+    compaction = EvaluationBatchCompactionEvidence.model_validate(
+        migrate_structured_spec_payload(
+            "EvaluationBatchCompactionEvidence",
+            strict_json_loads(compaction_path.read_text(encoding="utf-8")),
+            path=str(compaction_path),
+        ).payload
+    )
+    if compaction.retention is None:
+        return
+    collected_root = compaction_path.parent / "evaluation-batch-compaction"
+    activate_evaluation_payload_collection(
+        compaction.retention,
+        compaction_root=collected_root,
+    )
+    source_root = bundle.run_set_dir / "rows" / row.row_id
+    source_compaction_root = source_root / "evaluation-batch-compaction"
+    if source_compaction_root != collected_root and source_compaction_root.is_dir():
+        activate_evaluation_payload_collection(
+            compaction.retention,
+            compaction_root=source_compaction_root,
+            evaluation_root=(source_root / "evaluation"),
+            schedule_grace=False,
+        )
+        (source_root / "evaluation-payload-retention-ready").write_text(
+            "certified teardown completed\n",
+            encoding="utf-8",
+        )
+
+
 __all__ = [
     "EVALUATION_COLLECTION_OUTPUTS",
     "EvaluationMatrixExecutorAdapter",
@@ -383,6 +423,7 @@ __all__ = [
     "ExecutorFamilyError",
     "NativeTrainingExecutorAdapter",
     "evaluation_lifecycle_payload",
+    "finalize_evaluation_payload_retention",
     "evaluation_matrix_ordered_union",
     "executor_family_adapter",
 ]
