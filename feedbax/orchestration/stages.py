@@ -27,7 +27,12 @@ from feedbax.contracts.strict_json import (
 )
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
+    canonical_manifest_path,
     load_manifest_bytes,
+)
+from feedbax.persistence.artifact_custody import (
+    ArtifactBlobIntegrityError,
+    ImmutableArtifactBlobProvider,
 )
 from feedbax.contracts.remote_smoke import RemoteSmokeEvidence, RemoteSmokeRowEvidence
 from feedbax.contracts.spec_storage import (
@@ -1964,6 +1969,7 @@ class StageEngine:
                     checkpoint_custody[row.row_id] = _verify_collected_native_checkpoint_custody(
                         row, outputs
                     )
+                    _publish_collected_native_manifest_and_artifacts(row, outputs)
                 except Exception as exc:
                     if not preserve_executor_failure:
                         raise
@@ -2916,15 +2922,14 @@ class StageEngine:
                 checkpoint_custody[row.row_id] = _verify_collected_native_checkpoint_custody(
                     row, outputs
                 )
+                _publish_collected_native_manifest_and_artifacts(row, outputs)
             collected[row.row_id] = outputs
             collect_stage = state.stage(STAGE_COLLECT)
             collect_outputs = dict(collect_stage.outputs)
             collect_outputs["rows"] = collected
             if checkpoint_custody:
                 collect_outputs["checkpoint_custody"] = checkpoint_custody
-            row_state = state.rows[row.row_id].model_copy(
-                update={"collected_outputs": outputs}
-            )
+            row_state = state.rows[row.row_id].model_copy(update={"collected_outputs": outputs})
             state = state.model_copy(
                 update={
                     "rows": {**state.rows, row.row_id: row_state},
@@ -2941,9 +2946,7 @@ class StageEngine:
             self._validated_group_collection_rows.add(row.row_id)
         return state
 
-    def _active_launch_group(
-        self, state: RunSetState
-    ) -> tuple[RunSetState, list[RunRowSpec], int]:
+    def _active_launch_group(self, state: RunSetState) -> tuple[RunSetState, list[RunRowSpec], int]:
         groups = self.bundle.launch_policy.groups
         if groups is None:
             return state, self._launchable_rows(state), self.bundle.launch_policy.max_parallel_rows
@@ -3242,6 +3245,91 @@ def _verify_collected_native_checkpoint_custody(
         "transaction_root_sha256": transaction_root_sha256,
         "slot_names": sorted(authenticated.slot_names),
     }
+
+
+def _publish_collected_native_manifest_and_artifacts(
+    row: RunRowSpec,
+    collected: Mapping[str, str],
+) -> None:
+    """Make one collected native row resolvable before recording collection success."""
+    manifest_bytes = _read_collected_regular_file(
+        collected["manifest.json"],
+        context=f"collected training manifest for row {row.row_id!r}",
+    )
+    manifest = load_manifest_bytes(manifest_bytes)
+    if not isinstance(manifest, TrainingRunManifest):
+        raise OrchestrationStageError(
+            f"collected manifest is not a TrainingRunManifest for row {row.row_id!r}"
+        )
+    manifest_root = Path(collected["manifests"])
+    if not stat.S_ISDIR(manifest_root.stat(follow_symlinks=False).st_mode):
+        raise OrchestrationStageError(f"collected manifest root is unsafe for row {row.row_id!r}")
+    provider = ImmutableArtifactBlobProvider(manifest_root.absolute())
+    for artifact in manifest.artifacts:
+        if artifact.sha256 is None or artifact.size_bytes is None:
+            raise OrchestrationStageError(
+                f"collected artifact {artifact.role!r} lacks SHA-256 or size for row {row.row_id!r}"
+            )
+        if artifact.artifact_id is not None and artifact.artifact_id != (
+            f"artifact://sha256/{artifact.sha256}"
+        ):
+            raise OrchestrationStageError(
+                f"collected artifact {artifact.role!r} has conflicting identity for row "
+                f"{row.row_id!r}"
+            )
+        canonical = manifest_root / "artifacts" / "sha256" / artifact.sha256[:2] / artifact.sha256
+        relative = artifact.metadata.get("relative_path")
+        if relative is not None and relative != canonical.relative_to(manifest_root).as_posix():
+            raise OrchestrationStageError(
+                f"collected artifact {artifact.role!r} has noncanonical relative path for "
+                f"row {row.row_id!r}"
+            )
+        source = canonical if canonical.exists() else Path(collected.get(artifact.logical_name, ""))
+        if not source.is_file():
+            raise OrchestrationStageError(
+                f"collected artifact {artifact.role!r} is unresolved for row {row.row_id!r}: "
+                f"{artifact.logical_name!r}"
+            )
+        try:
+            provider._store_file(source, sha256=artifact.sha256, size_bytes=artifact.size_bytes)
+        except (ArtifactBlobIntegrityError, FileNotFoundError) as exc:
+            raise OrchestrationStageError(
+                f"collected artifact {artifact.role!r} failed custody for row {row.row_id!r}"
+            ) from exc
+
+    destination = canonical_manifest_path(manifest.kind, manifest.id, root=manifest_root)
+    manifest_directory = manifest_root / "manifests"
+    manifest_directory.mkdir(exist_ok=True)
+    if not stat.S_ISDIR(manifest_directory.stat(follow_symlinks=False).st_mode):
+        raise OrchestrationStageError(
+            f"collected manifest directory is unsafe for row {row.row_id!r}"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not stat.S_ISDIR(destination.parent.stat(follow_symlinks=False).st_mode) or (
+        destination.parent.resolve(strict=True).parent != manifest_directory.resolve(strict=True)
+    ):
+        raise OrchestrationStageError(f"collected manifest destination is unsafe: {destination}")
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(manifest_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, destination)
+        except FileExistsError:
+            if (
+                _read_collected_regular_file(
+                    destination, context=f"canonical training manifest for row {row.row_id!r}"
+                )
+                != manifest_bytes
+            ):
+                raise OrchestrationStageError(
+                    f"canonical training manifest conflicts with collected bytes for row "
+                    f"{row.row_id!r}"
+                )
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _read_collected_regular_file(path: str | Path, *, context: str) -> bytes:
