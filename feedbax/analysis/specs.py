@@ -608,7 +608,19 @@ def resolve_analysis_inputs(
             else:
                 if isinstance(manifest, EvaluationRunManifest):
                     try:
-                        states = load_evaluation_states(manifest, root=root_path)
+                        structure = None
+                        if any(
+                            artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+                            for artifact in manifest.artifacts
+                        ):
+                            structure = _evaluation_states_structure(
+                                ref,
+                                manifest,
+                                registry.structure_provider(spec.analysis_type),
+                            )
+                        states = load_evaluation_states(
+                            manifest, root=root_path, structure=structure
+                        )
                     except EvaluationStatesArtifactNotFound:
                         rederived, rederived_path = _rederive_evaluation_states(
                             ref.id,
@@ -868,27 +880,9 @@ def _load_required_durable_evaluation_states(
     structure_provider: EvaluationStatesStructureProviderProtocol | None,
 ) -> tuple[Any, AnalysisEvaluationStateSource]:
     manifest, artifact = _evaluation_states_artifact_for_durable_policy(ref, manifest)
-    try:
-        structure = structure_provider(manifest) if structure_provider is not None else None
-    except Exception as exc:
-        raise _resolution_error(
-            code="custody_unavailable",
-            manifest_id=ref.id,
-            artifact_id=artifact.artifact_id,
-            message=f"Evaluation states structure provider failed: {exc}",
-            details={"provider_failure_type": type(exc).__name__, "provider_failure": str(exc)},
-            cause=exc,
-        ) from exc
-    if structure is not None and not isinstance(structure, jtu.PyTreeDef):
-        raise _resolution_error(
-            code="custody_unavailable",
-            manifest_id=ref.id,
-            artifact_id=artifact.artifact_id,
-            message=(
-                "Evaluation states structure provider returned "
-                f"{type(structure).__name__}, expected PyTreeDef."
-            ),
-        )
+    structure = _evaluation_states_structure(
+        ref, manifest, structure_provider, artifact_id=artifact.artifact_id
+    )
     try:
         states = load_authenticated_evaluation_states_artifact(
             artifact,
@@ -923,6 +917,37 @@ def _load_required_durable_evaluation_states(
             cause=exc,
         ) from exc
     return states, _durable_state_source(ref, manifest)
+
+
+def _evaluation_states_structure(
+    ref: ParentRef,
+    manifest: EvaluationRunManifest,
+    structure_provider: EvaluationStatesStructureProviderProtocol | None,
+    *,
+    artifact_id: str | None = None,
+) -> jtu.PyTreeDef | None:
+    try:
+        structure = structure_provider(manifest) if structure_provider is not None else None
+    except Exception as exc:
+        raise _resolution_error(
+            code="custody_unavailable",
+            manifest_id=ref.id,
+            artifact_id=artifact_id,
+            message=f"Evaluation states structure provider failed: {exc}",
+            details={"provider_failure_type": type(exc).__name__, "provider_failure": str(exc)},
+            cause=exc,
+        ) from exc
+    if structure is not None and not isinstance(structure, jtu.PyTreeDef):
+        raise _resolution_error(
+            code="custody_unavailable",
+            manifest_id=ref.id,
+            artifact_id=artifact_id,
+            message=(
+                "Evaluation states structure provider returned "
+                f"{type(structure).__name__}, expected PyTreeDef."
+            ),
+        )
+    return structure
 
 
 def _rederive_evaluation_states(

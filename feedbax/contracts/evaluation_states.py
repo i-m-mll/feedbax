@@ -181,8 +181,9 @@ def load_evaluation_states_artifact(
     artifact: ArtifactRef,
     *,
     root: Path | str,
+    structure: jtu.PyTreeDef | None = None,
 ) -> Any:
-    """Load and verify evaluation states from an ``evaluation_states`` artifact."""
+    """Verify an artifact and load its states with the caller's v3 structure."""
     path = _artifact_path(artifact, root=Path(root))
     data = path.read_bytes()
     if artifact.sha256 is None:
@@ -196,7 +197,7 @@ def load_evaluation_states_artifact(
             f"logical_name={artifact.logical_name!r}, expected={artifact.sha256!r}, "
             f"computed={digest!r}"
         )
-    return load_evaluation_states_container_bytes(data)
+    return load_evaluation_states_container_bytes(data, structure=structure)
 
 
 def load_authenticated_evaluation_states_artifact(

@@ -14,6 +14,7 @@ from typing import Any
 import jax.numpy as jnp
 import pytest
 
+from feedbax.analysis.specs import find_manifest_by_id
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.base import ParentRef
@@ -1028,7 +1029,7 @@ def test_local_shadow_runtime_binding_adds_update_budget_without_mutating_bundle
     assert row.launch.command.count("--update-budget") == 0
 
 
-def test_one_update_shadow_collects_empty_declared_manifest_root(
+def test_one_update_shadow_collects_discoverable_run_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1092,7 +1093,12 @@ def test_one_update_shadow_collects_empty_declared_manifest_root(
     }
     collected_manifest_root = Path(collected["manifests"])
     assert collected_manifest_root.is_dir()
-    assert list(collected_manifest_root.iterdir()) == []
+    flat_manifest = Path(collected["manifest.json"])
+    manifest_id = json.loads(flat_manifest.read_text(encoding="utf-8"))["id"]
+    found, found_path = find_manifest_by_id(manifest_id, root=collected_manifest_root)
+    assert found is not None
+    assert found_path is not None
+    assert found_path.read_bytes() == flat_manifest.read_bytes()
 
 
 def test_one_update_native_row_uses_physical_shared_orchestration_root(

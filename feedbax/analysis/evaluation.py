@@ -36,6 +36,7 @@ import tempfile
 from typing import Any, Sequence
 
 import dill as pickle
+import jax.tree_util as jtu
 from pydantic import BaseModel, Field, model_validator
 
 from feedbax.contracts.strict_json import strict_json_loads
@@ -1488,11 +1489,12 @@ def load_evaluation_states(
     manifest: EvaluationRunManifest,
     *,
     root: Path | str | None = None,
+    structure: jtu.PyTreeDef | None = None,
 ) -> Any:
-    """Load durable evaluation states from a completed evaluation manifest."""
+    """Load durable states, using the caller's pytree structure for v3 containers."""
     artifact = _evaluation_states_artifact(manifest)
     root_path = Path(root) if root is not None else default_manifest_root()
-    return load_evaluation_states_artifact(artifact, root=root_path)
+    return load_evaluation_states_artifact(artifact, root=root_path, structure=structure)
 
 
 def _states_custody_for_spec(run_spec: EvaluationRunSpec) -> str:

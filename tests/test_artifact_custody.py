@@ -49,6 +49,30 @@ def _artifact_path(root: Path, digest: str) -> Path:
     return root / "artifacts" / "sha256" / digest[:2] / digest
 
 
+def test_path_backed_migration_streams_large_source_without_whole_file_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "diagnostics.json"
+    payload = b'{"trace":"' + b"x" * (12 * 1024 * 1024) + b'"}\n'
+    source.write_bytes(payload)
+    original_read_bytes = Path.read_bytes
+
+    def refuse_source_read(path: Path) -> bytes:
+        if path == source:
+            raise AssertionError("migration read the source into memory")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", refuse_source_read)
+    destination = tmp_path / "store"
+    refs, receipt = migrate_path_backed_content(
+        {"training_diagnostics": source}, destination_store=destination
+    )
+    expected_sha = hashlib.sha256(payload).hexdigest()
+    assert refs["training_diagnostics"].sha256 == expected_sha
+    assert receipt.mappings[0].size_bytes == len(payload)
+    assert _artifact_path(destination, expected_sha).read_bytes() == payload
+
+
 def test_role_free_objects_trees_and_bindings_share_one_canonical_identity(
     tmp_path: Path,
 ) -> None:
