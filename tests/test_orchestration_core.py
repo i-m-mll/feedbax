@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
@@ -24,7 +25,11 @@ from feedbax.orchestration import AuthorizedBatchStop, RowConformanceRuntimeInpu
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.base import ParentRef
-from feedbax.contracts.manifest import TrainingRunManifest
+from feedbax.contracts.base import ArtifactRef
+from feedbax.contracts.manifest import TrainingRunManifest, canonical_manifest_path
+from feedbax.contracts.artifact_store import store_bytes_artifact
+from feedbax.analysis.fulfillment import resolve_artifact_bytes
+from feedbax.analysis.specs import find_manifest_by_id
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowProvenance
 from feedbax.contracts.spec_storage import (
     build_resolved_semantics_snapshot,
@@ -57,6 +62,8 @@ from feedbax.contracts.training import (
     standard_supervised_method_ref,
 )
 from feedbax.orchestration import conformance, revision, schedule_eval, stages
+
+
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -202,6 +209,94 @@ from feedbax.training.manifest_preflight import preflight_training_run_manifest_
 from feedbax.training.spec_storage import TrainingRunIdentityAdapter
 from feedbax.contracts.remote_smoke import RemoteSmokeEvidence
 from feedbax.orchestration.revision import resolve_feedbax_revision
+
+
+def test_collected_native_diagnostics_and_manifest_resolve_from_canonical_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = SimpleNamespace(row_id="row-a")
+    collected_row = tmp_path / "collected" / row.row_id
+    manifest_root = collected_row / "manifests"
+    manifest_root.mkdir(parents=True)
+    diagnostics = collected_row / "training-diagnostics.json"
+    payload = b'{"trace":"' + b"x" * (12 * 1024 * 1024) + b'"}\n'
+    diagnostics.write_bytes(payload)
+    diagnostics_ref = ArtifactRef(
+        role="training_diagnostics",
+        logical_name=diagnostics.name,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size_bytes=len(payload),
+        media_type="application/json",
+    )
+    history_ref = store_bytes_artifact(
+        b"[]\n", root=manifest_root, role="training_history", logical_name="history.json"
+    )
+    manifest = TrainingRunManifest(
+        id="feedbax-training-run:collected-row-a",
+        status="completed",
+        artifacts=[history_ref, diagnostics_ref],
+    )
+    flat_manifest = collected_row / "manifest.json"
+    raw_manifest = manifest.model_dump_json(indent=2, exclude_none=True).encode() + b"\n"
+    flat_manifest.write_bytes(raw_manifest)
+    collected = {
+        "manifest.json": str(flat_manifest),
+        "training-diagnostics.json": str(diagnostics),
+        "manifests": str(manifest_root),
+    }
+    original_read_bytes = Path.read_bytes
+
+    def refuse_whole_diagnostics_read(path: Path) -> bytes:
+        if path == diagnostics:
+            raise AssertionError("diagnostics were read into memory")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", refuse_whole_diagnostics_read)
+    stages._publish_collected_native_manifest_and_artifacts(row, collected)
+    stages._publish_collected_native_manifest_and_artifacts(row, collected)
+
+    found, found_path = find_manifest_by_id(manifest.id, root=manifest_root)
+    assert found == manifest
+    assert found_path == canonical_manifest_path(manifest.kind, manifest.id, root=manifest_root)
+    assert found_path.read_bytes() == raw_manifest
+    canonical_diagnostics = resolve_artifact_bytes(diagnostics_ref, root=manifest_root).path
+    assert canonical_diagnostics is not None
+    assert canonical_diagnostics.read_bytes() == payload
+
+
+def test_collected_native_diagnostics_mismatch_refuses_manifest_publication(
+    tmp_path: Path,
+) -> None:
+    row = SimpleNamespace(row_id="row-a")
+    collected_row = tmp_path / "collected" / row.row_id
+    manifest_root = collected_row / "manifests"
+    manifest_root.mkdir(parents=True)
+    diagnostics = collected_row / "training-diagnostics.json"
+    diagnostics.write_bytes(b"{}\n")
+    manifest = TrainingRunManifest(
+        id="feedbax-training-run:bad-diagnostics",
+        status="completed",
+        artifacts=[
+            ArtifactRef(
+                role="training_diagnostics",
+                logical_name=diagnostics.name,
+                sha256="a" * 64,
+                size_bytes=3,
+            )
+        ],
+    )
+    flat_manifest = collected_row / "manifest.json"
+    flat_manifest.write_text(manifest.model_dump_json(exclude_none=True) + "\n")
+    with pytest.raises(stages.OrchestrationStageError, match="failed custody"):
+        stages._publish_collected_native_manifest_and_artifacts(
+            row,
+            {
+                "manifest.json": str(flat_manifest),
+                "training-diagnostics.json": str(diagnostics),
+                "manifests": str(manifest_root),
+            },
+        )
+    assert not canonical_manifest_path(manifest.kind, manifest.id, root=manifest_root).exists()
 
 
 _FAKE_DRIVER_ENVELOPE = DriverCapabilityEnvelope.single(
@@ -5195,12 +5290,13 @@ def test_ordered_launch_group_refills_then_crosses_authenticated_barrier(
 
     def verify(row: RunRowSpec, outputs: Mapping[str, str]) -> Mapping[str, Any]:
         verified.append(row.row_id)
-        assert outputs == {
-            "payload": str(bundle.run_set_dir / row.row_id / "payload.json")
-        }
+        assert outputs == {"payload": str(bundle.run_set_dir / row.row_id / "payload.json")}
         return {"transaction_id": f"checkpoint-{row.row_id}"}
 
     monkeypatch.setattr(stages, "_verify_collected_native_checkpoint_custody", verify)
+    monkeypatch.setattr(
+        stages, "_publish_collected_native_manifest_and_artifacts", lambda _row, _outputs: None
+    )
     rows = [_compiled_row(row_id) for row_id in ("a", "b", "c", "d")]
     bundle = _bundle(
         tmp_path,
@@ -5261,9 +5357,7 @@ def test_ordered_launch_group_does_not_advance_when_custody_authentication_fails
     def reject_custody(_row: RunRowSpec, _outputs: Mapping[str, str]) -> Mapping[str, Any]:
         raise OrchestrationStageError("terminal checkpoint custody rejected")
 
-    monkeypatch.setattr(
-        stages, "_verify_collected_native_checkpoint_custody", reject_custody
-    )
+    monkeypatch.setattr(stages, "_verify_collected_native_checkpoint_custody", reject_custody)
     bundle = _bundle(
         tmp_path,
         rows=[_compiled_row("first"), _compiled_row("later")],
@@ -5336,9 +5430,7 @@ def test_grouped_warm_first_uses_first_scheduled_row_not_bundle_order(
             max_parallel_rows=2,
             warm_first=True,
             groups=[
-                LaunchRowGroup(
-                    row_ids=["scheduled-first", "bundle-first"], max_concurrent=2
-                ),
+                LaunchRowGroup(row_ids=["scheduled-first", "bundle-first"], max_concurrent=2),
                 LaunchRowGroup(row_ids=["later"], max_concurrent=1),
             ],
         ),

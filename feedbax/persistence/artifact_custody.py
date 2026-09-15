@@ -10,7 +10,7 @@ import stat
 import threading
 import unicodedata
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -260,6 +260,18 @@ def _read_file_descriptor(file_descriptor: int) -> bytes:
     return b"".join(chunks)
 
 
+def _stream_file_descriptor(file_descriptor: int, *, target: int | None = None) -> tuple[str, int]:
+    os.lseek(file_descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    size_bytes = 0
+    while chunk := os.read(file_descriptor, _READ_CHUNK_SIZE):
+        digest.update(chunk)
+        size_bytes += len(chunk)
+        if target is not None:
+            _write_file_descriptor(target, chunk)
+    return digest.hexdigest(), size_bytes
+
+
 def _publish_materialized_file_no_replace(
     temporary_name: str,
     destination_name: str,
@@ -331,7 +343,11 @@ def _remove_private_materialization_staging_name(
     os.close(directory_descriptor)
 
 
-def _stage_blob_bytes(data: bytes, destination: Path) -> os.stat_result:
+def _stage_blob(
+    destination: Path,
+    expected_identity: tuple[str, int],
+    write_payload: Callable[[int], None],
+) -> os.stat_result:
     records = _open_directory_chain(destination.parent, create=True)
     parent_descriptor = records[-1][1]
     temporary_name = f"payload-{uuid.uuid4().hex}"
@@ -348,12 +364,10 @@ def _stage_blob_bytes(data: bytes, destination: Path) -> os.stat_result:
             0o600,
             dir_fd=staging_descriptor,
         )
-        _write_file_descriptor(temporary_descriptor, data)
+        write_payload(temporary_descriptor)
         os.fsync(temporary_descriptor)
-        if _read_file_descriptor(temporary_descriptor) != data:
-            raise ArtifactBlobIntegrityError(
-                f"staged blob bytes failed verification: {destination}"
-            )
+        if _stream_file_descriptor(temporary_descriptor) != expected_identity:
+            raise ArtifactBlobIntegrityError(f"staged blob failed verification: {destination}")
         try:
             _publish_materialized_file_no_replace(
                 temporary_name,
@@ -375,9 +389,9 @@ def _stage_blob_bytes(data: bytes, destination: Path) -> os.stat_result:
             context=f"canonical blob {destination}",
             dir_fd=parent_descriptor,
         )
-        stored = _read_file_descriptor(final_descriptor)
+        stored_identity = _stream_file_descriptor(final_descriptor)
         after = os.fstat(final_descriptor)
-        if _file_state(before) != _file_state(after) or stored != data:
+        if _file_state(before) != _file_state(after) or stored_identity != expected_identity:
             raise ArtifactBlobIntegrityError(
                 f"canonical blob bytes do not match content identity: {destination}"
             )
@@ -408,6 +422,25 @@ def _stage_blob_bytes(data: bytes, destination: Path) -> os.stat_result:
             except OSError:
                 os.close(staging_descriptor)
         _close_directory_chain(records)
+
+
+def _stage_blob_bytes(data: bytes, destination: Path) -> os.stat_result:
+    identity = hashlib.sha256(data).hexdigest(), len(data)
+    return _stage_blob(
+        destination, identity, lambda descriptor: _write_file_descriptor(descriptor, data)
+    )
+
+
+def _stage_blob_file(
+    source_descriptor: int,
+    destination: Path,
+    expected_identity: tuple[str, int],
+) -> os.stat_result:
+    def write_payload(descriptor: int) -> None:
+        if _stream_file_descriptor(source_descriptor, target=descriptor) != expected_identity:
+            raise ArtifactBlobIntegrityError(f"artifact source changed during store: {destination}")
+
+    return _stage_blob(destination, expected_identity, write_payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -549,6 +582,82 @@ class ImmutableArtifactBlobProvider:
                     f"pre-existing content object differs from stored payload: {ref.object_id}"
                 )
             return ref
+
+    def _store_file(
+        self,
+        source_path: Path | str,
+        *,
+        sha256: str | None = None,
+        size_bytes: int | None = None,
+    ) -> ContentObjectRef:
+        """Store exact file bytes through bounded chunks, checking any declared identity."""
+        source = Path(source_path).absolute()
+        source_records = _open_directory_chain(source.parent, create=False)
+        source_descriptor: int | None = None
+        try:
+            source_parent = source_records[-1][1]
+            source_descriptor, before = open_existing_file(
+                source.name,
+                rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+                error_factory=ArtifactBlobContainmentError,
+                context=f"artifact source {source}",
+                dir_fd=source_parent,
+            )
+            path_stat = os.stat(source.name, dir_fd=source_parent, follow_symlinks=False)
+            if (path_stat.st_dev, path_stat.st_ino) != (before.st_dev, before.st_ino):
+                raise ArtifactBlobIntegrityError(f"artifact source identity changed: {source}")
+            identity = _stream_file_descriptor(source_descriptor)
+            if sha256 is not None and identity[0] != _validate_digest(sha256):
+                raise ArtifactBlobIntegrityError(f"artifact source SHA-256 mismatch: {source}")
+            if size_bytes is not None and identity[1] != _validate_size(
+                size_bytes, field="size_bytes"
+            ):
+                raise ArtifactBlobIntegrityError(f"artifact source size mismatch: {source}")
+            if _file_state(before) != _file_state(os.fstat(source_descriptor)):
+                raise ArtifactBlobIntegrityError(f"artifact source changed during hash: {source}")
+            destination = self._canonical_path(identity[0])
+            self._validate_store_target(destination)
+            with self._exclusive_lock():
+                self._validate_store_target(destination)
+                if destination.exists():
+                    destination_records = _open_directory_chain(destination.parent, create=False)
+                    destination_descriptor: int | None = None
+                    try:
+                        destination_descriptor, written = open_existing_file(
+                            destination.name,
+                            rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+                            error_factory=ArtifactBlobIntegrityError,
+                            context=f"canonical blob {destination}",
+                            dir_fd=destination_records[-1][1],
+                        )
+                        if _stream_file_descriptor(destination_descriptor) != identity or (
+                            _file_state(written) != _file_state(os.fstat(destination_descriptor))
+                        ):
+                            raise ArtifactBlobIntegrityError(
+                                f"canonical blob bytes do not match content identity: {destination}"
+                            )
+                        _recheck_directory_chain(destination_records)
+                    finally:
+                        if destination_descriptor is not None:
+                            os.close(destination_descriptor)
+                        _close_directory_chain(destination_records)
+                else:
+                    written = _stage_blob_file(source_descriptor, destination, identity)
+            if _file_state(before) != _file_state(os.fstat(source_descriptor)):
+                raise ArtifactBlobIntegrityError(f"artifact source changed during store: {source}")
+            path_after = os.stat(source.name, dir_fd=source_parent, follow_symlinks=False)
+            if (path_after.st_dev, path_after.st_ino) != (before.st_dev, before.st_ino):
+                raise ArtifactBlobIntegrityError(f"artifact source identity changed: {source}")
+            _recheck_directory_chain(source_records)
+            return ContentObjectRef(
+                object_id=f"{CONTENT_OBJECT_REF_PREFIX}{identity[0]}",
+                sha256=identity[0],
+                size_bytes=written.st_size,
+            )
+        finally:
+            if source_descriptor is not None:
+                os.close(source_descriptor)
+            _close_directory_chain(source_records)
 
     def get_object(
         self,

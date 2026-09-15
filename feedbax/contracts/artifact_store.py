@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import stat
@@ -12,7 +11,6 @@ from typing import Any, Optional
 from feedbax.contracts.base import (
     ArtifactRef,
     default_manifest_root,
-    sha256_bytes,
 )
 from feedbax.contracts.artifact_custody import (
     ContentMigrationMapping,
@@ -28,20 +26,6 @@ from feedbax.contracts.retention_artifact_schema import (
 
 def _artifact_path(root: Path, digest: str) -> Path:
     return root / "artifacts" / "sha256" / digest[:2] / digest
-
-
-_ARTIFACT_STREAM_CHUNK_BYTES = 1024 * 1024
-
-
-def _file_content_identity(path: Path) -> tuple[str, int]:
-    """Return the streamed ``(sha256, size_bytes)`` identity of a file."""
-    digest = hashlib.sha256()
-    size_bytes = 0
-    with Path(path).open("rb") as stream:
-        while chunk := stream.read(_ARTIFACT_STREAM_CHUNK_BYTES):
-            digest.update(chunk)
-            size_bytes += len(chunk)
-    return digest.hexdigest(), size_bytes
 
 
 DEFAULT_ARTIFACT_MEDIA_TYPE = "application/octet-stream"
@@ -97,21 +81,22 @@ def store_artifact(
     if not source.exists():
         raise FileNotFoundError(source)
     root_path = Path(root) if root is not None else default_manifest_root()
-    expected_identity = _file_content_identity(source)
-    data = source.read_bytes()
-    if (sha256_bytes(data), len(data)) != expected_identity:
-        from feedbax.persistence.artifact_custody import ArtifactBlobIntegrityError
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
-        raise ArtifactBlobIntegrityError(f"artifact source bytes changed during store: {source}")
+    object_ref = ImmutableArtifactBlobProvider(root_path.absolute())._store_file(source)
     artifact_metadata = dict(metadata or {})
     artifact_metadata.setdefault("original_uri", str(source))
-    return store_bytes_artifact(
-        data,
-        root=root_path,
+    dest = _artifact_path(root_path, object_ref.sha256)
+    artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
+    return ArtifactRef(
         role=role,
         logical_name=logical_name or source.name,
         media_type=media_type,
         metadata=artifact_metadata,
+        artifact_id=f"artifact://sha256/{object_ref.sha256}",
+        sha256=object_ref.sha256,
+        size_bytes=object_ref.size_bytes,
+        uri=str(dest),
     )
 
 
@@ -215,9 +200,9 @@ def migrate_path_backed_content(
             raise ArtifactBlobContainmentError(
                 f"path-backed migration source must be one canonical regular non-link file: {path}"
             )
-        data = path.read_bytes()
+        object_ref = provider._store_file(path)
         after = path.stat(follow_symlinks=False)
-        if _file_content_identity(path) != (sha256_bytes(data), len(data)) or (
+        if (
             before.st_dev,
             before.st_ino,
             before.st_size,
@@ -233,7 +218,6 @@ def migrate_path_backed_content(
             raise ArtifactBlobIntegrityError(
                 f"path-backed migration source changed during ingest: {path}"
             )
-        object_ref = provider.store_object(data)
         refs[source_ref] = object_ref
         mappings.append(
             ContentMigrationMapping(
