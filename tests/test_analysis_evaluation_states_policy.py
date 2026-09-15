@@ -35,6 +35,7 @@ from feedbax.analysis.manifest_inputs import (
 )
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_METADATA_KEY,
+    EvaluationStatesContainerError,
     EvaluationStatesCustodyUnavailable,
     EvaluationStatesSizeMismatch,
 )
@@ -337,6 +338,99 @@ def test_require_durable_threads_typed_structure_provider_end_to_end(
             registry=missing_structure_registry,
         )
     assert excinfo.value.diagnostic.code == "custody_unavailable"
+
+
+def test_default_cache_miss_loads_typed_v3_with_recipe_structure(
+    tmp_path: Path, application_registry_bundle
+) -> None:
+    class TypedStates(NamedTuple):
+        value: object
+
+    def evaluation_recipe(run_spec, _root, _states_path, _execution_context):
+        return EvaluationRecipeResult(
+            states=TypedStates(np.asarray(run_spec.params["value"], dtype=np.int32))
+        )
+
+    application_registry_bundle.evaluation_recipes.register(EVALUATION_TYPE, evaluation_recipe)
+    manifest, _ = _evaluation(
+        tmp_path, durable=True, application_registry_bundle=application_registry_bundle
+    )
+    cache_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
+    cache_path.unlink()
+    registry = AnalysisRecipeRegistry()
+    registry.register(
+        ANALYSIS_TYPE,
+        lambda *_args: None,
+        evaluation_states_structure=lambda _: jt.structure(TypedStates(np.asarray(0))),
+    )
+
+    with patch(
+        "feedbax.analysis.specs.execute_evaluation_run_spec",
+        side_effect=AssertionError("present durable states must not be recomputed"),
+    ) as execute:
+        resolved = resolve_analysis_inputs(
+            _analysis_spec(manifest.id, policy="recompute"),
+            root=tmp_path,
+            evaluation_registry=application_registry_bundle.evaluation_recipes,
+            registry=registry,
+        )[0]
+    execute.assert_not_called()
+    assert isinstance(resolved.states, TypedStates)
+    assert int(resolved.states.value) == 3
+    assert resolved.evaluation_state_source.source_kind == "durable"
+    assert resolved.evaluation_state_source.container_schema_version == (
+        EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
+    )
+    assert cache_path.exists()
+
+    cache_path.unlink()
+    for structure_provider in (
+        None,
+        lambda _: jt.structure({"value": np.asarray(0)}),
+    ):
+        invalid_registry = AnalysisRecipeRegistry()
+        invalid_registry.register(
+            ANALYSIS_TYPE,
+            lambda *_args: None,
+            evaluation_states_structure=structure_provider,
+        )
+        with (
+            patch(
+                "feedbax.analysis.specs.execute_evaluation_run_spec",
+                side_effect=AssertionError("invalid v3 structure must not recompute"),
+            ) as execute,
+            pytest.raises(EvaluationStatesContainerError),
+        ):
+            resolve_analysis_inputs(
+                _analysis_spec(manifest.id, policy="recompute"),
+                root=tmp_path,
+                evaluation_registry=application_registry_bundle.evaluation_recipes,
+                registry=invalid_registry,
+            )
+        execute.assert_not_called()
+        assert not cache_path.exists()
+
+    non_durable, _ = _evaluation(
+        tmp_path, value=9, application_registry_bundle=application_registry_bundle
+    )
+    evaluation_states_cache_path(non_durable.id, root=tmp_path).unlink()
+
+    def unexpected_provider(_manifest):
+        raise AssertionError("no durable artifact needs no structure")
+
+    no_artifact_registry = AnalysisRecipeRegistry()
+    no_artifact_registry.register(
+        ANALYSIS_TYPE,
+        lambda *_args: None,
+        evaluation_states_structure=unexpected_provider,
+    )
+    rederived = resolve_analysis_inputs(
+        _analysis_spec(non_durable.id, policy="recompute"),
+        root=tmp_path,
+        evaluation_registry=application_registry_bundle.evaluation_recipes,
+        registry=no_artifact_registry,
+    )[0]
+    assert rederived.evaluation_state_source.source_kind == "analysis_time_recompute"
 
 
 def test_require_durable_classifies_structure_provider_failure(
