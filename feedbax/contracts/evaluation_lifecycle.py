@@ -40,7 +40,6 @@ EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_ID = "feedbax.spec.evaluation_payload
 EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_VERSION = (
     "feedbax.spec.evaluation_payload_retention_policy.v1"
 )
-DEFAULT_EVALUATION_INTERMEDIATE_GRACE_SECONDS = 24 * 60 * 60
 MAX_EVALUATION_INTERMEDIATE_GRACE_SECONDS = 7 * 24 * 60 * 60
 EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID = (
     "feedbax.orchestration.evaluation_batch_compaction_evidence"
@@ -199,9 +198,9 @@ class EvaluationPayloadRetentionPolicy(StrictModel):
     )
     default_output_disposition: Literal["keep", "discard"] = "keep"
     output_dispositions: dict[str, Literal["keep", "discard"]] = Field(default_factory=dict)
-    retain_intermediates: bool = False
-    intermediate_grace_seconds: int = Field(
-        default=DEFAULT_EVALUATION_INTERMEDIATE_GRACE_SECONDS,
+    intermediate_disposition: Literal["immediate", "grace", "keep"] = "immediate"
+    intermediate_grace_seconds: int | None = Field(
+        default=None,
         ge=60,
         le=MAX_EVALUATION_INTERMEDIATE_GRACE_SECONDS,
         strict=True,
@@ -218,7 +217,18 @@ class EvaluationPayloadRetentionPolicy(StrictModel):
             raise ValueError(
                 "evaluation retention output IDs must be non-empty and whitespace-free"
             )
+        if (self.intermediate_disposition == "grace") != (
+            self.intermediate_grace_seconds is not None
+        ):
+            raise ValueError(
+                "intermediate_grace_seconds is required only for grace disposition"
+            )
         return self
+
+    @property
+    def retain_intermediates(self) -> bool:
+        """Return whether consumed intermediates remain durably rooted."""
+        return self.intermediate_disposition == "keep"
 
     def disposition_for(self, output_id: str) -> Literal["keep", "discard"]:
         """Return one declared leaf's explicit override or the authored default."""
@@ -585,7 +595,6 @@ __all__ = [
     "EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION_V4",
     "EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_ID",
     "EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_VERSION",
-    "DEFAULT_EVALUATION_INTERMEDIATE_GRACE_SECONDS",
     "MAX_EVALUATION_INTERMEDIATE_GRACE_SECONDS",
     "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_ID",
     "EVALUATION_BATCH_COMPACTION_EVIDENCE_SCHEMA_VERSION",

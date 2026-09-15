@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from feedbax.plugins.application import ApplicationRegistryBundle
 
 from feedbax.analysis.rendering import render_markdown_note
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.base import (
     ArtifactMigrationRecord,
     ArtifactRef,
@@ -44,7 +45,6 @@ from feedbax.contracts.manifest import (
     RegenerationSpec,
     write_manifest,
 )
-from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 CustodyMode = Literal["manifest", "content-addressed"]
 SUPPORTED_EXECUTION_POLICY_OVERRIDE_FLAG = "--allow-large-per-row"
@@ -1363,7 +1363,7 @@ def main(
                             update={
                                 "retained_intermediate_ids": (
                                     *retention.retained_intermediate_ids,
-                                    *evaluation_records,
+                                    *(f"evaluation/{record_id}" for record_id in evaluation_records),
                                 )
                             }
                         )
@@ -1372,7 +1372,7 @@ def main(
                             update={
                                 "temporary_lease_ids": (
                                     *retention.temporary_lease_ids,
-                                    *evaluation_records,
+                                    *(f"evaluation/{record_id}" for record_id in evaluation_records),
                                 )
                             }
                         )
@@ -1406,6 +1406,21 @@ def main(
                     json.dumps(compaction.model_dump(mode="json"), indent=2, sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
+                if retention is not None and retention.temporary_lease_ids:
+                    from datetime import datetime, timedelta, timezone
+                    from feedbax.analysis.evaluation_compaction import (
+                        launch_evaluation_payload_recovery,
+                    )
+
+                    launch_evaluation_payload_recovery(
+                        retention,
+                        compaction_root=compaction_root,
+                        evaluation_root=Path(args.manifest_root),
+                        ready_path=Path(args.lifecycle_result).with_name(
+                            "evaluation-payload-retention-ready"
+                        ),
+                        fallback_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                    )
                 result = None
             else:
                 result = execute_evaluation_run_matrix(

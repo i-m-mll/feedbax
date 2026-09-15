@@ -6515,7 +6515,7 @@ def _migrate_evaluation_matrix_batch_plan_v2(payload: dict[str, Any]) -> dict[st
 
 
 def _migrate_evaluation_matrix_batch_plan_v4(payload: dict[str, Any]) -> dict[str, Any]:
-    """Adopt keep-final, bounded-intermediate defaults for existing v4 plans."""
+    """Preserve retain-all semantics for plans authored before disposal existed."""
     migrated = deepcopy(payload)
     migrated["schema_version"] = EVALUATION_MATRIX_BATCH_PLAN_SCHEMA_VERSION
     migrated["retention"] = {
@@ -6523,8 +6523,8 @@ def _migrate_evaluation_matrix_batch_plan_v4(payload: dict[str, Any]) -> dict[st
         "schema_version": EVALUATION_PAYLOAD_RETENTION_POLICY_SCHEMA_VERSION,
         "default_output_disposition": "keep",
         "output_dispositions": {},
-        "retain_intermediates": False,
-        "intermediate_grace_seconds": 24 * 60 * 60,
+        "intermediate_disposition": "keep",
+        "intermediate_grace_seconds": None,
     }
     return migrated
 

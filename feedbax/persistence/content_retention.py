@@ -1,10 +1,13 @@
-"""Transactional retention and manual garbage collection for the canonical CAS."""
+"""Transactional retention and exact lease-driven collection for the canonical CAS."""
 
 from __future__ import annotations
 
 import hashlib
 import os
 import stat
+import subprocess
+import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +54,18 @@ def _quarantine_path(
     digest: str,
 ) -> Path:
     return provider.root / "retention" / "quarantine" / pending.domain / pending.receipt_id / digest
+
+
+def _automatic_job_path(provider: ImmutableArtifactBlobProvider, job_id: str) -> Path:
+    return provider.root / "retention" / "automatic-collections" / f"{job_id}.json"
+
+
+def _is_single_regular_file(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    return stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1
 
 
 def _read_index(provider: ImmutableArtifactBlobProvider) -> ContentRetentionIndex:
@@ -462,6 +477,7 @@ def _live_closure(
     index: ContentRetentionIndex,
     *,
     now: datetime,
+    release_lease_ids: tuple[str, ...] = (),
 ) -> tuple[
     set[str],
     set[str],
@@ -475,6 +491,10 @@ def _live_closure(
     expired_release: set[str] = set()
     expired_lease_ids: list[str] = []
     errors: list[str] = []
+    release_scope = set(release_lease_ids)
+    known_lease_ids = {item.lease_id for item in index.leases}
+    for lease_id in sorted(release_scope - known_lease_ids):
+        errors.append(f"scoped release lease is unavailable: {lease_id}")
     roots = tuple(item.root_id for item in index.roots if not item.released)
     leases = tuple(
         item.lease_id
@@ -494,7 +514,7 @@ def _live_closure(
         if isinstance(record, ContentLeaseRecord) and record.expires_at <= now:
             if record.expiry_disposition == "block":
                 errors.append(f"lease expired without explicit release: {record.lease_id}")
-            else:
+            elif not release_scope or record.lease_id in release_scope:
                 expired_lease_ids.append(record.lease_id)
                 try:
                     expired_release.update(_validate_targets(provider, record.targets))
@@ -611,6 +631,7 @@ def collect_garbage(
             provider,
             index,
             now=observed_at,
+            release_lease_ids=request.release_lease_ids,
         )
         errors.extend(live_errors)
         decisions = tuple(
@@ -618,14 +639,23 @@ def collect_garbage(
                 object_id=f"{CONTENT_OBJECT_REF_PREFIX}{digest}",
                 sha256=digest,
                 size_bytes=size,
-                decision="live" if digest in live else "candidate",
+                decision=(
+                    "live"
+                    if digest in live
+                    or (request.release_lease_ids and digest not in expired_release)
+                    else "candidate"
+                ),
                 reason=(
                     "reachable from explicit custody"
                     if digest in live
                     else (
                         "time-bounded lease expired"
                         if digest in expired_release
-                        else "unreferenced"
+                        else (
+                            "outside exact lease-release scope"
+                            if request.release_lease_ids
+                            else "unreferenced"
+                        )
                     )
                 ),
             )
@@ -705,6 +735,182 @@ def recover_garbage_collection(provider: ImmutableArtifactBlobProvider) -> Conte
         if index.pending_gc is None:
             return None
         return _recover_locked(provider, index)
+
+
+def _active_release_leases(
+    provider: ImmutableArtifactBlobProvider,
+    lease_ids: tuple[str, ...],
+) -> tuple[ContentLeaseRecord, ...]:
+    with provider._exclusive_lock():
+        index = _read_index(provider)
+        if index.pending_gc is not None:
+            _recover_locked(provider, index)
+            index = _read_index(provider)
+        by_id = {item.lease_id: item for item in index.leases}
+        missing = [lease_id for lease_id in lease_ids if lease_id not in by_id]
+        if missing:
+            raise ContentRetentionError(
+                f"automatic release leases are unavailable: {missing!r}"
+            )
+        active = tuple(by_id[lease_id] for lease_id in lease_ids if not by_id[lease_id].released)
+        invalid = [
+            lease.lease_id for lease in active if lease.expiry_disposition != "release"
+        ]
+        if invalid:
+            raise ContentRetentionError(
+                f"automatic release leases lack release disposition: {invalid!r}"
+            )
+        return active
+
+
+def collect_release_leases(
+    provider: ImmutableArtifactBlobProvider,
+    lease_ids: tuple[str, ...],
+    *,
+    now: datetime | None = None,
+) -> ContentGcReceipt | None:
+    """Collect only objects made unreachable by the named expired release leases."""
+    canonical_ids = tuple(sorted(set(lease_ids)))
+    if canonical_ids != lease_ids or not canonical_ids:
+        raise ContentRetentionError("lease IDs must be nonempty, unique, and canonically ordered")
+    supplied_now = now or datetime.now(timezone.utc)
+    if supplied_now.tzinfo is None or supplied_now.utcoffset() is None:
+        raise ContentRetentionError("lease collection time must be timezone-aware")
+    observed_at = supplied_now.astimezone(timezone.utc)
+    for _attempt in range(8):
+        active = _active_release_leases(provider, canonical_ids)
+        if not active:
+            return None
+        future = [lease.lease_id for lease in active if lease.expires_at > observed_at]
+        if future:
+            raise ContentRetentionError(f"automatic release leases have not expired: {future!r}")
+        request = ContentGcRequest(release_lease_ids=canonical_ids)
+        report = collect_garbage(provider, request, now=observed_at)
+        if report.errors:
+            raise ContentRetentionError("; ".join(report.errors))
+        result = collect_garbage(
+            provider,
+            request.model_copy(
+                update={"destructive": True, "expected_generation": report.generation}
+            ),
+            now=observed_at,
+        )
+        if not result.errors:
+            if not _active_release_leases(provider, canonical_ids):
+                return result
+            continue
+        if result.errors != ("retention generation drifted after candidate reporting",):
+            raise ContentRetentionError("; ".join(result.errors))
+    raise ContentRetentionError("retention generation kept drifting during lease collection")
+
+
+def run_scheduled_lease_collection(
+    root: Path,
+    lease_ids: tuple[str, ...],
+    *,
+    retry_seconds: float = 60.0,
+    ready_path: Path | None = None,
+    fallback_at: datetime | None = None,
+) -> None:
+    """Wait for named durable leases and retry exact collection until they are released."""
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+    provider = ImmutableArtifactBlobProvider(root.absolute())
+    while True:
+        try:
+            if not _index_path(provider).exists():
+                return
+            active = _active_release_leases(provider, lease_ids)
+            if not active:
+                return
+            now = datetime.now(timezone.utc)
+            next_expiry = min(lease.expires_at for lease in active)
+            if ready_path is not None and not _is_single_regular_file(ready_path):
+                if fallback_at is None:
+                    raise ContentRetentionError("gated collection requires a fallback deadline")
+                next_expiry = max(next_expiry, fallback_at)
+            if next_expiry > now:
+                poll_seconds = 1.0 if ready_path is not None else retry_seconds
+                time.sleep(min(poll_seconds, (next_expiry - now).total_seconds()))
+                continue
+            due_ids = tuple(
+                sorted(lease.lease_id for lease in active if lease.expires_at <= now)
+            )
+            collect_release_leases(provider, due_ids, now=now)
+        except Exception as exc:
+            print(f"automatic lease collection retry: {exc}", file=sys.stderr, flush=True)
+            time.sleep(retry_seconds)
+
+
+def launch_scheduled_lease_collection(
+    root: Path,
+    lease_ids: tuple[str, ...],
+    *,
+    ready_path: Path | None = None,
+    fallback_at: datetime | None = None,
+) -> int:
+    """Launch one detached waiter for exact durable release leases."""
+    canonical_ids = tuple(sorted(set(lease_ids)))
+    if canonical_ids != lease_ids or not canonical_ids:
+        raise ContentRetentionError("lease IDs must be nonempty, unique, and canonically ordered")
+    provider = __import__(
+        "feedbax.persistence.artifact_custody", fromlist=["ImmutableArtifactBlobProvider"]
+    ).ImmutableArtifactBlobProvider(root.absolute())
+    _active_release_leases(provider, canonical_ids)
+    if (ready_path is None) != (fallback_at is None):
+        raise ContentRetentionError("ready_path and fallback_at must be supplied together")
+    if fallback_at is not None and (
+        fallback_at.tzinfo is None or fallback_at.utcoffset() is None
+    ):
+        raise ContentRetentionError("automatic collection fallback must be timezone-aware")
+    job_payload = {
+        "root": str(provider.root),
+        "lease_ids": list(canonical_ids),
+        "ready_path": str(ready_path.absolute()) if ready_path is not None else None,
+        "fallback_at": (
+            fallback_at.astimezone(timezone.utc).isoformat()
+            if fallback_at is not None
+            else None
+        ),
+    }
+    job_bytes = canonical_json_v1_bytes(job_payload)
+    job_path = _automatic_job_path(provider, hashlib.sha256(job_bytes).hexdigest())
+    if _is_single_regular_file(job_path):
+        if job_path.read_bytes() != job_bytes:
+            raise ContentRetentionError("automatic collection job identity drifted")
+    elif job_path.exists():
+        raise ContentRetentionError("automatic collection job path is unsafe")
+    else:
+        _write_new_or_replace(provider, job_path, job_bytes)
+    log_path = provider.root / "retention" / "automatic-collection.log"
+    _ensure_store_directory(provider, log_path.parent)
+    if log_path.exists() and not _is_single_regular_file(log_path):
+        raise ContentRetentionError("automatic collection log path is unsafe")
+    log_descriptor = os.open(
+        log_path,
+        os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+        0o600,
+    )
+    log_metadata = os.fstat(log_descriptor)
+    if not stat.S_ISREG(log_metadata.st_mode) or log_metadata.st_nlink != 1:
+        os.close(log_descriptor)
+        raise ContentRetentionError("automatic collection log identity is unsafe")
+    with os.fdopen(log_descriptor, "ab", buffering=0) as log:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "feedbax.persistence.content_retention",
+                "--automatic-release-job",
+                str(job_path),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+            close_fds=True,
+        )
+    return process.pid
 
 
 def _recover_locked(
@@ -841,7 +1047,9 @@ def _recover_locked(
 __all__ = [
     "ContentRetentionError",
     "acquire_lease",
+    "collect_release_leases",
     "collect_garbage",
+    "launch_scheduled_lease_collection",
     "place_hold",
     "recover_garbage_collection",
     "register_root",
@@ -849,6 +1057,52 @@ __all__ = [
     "release_lease",
     "release_root",
     "renew_lease",
+    "run_scheduled_lease_collection",
     "schedule_lease_release",
     "set_run_state",
 ]
+
+
+def _main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--automatic-release-job", type=Path, required=True)
+    arguments = parser.parse_args()
+    job_path = arguments.automatic_release_job.absolute()
+    raw = job_path.read_bytes()
+    payload = strict_json_loads(raw.decode("utf-8"), ref=str(job_path))
+    if raw != canonical_json_v1_bytes(payload):
+        raise ContentRetentionError("automatic collection job is not canonical")
+    if not isinstance(payload, dict):
+        raise ContentRetentionError("automatic collection job must be an object")
+    if job_path.stem != hashlib.sha256(raw).hexdigest():
+        raise ContentRetentionError("automatic collection job filename does not match its bytes")
+    root_value = payload.get("root")
+    if not isinstance(root_value, str) or not Path(root_value).is_absolute():
+        raise ContentRetentionError("automatic collection job root is invalid")
+    lease_ids = payload.get("lease_ids")
+    if not isinstance(lease_ids, list) or not all(isinstance(item, str) for item in lease_ids):
+        raise ContentRetentionError("automatic collection job lease IDs are invalid")
+    if tuple(lease_ids) != tuple(sorted(set(lease_ids))):
+        raise ContentRetentionError("automatic collection job lease IDs are not canonical")
+    ready_value = payload.get("ready_path")
+    fallback_value = payload.get("fallback_at")
+    ready_path = Path(ready_value) if isinstance(ready_value, str) else None
+    fallback_at = (
+        datetime.fromisoformat(fallback_value) if isinstance(fallback_value, str) else None
+    )
+    run_scheduled_lease_collection(
+        Path(root_value),
+        tuple(lease_ids),
+        ready_path=ready_path,
+        fallback_at=fallback_at,
+    )
+    try:
+        job_path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+if __name__ == "__main__":
+    _main()

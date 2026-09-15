@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -189,7 +190,6 @@ def test_expired_lease_is_ambiguous_until_explicit_release(tmp_path: Path) -> No
             expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
         )
     )
-
     report = provider.collect_garbage()
     assert report.stage == "no-op"
     assert "expired without explicit release" in report.errors[0]
@@ -275,6 +275,91 @@ def test_scheduled_release_is_idempotent_and_cannot_be_extended_by_retry(
     assert retried == first
     assert reacquired == first
     assert first.expiry_disposition == "release"
+
+
+def test_exact_lease_collection_does_not_sweep_unrelated_unrooted_content(
+    tmp_path: Path,
+) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "store")
+    selected = provider.store_object(b"selected")
+    unrelated = provider.store_object(b"unrelated legacy payload")
+    now = datetime.now(timezone.utc)
+    provider.acquire_lease(
+        ContentLeaseRecord(
+            lease_id="lease:selected",
+            owner="evaluation",
+            targets=(_object_target(selected),),
+            expires_at=now - timedelta(seconds=1),
+            expiry_disposition="release",
+        )
+    )
+    provider.acquire_lease(
+        ContentLeaseRecord(
+            lease_id="lease:unrelated-old-policy",
+            owner="legacy",
+            targets=(_object_target(unrelated),),
+            expires_at=now - timedelta(days=1),
+            expiry_disposition="release",
+        )
+    )
+
+    result = retention_module.collect_release_leases(
+        provider,
+        ("lease:selected",),
+        now=now,
+    )
+
+    assert result is not None and result.stage == "swept"
+    assert [item.sha256 for item in result.decisions] == [selected.sha256]
+    assert not _path(provider, selected.sha256).exists()
+    assert provider.get_object(unrelated) == b"unrelated legacy payload"
+
+
+def test_scheduled_lease_collection_waiter_reclaims_due_content(tmp_path: Path) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "store")
+    reference = provider.store_object(b"short grace")
+    provider.acquire_lease(
+        ContentLeaseRecord(
+            lease_id="lease:short-grace",
+            owner="evaluation",
+            targets=(_object_target(reference),),
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+            expiry_disposition="release",
+        )
+    )
+
+    retention_module.run_scheduled_lease_collection(
+        provider.root,
+        ("lease:short-grace",),
+        retry_seconds=0.01,
+    )
+
+    assert not _path(provider, reference.sha256).exists()
+
+
+def test_detached_scheduled_collection_reclaims_without_parent_activity(tmp_path: Path) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "store")
+    reference = provider.store_object(b"detached grace")
+    provider.acquire_lease(
+        ContentLeaseRecord(
+            lease_id="lease:detached",
+            owner="evaluation",
+            targets=(_object_target(reference),),
+            expires_at=datetime.now(timezone.utc) + timedelta(milliseconds=100),
+            expiry_disposition="release",
+        )
+    )
+
+    pid = retention_module.launch_scheduled_lease_collection(
+        provider.root,
+        ("lease:detached",),
+    )
+
+    assert pid > 0
+    deadline = time.monotonic() + 5
+    while _path(provider, reference.sha256).exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not _path(provider, reference.sha256).exists()
 
 
 def test_nonterminal_restartable_run_requires_durable_terminal_release(tmp_path: Path) -> None:

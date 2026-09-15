@@ -1091,6 +1091,24 @@ PLUGIN_REGISTRATION = PluginRegistration(
     assert compaction["retention"]["retained_output_ids"] == ["trajectory", "velocity"]
     assert compaction["retention"]["disposable_output_ids"] == []
     assert compaction["retention"]["temporary_lease_ids"]
+    evaluation_leases = []
+    for index_path in run_root.rglob("retention/index.json"):
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        provider_root = index_path.parents[1]
+        for lease in index["leases"]:
+            if lease["owner"] not in {
+                "feedbax.evaluation.compaction",
+                "evaluation-compaction",
+            }:
+                continue
+            evaluation_leases.append(lease)
+            assert lease["released"] is True
+            for target in lease["targets"]:
+                digest = target["object"]["sha256"]
+                assert not (
+                    provider_root / "artifacts" / "sha256" / digest[:2] / digest
+                ).exists()
+    assert evaluation_leases
     replay = compaction["retention"]["replay"]
     assert replay["canonical_executor"] == "python -m feedbax matrix-harness"
     run_bundle = json.loads((run_root / "bundle.json").read_text(encoding="utf-8"))

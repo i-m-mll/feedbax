@@ -327,11 +327,14 @@ class ContentGcRequest(StrictModel):
     domain: Literal["canonical", "remote-attempt-cache"] = "canonical"
     destructive: bool = False
     expected_generation: int | None = Field(default=None, ge=0)
+    release_lease_ids: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _require_generation(self) -> "ContentGcRequest":
         if self.destructive and self.expected_generation is None:
             raise ValueError("destructive GC requires expected_generation from a dry-run receipt")
+        if tuple(sorted(set(self.release_lease_ids))) != self.release_lease_ids:
+            raise ValueError("release_lease_ids must be unique and canonically ordered")
         return self
 
 

@@ -343,7 +343,7 @@ def test_consumed_durable_batch_states_become_bounded_gc_candidates(
     )
 
     assert len(record_ids) == 1
-    assert record_ids[0].startswith("evaluation-intermediates-grace:")
+    assert record_ids[0].startswith("evaluation-intermediates-release:")
     provider = ImmutableArtifactBlobProvider(root)
     before = provider.collect_garbage(now=now)
     assert before.stage == "reported"

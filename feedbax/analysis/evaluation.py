@@ -989,7 +989,7 @@ def finalize_evaluation_batch_retention(
     provider.set_run_state(root_id, nonterminal=False, restartable=False)
     if retain_intermediates:
         return (root_id,)
-    lease_id = f"evaluation-intermediates-grace:{root_digest}"
+    lease_id = f"evaluation-intermediates-release:{root_digest}"
     provider.acquire_lease(
         ContentLeaseRecord(
             lease_id=lease_id,

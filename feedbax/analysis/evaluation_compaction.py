@@ -24,6 +24,7 @@ from feedbax.contracts.evaluation_lifecycle import (
     EvaluationPayloadRetentionEvidence,
     EvaluationPayloadRetentionPolicy,
     EvaluationReplayIdentity,
+    MAX_EVALUATION_INTERMEDIATE_GRACE_SECONDS,
 )
 from feedbax.contracts.artifact_custody import (
     CONTENT_OBJECT_REF_PREFIX,
@@ -495,12 +496,13 @@ def reclaim_evaluation_batch_caches(
             )
             for outcome in outcomes
         )
+        completed_at = datetime.now(timezone.utc)
+        grace_seconds = policy.intermediate_grace_seconds or 0
         retention_record_ids = finalize_evaluation_batch_retention(
             evaluation_manifests,
             root=evaluation_custody_root,
             retain_intermediates=policy.retain_intermediates,
-            grace_expires_at=datetime.now(timezone.utc)
-            + timedelta(seconds=policy.intermediate_grace_seconds),
+            grace_expires_at=completed_at + timedelta(seconds=grace_seconds),
             manifest_sha256s=tuple(
                 sha256_bytes(Path(outcome.manifest_path).read_bytes()) for outcome in outcomes
             ),
@@ -829,8 +831,9 @@ def apply_evaluation_payload_retention(
         completed_at = datetime.now(timezone.utc)
     if completed_at.tzinfo is None or completed_at.utcoffset() is None:
         raise ValueError("evaluation retention completion time must be timezone-aware")
-    expires_at = completed_at.astimezone(timezone.utc) + timedelta(
-        seconds=policy.intermediate_grace_seconds
+    completed_at = completed_at.astimezone(timezone.utc)
+    grace_expires_at = completed_at + timedelta(
+        seconds=policy.intermediate_grace_seconds or 0
     )
     provider = ImmutableArtifactBlobProvider(custody_root)
     analysis_provider = ImmutableArtifactBlobProvider((custody_root / "analysis").absolute())
@@ -869,13 +872,13 @@ def apply_evaluation_payload_retention(
             )
             retained_outputs.append(output_id)
         else:
-            lease_id = f"evaluation-output-grace:{replay.execution_hash}:{output_id}"
+            lease_id = f"evaluation-output-release:{replay.execution_hash}:{output_id}"
             analysis_provider.acquire_lease(
                 ContentLeaseRecord(
                     lease_id=lease_id,
                     owner="feedbax.evaluation.compaction",
                     targets=tuple(_artifact_target(artifact) for artifact in manifest.artifacts),
-                    expires_at=expires_at,
+                    expires_at=completed_at,
                     expiry_disposition="release",
                 )
             )
@@ -908,7 +911,7 @@ def apply_evaluation_payload_retention(
                 provider.release_lease(lease_id)
                 retained_intermediates.append(lease_id)
             else:
-                provider.schedule_lease_release(lease_id, expires_at=expires_at)
+                provider.schedule_lease_release(lease_id, expires_at=grace_expires_at)
                 temporary_leases.append(lease_id)
 
     return EvaluationPayloadRetentionEvidence(
@@ -919,6 +922,87 @@ def apply_evaluation_payload_retention(
         retained_intermediate_ids=tuple(retained_intermediates),
         temporary_lease_ids=tuple(temporary_leases),
     )
+
+
+def activate_evaluation_payload_collection(
+    evidence: EvaluationPayloadRetentionEvidence,
+    *,
+    compaction_root: Path,
+    evaluation_root: Path | None = None,
+    schedule_grace: bool = True,
+) -> None:
+    """Execute or schedule only the disposable leases named by terminal evidence."""
+    from feedbax.persistence.content_retention import (
+        collect_release_leases,
+        launch_scheduled_lease_collection,
+    )
+
+    immediate: dict[Path, list[str]] = {}
+    scheduled: dict[Path, list[str]] = {}
+    for lease_ref in evidence.temporary_lease_ids:
+        if lease_ref.startswith("analysis/"):
+            root = (compaction_root / "analysis").absolute()
+            lease_id = lease_ref.removeprefix("analysis/")
+            target = immediate
+        elif lease_ref.startswith("evaluation/"):
+            if evaluation_root is None:
+                continue
+            root = evaluation_root.absolute()
+            lease_id = lease_ref.removeprefix("evaluation/")
+            target = (
+                immediate
+                if evidence.policy.intermediate_disposition == "immediate"
+                else scheduled
+            )
+        else:
+            root = compaction_root.absolute()
+            lease_id = lease_ref
+            target = (
+                immediate
+                if evidence.policy.intermediate_disposition == "immediate"
+                else scheduled
+            )
+        target.setdefault(root, []).append(lease_id)
+    for root, lease_ids in sorted(immediate.items(), key=lambda item: str(item[0])):
+        collect_release_leases(
+            ImmutableArtifactBlobProvider(root),
+            tuple(sorted(lease_ids)),
+        )
+    if schedule_grace:
+        for root, lease_ids in sorted(scheduled.items(), key=lambda item: str(item[0])):
+            launch_scheduled_lease_collection(root, tuple(sorted(lease_ids)))
+
+
+def launch_evaluation_payload_recovery(
+    evidence: EvaluationPayloadRetentionEvidence,
+    *,
+    compaction_root: Path,
+    evaluation_root: Path,
+    ready_path: Path,
+    fallback_at: datetime,
+) -> None:
+    """Keep exact disposable leases reclaimable after worker crash or idle."""
+    from feedbax.persistence.content_retention import launch_scheduled_lease_collection
+
+    groups: dict[Path, list[str]] = {}
+    for lease_ref in evidence.temporary_lease_ids:
+        if lease_ref.startswith("analysis/"):
+            root = (compaction_root / "analysis").absolute()
+            lease_id = lease_ref.removeprefix("analysis/")
+        elif lease_ref.startswith("evaluation/"):
+            root = evaluation_root.absolute()
+            lease_id = lease_ref.removeprefix("evaluation/")
+        else:
+            root = compaction_root.absolute()
+            lease_id = lease_ref
+        groups.setdefault(root, []).append(lease_id)
+    for root, lease_ids in sorted(groups.items(), key=lambda item: str(item[0])):
+        launch_scheduled_lease_collection(
+            root,
+            tuple(sorted(lease_ids)),
+            ready_path=ready_path,
+            fallback_at=fallback_at,
+        )
 
 
 def _artifact_target(artifact: ArtifactRef) -> ContentRetentionTarget:
@@ -956,7 +1040,10 @@ def _acquire_intermediate_lease(
             owner="feedbax.evaluation.compaction",
             targets=(_artifact_target(artifact),),
             expires_at=datetime.now(timezone.utc)
-            + timedelta(seconds=policy.intermediate_grace_seconds),
+            + timedelta(
+                seconds=policy.intermediate_grace_seconds
+                or MAX_EVALUATION_INTERMEDIATE_GRACE_SECONDS
+            ),
             expiry_disposition="block",
         )
     )

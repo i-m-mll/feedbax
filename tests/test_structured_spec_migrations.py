@@ -556,8 +556,9 @@ def test_evaluation_batch_plan_v4_migrates_to_explicit_retention_defaults() -> N
     plan = EvaluationMatrixBatchPlan.model_validate(migrated.payload)
 
     assert plan.retention.default_output_disposition == "keep"
-    assert plan.retention.intermediate_grace_seconds == 86400
-    assert not plan.retention.retain_intermediates
+    assert plan.retention.intermediate_grace_seconds is None
+    assert plan.retention.intermediate_disposition == "keep"
+    assert plan.retention.retain_intermediates
     assert [record.migration_id for record in migrated.migration_records] == [
         "evaluation-matrix-batch-plan-v4-to-v5-payload-retention"
     ]

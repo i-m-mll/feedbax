@@ -215,12 +215,18 @@ def test_retention_policy_defaults_outputs_to_keep_and_bounds_disposable_grace()
         consumers=(declaration,),
         retention=EvaluationPayloadRetentionPolicy(
             output_dispositions={"velocity": "discard"},
+            intermediate_disposition="grace",
             intermediate_grace_seconds=60,
         ),
     )
 
     assert plan.retention.disposition_for("velocity") == "discard"
     assert plan.retention.disposition_for("other") == "keep"
+    assert plan.retention.intermediate_disposition == "grace"
+    assert EvaluationPayloadRetentionPolicy().intermediate_disposition == "immediate"
+    assert EvaluationPayloadRetentionPolicy(
+        intermediate_disposition="keep"
+    ).retain_intermediates
     with pytest.raises(ValidationError, match="undeclared terminal leaves"):
         EvaluationMatrixBatchPlan.model_validate(
             {
@@ -232,7 +238,12 @@ def test_retention_policy_defaults_outputs_to_keep_and_bounds_disposable_grace()
             }
         )
     with pytest.raises(ValidationError, match="less than or equal to 604800"):
-        EvaluationPayloadRetentionPolicy(intermediate_grace_seconds=604801)
+        EvaluationPayloadRetentionPolicy(
+            intermediate_disposition="grace",
+            intermediate_grace_seconds=604801,
+        )
+    with pytest.raises(ValidationError, match="required only for grace"):
+        EvaluationPayloadRetentionPolicy(intermediate_disposition="grace")
     with pytest.raises(ValidationError, match="execution_envelope"):
         EvaluationReplayIdentity.model_validate(
             {
