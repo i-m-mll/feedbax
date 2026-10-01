@@ -80,7 +80,6 @@ PACKAGE_NAME = "vantry_study"
 EXPECTED_INIT_INVENTORY: tuple[str, ...] = (
     ".gitignore",
     "AGENTS.md",
-    "CLAUDE.md",
     "ci/feedbax-science-surface.toml",
     "feedbax.project.json",
     "pyproject.toml",
@@ -451,16 +450,16 @@ def test_the_wheel_ships_the_agent_instruction_template(
 # --------------------------------------------------------------------------
 
 
-def test_init_creates_exactly_the_eight_entries(initialized: ColdStartProject) -> None:
-    """An empty directory gets the complete eight-entry project contract."""
+def test_init_creates_exactly_the_seven_entries(initialized: ColdStartProject) -> None:
+    """An empty directory gets the complete seven-entry project contract."""
     created = sorted(
         path.relative_to(initialized.root).as_posix()
         for path in initialized.root.rglob("*")
         if path.is_file() or path.is_symlink()
     )
     assert created == sorted(EXPECTED_INIT_INVENTORY)
-    assert (initialized.root / "CLAUDE.md").is_symlink()
-    assert os.readlink(initialized.root / "CLAUDE.md") == "AGENTS.md"
+    assert (initialized.root / "AGENTS.md").is_file()
+    assert not (initialized.root / "CLAUDE.md").exists()
     assert not (initialized.root / "generated").exists()
     assert not (initialized.root / ".git").exists()
     assert (initialized.root / ".gitignore").read_text(encoding="utf-8") == "/generated/\n"

@@ -34,7 +34,7 @@ PLUGIN_API_START = "<!-- plugin-api-inventory:start -->"
 PLUGIN_API_END = "<!-- plugin-api-inventory:end -->"
 FIGURE_API_START = "<!-- figure-api-inventory:start -->"
 FIGURE_API_END = "<!-- figure-api-inventory:end -->"
-INSTRUCTION_FILES = (ROOT / "AGENTS.md", ROOT / "CLAUDE.md")
+INSTRUCTION_FILE = ROOT / "AGENTS.md"
 POLICY_DOCUMENT = ROOT / "docs" / "design" / "downstream_interface_stability.md"
 FIXTURE_ROOT = ROOT / "external" / "feedbax_conformance_fixture"
 sys.path.insert(0, str(FIXTURE_ROOT / "src"))
@@ -437,9 +437,7 @@ def _check_boundary_obligations(payload: dict[str, object]) -> None:
 
 
 def check_policy() -> None:
-    blocks = [_marked_block(path, START, END) for path in INSTRUCTION_FILES]
-    if blocks[0] != blocks[1]:
-        raise ValueError("Feedbax downstream-stability instruction blocks differ")
+    instruction_block = _marked_block(INSTRUCTION_FILE, START, END)
 
     bootstrap = _literal_assignments(ROOT / "feedbax" / "plugins" / "bootstrap.py")
     expected = {
@@ -473,7 +471,6 @@ def check_policy() -> None:
         if fields.get(name) != value:
             raise ValueError(f"policy field {name!r} drifted: {fields.get(name)!r} != {value!r}")
 
-    instruction_block = blocks[0]
     for value in (
         str(expected["policy_id"]),
         f"version `{expected['current']}`",

@@ -311,22 +311,18 @@ def _resolved_target(path: Path) -> Path:
 def plan_agent_files(root: Path) -> AgentFilePlan:
     """Decide which real files hold this repository's instructions.
 
-    The rules are deliberately timid. A new repository gets one real
-    ``AGENTS.md`` and a relative ``CLAUDE.md`` link beside it. An existing
-    symlink is followed to its real target rather than repointed. When only one
-    of the two exists, the missing one becomes a link to the one that does. When
-    both exist as regular files, both are written and neither is merged,
-    discarded, or converted — divergent human text is never resolved by a tool.
+    A new repository gets one real ``AGENTS.md``. An existing ``AGENTS.md``
+    remains the sole root instruction file. Legacy ``CLAUDE.md`` files and
+    symlinks are followed or preserved without deleting human text or changing
+    their targets; two regular files are never merged automatically.
     """
     agents, claude = (root / name for name in AGENT_FILE_NAMES)
     agents_here = agents.exists() or agents.is_symlink()
     claude_here = claude.exists() or claude.is_symlink()
     if not agents_here and not claude_here:
-        return AgentFilePlan(targets=(agents,), links=((claude, AGENT_FILE_NAMES[0]),))
+        return AgentFilePlan(targets=(agents,))
     if agents_here and not claude_here:
-        return AgentFilePlan(
-            targets=(_resolved_target(agents),), links=((claude, AGENT_FILE_NAMES[0]),)
-        )
+        return AgentFilePlan(targets=(_resolved_target(agents),))
     if claude_here and not agents_here:
         return AgentFilePlan(
             targets=(_resolved_target(claude),), links=((agents, AGENT_FILE_NAMES[1]),)

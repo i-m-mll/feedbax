@@ -1,11 +1,11 @@
 """``feedbax init``: the deterministic, transactional cold start for a project.
 
-A project that uses Feedbax needs eight things and no more: a declaration of its
+A project that uses Feedbax needs seven things and no more: a declaration of its
 layout, the budgets that bound how large an authored envelope may be, a
 root-anchored ignore rule for reproducible compiler output, a deny-by-default
 authorization for its production Python, a minimal installable package to put
-science in, and one agent instruction file reachable under both conventional
-names. This module creates exactly those, and nothing else.
+science in, and one root agent instruction file. This module creates exactly
+those, and nothing else.
 
 What it deliberately does *not* create is the point. No example envelope, no
 fake base, no placeholder science, no project-local compiler or wrapper CLI, no
@@ -149,7 +149,7 @@ class ProjectInitError(Exception):
 
 @dataclass(frozen=True)
 class EntryOutcome:
-    """What one of the eight entries is, or would be, after this run."""
+    """What one of the seven entries is, or would be, after this run."""
 
     path: str
     action: str
@@ -614,7 +614,7 @@ def created_entry_paths(report: InitReport) -> tuple[str, ...]:
     return tuple(outcome.path for outcome in report.outcomes if outcome.action == "created")
 
 
-#: The eight entries a fresh ``feedbax init`` is responsible for, in report
+#: The seven entries a fresh ``feedbax init`` is responsible for, in report
 #: order. Tests assert against this rather than against prose.
 INIT_ENTRIES: tuple[str, ...] = (
     PROJECT_DECLARATION_FILENAME,
@@ -624,7 +624,6 @@ INIT_ENTRIES: tuple[str, ...] = (
     "pyproject.toml",
     "src/<package>/__init__.py",
     AGENT_FILE_NAMES[0],
-    AGENT_FILE_NAMES[1],
 )
 
 
