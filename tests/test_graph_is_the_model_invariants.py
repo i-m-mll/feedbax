@@ -1,6 +1,6 @@
 """Component-level coverage for the "graph is the model" core principle.
 
-``AGENTS.md``/``CLAUDE.md`` state the principle and three corollaries:
+``AGENTS.md`` states the principle and three corollaries:
 
 1. The graph is the model — the built artifact contains exactly the node types,
    params, and topology the spec describes; nothing is added, dropped, or

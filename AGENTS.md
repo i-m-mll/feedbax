@@ -208,9 +208,8 @@ These rules are exported to downstream projects verbatim in
 ### Test Policy
 
 <!-- feedbax-test-policy:start -->
-- This marked block is mirrored in `AGENTS.md` and `CLAUDE.md`. When changing
-  Feedbax test policy, edit both copies in the same commit and run
-  `uv run --no-sync python scripts/check_instruction_policy.py`.
+- This marked block lives in `AGENTS.md`. When changing Feedbax test policy,
+  run `uv run --no-sync python scripts/check_instruction_policy.py`.
 - While iterating on a fix, run the narrowest relevant tests first: explicit
   node IDs or paths, `-k`, `pytest --lf`, or the repo's selective runner when
   one exists.

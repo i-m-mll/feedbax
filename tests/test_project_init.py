@@ -1,4 +1,4 @@
-"""``feedbax init`` creates exactly eight things, twice, without losing user bytes.
+"""``feedbax init`` creates exactly seven things, twice, without losing user bytes.
 
 The value of an initializer is not that it saves typing; it is that the thing it
 produces is *exactly* what the framework expects, and that running it again on a
@@ -50,7 +50,7 @@ def _entries(root: Path) -> set[str]:
 # --- the exact inventory ----------------------------------------------------
 
 
-def test_a_new_project_gets_exactly_the_eight_entries(tmp_path: Path) -> None:
+def test_a_new_project_gets_exactly_the_seven_entries(tmp_path: Path) -> None:
     root = _project(tmp_path)
 
     report = project_init.initialize(root)
@@ -65,7 +65,6 @@ def test_a_new_project_gets_exactly_the_eight_entries(tmp_path: Path) -> None:
         "pyproject.toml",
         "src/spinnaker_study/__init__.py",
         "AGENTS.md",
-        "CLAUDE.md",
     }
 
 
@@ -211,16 +210,14 @@ def test_the_written_pyproject_is_a_minimal_installable_project(tmp_path: Path) 
     ]
 
 
-def test_the_agent_files_are_one_real_file_and_one_relative_link(tmp_path: Path) -> None:
+def test_the_agent_files_are_one_real_agents_file(tmp_path: Path) -> None:
     root = _project(tmp_path)
 
     project_init.initialize(root)
 
     agents, claude = (root / name for name in AGENT_FILE_NAMES)
     assert agents.is_file() and not agents.is_symlink()
-    assert claude.is_symlink()
-    assert Path(claude.readlink()) == Path(AGENT_FILE_NAMES[0])
-    assert claude.read_text() == agents.read_text()
+    assert not claude.exists() and not claude.is_symlink()
     assert classify(parse_block(agents.read_text())) is BlockStatus.FRESH
 
 
@@ -348,7 +345,7 @@ def test_a_dry_run_writes_nothing_and_reports_everything(tmp_path: Path) -> None
 
     assert report.dry_run
     assert _entries(root) == set()
-    assert {outcome.action for outcome in report.outcomes} == {"created", "linked"}
+    assert {outcome.action for outcome in report.outcomes} == {"created"}
     assert "would created" in report.describe()
 
 

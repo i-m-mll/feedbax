@@ -243,15 +243,25 @@ def test_a_locally_edited_block_is_restored_not_preserved(tmp_path: Path) -> Non
     assert ai.classify(ai.parse_block(target.read_text())) is ai.BlockStatus.FRESH
 
 
-# --- the two conventional agent files ---------------------------------------
+# --- root agent files and legacy reconciliation -------------------------------
 
 
-def test_a_new_repository_gets_one_real_file_and_one_relative_link(tmp_path: Path) -> None:
+def test_a_new_repository_gets_only_agents_md(tmp_path: Path) -> None:
     ai.install(tmp_path)
 
     agents, claude = (tmp_path / name for name in ai.AGENT_FILE_NAMES)
     assert agents.is_file() and not agents.is_symlink()
-    assert claude.is_symlink() and Path(claude.readlink()) == Path("AGENTS.md")
+    assert not claude.exists() and not claude.is_symlink()
+
+
+def test_an_existing_agents_file_does_not_gain_a_claude_link(tmp_path: Path) -> None:
+    agents = tmp_path / "AGENTS.md"
+    agents.write_text(HUMAN_ABOVE)
+
+    ai.install(tmp_path)
+
+    assert agents.read_text().endswith(HUMAN_ABOVE)
+    assert not (tmp_path / "CLAUDE.md").exists()
 
 
 def test_an_existing_symlink_is_followed_not_repointed(tmp_path: Path) -> None:
