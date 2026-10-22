@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { componentLibrary } from '@/data/components';
 import { parseContract } from '@/generated/studioContracts';
 
-describe('component registry fallback', () => {
-  it('does not carry a hand-maintained offline registry', () => {
-    expect(componentLibrary).toEqual([]);
-  });
-
+describe('component catalog transport', () => {
   it('parses representation contracts from component catalog responses', () => {
     const response = parseContract('ComponentListResponse', {
       schema_id: 'feedbax.spec.studio.api_transport',
