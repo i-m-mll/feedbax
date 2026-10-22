@@ -118,6 +118,9 @@ from feedbax.orchestration.state import (
 from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
+_FIXTURE_LOCK_BYTES = b"version = 1\n"
+
+
 class FakeRunPodTransport:
     def __init__(self) -> None:
         self.runpodctl_calls: list[tuple[str, ...]] = []
@@ -412,7 +415,7 @@ def _bundle(
     smoke_enabled: bool = False,
 ) -> RunBundle:
     lockfile = tmp_path / "uv.lock"
-    lockfile.write_bytes((Path.cwd() / "uv.lock").read_bytes())
+    lockfile.write_bytes(_FIXTURE_LOCK_BYTES)
     lockfile_sha256 = hashlib.sha256(lockfile.read_bytes()).hexdigest()
     _git_seal_ready(tmp_path, "uv.lock")
     training_config = None
@@ -607,7 +610,7 @@ def _init_snapshot_repo(root: Path) -> None:
         check=True,
     )
     (root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
-    (root / "uv.lock").write_bytes((Path.cwd() / "uv.lock").read_bytes())
+    (root / "uv.lock").write_bytes(_FIXTURE_LOCK_BYTES)
     subprocess.run(["git", "-C", str(root), "add", "tracked.txt", "uv.lock"], check=True)
     subprocess.run(
         ["git", "-C", str(root), "commit", "-m", "fixture"],
