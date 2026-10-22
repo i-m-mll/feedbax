@@ -4081,13 +4081,10 @@ def test_assert_science_repo_revision_pin_refuses_mismatch() -> None:
 
 
 def test_resolve_science_repo_import_revisions_excludes_feedbax_checkout() -> None:
-    # Feedbax itself publishes no ``feedbax.plugins`` entry points and its own
-    # checkout is always excluded, so resolution is a well-typed no-op here and
-    # never reports the host revision as an imported science revision.
-    resolved = revision.resolve_science_repo_import_revisions(())
-    assert isinstance(resolved, dict)
-    feedbax_root = str(revision._git_toplevel(revision._feedbax_package_root()))
-    assert feedbax_root not in resolved
+    resolved = revision.resolve_science_repo_import_revisions(
+        (SimpleNamespace(entry_point_value="feedbax.plugins:register"),)
+    )
+    assert resolved == {}
 
 
 def test_stage_certify_refuses_mismatched_science_repo_revision(
