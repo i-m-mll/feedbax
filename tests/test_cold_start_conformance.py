@@ -383,51 +383,40 @@ class ColdStartProject:
         return json.loads((self.root / "feedbax.project.json").read_text(encoding="utf-8"))
 
 
-@pytest.fixture(scope="module")
-def initialized(
-    framework: InstalledFramework, tmp_path_factory: pytest.TempPathFactory
-) -> ColdStartProject:
-    """Run ``feedbax init`` once in a genuinely empty directory."""
-    root = tmp_path_factory.mktemp("cold-start-init") / PROJECT_NAME
-    root.mkdir()
-    completed = framework.cli(["init", "."], cwd=root)
-    return ColdStartProject(root=root, framework=framework, init_stdout=completed.stdout)
-
-
-@pytest.fixture(scope="module")
-def authored(
-    framework: InstalledFramework, tmp_path_factory: pytest.TempPathFactory
-) -> ColdStartProject:
-    """Initialize a project, author the cold-start content, and ratify it.
-
-    Separate from :func:`initialized` on purpose: the inventory assertions must
-    see a project nobody has added anything to.
-    """
-    root = tmp_path_factory.mktemp("cold-start-authored") / PROJECT_NAME
-    root.mkdir()
-    completed = framework.cli(["init", "."], cwd=root)
+def _author_project(project: ColdStartProject) -> None:
     for relative, source in AUTHORED_SOURCES.items():
-        path = root / relative
+        path = project.root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding="utf-8")
-    policy = root / "ci" / "feedbax-science-surface.toml"
+    policy = project.root / "ci" / "feedbax-science-surface.toml"
     policy.write_text(policy.read_text(encoding="utf-8") + RATIFIED_SCIENCE_ENTRY, encoding="utf-8")
-    _git(["init", "-q", "-b", BASELINE_REF, "."], cwd=root)
-    _git(["add", "-A"], cwd=root)
-    _git(["commit", "-q", "-m", "cold start"], cwd=root)
+    _git(["add", "-A"], cwd=project.root)
+    _git(["commit", "-q", "-m", "ratify cold start"], cwd=project.root)
     _run(
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            framework.python,
-            "--no-deps",
-            root,
-        ],
-        cwd=root.parent,
+        ["uv", "pip", "install", "--python", project.framework.python, "--no-deps", project.root],
+        cwd=project.root.parent,
     )
-    return ColdStartProject(root=root, framework=framework, init_stdout=completed.stdout)
+
+
+def test_installed_cli_cold_start_lifecycle(
+    framework: InstalledFramework, tmp_path: Path
+) -> None:
+    root = tmp_path / PROJECT_NAME
+    root.mkdir()
+    completed = framework.cli(["init", "."], cwd=root)
+    project = ColdStartProject(root=root, framework=framework, init_stdout=completed.stdout)
+
+    _assert_init_inventory(project)
+    _assert_init_schema_identities(project)
+    _assert_init_authority_notice(project)
+    _assert_initialization_idempotency(project)
+    _assert_unratified_policy_refusal(project)
+    _author_project(project)
+    _assert_authoring_budget(project)
+    _assert_no_downstream_machinery(project)
+    _assert_science_surface_admission_and_rejection(project)
+    _assert_compile_plan_execute_and_reuse(project)
+    _assert_unknown_target_refusal(project)
 
 
 # --------------------------------------------------------------------------
@@ -455,7 +444,7 @@ def test_the_wheel_ships_the_agent_instruction_template(
 # --------------------------------------------------------------------------
 
 
-def test_init_creates_exactly_the_seven_entries(initialized: ColdStartProject) -> None:
+def _assert_init_inventory(initialized: ColdStartProject) -> None:
     """An empty directory gets the complete seven-entry project contract."""
     created = sorted(
         path.relative_to(initialized.root).as_posix()
@@ -470,7 +459,7 @@ def test_init_creates_exactly_the_seven_entries(initialized: ColdStartProject) -
     assert (initialized.root / ".gitignore").read_text(encoding="utf-8") == "/generated/\n"
 
 
-def test_init_states_the_schema_identity_of_everything_durable_it_writes(
+def _assert_init_schema_identities(
     initialized: ColdStartProject,
 ) -> None:
     declaration = initialized.declaration
@@ -492,26 +481,19 @@ def test_init_states_the_schema_identity_of_everything_durable_it_writes(
     assert f"schema_version = {POLICY_SCHEMA_VERSION}" in policy
 
 
-def test_init_says_out_loud_that_the_gate_is_not_yet_authoritative(
+def _assert_init_authority_notice(
     initialized: ColdStartProject,
 ) -> None:
     """A green first run that meant nothing would be worse than no run at all."""
     assert "is not authoritative until it is committed and ratified" in (initialized.init_stdout)
 
 
-def test_a_second_init_and_instructions_install_change_nothing(
-    framework: InstalledFramework, tmp_path: Path
-) -> None:
-    root = tmp_path / PROJECT_NAME
-    root.mkdir()
-    framework.cli(["init", "."], cwd=root)
-    before = _tree_digest(root)
-
-    framework.cli(["init", "."], cwd=root)
-    framework.cli(["instructions", "install", "."], cwd=root)
-
-    assert _tree_digest(root) == before
-    assert framework.cli(["instructions", "check", "."], cwd=root).returncode == 0
+def _assert_initialization_idempotency(project: ColdStartProject) -> None:
+    before = _tree_digest(project.root)
+    project.cli(["init", "."])
+    project.cli(["instructions", "install", "."])
+    assert _tree_digest(project.root) == before
+    assert project.cli(["instructions", "check", "."]).returncode == 0
 
 
 # --------------------------------------------------------------------------
@@ -519,7 +501,7 @@ def test_a_second_init_and_instructions_install_change_nothing(
 # --------------------------------------------------------------------------
 
 
-def test_the_whole_cold_start_is_tens_of_hand_authored_lines(
+def _assert_authoring_budget(
     authored: ColdStartProject,
 ) -> None:
     """Science plus base plus envelope fits inside one envelope's line budget."""
@@ -532,7 +514,7 @@ def test_the_whole_cold_start_is_tens_of_hand_authored_lines(
         assert count > 0, relative
 
 
-def test_the_project_contains_no_machinery(authored: ColdStartProject) -> None:
+def _assert_no_downstream_machinery(authored: ColdStartProject) -> None:
     """Nothing downstream compiles, parses, emits, discovers, or fulfills.
 
     Generated custody and Git's own directory are excluded: a compiled document,
@@ -563,7 +545,7 @@ def test_the_project_contains_no_machinery(authored: ColdStartProject) -> None:
         assert machinery not in science, machinery
 
 
-def test_the_science_surface_gate_admits_the_cold_start_and_refuses_machinery(
+def _assert_science_surface_admission_and_rejection(
     authored: ColdStartProject,
 ) -> None:
     """The checker itself, run through the installed CLI, is the enforcement."""
@@ -603,34 +585,17 @@ def test_the_science_surface_gate_admits_the_cold_start_and_refuses_machinery(
     assert f"src/{PACKAGE_NAME}/compiler.py" in refused.stdout
 
 
-def test_the_science_policy_is_not_authoritative_before_it_is_ratified(
-    framework: InstalledFramework, tmp_path: Path
-) -> None:
-    """The working tree's own policy never authorizes anything."""
-    root = tmp_path / PROJECT_NAME
-    root.mkdir()
-    framework.cli(["init", "."], cwd=root)
-    _git(["init", "-q", "-b", BASELINE_REF, "."], cwd=root)
-
-    check = [
-        "check-project-science-surface",
-        "--root",
-        ".",
-        "--policy",
-        "ci/feedbax-science-surface.toml",
-        "--baseline-ref",
-        BASELINE_REF,
-    ]
-    before = framework.cli(check, cwd=root, check=False)
-    assert before.returncode == 1
-    assert "has no ratified science-surface policy" in before.stdout
-
-    _git(["add", "-A"], cwd=root)
-    _git(["commit", "-q", "-m", "ratify"], cwd=root)
-
-    after = framework.cli(check, cwd=root, check=False)
-    assert after.returncode == 0
-    assert "passed" in after.stdout
+def _assert_unratified_policy_refusal(project: ColdStartProject) -> None:
+    _git(["init", "-q", "-b", BASELINE_REF, "."], cwd=project.root)
+    refused = project.cli(
+        [
+            "check-project-science-surface", "--root", ".", "--policy",
+            "ci/feedbax-science-surface.toml", "--baseline-ref", BASELINE_REF,
+        ],
+        check=False,
+    )
+    assert refused.returncode == 1
+    assert "has no ratified science-surface policy" in refused.stdout
 
 
 # --------------------------------------------------------------------------
@@ -638,7 +603,7 @@ def test_the_science_policy_is_not_authoritative_before_it_is_ratified(
 # --------------------------------------------------------------------------
 
 
-def test_one_cycle_compiles_plans_and_fulfils_through_the_installed_cli(
+def _assert_compile_plan_execute_and_reuse(
     authored: ColdStartProject,
 ) -> None:
     output_directory = str(authored.declaration["output_directory"])
@@ -667,22 +632,6 @@ def test_one_cycle_compiles_plans_and_fulfils_through_the_installed_cli(
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     assert lock["schema_id"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_ID
     assert lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
-    validated = _run(
-        [
-            authored.framework.python,
-            "-c",
-            (
-                "import json, sys; "
-                "from feedbax.contracts.experiment_compile_lock import load_compile_lock; "
-                "load_compile_lock(json.load(open(sys.argv[1])), field=sys.argv[1]); "
-                "print('lock ok')"
-            ),
-            lock_path,
-        ],
-        cwd=authored.root,
-    )
-    assert validated.stdout.strip() == "lock ok"
-
     document = json.loads(document_path.read_text(encoding="utf-8"))
     assert document["base"]["params"]["span"] == 9, "the envelope's delta did not apply"
 
@@ -692,6 +641,8 @@ def test_one_cycle_compiles_plans_and_fulfils_through_the_installed_cli(
             "-c",
             (
                 "import json, sys; "
+                "from feedbax.contracts.experiment_compile_lock import load_compile_lock; "
+                "load_compile_lock(json.load(open(sys.argv[3])), field=sys.argv[3]); "
                 "from feedbax.workflow.experiment import "
                 "plan_experiment_workflow; "
                 "plan, index = plan_experiment_workflow("
@@ -701,6 +652,7 @@ def test_one_cycle_compiles_plans_and_fulfils_through_the_installed_cli(
             ),
             "wide-tally",
             output_directory,
+            lock_path,
         ],
         cwd=authored.root,
     )
@@ -738,7 +690,7 @@ def test_one_cycle_compiles_plans_and_fulfils_through_the_installed_cli(
     assert json.loads(again.stdout)["reused"] == ["evaluation:wide-tally"]
 
 
-def test_an_unknown_target_is_a_stable_refusal_rather_than_a_crash(
+def _assert_unknown_target_refusal(
     authored: ColdStartProject,
 ) -> None:
     refused = authored.cli(
