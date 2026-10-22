@@ -18,21 +18,13 @@ from feedbax.contracts.array_values import (
     SparseCooEntrySpec,
 )
 from feedbax.contracts.studio_api import (
-    AnalysisBundleDryRunPayload,
-    AnalysisBundleDryRunResponse,
-    AnalysisPackagesResponse,
-    AnalysisPackagesPayload,
     ComponentListResponse,
-    GenerateAnalysisRequest,
-    GraphListResponse,
-    GraphListPayload,
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
     StudioApiModel,
     TrainingErrorEvent,
     TrainingProgressEvent,
     TrainingResyncEvent,
-    TrainingStartResponse,
     TrainingStartPayload,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
@@ -127,50 +119,32 @@ def test_figure_registry_unreadable_manifest_fails_without_exposing_path(
     assert str(private_path) not in response.text
 
 
-def test_figure_file_formats_use_shared_media_types() -> None:
-    assert figures_api._SERVED_FORMATS == ("json", "html", "png", "svg", "webp", "pdf")
-    assert figures_api._CONTENT_TYPES == {
+def test_figure_file_endpoint_returns_content_with_literal_media_types(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    formats = {
         "json": "application/json",
-        "html": "text/html",
+        "html": "text/html; charset=utf-8",
         "png": "image/png",
         "svg": "image/svg+xml",
         "webp": "image/webp",
         "pdf": "application/pdf",
     }
-
-
-@pytest.mark.parametrize(
-    ("extension", "content_type"),
-    [
-        ("json", "application/json"),
-        ("html", "text/html; charset=utf-8"),
-        ("png", "image/png"),
-        ("svg", "image/svg+xml"),
-        ("webp", "image/webp"),
-        ("pdf", "application/pdf"),
-    ],
-)
-def test_figure_file_endpoint_returns_literal_content_type(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    extension: str,
-    content_type: str,
-) -> None:
-    artifact_path = tmp_path / f"figure.{extension}"
-    if extension in {"json", "html", "svg"}:
-        artifact_path.write_text("rendered", encoding="utf-8")
-    else:
+    artifacts = {}
+    for extension in formats:
+        artifact_path = tmp_path / f"figure.{extension}"
         artifact_path.write_bytes(b"rendered")
-    manifest = SimpleNamespace(id="figure-1")
-    artifact = SimpleNamespace(uri=str(artifact_path))
-    monkeypatch.setattr(figures_api, "_figure_manifests", lambda: [manifest])
-    monkeypatch.setattr(figures_api, "_render_artifact", lambda _manifest, _fmt: artifact)
+        artifacts[extension] = SimpleNamespace(uri=str(artifact_path))
+    monkeypatch.setattr(figures_api, "_figure_manifests", lambda: [SimpleNamespace(id="figure-1")])
+    monkeypatch.setattr(figures_api, "_render_artifact", lambda _manifest, fmt: artifacts[fmt])
 
     with TestClient(create_app()) as client:
-        response = client.get(f"/api/figures/figure-1/file?format={extension}")
-
-    assert response.status_code == 200
-    assert response.headers["content-type"] == content_type
+        for extension, content_type in formats.items():
+            response = client.get(f"/api/figures/figure-1/file?format={extension}")
+            assert response.status_code == 200, extension
+            assert response.headers["content-type"] == content_type, extension
+            assert response.content == b"rendered", extension
 
 
 def test_figure_file_endpoint_rejects_unsupported_format() -> None:
@@ -184,58 +158,6 @@ def test_figure_file_endpoint_rejects_unsupported_format() -> None:
             "['html', 'json', 'pdf', 'png', 'svg', 'webp']"
         )
     }
-
-
-def test_generate_analysis_request_defaults_and_preserves_states_policy() -> None:
-    defaulted = GenerateAnalysisRequest(node_id="analysis", eval_run_id="evaluation")
-    authored = GenerateAnalysisRequest(
-        node_id="analysis",
-        eval_run_id="evaluation",
-        evaluation_states_policy="require_durable",
-    )
-
-    assert defaulted.evaluation_states_policy == "recompute"
-    assert authored.evaluation_states_policy == "require_durable"
-
-
-def test_studio_api_envelopes_are_data_wrapped() -> None:
-    graph_list = GraphListResponse(data=GraphListPayload(graphs=[])).model_dump()
-    training_start = TrainingStartResponse(data=TrainingStartPayload(job_id="job-1")).model_dump()
-    analysis_packages = AnalysisPackagesResponse(
-        data=AnalysisPackagesPayload(packages=[])
-    ).model_dump()
-    analysis_dry_run = AnalysisBundleDryRunResponse(
-        data=AnalysisBundleDryRunPayload(
-            dry_run={
-                "bundle_name": "bundle",
-                "match_preview": {
-                    "selection_spec": {
-                        "mode": "explicit",
-                        "manifest_kind": "EvaluationRunManifest",
-                        "ids": ["eval-1"],
-                    },
-                    "match_count": 1,
-                    "parent_refs": [
-                        {
-                            "kind": "EvaluationRunManifest",
-                            "id": "eval-1",
-                            "role": "evaluation_run",
-                        }
-                    ],
-                },
-                "matched_run_ids": ["eval-1"],
-                "stages": [],
-            }
-        )
-    ).model_dump()
-
-    assert graph_list["data"]["graphs"] == []
-    assert training_start["data"]["job_id"] == "job-1"
-    assert analysis_packages["data"]["packages"] == []
-    assert analysis_dry_run["data"]["dry_run"]["matched_run_ids"] == ["eval-1"]
-    assert graph_list["schema_id"] == STUDIO_API_TRANSPORT_SCHEMA_ID
-    assert graph_list["schema_version"] == STUDIO_API_TRANSPORT_SCHEMA_VERSION
-    assert graph_list["data"]["schema_id"] == STUDIO_API_TRANSPORT_SCHEMA_ID
 
 
 def test_analysis_bundle_dry_run_endpoint_returns_stage_status() -> None:

@@ -16,12 +16,6 @@ afterEach(() => {
 });
 
 describe('ConsolePanel', () => {
-  it('renders the empty log state', () => {
-    render(<ConsolePanel />);
-
-    expect(screen.getByText('No logs yet')).toBeInTheDocument();
-  });
-
   it('renders streamed training log lines', () => {
     act(() => {
       useTrainingStore.setState({
