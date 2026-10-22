@@ -15,6 +15,7 @@ import tarfile
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -251,6 +252,41 @@ def test_noneditable_wheel_resolves_and_passes_exact_gate(
     assert assert_feedbax_revision_exact(revision_id) == revision_id
     assert resolve_feedbax_provenance().source_path == package_root
     assert resolve_feedbax_provenance().dirty is False
+    assert revision.resolve_science_repo_import_revisions(()) == {}
+
+
+def test_wheel_inside_science_checkout_preserves_science_ownership_and_pin(
+    wheel_package: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root, _revision_id = wheel_package
+    science_package = tmp_path / "science_provider"
+    science_package.mkdir()
+    (science_package / "__init__.py").write_text("", encoding="utf-8")
+    _run(["git", "init", "--quiet"], cwd=tmp_path)
+    _run(["git", "add", "science_provider"], cwd=tmp_path)
+    _run(
+        ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+         "commit", "--quiet", "-m", "science identity"],
+        cwd=tmp_path,
+    )
+    science_revision = _run(["git", "rev-parse", "HEAD"], cwd=tmp_path).stdout.strip()
+    assert package_root.is_relative_to(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    resolved = revision.resolve_science_repo_import_revisions(
+        (SimpleNamespace(entry_point_value="science_provider:register"),)
+    )
+
+    assert resolved == {str(tmp_path.resolve()): science_revision}
+    mismatched = "a" * 40 if science_revision != "a" * 40 else "b" * 40
+    with pytest.raises(FeedbaxRevisionError, match="science repo revision pin mismatch"):
+        revision.assert_science_repo_revision_pin(
+            primary_repo="science",
+            realized_revision=mismatched,
+            imported_revisions=resolved,
+        )
 
 
 def test_wheel_exact_gate_rejects_mismatch(wheel_package: tuple[Path, str]) -> None:
@@ -267,6 +303,8 @@ def test_wheel_rejects_missing_identity(wheel_package: tuple[Path, str]) -> None
 
     with pytest.raises(FeedbaxRevisionError, match="neither a Git-owned checkout"):
         resolve_feedbax_revision()
+    with pytest.raises(FeedbaxRevisionError, match="neither a Git-owned checkout"):
+        revision.resolve_science_repo_import_revisions(())
 
 
 def test_wheel_rejects_tampered_package_bytes(wheel_package: tuple[Path, str]) -> None:
@@ -276,6 +314,8 @@ def test_wheel_rejects_tampered_package_bytes(wheel_package: tuple[Path, str]) -
 
     with pytest.raises(FeedbaxRevisionError, match="does not match commit"):
         resolve_feedbax_revision()
+    with pytest.raises(FeedbaxRevisionError, match="does not match commit"):
+        revision.resolve_science_repo_import_revisions(())
 
 
 def test_wheel_rejects_malformed_and_unsupported_identity(
