@@ -166,109 +166,9 @@ def _make_undamped_spring_mass(
 # Test classes
 # =========================================================================
 
-class TestAcausalAssembly:
-    """Test the assembly algorithm produces correct systems."""
-
-    def test_mass_spring_damper_construction(self):
-        """MSD system assembles without error."""
-        msd = _make_msd()
-        assert msd._layout.total_size == 2  # pos, vel
-
-    def test_state_layout(self):
-        """State vector contains exactly pos and vel for the mass."""
-        msd = _make_msd()
-        layout = msd._layout
-        assert len(layout._differential) == 2
-        # Both should reference the mass's canonical flange vars
-        for vname in layout._differential:
-            assert "mass" in vname or "spring" in vname or "damper" in vname
-
-    def test_params_collected(self):
-        """All physical parameters are collected."""
-        msd = _make_msd()
-        names = set(msd.params.values.keys())
-        assert "mass.mass" in names
-        assert "spring.stiffness" in names
-        assert "damper.damping" in names
-
-    def test_sensor_output_registered(self):
-        """PositionSensor registers an output."""
-        msd = _make_msd()
-        assert "x_out" in msd._output_indices
-
-    def test_grounded_variables(self):
-        """Wall's across vars are marked grounded."""
-        msd = _make_msd()
-        # The wall's flange across vars should be grounded
-        grounded = msd._layout._grounded
-        assert len(grounded) >= 1  # at least one canonical var is grounded
-
-    def test_eliminated_variables(self):
-        """Connected across variables are eliminated properly."""
-        msd = _make_msd()
-        # spring.flange_b.pos should be eliminated in favour of mass.flange.pos
-        elim = msd._layout._eliminated
-        assert len(elim) > 0
-
 
 class TestMassSpringDamper:
     """Physics correctness for the mass-spring-damper system."""
-
-    @pytest.fixture
-    def msd(self):
-        return _make_msd(mass=1.0, stiffness=10.0, damping=0.5, dt=0.001)
-
-    def test_single_step(self, msd):
-        """A single step runs without error."""
-        state = init_state_from_component(msd)
-        key = jr.PRNGKey(0)
-        inputs = {"f_in": jnp.array([0.0])}
-        outputs, new_state = msd(inputs, state, key=key)
-        assert "state" in outputs
-
-    def test_force_accelerates_mass(self, msd):
-        """Constant force causes velocity increase."""
-        state = init_state_from_component(msd)
-        key = jr.PRNGKey(0)
-        force = jnp.array([1.0])
-
-        # Run several steps
-        for _ in range(100):
-            key, subkey = jr.split(key)
-            outputs, state = msd({"f_in": force}, state, key=subkey)
-
-        # Velocity should be positive
-        dae_state = msd.state_view(state)
-        vel = dae_state.system.y[1]  # velocity is index 1
-        assert vel > 0.0, f"Expected positive velocity, got {vel}"
-
-    def test_damped_oscillation(self, msd):
-        """Displaced mass-spring-damper shows decaying oscillation."""
-        state = init_state_from_component(msd)
-        key = jr.PRNGKey(0)
-
-        # Set initial displacement by applying a big force briefly
-        for _ in range(50):
-            key, subkey = jr.split(key)
-            outputs, state = msd({"f_in": jnp.array([5.0])}, state, key=subkey)
-
-        # Record position at the start of free oscillation
-        dae_state = msd.state_view(state)
-        pos_start = float(dae_state.system.y[0])
-
-        # Free oscillation (no force)
-        positions = []
-        for _ in range(2000):
-            key, subkey = jr.split(key)
-            outputs, state = msd({"f_in": jnp.array([0.0])}, state, key=subkey)
-            dae_state = msd.state_view(state)
-            positions.append(float(dae_state.system.y[0]))
-
-        # Should return towards zero (damped)
-        final_pos = positions[-1]
-        assert abs(final_pos) < abs(pos_start), (
-            f"Position should decay: start={pos_start:.4f}, end={final_pos:.4f}"
-        )
 
     def test_analytical_damped_solution(self):
         """Damped MSD matches analytical underdamped solution."""
@@ -290,11 +190,12 @@ class TestMassSpringDamper:
         new_dae = DAEState(system=new_sys_state, solver=dae_state.solver)
         state = state.set(sys.state_index, new_dae)
 
+        step = jax.jit(lambda inputs, state, key: sys(inputs, state, key=key))
         n_steps = 2000
         positions = []
         for _ in range(n_steps):
             key, subkey = jr.split(key)
-            outputs, state = sys({"f_in": jnp.array([0.0])}, state, key=subkey)
+            outputs, state = step({"f_in": jnp.array([0.0])}, state, subkey)
             dae_state = sys.state_view(state)
             positions.append(dae_state.system.y[0])
 
@@ -353,34 +254,21 @@ class TestEnergyConservation:
 class TestJITAndGrad:
     """Test JIT compilation and gradient flow."""
 
-    def test_jit_compilation(self):
-        """jax.jit traces AcausalSystem.__call__ without error."""
-        msd = _make_msd()
-        state = init_state_from_component(msd)
-        key = jr.PRNGKey(0)
-        inputs = {"f_in": jnp.array([1.0])}
-
-        @jax.jit
-        def step(inputs, state, key):
-            return msd(inputs, state, key=key)
-
-        outputs, new_state = step(inputs, state, key)
-        assert "state" in outputs
-
     def test_grad_through_solver(self):
-        """jax.grad produces finite gradients through the solver."""
-        msd = _make_msd()
+        """Force-to-velocity sensitivity matches Newton's law through the solver."""
+        mass, dt = 2.0, 0.001
+        msd = _make_msd(mass=mass, dt=dt)
         state = init_state_from_component(msd)
 
         def loss_fn(force_val):
             inputs = {"f_in": jnp.array([force_val])}
             key = jr.PRNGKey(0)
             outputs, _ = msd(inputs, state, key=key)
-            # Loss on the state vector
-            return jnp.sum(outputs["state"].y ** 2)
+            return outputs["state"].y[1]
 
         grad_val = jax.grad(loss_fn)(1.0)
         assert jnp.isfinite(grad_val), f"Got non-finite gradient: {grad_val}"
+        assert jnp.allclose(grad_val, dt / mass, atol=1e-8)
 
     def test_vmap_over_params(self):
         """vmap works over spring stiffness parameters."""
@@ -491,12 +379,11 @@ class TestSensorReadings:
 
         dae_state = msd.state_view(state)
         pos_from_state = dae_state.system.y[0]
-        pos_from_sensor = outputs.get("x_out", None)
+        pos_from_sensor = outputs["x_out"]
 
-        if pos_from_sensor is not None:
-            assert jnp.allclose(pos_from_state, pos_from_sensor, atol=1e-10), (
-                f"Sensor mismatch: state={pos_from_state}, sensor={pos_from_sensor}"
-            )
+        assert jnp.allclose(pos_from_state, pos_from_sensor, atol=1e-10), (
+            f"Sensor mismatch: state={pos_from_state}, sensor={pos_from_sensor}"
+        )
 
     def test_velocity_sensor(self):
         """VelocitySensor returns correct velocity."""
@@ -525,10 +412,9 @@ class TestSensorReadings:
 
         dae_state = sys.state_view(state)
         vel_from_state = dae_state.system.y[1]
-        vel_from_sensor = outputs.get("v_out", None)
+        vel_from_sensor = outputs["v_out"]
 
-        if vel_from_sensor is not None:
-            assert jnp.allclose(vel_from_state, vel_from_sensor, atol=1e-10)
+        assert jnp.allclose(vel_from_state, vel_from_sensor, atol=1e-10)
 
     def test_force_sensor(self):
         """ForceSensor reads spring force at the node."""

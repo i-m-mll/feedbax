@@ -12,12 +12,10 @@ import pytest
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from jaxtyping import Array
 
-from feedbax.mechanics.skeleton.pointmass_dae import PointMassDAE, PointMassDAEParams
-from feedbax.mechanics.skeleton.arm_dae import TwoLinkArmDAE, TwoLinkArmDAEParams
+from feedbax.mechanics.skeleton.pointmass_dae import PointMassDAE
+from feedbax.mechanics.skeleton.arm_dae import TwoLinkArmDAE
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.graph import init_state_from_component
 
@@ -70,7 +68,8 @@ class TestPointMassDAE:
         force = jnp.array([1.0, 0.0])
         inputs = {"force": force}
 
-        outputs, new_state = point_mass_dae(inputs, state, key=key)
+        step = jax.jit(lambda inputs, state, key: point_mass_dae(inputs, state, key=key))
+        outputs, new_state = step(inputs, state, key)
 
         # Check outputs
         assert "effector" in outputs
@@ -169,20 +168,6 @@ class TestPointMassDAE:
         assert not jnp.any(jnp.isnan(grad_force))
         # At t=0 with zero initial position, gradient should be near zero
         # because position hasn't changed much yet
-
-    def test_jit_compilation(self, point_mass_dae):
-        """Test that the component can be JIT compiled."""
-        state = init_state_from_component(point_mass_dae)
-        key = jr.PRNGKey(5)
-        inputs = {"force": jnp.array([1.0, 0.0])}
-
-        @jax.jit
-        def step(inputs, state, key):
-            return point_mass_dae(inputs, state, key=key)
-
-        # Should compile and run without error
-        outputs, new_state = step(inputs, state, key)
-        assert outputs["effector"].pos.shape == (2,)
 
 
 class TestTwoLinkArmDAE:
@@ -306,27 +291,21 @@ class TestTwoLinkArmDAE:
         n_steps = 1000
         inputs = {"torque": jnp.array([0.01, -0.01])}
 
-        for i in range(n_steps):
-            key, subkey = jr.split(key)
-            outputs, state = arm_dae(inputs, state, key=subkey)
-
-            # Check for NaN
-            effector = outputs["effector"]
-            assert not jnp.any(jnp.isnan(effector.pos)), f"NaN at step {i}"
-            assert not jnp.any(jnp.isnan(effector.vel)), f"NaN at step {i}"
-
-    def test_jit_compilation_arm(self, arm_dae):
-        """Test JIT compilation of arm DAE."""
-        state = init_state_from_component(arm_dae)
-        key = jr.PRNGKey(4)
-        inputs = {"torque": jnp.array([0.1, 0.0])}
-
         @jax.jit
-        def step(inputs, state, key):
-            return arm_dae(inputs, state, key=key)
+        def rollout(state, key):
+            def step(carry, _):
+                state, key = carry
+                key, subkey = jr.split(key)
+                outputs, state = arm_dae(inputs, state, key=subkey)
+                effector = outputs["effector"]
+                return (state, key), (effector.pos, effector.vel)
 
-        outputs, new_state = step(inputs, state, key)
-        assert outputs["effector"].pos.shape == (2,)
+            _, trajectory = jax.lax.scan(step, (state, key), None, length=n_steps)
+            return trajectory
+
+        positions, velocities = rollout(state, key)
+        assert jnp.all(jnp.isfinite(positions))
+        assert jnp.all(jnp.isfinite(velocities))
 
 
 class TestDAEExplicitComparison:
