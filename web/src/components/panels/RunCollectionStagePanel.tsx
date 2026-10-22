@@ -80,6 +80,7 @@ import {
   type TrainingRunSummary,
 } from '@/utils/pipelineCollections';
 import { studioDraftHashes } from '@/utils/studioDraftHash';
+import { useRootGraph } from '@/hooks/useRootGraph';
 import {
   executionBackendForTarget,
   stageMetadataWithExecutionTarget,
@@ -165,7 +166,7 @@ export function TrainCollectionPanel() {
     (state) => state.updateActiveScenarioTrainingSpec
   );
   const markDirty = useGraphStore((state) => state.markDirty);
-  const rootGraph = useGraphStore((state) => state.graph);
+  const rootGraph = useRootGraph();
   const trainingProgress = useTrainingStore((state) => state.progress);
   const trainingJobId = useTrainingStore((state) => state.jobId);
   const lossHistory = useTrainingStore((state) => state.lossHistory);

@@ -54,6 +54,8 @@ import type {
 import { PropertiesPanel } from '@/components/panels/PropertiesPanel';
 import { Plus, Trash2 } from 'lucide-react';
 import type { ParamValue, RetainedObservableSpec } from '@/types/graph';
+import { isCausalGraphSpec } from '@/types/graph';
+import { AcausalConnectionSpecSchema } from '@/generated/studioContracts';
 import type { TimeAggregationSpec } from '@/types/training';
 
 const GRAPH_ENTITY_KINDS = new Set(['graph_node', 'probe']);
@@ -788,7 +790,7 @@ function RetainedObservableInspector({
   const activeScenario = getScenario(workspace, activeStage?.scenario_id);
   const objectiveSpec = ensureObjectiveSpec(activeScenario?.objective_spec);
   const observableId = entity.id.replace(/^retained_observable:/, '');
-  const observable = (graph.retained_observables ?? []).find(
+  const observable = (isCausalGraphSpec(graph) ? graph.retained_observables ?? [] : []).find(
     (candidate) => candidate.id === observableId
   );
   const selectorOptions = useMemo(
@@ -951,7 +953,7 @@ function SourceInspector({
     selectTopPaneEntity(`objective_term:${term.id}`);
   };
   const addObservable = () => {
-    if (!selectedSourceSelector) return;
+    if (!selectedSourceSelector || !isCausalGraphSpec(graph)) return;
     const observable = createRetainedObservable({
       selector: selectedSourceSelector,
       existingIds: new Set((graph.retained_observables ?? []).map((item) => item.id)),
@@ -995,7 +997,7 @@ function SourceInspector({
       </button>
       <button
         type="button"
-        disabled={!selectedSourceSelector}
+        disabled={!selectedSourceSelector || !isCausalGraphSpec(graph)}
         onClick={addObservable}
         className="inline-flex h-8 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
       >
@@ -1006,10 +1008,21 @@ function SourceInspector({
   );
 }
 
-function EdgeInspector({ entity }: { entity: StudioScenarioEntity }) {
+export function EdgeInspector({ entity }: { entity: StudioScenarioEntity }) {
   const addTapForEdge = useGraphStore((state) => state.addTapForEdge);
   const edgeId = typeof entity.metadata.edge_id === 'string' ? entity.metadata.edge_id : null;
   const edgeType = typeof entity.metadata.edge_type === 'string' ? entity.metadata.edge_type : null;
+  if (edgeType === 'acausal_connection') {
+    const connection = AcausalConnectionSpecSchema.parse(entity.metadata.connection);
+    return (
+      <div className="space-y-3 p-6">
+        <div className="text-sm font-medium text-slate-800">Conserving connection</div>
+        <div className="text-xs text-slate-500">
+          {connection.a.join('.')} ↔ {connection.b.join('.')}
+        </div>
+      </div>
+    );
+  }
   const wire = entity.metadata.wire as
     | {
         source_node: string;

@@ -1,4 +1,12 @@
-import { isCausalGraphSpec, type ComponentSpec, type GraphSpec, type TapSpec } from '@/types/graph';
+import {
+  isAcausalGraphSpec,
+  isCausalGraphSpec,
+  type AcausalGraphSpec,
+  type ComponentSpec,
+  type GraphSpec,
+  type GraphSubgraphSpec,
+  type TapSpec,
+} from '@/types/graph';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
 import { taskBindingId } from '@/features/scenario/taskBindings';
 import { normalizeDynamicPorts } from '@/features/graph/dynamicPorts';
@@ -160,7 +168,20 @@ export function normalizeGraphAuthoringTypes(graph: GraphSpec): GraphSpec {
 export function normalizeGraphForStudioAuthoring(
   graph: GraphSpec,
   taskBindingSpec?: StudioTaskBindingSpec | null
-): GraphSpec {
+): GraphSpec;
+export function normalizeGraphForStudioAuthoring(
+  graph: AcausalGraphSpec,
+  taskBindingSpec?: StudioTaskBindingSpec | null
+): AcausalGraphSpec;
+export function normalizeGraphForStudioAuthoring(
+  graph: GraphSubgraphSpec,
+  taskBindingSpec?: StudioTaskBindingSpec | null
+): GraphSubgraphSpec;
+export function normalizeGraphForStudioAuthoring(
+  graph: GraphSubgraphSpec,
+  taskBindingSpec?: StudioTaskBindingSpec | null
+): GraphSubgraphSpec {
+  if (isAcausalGraphSpec(graph)) return graph;
   return normalizeDynamicPorts(normalizeGraphAuthoringTypes(graph), taskBindingSpec);
 }
 
@@ -183,8 +204,7 @@ export function normalizeTaskBindingSpecForStudioAuthoring(
         id: taskBindingId(
           binding.source_data_id,
           'input_mux',
-          binding.target_port,
-          binding.target_graph_path
+          binding.target_port
         ),
         target_node_id: 'input_mux',
       };
@@ -199,8 +219,7 @@ export function normalizeTaskBindingSpecForStudioAuthoring(
       id: taskBindingId(
         binding.source_data_id,
         binding.target_node_id,
-        'input',
-        binding.target_graph_path
+        'input'
       ),
       target_port: 'input',
     };

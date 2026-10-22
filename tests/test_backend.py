@@ -9,7 +9,6 @@ backward compatibility, vmap, and gradient checkpointing.
 
 import jax
 import jax.numpy as jnp
-import jax.tree as jt
 import pytest
 
 from feedbax.runtime.graph import init_state_from_component
@@ -21,7 +20,7 @@ from feedbax.mechanics import (
     PhysicsBackend,
     PhysicsState,
 )
-from feedbax.mechanics.plant import DirectForceInput, PlantState
+from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.state import CartesianState
 
@@ -143,48 +142,20 @@ class TestDiffraxBackendInit:
         assert isinstance(diffrax_backend, PhysicsBackend)
 
 
-class TestDiffraxBackendState:
-    def test_init_state_shapes(self, diffrax_backend, pointmass_plant, key):
-        """init_state produces correctly shaped PhysicsState."""
-        state = diffrax_backend.init_state(pointmass_plant, key=key)
-        assert isinstance(state, PhysicsState)
-        assert isinstance(state.plant, PlantState)
-        assert isinstance(state.effector, CartesianState)
-        assert state.effector.pos.shape == (2,)
-
-    def test_init_state_finite(self, diffrax_backend, pointmass_plant, key):
-        """init_state produces finite values."""
-        state = diffrax_backend.init_state(pointmass_plant, key=key)
-        assert jnp.all(jnp.isfinite(state.effector.pos))
-
-
 class TestDiffraxBackendSubstep:
-    def test_substep_returns_physics_state(
-        self, diffrax_backend, pointmass_plant, key
-    ):
-        """substep returns a PhysicsState."""
+    def test_constant_force_transition(self, diffrax_backend, pointmass_plant, dt, key):
+        """Euler stepping preserves both axes and carries velocity into position."""
         state = diffrax_backend.init_state(pointmass_plant, key=key)
-        action = jnp.ones(pointmass_plant.input_size) * 0.1
-        new_state = diffrax_backend.substep(pointmass_plant, state, action)
-        assert isinstance(new_state, PhysicsState)
-
-    def test_substep_finite(self, diffrax_backend, pointmass_plant, key):
-        """substep produces finite output."""
-        state = diffrax_backend.init_state(pointmass_plant, key=key)
-        action = jnp.ones(pointmass_plant.input_size) * 0.1
-        new_state = diffrax_backend.substep(pointmass_plant, state, action)
-        assert jnp.all(jnp.isfinite(new_state.effector.pos))
-        assert jnp.all(jnp.isfinite(new_state.effector.vel))
-
-    def test_substep_changes_state(self, diffrax_backend, pointmass_plant, key):
-        """Non-zero force should change the state."""
-        state = diffrax_backend.init_state(pointmass_plant, key=key)
-        action = jnp.array([1.0, 0.0])  # Force in x
-        new_state = diffrax_backend.substep(pointmass_plant, state, action)
-        # Velocity should have changed (acceleration from force)
-        assert not jnp.allclose(
-            new_state.effector.vel, state.effector.vel, atol=1e-10
+        force = jnp.array([1.0, -2.0])
+        initial = state.effector
+        state = diffrax_backend.substep(pointmass_plant, state, force)
+        assert jnp.allclose(state.effector.pos, initial.pos + initial.vel * dt)
+        assert jnp.allclose(state.effector.vel, initial.vel + force * dt)
+        state = diffrax_backend.substep(pointmass_plant, state, force)
+        assert jnp.allclose(
+            state.effector.pos, initial.pos + 2 * initial.vel * dt + force * dt**2
         )
+        assert jnp.allclose(state.effector.vel, initial.vel + 2 * force * dt)
 
 
 class TestDiffraxBackendObserve:
@@ -199,7 +170,7 @@ class TestDiffraxBackendObserve:
 
 
 class TestDiffraxBackendLegacyEquivalence:
-    def test_single_step_matches_legacy(self, pointmass_plant, dt, key):
+    def test_recurrent_steps_match_legacy(self, pointmass_plant, dt, key):
         """DiffraxBackend single substep matches legacy Mechanics."""
         # Legacy mechanics
         legacy = Mechanics(pointmass_plant, dt, key=key)
@@ -210,28 +181,21 @@ class TestDiffraxBackendLegacyEquivalence:
         backend_mech = Mechanics(pointmass_plant, dt, backend=backend, key=key)
         backend_state = init_state_from_component(backend_mech)
 
-        # Step both with same force
-        force = jnp.array([0.5, -0.3])
-        step_key = jax.random.PRNGKey(99)
-
-        legacy_out, _ = legacy(
-            {"force": force}, legacy_state, key=step_key
-        )
-        backend_out, _ = backend_mech(
-            {"force": force}, backend_state, key=step_key
-        )
-
-        # Effector positions should match
-        assert jnp.allclose(
-            legacy_out["effector"].pos,
-            backend_out["effector"].pos,
-            atol=1e-6,
-        )
-        assert jnp.allclose(
-            legacy_out["effector"].vel,
-            backend_out["effector"].vel,
-            atol=1e-6,
-        )
+        forces = (jnp.array([0.5, -0.3]), jnp.array([-0.2, 0.8]), jnp.zeros(2))
+        for i, force in enumerate(forces):
+            step_key = jax.random.fold_in(key, i)
+            legacy_out, legacy_state = legacy(
+                {"force": force}, legacy_state, key=step_key
+            )
+            backend_out, backend_state = backend_mech(
+                {"force": force}, backend_state, key=step_key
+            )
+            assert jnp.allclose(
+                legacy_out["effector"].pos, backend_out["effector"].pos, atol=1e-6
+            )
+            assert jnp.allclose(
+                legacy_out["effector"].vel, backend_out["effector"].vel, atol=1e-6
+            )
 
 
 # ===========================================================================
@@ -388,43 +352,7 @@ class TestMJXSkeletonStep:
 # Mechanics integration tests
 # ===========================================================================
 
-class TestMechanicsBackwardCompat:
-    def test_legacy_no_backend(self, pointmass_plant, dt, key):
-        """Mechanics without backend works as before."""
-        mech = Mechanics(pointmass_plant, dt, key=key)
-        state = init_state_from_component(mech)
-        force = jnp.array([0.1, 0.2])
-        out, new_state = mech({"force": force}, state, key=key)
-        assert "effector" in out
-        assert "state" in out
-        assert isinstance(out["state"], MechanicsState)
-        assert jnp.all(jnp.isfinite(out["effector"].pos))
-
-    def test_legacy_multi_step(self, pointmass_plant, dt, key):
-        """Legacy path works for multiple steps."""
-        mech = Mechanics(pointmass_plant, dt, key=key)
-        state = init_state_from_component(mech)
-        force = jnp.array([0.1, 0.0])
-
-        for i in range(20):
-            step_key = jax.random.fold_in(key, i)
-            out, state = mech({"force": force}, state, key=step_key)
-
-        assert jnp.all(jnp.isfinite(out["effector"].pos))
-        # Should have moved in x direction
-        assert out["effector"].vel[0] > 0
-
-
 class TestMechanicsDiffraxBackend:
-    def test_diffrax_backend_runs(self, pointmass_plant, dt, key):
-        """Mechanics with DiffraxBackend runs without error."""
-        backend = DiffraxBackend(control_dt=dt)
-        mech = Mechanics(pointmass_plant, dt, backend=backend, key=key)
-        state = init_state_from_component(mech)
-        force = jnp.array([0.1, 0.2])
-        out, _ = mech({"force": force}, state, key=key)
-        assert jnp.all(jnp.isfinite(out["effector"].pos))
-
     def test_diffrax_backend_multi_substep(self, pointmass_plant, dt, key):
         """DiffraxBackend with multiple substeps runs correctly."""
         backend = DiffraxBackend(control_dt=dt, sub_dt=dt / 5)
@@ -436,7 +364,10 @@ class TestMechanicsDiffraxBackend:
             step_key = jax.random.fold_in(key, i)
             out, state = mech({"force": force}, state, key=step_key)
 
-        assert jnp.all(jnp.isfinite(out["effector"].pos))
+        assert jnp.allclose(out["effector"].vel, force * (10 * dt), atol=1e-6)
+        elapsed_substeps = 10 * backend.n_substeps
+        expected_pos = force * backend.sub_dt**2 * elapsed_substeps * (elapsed_substeps - 1) / 2
+        assert jnp.allclose(out["effector"].pos, expected_pos, atol=1e-6)
 
 
 @requires_mujoco
@@ -482,15 +413,19 @@ class TestMechanicsVmap:
         state = init_state_from_component(mech)
 
         batch_size = 4
-        forces = jnp.ones((batch_size, 2)) * 0.1
+        forces = jnp.arange(batch_size * 2.0).reshape(batch_size, 2) * 0.1
         keys = jax.random.split(key, batch_size)
 
         def step_one(force, step_key):
             return mech({"force": force}, state, key=step_key)
 
         batch_out, _ = jax.vmap(step_one)(forces, keys)
-        assert batch_out["effector"].pos.shape == (batch_size, 2)
-        assert jnp.all(jnp.isfinite(batch_out["effector"].pos))
+        serial = [
+            mech({"force": force}, init_state_from_component(mech), key=step_key)[0]["effector"]
+            for force, step_key in zip(forces, keys)
+        ]
+        assert jnp.allclose(batch_out["effector"].pos, jnp.stack([out.pos for out in serial]))
+        assert jnp.allclose(batch_out["effector"].vel, jnp.stack([out.vel for out in serial]))
 
 
 class TestMechanicsRemat:

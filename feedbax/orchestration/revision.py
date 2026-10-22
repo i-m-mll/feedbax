@@ -420,14 +420,19 @@ def resolve_science_repo_import_revisions(
     Git checkout of each such provider — excluding the Feedbax package's own
     checkout — to the full commit currently on its ``HEAD``, so a recertification
     boundary can assert the imported science revision against the run's realized
-    repository snapshot before deriving any payload.
+    repository snapshot before deriving any payload. An authenticated Feedbax
+    wheel owns no checkout, even when installed inside a science repository.
 
     Returns:
         A mapping of resolved checkout path to its ``HEAD`` commit. Providers
         whose module source or containing checkout cannot be resolved are skipped
         rather than guessed; the caller decides how to treat an empty result.
     """
-    feedbax_root = _git_toplevel(_feedbax_package_root())
+    package_root = _feedbax_package_root()
+    resolve_feedbax_revision()
+    feedbax_root = (
+        package_root.parent if _resolve_checkout_revision(package_root) is not None else None
+    )
     revisions: dict[str, str] = {}
     for provenance in plugin_provenance:
         module_name = str(getattr(provenance, "entry_point_value", "")).partition(":")[0]

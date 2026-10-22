@@ -1,20 +1,20 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchStudioSchemaRegistry } from '@/api/client';
 import type { StudioWorkspaceSpec } from '@/types/workspace';
-import { useGraphStore } from '@/stores/graphStore';
+import { useRootGraph } from '@/hooks/useRootGraph';
 
 export function useStudioSchemaRegistry(
   workspace: StudioWorkspaceSpec | null,
   scenarioId: string | null | undefined
 ) {
-  const graph = useGraphStore((state) => state.graph);
+  const rootGraph = useRootGraph();
   return useQuery({
     queryKey: [
       'studio-schema-registry',
       workspace?.id ?? null,
       scenarioId ?? null,
       workspace,
-      graph,
+      rootGraph,
     ],
     queryFn: () => {
       if (!workspace) {
@@ -22,7 +22,7 @@ export function useStudioSchemaRegistry(
       }
       return fetchStudioSchemaRegistry({
         workspace,
-        graph,
+        graph: rootGraph,
         scenario_id: scenarioId ?? null,
       });
     },

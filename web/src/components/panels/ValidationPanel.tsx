@@ -1,3 +1,4 @@
+import { useRootGraph } from '@/hooks/useRootGraph';
 import { useCallback, useMemo, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import {
@@ -41,6 +42,7 @@ export function ValidationPanel() {
   // state.graph is always the currently active layer (root or nested subgraph),
   // because the store updates it whenever the user enters/exits a subgraph.
   const graph = useGraphStore((state) => state.graph);
+  const rootGraph = useRootGraph();
   const graphStack = useGraphStore((state) => state.graphStack);
   const currentGraphLabel = useGraphStore((state) => state.currentGraphLabel);
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
@@ -56,19 +58,18 @@ export function ValidationPanel() {
     const currentGraphPath = graphStack
       .map((layer) => layer.childNodeId)
       .filter((item): item is string => Boolean(item));
-    const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
     return scopedTaskBindingSpec(
       ensureTaskBindingSpec(scenario?.task_binding_spec, rootGraph, scenario?.task_spec),
       currentGraphPath
     );
-  }, [graph, graphStack, workspace]);
+  }, [rootGraph, graphStack, workspace]);
   const isAcausalLayer = isAcausalGraphSpec(graph);
   const schemaRegistry = useMemo(
     () => (isAcausalLayer ? null : projectStudioSchema(graph, components, taskBindingSpec)),
     [components, graph, isAcausalLayer, taskBindingSpec]
   );
   const validation = useMemo(
-    () => (schemaRegistry ? validateGraph(graph, schemaRegistry) : { valid: true, errors: [], warnings: [], cycles: [] }),
+    () => (!isAcausalGraphSpec(graph) && schemaRegistry ? validateGraph(graph, schemaRegistry) : { valid: true, errors: [], warnings: [], cycles: [] }),
     [graph, schemaRegistry]
   );
   const sceneWarnings = useMemo(() => {

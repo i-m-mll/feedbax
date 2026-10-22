@@ -195,6 +195,7 @@ def test_pytest_command_uses_xdist_by_default(monkeypatch) -> None:
         "tests",
         "-n",
         "auto",
+        "--dist=loadgroup",
         "-m",
         "not optional_mjx and not optional_ppo",
         "-q",
@@ -260,7 +261,7 @@ def test_green_memo_cannot_alias_serial_runner(monkeypatch, tmp_path: Path) -> N
     serial_args = full_suite.xdist_args()
     serial = full_suite.build_fingerprint(repo, runner_args=serial_args)
 
-    assert parallel_args == ["-n", "auto"]
+    assert parallel_args == ["-n", "auto", "--dist=loadgroup"]
     # Serial must force `-n 0`, not an empty runner list: the pyproject addopts
     # default enables `-n auto`, so only an explicit `-n 0` makes the disabled
     # path actually run serially and keeps the serial fingerprint truthful.
@@ -307,6 +308,10 @@ def _class_pytest_markers(source: str, class_name: str) -> set[str]:
     tree = ast.parse(source)
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == class_name:
+            assert any(
+                isinstance(child, ast.FunctionDef) and child.name.startswith("test_")
+                for child in node.body
+            ), f"class {class_name} has no retained tests"
             return {
                 decorator.attr
                 for decorator in node.decorator_list
@@ -315,58 +320,73 @@ def _class_pytest_markers(source: str, class_name: str) -> set[str]:
     raise AssertionError(f"class {class_name} not found")
 
 
-def _module_pytest_markers(source: str) -> set[str]:
-    """Return every ``pytest.mark.<name>`` assigned to a module-level ``pytestmark``."""
-    tree = ast.parse(source)
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(
-            isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets
-        ):
-            continue
-        value = node.value
-        elements = value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]
-        return {
-            element.attr for element in elements if isinstance(element, ast.Attribute)
-        }
-    return set()
-
-
-def test_slow_tier_leaves_the_default_gate_and_returns_for_every_closeout_profile() -> None:
-    """The `slow` tier is deselected per iteration and restored by this wrapper.
-
-    The `slow` modules build a real wheel and install it, so they need a clean Git
-    checkout plus a network or a warm `uv` cache. That is not a promise the gate
-    that must pass on every invocation can make, so `addopts` deselects them. They
-    are still load-bearing — `test_cold_start_conformance` is the honesty gate for
-    the whole upstreaming program — so every profile this wrapper runs must bring
-    them back. A command-line `-m` overrides `addopts`, which is exactly how that
-    happens; this test fails if either half of the arrangement is edited away.
-    """
-    repo_root = Path(__file__).resolve().parents[1]
-    addopts = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))[
-        "tool"
-    ]["pytest"]["ini_options"]["addopts"]
-
-    assert "not slow" in addopts, (
-        "the default gate must deselect the `slow` tier; the marker is declared for "
-        "exactly this purpose and is inert unless `addopts` names it"
-    )
-
+def test_profiles_select_slow_and_optional_categories(tmp_path: Path) -> None:
+    """Exercise pytest's actual default/CLI marker precedence on a tiny corpus."""
     full_suite = load_full_suite_module()
-    for profile, expression in full_suite.SUITE_MARKER_EXPRESSIONS.items():
-        assert "slow" not in expression, (
-            f"the `{profile}` closeout profile must not deselect `slow`: the wrapper is "
-            "where the wheel-building tier is paid for"
-        )
+    repo_root = Path(__file__).resolve().parents[1]
+    options = tomllib.loads((repo_root / "pyproject.toml").read_text())["tool"]["pytest"][
+        "ini_options"
+    ]
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\naddopts = "
+        + options["addopts"]
+        + "\nmarkers =\n"
+        + "\n".join("    " + marker for marker in options["markers"])
+        + "\n"
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_categories.py").write_text("""import pytest
 
-    tests_dir = repo_root / "tests"
-    for module in ("test_cold_start_conformance.py", "test_feedbax_wheel_provenance.py"):
-        markers = _module_pytest_markers((tests_dir / module).read_text(encoding="utf-8"))
-        assert "slow" in markers, (
-            f"{module} builds and installs a real wheel and must stay in the `slow` tier"
+def test_core(): pass
+@pytest.mark.slow
+def test_slow(): pass
+@pytest.mark.optional_mjx
+def test_mjx(): pass
+@pytest.mark.optional_mjx
+@pytest.mark.slow
+def test_mjx_slow(): pass
+@pytest.mark.optional_ppo
+def test_ppo(): pass
+@pytest.mark.optional_ppo
+@pytest.mark.slow
+def test_ppo_slow(): pass
+""")
+    core = {"test_core", "test_slow"}
+    mjx = {"test_mjx", "test_mjx_slow"}
+    ppo = {"test_ppo", "test_ppo_slow"}
+    cases = {
+        None: {"test_core"},
+        "core": core,
+        "mjx": core | mjx,
+        "ppo": core | ppo,
+        "all": core | mjx | ppo,
+    }
+    collection = ["--collect-only", "-q", "-p", "xdist.plugin"]
+    for profile, expected in cases.items():
+        command = (
+            [sys.executable, "-m", "pytest", "tests", "-n", "0", *collection]
+            if profile is None
+            else full_suite.pytest_command(
+                collection, suite_profile=profile, runner_args=["-n", "0"]
+            )
         )
+        result = subprocess.run(
+            command,
+            cwd=tmp_path,
+            env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTEST_ADDOPTS": ""},
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        selected = {
+            line.rsplit("::", 1)[-1]
+            for line in result.stdout.splitlines()
+            if line.startswith("tests/test_categories.py::")
+        }
+        assert selected == expected, profile
 
 
 def test_representative_nodes_have_expected_optional_markers() -> None:
@@ -378,7 +398,7 @@ def test_representative_nodes_have_expected_optional_markers() -> None:
     assert _assigned_pytest_marker(mjx_source) == "optional_mjx"
     assert _assigned_pytest_marker(ppo_source) == "optional_ppo"
     assert "optional_mjx" in _class_pytest_markers(backend_source, "TestMJXBackendState")
-    assert "optional_mjx" not in _class_pytest_markers(backend_source, "TestDiffraxBackendState")
+    assert "optional_mjx" not in _class_pytest_markers(backend_source, "TestDiffraxBackendSubstep")
 
 
 def test_jax_cache_env_exposes_base_root_without_exact_cache_dir(monkeypatch, tmp_path) -> None:
@@ -582,6 +602,10 @@ def test_main_removes_sealed_temporary_tree_after_pytest_exit(
     caller_root.mkdir()
     caller_sentinel = caller_root / "keep-me"
     caller_sentinel.write_text("caller-owned", encoding="utf-8")
+    caller_sentinel.chmod(0o444)
+    external_directory = caller_root / "external sealed directory"
+    external_directory.mkdir()
+    external_directory.chmod(0o555)
     observed_root = None
 
     monkeypatch.setenv("TMPDIR", str(caller_root))
@@ -611,6 +635,8 @@ def test_main_removes_sealed_temporary_tree_after_pytest_exit(
         sealed_file = sealed_snapshot / "large-fixture.bin"
         sealed_file.write_bytes(b"fixture")
         sealed_file.chmod(0o444)
+        os.link(caller_sentinel, sealed_snapshot / "hardlinked-cache-entry")
+        (sealed_snapshot / "external-link").symlink_to(external_directory, target_is_directory=True)
         sealed_snapshot.chmod(0o555)
         return subprocess.CompletedProcess(command, returncode)
 
@@ -620,11 +646,13 @@ def test_main_removes_sealed_temporary_tree_after_pytest_exit(
     assert observed_root is not None
     assert not observed_root.exists()
     assert caller_sentinel.read_text(encoding="utf-8") == "caller-owned"
+    if os.name != "nt":
+        assert stat.S_IMODE(caller_sentinel.stat().st_mode) == 0o444
+    assert stat.S_IMODE(external_directory.stat().st_mode) == 0o555
+    external_directory.chmod(0o755)
 
 
-def test_main_removes_sealed_temporary_tree_after_interruption(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_main_removes_sealed_temporary_tree_after_interruption(monkeypatch, tmp_path: Path) -> None:
     full_suite = load_full_suite_module()
     repo_root = Path(__file__).resolve().parents[1]
     caller_root = tmp_path / "caller root"
@@ -689,3 +717,149 @@ def test_temporary_root_cleanup_refuses_missing_ownership_marker(tmp_path: Path)
     assert stat.S_IMODE(sealed_file.stat().st_mode) == 0o444
     sealed_directory.chmod(0o755)
     shutil.rmtree(owned_root)
+
+
+def test_auto_workers_and_native_threads_have_explicit_budgets(monkeypatch) -> None:
+    full_suite = load_full_suite_module()
+    monkeypatch.setattr(full_suite.os, "cpu_count", lambda: 14)
+    monkeypatch.delenv("FEEDBAX_TEST_AUTO_WORKERS", raising=False)
+    assert full_suite.auto_worker_count() == 12
+    monkeypatch.setenv("FEEDBAX_TEST_AUTO_WORKERS", "2")
+    assert full_suite.auto_worker_count() == 2
+    monkeypatch.setenv("FEEDBAX_TEST_AUTO_WORKERS", "99")
+    assert full_suite.auto_worker_count() == 14
+    monkeypatch.setenv("FEEDBAX_TEST_AUTO_WORKERS", "0")
+    with pytest.raises(ValueError, match="positive integer"):
+        full_suite.auto_worker_count()
+
+    monkeypatch.setenv("FEEDBAX_TEST_NATIVE_THREADS", "1")
+    for name in full_suite.NATIVE_THREAD_ENV_VARS:
+        monkeypatch.setenv(name, "32")
+    full_suite.configure_native_threads()
+    assert all(os.environ[name] == "1" for name in full_suite.NATIVE_THREAD_ENV_VARS)
+
+
+def test_worker_and_thread_budgets_are_part_of_memo_identity(monkeypatch, tmp_path) -> None:
+    full_suite = load_full_suite_module()
+    repo = make_full_suite_repo(tmp_path / "repo")
+    monkeypatch.setattr(full_suite, "distribution_version", lambda name: "0.0.0")
+    monkeypatch.setenv("FEEDBAX_TEST_AUTO_WORKERS", "2")
+    monkeypatch.setenv("FEEDBAX_TEST_NATIVE_THREADS", "1")
+    first = full_suite.build_fingerprint(repo)
+    monkeypatch.setenv("FEEDBAX_TEST_AUTO_WORKERS", "4")
+    second = full_suite.build_fingerprint(repo)
+    monkeypatch.setenv("FEEDBAX_TEST_NATIVE_THREADS", "2")
+    third = full_suite.build_fingerprint(repo)
+    assert len({first.key, second.key, third.key}) == 3
+
+
+@pytest.mark.parametrize(
+    ("returncode", "raw_written", "cleanup_interrupted"),
+    [(0, True, False), (7, True, False), (7, False, False), (7, True, True)],
+)
+def test_profile_runs_without_memo_and_redacts_argument_values(
+    monkeypatch, tmp_path: Path, returncode: int, raw_written: bool, cleanup_interrupted: bool
+) -> None:
+    full_suite = load_full_suite_module()
+    repo = tmp_path / "private checkout"
+    repo.mkdir()
+    monkeypatch.setenv("FULL_SUITE_LOCK_DIR", str(tmp_path / "lock"))
+    monkeypatch.setattr(full_suite, "repo_root_from", lambda start: repo)
+    monkeypatch.setattr(full_suite, "shared_cache_root", lambda root: tmp_path / "cache")
+    clock = [10.0]
+    monkeypatch.setattr(full_suite.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(
+        full_suite,
+        "build_fingerprint",
+        lambda *args, **kwargs: full_suite.SuiteFingerprint(
+            payload={"pytest_args": [str(repo)]}, memo_allowed=True
+        ),
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("diagnostic runs must neither consult nor write green memos")
+
+    monkeypatch.setattr(full_suite, "has_green_memo", forbidden)
+    monkeypatch.setattr(full_suite, "write_green_memo", forbidden)
+
+    def run_pytest(command, *, cwd, env, check):
+        clock[0] += 2.0
+        assert command[-2:] == ["-p", "scripts.pytest_suite_profile"]
+        raw = Path(env["FEEDBAX_SUITE_PROFILE_RAW"])
+        assert raw.parent == Path(env["TMPDIR"])
+        if raw_written:
+            raw.write_text(
+                json.dumps(
+                    {
+                        "schema_id": "feedbax.test-suite-profile",
+                        "schema_version": 1,
+                        "diagnostic_only": True,
+                        "complete": True,
+                        "fixtures": {"module:expensive": {"count": 1, "seconds": 12.0}},
+                    }
+                )
+            )
+        return subprocess.CompletedProcess(command, returncode)
+
+    monkeypatch.setattr(full_suite.subprocess, "run", run_pytest)
+    output = tmp_path / "diagnostics.json"
+    remove_tree = full_suite.shutil.rmtree
+
+    def finish_cleanup(path):
+        pending = json.loads(output.read_text())
+        assert pending["execution"] == {
+            "elapsed_seconds": 2.0,
+            "returncode": returncode,
+            "cleanup_complete": False,
+        }
+        remove_tree(path)
+        clock[0] += 3.0
+        if cleanup_interrupted:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(full_suite.shutil, "rmtree", finish_cleanup)
+    if cleanup_interrupted:
+        with pytest.raises(KeyboardInterrupt):
+            full_suite.main(["--profile-json", str(output), str(repo)])
+    else:
+        assert full_suite.main(["--profile-json", str(output), str(repo)]) == returncode
+    text = output.read_text()
+    assert str(repo) not in text
+    data = json.loads(text)
+    assert data["execution"]["returncode"] == returncode
+    assert data["execution"]["elapsed_seconds"] == (2.0 if cleanup_interrupted else 5.0)
+    assert data["execution"]["cleanup_complete"] is not cleanup_interrupted
+    assert data["complete"] == (raw_written and not cleanup_interrupted)
+    if cleanup_interrupted:
+        assert data["incomplete_reason"] == "suite temporary-root cleanup has not completed"
+    elif not raw_written:
+        assert data["incomplete_reason"] == "pytest exited without session diagnostics"
+    if raw_written:
+        assert data["fixtures"]["module:expensive"]["seconds"] == 12.0
+    assert len(data["context"]["selection_sha256"]) == 64
+
+
+def test_profile_rejects_unknown_diagnostic_schema(tmp_path) -> None:
+    full_suite = load_full_suite_module()
+    raw = tmp_path / "raw.json"
+    raw.write_text('{"schema_id": "feedbax.test-suite-profile", "schema_version": 2}')
+    with pytest.raises(ValueError, match="unsupported pytest diagnostic profile schema"):
+        full_suite.write_suite_profile(
+            tmp_path / "out.json",
+            full_suite.read_suite_profile(raw),
+            full_suite.SuiteFingerprint(payload={}, memo_allowed=False),
+            elapsed_seconds=1,
+            returncode=0,
+        )
+
+
+def test_jax_environment_is_fingerprinted_without_exposing_values(monkeypatch, tmp_path):
+    full_suite = load_full_suite_module()
+    repo = make_full_suite_repo(tmp_path / "repo")
+    monkeypatch.setattr(full_suite, "distribution_version", lambda name: "0.0.0")
+    monkeypatch.delenv("XLA_FLAGS", raising=False)
+    first = full_suite.build_fingerprint(repo)
+    monkeypatch.setenv("XLA_FLAGS", "--flag=/private/test/value")
+    second = full_suite.build_fingerprint(repo)
+    assert first.key != second.key
+    assert "/private/test/value" not in json.dumps(second.payload)

@@ -25,16 +25,8 @@ def _registry_cases() -> list[pytest.ParameterSet]:
             continue
         meta = registry.get(component_type)
         assert meta is not None
-        params = meta.param_schema or [None]
-        for schema in params:
-            param_name = None if schema is None else schema.name
-            cases.append(
-                pytest.param(
-                    component_type,
-                    param_name,
-                    id=f"{component_type}-{param_name or 'no-params'}",
-                )
-            )
+        param_names = [schema.name for schema in meta.param_schema] or [None]
+        cases.append(pytest.param(component_type, param_names, id=component_type))
     return cases
 
 
@@ -196,45 +188,48 @@ def _single_node_spec(
     return spec, prototypes
 
 
-@pytest.mark.parametrize(("component_type", "param_name"), _registry_cases())
+@pytest.mark.parametrize(("component_type", "param_names"), _registry_cases())
 def test_registered_buildable_component_param_round_trips(
     component_type: str,
-    param_name: str | None,
+    param_names: list[str | None],
 ) -> None:
     """Every declared leaf parameter is exercised non-default and must survive."""
     registry = ComponentRegistry(load_user_components=False)
     meta = registry.get(component_type)
     assert meta is not None
     baseline_params = _contextualize_params(component_type, None, deepcopy(meta.default_params))
-    params = deepcopy(baseline_params)
-    if param_name is not None:
-        schema = next(item for item in meta.param_schema if item.name == param_name)
-        params[param_name] = _non_default_value(component_type, schema)
-        params = _contextualize_params(component_type, param_name, params)
-
-    spec, prototypes = _single_node_spec(registry, component_type, params)
-    first = spec_to_graph(spec, registry, prototypes)
-    serialized = graph_to_spec(first)
-    emitted = serialized.nodes["node"]
-    assert emitted.type == component_type
-
-    if param_name is not None and param_name != "schema_version":
-        baseline_spec, baseline_prototypes = _single_node_spec(
-            registry, component_type, baseline_params
-        )
-        baseline = graph_to_spec(
-            spec_to_graph(baseline_spec, registry, baseline_prototypes)
-        )
-        assert emitted.params != baseline.nodes["node"].params, (
-            f"{component_type}.{param_name} did not affect the canonical GraphSpec"
-        )
-
-    second = spec_to_graph(
-        serialized,
-        ComponentRegistry(load_user_components=False),
-        prototypes,
+    baseline_spec, baseline_prototypes = _single_node_spec(
+        registry, component_type, baseline_params
     )
-    assert graph_to_spec(second).nodes["node"].params == emitted.params
+    baseline = graph_to_spec(spec_to_graph(baseline_spec, registry, baseline_prototypes))
+
+    for param_name in param_names:
+        witness = f"{component_type}.{param_name}"
+        params = deepcopy(baseline_params)
+        if param_name is not None:
+            schema = next(item for item in meta.param_schema if item.name == param_name)
+            params[param_name] = _non_default_value(component_type, schema)
+            params = _contextualize_params(component_type, param_name, params)
+
+        if param_name is None:
+            serialized, prototypes = baseline, baseline_prototypes
+        else:
+            spec, prototypes = _single_node_spec(registry, component_type, params)
+            serialized = graph_to_spec(spec_to_graph(spec, registry, prototypes))
+        emitted = serialized.nodes["node"]
+        assert emitted.type == component_type, witness
+
+        if param_name is not None and param_name != "schema_version":
+            assert emitted.params != baseline.nodes["node"].params, (
+                f"{witness} did not affect the canonical GraphSpec"
+            )
+
+        second = spec_to_graph(
+            serialized,
+            ComponentRegistry(load_user_components=False),
+            prototypes,
+        )
+        assert graph_to_spec(second).nodes["node"].params == emitted.params, witness
 
 
 def test_two_link_arm_nondefault_lengths_round_trip() -> None:

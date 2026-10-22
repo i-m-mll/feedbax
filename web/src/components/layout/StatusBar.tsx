@@ -1,3 +1,4 @@
+import { useRootGraph } from '@/hooks/useRootGraph';
 import { CheckCircle2, Circle, AlertTriangle } from 'lucide-react';
 import { useMemo } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
@@ -13,6 +14,7 @@ import { useCompileStatusStore } from '@/stores/compileStatusStore';
 
 export function StatusBar() {
   const graph = useGraphStore((state) => state.graph);
+  const rootGraph = useRootGraph();
   const graphStack = useGraphStore((state) => state.graphStack);
   const workspace = useWorkspaceStore((state) => state.workspace);
   const { components } = useComponents();
@@ -23,7 +25,6 @@ export function StatusBar() {
     const currentGraphPath = graphStack
       .map((layer) => layer.childNodeId)
       .filter((item): item is string => Boolean(item));
-    const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
     return scopedTaskBindingSpec(
       ensureTaskBindingSpec(
         trainingScenario?.task_binding_spec,
@@ -32,14 +33,14 @@ export function StatusBar() {
       ),
       currentGraphPath
     );
-  }, [graph, graphStack, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]);
+  }, [rootGraph, graphStack, trainingScenario?.task_binding_spec, trainingScenario?.task_spec]);
   const isAcausalLayer = isAcausalGraphSpec(graph);
   const schemaRegistry = useMemo(
     () => (isAcausalLayer ? null : projectStudioSchema(graph, components, taskBindingSpec)),
     [components, graph, isAcausalLayer, taskBindingSpec]
   );
   const validation = useMemo(
-    () => (schemaRegistry ? validateGraph(graph, schemaRegistry) : { valid: true, errors: [], warnings: [], cycles: [] }),
+    () => (!isAcausalGraphSpec(graph) && schemaRegistry ? validateGraph(graph, schemaRegistry) : { valid: true, errors: [], warnings: [], cycles: [] }),
     [graph, schemaRegistry]
   );
   const acausalBalance = useMemo(() => {

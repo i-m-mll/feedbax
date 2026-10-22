@@ -6,6 +6,8 @@ import type { AnalysisInputRequirement } from '@/types/analysis';
 import type { LossTermSpec, TaskSpec, TimeAggregationSpec, TrainingSpec } from '@/types/training';
 import type {
   StudioBiomechanicsSpec,
+  StudioTaskBinding as GeneratedStudioTaskBinding,
+  StudioTaskBindingSpec as GeneratedStudioTaskBindingSpec,
   StudioEpochValueSpec as GeneratedStudioEpochValueSpec,
   StudioTaskEpochSpec as GeneratedStudioTaskEpochSpec,
   StudioTaskTimelineSegmentSpec as GeneratedStudioTaskTimelineSegmentSpec,
@@ -216,22 +218,12 @@ export interface StudioTaskDataSpec {
   metadata: Record<string, unknown>;
 }
 
-export interface StudioTaskBinding {
-  id: string;
-  source_data_id: string;
-  /** Node-id path from the root graph to the graph layer that owns this binding. */
-  target_graph_path?: string[];
-  target_node_id: string;
-  target_port: string;
-  role: 'model_input' | 'target' | 'initial_state' | 'intervention' | string;
-  metadata: Record<string, unknown>;
-}
+export type StudioTaskBinding = Required<GeneratedStudioTaskBinding>;
 
-export interface StudioTaskBindingSpec {
-  schema_version: 'feedbax.studio.task_bindings.v2' | string;
+export interface StudioTaskBindingSpec
+  extends Required<Omit<GeneratedStudioTaskBindingSpec, 'exposed_data'>> {
   exposed_data: StudioTaskDataSpec[];
   bindings: StudioTaskBinding[];
-  metadata: Record<string, unknown>;
 }
 
 export type StudioValueSpecMode =

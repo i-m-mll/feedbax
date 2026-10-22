@@ -1,30 +1,25 @@
-"""Real-wheel acceptance tests for Feedbax distribution provenance.
+"""Distribution identity rejection and real wheel/sdist acceptance.
 
-These build a real wheel and install it, which needs a clean Git checkout —
-Feedbax refuses to stamp distribution provenance onto uncommitted bytes, and the
-module-scoped fixtures assert that before they start — plus either a network or
-a warm ``uv`` cache. The default per-iteration gate cannot promise any of those,
-and a gate that goes red whenever someone has an edit in progress names the
-developer's working tree rather than a defect. The module therefore carries
-``slow``, which ``pyproject.toml`` deselects from the default gate and
-``scripts/full_suite.py`` restores for the closeout bar, alongside
-``test_cold_start_conformance`` which pays the same price for the same reason.
+Small authenticated packages exercise identity rejection without building Feedbax.
+The ``slow`` acceptance scenarios build and install the actual package, prove
+public model imports, and protect source immutability on success and failure.
+Their shared immutable build fixtures run together under xdist's loadgroup scheduler.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import tarfile
-import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from feedbax._distribution_provenance import build_provenance_from_git
 from feedbax.orchestration import revision
 from feedbax.orchestration.revision import (
     FEEDBAX_DISTRIBUTION_PROVENANCE_SCHEMA_VERSION,
@@ -34,7 +29,7 @@ from feedbax.orchestration.revision import (
     resolve_feedbax_revision,
 )
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.xdist_group(name="wheel_provenance")
 
 
 def _run(
@@ -50,6 +45,7 @@ def _run(
         check=check,
         capture_output=True,
         text=True,
+        timeout=60,
         env={
             **os.environ,
             "GIT_CONFIG_GLOBAL": os.devnull,
@@ -112,7 +108,26 @@ def _install_and_assert_wheel(
     )
     assert package_root.is_relative_to(environment)
     assert not (package_root.parent / ".git").exists()
-    assert (package_root / "models" / "cde.py").is_file()
+    dependency_site = Path(pytest.__file__).resolve().parent.parent
+    imported_paths = _run(
+        [
+            str(python),
+            "-c",
+            (
+                "import pathlib, sys; "
+                f"sys.path.append({str(dependency_site)!r}); "
+                "import feedbax.analysis.exact_parents; "
+                "import feedbax.models.cde as cde; "
+                "import feedbax.models.feedback as feedback; "
+                "print(pathlib.Path(cde.__file__).resolve()); "
+                "print(pathlib.Path(feedback.__file__).resolve())"
+            ),
+        ],
+        cwd=root,
+        extra_env={"PYTHONPATH": ""},
+    ).stdout.splitlines()
+    assert len(imported_paths) == 2
+    assert all(Path(path).is_relative_to(environment) for path in imported_paths)
     observed_revision = _run(
         [
             str(python),
@@ -195,15 +210,35 @@ def sdist_distribution(
     return sdist, package_root, revision_id
 
 
+@pytest.fixture(scope="module")
+def provenance_package(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
+    root = tmp_path_factory.mktemp("provenance-source")
+    package = root / "feedbax"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    _run(["git", "init", "--quiet"], cwd=root)
+    _run(["git", "add", "feedbax"], cwd=root)
+    _run(
+        ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+         "commit", "--quiet", "-m", "package identity"],
+        cwd=root,
+    )
+    encoded = build_provenance_from_git(root)
+    (package / "_distribution_provenance.json").write_bytes(encoded)
+    return package, json.loads(encoded)["revision"]
+
+
 @pytest.fixture
 def wheel_package(
-    installed_wheel: tuple[Path, Path, str],
+    provenance_package: tuple[Path, str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[Path, str]:
-    _source, installed_package, revision_id = installed_wheel
+    source, revision_id = provenance_package
     package_root = tmp_path / "site-packages" / "feedbax"
-    shutil.copytree(installed_package, package_root)
+    package_root.mkdir(parents=True)
+    for path in source.iterdir():
+        (package_root / path.name).write_bytes(path.read_bytes())
     monkeypatch.setattr(revision.feedbax, "__file__", str(package_root / "__init__.py"))
     return package_root, revision_id
 
@@ -217,6 +252,41 @@ def test_noneditable_wheel_resolves_and_passes_exact_gate(
     assert assert_feedbax_revision_exact(revision_id) == revision_id
     assert resolve_feedbax_provenance().source_path == package_root
     assert resolve_feedbax_provenance().dirty is False
+    assert revision.resolve_science_repo_import_revisions(()) == {}
+
+
+def test_wheel_inside_science_checkout_preserves_science_ownership_and_pin(
+    wheel_package: tuple[Path, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root, _revision_id = wheel_package
+    science_package = tmp_path / "science_provider"
+    science_package.mkdir()
+    (science_package / "__init__.py").write_text("", encoding="utf-8")
+    _run(["git", "init", "--quiet"], cwd=tmp_path)
+    _run(["git", "add", "science_provider"], cwd=tmp_path)
+    _run(
+        ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+         "commit", "--quiet", "-m", "science identity"],
+        cwd=tmp_path,
+    )
+    science_revision = _run(["git", "rev-parse", "HEAD"], cwd=tmp_path).stdout.strip()
+    assert package_root.is_relative_to(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    resolved = revision.resolve_science_repo_import_revisions(
+        (SimpleNamespace(entry_point_value="science_provider:register"),)
+    )
+
+    assert resolved == {str(tmp_path.resolve()): science_revision}
+    mismatched = "a" * 40 if science_revision != "a" * 40 else "b" * 40
+    with pytest.raises(FeedbaxRevisionError, match="science repo revision pin mismatch"):
+        revision.assert_science_repo_revision_pin(
+            primary_repo="science",
+            realized_revision=mismatched,
+            imported_revisions=resolved,
+        )
 
 
 def test_wheel_exact_gate_rejects_mismatch(wheel_package: tuple[Path, str]) -> None:
@@ -233,6 +303,8 @@ def test_wheel_rejects_missing_identity(wheel_package: tuple[Path, str]) -> None
 
     with pytest.raises(FeedbaxRevisionError, match="neither a Git-owned checkout"):
         resolve_feedbax_revision()
+    with pytest.raises(FeedbaxRevisionError, match="neither a Git-owned checkout"):
+        revision.resolve_science_repo_import_revisions(())
 
 
 def test_wheel_rejects_tampered_package_bytes(wheel_package: tuple[Path, str]) -> None:
@@ -242,6 +314,8 @@ def test_wheel_rejects_tampered_package_bytes(wheel_package: tuple[Path, str]) -
 
     with pytest.raises(FeedbaxRevisionError, match="does not match commit"):
         resolve_feedbax_revision()
+    with pytest.raises(FeedbaxRevisionError, match="does not match commit"):
+        revision.resolve_science_repo_import_revisions(())
 
 
 def test_wheel_rejects_malformed_and_unsupported_identity(
@@ -278,6 +352,7 @@ def test_wheel_rejects_conflicting_checkout_identity(
         resolve_feedbax_revision()
 
 
+@pytest.mark.slow
 def test_wheel_build_rejects_dirty_source(
     installed_wheel: tuple[Path, Path, str],
     tmp_path: Path,
@@ -309,6 +384,7 @@ def test_wheel_build_rejects_dirty_source(
     )
 
 
+@pytest.mark.slow
 def test_git_sdist_wheel_preserves_exact_verified_identity(
     sdist_distribution: tuple[Path, Path, str],
 ) -> None:
@@ -321,52 +397,13 @@ def test_git_sdist_wheel_preserves_exact_verified_identity(
     assert payload["revision"] == revision_id
 
 
-def test_real_checkout_wheel_contains_and_imports_public_models(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[1]
-    assert _run(["git", "status", "--porcelain=v1"], cwd=root).stdout == ""
-    wheel_dir = tmp_path / "wheel"
-    wheel_dir.mkdir()
-    _build(
-        ["--wheel", "--directory", str(root), "--out-dir", str(wheel_dir)],
-        cwd=tmp_path,
-        cache=tmp_path / "uv-build-cache",
-    )
-    wheel = next(wheel_dir.glob("feedbax-*.whl"))
-    with zipfile.ZipFile(wheel) as archive:
-        members = set(archive.namelist())
-    assert {
-        "feedbax/models/feedback.py",
-        "feedbax/models/cde.py",
-    } <= members
-
-    environment = tmp_path / "environment"
-    _run(["uv", "venv", "--system-site-packages", str(environment)], cwd=tmp_path)
-    python = environment / "bin" / "python"
-    _run(
-        ["uv", "pip", "install", "--python", str(python), "--no-deps", str(wheel)],
-        cwd=tmp_path,
-        extra_env={"UV_CACHE_DIR": str(tmp_path / "uv-install-cache")},
-    )
-    dependency_site = Path(pytest.__file__).resolve().parent.parent
-    imported_paths = _run(
-        [
-            str(python),
-            "-c",
-            (
-                "import pathlib, sys; "
-                f"sys.path.append({str(dependency_site)!r}); "
-                "import feedbax.analysis.exact_parents; "
-                "import feedbax.models.cde as cde; "
-                "import feedbax.models.feedback as feedback; "
-                "print(pathlib.Path(cde.__file__).resolve()); "
-                "print(pathlib.Path(feedback.__file__).resolve())"
-            ),
-        ],
-        cwd=tmp_path,
-        extra_env={"PYTHONPATH": ""},
-    ).stdout.splitlines()
-    assert len(imported_paths) == 2
-    assert all(Path(path).is_relative_to(environment) for path in imported_paths)
+@pytest.mark.slow
+def test_noneditable_wheel_installs_and_verifies_public_models(installed_wheel) -> None:
+    source, package_root, revision_id = installed_wheel
+    assert package_root != source / "feedbax"
+    assert json.loads((package_root / "_distribution_provenance.json").read_bytes())[
+        "revision"
+    ] == revision_id
 
 
 def _rewrite_sdist(
@@ -394,6 +431,7 @@ def _rewrite_sdist(
 
 
 @pytest.mark.parametrize("mutation", ["missing", "tampered"])
+@pytest.mark.slow
 def test_sdist_wheel_rejects_missing_or_tampered_provenance(
     sdist_distribution: tuple[Path, Path, str],
     tmp_path: Path,
@@ -422,6 +460,7 @@ def test_sdist_wheel_rejects_missing_or_tampered_provenance(
         assert "commit identity is unverifiable" in result.stderr
 
 
+@pytest.mark.slow
 def test_post_initialize_failure_never_mutates_source_checkout(
     installed_wheel: tuple[Path, Path, str],
     tmp_path: Path,
@@ -458,6 +497,7 @@ def test_post_initialize_failure_never_mutates_source_checkout(
     assert not (source / "feedbax" / "_distribution_provenance.json").exists()
 
 
+@pytest.mark.slow
 def test_concurrent_direct_wheel_builds_are_isolated_and_source_clean(
     installed_wheel: tuple[Path, Path, str],
     tmp_path: Path,

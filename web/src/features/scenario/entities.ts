@@ -1,10 +1,12 @@
 import type {
-  GraphSpec,
+  GraphSubgraphSpec,
   RetainedObservableSpec,
   RetainedObservableTargetSpec,
   TapSpec,
   WireSpec,
 } from '@/types/graph';
+import { isAcausalGraphSpec } from '@/types/graph';
+import { acausalConnectionId } from '@/features/domains/acausal';
 import type {
   StudioObjectiveSpec,
   StudioObjectiveTermSpec,
@@ -242,7 +244,7 @@ function isMechanicsNode(nodeId: string, type: string): boolean {
   return MECHANICS_TYPE_HINTS.some((hint) => normalized.includes(hint));
 }
 
-function addGraphEntities(registry: StudioScenarioEntityRegistry, graph: GraphSpec) {
+function addGraphEntities(registry: StudioScenarioEntityRegistry, graph: GraphSubgraphSpec) {
   for (const [nodeId, node] of Object.entries(graph.nodes)) {
     const entityId = graphNodeEntityId(nodeId);
     addEntity(registry, {
@@ -303,6 +305,27 @@ function addGraphEntities(registry: StudioScenarioEntityRegistry, graph: GraphSp
         metadata: { node_id: nodeId, port, direction: 'output' },
       });
     }
+  }
+
+  if (isAcausalGraphSpec(graph)) {
+    for (const connection of graph.connections) {
+      const edgeId = acausalConnectionId(connection);
+      addEntity(registry, {
+        id: graphEdgeEntityId(edgeId),
+        kind: 'graph_edge',
+        label: `${connection.a.join('.')} — ${connection.b.join('.')}`,
+        summary: 'Conserving connection',
+        scenario_id: registry.scenario_id,
+        stage_id: registry.stage_id,
+        selector: null,
+        relations: [
+          relation('references', graphNodeEntityId(connection.a[0])),
+          relation('references', graphNodeEntityId(connection.b[0])),
+        ],
+        metadata: { edge_id: edgeId, edge_type: 'acausal_connection', connection },
+      }, true);
+    }
+    return;
   }
 
   for (const wire of graph.wires) {
@@ -635,7 +658,7 @@ function addTaskEntity(
 function addMechanicsEntities(
   registry: StudioScenarioEntityRegistry,
   scenario: StudioScenarioSpec,
-  graph: GraphSpec | null
+  graph: GraphSubgraphSpec | null
 ) {
   const mechanicsNodes = Object.entries(graph?.nodes ?? {}).filter(([nodeId, node]) =>
     isMechanicsNode(nodeId, node.type)
@@ -737,7 +760,7 @@ export function buildScenarioEntityRegistry({
   graph,
 }: {
   scenario: StudioScenarioSpec | null | undefined;
-  graph?: GraphSpec | null;
+  graph?: GraphSubgraphSpec | null;
 }): StudioScenarioEntityRegistry {
   const resolvedGraph = graph ?? null;
   const registry: StudioScenarioEntityRegistry = {

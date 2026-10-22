@@ -1,4 +1,4 @@
-import type { GraphSpec } from '@/types/graph';
+import { isAcausalGraphSpec, type GraphSpec, type GraphSubgraphSpec } from '@/types/graph';
 import type { PortSchema, StudioSchemaRegistry, ValueSchema } from '@/types/workspace';
 
 export interface DimensionConstraint {
@@ -57,9 +57,10 @@ const DIMENSION_TARGETS: Record<string, DimensionTarget[]> = {
 };
 
 export function deriveDimensionConstraints(
-  graph: GraphSpec,
+  graph: GraphSubgraphSpec,
   registry: Pick<StudioSchemaRegistry, 'ports' | 'task_data'>
 ): DimensionConstraint[] {
+  if (isAcausalGraphSpec(graph)) return [];
   const constraints: DimensionConstraint[] = [];
   const ports = new Map(
     registry.ports
@@ -135,11 +136,12 @@ export function applyBoundaryOverrides(
 }
 
 export function deriveSubgraphBoundaryOverrides(
-  parentGraph: GraphSpec,
+  parentGraph: GraphSubgraphSpec,
   childNodeId: string,
   parentRegistry: Pick<StudioSchemaRegistry, 'ports' | 'task_data'>
 ): Map<string, ValueSchema> {
   const overrides = new Map<string, ValueSchema>();
+  if (isAcausalGraphSpec(parentGraph)) return overrides;
   if (!parentGraph.nodes[childNodeId]) return overrides;
 
   const parentConstraints = deriveDimensionConstraints(parentGraph, parentRegistry);

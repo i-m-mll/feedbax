@@ -527,12 +527,3 @@ def test_direct_spec_execution_metadata_carries_no_composition_key(
     )
 
     assert "analysis_composition" not in manifest.metadata
-
-
-def test_provider_manifest_publishes_the_delta_authoring_kind() -> None:
-    from feedbax.integrations.provider import provider_manifest
-
-    properties = provider_manifest().schemas["AnalysisRunDeltaSpec"]["properties"]
-
-    assert set(properties) == {"schema_id", "schema_version", "parent", "deltas"}
-    assert properties["schema_version"]["default"] == ANALYSIS_RUN_DELTA_SPEC_SCHEMA_VERSION

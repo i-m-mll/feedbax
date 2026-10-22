@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ComponentDefinition } from '@/types/components';
-import type { GraphSpec } from '@/types/graph';
+import type { AcausalGraphSpec, GraphSpec } from '@/types/graph';
 import type { StudioScenarioSpec } from '@/types/workspace';
 import {
   buildScenarioEntityRegistry,
@@ -299,6 +299,37 @@ const components: ComponentDefinition[] = [
 ];
 
 describe('resolved scene projection', () => {
+  it('reports unavailable directed frame sources in acausal interiors', () => {
+    const interior: AcausalGraphSpec = {
+      schema_id: 'feedbax.spec.acausal_graph',
+      schema_version: 'feedbax.spec.acausal_graph.v1',
+      physical_domain: 'translational',
+      nodes: graph.nodes,
+      connections: [],
+      solver: { solver_type: 'euler', dt: 0.01 },
+    };
+    const representation = components[0].representation!;
+    const scene = buildResolvedScene({
+      scenario,
+      graph: interior,
+      registry: buildScenarioEntityRegistry({ scenario, graph: interior }),
+      components: [{
+        ...components[0],
+        representation: {
+          ...representation,
+          elements: representation.elements.map((element) => ({
+            ...element,
+            frame_provider: { kind: 'from_input_port', input_port: 'force' },
+          })),
+        },
+      }, components[1]],
+    });
+
+    expect(scene.validation).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'workspace_unresolved_frame_provider' }),
+    ]));
+  });
+
   it('builds represented mechanics and task geometry from catalog metadata and live params', () => {
     const sceneRegistry = buildScenarioEntityRegistry({ scenario, graph });
     const scene = buildResolvedScene({ scenario, graph, registry: sceneRegistry, components });

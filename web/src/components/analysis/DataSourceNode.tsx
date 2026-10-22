@@ -1,3 +1,4 @@
+import { useRootGraph } from '@/hooks/useRootGraph';
 /**
  * DataSourceNode — the implicit data source on the left edge of the analysis DAG.
  *
@@ -23,7 +24,6 @@ import {
   type StudioSelectorOption,
 } from '@/features/scenario/selectors';
 import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
-import { useGraphStore } from '@/stores/graphStore';
 import { getStageByKind, getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import type { GraphSpec } from '@/types/graph';
 import { StateFieldTree, countVisibleRows, FIELD_ROW_HEIGHT } from './StateFieldTree';
@@ -225,7 +225,7 @@ export function DataSourceNode({ id, data, selected }: NodeProps) {
   const workspace = useWorkspaceStore(
     useShallow((state) => (state.workspace ? { ...state.workspace } : null))
   );
-  const graph = useGraphStore((s) => s.graph);
+  const graph = useRootGraph();
   const trainingStage = getStageByKind(workspace, 'train');
   const trainingScenario = getTrainingScenario(workspace);
   const schemaQuery = useStudioSchemaRegistry(workspace, trainingStage?.scenario_id ?? null);

@@ -2,7 +2,6 @@
 
 import jax
 import jax.numpy as jnp
-import pytest
 
 from feedbax.runtime.graph import init_state_from_component
 
@@ -29,9 +28,10 @@ def _run_steps(component, inputs_seq, state=None):
     """Run component for len(inputs_seq) steps, return list of output dicts."""
     if state is None:
         state = init_state_from_component(component)
+    step = jax.jit(lambda inputs, state: component(inputs, state, key=KEY))
     outputs = []
     for step_inputs in inputs_seq:
-        out, state = component(step_inputs, state, key=KEY)
+        out, state = step(step_inputs, state)
         outputs.append(out)
     return outputs, state
 
@@ -41,53 +41,12 @@ def _run_steps(component, inputs_seq, state=None):
 # ===========================================================================
 
 class TestIntegrator:
-    def test_step_response_is_ramp(self):
-        """A constant input should produce a linearly increasing ramp."""
-        dt = 0.01
-        n_steps = 100
-        comp = Integrator(dt=dt, n_dims=1, initial_value=0.0)
-        state = init_state_from_component(comp)
-
-        inputs_seq = [{"input": jnp.array([1.0])} for _ in range(n_steps)]
-        outputs, _ = _run_steps(comp, inputs_seq, state)
-
-        # After N steps of unit input, value should be N * dt
-        final = outputs[-1]["output"]
-        expected = n_steps * dt
-        assert jnp.allclose(final, jnp.array([expected]), atol=1e-5)
-
-    def test_analytical_accumulation(self):
-        """Value after N steps matches N * u * dt for constant u."""
-        dt = 0.02
-        u = 3.0
-        n_steps = 50
-        comp = Integrator(dt=dt, n_dims=1)
-        state = init_state_from_component(comp)
-
-        inputs_seq = [{"input": jnp.array([u])} for _ in range(n_steps)]
-        outputs, _ = _run_steps(comp, inputs_seq, state)
-
-        expected = n_steps * u * dt
-        assert jnp.allclose(outputs[-1]["output"], jnp.array([expected]), atol=1e-5)
-
-    def test_multidim(self):
-        """Works with multi-dimensional signals."""
-        comp = Integrator(dt=0.01, n_dims=3)
-        state = init_state_from_component(comp)
-        out, _ = comp({"input": jnp.ones(3)}, state, key=KEY)
-        assert out["output"].shape == (3,)
-
-    def test_jit(self):
-        """JIT compilation succeeds."""
-        comp = Integrator(dt=0.01, n_dims=2)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"input": jnp.ones(2)}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (2,)
+    def test_multidimensional_trajectory(self):
+        comp = Integrator(dt=0.02, n_dims=3, initial_value=0.5)
+        inputs = jnp.array([[1.0, -2.0, 0.0], [3.0, 1.0, -4.0], [-2.0, 0.0, 5.0]])
+        outputs, _ = _run_steps(comp, [{"input": value} for value in inputs])
+        expected = jnp.array([[0.52, 0.46, 0.5], [0.58, 0.48, 0.42], [0.54, 0.48, 0.52]])
+        assert jnp.allclose(jnp.stack([out["output"] for out in outputs]), expected)
 
 
 # ===========================================================================
@@ -100,29 +59,19 @@ class TestDerivative:
         dt = 0.01
         comp = Derivative(dt=dt, n_dims=1)
         state = init_state_from_component(comp)
+        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
 
         # Ramp input: 0, dt, 2*dt, ...
         n_steps = 50
         derivatives = []
         for i in range(n_steps):
             val = jnp.array([i * dt])
-            out, state = comp({"input": val}, state, key=KEY)
+            out, state = step({"input": val}, state)
             derivatives.append(out["output"])
 
         # After the first step, derivative should be ~1.0 (slope of ramp)
         for d in derivatives[1:]:
             assert jnp.allclose(d, jnp.array([1.0]), atol=1e-5)
-
-    def test_jit(self):
-        comp = Derivative(dt=0.01, n_dims=1)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"input": jnp.array([1.0])}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (1,)
 
 
 # ===========================================================================
@@ -170,21 +119,6 @@ class TestStateSpace:
             assert curr_val <= prev_val + 1e-6  # monotonically decaying
             prev_val = curr_val
 
-    def test_jit(self):
-        A = jnp.eye(2) * -0.5
-        B = jnp.eye(2)
-        C = jnp.eye(2)
-        D = jnp.zeros((2, 2))
-        comp = StateSpace(A, B, C, D, dt=0.01)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"input": jnp.ones(2)}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (2,)
-
 
 # ===========================================================================
 # TransferFunction
@@ -212,17 +146,6 @@ class TestTransferFunction:
         state = init_state_from_component(comp)
         out, _ = comp({"input": jnp.array([2.0])}, state, key=KEY)
         assert jnp.allclose(out["output"], jnp.array([10.0]), atol=1e-5)
-
-    def test_jit(self):
-        comp = TransferFunction(num=[1.0], den=[1.0, 1.0], dt=0.01)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"input": jnp.array([1.0])}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (1,)
 
 
 # ===========================================================================
@@ -282,17 +205,6 @@ class TestPID:
         # Should be close to setpoint
         assert jnp.abs(output_val[0] - setpoint) < 0.1
 
-    def test_jit(self):
-        comp = PID(Kp=1.0, Ki=0.1, Kd=0.01, dt=0.01, n_dims=2)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"error": jnp.ones(2)}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (2,)
-
 
 # ===========================================================================
 # PIDDiscrete
@@ -303,21 +215,11 @@ class TestPIDDiscrete:
         """Step error with P-only should give proportional output."""
         comp = PIDDiscrete(Kp=2.0, Ki=0.0, Kd=0.0, dt=0.01, n_dims=1)
         state = init_state_from_component(comp)
+        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
 
-        out, state = comp({"error": jnp.array([1.0])}, state, key=KEY)
+        out, state = step({"error": jnp.array([1.0])}, state)
         # Velocity form: dp = Kp*(e - 0) = 2.0, u = 0 + 2.0 = 2.0
         assert jnp.allclose(out["output"], jnp.array([2.0]), atol=1e-5)
-
-    def test_jit(self):
-        comp = PIDDiscrete(Kp=1.0, Ki=0.1, Kd=0.01, dt=0.01, n_dims=1)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"error": jnp.array([1.0])}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (1,)
 
 
 # ===========================================================================
@@ -329,12 +231,13 @@ class TestMuxDemux:
         """Mux should concatenate inputs into one vector."""
         comp = Mux(n_inputs=3)
         state = init_state_from_component(comp)
+        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
         inputs = {
             "in_0": jnp.array([1.0, 2.0]),
             "in_1": jnp.array([3.0]),
             "in_2": jnp.array([4.0, 5.0]),
         }
-        out, _ = comp(inputs, state, key=KEY)
+        out, _ = step(inputs, state)
         expected = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
         assert jnp.allclose(out["output"], expected)
 
@@ -348,103 +251,27 @@ class TestMuxDemux:
         assert jnp.allclose(out["out_1"], jnp.array([3.0]))
         assert jnp.allclose(out["out_2"], jnp.array([4.0, 5.0]))
 
-    def test_round_trip(self):
-        """Mux then Demux should preserve original values."""
-        mux = Mux(n_inputs=2)
-        demux = Demux(sizes=[3, 2])
-        mux_state = init_state_from_component(mux)
-        demux_state = init_state_from_component(demux)
-
-        a = jnp.array([1.0, 2.0, 3.0])
-        b = jnp.array([4.0, 5.0])
-
-        mux_out, _ = mux({"in_0": a, "in_1": b}, mux_state, key=KEY)
-        demux_out, _ = demux({"input": mux_out["output"]}, demux_state, key=KEY)
-
-        assert jnp.allclose(demux_out["out_0"], a)
-        assert jnp.allclose(demux_out["out_1"], b)
-
-    def test_jit(self):
-        mux = Mux(n_inputs=2)
-        state = init_state_from_component(mux)
-
-        @jax.jit
-        def step(s):
-            return mux({"in_0": jnp.ones(2), "in_1": jnp.ones(3)}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (5,)
-
 
 # ===========================================================================
 # Switch
 # ===========================================================================
 
 class TestSwitch:
-    def test_routes_true(self):
-        """When condition > threshold, output is true_input."""
-        comp = Switch(threshold=0.0)
-        state = init_state_from_component(comp)
-        out, _ = comp(
-            {
-                "condition": jnp.array([1.0]),
-                "true_input": jnp.array([10.0]),
-                "false_input": jnp.array([-10.0]),
-            },
-            state,
-            key=KEY,
-        )
-        assert jnp.allclose(out["output"], jnp.array([10.0]))
-
-    def test_routes_false(self):
-        """When condition <= threshold, output is false_input."""
-        comp = Switch(threshold=0.0)
-        state = init_state_from_component(comp)
-        out, _ = comp(
-            {
-                "condition": jnp.array([-1.0]),
-                "true_input": jnp.array([10.0]),
-                "false_input": jnp.array([-10.0]),
-            },
-            state,
-            key=KEY,
-        )
-        assert jnp.allclose(out["output"], jnp.array([-10.0]))
-
     def test_elementwise(self):
         """Switch operates element-wise on arrays."""
         comp = Switch(threshold=0.0)
         state = init_state_from_component(comp)
-        out, _ = comp(
+        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
+        out, _ = step(
             {
-                "condition": jnp.array([1.0, -1.0, 0.5]),
+                "condition": jnp.array([1.0, -1.0, 0.0]),
                 "true_input": jnp.array([1.0, 1.0, 1.0]),
                 "false_input": jnp.array([0.0, 0.0, 0.0]),
             },
             state,
-            key=KEY,
         )
-        expected = jnp.array([1.0, 0.0, 1.0])
+        expected = jnp.array([1.0, 0.0, 0.0])
         assert jnp.allclose(out["output"], expected)
-
-    def test_jit(self):
-        comp = Switch(threshold=0.5)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp(
-                {
-                    "condition": jnp.array([1.0]),
-                    "true_input": jnp.array([1.0]),
-                    "false_input": jnp.array([0.0]),
-                },
-                s,
-                key=KEY,
-            )
-
-        out, _ = step(state)
-        assert out["output"].shape == (1,)
 
 
 # ===========================================================================
@@ -456,7 +283,8 @@ class TestDeadZone:
         """Inputs within dead band produce zero output."""
         comp = DeadZone(threshold=0.5)
         state = init_state_from_component(comp)
-        out, _ = comp({"input": jnp.array([0.3, -0.2, 0.0])}, state, key=KEY)
+        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
+        out, _ = step({"input": jnp.array([0.3, -0.2, 0.0])}, state)
         assert jnp.allclose(out["output"], jnp.zeros(3), atol=1e-6)
 
     def test_outside_dead_band(self):
@@ -466,17 +294,6 @@ class TestDeadZone:
         out, _ = comp({"input": jnp.array([1.0, -1.0])}, state, key=KEY)
         expected = jnp.array([0.5, -0.5])
         assert jnp.allclose(out["output"], expected, atol=1e-6)
-
-    def test_jit(self):
-        comp = DeadZone(threshold=0.1)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"input": jnp.array([0.5])}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (1,)
 
 
 # ===========================================================================
@@ -490,14 +307,15 @@ class TestRateLimiter:
         max_rate = 10.0  # max 0.1 per step
         comp = RateLimiter(max_rate=max_rate, dt=dt, n_dims=1)
         state = init_state_from_component(comp)
+        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
 
         # Apply a large step from 0 to 5
-        out1, state = comp({"input": jnp.array([5.0])}, state, key=KEY)
+        out1, state = step({"input": jnp.array([5.0])}, state)
         # Should only move max_rate * dt = 0.1
         assert jnp.allclose(out1["output"], jnp.array([0.1]), atol=1e-6)
 
         # Second step: another 0.1
-        out2, state = comp({"input": jnp.array([5.0])}, state, key=KEY)
+        out2, state = step({"input": jnp.array([5.0])}, state)
         assert jnp.allclose(out2["output"], jnp.array([0.2]), atol=1e-6)
 
     def test_no_limit_when_slow(self):
@@ -506,17 +324,6 @@ class TestRateLimiter:
         state = init_state_from_component(comp)
         out, _ = comp({"input": jnp.array([0.5])}, state, key=KEY)
         assert jnp.allclose(out["output"], jnp.array([0.5]), atol=1e-6)
-
-    def test_jit(self):
-        comp = RateLimiter(max_rate=1.0, dt=0.01, n_dims=2)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"input": jnp.ones(2)}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (2,)
 
 
 # ===========================================================================
@@ -528,29 +335,19 @@ class TestUnitDelay:
         """Output at step k should be the input from step k-1."""
         comp = UnitDelay(n_dims=2, initial_value=0.0)
         state = init_state_from_component(comp)
+        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
 
         # Step 0: output should be initial value (0)
-        out0, state = comp({"input": jnp.array([1.0, 2.0])}, state, key=KEY)
+        out0, state = step({"input": jnp.array([1.0, 2.0])}, state)
         assert jnp.allclose(out0["output"], jnp.zeros(2))
 
         # Step 1: output should be input from step 0
-        out1, state = comp({"input": jnp.array([3.0, 4.0])}, state, key=KEY)
+        out1, state = step({"input": jnp.array([3.0, 4.0])}, state)
         assert jnp.allclose(out1["output"], jnp.array([1.0, 2.0]))
 
         # Step 2: output should be input from step 1
-        out2, state = comp({"input": jnp.array([5.0, 6.0])}, state, key=KEY)
+        out2, state = step({"input": jnp.array([5.0, 6.0])}, state)
         assert jnp.allclose(out2["output"], jnp.array([3.0, 4.0]))
-
-    def test_jit(self):
-        comp = UnitDelay(n_dims=1)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"input": jnp.array([1.0])}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (1,)
 
 
 # ===========================================================================
@@ -562,32 +359,22 @@ class TestZeroOrderHold:
         """Samples input on first step, holds for hold_steps."""
         comp = ZeroOrderHold(hold_steps=3, n_dims=1)
         state = init_state_from_component(comp)
+        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
 
         # Step 0: counter=0, should sample
-        out0, state = comp({"input": jnp.array([10.0])}, state, key=KEY)
+        out0, state = step({"input": jnp.array([10.0])}, state)
         assert jnp.allclose(out0["output"], jnp.array([10.0]))
 
         # Steps 1, 2: should hold
-        out1, state = comp({"input": jnp.array([20.0])}, state, key=KEY)
+        out1, state = step({"input": jnp.array([20.0])}, state)
         assert jnp.allclose(out1["output"], jnp.array([10.0]))
 
-        out2, state = comp({"input": jnp.array([30.0])}, state, key=KEY)
+        out2, state = step({"input": jnp.array([30.0])}, state)
         assert jnp.allclose(out2["output"], jnp.array([10.0]))
 
         # Step 3: counter wraps, should sample again
-        out3, state = comp({"input": jnp.array([40.0])}, state, key=KEY)
+        out3, state = step({"input": jnp.array([40.0])}, state)
         assert jnp.allclose(out3["output"], jnp.array([40.0]))
-
-    def test_jit(self):
-        comp = ZeroOrderHold(hold_steps=2, n_dims=1)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"input": jnp.array([1.0])}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (1,)
 
 
 # ===========================================================================
@@ -606,17 +393,6 @@ class TestIntegratorDiscrete:
         # After inputs 1,2,3,4,5: sum = 15
         assert jnp.allclose(outputs[-1]["output"], jnp.array([15.0]), atol=1e-5)
 
-    def test_jit(self):
-        comp = IntegratorDiscrete(dt=0.5, n_dims=2)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"input": jnp.ones(2)}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (2,)
-
 
 # ===========================================================================
 # HighPassFilter
@@ -627,10 +403,11 @@ class TestHighPassFilter:
         """A high-pass filter should attenuate a constant (DC) input over time."""
         comp = HighPassFilter(tau=0.1, dt=0.01, n_dims=1)
         state = init_state_from_component(comp)
+        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
 
         # Apply constant input for many steps
         for _ in range(500):
-            out, state = comp({"input": jnp.array([1.0])}, state, key=KEY)
+            out, state = step({"input": jnp.array([1.0])}, state)
 
         # Output should be close to zero (DC rejected)
         assert jnp.abs(out["output"][0]) < 0.1
@@ -644,40 +421,22 @@ class TestHighPassFilter:
         out, _ = comp({"input": jnp.array([1.0])}, state, key=KEY)
         assert jnp.abs(out["output"][0]) > 0.5
 
-    def test_jit(self):
-        comp = HighPassFilter(tau=0.05, dt=0.01, n_dims=1)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"input": jnp.array([1.0])}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (1,)
-
 
 # ===========================================================================
 # BandPassFilter
 # ===========================================================================
 
 class TestBandPassFilter:
-    def test_construction(self):
-        """BandPassFilter should construct without error."""
+    def test_step_transient_decays(self):
+        """A band-pass filter passes the step transient and rejects its DC tail."""
         comp = BandPassFilter(tau_low=0.1, tau_high=0.01, dt=0.01, n_dims=1)
         state = init_state_from_component(comp)
-        out, _ = comp({"input": jnp.array([1.0])}, state, key=KEY)
-        assert out["output"].shape == (1,)
-
-    def test_jit(self):
-        comp = BandPassFilter(tau_low=0.1, tau_high=0.01, dt=0.01, n_dims=1)
-        state = init_state_from_component(comp)
-
-        @jax.jit
-        def step(s):
-            return comp({"input": jnp.array([1.0])}, s, key=KEY)
-
-        out, _ = step(state)
-        assert out["output"].shape == (1,)
+        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
+        out, _ = step({"input": jnp.array([1.0])}, state)
+        assert 0.0 < out["output"][0] < 1.0
+        for _ in range(200):
+            out, state = step({"input": jnp.array([1.0])}, state)
+        assert jnp.abs(out["output"][0]) < 1e-5
 
 
 # ===========================================================================
@@ -695,9 +454,9 @@ class TestVmapBatch:
         def batched_step(inputs):
             return comp({"input": inputs}, state, key=KEY)
 
-        batch_inputs = jnp.ones((4, 2))
+        batch_inputs = jnp.arange(8.0).reshape(4, 2)
         out, _ = batched_step(batch_inputs)
-        assert out["output"].shape == (4, 2)
+        assert jnp.allclose(out["output"], batch_inputs * 0.01)
 
     def test_pid_vmap(self):
         """PID should work with vmap over a batch of errors."""
@@ -709,20 +468,28 @@ class TestVmapBatch:
         def batched_step(errors):
             return comp({"error": errors}, state, key=KEY)
 
-        batch_errors = jnp.ones((8, 3))
+        batch_errors = jnp.arange(24.0).reshape(8, 3) / 10
         out, _ = batched_step(batch_errors)
-        assert out["output"].shape == (8, 3)
+        serial = jnp.stack([
+            comp({"error": error}, init_state_from_component(comp), key=KEY)[0]["output"]
+            for error in batch_errors
+        ])
+        assert jnp.allclose(out["output"], serial)
 
     def test_unit_delay_vmap(self):
-        """UnitDelay should work with vmap over a batch."""
+        """Each batched delay carries its own previous input."""
         comp = UnitDelay(n_dims=2)
         state = init_state_from_component(comp)
+        batch_inputs = jnp.arange(8.0).reshape(4, 2)
 
         @jax.jit
         @jax.vmap
-        def batched_step(inputs):
+        def first_step(inputs):
             return comp({"input": inputs}, state, key=KEY)
 
-        batch_inputs = jnp.ones((4, 2))
-        out, _ = batched_step(batch_inputs)
-        assert out["output"].shape == (4, 2)
+        out, states = first_step(batch_inputs)
+        assert jnp.allclose(out["output"], jnp.zeros_like(batch_inputs))
+        next_out, _ = jax.jit(jax.vmap(
+            lambda inputs, state: comp({"input": inputs}, state, key=KEY)
+        ))(-batch_inputs, states)
+        assert jnp.allclose(next_out["output"], batch_inputs)
