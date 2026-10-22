@@ -320,76 +320,73 @@ def _class_pytest_markers(source: str, class_name: str) -> set[str]:
     raise AssertionError(f"class {class_name} not found")
 
 
-def _module_pytest_markers(source: str) -> set[str]:
-    """Return every ``pytest.mark.<name>`` assigned to a module-level ``pytestmark``."""
-    tree = ast.parse(source)
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(
-            isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets
-        ):
-            continue
-        value = node.value
-        elements = value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]
-        return {element.attr for element in elements if isinstance(element, ast.Attribute)}
-    return set()
-
-
-def test_slow_tier_leaves_the_default_gate_and_returns_for_every_closeout_profile() -> None:
-    """The `slow` tier is deselected per iteration and restored by this wrapper.
-
-    The `slow` modules build a real wheel and install it, so they need a clean Git
-    checkout plus a network or a warm `uv` cache. That is not a promise the gate
-    that must pass on every invocation can make, so `addopts` deselects them. They
-    are still load-bearing — `test_cold_start_conformance` is the honesty gate for
-    the whole upstreaming program — so every profile this wrapper runs must bring
-    them back. A command-line `-m` overrides `addopts`, which is exactly how that
-    happens; this test fails if either half of the arrangement is edited away.
-    """
-    repo_root = Path(__file__).resolve().parents[1]
-    addopts = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))["tool"][
-        "pytest"
-    ]["ini_options"]["addopts"]
-
-    assert "not slow" in addopts, (
-        "the default gate must deselect the `slow` tier; the marker is declared for "
-        "exactly this purpose and is inert unless `addopts` names it"
-    )
-
+def test_profiles_select_slow_and_optional_categories(tmp_path: Path) -> None:
+    """Exercise pytest's actual default/CLI marker precedence on a tiny corpus."""
     full_suite = load_full_suite_module()
-    for profile, expression in full_suite.SUITE_MARKER_EXPRESSIONS.items():
-        assert "slow" not in expression, (
-            f"the `{profile}` closeout profile must not deselect `slow`: the wrapper is "
-            "where the wheel-building tier is paid for"
-        )
+    repo_root = Path(__file__).resolve().parents[1]
+    options = tomllib.loads((repo_root / "pyproject.toml").read_text())["tool"]["pytest"][
+        "ini_options"
+    ]
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\naddopts = "
+        + options["addopts"]
+        + "\nmarkers =\n"
+        + "\n".join("    " + marker for marker in options["markers"])
+        + "\n"
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_categories.py").write_text("""import pytest
 
-    tests_dir = repo_root / "tests"
-    cold_source = (tests_dir / "test_cold_start_conformance.py").read_text(encoding="utf-8")
-    assert "slow" in _module_pytest_markers(cold_source)
-    wheel_source = (tests_dir / "test_feedbax_wheel_provenance.py").read_text(encoding="utf-8")
-    module_markers = _module_pytest_markers(wheel_source)
-    wheel_tests = {
-        node.name: node
-        for node in ast.parse(wheel_source).body
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+def test_core(): pass
+@pytest.mark.slow
+def test_slow(): pass
+@pytest.mark.optional_mjx
+def test_mjx(): pass
+@pytest.mark.optional_mjx
+@pytest.mark.slow
+def test_mjx_slow(): pass
+@pytest.mark.optional_ppo
+def test_ppo(): pass
+@pytest.mark.optional_ppo
+@pytest.mark.slow
+def test_ppo_slow(): pass
+""")
+    core = {"test_core", "test_slow"}
+    mjx = {"test_mjx", "test_mjx_slow"}
+    ppo = {"test_ppo", "test_ppo_slow"}
+    cases = {
+        None: {"test_core"},
+        "core": core,
+        "mjx": core | mjx,
+        "ppo": core | ppo,
+        "all": core | mjx | ppo,
     }
-    build_nodes = {
-        "test_wheel_build_rejects_dirty_source",
-        "test_git_sdist_wheel_preserves_exact_verified_identity",
-        "test_real_checkout_wheel_contains_and_imports_public_models",
-        "test_sdist_wheel_rejects_missing_or_tampered_provenance",
-        "test_post_initialize_failure_never_mutates_source_checkout",
-        "test_concurrent_direct_wheel_builds_are_isolated_and_source_clean",
-    }
-    assert build_nodes <= wheel_tests.keys(), "real wheel acceptance witnesses must remain"
-    for name in build_nodes:
-        markers = module_markers | {
-            decorator.attr
-            for decorator in wheel_tests[name].decorator_list
-            if isinstance(decorator, ast.Attribute)
+    collection = ["--collect-only", "-q", "-p", "xdist.plugin"]
+    for profile, expected in cases.items():
+        command = (
+            [sys.executable, "-m", "pytest", "tests", "-n", "0", *collection]
+            if profile is None
+            else full_suite.pytest_command(
+                collection, suite_profile=profile, runner_args=["-n", "0"]
+            )
+        )
+        result = subprocess.run(
+            command,
+            cwd=tmp_path,
+            env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTEST_ADDOPTS": ""},
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        selected = {
+            line.rsplit("::", 1)[-1]
+            for line in result.stdout.splitlines()
+            if line.startswith("tests/test_categories.py::")
         }
-        assert "slow" in markers, f"{name} builds a real wheel and must stay in the slow tier"
+        assert selected == expected, profile
 
 
 def test_representative_nodes_have_expected_optional_markers() -> None:
