@@ -21,6 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.orchestration import AuthorizedBatchStop, RowConformanceRuntimeInputs
+from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.base import ParentRef
@@ -107,6 +108,7 @@ from feedbax.orchestration.bundle import (
     RowLaunchSpec,
     SchemaArtifactRef,
     canonical_run_bundle_sha256,
+    environment_declaration_identity_projection,
 )
 from feedbax.orchestration.conformance import (
     CheckEntry,
@@ -789,6 +791,32 @@ def _bundle(
         context=context,
         registry=registry,
     )
+
+
+def test_declared_environment_identity_binds_semantics_and_excludes_metadata() -> None:
+    environment = EnvironmentDeclaration(
+        python_version="3.12",
+        repo_revisions=[RepoRevision(path="feedbax", revision="abc123")],
+        lockfile_hashes={"uv.lock": "a" * 64},
+        overlay_steps=["uv sync --frozen"],
+        image_id="registry.example/feedbax@sha256:" + "b" * 64,
+    )
+
+    def identity(value: EnvironmentDeclaration) -> str:
+        return hashlib.sha256(
+            canonical_json_v1_bytes(environment_declaration_identity_projection(value))
+        ).hexdigest()
+
+    original = identity(environment)
+    for field, replacement in (
+        ("python_version", "3.13"),
+        ("repo_revisions", [RepoRevision(path="feedbax", revision="def456")]),
+        ("lockfile_hashes", {"uv.lock": "c" * 64}),
+        ("overlay_steps", ["uv sync --frozen --all-extras"]),
+        ("image_id", "registry.example/feedbax@sha256:" + "d" * 64),
+    ):
+        assert identity(environment.model_copy(update={field: replacement})) != original, field
+    assert identity(environment.model_copy(update={"metadata": {"note": "operator"}})) == original
 
 
 def test_assembly_copies_the_authored_feedbax_revision(
