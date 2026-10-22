@@ -1,9 +1,15 @@
+# Native pool budgets must be set before importing JAX or NumPy.
+# ruff: noqa: E402
 from collections.abc import Iterator
 import hashlib
 import os
 from pathlib import Path
 import shutil
 import subprocess
+
+from scripts.full_suite import auto_worker_count, configure_native_threads
+
+configure_native_threads()
 
 import jax
 import pytest
@@ -17,6 +23,11 @@ from feedbax.plugins.application import (
     ApplicationRegistryBundle,
     new_application_registry_bundle,
 )
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
+    return auto_worker_count()
 
 
 _CACHE_SOURCE_PATHS = ("feedbax", "tests", "pyproject.toml", "uv.lock")
@@ -244,9 +255,7 @@ def subprocess_dirty_tolerance():
     """
 
     def install(directory: Path) -> None:
-        (directory / "sitecustomize.py").write_text(
-            _SUBPROCESS_DIRTY_TOLERANCE, encoding="utf-8"
-        )
+        (directory / "sitecustomize.py").write_text(_SUBPROCESS_DIRTY_TOLERANCE, encoding="utf-8")
 
     return install
 
