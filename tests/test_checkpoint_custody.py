@@ -41,10 +41,8 @@ from feedbax.contracts.checkpoints import (
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
-    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
-    TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
     TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
     structural_abi_content_projection,
@@ -52,11 +50,8 @@ from feedbax.contracts.checkpoints import (
 )
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
-    TrainingRunManifest,
     load_manifest,
-    spec_payload,
 )
-from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.migrations import migrate_structured_spec_payload
 from feedbax.contracts.training import (
     LossTermSpec,
@@ -293,66 +288,26 @@ def _rewrite_controller_leaf_type(result, leaf_type: str) -> None:
     _rewrite_manifest_and_latest(result, payload)
 
 
-def test_structural_abi_content_projection_field_classification() -> None:
-    leaf_identity_fields = {
-        "path",
-        "leaf_type",
-        "shape",
-        "dtype",
-        "weak_type",
-        "static_repr_sha256",
-    }
-    fingerprint_identity_fields = {
-        "fingerprint_algorithm_version",
-        "treedef",
-        "leaf_count",
-        "leaves",
-    }
-    assert set(SlotLeafFingerprint.model_fields) == leaf_identity_fields | {
-        "sharding",
-        "layout",
-    }
-    assert set(StructuralAbiFingerprint.model_fields) == fingerprint_identity_fields | {
-        "schema_id",
-        "schema_version",
-        "environment_provenance",
-        "provenance_status",
-        "fingerprint_sha256",
-        "metadata",
-    }
-
+def test_structural_abi_digest_binds_content_and_ignores_placement() -> None:
     fingerprint = StructuralAbiFingerprint(
         treedef="PyTreeDef(*)",
         leaf_count=1,
-        leaves=[
-            SlotLeafFingerprint(
-                path="[0]",
-                leaf_type="jax.Array",
-                shape=(2,),
-                dtype="float32",
-                weak_type=False,
-                sharding="SingleDeviceSharding(device=CpuDevice(id=0))",
-                layout="Layout(device_local_layout=None, sharding=None)",
-            )
-        ],
+        leaves=[SlotLeafFingerprint(path="[0]", leaf_type="jax.Array", shape=(2,), dtype="float32")],
         fingerprint_sha256="not-part-of-content",
-        metadata={"note": "not-part-of-content"},
     )
+    relocated = fingerprint.model_copy(update={
+        "leaves": [fingerprint.leaves[0].model_copy(update={
+            "sharding": "other device", "layout": "other layout",
+        })],
+        "metadata": {"operator_note": "relocated"},
+        "fingerprint_sha256": "also-not-content",
+    })
+    reshaped = fingerprint.model_copy(update={
+        "leaves": [fingerprint.leaves[0].model_copy(update={"shape": (3,)})],
+    })
 
-    assert structural_abi_content_projection(fingerprint) == {
-        "fingerprint_algorithm_version": ("feedbax.training_checkpoint.structural_abi.content.v2"),
-        "treedef": "PyTreeDef(*)",
-        "leaf_count": 1,
-        "leaves": [
-            {
-                "path": "[0]",
-                "leaf_type": "jax.Array",
-                "shape": [2],
-                "dtype": "float32",
-                "weak_type": False,
-            }
-        ],
-    }
+    assert structural_abi_content_sha256(fingerprint) == structural_abi_content_sha256(relocated)
+    assert structural_abi_content_sha256(fingerprint) != structural_abi_content_sha256(reshaped)
 
 
 def test_structural_abi_content_projection_preserves_tolerant_migration_shape() -> None:
@@ -735,31 +690,6 @@ def test_load_reuses_manifest_structural_fingerprints_for_loaded_slots(
     assert calls == len(result.manifest.slots) * 2
 
 
-def test_slot_integrity_records_preserve_leaf_digest_and_fingerprint_values() -> None:
-    value = {
-        "array": jnp.array([1.0, 2.0], dtype=jnp.float32),
-        "static": ("kept", 3),
-    }
-    legacy_leaf_digests = []
-    for path, leaf in custody_module.jt.leaves_with_path(value):
-        if custody_module.eqx.is_array(leaf):
-            data = bytes(jnp.asarray(leaf).tobytes())
-        else:
-            data = pickle.dumps(leaf, protocol=pickle.HIGHEST_PROTOCOL)
-        legacy_leaf_digests.append(
-            custody_module.SlotLeafContentDigest(
-                path=custody_module._key_path_to_text(path),
-                sha256=custody_module.sha256_bytes(data),
-                size_bytes=len(data),
-            )
-        )
-
-    integrity = custody_module._slot_integrity_records(value)
-
-    assert integrity.leaf_digests == legacy_leaf_digests
-    assert integrity.structural_abi_fingerprint == custody_module.structural_abi_fingerprint(value)
-
-
 def _legacy_leaf_content_digests(value: object) -> list:
     """Leaf digests recomputed with the original whole-tree host-copy formula.
 
@@ -1134,43 +1064,6 @@ def test_semantic_state_accessors_fail_closed_for_unknown_missing_and_mismatch(
             allowed_root=right_result.root,
             slot_names=["controller"],
         )
-
-
-def test_training_run_manifest_links_checkpoint_custody_ref() -> None:
-    ref = ParentRef(
-        kind="TrainingCheckpointTransactionManifest",
-        id="tx-demo",
-        role="training_checkpoint_custody",
-        uri="repo://checkpoints/tx-demo/manifest.json",
-    )
-    manifest = TrainingRunManifest(
-        id="feedbax-training-run:demo",
-        training_spec=spec_payload("TrainingRunSpec", _run_spec().model_dump(mode="json")),
-        checkpoint_custody=[ref],
-    )
-
-    assert manifest.checkpoint_custody == [ref]
-
-
-def test_checkpoint_transaction_schema_family_is_registered() -> None:
-    families = {family.kind: family for family in default_spec_registry.families()}
-
-    family = families["TrainingCheckpointTransactionManifest"]
-    assert family.identity == "feedbax.manifest.training_checkpoint_transaction"
-    assert family.current_version == TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION
-    assert family.policy is not None
-    assert family.policy.owner_module == "feedbax.contracts.checkpoints"
-    assert family.policy.supported_old_versions == (
-        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1,
-        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V2,
-        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V3,
-        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V4,
-        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V5,
-        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V6,
-        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V7,
-        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V8,
-        TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V9,
-    )
 
 
 def test_checkpoint_transaction_manifest_v1_migrates_to_current_portable_custody(

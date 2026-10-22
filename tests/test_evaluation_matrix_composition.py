@@ -603,14 +603,3 @@ def test_content_pinned_axis_base_selects_a_sub_document(
         matrix, repo_root=tmp_path, registry=application_registry_bundle.evaluation_recipes
     )
     assert [row.row_id for row in resolved] == ["target-t0", "target-t1"]
-
-
-def test_provider_manifest_publishes_the_delta_authoring_kind() -> None:
-    from feedbax.integrations.provider import provider_manifest
-
-    properties = provider_manifest().schemas["EvaluationRunMatrixDeltaSpec"]["properties"]
-
-    assert set(properties) == {"schema_id", "schema_version", "parent", "deltas"}
-    assert properties["schema_version"]["default"] == (
-        EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION
-    )

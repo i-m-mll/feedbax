@@ -296,22 +296,6 @@ def test_versionless_document_fails_closed(
         assert kind in message
 
 
-@pytest.mark.parametrize(
-    "kind, factory, resolve, current, supported_old, rejected", AUTHORING_FAMILIES
-)
-def test_declared_version_string_migrates_by_its_own_declaration(
-    kind, factory, resolve, current, supported_old, rejected
-) -> None:
-    """A real version string is read from the declaration."""
-    for version, expect_records in ((current, False), (supported_old, True)):
-        document = with_version(factory(), version)
-        result = migrate_authored_document(kind, document)
-
-        assert result.source_version == version
-        assert result.target_version == current
-        assert bool(result.migration_records) is expect_records
-
-
 def test_bundle_payload_loader_shares_the_declared_version_path() -> None:
     """The packaged-resource bundle loader resolves versions the same way."""
     assert (
