@@ -17,7 +17,8 @@ import {
   taskEntityId,
   taskDataEntityId,
 } from '@/features/scenario/entities';
-import type { GraphSpec } from '@/types/graph';
+import type { AcausalGraphSpec, GraphSpec } from '@/types/graph';
+import { acausalConnectionId } from '@/features/domains/acausal';
 import type { StudioScenarioSpec } from '@/types/workspace';
 
 const graph: GraphSpec = {
@@ -92,7 +93,7 @@ const scenario: StudioScenarioSpec = {
   training_spec: null,
   task_spec: { type: 'ReachingTask', params: { n_targets: 8 } },
   task_binding_spec: {
-    schema_version: 'feedbax.studio.task_bindings.v2',
+    schema_version: 'feedbax.spec.studio.task_bindings.v2',
     exposed_data: [
       {
         id: 'inputs',
@@ -176,6 +177,36 @@ describe('graph port entity ids', () => {
 });
 
 describe('scenario entity registry', () => {
+  it('matches acausal canvas connection identity without fabricating causal selectors', () => {
+    const interior: AcausalGraphSpec = {
+      schema_id: 'feedbax.spec.acausal_graph',
+      schema_version: 'feedbax.spec.acausal_graph.v1',
+      physical_domain: 'translational',
+      nodes: {
+        mass: { type: 'Mass', params: {}, input_ports: [], output_ports: [] },
+        spring: { type: 'Spring', params: {}, input_ports: [], output_ports: [] },
+      },
+      connections: [{ a: ['mass', 'flange'], b: ['spring', 'flange'] }],
+      solver: { solver_type: 'euler', dt: 0.01 },
+    };
+    const registry = buildScenarioEntityRegistry({ scenario: null, graph: interior });
+    const edgeId = graphEdgeEntityId(acausalConnectionId(interior.connections[0]));
+
+    expect(registry.entities[edgeId]).toMatchObject({
+      kind: 'graph_edge',
+      selector: null,
+      relations: [
+        { kind: 'references', entity_id: graphNodeEntityId('mass') },
+        { kind: 'references', entity_id: graphNodeEntityId('spring') },
+      ],
+      metadata: { connection: interior.connections[0] },
+    });
+    expect(registry.root_entity_ids).toEqual([
+      graphNodeEntityId('mass'), graphNodeEntityId('spring'), edgeId,
+    ]);
+    expect(interior).not.toHaveProperty('wires');
+  });
+
   it('derives graph, task, mechanics, probe, and objective entities', () => {
     const registry = buildScenarioEntityRegistry({ scenario, graph });
     const wire = graph.wires[0];

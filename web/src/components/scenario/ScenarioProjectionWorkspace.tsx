@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent, PointerEvent, WheelEvent } from 'react';
+import { isCausalGraphSpec } from '@/types/graph';
 import clsx from 'clsx';
 import {
   Database,
@@ -123,6 +124,7 @@ import { useLayoutStore } from '@/stores/layoutStore';
 import { useStudioSchemaRegistry } from '@/hooks/useStudioSchemas';
 import type {
   GraphSpec,
+  GraphSubgraphSpec,
   RetainedObservableSpec,
 } from '@/types/graph';
 import type {
@@ -1628,7 +1630,7 @@ function ObservablesProjection({
 }: {
   registry: StudioScenarioEntityRegistry;
   selectedId: string | null;
-  graph: { retained_observables?: RetainedObservableSpec[] | null };
+  graph: GraphSubgraphSpec;
   objectiveSpec: StudioObjectiveSpec;
   schemaRegistry: StudioSchemaRegistry | null;
   onSelect: (entityId: string | null) => void;
@@ -1637,19 +1639,19 @@ function ObservablesProjection({
   onRemove: (observableId: string) => void;
   readOnly?: boolean;
 }) {
-  const observables = graph.retained_observables ?? [];
+  const observables = isCausalGraphSpec(graph) ? graph.retained_observables ?? [] : [];
   const selectorOptions = useMemo(
     () => selectorOptionsForRegistry({ registry, schemaRegistry, objectiveSpec }),
     [objectiveSpec, registry, schemaRegistry]
   );
   const captureOptions = useMemo(
     () =>
-      selectorOptions.filter((option) => {
+      isCausalGraphSpec(graph) ? selectorOptions.filter((option) => {
         if (option.selector.namespace === 'retained_observable') return false;
         if (option.selector.namespace === 'probe') return false;
         return selectorToRetainedObservableTarget(option.selector) !== null;
-      }),
-    [selectorOptions]
+      }) : [],
+    [graph, selectorOptions]
   );
   const [draftSelector, setDraftSelector] = useState<string>(() => captureOptions[0]?.selector.compact ?? '');
 
@@ -2012,8 +2014,8 @@ function asScenarioTaskBindingSpec(
 
 function graphSpecForProjection(
   frozenSnapshot: FrozenSnapshotProjection | null,
-  graph: GraphSpec
-): GraphSpec {
+  graph: GraphSubgraphSpec
+): GraphSubgraphSpec {
   const graphSpec = snapshotRecord(frozenSnapshot?.snapshot.graph_spec);
   return graphSpec ? (graphSpec as unknown as GraphSpec) : graph;
 }

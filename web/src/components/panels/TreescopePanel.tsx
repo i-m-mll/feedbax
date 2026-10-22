@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useGraphStore } from '@/stores/graphStore';
+import { isCausalGraphSpec } from '@/types/graph';
 import type { GraphSpec } from '@/types/graph';
 import { PanelSectionHeader } from '@/components/ui/PanelPrimitives';
 
@@ -83,7 +84,10 @@ export function TreescopePanel() {
   // Create a stable key for the current graph content so we debounce
   // and re-query when the graph actually changes (nodes/wires).
   const graphKey = useMemo(
-    () => JSON.stringify({ nodes: Object.keys(graph.nodes), wires: graph.wires.length }),
+    () => JSON.stringify({
+      nodes: Object.keys(graph.nodes),
+      edges: isCausalGraphSpec(graph) ? graph.wires.length : graph.connections.length,
+    }),
     [graph]
   );
 
@@ -114,6 +118,9 @@ export function TreescopePanel() {
   const treescopeQuery = useQuery({
     queryKey: ['treescope', graphId ?? 'inline', debouncedGraphKey, graphStack.length, maxDepth, projectCycles],
     queryFn: () => {
+      if (!isCausalGraphSpec(graph)) {
+        throw new Error('Tree inspection requires a causal graph view.');
+      }
       if (graphId && graphStack.length === 0) {
         // Saved graph at top level -- use the persisted endpoint
         return fetchTreescope(graphId, { maxDepth, projectCycles });
@@ -121,7 +128,8 @@ export function TreescopePanel() {
       // Either unsaved or inside a subgraph -- use inline rendering
       return fetchTreescopeInline(graph, { maxDepth, projectCycles });
     },
-    enabled: isExpanded && hasNodes && statusQuery.data?.treescope_available === true,
+    enabled: isCausalGraphSpec(graph) && isExpanded && hasNodes
+      && statusQuery.data?.treescope_available === true,
     staleTime: 30 * 1000,
     retry: 1,
   });
@@ -135,7 +143,7 @@ export function TreescopePanel() {
 
   // While the status check is in flight, render nothing — avoids showing
   // "Loading inspection status..." in the properties panel when idle.
-  if (statusQuery.isLoading) {
+  if (!isCausalGraphSpec(graph) || statusQuery.isLoading) {
     return null;
   }
 

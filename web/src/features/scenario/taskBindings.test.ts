@@ -6,13 +6,14 @@ import {
   removeTaskBindingsForTargetNodes,
   retargetTaskBindingsForNodeRename,
   scopedTaskBindingSpec,
-  taskBindingId,
   targetInputOccupied,
   GRAPH_BINDABLE_TASK_DATA_ROLES,
 } from '@/features/scenario/taskBindings';
 import type { GraphSpec } from '@/types/graph';
 import type { TaskSpec } from '@/types/training';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
+import { currentDraftSpecHashesForScenario } from '@/utils/pipelineCollections';
+import { StudioTaskBindingSpecSchema } from '@/generated/studioContracts';
 
 const graphWithNetworkInput: GraphSpec = {
   nodes: {
@@ -80,6 +81,31 @@ const graphWithNamedMux: GraphSpec = {
 const delayedTask: TaskSpec = { type: 'DelayedReaches', params: {} };
 
 describe('task data bindings', () => {
+  it('preserves default root binding identity and rejects unsupported persisted fields', () => {
+    const spec = createDefaultTaskBindingSpec(graphWithNetworkInput);
+    const normalized = ensureTaskBindingSpec(spec, graphWithNetworkInput);
+    expect(StudioTaskBindingSpecSchema.safeParse(normalized).success).toBe(true);
+    expect(StudioTaskBindingSpecSchema.safeParse({
+      ...normalized,
+      schema_version: 'feedbax.studio.task_bindings.v2',
+    }).success).toBe(false);
+    const hash = (task_binding_spec: StudioTaskBindingSpec) =>
+      currentDraftSpecHashesForScenario({ task_binding_spec }, graphWithNetworkInput);
+
+    expect(hash(normalized)).toEqual(hash(spec));
+
+    const unsupported = {
+      ...spec,
+      bindings: spec.bindings.map((binding) => ({
+        ...binding,
+        target_graph_path: ['controller'],
+      })),
+    };
+    expect(() => ensureTaskBindingSpec(unsupported, graphWithNetworkInput))
+      .toThrow(/target_graph_path/);
+
+  });
+
   it('includes component parameters in graph-bindable roles', () => {
     expect(GRAPH_BINDABLE_TASK_DATA_ROLES.has('component_parameter')).toBe(true);
     expect(GRAPH_BINDABLE_TASK_DATA_ROLES.has('intervention')).toBe(false);
@@ -176,7 +202,7 @@ describe('task data bindings', () => {
 
   it('drops legacy generic Inputs bindings when delayed-reach task data is normalized', () => {
     const legacySpec: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [
         {
           id: 'inputs',
@@ -209,7 +235,7 @@ describe('task data bindings', () => {
 
   it('treats task data occupancy as target-scoped so one datum can fan out', () => {
     const spec: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [
         {
           id: 'target_on',
@@ -258,49 +284,20 @@ describe('task data bindings', () => {
     ]);
   });
 
-  it('keeps same local node IDs isolated by graph path', () => {
+  it('projects root task bindings only in the root view', () => {
     const spec = createDefaultTaskBindingSpec(graphWithTaskMux, delayedTask);
-    const scopedBinding = {
-      id: taskBindingId('hold', 'task_mux', 'in_1', ['network']),
-      source_data_id: 'hold',
-      target_graph_path: ['network'],
-      target_node_id: 'task_mux',
-      target_port: 'in_1',
-      role: 'model_input',
-      metadata: {},
-    };
-    const withSubgraphBinding: StudioTaskBindingSpec = {
-      ...spec,
-      bindings: [...spec.bindings, scopedBinding],
-    };
 
-    expect(scopedTaskBindingSpec(withSubgraphBinding, []).bindings).toEqual(spec.bindings);
-    expect(scopedTaskBindingSpec(withSubgraphBinding, ['network']).bindings).toEqual([
-      scopedBinding,
-    ]);
-    expect(targetInputOccupied(graphWithTaskMux, scopedTaskBindingSpec(withSubgraphBinding, []), 'task_mux', 'in_1')).toBe(true);
-    expect(targetInputOccupied(graphWithTaskMux, scopedTaskBindingSpec(withSubgraphBinding, ['network']), 'task_mux', 'in_1')).toBe(true);
+    expect(scopedTaskBindingSpec(spec, [])).toBe(spec);
+    expect(scopedTaskBindingSpec(spec, ['network']).bindings).toEqual([]);
+    expect(targetInputOccupied(graphWithTaskMux, scopedTaskBindingSpec(spec, []), 'task_mux', 'in_1'))
+      .toBe(true);
+    expect(targetInputOccupied(graphWithTaskMux, scopedTaskBindingSpec(spec, ['network']), 'task_mux', 'in_1'))
+      .toBe(false);
   });
 
-  it('removes deleted-node task bindings only in the active graph path', () => {
+  it('preserves root bindings when nodes are deleted inside a nested view', () => {
     const spec = createDefaultTaskBindingSpec(graphWithTaskMux, delayedTask);
-    const subgraphBinding = {
-      id: taskBindingId('hold', 'task_mux', 'in_1', ['network']),
-      source_data_id: 'hold',
-      target_graph_path: ['network'],
-      target_node_id: 'task_mux',
-      target_port: 'in_1',
-      role: 'model_input',
-      metadata: {},
-    };
-    const withSubgraphBinding: StudioTaskBindingSpec = {
-      ...spec,
-      bindings: [...spec.bindings, subgraphBinding],
-    };
-
-    const pruned = removeTaskBindingsForTargetNodes(withSubgraphBinding, ['task_mux'], ['network']);
-
-    expect(pruned.bindings).toEqual(spec.bindings);
+    expect(removeTaskBindingsForTargetNodes(spec, ['task_mux'], ['network'])).toBe(spec);
   });
 
   it('removes bindings that target deleted model nodes', () => {

@@ -172,7 +172,7 @@ describe('delayed reach task timeline helpers', () => {
   it('applies timeline edits to task params and Task Data value specs', () => {
     const timeline = delayedReachTimelineFromTask(task)!;
     const taskBindingSpec: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [
         {
           id: 'target_position',

@@ -1,4 +1,10 @@
-import type { GraphSpec, ComponentSpec } from '@/types/graph';
+import {
+  isAcausalGraphSpec,
+  type GraphSpec,
+  type AcausalGraphSpec,
+  type GraphSubgraphSpec,
+  type ComponentSpec,
+} from '@/types/graph';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
 
 export const MUX_COMPONENT_TYPE = 'Mux';
@@ -95,7 +101,20 @@ export function normalizeMuxSpec(
 export function normalizeDynamicPorts(
   graph: GraphSpec,
   taskBindingSpec?: StudioTaskBindingSpec | null
-): GraphSpec {
+): GraphSpec;
+export function normalizeDynamicPorts(
+  graph: AcausalGraphSpec,
+  taskBindingSpec?: StudioTaskBindingSpec | null
+): AcausalGraphSpec;
+export function normalizeDynamicPorts(
+  graph: GraphSubgraphSpec,
+  taskBindingSpec?: StudioTaskBindingSpec | null
+): GraphSubgraphSpec;
+export function normalizeDynamicPorts(
+  graph: GraphSubgraphSpec,
+  taskBindingSpec?: StudioTaskBindingSpec | null
+): GraphSubgraphSpec {
+  if (isAcausalGraphSpec(graph)) return graph;
   let changed = false;
   const muxBindingIndex = buildMuxBindingIndex(graph, taskBindingSpec);
   const nodes = Object.fromEntries(
@@ -132,10 +151,11 @@ function materializeMuxSpecForBindingsWithIndex(
 }
 
 export function materializeMuxSpecForBindings(
-  graph: GraphSpec,
+  graph: GraphSubgraphSpec,
   nodeId: string,
   taskBindingSpec?: StudioTaskBindingSpec | null
 ): ComponentSpec | null {
+  if (isAcausalGraphSpec(graph)) return null;
   return materializeMuxSpecForBindingsWithIndex(
     graph,
     nodeId,
@@ -144,10 +164,11 @@ export function materializeMuxSpecForBindings(
 }
 
 export function visibleMuxInputPorts(
-  graph: GraphSpec,
+  graph: GraphSubgraphSpec,
   nodeId: string,
   taskBindingSpec?: StudioTaskBindingSpec | null
 ): { ports: string[]; nextPort: string | null } | null {
+  if (isAcausalGraphSpec(graph)) return null;
   const muxBindingIndex = buildMuxBindingIndex(graph, taskBindingSpec);
   const spec = materializeMuxSpecForBindingsWithIndex(graph, nodeId, muxBindingIndex);
   if (!spec) return null;
@@ -172,10 +193,11 @@ function muxHasSpareInputWithIndex(
 }
 
 export function muxHasSpareInput(
-  graph: GraphSpec,
+  graph: GraphSubgraphSpec,
   nodeId: string,
   taskBindingSpec?: StudioTaskBindingSpec | null
 ): boolean {
+  if (isAcausalGraphSpec(graph)) return false;
   const spec = graph.nodes[nodeId];
   if (!isMuxSpec(spec)) return false;
   return muxHasSpareInputWithIndex(spec, nodeId, buildMuxBindingIndex(graph, taskBindingSpec));
@@ -194,10 +216,11 @@ function nextMuxInputPortWithIndex(
 }
 
 export function nextMuxInputPort(
-  graph: GraphSpec,
+  graph: GraphSubgraphSpec,
   nodeId: string,
   taskBindingSpec?: StudioTaskBindingSpec | null
 ): string | null {
+  if (isAcausalGraphSpec(graph)) return null;
   const muxBindingIndex = buildMuxBindingIndex(graph, taskBindingSpec);
   return nextMuxInputPortWithIndex(
     graph,
@@ -208,7 +231,7 @@ export function nextMuxInputPort(
 }
 
 export function isNextMuxInputPort(
-  graph: GraphSpec,
+  graph: GraphSubgraphSpec,
   nodeId: string | null | undefined,
   port: string | null | undefined,
   taskBindingSpec?: StudioTaskBindingSpec | null
@@ -217,11 +240,12 @@ export function isNextMuxInputPort(
   return nextMuxInputPort(graph, nodeId, taskBindingSpec) === port;
 }
 
-export function expandMuxForPort(
-  graph: GraphSpec,
+export function expandMuxForPort<T extends GraphSubgraphSpec>(
+  graph: T,
   nodeId: string,
   port: string
-): GraphSpec {
+): T {
+  if (isAcausalGraphSpec(graph)) return graph;
   const spec = graph.nodes[nodeId];
   const index = muxInputIndex(port);
   if (!isMuxSpec(spec) || index === null) return graph;

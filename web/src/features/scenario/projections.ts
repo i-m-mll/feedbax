@@ -1,7 +1,8 @@
 import type {
-  GraphSpec,
+  GraphSubgraphSpec,
   ComponentSpec,
 } from '@/types/graph';
+import { isCausalGraphSpec } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type {
   RepresentationElementSpec,
@@ -316,7 +317,7 @@ function bindingValue(
 function frameFromProvider(
   provider: RepresentationFrameProvider | null | undefined,
   fallbackFrame: string,
-  graph: GraphSpec | null | undefined,
+  graph: GraphSubgraphSpec | null | undefined,
   nodeId: string | null,
   messages: ResolvedSceneValidationMessage[],
   entityId: string,
@@ -329,7 +330,7 @@ function frameFromProvider(
     const hasWire =
       Boolean(nodeId && inputPort) &&
       Boolean(
-        graph?.wires.some(
+        isCausalGraphSpec(graph) && graph.wires.some(
           (wire) => wire.target_node === nodeId && wire.target_port === inputPort
         )
       );
@@ -565,7 +566,7 @@ function planarChainFrames({
   entityId,
   elementId,
 }: {
-  graph: GraphSpec | null | undefined;
+  graph: GraphSubgraphSpec | null | undefined;
   componentsByName: Map<string, ComponentDefinition>;
   muscleNodeId: string | null;
   provider: RepresentationFrameProvider | null | undefined;
@@ -600,7 +601,14 @@ function planarChainFrames({
   let wiredSourcePort: string | null = null;
   let requestedElementId: string | null = null;
   if (provider.kind === 'from_input_port') {
-    const wires = (graph?.wires ?? []).filter(
+    if (!isCausalGraphSpec(graph)) {
+      return fail(
+        'workspace_muscle_path_host_wire_unresolved',
+        `Muscle path input '${provider.input_port ?? 'unknown'}' requires a causal host graph.`,
+        `graph.wires.${muscleNodeId}.${provider.input_port ?? 'unknown'}`
+      );
+    }
+    const wires = graph.wires.filter(
       (wire) => wire.target_node === muscleNodeId && wire.target_port === provider.input_port
     );
     if (wires.length !== 1) {
@@ -778,7 +786,7 @@ function resolveComponentRepresentation({
 }: {
   scene: ResolvedScene;
   registry: StudioScenarioEntityRegistry;
-  graph: GraphSpec | null | undefined;
+  graph: GraphSubgraphSpec | null | undefined;
   componentsByName: Map<string, ComponentDefinition>;
   poseValues: ResolvedScenePoseValues | undefined;
   requirePoseValues: boolean;
@@ -1172,7 +1180,7 @@ function addObjectiveProjections(
 function reachabilityMessages(
   scene: ResolvedScene,
   registry: StudioScenarioEntityRegistry,
-  graph: GraphSpec | null | undefined,
+  graph: GraphSubgraphSpec | null | undefined,
   componentsByName: Map<string, ComponentDefinition>,
   task: StudioScenarioSpec['task_spec']
 ) {
@@ -1242,7 +1250,7 @@ export function buildResolvedScene({
   requirePoseValues = false,
 }: {
   scenario: StudioScenarioSpec | null | undefined;
-  graph?: GraphSpec | null;
+  graph?: GraphSubgraphSpec | null;
   registry: StudioScenarioEntityRegistry;
   components: ComponentDefinition[];
   poseValues?: ResolvedScenePoseValues;

@@ -1,6 +1,7 @@
 import type { ComponentDefinition, PortType } from '@/types/components';
 import {
   isCausalGraphSpec,
+  isAcausalGraphSpec,
   type GraphSpec,
   type GraphSubgraphSpec,
   type RetainedObservableSpec,
@@ -78,10 +79,22 @@ function buildPortSchemaIndex(ports: PortSchema[]): PortSchemaIndex {
 }
 
 export function projectStudioSchema(
-  graph: GraphSpec,
+  graph: GraphSubgraphSpec,
   components: ComponentDefinition[],
   taskBindingSpec?: StudioTaskBindingSpec | null
 ): StudioSchemaRegistry {
+  if (isAcausalGraphSpec(graph)) {
+    return {
+      kind: 'studio_schema_registry',
+      schema_version: 'feedbax.schema.v1',
+      generated_at: new Date().toISOString(),
+      ports: [],
+      task_data: [],
+      selector_targets: [],
+      issues: [],
+      metadata: { projected_by: 'feedbax.web.projectStudioSchema' },
+    };
+  }
   const componentMap = new Map(components.map((component) => [component.name, component]));
   const schemaGraph = normalizeDynamicPorts(graph, taskBindingSpec);
   const taskData = enumerateTaskData(taskBindingSpec);
@@ -916,8 +929,7 @@ function validateTaskBindings(
     const expectedId = taskBindingId(
       binding.source_data_id,
       binding.target_node_id,
-      binding.target_port,
-      binding.target_graph_path
+      binding.target_port
     );
     if (bindingIds.has(binding.id)) {
       issues.push({

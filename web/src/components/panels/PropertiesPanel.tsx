@@ -1,3 +1,4 @@
+import { useRootGraph } from '@/hooks/useRootGraph';
 import { useEffect, useMemo, useState } from 'react';
 import { useGraphStore } from '@/stores/graphStore';
 import {
@@ -126,7 +127,7 @@ export function PropertiesPanel() {
     () => nodes.find((node) => node.selected && node.type !== 'tap'),
     [nodes]
   );
-  const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
+  const rootGraph = useRootGraph();
   const taskBindingSpec = useMemo(
     () =>
       ensureTaskBindingSpec(
@@ -183,7 +184,7 @@ export function PropertiesPanel() {
     () => new Map(nodeDimensionConstraints.map((constraint) => [constraint.param, constraint])),
     [nodeDimensionConstraints]
   );
-  const taps = graph.taps ?? [];
+  const taps = isCausalGraphSpec(graph) ? graph.taps ?? [] : [];
   const selectedTap = selectedTapId
     ? taps.find((tap) => tap.id === selectedTapId)
     : undefined;
@@ -335,9 +336,9 @@ export function PropertiesPanel() {
           </button>
           <button
             type="button"
-            disabled={!edgeSelector}
+            disabled={!edgeSelector || !isCausalGraphSpec(graph)}
             onClick={() => {
-              if (!edgeSelector) return;
+              if (!edgeSelector || !isCausalGraphSpec(graph)) return;
               const observable = createRetainedObservable({
                 selector: edgeSelector,
                 existingIds: new Set((graph.retained_observables ?? []).map((item) => item.id)),
@@ -390,8 +391,10 @@ export function PropertiesPanel() {
           binding={binding}
           isBoundaryAlias={isBoundaryAlias}
           canAddObjective={Boolean(activeScenario)}
+          canCapture={isCausalGraphSpec(graph)}
           onAddObjective={() => addObjectiveFromSelector(portSelector)}
           onCapture={() => {
+            if (!isCausalGraphSpec(graph)) return;
             const observable = createRetainedObservable({
               selector: portSelector,
               existingIds: new Set((graph.retained_observables ?? []).map((item) => item.id)),
@@ -621,8 +624,9 @@ export function PropertiesPanel() {
           </button>
           <button
             className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
-            disabled={(nodeSpec.output_ports ?? []).length === 0}
+            disabled={!isCausalGraphSpec(graph) || (nodeSpec.output_ports ?? []).length === 0}
             onClick={() => {
+              if (!isCausalGraphSpec(graph)) return;
               const port = nodeSpec.output_ports[0];
               if (!port) return;
               const selector = {
@@ -647,6 +651,7 @@ export function PropertiesPanel() {
           </button>
           <button
             className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:text-slate-800"
+            disabled={!isCausalGraphSpec(graph)}
             onClick={() => addTap(selectedNode.id, 'intervention')}
           >
             Add Intervention
@@ -753,6 +758,7 @@ function PortPropertiesPanel({
   binding,
   isBoundaryAlias,
   canAddObjective,
+  canCapture,
   onAddObjective,
   onCapture,
   onRename,
@@ -764,6 +770,7 @@ function PortPropertiesPanel({
   binding?: [string, string];
   isBoundaryAlias: boolean;
   canAddObjective: boolean;
+  canCapture: boolean;
   onAddObjective: () => void;
   onCapture: () => void;
   onRename: (nextPort: string) => void;
@@ -804,6 +811,7 @@ function PortPropertiesPanel({
         </button>
         <button
           type="button"
+          disabled={!canCapture}
           onClick={onCapture}
           className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm hover:border-brand-200 hover:text-slate-900"
         >

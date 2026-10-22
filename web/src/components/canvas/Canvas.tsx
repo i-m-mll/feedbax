@@ -1,3 +1,5 @@
+import { upsertRootTaskBinding } from '@/services/studioTaskBindings';
+import { useRootGraph } from '@/hooks/useRootGraph';
 import {
   useCallback,
   useEffect,
@@ -44,8 +46,8 @@ import {
   ensureTaskBindingSpec,
   removeTaskBindingsForTargetNodes,
   scopedTaskBindingSpec,
-  taskBindingId,
-  taskBindingGraphPathKey,
+  canAuthorTaskBindings,
+  ROOT_TASK_BINDING_MESSAGE,
   targetInputOccupied,
 } from '@/features/scenario/taskBindings';
 import {
@@ -71,7 +73,7 @@ import { PenzaiInspector } from '@/components/panels/PenzaiInspector';
 import { MechanicsAssemblyView } from '@/components/canvas/MechanicsAssemblyView';
 import clsx from 'clsx';
 import { toast } from 'sonner';
-import { isAcausalGraphSpec, type ComponentSpec, type GraphEdgeData, type GraphNodeData, type GraphSpec, type TapNodeData } from '@/types/graph';
+import { isAcausalGraphSpec, type ComponentSpec, type GraphEdgeData, type GraphNodeData, type GraphSpec, type GraphSubgraphSpec, type TapNodeData } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type {
   StudioTaskBinding,
@@ -214,7 +216,7 @@ function graphWithConnection(graph: GraphSpec, connection: Connection): GraphSpe
 }
 
 function dimensionParamUpdates(
-  graph: GraphSpec,
+  graph: GraphSubgraphSpec,
   components: ComponentDefinition[],
   taskBindingSpec: StudioTaskBindingSpec,
   boundaryOverrides: Map<string, ValueSchema> = new Map()
@@ -241,7 +243,7 @@ function dimensionParamUpdates(
 }
 
 function subgraphBoundaryOverrides(
-  parentGraph: GraphSpec | null | undefined,
+  parentGraph: GraphSubgraphSpec | null | undefined,
   childNodeId: string | null | undefined,
   components: ComponentDefinition[],
   parentTaskBindingSpec: StudioTaskBindingSpec
@@ -757,7 +759,7 @@ export function Canvas() {
   const assemblyPanelWidth = `${Math.round(
     Math.max(0.28, Math.min(0.72, uiState.assembly_view?.split_ratio ?? 0.42)) * 100
   )}%`;
-  const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
+  const rootGraph = useRootGraph();
   const allTaskBindingSpec = useMemo(
     () =>
       ensureTaskBindingSpec(
@@ -791,7 +793,7 @@ export function Canvas() {
   const taskBindingSignature = taskBindingSpec.bindings
     .map(
       (binding) =>
-        `${binding.id}:${taskBindingGraphPathKey(binding.target_graph_path)}:${binding.source_data_id}:${binding.target_node_id}:${binding.target_port}:${binding.role}`
+        `${binding.id}:${binding.source_data_id}:${binding.target_node_id}:${binding.target_port}:${binding.role}`
     )
     .join('|');
   const taskBindings = useMemo(() => taskBindingSpec.bindings, [taskBindingSignature]);
@@ -1016,7 +1018,7 @@ export function Canvas() {
 
   const taskSourceNodes = useMemo<Node<GraphNodeData | TapNodeData | TaskSourceNodeData>[]>(
     () =>
-      topPane.active_projection === 'task'
+      topPane.active_projection === 'task' && canAuthorTaskBindings(graph, graphStack.length)
         ? bindableTaskData.map((data, index) => {
             let position = taskSourcePositions[data.id];
             if (!position) {
@@ -1074,6 +1076,8 @@ export function Canvas() {
     [
       beginTaskConnection,
       bindableTaskData,
+      graph,
+      graphStack.length,
       prepareTaskConnection,
       releaseTaskConnection,
       taskSourcePositions,
@@ -1182,19 +1186,11 @@ export function Canvas() {
 
   const schemaRegistry = useMemo(
     () =>
-      isAcausalLayer
-        ? {
-            kind: 'studio_schema_registry' as const,
-            schema_version: 'feedbax.schema.v1',
-            generated_at: new Date().toISOString(),
-            ports: [],
-            task_data: [],
-            selector_targets: [],
-            issues: [],
-            metadata: { projected_by: 'feedbax.web.acausalCanvas' },
-          }
-        : applyBoundaryOverrides(projectStudioSchema(graph as GraphSpec, components, taskBindingSpec), parentBoundaryOverrides),
-    [components, graph, isAcausalLayer, parentBoundaryOverrides, taskBindingSpec]
+      applyBoundaryOverrides(
+        projectStudioSchema(graph, components, taskBindingSpec),
+        parentBoundaryOverrides
+      ),
+    [components, graph, parentBoundaryOverrides, taskBindingSpec]
   );
 
   const displayEdges = useMemo(
@@ -1326,78 +1322,22 @@ export function Canvas() {
 
   const upsertTaskBinding = useCallback(
     (dataId: string, targetNodeId: string, targetPort: string) => {
-      const taskData = taskBindingSpec.exposed_data.find((data) => data.id === dataId);
-      if (!taskData?.bindable) return;
-      const nextBindingId = taskBindingId(dataId, targetNodeId, targetPort, currentGraphPath);
-      const existingBinding = taskBindingSpec.bindings.find(
-        (binding) => binding.id === nextBindingId
-      );
-      if (existingBinding) {
-        setSelectedEdge(null);
-        setSelectedNode(null);
-        setSelectedTap(null);
-        selectTopPaneEntity(taskBindingEntityId(existingBinding.id));
+      const outcome = upsertRootTaskBinding(dataId, targetNodeId, targetPort);
+      if (outcome.ok === false) {
+        toast.error(outcome.message, { id: 'task-binding-error' });
         return;
       }
-      if (targetInputOccupied(graph, taskBindingSpec, targetNodeId, targetPort)) {
-        return;
+      if (outcome.created) {
+        const paramUpdates = dimensionParamUpdates(outcome.graph, components, outcome.spec);
+        updateNodeParamsBatch(paramUpdates, outcome.spec);
       }
-      const nextBinding: StudioTaskBinding = {
-        id: nextBindingId,
-        source_data_id: dataId,
-        target_graph_path: currentGraphPath.length > 0 ? currentGraphPath : undefined,
-        target_node_id: targetNodeId,
-        target_port: targetPort,
-        role: taskData.role,
-        metadata: {},
-      };
-      const nextScopedTaskBindingSpec: StudioTaskBindingSpec = {
-        ...taskBindingSpec,
-        bindings: [
-          ...taskBindingSpec.bindings.filter(
-            (binding) => binding.id !== nextBinding.id
-          ),
-          nextBinding,
-        ],
-      };
-      const nextTaskBindingSpec: StudioTaskBindingSpec = {
-        ...allTaskBindingSpec,
-        bindings: [
-          ...allTaskBindingSpec.bindings.filter(
-            (binding) => binding.id !== nextBinding.id
-          ),
-          nextBinding,
-        ],
-      };
-      const paramUpdates = dimensionParamUpdates(
-        graph,
-        components,
-        nextScopedTaskBindingSpec,
-        parentBoundaryOverrides
-      );
-      updateTaskBindingSpec(nextTaskBindingSpec);
-      updateNodeParamsBatch(paramUpdates, nextScopedTaskBindingSpec);
-      markDirty();
       setSelectedEdge(null);
       setSelectedNode(null);
       setSelectedTap(null);
-      selectTopPaneEntity(taskBindingEntityId(nextBinding.id));
+      selectTopPaneEntity(taskBindingEntityId(outcome.binding.id));
     },
-    [
-      allTaskBindingSpec,
-      components,
-      currentGraphPath,
-      graph,
-      markDirty,
-      selectTopPaneEntity,
-      setSelectedEdge,
-      setSelectedNode,
-      setSelectedTap,
-      parentBoundaryOverrides,
-      taskBindingSpec,
-      updateNodeParamsBatch,
-      updateTaskBindingSpec,
-    ]
+    [components, selectTopPaneEntity, setSelectedEdge, setSelectedNode, setSelectedTap,
+      updateNodeParamsBatch]
   );
 
   const setFeedbackForConnection = useCallback((feedback: ConnectionFeedback) => {
@@ -1424,6 +1364,13 @@ export function Canvas() {
         connection.target,
         connection.targetHandle,
       ].join(':');
+      const taskDataId = taskDataIdFromSourceNodeId(connection.source);
+      if (taskDataId) {
+        const current = useGraphStore.getState();
+        if (!canAuthorTaskBindings(current.graph, current.graphStack.length)) {
+          return { status: 'blocked', message: ROOT_TASK_BINDING_MESSAGE, signature };
+        }
+      }
       if (isAcausalGraphSpec(graph)) {
         const verdict = evaluateAcausalConnection(graph, componentRegistry, connection);
         if (verdict.allowed) {
@@ -1435,7 +1382,6 @@ export function Canvas() {
           signature,
         };
       }
-      const taskDataId = taskDataIdFromSourceNodeId(connection.source);
       if (taskDataId) {
         if (isStateHandle(connection.targetHandle)) {
           return {
@@ -1944,6 +1890,7 @@ export function Canvas() {
             <button
               className="flex items-center justify-center rounded-full text-slate-500 hover:text-slate-700"
               onClick={wrapInParentGraph}
+              disabled={isAcausalLayer}
               title="Wrap this graph in a new parent"
             >
               <span className="text-xs font-mono">..</span>

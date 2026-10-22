@@ -4,7 +4,7 @@ import {
   normalizeGraphForStudioAuthoring,
   normalizeTaskBindingSpecForStudioAuthoring,
 } from '@/features/graph/normalization';
-import { isCausalGraphSpec, type GraphSpec } from '@/types/graph';
+import { isCausalGraphSpec, type AcausalGraphSpec, type GraphSpec } from '@/types/graph';
 
 const runtimeGraph: GraphSpec = {
   nodes: {
@@ -72,6 +72,32 @@ const runtimeGraph: GraphSpec = {
 };
 
 describe('graph authoring normalization', () => {
+  it('preserves acausal interiors both as active graphs and inside causal graphs', () => {
+    const interior: AcausalGraphSpec = {
+      schema_id: 'feedbax.spec.acausal_graph',
+      schema_version: 'feedbax.spec.acausal_graph.v1',
+      physical_domain: 'translational',
+      nodes: {
+        mass: { type: 'Mass', params: { mass: 2 }, input_ports: [], output_ports: [] },
+        spring: { type: 'Spring', params: { stiffness: 4 }, input_ports: [], output_ports: [] },
+      },
+      connections: [{ a: ['mass', 'flange'], b: ['spring', 'flange'] }],
+      solver: {
+        solver_type: 'implicit_euler',
+        dt: 0.003,
+        root_finder: { method: 'newton', rtol: 1e-5, atol: 1e-7, max_steps: 12 },
+      },
+    };
+
+    expect(normalizeGraphForStudioAuthoring(interior)).toBe(interior);
+    const normalized = normalizeGraphForStudioAuthoring({
+      ...runtimeGraph,
+      subgraphs: { mechanics: interior },
+    });
+    expect(normalized.subgraphs?.mechanics).toBe(interior);
+    expect(normalized.input_ports).toEqual(['input']);
+  });
+
   it('does not generate hidden network topology while normalizing legacy metadata', () => {
     const normalized = normalizeGraphAuthoringTypes(runtimeGraph);
 
@@ -106,7 +132,7 @@ describe('graph authoring normalization', () => {
 
   it('normalizes dynamic mux ports after task-data binding ingress', () => {
     const normalized = normalizeGraphForStudioAuthoring(runtimeGraph, {
-      schema_version: 'feedbax.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [],
       bindings: [
         {
@@ -165,7 +191,7 @@ describe('graph authoring normalization', () => {
     const graph = normalizeGraphForStudioAuthoring(runtimeGraph);
     const normalized = normalizeTaskBindingSpecForStudioAuthoring(
       {
-        schema_version: 'feedbax.studio.task_bindings.v2',
+        schema_version: 'feedbax.spec.studio.task_bindings.v2',
         exposed_data: [],
         bindings: [
           {
@@ -215,7 +241,7 @@ describe('graph authoring normalization', () => {
     };
     const normalized = normalizeTaskBindingSpecForStudioAuthoring(
       {
-        schema_version: 'feedbax.studio.task_bindings.v2',
+        schema_version: 'feedbax.spec.studio.task_bindings.v2',
         exposed_data: [],
         bindings: [
           {
