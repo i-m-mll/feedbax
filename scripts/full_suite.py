@@ -93,7 +93,9 @@ def _make_owned_tree_removable(root: Path) -> None:
         status = path.lstat()
         if stat.S_ISLNK(status.st_mode):
             return
-        path.chmod(stat.S_IMODE(status.st_mode) | permissions, follow_symlinks=False)
+        mode = stat.S_IMODE(status.st_mode)
+        if mode & permissions != permissions:
+            path.chmod(mode | permissions, follow_symlinks=False)
 
     directory_permissions = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
     add_owner_permissions(root, directory_permissions)
@@ -101,8 +103,11 @@ def _make_owned_tree_removable(root: Path) -> None:
         current_path = Path(current)
         for directory in directories:
             add_owner_permissions(current_path / directory, directory_permissions)
-        for filename in files:
-            add_owner_permissions(current_path / filename, stat.S_IWUSR)
+        # POSIX unlink needs writable parent directories; changing a file's mode
+        # also changes any hardlinked sealed-cache inode outside this owned tree.
+        if os.name == "nt":
+            for filename in files:
+                add_owner_permissions(current_path / filename, stat.S_IWUSR)
 
 
 @contextmanager
@@ -354,6 +359,7 @@ def write_suite_profile(
     *,
     elapsed_seconds: float,
     returncode: int,
+    cleanup_complete: bool = True,
 ) -> None:
     """Write local diagnostics without exposing invocation paths or argument values."""
     if (data.get("schema_id"), data.get("schema_version")) != (
@@ -373,7 +379,15 @@ def write_suite_profile(
         "suite_profile",
         "execution_environment_sha256",
     )
-    data["execution"] = {"elapsed_seconds": elapsed_seconds, "returncode": returncode}
+    data = dict(data)
+    if not cleanup_complete:
+        data["complete"] = False
+        data["incomplete_reason"] = "suite temporary-root cleanup has not completed"
+    data["execution"] = {
+        "elapsed_seconds": elapsed_seconds,
+        "returncode": returncode,
+        "cleanup_complete": cleanup_complete,
+    }
     data["context"] = {
         **{key: fingerprint.payload.get(key) for key in public_fields},
         "selection_sha256": hashlib.sha256(
@@ -390,7 +404,9 @@ def write_suite_profile(
         else "source_and_invocation",
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(destination)
 
 
 def is_execution_relevant_untracked_path(path: str) -> bool:
@@ -719,6 +735,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if args.profile_json:
                     profile_data = read_suite_profile(raw_profile)
+                    write_suite_profile(
+                        args.profile_json,
+                        profile_data,
+                        fingerprint,
+                        elapsed_seconds=time.perf_counter() - started,
+                        returncode=result.returncode,
+                        cleanup_complete=False,
+                    )
             if args.profile_json:
                 write_suite_profile(
                     args.profile_json,
