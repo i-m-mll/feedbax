@@ -602,6 +602,10 @@ def test_main_removes_sealed_temporary_tree_after_pytest_exit(
     caller_root.mkdir()
     caller_sentinel = caller_root / "keep-me"
     caller_sentinel.write_text("caller-owned", encoding="utf-8")
+    caller_sentinel.chmod(0o444)
+    external_directory = caller_root / "external sealed directory"
+    external_directory.mkdir()
+    external_directory.chmod(0o555)
     observed_root = None
 
     monkeypatch.setenv("TMPDIR", str(caller_root))
@@ -631,6 +635,8 @@ def test_main_removes_sealed_temporary_tree_after_pytest_exit(
         sealed_file = sealed_snapshot / "large-fixture.bin"
         sealed_file.write_bytes(b"fixture")
         sealed_file.chmod(0o444)
+        os.link(caller_sentinel, sealed_snapshot / "hardlinked-cache-entry")
+        (sealed_snapshot / "external-link").symlink_to(external_directory, target_is_directory=True)
         sealed_snapshot.chmod(0o555)
         return subprocess.CompletedProcess(command, returncode)
 
@@ -640,6 +646,10 @@ def test_main_removes_sealed_temporary_tree_after_pytest_exit(
     assert observed_root is not None
     assert not observed_root.exists()
     assert caller_sentinel.read_text(encoding="utf-8") == "caller-owned"
+    if os.name != "nt":
+        assert stat.S_IMODE(caller_sentinel.stat().st_mode) == 0o444
+    assert stat.S_IMODE(external_directory.stat().st_mode) == 0o555
+    external_directory.chmod(0o755)
 
 
 def test_main_removes_sealed_temporary_tree_after_interruption(monkeypatch, tmp_path: Path) -> None:
@@ -713,7 +723,7 @@ def test_auto_workers_and_native_threads_have_explicit_budgets(monkeypatch) -> N
     full_suite = load_full_suite_module()
     monkeypatch.setattr(full_suite.os, "cpu_count", lambda: 14)
     monkeypatch.delenv("FEEDBAX_TEST_AUTO_WORKERS", raising=False)
-    assert full_suite.auto_worker_count() == 4
+    assert full_suite.auto_worker_count() == 12
     monkeypatch.setenv("FEEDBAX_TEST_AUTO_WORKERS", "2")
     assert full_suite.auto_worker_count() == 2
     monkeypatch.setenv("FEEDBAX_TEST_AUTO_WORKERS", "99")
@@ -743,9 +753,12 @@ def test_worker_and_thread_budgets_are_part_of_memo_identity(monkeypatch, tmp_pa
     assert len({first.key, second.key, third.key}) == 3
 
 
-@pytest.mark.parametrize(("returncode", "raw_written"), [(0, True), (7, True), (7, False)])
+@pytest.mark.parametrize(
+    ("returncode", "raw_written", "cleanup_interrupted"),
+    [(0, True, False), (7, True, False), (7, False, False), (7, True, True)],
+)
 def test_profile_runs_without_memo_and_redacts_argument_values(
-    monkeypatch, tmp_path: Path, returncode: int, raw_written: bool
+    monkeypatch, tmp_path: Path, returncode: int, raw_written: bool, cleanup_interrupted: bool
 ) -> None:
     full_suite = load_full_suite_module()
     repo = tmp_path / "private checkout"
@@ -753,6 +766,8 @@ def test_profile_runs_without_memo_and_redacts_argument_values(
     monkeypatch.setenv("FULL_SUITE_LOCK_DIR", str(tmp_path / "lock"))
     monkeypatch.setattr(full_suite, "repo_root_from", lambda start: repo)
     monkeypatch.setattr(full_suite, "shared_cache_root", lambda root: tmp_path / "cache")
+    clock = [10.0]
+    monkeypatch.setattr(full_suite.time, "perf_counter", lambda: clock[0])
     monkeypatch.setattr(
         full_suite,
         "build_fingerprint",
@@ -768,6 +783,7 @@ def test_profile_runs_without_memo_and_redacts_argument_values(
     monkeypatch.setattr(full_suite, "write_green_memo", forbidden)
 
     def run_pytest(command, *, cwd, env, check):
+        clock[0] += 2.0
         assert command[-2:] == ["-p", "scripts.pytest_suite_profile"]
         raw = Path(env["FEEDBAX_SUITE_PROFILE_RAW"])
         assert raw.parent == Path(env["TMPDIR"])
@@ -779,6 +795,7 @@ def test_profile_runs_without_memo_and_redacts_argument_values(
                         "schema_version": 1,
                         "diagnostic_only": True,
                         "complete": True,
+                        "fixtures": {"module:expensive": {"count": 1, "seconds": 12.0}},
                     }
                 )
             )
@@ -786,14 +803,39 @@ def test_profile_runs_without_memo_and_redacts_argument_values(
 
     monkeypatch.setattr(full_suite.subprocess, "run", run_pytest)
     output = tmp_path / "diagnostics.json"
-    assert full_suite.main(["--profile-json", str(output), str(repo)]) == returncode
+    remove_tree = full_suite.shutil.rmtree
+
+    def finish_cleanup(path):
+        pending = json.loads(output.read_text())
+        assert pending["execution"] == {
+            "elapsed_seconds": 2.0,
+            "returncode": returncode,
+            "cleanup_complete": False,
+        }
+        remove_tree(path)
+        clock[0] += 3.0
+        if cleanup_interrupted:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(full_suite.shutil, "rmtree", finish_cleanup)
+    if cleanup_interrupted:
+        with pytest.raises(KeyboardInterrupt):
+            full_suite.main(["--profile-json", str(output), str(repo)])
+    else:
+        assert full_suite.main(["--profile-json", str(output), str(repo)]) == returncode
     text = output.read_text()
     assert str(repo) not in text
     data = json.loads(text)
     assert data["execution"]["returncode"] == returncode
-    assert data["complete"] == raw_written
-    if not raw_written:
+    assert data["execution"]["elapsed_seconds"] == (2.0 if cleanup_interrupted else 5.0)
+    assert data["execution"]["cleanup_complete"] is not cleanup_interrupted
+    assert data["complete"] == (raw_written and not cleanup_interrupted)
+    if cleanup_interrupted:
+        assert data["incomplete_reason"] == "suite temporary-root cleanup has not completed"
+    elif not raw_written:
         assert data["incomplete_reason"] == "pytest exited without session diagnostics"
+    if raw_written:
+        assert data["fixtures"]["module:expensive"]["seconds"] == 12.0
     assert len(data["context"]["selection_sha256"]) == 64
 
 
