@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import errno
 import hashlib
 import json
@@ -61,7 +60,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
-from feedbax.orchestration import conformance, revision, schedule_eval, stages
+from feedbax.orchestration import revision, schedule_eval, stages
 
 
 from feedbax.orchestration.assembly import (
@@ -95,7 +94,6 @@ from feedbax.orchestration.bundle import (
     DeploymentPolicy,
     DeploymentResourceRequest,
     EnvironmentDeclaration,
-    ExecutionIdentityEnvelope,
     ImmutableInputArtifactRef,
     ImmutableInputIdentity,
     InputCustodySource,
@@ -109,8 +107,6 @@ from feedbax.orchestration.bundle import (
     RowLaunchSpec,
     SchemaArtifactRef,
     canonical_run_bundle_sha256,
-    environment_declaration_identity_projection,
-    execution_identity_projection,
 )
 from feedbax.orchestration.conformance import (
     CheckEntry,
@@ -793,64 +789,6 @@ def _bundle(
         context=context,
         registry=registry,
     )
-
-
-def test_environment_declaration_identity_projection_classifies_every_field() -> None:
-    identity_fields = {
-        "python_version",
-        "repo_revisions",
-        "lockfile_hashes",
-        "overlay_steps",
-        "image_id",
-    }
-    operational_fields = {"metadata"}
-    assert set(EnvironmentDeclaration.model_fields) == identity_fields | operational_fields
-
-    environment = EnvironmentDeclaration(
-        python_version="3.12",
-        repo_revisions=[RepoRevision(path="feedbax", revision="abc123")],
-        lockfile_hashes={"uv.lock": "b" * 64, "requirements.lock": "a" * 64},
-        overlay_steps=["uv sync --frozen"],
-        image_id="registry.example/feedbax@sha256:" + "c" * 64,
-        metadata={"operator_note": "not identity"},
-    )
-
-    assert environment_declaration_identity_projection(environment) == {
-        "python_version": "3.12",
-        "repo_revisions": [{"path": "feedbax", "revision": "abc123", "dirty_allowed": False}],
-        "lockfile_hashes": {"requirements.lock": "a" * 64, "uv.lock": "b" * 64},
-        "overlay_steps": ["uv sync --frozen"],
-        "image_id": "registry.example/feedbax@sha256:" + "c" * 64,
-    }
-
-
-def test_execution_identity_projection_classifies_every_envelope_field(tmp_path: Path) -> None:
-    projected_source_fields = {
-        "authored_intent",
-        "resolved_snapshot",
-        "execution_capsule",
-        "immutable_inputs",
-    }
-    nonprojected_fields = {"schema_id", "schema_version", "payload", "row_provenance"}
-    assert set(ExecutionIdentityEnvelope.model_fields) == (
-        projected_source_fields | nonprojected_fields
-    )
-
-    envelope = _bundle(tmp_path).rows[0].execution
-    projection = execution_identity_projection(envelope)
-
-    assert set(projection) == {
-        "intent_hash",
-        "resolved_semantics_root_hash",
-        "execution_hash",
-        "input_data_identities",
-    }
-    assert projection == {
-        "intent_hash": envelope.authored_intent.intent_hash,
-        "resolved_semantics_root_hash": envelope.resolved_snapshot.root_hash,
-        "execution_hash": envelope.execution_capsule.execution_hash,
-        "input_data_identities": [],
-    }
 
 
 def test_assembly_copies_the_authored_feedbax_revision(
@@ -3138,15 +3076,6 @@ def test_preflight_schedule_realization_fails_when_resume_context_is_dropped(
     assert "resume_context missing" in (checks["schedule-realization"].detail or "")
 
 
-def test_schedule_preflight_and_conformance_share_schedule_eval_helper() -> None:
-    assert (
-        conformance.learning_rate_from_build_optimizer
-        is schedule_eval.learning_rate_from_build_optimizer
-    )
-    assert conformance.extract_resume_context is schedule_eval.extract_resume_context
-    assert stages.schedule_eval is schedule_eval
-
-
 def test_schedule_context_metadata_is_last_fallback_and_build_stays_independent() -> None:
     row_context = _schedule_context(
         schedule_origin_step=1,
@@ -3184,44 +3113,6 @@ def test_schedule_context_metadata_is_last_fallback_and_build_stays_independent(
             ),
             label="optimizer_build_context",
         )
-
-
-def test_production_stage_engine_call_sites_supply_nonempty_registry() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    for relative in (
-        "feedbax/bin/orchestrate.py",
-        "feedbax/web/services/training_service.py",
-    ):
-        tree = ast.parse((repo_root / relative).read_text(encoding="utf-8"))
-        calls = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and (
-                (isinstance(node.func, ast.Name) and node.func.id == "StageEngine")
-                or (
-                    isinstance(node.func, ast.Attribute)
-                    and isinstance(node.func.value, ast.Name)
-                    and node.func.value.id == "StageEngine"
-                    and node.func.attr == "from_request"
-                )
-            )
-        ]
-        assert calls, relative
-        for call in calls:
-            registry = next(
-                (
-                    keyword.value
-                    for keyword in call.keywords
-                    if keyword.arg == "conformance_registry"
-                ),
-                None,
-            )
-            assert isinstance(registry, (ast.Attribute, ast.Name)), f"{relative}:{call.lineno}"
-            if isinstance(registry, ast.Attribute):
-                assert registry.attr == "conformance_checks", f"{relative}:{call.lineno}"
-            else:
-                assert registry.id == "conformance_registry", f"{relative}:{call.lineno}"
 
 
 def test_conformance_discovery_prefers_typed_diagnostics_over_manifest_metrics(

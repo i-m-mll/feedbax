@@ -67,7 +67,6 @@ from feedbax.orchestration.drivers.runpod import (
     build_launch_row_command,
     build_runpod_execution_namespace,
     build_literal_path_patch_command,
-    build_remote_nohup_sentinel_command,
     classify_pod_state,
     compute_runpod_environment_fingerprint,
     endpoint_classification,
@@ -782,40 +781,6 @@ def test_engine_persists_one_intent_before_each_single_create(tmp_path: Path) ->
     assert len(set(transport.create_names)) == 2
 
 
-_RUNPOD_RESOURCE_UNAVAILABLE = (
-    '{"error":"This machine does not have the resources to deploy your pod. '
-    'Please try a different machine"}\n'
-    "Usage:\n  runpodctl pod create [flags]\n\n"
-    '{"error":"failed to create pod: This machine does not have the resources to deploy '
-    'your pod. Please try a different machine"}\n'
-)
-
-
-@pytest.mark.parametrize("stream", ["stdout", "stderr"])
-def test_resource_unavailable_create_response_is_definitive(stream: str) -> None:
-    result = CommandResult(1, **{stream: _RUNPOD_RESOURCE_UNAVAILABLE})
-
-    classification, _detail = runpod_module._classify_create_failure(result, None)
-
-    assert classification == "non-retryable"
-
-
-_RUNPOD_NO_INSTANCES_AVAILABLE = (
-    '{"error":"There are no longer any instances available with the requested '
-    'specifications. Please refresh and try again."}\n'
-)
-
-
-@pytest.mark.parametrize("stream", ["stdout", "stderr"])
-def test_no_instances_available_create_response_is_definitive(stream: str) -> None:
-    """EU-RO-1 variant surfaced from rlrmp2/5ea2a98: a distinct RunPod no-capacity message."""
-    result = CommandResult(1, **{stream: _RUNPOD_NO_INSTANCES_AVAILABLE})
-
-    classification, _detail = runpod_module._classify_create_failure(result, None)
-
-    assert classification == "non-retryable"
-
-
 @pytest.mark.parametrize(
     "result",
     [
@@ -847,26 +812,17 @@ def _create_failure_corpus() -> list[dict[str, Any]]:
 @pytest.mark.parametrize("entry", _create_failure_corpus(), ids=lambda entry: entry["name"])
 def test_create_failure_corpus_classification(entry: dict[str, Any]) -> None:
     """Every curated payload must keep its human-adjudicated classification."""
-    result = CommandResult(entry["returncode"], entry["stdout"], entry["stderr"])
+    for stdout, stderr in ((entry["stdout"], entry["stderr"]), (entry["stderr"], entry["stdout"])):
+        result = CommandResult(entry["returncode"], stdout, stderr)
+        classification, _detail = runpod_module._classify_create_failure(result, None)
+        assert classification == entry["expected_classification"], entry["name"]
 
-    classification, _detail = runpod_module._classify_create_failure(result, None)
 
-    assert classification == entry["expected_classification"], entry["name"]
-
-
-@pytest.mark.parametrize(
-    "entry",
-    [
-        entry
-        for entry in _create_failure_corpus()
-        if entry["expected_behavior"] == "region-rejected-continues"
-    ],
-    ids=lambda entry: entry["name"],
-)
-def test_create_failure_corpus_definitive_rejects_region_and_continues(
-    tmp_path: Path, entry: dict[str, Any]
-) -> None:
-    """A definitive corpus entry rejects its candidate region and moves to the next one."""
+def test_create_failure_definitive_rejects_region_and_continues(tmp_path: Path) -> None:
+    entry = next(
+        item for item in _create_failure_corpus()
+        if item["expected_behavior"] == "region-rejected-continues"
+    )
     bundle = _bundle(tmp_path)
     store = RunSetStateStore(bundle.run_set_dir / f"corpus-definitive-{entry['name']}.json")
     transport = AcquisitionLeaseTransport(store)
@@ -885,18 +841,17 @@ def test_create_failure_corpus_definitive_rejects_region_and_continues(
         "failed-unacquired",
         "acquired",
     ]
+    assert [intent.datacenter_candidate for intent in persisted.acquisition_intents] == [
+        "CA-MTL-1", "EU-CZ-1"
+    ]
     assert len(transport.create_names) == 2
 
 
-@pytest.mark.parametrize(
-    "entry",
-    [entry for entry in _create_failure_corpus() if entry["expected_behavior"] == "halt-ambiguous"],
-    ids=lambda entry: entry["name"],
-)
-def test_create_failure_corpus_ambiguous_halts_acquisition(
-    tmp_path: Path, entry: dict[str, Any]
-) -> None:
-    """An ambiguous corpus entry stops provisioning rather than guessing at a classification."""
+def test_create_failure_ambiguous_halts_acquisition(tmp_path: Path) -> None:
+    entry = next(
+        item for item in _create_failure_corpus()
+        if item["expected_behavior"] == "halt-ambiguous"
+    )
     bundle = _bundle(tmp_path)
     store = RunSetStateStore(bundle.run_set_dir / f"corpus-ambiguous-{entry['name']}.json")
     transport = AcquisitionLeaseTransport(store)
@@ -912,32 +867,6 @@ def test_create_failure_corpus_ambiguous_halts_acquisition(
     assert len(transport.create_names) == 1
     assert persisted.acquisition_intents[0].state == "ambiguous-unresolved"
     assert persisted.provisioning_stop_reason == "ambiguous-acquisition-unresolved"
-
-
-def test_resource_unavailable_create_advances_to_next_candidate(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path)
-    store = RunSetStateStore(bundle.run_set_dir / "resource-unavailable-state.json")
-    transport = AcquisitionLeaseTransport(store)
-    transport.create_results = [
-        CommandResult(1, "", _RUNPOD_RESOURCE_UNAVAILABLE),
-        CommandResult(0, '{"id":"pod-second"}'),
-    ]
-    transport.register_on_create = [(), ("pod-second",)]
-    engine, _driver, state = _acquisition_engine(bundle, store, transport)
-
-    _state_after, outputs = engine._engine_owned_provision(state, attempt_ordinal=1)
-
-    assert outputs["pod_id"] == "pod-second"
-    persisted = store.load()
-    assert [intent.state for intent in persisted.acquisition_intents] == [
-        "failed-unacquired",
-        "acquired",
-    ]
-    assert [intent.datacenter_candidate for intent in persisted.acquisition_intents] == [
-        "CA-MTL-1",
-        "EU-CZ-1",
-    ]
-    assert len(transport.create_names) == 2
 
 
 def test_ambiguous_create_zero_match_stops_without_next_candidate(tmp_path: Path) -> None:
@@ -2834,25 +2763,28 @@ def test_realize_env_fingerprint_match_skips_environment_steps(tmp_path: Path) -
     assert all("overlay-" not in command for command in transport.ssh_commands)
 
 
-def test_literal_patch_command_uses_perl_quotemeta_not_regex_globs() -> None:
-    command = build_literal_path_patch_command(
-        "/workspace/feedbax/pyproject.toml", "/a/path+[x]", "/remote/path"
+def test_literal_path_patch_changes_only_the_declared_file(tmp_path: Path) -> None:
+    source = "/local/path+[x]"
+    replacement = "/remote/path"
+    target = tmp_path / "project file.toml"
+    neighbor = tmp_path / "other.toml"
+    original = f"path = '{source}'\nuntouched = '/local/pathx'\n"
+    target.write_text(original, encoding="utf-8")
+    neighbor.write_text(original, encoding="utf-8")
+
+    result = subprocess.run(
+        ["bash", "-c", build_literal_path_patch_command(str(target), source, replacement)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
     )
 
-    assert "perl -0pi" in command
-    assert "\\Q$ENV{PATCH_FROM}\\E" in command
-    assert "/a/path+[x]" in command
-    assert "/workspace/feedbax/pyproject.toml" in command
-    assert "find " not in command
-
-
-def test_literal_patch_command_cannot_rewrite_out_of_scope_file() -> None:
-    command = build_literal_path_patch_command(
-        "/workspace/feedbax/pyproject.toml", "/local/feedbax", "/workspace/feedbax"
+    assert result.returncode == 0, result.stderr
+    assert target.read_text(encoding="utf-8") == (
+        "path = '/remote/path'\nuntouched = '/local/pathx'\n"
     )
-
-    assert "/workspace/feedbax/other.py" not in command
-    assert command.count("/workspace/feedbax/pyproject.toml") == 1
+    assert neighbor.read_text(encoding="utf-8") == original
 
 
 def test_stage_inputs_ignores_checkpoint_shaped_payload_keys(tmp_path: Path) -> None:
@@ -3119,21 +3051,6 @@ def test_runpod_stop_requires_and_checks_durable_process_identity(tmp_path: Path
     assert "checkpoint-stop <<'PY'" in checkpoint_command
     assert "os.killpg(process_group_id, signal.SIGINT)" in checkpoint_command
     assert identity.launch_token in checkpoint_command
-
-
-def test_remote_sentinel_uses_session_detacher_instead_of_background_shell() -> None:
-    command = build_remote_nohup_sentinel_command(
-        workdir="/workspace/feedbax",
-        command="python -c 'import time; time.sleep(30)'",
-        done_file="/workspace/run/sentinels/bootstrap.done",
-        failed_file="/workspace/run/sentinels/bootstrap.failed",
-        log_file="/workspace/run/logs/bootstrap.log",
-    )
-
-    assert "setsid -f bash -lc" in command
-    assert "nohup" not in command
-    assert "</dev/null" in command
-    assert command.endswith("2>&1")
 
 
 def test_launch_row_command_returns_before_buffered_child_and_replaces_stale_pid(

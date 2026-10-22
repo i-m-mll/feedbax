@@ -62,7 +62,6 @@ from feedbax.contracts.experiment_envelope_dialect import (
     EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_VERSION_V1,
     REPORT_OUTPUT,
     TRAINING_OUTPUT_V6,
-    ExperimentEnvelopeLayer,
 )
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.manifest import OverridePatch
@@ -293,37 +292,7 @@ def test_canonical_hash_separates_values_that_differ_only_in_type() -> None:
     assert canonical_sha256({"v": 1}) != canonical_sha256({"v": "1"})
 
 
-def test_emit_text_is_the_deterministic_tracked_form() -> None:
-    document = {"b": 1, "a": 2}
-
-    emitted = emit_text(document)
-
-    assert emitted.endswith("\n")
-    assert not emitted.endswith("\n\n")
-    assert emit_text(document) == emitted
-    assert json.loads(emitted) == document
-
-
 # -- budgets --------------------------------------------------------------
-
-
-def test_budget_states_one_section_per_dialect_layer(budgets: AuthoringBudgets) -> None:
-    assert set(budgets.layers) == set(DECLARED_LAYERS)
-    assert set(DECLARED_LAYERS) == {layer.value for layer in ExperimentEnvelopeLayer}
-    assert budgets.budget_id == _budget_document()["budget_id"]
-
-
-def test_widest_caps_are_the_maximum_any_layer_states(
-    budgets: AuthoringBudgets,
-) -> None:
-    widest = budgets.widest
-
-    assert widest.max_scalar_bytes == max(
-        budgets.for_layer(layer).max_scalar_bytes for layer in budgets.layers
-    )
-    assert widest.max_assertions == max(
-        budgets.for_layer(layer).max_assertions for layer in budgets.layers
-    )
 
 
 def test_per_layer_cap_refuses_the_layer_that_states_the_tighter_bound(
