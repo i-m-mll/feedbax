@@ -723,7 +723,7 @@ def test_auto_workers_and_native_threads_have_explicit_budgets(monkeypatch) -> N
     full_suite = load_full_suite_module()
     monkeypatch.setattr(full_suite.os, "cpu_count", lambda: 14)
     monkeypatch.delenv("FEEDBAX_TEST_AUTO_WORKERS", raising=False)
-    assert full_suite.auto_worker_count() == 4
+    assert full_suite.auto_worker_count() == 12
     monkeypatch.setenv("FEEDBAX_TEST_AUTO_WORKERS", "2")
     assert full_suite.auto_worker_count() == 2
     monkeypatch.setenv("FEEDBAX_TEST_AUTO_WORKERS", "99")
