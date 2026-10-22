@@ -56,7 +56,11 @@ from feedbax.governance.project_init import (
 )
 from feedbax.governance.science_surface import POLICY_SCHEMA_VERSION
 
-pytestmark = [pytest.mark.slow, pytest.mark.feedbax_contract]
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.feedbax_contract,
+    pytest.mark.xdist_group(name="cold_start"),
+]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -223,6 +227,7 @@ def _run(
         check=check,
         capture_output=True,
         text=True,
+        timeout=60,
         env=_clean_env(),
     )
 

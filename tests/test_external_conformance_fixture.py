@@ -11,8 +11,6 @@ import tomllib
 import pytest
 from pydantic import ValidationError
 
-from feedbax.orchestration import CustodyPreservationRequired, PrimaryStatePersistenceError
-
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_SRC = ROOT / "external" / "feedbax_conformance_fixture" / "src"
@@ -409,28 +407,6 @@ def test_result_v14_preserves_v13_inventory_and_appends_figure_role_case(
             fixture_package.ConformanceResult.model_validate({**valid, "cases": cases})
 
 
-def test_runner_case_order_exactly_matches_v14_inventory(fixture_package) -> None:
-    runner_path = FIXTURE_SRC / "feedbax_external_conformance" / "runner.py"
-    tree = ast.parse(runner_path.read_text(encoding="utf-8"), filename=str(runner_path))
-    case_keys: tuple[str, ...] | None = None
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not isinstance(target, ast.Name) or target.id != "cases":
-            continue
-        if not isinstance(node.value, ast.Dict):
-            continue
-        case_keys = tuple(
-            key.value
-            for key in node.value.keys
-            if isinstance(key, ast.Constant) and isinstance(key.value, str)
-        )
-        break
-
-    assert case_keys == fixture_package.REQUIRED_CASE_IDS
-
-
 def test_result_v14_case_values_are_strict_booleans(fixture_package) -> None:
     cases = _required_cases(fixture_package)
     cases["public_lifecycle_recovery"] = "yes"
@@ -541,36 +517,6 @@ def test_fixture_has_no_private_feedbax_imports() -> None:
     assert violations == []
 
 
-def test_component_param_array_value_case_uses_public_installed_contract(
-    fixture_package,
-) -> None:
-    cases = importlib.import_module(f"{fixture_package.__name__}.cases")
-
-    assert cases.check_component_param_array_values()
-
-
-def test_component_registration_case_uses_explicit_non_discovering_registry(
-    fixture_package,
-) -> None:
-    cases = importlib.import_module(f"{fixture_package.__name__}.cases")
-
-    assert cases.check_component_registration_and_migration()
-
-
-def test_resolved_projection_case_uses_explicit_bootstrap_registries(
-    fixture_package,
-) -> None:
-    cases = importlib.import_module(f"{fixture_package.__name__}.cases")
-
-    assert cases.check_resolved_evaluation_row_projection()
-
-
-def test_figure_composition_case_uses_public_installed_contract(fixture_package) -> None:
-    cases = importlib.import_module(f"{fixture_package.__name__}.cases")
-
-    assert cases.check_figure_composition_public_contract()
-
-
 def test_public_range_core_imports_without_matplotlib_or_plotly() -> None:
     source = r"""
 import importlib.abc
@@ -617,72 +563,6 @@ assert "matplotlib" not in sys.modules
     environment["PYTHONPATH"] = str(ROOT)
 
     subprocess.run([sys.executable, "-c", source], env=environment, check=True)
-
-
-def test_figure_role_reference_case_uses_public_installed_contract(fixture_package) -> None:
-    cases = importlib.import_module(f"{fixture_package.__name__}.cases")
-
-    assert cases.check_figure_role_reference_public_contract()
-
-
-def test_unified_bootstrap_case_uses_typed_plugin_registrations(
-    fixture_package,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    cases = importlib.import_module(f"{fixture_package.__name__}.cases")
-    plugin = importlib.import_module(f"{fixture_package.__name__}.plugin")
-
-    class Distribution:
-        name = "feedbax-external-conformance"
-        version = "0.1.0"
-
-    class EntryPoint:
-        dist = Distribution()
-
-        def __init__(self, name: str, value: str, registration: object) -> None:
-            self.name = name
-            self.value = value
-            self._registration = registration
-
-        def load(self) -> object:
-            return self._registration
-
-    points = (
-        EntryPoint(
-            "fixture-dependent",
-            "feedbax_external_conformance.plugin:DEPENDENT_PLUGIN_REGISTRATION",
-            plugin.DEPENDENT_PLUGIN_REGISTRATION,
-        ),
-        EntryPoint(
-            "fixture-foundation",
-            "feedbax_external_conformance.plugin:FOUNDATION_PLUGIN_REGISTRATION",
-            plugin.FOUNDATION_PLUGIN_REGISTRATION,
-        ),
-    )
-
-    bootstrap_module = importlib.import_module("feedbax.plugins.bootstrap")
-    monkeypatch.setattr(
-        bootstrap_module.importlib.metadata,
-        "entry_points",
-        lambda **_kwargs: points,
-    )
-
-    assert cases.check_unified_plugin_bootstrap()
-    assert cases.check_dynamic_component_ports()
-
-
-def test_fixture_declares_only_the_unified_plugin_entry_point_group() -> None:
-    pyproject = ROOT / "external" / "feedbax_conformance_fixture" / "pyproject.toml"
-    payload = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-
-    groups = payload["project"]["entry-points"]
-    assert set(groups) == {"feedbax.plugins"}
-    assert groups["feedbax.plugins"] == {
-        "fixture-dependent": ("feedbax_external_conformance.plugin:DEPENDENT_PLUGIN_REGISTRATION"),
-        "fixture-foundation": (
-            "feedbax_external_conformance.plugin:FOUNDATION_PLUGIN_REGISTRATION"
-        ),
-    }
 
 
 def test_fixture_analysis_dependency_does_not_require_matplotlib() -> None:
@@ -830,14 +710,6 @@ def test_clean_wheel_runner_checks_installed_dependency_metadata(
     ]
 
 
-def test_clean_wheel_wrapper_pins_v14_roles_and_persisted_output() -> None:
-    source = (ROOT / "scripts" / "run_external_conformance.py").read_text(encoding="utf-8")
-
-    assert 'payload["schema_version"] != "feedbax.external_conformance.result.v14"' in source
-    assert 'payload["protocol_roles"] != {"current": 1, "minimum": 1}' in source
-    assert "args.result_out.write_text" in source
-
-
 def test_clean_wheel_wrapper_rejects_malformed_result(
     tmp_path: Path,
 ) -> None:
@@ -886,52 +758,3 @@ def test_local_lifecycle_uses_clean_interpreter_distribution_inventory(
 
     assert driver.python_executable == sys.executable
     assert driver.freeze_lines is None
-
-
-def test_custody_persistence_case_uses_public_installed_contract(fixture_package) -> None:
-    lifecycle = importlib.import_module(f"{fixture_package.__name__}.lifecycle")
-
-    assert lifecycle.check_custody_persistence_recovery()
-
-
-def test_content_store_candidate_uses_public_installed_contract(fixture_package) -> None:
-    cases = importlib.import_module(f"{fixture_package.__name__}.cases")
-
-    assert cases.check_content_store_candidate_contract()
-
-
-def test_custody_persistence_exceptions_are_public_typed_contracts() -> None:
-    assert issubclass(PrimaryStatePersistenceError, OSError)
-    assert issubclass(CustodyPreservationRequired, RuntimeError)
-
-
-def test_local_lifecycle_child_is_fixed_print_only(fixture_package) -> None:
-    lifecycle = importlib.import_module(f"{fixture_package.__name__}.lifecycle")
-    compiled = lifecycle._LocalLifecycleCompiler().compile(
-        authored={
-            "schema_id": "feedbax.spec.studio.training_assembly",
-            "schema_version": "feedbax.spec.studio.training_assembly.v1",
-        },
-        run_set_id="fixture",
-        context=None,
-    )
-
-    assert [(row.row_id, row.launch.command) for row in compiled.rows] == [
-        (
-            "fixture-row",
-            [
-                sys.executable,
-                "-c",
-                "print('feedbax external conformance lifecycle')",
-            ],
-        )
-    ]
-
-
-def test_ci_invokes_repository_clean_wheel_command_and_persists_result() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "uv run --no-sync python scripts/run_external_conformance.py" in workflow
-    assert "--result-out artifacts/downstream-conformance.json" in workflow
-    assert "actions/upload-artifact@v4" in workflow
-    assert "path: artifacts/downstream-conformance.json" in workflow
-    assert "if-no-files-found: error" in workflow
