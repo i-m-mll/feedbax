@@ -125,7 +125,7 @@ function makeInitialGraphSnapshot(): GraphSnapshot {
   };
 }
 
-function makeBlankGraphSnapshot(name: string): GraphSnapshot {
+function makeBlankGraphSnapshot(name: string): GraphSnapshot & { graph: GraphSpec } {
   const graph = createBlankGraph();
   graph.metadata!.name = name;
   const uiState: GraphUIState = {

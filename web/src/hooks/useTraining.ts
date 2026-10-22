@@ -1,3 +1,4 @@
+import { useRootGraph } from '@/hooks/useRootGraph';
 import { useCallback, useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { startTraining, stopTraining } from '@/api/client';
@@ -131,7 +132,7 @@ export function useTraining() {
     setLatestTrajectory,
   } = trainingStore;
   const graphId = useGraphStore((state) => state.graphId);
-  const graph = useGraphStore((state) => state.graph);
+  const graph = useRootGraph();
   const wsRef = useRef<WebSocket | null>(null);
   const wsJobIdRef = useRef<string | null>(null);
   const reconnectAttemptRef = useRef(0);

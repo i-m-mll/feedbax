@@ -12,7 +12,7 @@ import { saveActiveStudioDocument } from '@/services/studioPersistence';
 import {
   ensureTaskBindingSpec,
   scopedTaskBindingSpec,
-  taskBindingInGraphPath,
+  isRootTaskBindingPath,
 } from '@/features/scenario/taskBindings';
 
 export const FIT_VIEW_SHORTCUT_EVENT = 'feedbax:shortcut-fit-view';
@@ -81,7 +81,7 @@ export function useAppShortcuts() {
       .map((node) => node.id);
     const topPane = getTopPaneState(workspace);
     const trainingScenario = getTrainingScenario(workspace);
-    const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
+    const rootGraph = useGraphStore.getState().capturePersistedGraph().graph;
     const taskBindingSpec = trainingScenario
       ? ensureTaskBindingSpec(trainingScenario.task_binding_spec, rootGraph, trainingScenario.task_spec)
       : null;
@@ -127,7 +127,7 @@ export function useAppShortcuts() {
         ...taskBindingSpec,
         bindings: taskBindingSpec.bindings.filter(
           (binding) =>
-            !impactedIds.has(binding.id) || !taskBindingInGraphPath(binding, currentGraphPath)
+            !impactedIds.has(binding.id) || !isRootTaskBindingPath(currentGraphPath)
         ),
       });
     }

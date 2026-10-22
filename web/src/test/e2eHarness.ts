@@ -9,6 +9,7 @@ declare global {
       nodeParam: (nodeId: string, paramName: string) => ParamValue | undefined;
       updateNodeParam: (nodeId: string, paramName: string, value: ParamValue) => void;
       enterSubgraph: (nodeId: string) => void;
+      exitToRoot: () => void;
       markDirty: () => void;
     };
   }
@@ -23,6 +24,7 @@ export function installE2EHarness() {
     updateNodeParam: (nodeId, paramName, value) =>
       useGraphStore.getState().updateNodeParams(nodeId, paramName, value),
     enterSubgraph: (nodeId) => useGraphStore.getState().enterSubgraph(nodeId),
+    exitToRoot: () => useGraphStore.getState().exitToBreadcrumb(0),
     markDirty: () => useGraphStore.getState().markDirty(),
   };
 }

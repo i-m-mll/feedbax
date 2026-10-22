@@ -3,8 +3,12 @@ import {
   nextMuxInputPort,
   normalizeDynamicPorts,
   visibleMuxInputPorts,
+  materializeMuxSpecForBindings,
+  muxHasSpareInput,
+  isNextMuxInputPort,
+  expandMuxForPort,
 } from '@/features/graph/dynamicPorts';
-import type { GraphSpec } from '@/types/graph';
+import type { AcausalGraphSpec, GraphSpec } from '@/types/graph';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
 
 function graph(inputPorts = ['in_0', 'in_1']): GraphSpec {
@@ -33,7 +37,7 @@ function graph(inputPorts = ['in_0', 'in_1']): GraphSpec {
 
 function taskBindings(...ports: string[]): StudioTaskBindingSpec {
   return {
-    schema_version: 'feedbax.studio.task_bindings.v2',
+    schema_version: 'feedbax.spec.studio.task_bindings.v2',
     exposed_data: ports.map((port) => ({
       id: port,
       label: port,
@@ -56,6 +60,25 @@ function taskBindings(...ports: string[]): StudioTaskBindingSpec {
 }
 
 describe('dynamic graph ports', () => {
+  it('does not apply causal mux affordances to an acausal active graph', () => {
+    const interior: AcausalGraphSpec = {
+      schema_id: 'feedbax.spec.acausal_graph',
+      schema_version: 'feedbax.spec.acausal_graph.v1',
+      physical_domain: 'translational',
+      nodes: { mass: { type: 'Mass', params: {}, input_ports: [], output_ports: [] } },
+      connections: [{ a: ['mass', 'left'], b: ['mass', 'right'] }],
+      solver: { solver_type: 'euler', dt: 0.01 },
+    };
+
+    expect(visibleMuxInputPorts(interior, 'mass')).toBeNull();
+    expect(materializeMuxSpecForBindings(interior, 'mass')).toBeNull();
+    expect(nextMuxInputPort(interior, 'mass')).toBeNull();
+    expect(muxHasSpareInput(interior, 'mass')).toBe(false);
+    expect(isNextMuxInputPort(interior, 'mass', 'in_0')).toBe(false);
+    expect(expandMuxForPort(interior, 'mass', 'in_0')).toBe(interior);
+    expect(normalizeDynamicPorts(interior)).toBe(interior);
+  });
+
   it('grows a mux to the highest wired input and shrinks trailing unused ports', () => {
     const expanded = normalizeDynamicPorts({
       ...graph(),

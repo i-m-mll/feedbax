@@ -71,6 +71,10 @@ function graphFixture(hiddenSize: number) {
 }
 
 async function installMockApi(page: Page) {
+  page.on('console', (message) => {
+    if (message.type() === 'error') console.error(message.text());
+  });
+  page.on('pageerror', (error) => console.error(error));
   let savedGraph = graphFixture(100);
   const uiState: any = {
     viewport: { x: 0, y: 0, zoom: 1 },
@@ -101,6 +105,7 @@ async function installMockApi(page: Page) {
       semantic_document_sha256: 'a'.repeat(64),
       authored_path: '/graph',
     },
+    semantic_anchors: {},
     graph_ui_state: uiState,
     analysis_pages: [],
     active_analysis_page_id: null,
@@ -189,6 +194,9 @@ async function installMockApi(page: Page) {
   });
 
   await page.route('**/api/provider/studio/schemas', async (route) => {
+    const { graph } = route.request().postDataJSON();
+    expect(graph.schema_id).not.toBe('feedbax.spec.acausal_graph');
+    expect(Array.isArray(graph.wires)).toBe(true);
     await route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
@@ -285,6 +293,8 @@ test('parameter editing preserves geometry and survives save/reload', async ({ p
   await page.locator('.react-flow__node[data-id="cell"]').click();
   const hiddenSize = page.getByRole('textbox', { name: /^hidden size$/i });
   await expect(hiddenSize).toHaveValue('100');
+  await hiddenSize.scrollIntoViewIfNeeded();
+  await expect(hiddenSize).toBeInViewport({ ratio: 1 });
   const nodeName = page.getByRole('textbox', { name: 'Node name', exact: true });
   const fieldBounds = await hiddenSize.boundingBox();
   const nameBounds = await nodeName.boundingBox();
@@ -346,10 +356,15 @@ test('reload restores acausal domain context and rejects causal subgraph drops',
     .poll(() => page.evaluate(() => window.feedbaxE2E?.graphId()))
     .toBe('graph-1');
 
+  await page.getByRole('button', { name: 'Task', exact: true }).click();
+  const taskHandles = page.locator('[data-task-data-port-id]');
+  await expect(taskHandles).not.toHaveCount(0);
   await page.evaluate(() => window.feedbaxE2E?.enterSubgraph('system'));
   await expect
     .poll(() => page.evaluate(() => window.feedbaxE2E?.currentContext()))
     .toBe(ACAUSAL_DOMAIN_ID);
+  await expect(taskHandles).toHaveCount(0);
+  await expect(page.getByTitle('Wrap this graph in a new parent')).toBeDisabled();
 
   const autosave = page.waitForResponse(
     (response) =>
@@ -381,4 +396,7 @@ test('reload restores acausal domain context and rejects causal subgraph drops',
   await expect(page.getByText(
     "Acausal interiors accept acausal-domain components only; 'Subgraph' is causal."
   )).toBeVisible();
+  await page.evaluate(() => window.feedbaxE2E?.exitToRoot());
+  await expect(taskHandles).not.toHaveCount(0);
+  await expect(page.getByTitle('Wrap this graph in a new parent')).toBeEnabled();
 });

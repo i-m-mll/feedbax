@@ -10,6 +10,12 @@ import {
 import type { ComponentDefinition } from '@/types/components';
 
 const CAUSAL_DOMAIN_ID = 'feedbax.domain.causal';
+
+function activeCausalGraph(): GraphSpec {
+  const graph = useGraphStore.getState().graph;
+  if (!isCausalGraphSpec(graph)) throw new Error('Expected an active causal graph');
+  return graph;
+}
 const ACAUSAL_DOMAIN_ID = 'feedbax.domain.acausal';
 const INSPECTOR_DOMAIN_ID = 'feedbax.domain.inspector';
 
@@ -298,7 +304,7 @@ describe('graphStore boundary aliases', () => {
       .getState()
       .renameSubgraphBoundaryPort('network', 'input', 'feedback', 'proprioception');
 
-    const graph = useGraphStore.getState().graph;
+    const graph = activeCausalGraph();
     const network = graph.nodes.network;
     const subgraph = graph.subgraphs?.network;
 
@@ -1028,9 +1034,9 @@ describe('graphStore recurrent connections', () => {
       targetHandle: 'input',
     });
 
-    const wire = useGraphStore
-      .getState()
-      .graph.wires.find((item) => item.source_node === 'b' && item.target_node === 'a');
+    const wire = activeCausalGraph().wires.find(
+      (item) => item.source_node === 'b' && item.target_node === 'a'
+    );
     const edge = useGraphStore
       .getState()
       .edges.find((item) => item.type === 'routed' && item.source === 'b' && item.target === 'a');
@@ -1062,7 +1068,7 @@ describe('graphStore retained observables', () => {
       metadata: {},
     });
 
-    expect(useGraphStore.getState().graph.retained_observables).toEqual([
+    expect(activeCausalGraph().retained_observables).toEqual([
       expect.objectContaining({
         id: 'obs:network_output',
         retention: { mode: 'trajectory' },
@@ -1074,14 +1080,14 @@ describe('graphStore retained observables', () => {
       retention: { mode: 'window', window_size: 16 },
     });
 
-    expect(useGraphStore.getState().graph.retained_observables?.[0]).toMatchObject({
+    expect(activeCausalGraph().retained_observables?.[0]).toMatchObject({
       label: 'Network output window',
       retention: { mode: 'window', window_size: 16 },
     });
 
     useGraphStore.getState().removeRetainedObservable('obs:network_output');
 
-    expect(useGraphStore.getState().graph.retained_observables).toEqual([]);
+    expect(activeCausalGraph().retained_observables).toEqual([]);
   });
 });
 
@@ -1280,7 +1286,7 @@ describe('graphStore template insertion', () => {
     expect(Object.keys(state.graph.nodes)).toEqual(['source', 'input_mux', 'cell', 'readout']);
     expect(state.graph.nodes['Recurrent Controller']).toBeUndefined();
     expect(state.graph.nodes.cell.params._subgraph).toBeUndefined();
-    expect(state.graph.wires).toEqual([
+    expect(activeCausalGraph().wires).toEqual([
       {
         source_node: 'input_mux',
         source_port: 'output',
@@ -1332,7 +1338,7 @@ describe('graphStore template insertion', () => {
     useGraphStore.getState().addNodeFromComponent(templateComponent, { x: 200, y: 160 });
     useGraphStore.getState().addNodeFromComponent(templateComponent, { x: 600, y: 160 });
 
-    const observables = useGraphStore.getState().graph.retained_observables ?? [];
+    const observables = activeCausalGraph().retained_observables ?? [];
     const secondImport = observables.filter((observable) =>
       observable.id.startsWith('feedbax_templates_recurrent_controller:observable:')
     );

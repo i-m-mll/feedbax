@@ -14,6 +14,7 @@ import {
 import { graphNodeEntityId } from '@/features/scenario/entities';
 import { addObjectiveTerm, createObjectiveTerm } from '@/features/scenario/objectives';
 import { WORKSPACE_VIEW_STATE_SCHEMA_VERSION } from '@/types/workspace';
+import type { StudioTaskBindingSpec } from '@/types/workspace';
 import {
   frozenSnapshotProvenanceMetadata,
   useSelectionContextStore,
@@ -215,7 +216,7 @@ describe('buildWorkspaceSnapshot', () => {
     expect(scenario.training_spec).toEqual(trainingSpec);
     expect(scenario.task_spec).toEqual(taskSpec);
     expect(scenario.task_binding_spec).toMatchObject({
-      schema_version: 'feedbax.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [
         { id: 'inputs', bindable: true },
         { id: 'targets', bindable: false },
@@ -402,8 +403,8 @@ describe('buildWorkspaceSnapshot', () => {
       ...taskSpec,
       params: { ...taskSpec.params, target_radius: 0.04 },
     };
-    const workspaceOwnedTaskBindingSpec = {
-      schema_version: 'feedbax.studio.task_bindings.v2',
+    const workspaceOwnedTaskBindingSpec: StudioTaskBindingSpec = {
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [],
       bindings: [
         {
@@ -843,7 +844,7 @@ describe('buildWorkspaceSnapshot', () => {
       params: { ...taskSpec.params, n_targets: 16 },
     });
     useWorkspaceStore.getState().updateActiveScenarioTaskBindingSpec({
-      schema_version: 'feedbax.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [],
       bindings: [],
       metadata: { edited: true },
@@ -888,7 +889,7 @@ describe('buildWorkspaceSnapshot', () => {
     const trainStage = workspace.stages.find((stage) => stage.kind === 'train')!;
     const scenario = workspace.scenarios[trainStage.scenario_id!];
     scenario.task_binding_spec = {
-      schema_version: 'feedbax.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [
         {
           id: 'inputs',

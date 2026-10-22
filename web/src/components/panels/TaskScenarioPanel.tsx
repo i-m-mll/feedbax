@@ -1,3 +1,4 @@
+import { useRootGraph } from '@/hooks/useRootGraph';
 import {
   useLayoutEffect,
   useMemo,
@@ -10,6 +11,7 @@ import {
   createDefaultTaskBindingSpec,
   ensureTaskBindingSpec,
   scopedTaskBindingSpec,
+  canAuthorTaskBindings,
 } from '@/features/scenario/taskBindings';
 import {
   applyDelayedReachTimelineEdit,
@@ -293,7 +295,7 @@ export function TaskScenarioPanel() {
     () => graphStack.map((layer) => layer.childNodeId).filter((item): item is string => Boolean(item)),
     [graphStack]
   );
-  const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
+  const rootGraph = useRootGraph();
   const allTaskBindingSpec = useMemo(
     () =>
       ensureTaskBindingSpec(
@@ -435,11 +437,11 @@ export function TaskScenarioPanel() {
               <span className="min-w-0 truncate text-right text-slate-600">
                 {data.label}
               </span>
-              <span
+              {canAuthorTaskBindings(graph, graphStack.length) && <span
                 data-task-data-port-id={data.id}
                 className="pointer-events-none absolute right-[-20px] top-1/2 z-30 h-2.5 w-2.5 -translate-y-1/2 rounded-full border border-white bg-emerald-500 shadow-soft"
                 title={`${data.label} Task Data`}
-              />
+              />}
             </div>
           ))}
           </div>

@@ -1,5 +1,6 @@
+import { useRootGraph } from '@/hooks/useRootGraph';
 import { NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from '@xyflow/react';
-import type { GraphNodeData } from '@/types/graph';
+import { isAcausalGraphSpec, type GraphNodeData } from '@/types/graph';
 import type { AnalysisNodeMeta } from '@/types/analysis';
 import clsx from 'clsx';
 import { useGraphStore } from '@/stores/graphStore';
@@ -60,7 +61,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
     () => graphStack.map((layer) => layer.childNodeId).filter((item): item is string => Boolean(item)),
     [graphStack]
   );
-  const rootGraph = graphStack.length > 0 ? graphStack[0].graph : graph;
+  const rootGraph = useRootGraph();
   const allTaskBindingSpec = useMemo(
     () =>
       ensureTaskBindingSpec(
@@ -146,7 +147,8 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
   const isAcausalLayer = nodeData.current_domain === 'feedbax.domain.acausal';
   const isConservingPort = useCallback(
     (port: string) =>
-      isAcausalLayer && portIsConserving(graph as never, componentRegistry, label, port),
+      isAcausalLayer && isAcausalGraphSpec(graph)
+        && portIsConserving(graph, componentRegistry, label, port),
     [componentRegistry, graph, isAcausalLayer, label]
   );
   const statusPipClass =

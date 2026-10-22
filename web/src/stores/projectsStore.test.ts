@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GraphSpec, GraphUIState } from '@/types/graph';
+import { isCausalGraphSpec } from '@/types/graph';
 
 const LOCAL_PROJECTS_STORAGE_KEY = 'feedbax:studio-local-tabs';
 
@@ -145,7 +146,9 @@ describe('projectsStore local restore state', () => {
     );
     expect(useGraphStore.getState().graph.nodes.network.type).toBe('SimpleStagedNetwork');
     expect(useGraphStore.getState().graph.subgraphs?.network).toBeUndefined();
-    expect(useGraphStore.getState().graph.input_bindings).toEqual({
+    const graph = useGraphStore.getState().graph;
+    if (!isCausalGraphSpec(graph)) throw new Error('Expected the restored causal root');
+    expect(graph.input_bindings).toEqual({
       input: ['network', 'target'],
     });
   });

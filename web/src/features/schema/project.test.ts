@@ -7,7 +7,7 @@ import {
   deriveSubgraphBoundaryOverrides,
 } from './dimensions';
 import type { ComponentDefinition } from '@/types/components';
-import type { GraphSpec } from '@/types/graph';
+import type { AcausalGraphSpec, GraphSpec } from '@/types/graph';
 import type { StudioSchemaRegistry, StudioTaskBindingSpec } from '@/types/workspace';
 
 const components: ComponentDefinition[] = [
@@ -121,7 +121,7 @@ const graph: GraphSpec = {
 
 function taskBindingSpec(sourceDataId = 'inputs'): StudioTaskBindingSpec {
   return {
-    schema_version: 'feedbax.studio.task_bindings.v2',
+    schema_version: 'feedbax.spec.studio.task_bindings.v2',
     exposed_data: [
       {
         id: 'inputs',
@@ -159,6 +159,28 @@ function taskBindingSpec(sourceDataId = 'inputs'): StudioTaskBindingSpec {
 }
 
 describe('projectStudioSchema', () => {
+  it('keeps conserving connections outside causal port and dimension inference', () => {
+    const interior: AcausalGraphSpec = {
+      schema_id: 'feedbax.spec.acausal_graph',
+      schema_version: 'feedbax.spec.acausal_graph.v1',
+      physical_domain: 'translational',
+      nodes: {
+        mass: { type: 'Mass', params: {}, input_ports: [], output_ports: [] },
+      },
+      connections: [{ a: ['mass', 'left'], b: ['mass', 'right'] }],
+      solver: { solver_type: 'euler', dt: 0.01 },
+    };
+    const registry = projectStudioSchema(interior, components);
+
+    expect(registry.ports).toEqual([]);
+    expect(registry.selector_targets).toEqual([]);
+    expect(registry.issues).toEqual([]);
+    expect(deriveDimensionConstraints(interior, registry)).toEqual([]);
+    expect(deriveSubgraphBoundaryOverrides(interior, 'mass', registry).size).toBe(0);
+    expect(interior.connections).toHaveLength(1);
+    expect(interior).not.toHaveProperty('wires');
+  });
+
   it('validates graph wires against projected port schemas', () => {
     const registry = projectStudioSchema(
       {
@@ -399,7 +421,7 @@ describe('projectStudioSchema', () => {
 
   it('projects dynamic mux input ports with the mux input schema', () => {
     const muxTaskBindings: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [
         {
           id: 'target_on',
@@ -451,7 +473,7 @@ describe('projectStudioSchema', () => {
 
   it('infers mux output width from bound task-data sample shapes', () => {
     const muxTaskBindings: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [
         {
           id: 'target_position',
@@ -519,7 +541,7 @@ describe('projectStudioSchema', () => {
 
   it('derives network size constraints from task muxes and mechanics consumers', () => {
     const spec: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [
         {
           id: 'target_position',
@@ -620,7 +642,7 @@ describe('projectStudioSchema', () => {
 
   it('uses subgraph boundary schemas for parent port compatibility', () => {
     const spec: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v2',
       exposed_data: [
         {
           id: 'target_position',
