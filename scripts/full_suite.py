@@ -20,16 +20,29 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from types import TracebackType
 from typing import Any, Iterator, Self, Sequence
 
 
 SCHEMA_VERSION = 2
+PROFILE_SCHEMA_ID = "feedbax.test-suite-profile"
+PROFILE_SCHEMA_VERSION = 1
 LOCK_PROTOCOL_VERSION = 1
 LOCK_BUSY_EXIT = 75
 LOCK_ENV_VAR = "FULL_SUITE_LOCK_DIR"
 LOCK_FILENAME = "full-suite.lock"
 LOCK_REPOSITORY = "feedbax"
+NATIVE_THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+)
+AUTO_WORKER_ENV = "FEEDBAX_TEST_AUTO_WORKERS"
+DEFAULT_AUTO_WORKERS = 4
+DEFAULT_NATIVE_THREADS = 1
 TEMP_ROOT_MARKER = ".feedbax-full-suite-owner"
 REQUIRED_FINGERPRINT_FIELDS = (
     "git_tree",
@@ -300,6 +313,86 @@ def configure_jax_cache_env(cache_root: Path) -> None:
     os.environ.setdefault("FEEDBAX_JAX_TEST_CACHE_ROOT", str(cache_root))
 
 
+def auto_worker_count() -> int:
+    """Bound automatic process fanout independently of the machine's core count."""
+    requested = int(os.environ.get(AUTO_WORKER_ENV, str(DEFAULT_AUTO_WORKERS)))
+    if requested < 1:
+        raise ValueError(f"{AUTO_WORKER_ENV} must be a positive integer")
+    return min(requested, os.cpu_count() or 1)
+
+
+def configure_native_threads() -> None:
+    """Keep each worker's BLAS/OpenMP pool within the explicit test budget."""
+    threads = int(os.environ.get("FEEDBAX_TEST_NATIVE_THREADS", str(DEFAULT_NATIVE_THREADS)))
+    if threads < 1:
+        raise ValueError("FEEDBAX_TEST_NATIVE_THREADS must be a positive integer")
+    for name in NATIVE_THREAD_ENV_VARS:
+        os.environ[name] = str(threads)
+
+
+def read_suite_profile(raw_path: Path) -> dict[str, Any]:
+    """Retain a failed child exit even when pytest could not finish diagnostics."""
+    try:
+        return json.loads(raw_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        reason = "pytest exited without session diagnostics"
+    except json.JSONDecodeError:
+        reason = "pytest exited with incomplete session diagnostics"
+    return {
+        "schema_id": PROFILE_SCHEMA_ID,
+        "schema_version": PROFILE_SCHEMA_VERSION,
+        "diagnostic_only": True,
+        "complete": False,
+        "incomplete_reason": reason,
+    }
+
+
+def write_suite_profile(
+    destination: Path,
+    data: dict[str, Any],
+    fingerprint: SuiteFingerprint,
+    *,
+    elapsed_seconds: float,
+    returncode: int,
+) -> None:
+    """Write local diagnostics without exposing invocation paths or argument values."""
+    if (data.get("schema_id"), data.get("schema_version")) != (
+        PROFILE_SCHEMA_ID,
+        PROFILE_SCHEMA_VERSION,
+    ):
+        raise ValueError("unsupported pytest diagnostic profile schema")
+    public_fields = (
+        "git_tree",
+        "uv_lock_sha256",
+        "python_version",
+        "python_implementation",
+        "jax_version",
+        "jaxlib_version",
+        "pytest_version",
+        "pytest_xdist_version",
+        "suite_profile",
+        "execution_environment_sha256",
+    )
+    data["execution"] = {"elapsed_seconds": elapsed_seconds, "returncode": returncode}
+    data["context"] = {
+        **{key: fingerprint.payload.get(key) for key in public_fields},
+        "selection_sha256": hashlib.sha256(
+            json.dumps(fingerprint.payload.get("pytest_args", []), separators=(",", ":")).encode()
+        ).hexdigest(),
+        "memo_fingerprint_key": fingerprint.key,
+        "auto_workers": auto_worker_count(),
+        "native_threads": int(
+            os.environ.get("FEEDBAX_TEST_NATIVE_THREADS", str(DEFAULT_NATIVE_THREADS))
+        ),
+        "cache_disabled": os.environ.get("FEEDBAX_DISABLE_JAX_COMPILATION_CACHE") == "1",
+        "cache_scope": "explicit"
+        if "FEEDBAX_JAX_COMPILATION_CACHE_DIR" in os.environ
+        else "source_and_invocation",
+    }
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def is_execution_relevant_untracked_path(path: str) -> bool:
     return any(
         path == relevant_path.rstrip("/") or path.startswith(relevant_path)
@@ -335,6 +428,18 @@ def clean_tree_hash(repo_root: Path) -> tuple[str | None, tuple[str, ...]]:
     return result.stdout.strip(), ()
 
 
+def execution_environment_digest() -> str:
+    """Fingerprint JAX/XLA behavior without putting environment values into reports."""
+    relevant = {
+        key: value
+        for key, value in os.environ.items()
+        if key.startswith("JAX_")
+        or key.startswith("XLA_")
+        or key == "FEEDBAX_DISABLE_JAX_COMPILATION_CACHE"
+    }
+    return hashlib.sha256(json.dumps(relevant, sort_keys=True).encode()).hexdigest()
+
+
 def build_fingerprint(
     repo_root: Path,
     *,
@@ -356,6 +461,11 @@ def build_fingerprint(
         "suite_profile": suite_profile,
         "pytest_args": list(pytest_args),
         "runner_args": list(runner_args),
+        "execution_environment_sha256": execution_environment_digest(),
+        "auto_workers": auto_worker_count(),
+        "native_threads": int(
+            os.environ.get("FEEDBAX_TEST_NATIVE_THREADS", str(DEFAULT_NATIVE_THREADS))
+        ),
     }
 
     refusal_reasons = list(git_refusals)
@@ -418,7 +528,7 @@ def xdist_args() -> list[str]:
         return ["-n", "0"]
     if distribution_version("pytest-xdist") is None:
         return []
-    return ["-n", os.environ.get("FEEDBAX_FULL_SUITE_XDIST_WORKERS", "auto")]
+    return ["-n", os.environ.get("FEEDBAX_FULL_SUITE_XDIST_WORKERS", "auto"), "--dist=loadgroup"]
 
 
 def pytest_command(
@@ -443,10 +553,19 @@ def pytest_command(
 
 def parse_args(argv: Sequence[str] | None) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
-        description="Run the Feedbax full pytest suite with xdist, JAX cache, and green-tree memoization."
+        description="Run the Feedbax full pytest suite with xdist, JAX cache, and green-tree memoization.",
+        epilog=(
+            f"Automatic workers default to {DEFAULT_AUTO_WORKERS} (FEEDBAX_TEST_AUTO_WORKERS overrides); "
+            f"native pools default to {DEFAULT_NATIVE_THREADS} thread per worker (FEEDBAX_TEST_NATIVE_THREADS)."
+        ),
     )
     parser.add_argument(
         "--force", action="store_true", help="Run even when a matching green memo exists."
+    )
+    parser.add_argument(
+        "--profile-json",
+        type=Path,
+        help="Write local timing diagnostics; always execute without consulting or recording memos.",
     )
     parser.add_argument("--no-memo", action="store_true", help="Disable memo lookup and recording.")
     parser.add_argument(
@@ -500,6 +619,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         os.environ.get("FEEDBAX_FULL_SUITE_MEMO_DIR", str(cache_root / "full_suite_memo"))
     )
     configure_jax_cache_env(cache_root)
+    configure_native_threads()
 
     runner_args = xdist_args()
     command = pytest_command(
@@ -529,6 +649,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
+    if args.profile_json:
+        command.extend(["-p", "scripts.pytest_suite_profile"])
+
     if args.dry_run:
         fingerprint = build_fingerprint(
             repo_root,
@@ -536,7 +659,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             pytest_args=passthrough,
             runner_args=runner_args,
         )
-        would_skip = not args.force and not args.no_memo and has_green_memo(memo_dir, fingerprint)
+        would_skip = (
+            not args.force
+            and not args.no_memo
+            and not args.profile_json
+            and has_green_memo(memo_dir, fingerprint)
+        )
         print(
             json.dumps(
                 {
@@ -562,7 +690,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 runner_args=runner_args,
             )
             would_skip = (
-                not args.force and not args.no_memo and has_green_memo(memo_dir, fingerprint)
+                not args.force
+                and not args.no_memo
+                and not args.profile_json
+                and has_green_memo(memo_dir, fingerprint)
             )
 
             if fingerprint.refusal_reasons:
@@ -574,14 +705,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
 
             print("Running:", " ".join(command))
+            started = time.perf_counter()
             with owned_suite_temporary_root() as temporary_root:
+                env = {**os.environ, "TMPDIR": str(temporary_root)}
+                raw_profile = temporary_root / "profile.json"
+                if args.profile_json:
+                    env["FEEDBAX_SUITE_PROFILE_RAW"] = str(raw_profile)
                 result = subprocess.run(
                     command,
                     cwd=repo_root,
-                    env={**os.environ, "TMPDIR": str(temporary_root)},
+                    env=env,
                     check=False,
                 )
-            if result.returncode == 0 and not args.no_memo and fingerprint.memo_allowed:
+                if args.profile_json:
+                    profile_data = read_suite_profile(raw_profile)
+            if args.profile_json:
+                write_suite_profile(
+                    args.profile_json,
+                    profile_data,
+                    fingerprint,
+                    elapsed_seconds=time.perf_counter() - started,
+                    returncode=result.returncode,
+                )
+            if (
+                result.returncode == 0
+                and not args.no_memo
+                and not args.profile_json
+                and fingerprint.memo_allowed
+            ):
                 path = write_green_memo(memo_dir, fingerprint, command)
                 print(f"Recorded full-suite green memo: {path}")
             return result.returncode
