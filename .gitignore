@@ -26,6 +26,7 @@ models/
 *.wav
 *.mp4
 *.png
+!docs/assets/mandible.png
 *.jpg
 *.pt
 *.gif

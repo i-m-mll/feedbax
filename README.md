@@ -1,6 +1,10 @@
 > [!NOTE]
 > **Feedbax is under active development while the eager graph architecture and Studio workflow stabilize.** Feel free to explore, but know that things will continue to change.
 
+<p align="center">
+  <img src="docs/assets/mandible.png" alt="Mandible logo" width="100" height="100">
+</p>
+
 # Getting started
 
 Feedbax is a [JAX](https://jax.readthedocs.io/en/latest/beginner_guide.html#beginner-guide) library for optimal feedback control with neural networks.
