@@ -2,9 +2,14 @@
 COMMIT_MSG.txt
 
 .DS_Store
+node_modules/
+web/node_modules
+pnpm-lock.yaml
+web/pnpm-lock.yaml
 
 .specstory
 codebase.md
+.playwright-mcp/page-*.yml
 
 # Markdown copies of example notebooks
 # (They are meant to make search-replace easier)
@@ -12,19 +17,25 @@ examples/markdown/
 
 # saved models
 models/
+!feedbax/models/
+!feedbax/models/**
+!feedbax/web/models/
 *.eqx
 
 # data and media
 *.wav
 *.mp4
 *.png
+!docs/assets/mandible.png
 *.jpg
 *.pt
 *.gif
 *.svg
+!web/public/icon.svg
 img/
 _img/
 data/
+!web/src/data/
 
 # logs
 *.log
@@ -36,8 +47,10 @@ data/
 # temporary files
 tmp*
 .tmp*
+.zellij-session
 *.insyncdl
 _debris/
+.feedbax_cache/
 
 # training checkpoints
 checkpoints/
@@ -63,6 +76,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!web/src/lib/
 lib64/
 parts/
 sdist/
@@ -179,3 +193,8 @@ dmypy.json
 # vscode
 *.code-workspace
 .claude-story/
+
+# TypeScript/Vite build artifacts
+*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts

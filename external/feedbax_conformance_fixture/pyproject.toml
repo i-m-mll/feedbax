@@ -1,0 +1,20 @@
+[project]
+name = "feedbax-external-conformance"
+version = "0.1.0"
+description = "Clean-installed downstream conformance fixture for Feedbax"
+requires-python = ">=3.12"
+dependencies = ["feedbax[analysis]==0.2.0"]
+
+[project.scripts]
+feedbax-external-conformance = "feedbax_external_conformance.__main__:main"
+
+[project.entry-points."feedbax.plugins"]
+fixture-dependent = "feedbax_external_conformance.plugin:DEPENDENT_PLUGIN_REGISTRATION"
+fixture-foundation = "feedbax_external_conformance.plugin:FOUNDATION_PLUGIN_REGISTRATION"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/feedbax_external_conformance"]

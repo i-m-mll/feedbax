@@ -1,0 +1,268 @@
+from __future__ import annotations
+import logging
+import os
+import tempfile
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from starlette.background import BackgroundTask
+
+from feedbax.contracts.training import LossTermSpec, TrainingConfig, TrainingSpec, TaskSpec
+from feedbax.contracts.studio_api import (
+    SuccessPayload,
+    SuccessResponse,
+    TrainingStartResponse,
+    TrainingStatusResponse,
+    WorkerConnectEnvelope,
+    WorkerConnectResponse,
+    WorkerStatusEnvelope,
+    WorkerStatusResponse,
+)
+from feedbax.web.services.graph_service import GraphService
+from feedbax.objectives.service import loss_service
+from feedbax.web.services.training_service import RunStateCorruptionError, training_service
+from feedbax.web.worker.transport import WorkerConfigurationError, WorkerTransportError
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+graph_service = GraphService()
+
+
+# ---------------------------------------------------------------------------
+# Remote worker management
+# ---------------------------------------------------------------------------
+
+
+class WorkerConnectRequest(BaseModel):
+    url: str
+    auth_token: Optional[str] = None
+
+
+@router.post("/worker/connect", response_model=WorkerConnectEnvelope)
+async def connect_worker(payload: WorkerConnectRequest) -> WorkerConnectEnvelope:
+    """Configure the Studio backend to use a remote training worker.
+
+    Body:
+        url: Exact worker origin. Remote origins must be present in the
+            server-side ``FEEDBAX_WORKER_ALLOWED_ORIGINS`` JSON allowlist.
+        auth_token: Required bearer token for non-loopback workers.
+    """
+    try:
+        training_service.connect_remote(payload.url, payload.auth_token)
+    except WorkerConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return WorkerConnectEnvelope(
+        data=WorkerConnectResponse(ok=True, url=training_service.worker_url() or "")
+    )
+
+
+@router.get("/worker/status", response_model=WorkerStatusEnvelope)
+async def get_worker_status() -> WorkerStatusEnvelope:
+    """Return the current worker configuration (local vs remote, URL, health)."""
+    mode = training_service.worker_mode()
+    url = training_service.worker_url()
+    connected = False
+    if url is not None:
+        connected = await training_service.worker_connected()
+    return WorkerStatusEnvelope(data=WorkerStatusResponse(mode=mode, url=url, connected=connected))
+
+
+class TrainingRequest(BaseModel):
+    graph_id: str
+    training_spec: TrainingSpec
+    task_spec: TaskSpec
+    task_binding_spec: Optional[dict] = None
+    # Structured config forwarded to the worker for real JAX training.
+    training_config: Optional[TrainingConfig] = None
+    # Optional graph spec forwarded to the worker for config inference.
+    graph_spec: Optional[dict] = None
+
+
+@router.post("", response_model=TrainingStartResponse)
+async def start_training(payload: TrainingRequest, request: Request) -> TrainingStartResponse:
+    training_config = (
+        payload.training_config.model_dump(exclude_unset=True)
+        if payload.training_config is not None
+        else None
+    )
+    job_id = await training_service.start_training(
+        payload.training_spec.n_batches,
+        training_config=training_config,
+        training_spec=payload.training_spec.model_dump(),
+        task_spec=payload.task_spec.model_dump(),
+        task_binding_spec=payload.task_binding_spec,
+        graph_spec=payload.graph_spec,
+        conformance_registry=request.app.state.bootstrap_state.bundle.conformance_checks,
+        driver_registry=request.app.state.bootstrap_state.bundle.drivers,
+        plugin_provenance=request.app.state.bootstrap_state.provenance,
+    )
+    return TrainingStartResponse(data={"job_id": job_id})
+
+
+@router.get("/{job_id}", response_model=TrainingStatusResponse)
+async def get_training_status(job_id: str) -> TrainingStatusResponse:
+    try:
+        status = await training_service.get_status(job_id)
+    except RunStateCorruptionError as exc:
+        logger.error(
+            "Studio training status failed on corrupt document at %s: %s",
+            exc.path,
+            exc.reason,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Persisted Studio run state is corrupt",
+        ) from exc
+    if status is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return TrainingStatusResponse(data={"status": status})
+
+
+@router.delete("/{job_id}", response_model=SuccessResponse)
+async def stop_training(job_id: str) -> SuccessResponse:
+    try:
+        await training_service.stop_training(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return SuccessResponse(data=SuccessPayload(success=True))
+
+
+@router.get("/{job_id}/checkpoint")
+async def get_checkpoint(job_id: str):
+    checkpoint = await training_service.latest_checkpoint(job_id)
+    if checkpoint is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return checkpoint
+
+
+@router.get("/{job_id}/manifest")
+async def get_training_manifest(job_id: str):
+    manifest = await training_service.latest_manifest(job_id)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Manifest not found")
+    return manifest
+
+
+@router.get("/{job_id}/checkpoint/download")
+async def download_checkpoint(job_id: str):
+    """Download the serialized checkpoint file for a completed training job.
+
+    Proxies the binary ``.eqx`` file from the worker through the Studio
+    backend to the browser.  A temporary file is used for the proxy and
+    cleaned up automatically after the response is sent.
+    """
+    fd, dest = tempfile.mkstemp(suffix=".eqx")
+    os.close(fd)
+    try:
+        await training_service.download_checkpoint(job_id, dest)
+    except ValueError:
+        os.unlink(dest)
+        raise HTTPException(status_code=404, detail="Job not found")
+    except RuntimeError as exc:
+        os.unlink(dest)
+        detail = (
+            str(exc)
+            if isinstance(exc, WorkerTransportError)
+            else "Training worker checkpoint is unavailable"
+        )
+        raise HTTPException(status_code=503, detail=detail) from exc
+    return FileResponse(
+        dest,
+        media_type="application/octet-stream",
+        filename=f"feedbax_checkpoint_{job_id}.eqx",
+        background=BackgroundTask(os.unlink, dest),
+    )
+
+
+# --- Probe and Loss Configuration Endpoints ---
+
+
+class ProbeResponse(BaseModel):
+    id: str
+    label: str
+    node: str
+    timing: str
+    selector: str
+    description: Optional[str] = None
+
+
+@router.get("/probes/{graph_id}")
+async def get_available_probes(graph_id: str) -> List[ProbeResponse]:
+    """Get all available probes for a graph."""
+    try:
+        record = graph_service.get_graph(graph_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Graph not found") from exc
+
+    probes = loss_service.get_available_probes(record.project.graph)
+    return [
+        ProbeResponse(
+            id=p.id,
+            label=p.label,
+            node=p.node,
+            timing=p.timing,
+            selector=p.selector,
+            description=p.description,
+        )
+        for p in probes
+    ]
+
+
+class ValidateLossRequest(BaseModel):
+    graph_id: str
+    loss_spec: LossTermSpec
+
+
+class ValidationErrorResponse(BaseModel):
+    path: List[str]
+    field: str
+    message: str
+
+
+class ValidateLossResponse(BaseModel):
+    valid: bool
+    errors: List[ValidationErrorResponse]
+
+
+@router.post("/loss/validate")
+async def validate_loss_spec(payload: ValidateLossRequest) -> ValidateLossResponse:
+    """Validate a loss specification against a graph."""
+    try:
+        record = graph_service.get_graph(payload.graph_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Graph not found") from exc
+
+    errors = loss_service.validate_loss_spec(payload.loss_spec, record.project.graph)
+    return ValidateLossResponse(
+        valid=len(errors) == 0,
+        errors=[
+            ValidationErrorResponse(
+                path=e["path"],
+                field=e["field"],
+                message=e["message"],
+            )
+            for e in errors
+        ],
+    )
+
+
+class ResolveSelectorRequest(BaseModel):
+    graph_id: str
+    selector: str
+
+
+@router.post("/loss/resolve-selector")
+async def resolve_selector(payload: ResolveSelectorRequest) -> Dict[str, Any]:
+    """Resolve a probe selector to its specification."""
+    try:
+        record = graph_service.get_graph(payload.graph_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Graph not found") from exc
+
+    result = loss_service.resolve_probe_selector(payload.selector, record.project.graph)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Selector not found")
+    return result

@@ -1,22 +1,18 @@
-from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Literal, NamedTuple, Optional, TypeAlias, TypeGuard, TypeVar
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal, NamedTuple, Optional, TypeAlias, TypeGuard
 
 import equinox as eqx
 import jax.tree as jt
+import feedbax._vendor.jax_cookbook.tree as jtree
 import numpy as np
 import plotly.graph_objs as go
 import polars as pl
 from jaxtyping import Array, PyTree, Shaped
 from plotly.basedatatypes import BaseTraceType
 
-from feedbax import tree_labels
-
 AggMode: TypeAlias = Literal["standard", "circular"]
 
 StrMapping: TypeAlias = Mapping[str, Any]
-
-T = TypeVar("T")
-
 
 def _wrap_to_pi(x):
     TAU = 2 * np.pi
@@ -109,7 +105,7 @@ def tree_of_2d_timeseries_to_df(
     arrays_flat = map(np.array, jt.leaves(eqx.filter(tree, array_spec)))
 
     if labels is None:
-        labels = tree_labels(tree, join_with=" ")
+        labels = jtree.labels(tree, join_with=" ")
 
     labels_flat = jt.leaves(eqx.filter(labels, array_spec))
 
@@ -212,19 +208,6 @@ def _is_str_mapping(x: object) -> TypeGuard[StrMapping]:
     # Empty dict is fine; otherwise ensure keys are str
     for k in x.keys():
         if not isinstance(k, str):
-            return False
-    return True
-
-
-def _is_mapping_of_type(
-    x: object,
-    is_type_: Callable[[Any], bool],
-) -> TypeGuard[Mapping]:
-    """True if x is a Mapping whose values are Mapping[str, Any]."""
-    if not isinstance(x, Mapping):
-        return False
-    for v in x.values():
-        if not is_type_(v):
             return False
     return True
 

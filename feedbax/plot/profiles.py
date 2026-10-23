@@ -1,23 +1,27 @@
 from math import sqrt
-from typing import Literal, Optional, Type, TypeVar
+from typing import Literal, Optional, TypeVar
 
 import equinox as eqx
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 import numpy as np
-import plotly.express as px
 import plotly.graph_objs as go
 from jaxtyping import Array, Float, PyTree
 from plotly.colors import convert_colors_to_same_type
 
-from feedbax import tree_labels
-from feedbax._tree import tree_prefix_expand, tree_zip
+from feedbax.plot import apply_default_template
 from feedbax.plot.colors import (
     DEFAULT_COLORS,
     color_add_alpha,
 )
 from feedbax.plot.misc import AggMode, _agg_circular, _agg_standard, _maybe_unwrap
-from jax_cookbook import MaskedArray
+from feedbax._vendor.jax_cookbook import MaskedArray
+
+# Plotly copies the process-default template into each figure as it is constructed, so
+# the Feedbax default has to be in place before any function here runs. Importing a
+# figure-drawing module is itself use of the plotting surface, unlike importing the
+# package, which entry points that never draw anything do transitively.
+apply_default_template()
 
 T = TypeVar("T")
 
@@ -59,7 +63,7 @@ def profiles(
     Supports MaskedArray leaves (duck-typed via .data/.mask attributes), which are
     converted to NaN-masked arrays for aggregation.
     """
-    from jax_cookbook import MaskedArray, is_type
+    from feedbax._vendor.jax_cookbook import MaskedArray, is_type
 
     # Treat MaskedArray as a leaf throughout processing
     is_leaf_ma = is_type(MaskedArray)
@@ -80,10 +84,10 @@ def profiles(
             is_leaf=is_leaf_ma,
         )
     else:
-        timesteps = tree_prefix_expand(timesteps, vars_, is_leaf=is_leaf_ma)
+        timesteps = jtree.prefix_expand(timesteps, vars_, is_leaf=is_leaf_ma)
 
     if labels is None:
-        labels = tree_labels(vars_, is_leaf=is_leaf_ma)
+        labels = jtree.labels(vars_, is_leaf=is_leaf_ma)
 
     batch_axes = jt.map(
         lambda x: tuple(range((x.data if isinstance(x, MaskedArray) else x).ndim - 1)),
@@ -96,7 +100,7 @@ def profiles(
         mean_axes = jt.map(
             lambda axes, axis: tuple(ax for ax in axes if ax != axis),
             batch_axes,
-            tree_prefix_expand(keep_axis, vars_, is_leaf=is_leaf_ma),
+            jtree.prefix_expand(keep_axis, vars_, is_leaf=is_leaf_ma),
             is_leaf=lambda x: isinstance(x, tuple) and eqx.is_array_like(x[0]),
         )
 
@@ -214,7 +218,7 @@ def profiles(
 
     # Treat MaskedArray as a leaf and tuples as leaves when flattening for plotting
     plot_data = jt.leaves(
-        tree_zip(vars_flat, means, ubs, lbs, timesteps, labels, is_leaf=is_leaf_ma),
+        jtree.zip_(vars_flat, means, ubs, lbs, timesteps, labels, is_leaf=is_leaf_ma),
         is_leaf=lambda x: isinstance(x, tuple) or isinstance(x, MaskedArray),
     )
 
@@ -247,24 +251,4 @@ def profiles(
     if layout_kws is not None:
         fig.update_layout(layout_kws)
 
-    return fig
-
-
-def profile(
-    var: Float[Array, "batch timestep"],
-    var_label: str = "Value",
-    colors: Optional[list[str]] = None,
-    layout_kws: Optional[dict] = None,
-    **kwargs,
-) -> go.Figure:
-    """Plot a single batch of lines."""
-    # TODO: vlines
-    fig = px.line(
-        var.T,
-        color_discrete_sequence=colors,
-        labels=dict(index="Time step", value=var_label, variable="Trial"),
-        **kwargs,
-    )
-    if layout_kws is not None:
-        fig.update_layout(layout_kws)
     return fig

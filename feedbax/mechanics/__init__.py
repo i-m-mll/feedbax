@@ -1,1 +1,54 @@
 from .mechanics import Mechanics, MechanicsState
+from .linear_state_space import (
+    STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+    LinearStateSpace,
+    LinearStateSpaceState,
+    StructuralLinearDynamicsPerturbation,
+    StructuralLinearStateSpace,
+    structural_linear_transition,
+)
+
+# Physics backend abstraction
+from .backend import PhysicsBackend, PhysicsState, DiffraxBackend, MJXBackend
+
+# DAE components
+from .dae import DAEComponent, DAEState, DAEParams
+
+# Hill muscle models
+from .hill_muscles import (
+    HillMuscleParams,
+    HillMuscleState,
+    RigidTendonHillMuscle,
+    CompliantTendonHillMuscle,
+    ForceLengthCurve,
+    PassiveForceLengthCurve,
+    ForceVelocityCurve,
+    TendonForceLengthCurve,
+    ActivationDynamics,
+)
+
+# Muscle geometry
+from .geometry import (
+    AbstractMuscleGeometry,
+    ConstantMomentArmGeometry,
+    PolynomialMomentArmGeometry,
+    WrappingGeometry,
+    TwoLinkArmMuscleGeometry,
+    PointMassRadialGeometry,
+)
+
+# Musculoskeletal models
+from .musculoskeletal import (
+    MusculoskeletalState,
+    RigidTendonMusculoskeletalArm,
+    CompliantTendonMusculoskeletalArm,
+)
+
+# Standalone muscle Components
+from .muscles import ReluMuscle, RigidTendonHillMuscleThelen
+
+# Analytical musculoskeletal plant (pure JAX, no MuJoCo)
+from .analytical_plant import AnalyticalMusculoskeletalPlant, AnalyticalMuscleState
+
+# Pre-built effector templates
+from .templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu

@@ -1,0 +1,8 @@
+# The default template (theme) to use for plots
+templates: 
+  default: 'simple_white'
+
+# How much to darken (<1) or lighten (>1) traces of means, versus traces of e.g. individual trials
+mean_lighten_factor: 0.7
+
+default_colorscale: 'phase'  

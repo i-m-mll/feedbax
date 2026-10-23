@@ -8,7 +8,8 @@ import numpy as np
 import jax.random as jr
 import plotly.io as pio
 
-from feedbax import load, tree_take
+import jax_cookbook.tree as jtree
+from jax_cookbook import load
 import feedbax.plotly as fbp
 
 from dash_demo_data_gen import setup, hyperparameters
@@ -23,7 +24,7 @@ key_eval = jr.PRNGKey(0)
 n_replicates = hyperparameters['n_replicates']
 states = task.eval_ensemble(models, n_replicates, key_eval)
 
-states_0 = tree_take(states, 0)
+states_0 = jtree.take(states, 0)
 
 # external_stylesheets = ['https://codepen.io/chriddyp/pen/bWLwgP.css']
 external_stylesheets = [dbc.themes.BOOTSTRAP]
@@ -150,7 +151,7 @@ def update(
     unselect_n_clicks,
     selected_trial_idx,
 ):
-    states_i = tree_take(states, replicate - 1)
+    states_i = jtree.take(states, replicate - 1)
 
     fig_traj = fbp.effector_trajectories(
         states_i,

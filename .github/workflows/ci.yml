@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - develop
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --dev --all-extras
+
+      - name: Check lockfile
+        run: uv lock --check
+
+      - name: Check downstream interface policy
+        run: uv run --no-sync python scripts/check_downstream_interface_policy.py
+
+      - name: Run clean-wheel external conformance foundation
+        run: >
+          uv run --no-sync python scripts/run_external_conformance.py
+          --result-out artifacts/downstream-conformance.json
+
+      - name: Upload downstream conformance result
+        uses: actions/upload-artifact@v4
+        with:
+          name: downstream-conformance-result
+          path: artifacts/downstream-conformance.json
+          if-no-files-found: error
+
+      - name: Check generated Studio contracts
+        run: |
+          uv run python scripts/generate_studio_contracts.py
+          git diff --exit-code web/src/generated/studioContracts.ts
+
+      - name: Run full Python suite
+        run: scripts/full_suite.sh --no-memo
+
+      - name: Run ruff fatal checks
+        run: uv run ruff check feedbax tests scripts --select E9,F63,F7,F82 --ignore F722,F821
+
+      - name: Run pyright
+        run: scripts/pyright.sh tests/test_batch_reshape_nan_bypass.py
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test -- --run
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright smoke
+        run: npm run test:e2e
+
+      - name: Build
+        run: npm run build

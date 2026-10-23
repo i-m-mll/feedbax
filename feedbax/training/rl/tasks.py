@@ -1,0 +1,790 @@
+"""Motor task specifications and generators for RL training.
+
+Provides task types (reach, hold, track, swing) with both Python-level
+and fully JAX-traceable samplers for use in vmapped/scanned environments.
+Includes curriculum learning support for progressive target distance scaling.
+"""
+
+from __future__ import annotations
+
+from typing import NamedTuple
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+from jaxtyping import Array, Float, Int, PRNGKeyArray
+
+
+# Task type constants
+TASK_REACH = 0
+TASK_HOLD = 1
+TASK_TRACK = 2
+TASK_SWING = 3
+
+# --- Curriculum learning: progressive target distance ---
+# Bug: 2055433 -- Each stage fraction defines max target distance as a
+# proportion of total arm reach, ramping from easy (nearby) to full workspace.
+CURRICULUM_STAGES: Float[Array, " 6"] = jnp.array(
+    [0.2, 0.35, 0.5, 0.65, 0.8, 0.9],
+)
+
+
+class CurriculumState(eqx.Module):
+    """Curriculum state for progressive target distance scaling.
+
+    Tracks the current curriculum stage and consecutive-success window
+    for deciding when to advance to the next stage. All fields are
+    scalar JAX arrays for JIT/vmap compatibility.
+
+    Attributes:
+        stage: Current curriculum stage index (0-based).
+        success_count: Consecutive successful updates in current window.
+        total_count: Total updates evaluated in current window.
+        max_target_fraction: Current max target distance as fraction of
+            arm reach, derived from ``CURRICULUM_STAGES[stage]``.
+    """
+
+    stage: Int[Array, ""]
+    success_count: Int[Array, ""]
+    total_count: Int[Array, ""]
+    max_target_fraction: Float[Array, ""]
+
+
+def init_curriculum() -> CurriculumState:
+    """Initialize curriculum state at stage 0 (fraction 0.2)."""
+    return CurriculumState(
+        stage=jnp.array(0, dtype=jnp.int32),
+        success_count=jnp.array(0, dtype=jnp.int32),
+        total_count=jnp.array(0, dtype=jnp.int32),
+        max_target_fraction=CURRICULUM_STAGES[0],
+    )
+
+
+def update_curriculum(
+    state: CurriculumState,
+    success_rate: Float[Array, ""],
+    window_size: int = 5,
+) -> CurriculumState:
+    """Update curriculum state after a PPO update.
+
+    Advances to the next stage when ``window_size`` consecutive updates
+    achieve ``success_rate >= 0.85``. A single failure resets the
+    consecutive counter. All logic uses ``jnp.where`` for JIT compatibility.
+
+    Args:
+        state: Current curriculum state.
+        success_rate: Success rate from the latest PPO update (scalar).
+        window_size: Number of consecutive successful updates required
+            to advance. Default: 5.
+
+    Returns:
+        Updated curriculum state.
+    """
+    # Bug: 2055433 -- Consecutive success tracking for stage advancement.
+    is_success = success_rate >= 0.85
+    new_success_count = jnp.where(
+        is_success,
+        state.success_count + 1,
+        jnp.array(0, dtype=jnp.int32),
+    )
+    new_total_count = state.total_count + 1
+
+    # Advance stage when we hit the required consecutive successes
+    should_advance = new_success_count >= window_size
+    max_stage = CURRICULUM_STAGES.shape[0] - 1
+    new_stage = jnp.where(
+        should_advance,
+        jnp.minimum(state.stage + 1, max_stage),
+        state.stage,
+    )
+
+    # Reset counters on stage advancement
+    new_success_count = jnp.where(
+        should_advance,
+        jnp.array(0, dtype=jnp.int32),
+        new_success_count,
+    )
+    new_total_count = jnp.where(
+        should_advance,
+        jnp.array(0, dtype=jnp.int32),
+        new_total_count,
+    )
+
+    new_fraction = CURRICULUM_STAGES[new_stage]
+
+    return CurriculumState(
+        stage=new_stage,
+        success_count=new_success_count,
+        total_count=new_total_count,
+        max_target_fraction=new_fraction,
+    )
+
+
+class TaskSpec(NamedTuple):
+    """Task specification for a single episode.
+
+    Deprecated: use ``TaskParams`` with ``target_at_t`` for lazy evaluation.
+
+    Attributes:
+        task_type: Integer task type (0=reach, 1=hold, 2=track, 3=swing).
+        target_pos: Target end-effector positions, shape ``(T, 2)``.
+        target_vel: Target end-effector velocities, shape ``(T, 2)``.
+        perturbation: External perturbation forces, shape ``(T, 2)``.
+    """
+
+    task_type: int
+    target_pos: Float[Array, "T 2"]
+    target_vel: Float[Array, "T 2"]
+    perturbation: Float[Array, "T 2"]
+
+
+@jax.tree_util.register_pytree_node_class
+class TaskParams(NamedTuple):
+    """Compact task parameters for lazy target generation.
+
+    Attributes:
+        task_type: Integer task type (0=reach, 1=hold, 2=track, 3=swing).
+        start_pos: Starting position, shape ``(2,)``.
+        end_pos: Target endpoint, shape ``(2,)``.
+        perturb_time_idx: Timestep index for perturbation onset.
+        perturb_force: Perturbation force vector, shape ``(2,)``.
+        control_points: Catmull-Rom control points, shape ``(6, 2)``.
+        t0: Start time.
+        tf: End time.
+        dt: Timestep.
+        n_steps: Total number of timesteps.
+    """
+
+    task_type: int
+    start_pos: Float[Array, " 2"]
+    end_pos: Float[Array, " 2"]
+    perturb_time_idx: int
+    perturb_force: Float[Array, " 2"]
+    control_points: Float[Array, " 6 2"]
+    t0: Float[Array, ""]
+    tf: Float[Array, ""]
+    dt: Float[Array, ""]
+    n_steps: int
+
+    def tree_flatten(self):
+        children = (
+            self.task_type,
+            self.start_pos,
+            self.end_pos,
+            self.perturb_time_idx,
+            self.perturb_force,
+            self.control_points,
+            self.t0,
+            self.tf,
+            self.dt,
+        )
+        aux_data = {"n_steps": self.n_steps}
+        return children, aux_data
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        (
+            task_type,
+            start_pos,
+            end_pos,
+            perturb_time_idx,
+            perturb_force,
+            control_points,
+            t0,
+            tf,
+            dt,
+        ) = children
+        return cls(
+            task_type=task_type,
+            start_pos=start_pos,
+            end_pos=end_pos,
+            perturb_time_idx=perturb_time_idx,
+            perturb_force=perturb_force,
+            control_points=control_points,
+            t0=t0,
+            tf=tf,
+            dt=dt,
+            n_steps=aux_data["n_steps"],
+        )
+
+
+def reach_task_params(
+    start_pos: Float[Array, " 2"],
+    end_pos: Float[Array, " 2"],
+    n_steps: int,
+    dt: float | Float[Array, ""],
+) -> TaskParams:
+    """Create compact deterministic parameters for a minimum-jerk reach.
+
+    This is the compact counterpart to :func:`reach_task`: it stores only the
+    endpoint record and timing scalars. Dense ``(T, 2)`` target arrays can be
+    reconstructed at execution time via :func:`target_at_t` or
+    :func:`reconstruct_trajectory`.
+    """
+    dt_arr = jnp.asarray(dt)
+    return TaskParams(
+        task_type=TASK_REACH,
+        start_pos=jnp.asarray(start_pos),
+        end_pos=jnp.asarray(end_pos),
+        perturb_time_idx=jnp.array(0, dtype=jnp.int32),
+        perturb_force=jnp.zeros((2,)),
+        control_points=jnp.zeros((6, 2)),
+        t0=jnp.asarray(0.0),
+        tf=dt_arr * (n_steps - 1),
+        dt=dt_arr,
+        n_steps=n_steps,
+    )
+
+
+def _fk_planar(
+    joint_angles: Float[Array, " n_joints"],
+    segment_lengths: Float[Array, " n_joints"],
+) -> Float[Array, " 2"]:
+    """Forward kinematics for a planar serial arm.
+
+    Computes the end-effector position from joint angles and segment lengths.
+    Works with any number of joints (not hardcoded to a specific topology).
+
+    Args:
+        joint_angles: Angle of each joint, shape ``(n_joints,)``.
+        segment_lengths: Length of each segment, shape ``(n_joints,)``.
+
+    Returns:
+        End-effector position in Cartesian space, shape ``(2,)``.
+    """
+    cumulative_angles = jnp.cumsum(joint_angles)
+    x = jnp.sum(segment_lengths * jnp.cos(cumulative_angles))
+    y = jnp.sum(segment_lengths * jnp.sin(cumulative_angles))
+    return jnp.array([x, y])
+
+
+def _sample_reachable_pos(
+    key: PRNGKeyArray,
+    segment_lengths: Float[Array, " n_joints"],
+) -> Float[Array, " 2"]:
+    """Sample a reachable effector position via random joint angles + FK.
+
+    Joint angles are sampled in ``[0.1*pi, 0.9*pi]`` to avoid workspace
+    boundary extremes (fully extended or fully folded configurations).
+    The resulting position is reachable by construction since it comes
+    from valid joint angles through forward kinematics.
+
+    Args:
+        key: PRNG key.
+        segment_lengths: Segment lengths, shape ``(n_joints,)``.
+
+    Returns:
+        Reachable Cartesian position, shape ``(2,)``.
+    """
+    n_joints = segment_lengths.shape[0]
+    angles = jax.random.uniform(
+        key,
+        shape=(n_joints,),
+        minval=0.1 * jnp.pi,
+        maxval=0.9 * jnp.pi,
+    )
+    return _fk_planar(angles, segment_lengths)
+
+
+def _finite_diff_velocity(
+    positions: Float[Array, "T 2"],
+    dt: Float[Array, ""],
+) -> Float[Array, "T 2"]:
+    """Finite-difference velocity with boundary clamping."""
+    n_steps = positions.shape[0]
+    idx = jnp.arange(n_steps)
+    idx_minus = jnp.clip(idx - 1, 0, n_steps - 1)
+    idx_plus = jnp.clip(idx + 1, 0, n_steps - 1)
+    dt_safe = jnp.maximum(dt, 1e-6)
+    return (positions[idx_plus] - positions[idx_minus]) / (2.0 * dt_safe)
+
+
+def _velocity_from_positions(positions: Float[Array, "T 2"], dt: float) -> Float[Array, "T 2"]:
+    """Finite-difference velocity from position trajectory."""
+    return _finite_diff_velocity(positions, jnp.asarray(dt))
+
+
+def _vel_from_pos(
+    positions: Float[Array, "T 2"],
+    dt: Float[Array, ""],
+) -> Float[Array, "T 2"]:
+    """Finite-difference velocity. dt may be a JAX tracer (safe in JIT)."""
+    return _finite_diff_velocity(positions, dt)
+
+
+def _reach_pos_at_t(params: TaskParams, t_index: Array) -> Float[Array, " 2"]:
+    t0 = jnp.asarray(params.t0)
+    tf = jnp.asarray(params.tf)
+    dt = jnp.asarray(params.dt)
+    t = t0 + dt * t_index
+    duration = jnp.maximum(tf - t0, 1e-6)
+    s = jnp.clip((t - t0) / duration, 0.0, 1.0)
+    profile = 10 * s**3 - 15 * s**4 + 6 * s**5
+    return params.start_pos + (params.end_pos - params.start_pos) * profile
+
+
+def _hold_pos_at_t(params: TaskParams, _: Array) -> Float[Array, " 2"]:
+    return params.end_pos
+
+
+def _track_pos_at_t(params: TaskParams, t_index: Array) -> Float[Array, " 2"]:
+    points = jnp.concatenate(
+        [params.control_points[:1], params.control_points, params.control_points[-1:]],
+        axis=0,
+    )
+    n_seg = points.shape[0] - 3
+    n_steps = jnp.asarray(params.n_steps)
+    segment_len = jnp.maximum(n_steps // n_seg, 1)
+    seg = jnp.minimum(t_index // segment_len, n_seg - 1)
+    seg_start = seg * segment_len
+    seg_end = jnp.where(seg < n_seg - 1, (seg + 1) * segment_len, n_steps)
+    seg_len = jnp.maximum(seg_end - seg_start, 1)
+    local_idx = t_index - seg_start
+    t = local_idx / jnp.maximum(seg_len - 1, 1)
+    return _catmull_rom(
+        points[seg],
+        points[seg + 1],
+        points[seg + 2],
+        points[seg + 3],
+        t,
+    )
+
+
+def _swing_pos_at_t(params: TaskParams, t_index: Array) -> Float[Array, " 2"]:
+    t0 = jnp.asarray(params.t0)
+    dt = jnp.asarray(params.dt)
+    t = t0 + dt * t_index
+    # Derive swing radius from start_pos (set to [radius, 0] at sampling time)
+    # so that FK-aware sampling propagates through to trajectory reconstruction.
+    radius = jnp.sqrt(params.start_pos[0] ** 2 + params.start_pos[1] ** 2)
+    radius = jnp.maximum(radius, 1e-6)  # Avoid degenerate zero radius
+    angle = 0.6 * jnp.sin(2 * jnp.pi * 0.5 * t)
+    return jnp.stack([radius * jnp.cos(angle), radius * jnp.sin(angle)], axis=-1)
+
+
+def _target_pos_at_t(params: TaskParams, t_index: Array) -> Float[Array, " 2"]:
+    def reach_fn(args):
+        p, t = args
+        return _reach_pos_at_t(p, t)
+
+    def hold_fn(args):
+        p, t = args
+        return _hold_pos_at_t(p, t)
+
+    def track_fn(args):
+        p, t = args
+        return _track_pos_at_t(p, t)
+
+    def swing_fn(args):
+        p, t = args
+        return _swing_pos_at_t(p, t)
+
+    task_type = jnp.asarray(params.task_type)
+    return jax.lax.switch(
+        task_type,
+        (reach_fn, hold_fn, track_fn, swing_fn),
+        (params, t_index),
+    )
+
+
+def target_at_t(
+    params: TaskParams, t_index: Array
+) -> tuple[Float[Array, " 2"], Float[Array, " 2"]]:
+    """Return target position/velocity at a given timestep."""
+    t_index = jnp.asarray(t_index)
+    n_steps = jnp.asarray(params.n_steps)
+    t_minus = jnp.clip(t_index - 1, 0, n_steps - 1)
+    t_plus = jnp.clip(t_index + 1, 0, n_steps - 1)
+    pos = _target_pos_at_t(params, t_index)
+    pos_minus = _target_pos_at_t(params, t_minus)
+    pos_plus = _target_pos_at_t(params, t_plus)
+    dt_safe = jnp.maximum(jnp.asarray(params.dt), 1e-6)
+    vel = (pos_plus - pos_minus) / (2.0 * dt_safe)
+    return pos, vel
+
+
+def sample_task_params_jax(
+    key: PRNGKeyArray,
+    task_type: int | Array,
+    n_steps: int,
+    dt: float,
+    *,
+    segment_lengths: Float[Array, " n_joints"],
+    use_fk: bool,
+    reach_radius: float = 0.5,
+    track_radius: float = 0.35,
+    max_target_distance: float | Float[Array, ""],
+    use_curriculum: bool,
+    single_task: bool,
+) -> TaskParams:
+    """Sample compact task parameters in a fully JAX-traceable way.
+
+    When ``use_fk`` is True, targets are sampled in joint space and mapped to
+    Cartesian space via forward kinematics. This guarantees all targets are
+    physically reachable by the arm. When ``use_fk`` is False, falls back to
+    uniform Cartesian sampling within ``reach_radius`` (legacy behavior, no
+    reachability guarantee).
+
+    When ``use_curriculum`` is True, the REACH target's distance from the
+    start position is clamped to ``max_target_distance``. This supports
+    curriculum learning where the agent first learns nearby reaches before
+    progressing to the full workspace. Other task types are unaffected.
+
+    Args:
+        key: PRNG key.
+        task_type: Fixed task type (0-3) used when ``single_task`` is True.
+            May be a traced integer (safe inside vmap).
+        n_steps: Number of timesteps per episode.
+        dt: Physics timestep in seconds.
+        segment_lengths: Segment lengths for FK-based reachable sampling.
+            Shape ``(n_joints,)``.
+        use_fk: Whether to use FK-based reachable sampling.
+        reach_radius: Workspace radius for legacy Cartesian sampling.
+        track_radius: Workspace radius for legacy tracking control points.
+        max_target_distance: Maximum distance from start to reach target.
+            Bug: 2055433 -- curriculum learning support.
+        use_curriculum: Whether to clamp the reach target distance.
+        single_task: Whether to use a fixed task type instead of sampling.
+
+    Returns:
+        Sampled TaskParams.
+    """
+    use_fk = jnp.asarray(use_fk)
+    use_curriculum = jnp.asarray(use_curriculum)
+    single_task = jnp.asarray(single_task)
+
+    key, type_key, k1, k2, k3 = jax.random.split(key, 5)
+    sampled_task_type = jax.random.randint(type_key, (), 0, 4)
+    fixed_task_type = jnp.asarray(task_type)
+    task_type = jnp.where(single_task, fixed_task_type, sampled_task_type)
+
+    t0 = jnp.asarray(0.0)
+    tf = jnp.asarray(dt) * (n_steps - 1)
+    dt_arr = jnp.asarray(dt)
+
+    # --- Reach ---
+    rk1, rk2 = jax.random.split(k1)
+    reach_start_fk = _sample_reachable_pos(rk1, segment_lengths)
+    reach_end_fk = _sample_reachable_pos(rk2, segment_lengths)
+    reach_start_raw = jax.random.uniform(
+        rk1,
+        (2,),
+        minval=-reach_radius * 0.5,
+        maxval=reach_radius * 0.5,
+    )
+    reach_end_raw = jax.random.uniform(
+        rk2,
+        (2,),
+        minval=-reach_radius,
+        maxval=reach_radius,
+    )
+    reach_start = jnp.where(use_fk, reach_start_fk, reach_start_raw)
+    reach_end_raw = jnp.where(use_fk, reach_end_fk, reach_end_raw)
+    # Bug: 2055433 -- Clamp reach target distance for curriculum learning.
+    # Scale the direction vector from start to end so the distance does not
+    # exceed max_target_distance, preserving the sampled direction.
+    direction = reach_end_raw - reach_start
+    dist = jnp.sqrt(jnp.sum(direction**2))
+    safe_dist = jnp.maximum(dist, 1e-8)
+    scale = jnp.minimum(jnp.asarray(max_target_distance) / safe_dist, 1.0)
+    reach_end_clipped = reach_start + direction * scale
+    reach_end = jnp.where(use_curriculum, reach_end_clipped, reach_end_raw)
+
+    reach_cp = jnp.zeros((6, 2))
+    reach_perturb_idx = jnp.array(0, dtype=jnp.int32)
+    reach_perturb = jnp.zeros((2,))
+
+    # --- Hold ---
+    # Bug: 67e2e5e -- Randomize perturbation direction, magnitude, and timing
+    key, hold_fk_key, hold_raw_key, hk1, hk2, hk3 = jax.random.split(key, 6)
+    hold_fk = _sample_reachable_pos(hold_fk_key, segment_lengths)
+    hold_raw = jax.random.uniform(
+        hold_raw_key,
+        (2,),
+        minval=-reach_radius * 0.5,
+        maxval=reach_radius * 0.5,
+    )
+    hold_pos = jnp.where(use_fk, hold_fk, hold_raw)
+    hold_cp = jnp.zeros((6, 2))
+    # Random perturbation direction (uniform angle)
+    perturb_angle = jax.random.uniform(hk1, shape=(), minval=0.0, maxval=2 * jnp.pi)
+    # Random magnitude (normal, clipped to avoid degenerate cases)
+    perturb_mag = jnp.clip(
+        jax.random.normal(hk2, shape=()) * 1.0 + 3.0,
+        0.5,
+        6.0,
+    )
+    hold_perturb = perturb_mag * jnp.array(
+        [jnp.cos(perturb_angle), jnp.sin(perturb_angle)],
+    )
+    # Jittered timing (+-10% of episode around midpoint)
+    hold_perturb_idx = jax.random.randint(
+        hk3,
+        shape=(),
+        minval=int(0.4 * n_steps),
+        maxval=int(0.6 * n_steps) + 1,
+    ).astype(jnp.int32)
+
+    # --- Track ---
+    n_pts = 6
+    k3a, k3b = jax.random.split(k3)
+    # Sample each control point as a reachable position via FK
+    cp_keys = jax.random.split(k3a, n_pts)
+    track_cp_fk = jax.vmap(_sample_reachable_pos, in_axes=(0, None))(
+        cp_keys,
+        segment_lengths,
+    )
+    angles = jax.random.uniform(k3a, (n_pts,), minval=0.0, maxval=2 * jnp.pi)
+    radii = track_radius * (0.6 + 0.4 * jax.random.uniform(k3b, (n_pts,)))
+    track_cp_raw = jnp.stack(
+        [radii * jnp.cos(angles), radii * jnp.sin(angles)],
+        axis=-1,
+    )
+    track_cp = jnp.where(use_fk, track_cp_fk, track_cp_raw)
+    track_perturb_idx = jnp.array(0, dtype=jnp.int32)
+    track_perturb = jnp.zeros((2,))
+
+    # --- Swing ---
+    # When FK is available, derive swing radius from arm reach instead of
+    # using a hardcoded 0.45. Use ~60% of max reach for the oscillation
+    # center, keeping the full swing arc within the reachable workspace.
+    swing_radius_fk = 0.6 * jnp.sum(segment_lengths)
+    swing_radius_raw = jnp.asarray(0.45)
+    swing_radius = jnp.where(use_fk, swing_radius_fk, swing_radius_raw)
+    swing_start = jnp.array([swing_radius, 0.0])
+    swing_t = tf
+    swing_angle = 0.6 * jnp.sin(2 * jnp.pi * 0.5 * swing_t)
+    swing_end = jnp.stack(
+        [swing_radius * jnp.cos(swing_angle), swing_radius * jnp.sin(swing_angle)],
+        axis=-1,
+    )
+    swing_cp = jnp.zeros((6, 2))
+    swing_perturb_idx = jnp.array(0, dtype=jnp.int32)
+    swing_perturb = jnp.zeros((2,))
+
+    all_start = jnp.stack([reach_start, hold_pos, track_cp[0], swing_start])
+    all_end = jnp.stack([reach_end, hold_pos, track_cp[-1], swing_end])
+    all_cp = jnp.stack([reach_cp, hold_cp, track_cp, swing_cp])
+    all_perturb_idx = jnp.stack(
+        [reach_perturb_idx, hold_perturb_idx, track_perturb_idx, swing_perturb_idx]
+    )
+    all_perturb = jnp.stack([reach_perturb, hold_perturb, track_perturb, swing_perturb])
+
+    return TaskParams(
+        task_type=task_type,
+        start_pos=all_start[task_type],
+        end_pos=all_end[task_type],
+        perturb_time_idx=all_perturb_idx[task_type],
+        perturb_force=all_perturb[task_type],
+        control_points=all_cp[task_type],
+        t0=t0,
+        tf=tf,
+        dt=dt_arr,
+        n_steps=n_steps,
+    )
+
+
+def reconstruct_trajectory(
+    params: TaskParams,
+) -> tuple[Float[Array, "T 2"], Float[Array, "T 2"]]:
+    """Reconstruct full target position/velocity arrays from params."""
+    n_steps = int(params.n_steps)
+    t_idx = jnp.arange(n_steps)
+    return jax.vmap(lambda t: target_at_t(params, t))(t_idx)
+
+
+def reach_task(
+    timestamps: Float[Array, " T"],
+    start: Float[Array, " 2"],
+    target: Float[Array, " 2"],
+) -> TaskSpec:
+    """Minimum-jerk reach from start to target.
+
+    Args:
+        timestamps: Time points, shape ``(T,)``.
+        start: Starting position, shape ``(2,)``.
+        target: Target position, shape ``(2,)``.
+
+    Returns:
+        TaskSpec with minimum-jerk position profile.
+    """
+    t0 = timestamps[0]
+    tf = timestamps[-1]
+    duration = tf - t0
+    s = (timestamps - t0) / jnp.maximum(duration, 1e-6)
+    s = jnp.clip(s, 0.0, 1.0)
+    profile = 10 * s**3 - 15 * s**4 + 6 * s**5
+    target_pos = start + (target - start) * profile[:, None]
+    dt = float(timestamps[1] - timestamps[0])
+    target_vel = _velocity_from_positions(target_pos, dt)
+    perturb = jnp.zeros_like(target_pos)
+    return TaskSpec(TASK_REACH, target_pos, target_vel, perturb)
+
+
+def hold_task(
+    timestamps: Float[Array, " T"],
+    hold_pos: Float[Array, " 2"],
+    *,
+    perturb_time: float | None = None,
+    perturb_force: Float[Array, " 2"] | None = None,
+) -> TaskSpec:
+    """Hold a fixed target with an optional external perturbation.
+
+    Args:
+        timestamps: Time points, shape ``(T,)``.
+        hold_pos: Position to hold, shape ``(2,)``.
+        perturb_time: Time at which to apply perturbation (default: midpoint).
+        perturb_force: Perturbation force vector (default: ``[3.0, 0.0]``).
+
+    Returns:
+        TaskSpec with static target and impulse perturbation.
+    """
+    target_pos = jnp.tile(hold_pos[None, :], (timestamps.shape[0], 1))
+    target_vel = jnp.zeros_like(target_pos)
+    perturb = jnp.zeros_like(target_pos)
+    if perturb_time is None:
+        perturb_time = float(timestamps[len(timestamps) // 2])
+    if perturb_force is None:
+        perturb_force = jnp.array([3.0, 0.0])
+    idx = int(jnp.argmin(jnp.abs(timestamps - perturb_time)))
+    perturb = perturb.at[idx].set(perturb_force)
+    return TaskSpec(TASK_HOLD, target_pos, target_vel, perturb)
+
+
+def _catmull_rom(p0: Array, p1: Array, p2: Array, p3: Array, t: Array) -> Array:
+    """Catmull-Rom spline interpolation."""
+    t2 = t * t
+    t3 = t2 * t
+    return 0.5 * (
+        (2 * p1)
+        + (-p0 + p2) * t
+        + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
+        + (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+    )
+
+
+def tracking_task(
+    timestamps: Float[Array, " T"],
+    key: PRNGKeyArray,
+    *,
+    radius: float = 0.35,
+) -> TaskSpec:
+    """Spline-like tracking task using Catmull-Rom interpolation.
+
+    Args:
+        timestamps: Time points, shape ``(T,)``.
+        key: PRNG key for random control point generation.
+        radius: Approximate workspace radius for control points.
+
+    Returns:
+        TaskSpec with smooth spline trajectory.
+    """
+    n_points = 6
+    key_angles, key_radii = jax.random.split(key)
+    angles = jax.random.uniform(key_angles, (n_points,), minval=0.0, maxval=2 * jnp.pi)
+    radii = radius * (0.6 + 0.4 * jax.random.uniform(key_radii, (n_points,)))
+    points = jnp.stack([radii * jnp.cos(angles), radii * jnp.sin(angles)], axis=-1)
+    points = jnp.concatenate([points[:1], points, points[-1:]], axis=0)
+
+    n_segments = points.shape[0] - 3
+    segment_len = timestamps.shape[0] // n_segments
+
+    targets = []
+    for seg in range(n_segments):
+        start = seg * segment_len
+        end = (seg + 1) * segment_len if seg < n_segments - 1 else timestamps.shape[0]
+        t = jnp.linspace(0.0, 1.0, end - start)
+        targets.append(
+            _catmull_rom(
+                points[seg],
+                points[seg + 1],
+                points[seg + 2],
+                points[seg + 3],
+                t[:, None],
+            )
+        )
+    target_pos = jnp.concatenate(targets, axis=0)
+    dt = float(timestamps[1] - timestamps[0])
+    target_vel = _velocity_from_positions(target_pos, dt)
+    perturb = jnp.zeros_like(target_pos)
+    return TaskSpec(TASK_TRACK, target_pos, target_vel, perturb)
+
+
+def swing_task(
+    timestamps: Float[Array, " T"],
+    *,
+    radius: float = 0.45,
+    amplitude: float = 0.6,
+    frequency: float = 0.5,
+) -> TaskSpec:
+    """Swing target along an arc with sinusoidal phase.
+
+    Args:
+        timestamps: Time points, shape ``(T,)``.
+        radius: Distance from origin to arc center.
+        amplitude: Angular amplitude of the swing.
+        frequency: Oscillation frequency in Hz.
+
+    Returns:
+        TaskSpec with sinusoidal arc trajectory.
+    """
+    t = timestamps - timestamps[0]
+    angle = amplitude * jnp.sin(2 * jnp.pi * frequency * t)
+    target_pos = jnp.stack([radius * jnp.cos(angle), radius * jnp.sin(angle)], axis=-1)
+    dt = float(timestamps[1] - timestamps[0])
+    target_vel = _velocity_from_positions(target_pos, dt)
+    perturb = jnp.zeros_like(target_pos)
+    return TaskSpec(TASK_SWING, target_pos, target_vel, perturb)
+
+
+def sample_task(
+    timestamps: Float[Array, " T"],
+    key: PRNGKeyArray,
+    *,
+    task_type: int | None = None,
+    reach_radius: float = 0.5,
+) -> TaskSpec:
+    """Sample one of the four task types uniformly.
+
+    This version uses Python control flow and is NOT safe inside
+    ``jax.jit`` / ``jax.vmap``. Use ``sample_task_params_jax`` for traced contexts.
+
+    Args:
+        timestamps: Time points, shape ``(T,)``.
+        key: PRNG key.
+        task_type: Force a specific task type (0-3), or None for random.
+        reach_radius: Workspace radius for reach/hold tasks.
+
+    Returns:
+        Sampled TaskSpec.
+    """
+    if task_type is None:
+        key, subkey = jax.random.split(key)
+        task_type = int(jax.random.randint(subkey, (), 0, 4))
+
+    if task_type == TASK_REACH:
+        key_start, key_target = jax.random.split(key)
+        start = jax.random.uniform(
+            key_start,
+            (2,),
+            minval=-reach_radius * 0.5,
+            maxval=reach_radius * 0.5,
+        )
+        target = jax.random.uniform(
+            key_target,
+            (2,),
+            minval=-reach_radius,
+            maxval=reach_radius,
+        )
+        return reach_task(timestamps, start, target)
+    if task_type == TASK_HOLD:
+        hold_pos = jax.random.uniform(
+            key,
+            (2,),
+            minval=-reach_radius * 0.5,
+            maxval=reach_radius * 0.5,
+        )
+        return hold_task(timestamps, hold_pos)
+    if task_type == TASK_TRACK:
+        return tracking_task(timestamps, key)
+    return swing_task(timestamps)

@@ -1,0 +1,1557 @@
+"""Local subprocess orchestration driver."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import secrets
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
+from functools import cache
+from pathlib import Path
+from typing import Any
+
+from feedbax.contracts.strict_json import (
+    StrictJsonError,
+    strict_json_loads,
+    strict_model_validate_json,
+)
+
+from feedbax.contracts.evaluation_lifecycle import (
+    EVALUATION_COLLECTION_OUTPUTS,
+    EvaluationMatrixOrderedUnionEvidence,
+)
+from feedbax.orchestration.bundle import (
+    ResolvedAssemblyInput,
+    RunBundle,
+    RunRowSpec,
+    environment_declaration_identity_projection,
+)
+from feedbax.orchestration.conformance import (
+    RunConformanceCertificate,
+    assert_certificate_allows_completed_registration,
+)
+from feedbax.orchestration.drivers.base import DriverRowProbe
+from feedbax.orchestration.drivers.capabilities import (
+    AcquisitionSemantics,
+    AuthorizationSemantics,
+    CustodySemantics,
+    DriverCapabilityEnvelope,
+    DriverCapabilityFacts,
+    DriverConstructionContext,
+    DriverHook,
+    DriverRegistration,
+    DriverVenue,
+    EnvironmentSemantics,
+    MonitoringSemantics,
+    RecoverySemantics,
+    RealizedDriverCapabilities,
+    ResourceSemantics,
+    RetrySemantics,
+    SpendSemantics,
+    TeardownSemantics,
+)
+from feedbax.orchestration.drivers.native_execution import (
+    native_resume_checkpoint_source,
+    seed_authenticated_checkpoint,
+)
+from feedbax.orchestration.executor_family import executor_family_adapter
+from feedbax.orchestration.input_materialization import (
+    InputMaterializationError,
+    InputProviderRootBinding,
+    acquire_content_projection_lease,
+    compile_content_input_projection,
+    materialize_bundle_inputs,
+    materialize_content_input_projection,
+    preflight_bundle_input_bindings,
+)
+from feedbax.orchestration.repo_snapshot import git_common_dir
+from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
+from feedbax.orchestration.state import PreflightCheckEntry, ProcessIdentity, RunSetState
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.training import publish_directory_no_replace
+
+
+class LocalDriverError(RuntimeError):
+    """Raised when the local driver cannot complete a requested action."""
+
+
+JAX_COMPILATION_CACHE_DIR_ENV = "JAX_COMPILATION_CACHE_DIR"
+FEEDBAX_JAX_COMPILATION_CACHE_DIR_ENV = "FEEDBAX_JAX_COMPILATION_CACHE_DIR"
+FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV = "FEEDBAX_DISABLE_JAX_COMPILATION_CACHE"
+FEEDBAX_PROCESS_IDENTITY_ENV = "FEEDBAX_PROCESS_IDENTITY"
+
+_LOCAL_PROCESS_LAUNCH_SCRIPT = r"""
+import json
+import os
+import secrets
+import sys
+
+identity_path, *command = sys.argv[1:]
+payload = {
+    "schema_id": "feedbax.orchestration.process_identity",
+    "schema_version": "feedbax.orchestration.process_identity.v1",
+    "mechanism": "environment-token-v1",
+    "run_set_id": os.environ["FEEDBAX_RUN_SET_ID"],
+    "row_id": os.environ["FEEDBAX_ROW_ID"],
+    "launch_token": os.environ["FEEDBAX_PROCESS_IDENTITY"],
+    "pid": os.getpid(),
+    "process_group_id": os.getpgrp(),
+}
+data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+temporary_path = f"{identity_path}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
+descriptor = os.open(
+    temporary_path,
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+    0o600,
+)
+try:
+    try:
+        while data:
+            written = os.write(descriptor, data)
+            if written <= 0:
+                raise RuntimeError("process identity acknowledgement write made no progress")
+            data = data[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.link(temporary_path, identity_path, follow_symlinks=False)
+    directory = os.open(os.path.dirname(identity_path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    try:
+        os.unlink(temporary_path)
+    except FileNotFoundError:
+        pass
+os.execvpe(command[0], command, os.environ)
+"""
+
+
+def resolve_jax_compilation_cache_dir() -> Path | None:
+    """Resolve the persistent JAX compilation cache directory for local rows.
+
+    The RunPod driver exports `JAX_COMPILATION_CACHE_DIR` to a persistent volume and the
+    test suite configures the same cache, so only locally launched rows were paying full
+    XLA compilation on every invocation. The locally run end-to-end smoke that precedes
+    remote resource acquisition is exactly that path, so it paid the compile every time.
+
+    Resolution follows the precedent already established for the test cache and the
+    sealed repo-snapshot cache: an explicit override first, then the Git common directory
+    of the running Feedbax checkout, which keeps sibling checkouts apart while letting
+    worktrees of one checkout share compiled artifacts. When Feedbax is not installed
+    from a Git checkout there is no common directory, so the fall-back is a
+    per-installation namespace under the user cache directory.
+
+    Returns:
+        The directory to export as `JAX_COMPILATION_CACHE_DIR`, or `None` when
+        `FEEDBAX_DISABLE_JAX_COMPILATION_CACHE=1` disables the persistent cache.
+    """
+    if os.environ.get(FEEDBAX_DISABLE_JAX_COMPILATION_CACHE_ENV) == "1":
+        return None
+    override = os.environ.get(FEEDBAX_JAX_COMPILATION_CACHE_DIR_ENV) or os.environ.get(
+        JAX_COMPILATION_CACHE_DIR_ENV
+    )
+    if override:
+        return Path(override).expanduser()
+    return _default_jax_compilation_cache_dir()
+
+
+@cache
+def _default_jax_compilation_cache_dir() -> Path:
+    """Return the checkout-scoped default cache directory, resolved once per process.
+
+    Locating the Git common directory costs a subprocess, and a run set launches many
+    rows, so the answer is memoized: it cannot change while the process is alive.
+    """
+    package_root = Path(__file__).resolve().parents[3]
+    common_dir = git_common_dir(package_root)
+    if common_dir is not None:
+        return common_dir / "feedbax_jax_compilation_cache"
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME") or "~/.cache").expanduser()
+    namespace = hashlib.sha256(os.fsencode(package_root)).hexdigest()[:16]
+    return cache_home / "feedbax" / "jax-compilation" / namespace
+
+
+_DEPENDENCY_INVENTORY_SCRIPT = """
+import importlib.metadata
+import json
+import platform
+import sys
+
+inventory = []
+for distribution in importlib.metadata.distributions():
+    name = distribution.metadata["Name"]
+    version = distribution.version
+    if not name or not version:
+        raise RuntimeError("installed distribution lacks required name or version metadata")
+    direct_url_text = distribution.read_text("direct_url.json")
+    direct_url = json.loads(direct_url_text) if direct_url_text is not None else None
+    if direct_url is not None and not isinstance(direct_url, dict):
+        raise RuntimeError(f"distribution {name!r} has invalid direct_url.json")
+    inventory.append({"direct_url": direct_url, "name": name, "version": version})
+payload = {
+    "schema_version": "feedbax.local_dependency_inventory.v1",
+    "interpreter": {
+        "cache_tag": sys.implementation.cache_tag,
+        "executable": sys.executable,
+        "implementation": sys.implementation.name,
+        "version": platform.python_version(),
+    },
+    "distributions": inventory,
+}
+print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+"""
+
+
+class LocalOrchestrationDriver:
+    """Run orchestration rows as local subprocesses under the run-set directory."""
+
+    poll_interval_seconds = 0.05
+
+    capability_envelope = DriverCapabilityEnvelope(
+        driver_name="local",
+        variants={
+            "local-stop": DriverCapabilityFacts(
+                variant_id="local-stop",
+                venue=DriverVenue.LOCAL_PROCESS,
+                resources=ResourceSemantics.LOCAL_PROCESS,
+                spend=SpendSemantics.NONE,
+                authorization=AuthorizationSemantics.NONE,
+                environment=EnvironmentSemantics.LOCAL_INVENTORY,
+                monitoring=MonitoringSemantics.ROW_POLL,
+                recovery=RecoverySemantics.PROCESS_LOCAL,
+                retry=RetrySemantics.NONE,
+                acquisition=AcquisitionSemantics.NONE,
+                teardown=TeardownSemantics.LOCAL_PROCESS_STOP,
+                custody=CustodySemantics.LOCAL_RUN_SET,
+                optional_hooks=frozenset(
+                    {
+                        DriverHook.PREFLIGHT_CHECKS,
+                        DriverHook.CHECKPOINT_STOP,
+                    }
+                ),
+            ),
+            "local-preserved": DriverCapabilityFacts(
+                variant_id="local-preserved",
+                venue=DriverVenue.LOCAL_PROCESS,
+                resources=ResourceSemantics.LOCAL_PROCESS,
+                spend=SpendSemantics.NONE,
+                authorization=AuthorizationSemantics.NONE,
+                environment=EnvironmentSemantics.LOCAL_INVENTORY,
+                monitoring=MonitoringSemantics.ROW_POLL,
+                recovery=RecoverySemantics.PROCESS_LOCAL,
+                retry=RetrySemantics.NONE,
+                acquisition=AcquisitionSemantics.NONE,
+                teardown=TeardownSemantics.RESOURCES_PRESERVED,
+                custody=CustodySemantics.LOCAL_RUN_SET,
+                optional_hooks=frozenset({DriverHook.PREFLIGHT_CHECKS}),
+            ),
+        },
+    )
+    realized_capabilities = capability_envelope.realize("local-stop")
+
+    def __init__(
+        self,
+        *,
+        cwd: Path | str | None = None,
+        python_executable: str | None = None,
+        freeze_lines: Sequence[str] | None = None,
+        input_provider_bindings: Sequence[InputProviderRootBinding] = (),
+        staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
+        content_store_root: Path | str | None = None,
+        content_lease_seconds: int | None = None,
+        update_budget: int | None = None,
+        realized_capabilities: RealizedDriverCapabilities | None = None,
+    ) -> None:
+        self.realized_capabilities = realized_capabilities or type(self).realized_capabilities
+        self.cwd = Path(cwd or Path.cwd())
+        self.python_executable = python_executable or sys.executable
+        self.freeze_lines = tuple(freeze_lines) if freeze_lines is not None else None
+        self.input_provider_bindings = tuple(input_provider_bindings)
+        self.staged_root_bindings = tuple(staged_root_bindings)
+        self.content_store_root = content_store_root
+        if content_lease_seconds is not None and content_lease_seconds <= 0:
+            raise ValueError("content_lease_seconds must be positive")
+        self.content_lease_seconds = content_lease_seconds
+        self.update_budget = update_budget
+        self._processes: dict[str, subprocess.Popen[bytes]] = {}
+
+    def preflight_checks(self, bundle: RunBundle) -> list[PreflightCheckEntry]:
+        """Authenticate every local input binding before PROVISION."""
+        if not bundle.content_bindings and not self.staged_root_bindings:
+            return []
+        failures, observed = preflight_bundle_input_bindings(
+            bundle,
+            provider_bindings=self.input_provider_bindings,
+            staged_root_bindings=self.staged_root_bindings,
+            content_store_root=self.content_store_root,
+        )
+        return [
+            PreflightCheckEntry(
+                name="local-input-bindings",
+                status="fail" if failures else "pass",
+                detail="; ".join(failures) if failures else None,
+                observed=observed or "no-resolved-inputs",
+            )
+        ]
+
+    def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
+        run_set_dir = bundle.run_set_dir
+        for dirname in ("events", "sentinels", "rows", "collected"):
+            (run_set_dir / dirname).mkdir(parents=True, exist_ok=True)
+        return {"driver": "local", "run_set_dir": str(run_set_dir)}
+
+    def realize_env(self, bundle: RunBundle, state: RunSetState) -> str:
+        return compute_environment_fingerprint(
+            bundle,
+            cwd=self.cwd,
+            python_executable=self.python_executable,
+            freeze_lines=self.freeze_lines,
+        )
+
+    def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
+        inputs_dir = bundle.run_set_dir / "inputs"
+        if os.path.lexists(inputs_dir):
+            raise LocalDriverError(f"input destination already exists: {inputs_dir}")
+        attempt_root = (
+            bundle.run_set_dir
+            / ".stage-attempts"
+            / (f"stage-inputs-{state.stage('STAGE_INPUTS').attempts}")
+        )
+        try:
+            content_projection = None
+            if bundle.content_bindings:
+                if self.content_store_root is None:
+                    raise InputMaterializationError(
+                        "content bindings require one explicit canonical store root"
+                    )
+                content_provider = ImmutableArtifactBlobProvider(self.content_store_root)
+                content_projection = compile_content_input_projection(
+                    bundle.content_bindings, content_provider
+                )
+            staged_inputs = materialize_bundle_inputs(
+                bundle,
+                destination_root=attempt_root,
+                provider_bindings=self.input_provider_bindings,
+                staged_root_bindings=self.staged_root_bindings,
+                content_store_root=self.content_store_root,
+            )
+            if content_projection is not None:
+                staged_inputs = (
+                    *staged_inputs,
+                    *materialize_content_input_projection(
+                        content_projection,
+                        content_provider,
+                        destination_root=attempt_root / "inputs" / "content" / "trees",
+                        object_root=bundle.run_set_dir / ".content-cache" / "objects" / "sha256",
+                    ),
+                )
+        except InputMaterializationError as exc:
+            raise LocalDriverError(str(exc)) from exc
+        payloads: list[dict[str, str]] = []
+        if bundle.execution_family == "evaluation-matrix":
+            bundle_target = attempt_root / "inputs" / "run-bundle.json"
+            bundle_target.write_text(
+                bundle.model_dump_json(exclude_none=True),
+                encoding="utf-8",
+            )
+        for row in bundle.rows:
+            if row.launch.payload_routing.get("kind") != "registered-execution-payload":
+                continue
+            source = Path(row.execution.payload.uri or "")
+            if not source.is_file():
+                raise LocalDriverError(
+                    f"registered execution payload is not materialized for row {row.row_id!r}"
+                )
+            if _sha256_file(source) != row.execution.payload.sha256:
+                raise LocalDriverError(
+                    f"registered execution payload digest mismatch for row {row.row_id!r}"
+                )
+            target = attempt_root / "inputs" / f"{row.row_id}.json"
+            shutil.copy2(source, target)
+            payloads.append(
+                {
+                    "row_id": row.row_id,
+                    "source": str(source),
+                    "target": str(inputs_dir / target.name),
+                }
+            )
+        content_provider = (
+            ImmutableArtifactBlobProvider(self.content_store_root)
+            if bundle.content_bindings and self.content_store_root is not None
+            else None
+        )
+        parent_descriptor = os.open(
+            bundle.run_set_dir,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        lease_acquired = False
+        try:
+            if content_projection is not None:
+                if content_provider is None or self.content_lease_seconds is None:
+                    raise LocalDriverError(
+                        "content bindings require canonical store and explicit lease seconds"
+                    )
+                acquire_content_projection_lease(
+                    content_projection,
+                    content_provider,
+                    lease_id=bundle.run_set_id,
+                    owner=f"local:{bundle.run_set_id}",
+                    expires_at=datetime.now(timezone.utc)
+                    + timedelta(seconds=self.content_lease_seconds),
+                )
+                lease_acquired = True
+            source_name = (attempt_root / "inputs").relative_to(bundle.run_set_dir).as_posix()
+            publish_directory_no_replace(
+                parent_descriptor,
+                source_name,
+                "inputs",
+                expected_identity=os.stat(
+                    source_name, dir_fd=parent_descriptor, follow_symlinks=False
+                ),
+            )
+        except Exception:
+            if lease_acquired and content_provider is not None:
+                content_provider.release_lease(bundle.run_set_id)
+            raise
+        finally:
+            os.close(parent_descriptor)
+        return {
+            "input_count": len(staged_inputs),
+            "inputs": [
+                {
+                    "target_role": staged.target_role,
+                    "destination": str(
+                        inputs_dir / staged.destination.relative_to(attempt_root / "inputs")
+                    ),
+                    "files": [asdict(item) for item in staged.files],
+                }
+                for staged in staged_inputs
+            ],
+            "inputs_dir": str(inputs_dir),
+            "payload_count": len(payloads),
+            "payloads": payloads,
+        }
+
+    def launch_row(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> Mapping[str, Any]:
+        paths = _row_paths(bundle, row.row_id)
+        if paths["done"].exists():
+            return {"row_id": row.row_id, "status": "completed"}
+        if paths["failed"].exists():
+            return {"row_id": row.row_id, "status": "failed"}
+        if row.row_id in self._processes and self._processes[row.row_id].poll() is None:
+            pid = self._processes[row.row_id].pid
+            identity, detail = _verified_local_process_identity(paths, bundle, row, pid)
+            if identity is None:
+                return _unverified_local_launch(bundle, row, paths, pid, detail)
+            return {
+                "row_id": row.row_id,
+                "pid": pid,
+                "process_identity": identity.model_dump(mode="json"),
+            }
+        if paths["started"].exists():
+            pid = _read_pid(paths["pid"])
+            if pid and _pid_alive(pid):
+                identity, detail = _verified_local_process_identity(paths, bundle, row, pid)
+                if identity is None:
+                    return _unverified_local_launch(bundle, row, paths, pid, detail)
+                self._processes.pop(row.row_id, None)
+                return {
+                    "row_id": row.row_id,
+                    "pid": pid,
+                    "process_identity": identity.model_dump(mode="json"),
+                    "status": "launched",
+                    "adopted": True,
+                }
+            discrepancy = {
+                "code": "orphaned_launch",
+                "message": (
+                    "orphaned launch: started sentinel present, process dead, no terminal sentinel"
+                ),
+                "pid": pid,
+            }
+            paths["sentinels"].mkdir(parents=True, exist_ok=True)
+            paths["failed"].write_text(discrepancy["message"] + "\n", encoding="utf-8")
+            return {
+                "row_id": row.row_id,
+                "pid": pid,
+                "status": "failed",
+                "detail": discrepancy["message"],
+                "event_discrepancies": [discrepancy],
+            }
+
+        paths["row_dir"].mkdir(parents=True, exist_ok=True)
+        paths["sentinels"].mkdir(parents=True, exist_ok=True)
+        paths["events"].mkdir(parents=True, exist_ok=True)
+        checkpoint_source = native_resume_checkpoint_source(bundle, row)
+        if checkpoint_source is not None:
+            _seed_native_resume_checkpoint_root(
+                bundle.run_set_dir / "inputs" / checkpoint_source.custody.target_role,
+                paths["row_dir"],
+                checkpoint_source,
+            )
+        paths["started"].write_text(str(time.time()), encoding="utf-8")
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "FEEDBAX_RUN_SET_ID": bundle.run_set_id,
+                "FEEDBAX_ROW_ID": row.row_id,
+                "FEEDBAX_RUN_EVENTS_DIR": str(paths["events"]),
+                "FEEDBAX_ENV_FINGERPRINT": state.environment_fingerprint or "",
+                "FEEDBAX_ROW_DIR": str(paths["row_dir"]),
+            }
+        )
+        env["PYTHONPATH"] = _prepend_feedbax_source_root(env.get("PYTHONPATH"))
+        launch_token = secrets.token_hex(32)
+        env[FEEDBAX_PROCESS_IDENTITY_ENV] = launch_token
+        jax_cache_dir = resolve_jax_compilation_cache_dir()
+        if jax_cache_dir is None:
+            env.pop(JAX_COMPILATION_CACHE_DIR_ENV, None)
+        else:
+            jax_cache_dir.mkdir(parents=True, exist_ok=True)
+            env[JAX_COMPILATION_CACHE_DIR_ENV] = str(jax_cache_dir)
+        command, bound_row = executor_family_adapter(row.execution_family).bind_command(
+            _row_command(row, self.python_executable),
+            bundle=bundle,
+            row=row,
+            payload_path=bundle.run_set_dir / "inputs" / f"{row.row_id}.json",
+            collection_root=paths["row_dir"],
+            inputs_root=bundle.run_set_dir / "inputs",
+            repo_root=self.cwd,
+            environment_fingerprint=state.environment_fingerprint or "",
+            update_budget=(
+                self.update_budget if row.execution_family == "native-training" else None
+            ),
+        )
+        stdout = (paths["row_dir"] / "stdout.log").open("ab")
+        stderr = (paths["row_dir"] / "stderr.log").open("ab")
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                _LOCAL_PROCESS_LAUNCH_SCRIPT,
+                str(paths["process_identity"]),
+                *command,
+            ],
+            cwd=self.cwd,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+            start_new_session=True,
+        )
+        stdout.close()
+        stderr.close()
+        self._processes[row.row_id] = process
+        identity = ProcessIdentity(
+            run_set_id=bundle.run_set_id,
+            row_id=row.row_id,
+            pid=process.pid,
+            process_group_id=process.pid,
+            launch_token=launch_token,
+        )
+        paths["pid"].write_text(f"{process.pid}\n", encoding="utf-8")
+        deadline = time.monotonic() + 2.0
+        while not paths["process_identity"].is_file() and process.poll() is None:
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.005)
+        observed, identity_error = _read_local_process_identity(paths["process_identity"])
+        if observed != identity:
+            if process.poll() is None:
+                _terminate_process_group(process.pid, process=process)
+            detail = identity_error or "process identity record does not match launch"
+            paths["failed"].write_text(detail + "\n", encoding="utf-8")
+            return {"row_id": row.row_id, "pid": process.pid, "status": "failed", "detail": detail}
+        return {
+            "row_id": row.row_id,
+            "pid": process.pid,
+            "process_identity": identity.model_dump(mode="json"),
+            "command": command,
+        }
+
+    def probe(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> DriverRowProbe:
+        paths = _row_paths(bundle, row.row_id)
+        process = self._processes.get(row.row_id)
+        if process is not None:
+            returncode = process.poll()
+            if returncode is None:
+                identity, detail = _verified_local_process_identity(paths, bundle, row, process.pid)
+                if identity is None:
+                    try:
+                        returncode = process.wait(timeout=0.05)
+                    except subprocess.TimeoutExpired:
+                        returncode = None
+                    if returncode == 0:
+                        paths["done"].write_text("0\n", encoding="utf-8")
+                        return DriverRowProbe(status="completed", pid=process.pid)
+                    if returncode is not None:
+                        paths["failed"].write_text(f"{returncode}\n", encoding="utf-8")
+                        return DriverRowProbe(
+                            status="failed", pid=process.pid, detail=f"exit={returncode}"
+                        )
+                    return DriverRowProbe(status="failed", pid=process.pid, detail=detail)
+                return DriverRowProbe(status="running", pid=process.pid, process_identity=identity)
+            if returncode == 0:
+                paths["done"].write_text("0\n", encoding="utf-8")
+                return DriverRowProbe(status="completed", pid=process.pid)
+            paths["failed"].write_text(f"{returncode}\n", encoding="utf-8")
+            return DriverRowProbe(status="failed", pid=process.pid, detail=f"exit={returncode}")
+        if paths["done"].exists():
+            return DriverRowProbe(status="completed", pid=_read_pid(paths["pid"]))
+        if paths["failed"].exists():
+            return DriverRowProbe(status="failed", pid=_read_pid(paths["pid"]))
+        if paths["pid"].exists():
+            pid = _read_pid(paths["pid"])
+            if pid and _pid_alive(pid):
+                identity, detail = _verified_local_process_identity(paths, bundle, row, pid)
+                if identity is None:
+                    return DriverRowProbe(status="failed", pid=pid, detail=detail)
+                return DriverRowProbe(status="running", pid=pid, process_identity=identity)
+            return DriverRowProbe(status="failed", pid=pid, detail="pid exited without sentinel")
+        return DriverRowProbe(status="pending")
+
+    def stop_row(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> Mapping[str, Any]:
+        paths = _row_paths(bundle, row.row_id)
+        process = self._processes.get(row.row_id)
+        pid = process.pid if process is not None else _read_pid(paths["pid"])
+        expected = state.rows.get(row.row_id)
+        group_alive = (
+            expected is not None
+            and expected.process_identity is not None
+            and _process_group_alive(expected.process_identity.process_group_id)
+        )
+        if pid and (_pid_alive(pid) or group_alive):
+            identity = _authorize_local_signal(paths, bundle, row, state, pid)
+            _terminate_process_group(identity.process_group_id, process=process)
+        paths["failed"].write_text("stopped\n", encoding="utf-8")
+        return {"row_id": row.row_id, "pid": pid, "status": "stopped"}
+
+    def request_stop_at_checkpoint(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> Mapping[str, Any]:
+        """Ask a local row to stop itself at its next durable checkpoint."""
+        paths = _row_paths(bundle, row.row_id)
+        process = self._processes.get(row.row_id)
+        pid = process.pid if process is not None else _read_pid(paths["pid"])
+        expected = state.rows.get(row.row_id)
+        group_alive = (
+            expected is not None
+            and expected.process_identity is not None
+            and _process_group_alive(expected.process_identity.process_group_id)
+        )
+        if pid and (_pid_alive(pid) or group_alive):
+            identity = _authorize_local_signal(paths, bundle, row, state, pid)
+            try:
+                os.killpg(identity.process_group_id, signal.SIGINT)
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                raise LocalDriverError(
+                    f"could not signal verified local row process group {identity.process_group_id}"
+                ) from exc
+        return {"row_id": row.row_id, "pid": pid, "status": "stop_requested"}
+
+    def collect(
+        self,
+        bundle: RunBundle,
+        row: RunRowSpec,
+        state: RunSetState,
+    ) -> Mapping[str, str]:
+        paths = _row_paths(bundle, row.row_id)
+        dest_dir = bundle.run_set_dir / "collected" / row.row_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        collected: dict[str, str] = {}
+        sources = row.launch.collect or [str(paths["event_log"])]
+        failed_row = state.rows[row.row_id].status in {"failed", "stopped"}
+        for source in sources:
+            source_path = Path(source)
+            if not source_path.is_absolute():
+                source_path = paths["row_dir"] / source_path
+            if bundle.execution_family == "evaluation-matrix" and os.path.abspath(
+                source_path
+            ) == os.path.abspath(paths["row_dir"] / "evaluation"):
+                # Compact products supersede this raw working store. Older
+                # bundles may still declare it, but collection must not create
+                # a second terminal copy.
+                continue
+            if not source_path.exists():
+                continue
+            # A failed executor may leave a large, actively-written raw/cache tree.
+            # Small declared files remain useful failure evidence, but recursive
+            # directory collection is terminal-output publication and is therefore
+            # forbidden until the executor has completed successfully.
+            if failed_row and source_path.is_dir():
+                continue
+            dest = dest_dir / source_path.name
+            if source_path.is_dir():
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.copytree(source_path, dest)
+            else:
+                shutil.copy2(source_path, dest)
+            collected[source_path.name] = str(dest)
+        payload_sha256 = row.launch.metadata.get("payload_sha256")
+        if payload_sha256 and collected:
+            first = Path(next(iter(collected.values())))
+            if first.is_file() and _sha256_file(first) != str(payload_sha256):
+                raise LocalDriverError(f"payload sha256 mismatch for row {row.row_id!r}")
+        return collected
+
+    def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
+        result = dict(self._teardown_resources(bundle, state))
+        result["content_lease"] = self._release_content_lease(bundle)
+        return result
+
+    def _teardown_resources(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
+        if self.realized_capabilities.facts.teardown is TeardownSemantics.RESOURCES_PRESERVED:
+            return {
+                "driver": "local",
+                "teardown": "skipped",
+                "skip_reason": "realized-capability-preserves-resources",
+                "stopped_rows": [],
+            }
+        stopped: list[str] = []
+        for row in bundle.rows:
+            probe = self.probe(bundle, row, state)
+            paths = _row_paths(bundle, row.row_id)
+            pid = probe.pid or _read_pid(paths["pid"])
+            if probe.status == "running" or (pid and _process_group_alive(pid)):
+                self.stop_row(bundle, row, state)
+                stopped.append(row.row_id)
+        failed_row_reclamation = [
+            _reclaim_failed_row_tree(bundle, row)
+            for row in bundle.rows
+            if state.rows[row.row_id].status in {"failed", "stopped"}
+            and state.stage("COLLECT").status in {"completed", "failed"}
+        ]
+        successful_evaluation_reclamation = _reclaim_successful_evaluation_stores(
+            bundle,
+            state,
+        )
+        reclamation: dict[str, Any] = {
+            "status": "not-applicable",
+            "custody_refs": [],
+            "reclaimed_bytes": 0,
+        }
+        return {
+            "driver": "local",
+            "stopped_rows": stopped,
+            "failed_row_reclamation": failed_row_reclamation,
+            "successful_evaluation_reclamation": successful_evaluation_reclamation,
+            "staged_root_reclamation": reclamation,
+        }
+
+    def _release_content_lease(self, bundle: RunBundle) -> str:
+        if not getattr(bundle, "content_bindings", ()):
+            return "not-applicable"
+        if self.content_store_root is None:
+            raise LocalDriverError("canonical content store is unavailable at teardown")
+        ImmutableArtifactBlobProvider(self.content_store_root).release_lease(bundle.run_set_id)
+        return "released"
+
+
+def compute_environment_fingerprint(
+    bundle: RunBundle,
+    *,
+    cwd: Path | str,
+    python_executable: str | None = None,
+    freeze_lines: Sequence[str] | None = None,
+) -> str:
+    """Compute a deterministic local environment fingerprint."""
+    root = Path(cwd)
+    interpreter, discovered_packages = _probe_dependency_inventory(python_executable)
+    package_lines = list(freeze_lines) if freeze_lines is not None else discovered_packages
+    payload = environment_declaration_identity_projection(bundle.environment)
+    payload["declared_python_version"] = payload.pop("python_version")
+    payload["repo_revisions"] = []
+    payload.update(
+        {
+            "dependency_inventory_source": (
+                "provided" if freeze_lines is not None else "importlib.metadata"
+            ),
+            "interpreter": interpreter,
+            "packages": sorted(package_lines),
+        }
+    )
+    for revision in bundle.environment.repo_revisions:
+        repo_path = root / revision.path
+        dirty = _git_dirty(repo_path)
+        if dirty and not revision.dirty_allowed:
+            raise LocalDriverError(f"dirty repo not allowed for fingerprint: {repo_path}")
+        payload["repo_revisions"].append(
+            {
+                "path": revision.path,
+                "revision": revision.revision,
+                "dirty_allowed": revision.dirty_allowed,
+                "head": _git_output(repo_path, "rev-parse", "HEAD") or None,
+                "patch_sha256": _git_patch_sha256(repo_path) if dirty else None,
+            }
+        )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _reclaim_successful_evaluation_stores(
+    bundle: RunBundle,
+    state: RunSetState,
+) -> list[Mapping[str, Any]]:
+    """Reclaim raw evaluation stores after their compact terminal custody is certified."""
+    if bundle.execution_family != "evaluation-matrix":
+        return []
+    completed_rows = [row for row in bundle.rows if state.rows.get(row.row_id, None) is not None]
+    if (
+        len(completed_rows) != len(bundle.rows)
+        or any(state.rows[row.row_id].status != "completed" for row in completed_rows)
+        or state.stage("COLLECT").status != "completed"
+        or state.stage("CERTIFY").status != "completed"
+    ):
+        return [
+            {
+                "row_id": row.row_id,
+                "status": "retained",
+                "reclaimed_bytes": 0,
+                "reason": "terminal-consumer-barrier-not-complete",
+            }
+            for row in completed_rows
+        ]
+    _verify_successful_evaluation_terminal_custody(bundle, state)
+    return [_reclaim_successful_evaluation_store(bundle, row) for row in completed_rows]
+
+
+def _verify_successful_evaluation_terminal_custody(
+    bundle: RunBundle,
+    state: RunSetState,
+) -> None:
+    collect = state.stage("COLLECT")
+    collected_rows = collect.outputs.get("rows")
+    if not isinstance(collected_rows, Mapping):
+        raise LocalDriverError("evaluation reclamation requires durable collected-row outputs")
+    ordered_union = collect.outputs.get("evaluation_matrix_ordered_union")
+    if not isinstance(ordered_union, Mapping):
+        raise LocalDriverError("evaluation reclamation requires durable ordered-union evidence")
+    union_payload = dict(ordered_union)
+    union_path = union_payload.pop("path", None)
+    expected_union_path = bundle.run_set_dir / "evaluation-matrix-ordered-union.json"
+    if not isinstance(union_path, str) or Path(union_path) != expected_union_path:
+        raise LocalDriverError("evaluation reclamation ordered-union path is not run-owned")
+    _require_run_owned_path(
+        expected_union_path,
+        root=bundle.run_set_dir,
+        directory=False,
+    )
+    try:
+        recorded_union = EvaluationMatrixOrderedUnionEvidence.model_validate(union_payload)
+        durable_union = strict_model_validate_json(
+            EvaluationMatrixOrderedUnionEvidence, expected_union_path.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as exc:
+        raise LocalDriverError("evaluation reclamation ordered-union evidence is invalid") from exc
+    if recorded_union != durable_union:
+        raise LocalDriverError("evaluation reclamation ordered-union evidence drifted")
+    for row in bundle.rows:
+        outputs = state.rows[row.row_id].collected_outputs
+        recorded_outputs = collected_rows.get(row.row_id)
+        if not isinstance(recorded_outputs, Mapping) or dict(recorded_outputs) != outputs:
+            raise LocalDriverError(
+                f"evaluation reclamation collected outputs drifted for row {row.row_id!r}"
+            )
+        event_name = f"{row.row_id}.events.jsonl"
+        for name, path in outputs.items():
+            if not isinstance(name, str) or not isinstance(path, str):
+                raise LocalDriverError(
+                    f"evaluation reclamation collected output is invalid for row {row.row_id!r}"
+                )
+            expected_path = (
+                bundle.run_set_dir / "events" / event_name
+                if name == event_name
+                else bundle.run_set_dir / "collected" / row.row_id / name
+            )
+            if Path(path) != expected_path:
+                raise LocalDriverError(
+                    f"evaluation reclamation collected output path is not run-owned for "
+                    f"row {row.row_id!r}: {name!r}"
+                )
+            _require_run_owned_path(
+                expected_path,
+                root=bundle.run_set_dir,
+                directory=name == "evaluation-batch-compaction",
+            )
+        missing_declared = set(EVALUATION_COLLECTION_OUTPUTS) - outputs.keys()
+        if missing_declared:
+            raise LocalDriverError(
+                f"evaluation reclamation compact outputs are incomplete for row "
+                f"{row.row_id!r}: {sorted(missing_declared)!r}"
+            )
+        missing = executor_family_adapter(row.execution_family).missing_collection_outputs(
+            bundle,
+            row,
+            outputs,
+        )
+        if missing:
+            raise LocalDriverError(
+                f"evaluation reclamation compact outputs are incomplete for row "
+                f"{row.row_id!r}: {missing!r}"
+            )
+    certify = state.stage("CERTIFY")
+    certificate_ref = certify.outputs.get("certificate_ref")
+    certificate_sha256 = certify.outputs.get("certificate_sha256")
+    expected_certificate = bundle.run_set_dir / "conformance.json"
+    if (
+        certify.outputs.get("overall") != "pass"
+        or state.certificate_ref != str(expected_certificate)
+        or certificate_ref != str(expected_certificate)
+        or not isinstance(certificate_sha256, str)
+    ):
+        raise LocalDriverError("evaluation reclamation requires a durable passing certificate")
+    _require_run_owned_path(
+        expected_certificate,
+        root=bundle.run_set_dir,
+        directory=False,
+    )
+    if _sha256_file(expected_certificate) != certificate_sha256:
+        raise LocalDriverError("evaluation reclamation requires a durable passing certificate")
+    try:
+        certificate = strict_model_validate_json(
+            RunConformanceCertificate, expected_certificate.read_text(encoding="utf-8")
+        )
+        assert_certificate_allows_completed_registration(certificate)
+    except (OSError, ValueError) as exc:
+        raise LocalDriverError(
+            "evaluation reclamation requires a valid passing certificate"
+        ) from exc
+    if certificate.run_set_id != bundle.run_set_id or set(certificate.rows) != {
+        row.row_id for row in bundle.rows
+    }:
+        raise LocalDriverError("evaluation reclamation certificate authority drifted")
+
+
+def _require_run_owned_path(path: Path, *, root: Path, directory: bool) -> None:
+    """Require an existing non-symlink file or directory at an exact run-owned path."""
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise LocalDriverError(
+            f"evaluation reclamation durable path is outside the run set: {path}"
+        ) from exc
+    current = root
+    for component in relative.parts:
+        current /= component
+        if current.is_symlink():
+            raise LocalDriverError(f"evaluation reclamation durable path is unsafe: {path}")
+    if not os.path.lexists(path):
+        raise LocalDriverError(f"evaluation reclamation durable path is unsafe: {path}")
+    if directory:
+        valid = path.is_dir()
+    else:
+        valid = path.is_file()
+    if not valid:
+        raise LocalDriverError(f"evaluation reclamation durable path has wrong type: {path}")
+
+
+def _reclaim_successful_evaluation_store(
+    bundle: RunBundle,
+    row: RunRowSpec,
+) -> Mapping[str, Any]:
+    """Atomically isolate and remove one run-owned raw evaluation store."""
+    row_root = bundle.run_set_dir / "rows" / row.row_id
+    _require_run_owned_path(
+        row_root,
+        root=bundle.run_set_dir,
+        directory=True,
+    )
+    raw_root = row_root / "evaluation"
+    isolated = row_root / ".evaluation.success-reclaiming"
+    record_path = row_root / ".evaluation-store-reclamation.json"
+    if os.path.lexists(raw_root) and os.path.lexists(isolated):
+        raise LocalDriverError(
+            f"raw evaluation store and reclamation isolate both exist for {row.row_id!r}"
+        )
+    record: dict[str, Any] | None = None
+    if record_path.is_symlink():
+        raise LocalDriverError(f"raw evaluation reclamation record is unsafe for {row.row_id!r}")
+    if record_path.is_file():
+        try:
+            loaded = strict_json_loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, StrictJsonError) as exc:
+            raise LocalDriverError(
+                f"raw evaluation reclamation record is invalid for {row.row_id!r}"
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise LocalDriverError(
+                f"raw evaluation reclamation record is invalid for {row.row_id!r}"
+            )
+        record = loaded
+        if (
+            record.get("schema_version")
+            != "feedbax.orchestration.local_evaluation_store_reclamation.v1"
+            or record.get("row_id") != row.row_id
+            or record.get("source") != str(raw_root)
+            or record.get("status") not in {"deleting", "completed"}
+            or not isinstance(record.get("reclaimed_bytes"), int)
+            or record["reclaimed_bytes"] < 0
+        ):
+            raise LocalDriverError(f"raw evaluation reclamation record drifted for {row.row_id!r}")
+        if record["status"] == "completed":
+            if os.path.lexists(raw_root) or os.path.lexists(isolated):
+                raise LocalDriverError(
+                    f"reclaimed raw evaluation store reappeared for {row.row_id!r}"
+                )
+            return {
+                "row_id": row.row_id,
+                "status": "already-reclaimed",
+                "reclaimed_bytes": 0,
+            }
+    elif not os.path.lexists(raw_root):
+        if os.path.lexists(isolated):
+            raise LocalDriverError(
+                f"raw evaluation reclamation isolate lacks intent for {row.row_id!r}"
+            )
+        raise LocalDriverError(
+            f"raw evaluation store disappeared without reclamation authority for {row.row_id!r}"
+        )
+
+    target = isolated if os.path.lexists(isolated) else raw_root
+    if record is None:
+        if target.is_symlink() or not target.is_dir():
+            raise LocalDriverError(f"raw evaluation store is not a run-owned directory: {target}")
+        reclaimed_bytes = sum(
+            entry.stat(follow_symlinks=False).st_blocks * 512
+            for entry in (target, *target.rglob("*"))
+            if not entry.is_symlink()
+        )
+        record = {
+            "schema_version": "feedbax.orchestration.local_evaluation_store_reclamation.v1",
+            "row_id": row.row_id,
+            "source": str(raw_root),
+            "reclaimed_bytes": reclaimed_bytes,
+            "status": "deleting",
+        }
+        _atomic_write_local_json(record_path, record)
+    else:
+        reclaimed_bytes = record["reclaimed_bytes"]
+
+    if os.path.lexists(target):
+        if target.is_symlink() or not target.is_dir():
+            raise LocalDriverError(f"raw evaluation store is not a run-owned directory: {target}")
+        if target == raw_root:
+            os.replace(raw_root, isolated)
+        shutil.rmtree(isolated)
+    record["status"] = "completed"
+    _atomic_write_local_json(record_path, record)
+    return {
+        "row_id": row.row_id,
+        "status": "reclaimed",
+        "reclaimed_bytes": reclaimed_bytes,
+    }
+
+
+def _atomic_write_local_json(path: Path, payload: Mapping[str, Any]) -> None:
+    """Replace one run-local JSON record without exposing partial bytes."""
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(dict(payload), handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _terminate_process_group(
+    process_group_id: int,
+    *,
+    process: subprocess.Popen[bytes] | None,
+    timeout_seconds: float = 2.0,
+) -> None:
+    """Terminate a row's whole process group even when its leader already exited."""
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except PermissionError as exc:
+        # macOS may report EPERM when the session leader exits between the
+        # identity check and killpg(). Treat that race as an idempotent stop
+        # only when this driver still owns the exact Popen and a fresh process
+        # table snapshot proves that the group has no live members.
+        members, member_error = _process_group_member_pids(process_group_id)
+        if (
+            process is not None
+            and process.poll() is not None
+            and member_error is None
+            and not members
+        ):
+            return
+        raise LocalDriverError(
+            f"could not terminate verified process group {process_group_id}"
+        ) from exc
+    except OSError as exc:
+        raise LocalDriverError(
+            f"could not terminate verified process group {process_group_id}"
+        ) from exc
+    deadline = time.monotonic() + timeout_seconds
+    while _process_group_alive(process_group_id) and time.monotonic() < deadline:
+        if process is not None:
+            process.poll()
+        time.sleep(0.01)
+    if _process_group_alive(process_group_id):
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process is not None:
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            raise LocalDriverError(
+                f"local row process group {process_group_id} did not terminate"
+            ) from exc
+    deadline = time.monotonic() + timeout_seconds
+    while _process_group_alive(process_group_id) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if _process_group_alive(process_group_id):
+        raise LocalDriverError(
+            f"local row process group {process_group_id} remained live after SIGKILL"
+        )
+
+
+def _process_group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    members, error = _process_group_member_pids(pgid)
+    return True if error is not None else bool(members)
+
+
+def _reclaim_failed_row_tree(
+    bundle: RunBundle,
+    row: RunRowSpec,
+) -> Mapping[str, Any]:
+    """Atomically isolate and remove one failed run-owned row tree."""
+    rows_root = bundle.run_set_dir / "rows"
+    row_root = rows_root / row.row_id
+    isolated = rows_root / f".{row.row_id}.failed-reclaiming"
+    if os.path.lexists(row_root) and os.path.lexists(isolated):
+        raise LocalDriverError(
+            f"failed row tree and reclamation isolate both exist for {row.row_id!r}"
+        )
+    target = isolated if os.path.lexists(isolated) else row_root
+    if not os.path.lexists(target):
+        return {"row_id": row.row_id, "status": "already-reclaimed", "reclaimed_bytes": 0}
+    if target.is_symlink() or not target.is_dir():
+        raise LocalDriverError(f"failed row tree is not a run-owned directory: {target}")
+    reclaimed_bytes = sum(
+        entry.stat(follow_symlinks=False).st_blocks * 512
+        for entry in target.rglob("*")
+        if entry.is_file() and not entry.is_symlink()
+    )
+    if target == row_root:
+        os.replace(row_root, isolated)
+    shutil.rmtree(isolated)
+    return {
+        "row_id": row.row_id,
+        "status": "reclaimed",
+        "reclaimed_bytes": reclaimed_bytes,
+    }
+
+
+def _row_command(row: RunRowSpec, python_executable: str) -> list[str]:
+    if row.launch.command:
+        return [str(part) for part in row.launch.command]
+    assert row.launch.entry is not None
+    return [python_executable, row.launch.entry]
+
+
+def _prepend_feedbax_source_root(existing: str | None) -> str:
+    """Make this checkout importable to rows launched from an arbitrary cwd."""
+    source_root = str(Path(__file__).resolve().parents[3])
+    return source_root if not existing else os.pathsep.join((source_root, existing))
+
+
+def _row_paths(bundle: RunBundle, row_id: str) -> dict[str, Path]:
+    run_set_dir = bundle.run_set_dir
+    sentinels = run_set_dir / "sentinels"
+    events = run_set_dir / "events"
+    row_dir = run_set_dir / "rows" / row_id
+    return {
+        "sentinels": sentinels,
+        "events": events,
+        "row_dir": row_dir,
+        "started": sentinels / f"{row_id}.started",
+        "pid": sentinels / f"{row_id}.pid",
+        "process_identity": sentinels / f"{row_id}.process.json",
+        "done": sentinels / f"{row_id}.done",
+        "failed": sentinels / f"{row_id}.failed",
+        "event_log": events / f"{row_id}.events.jsonl",
+    }
+
+
+def _probe_dependency_inventory(
+    python_executable: str | None,
+) -> tuple[dict[str, str | None], list[str]]:
+    """Read interpreter identity and distribution provenance from the selected Python."""
+    executable = python_executable or sys.executable
+    try:
+        result = subprocess.run(
+            [executable, "-c", _DEPENDENCY_INVENTORY_SCRIPT],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        stderr = getattr(exc, "stderr", None)
+        detail = str(stderr).strip() if stderr else str(exc)
+        raise LocalDriverError(
+            f"dependency inventory failed for interpreter {executable!r}: {detail}"
+        ) from exc
+
+    try:
+        probe = strict_json_loads(result.stdout)
+    except (json.JSONDecodeError, StrictJsonError) as exc:
+        raise LocalDriverError(
+            f"dependency inventory from interpreter {executable!r} was not valid JSON"
+        ) from exc
+    if not isinstance(probe, dict) or set(probe) != {
+        "distributions",
+        "interpreter",
+        "schema_version",
+    }:
+        raise LocalDriverError(
+            f"dependency inventory from interpreter {executable!r} had invalid structure"
+        )
+    if probe["schema_version"] != "feedbax.local_dependency_inventory.v1":
+        raise LocalDriverError(
+            f"dependency inventory from interpreter {executable!r} had unknown schema"
+        )
+    interpreter = probe["interpreter"]
+    if (
+        not isinstance(interpreter, dict)
+        or set(interpreter) != {"cache_tag", "executable", "implementation", "version"}
+        or not isinstance(interpreter["executable"], str)
+        or not interpreter["executable"]
+        or not isinstance(interpreter["implementation"], str)
+        or not interpreter["implementation"]
+        or not isinstance(interpreter["version"], str)
+        or not interpreter["version"]
+        or (interpreter["cache_tag"] is not None and not isinstance(interpreter["cache_tag"], str))
+    ):
+        raise LocalDriverError(
+            f"dependency inventory from interpreter {executable!r} had invalid interpreter identity"
+        )
+    inventory = probe["distributions"]
+    return dict(interpreter), _canonicalize_dependency_inventory(inventory, executable=executable)
+
+
+def _canonicalize_dependency_inventory(inventory: Any, *, executable: str) -> list[str]:
+    """Validate and canonicalize importlib distribution records."""
+    if not isinstance(inventory, list) or any(
+        not isinstance(entry, dict)
+        or set(entry) != {"direct_url", "name", "version"}
+        or not isinstance(entry["name"], str)
+        or not entry["name"]
+        or not isinstance(entry["version"], str)
+        or not entry["version"]
+        or (entry["direct_url"] is not None and not isinstance(entry["direct_url"], dict))
+        for entry in inventory
+    ):
+        raise LocalDriverError(
+            f"dependency inventory from interpreter {executable!r} had invalid structure"
+        )
+    by_name: dict[str, dict[str, Any]] = {}
+    for raw_entry in inventory:
+        entry = dict(raw_entry)
+        entry["name"] = re.sub(r"[-_.]+", "-", entry["name"]).lower()
+        previous = by_name.get(entry["name"])
+        if previous is not None and previous != entry:
+            raise LocalDriverError(
+                "dependency inventory contains conflicting distributions for normalized name "
+                f"{entry['name']!r}"
+            )
+        by_name[entry["name"]] = entry
+    return [
+        json.dumps(by_name[name], sort_keys=True, separators=(",", ":")) for name in sorted(by_name)
+    ]
+
+
+def _git_output(cwd: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return result.stdout.strip()
+
+
+def _git_dirty(cwd: Path) -> bool:
+    return bool(_git_output(cwd, "status", "--porcelain"))
+
+
+def _git_patch_sha256(cwd: Path) -> str:
+    diff = _git_output(cwd, "diff", "--binary")
+    untracked = _git_output(cwd, "ls-files", "--others", "--exclude-standard")
+    h = hashlib.sha256()
+    h.update(diff.encode("utf-8"))
+    h.update(untracked.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _seed_native_resume_checkpoint_root(
+    source: Path, row_dir: Path, resolved: ResolvedAssemblyInput
+) -> None:
+    """Clone one staged checkpoint tree and publish it without replacement."""
+
+    if not source.is_dir() or source.is_symlink():
+        raise LocalDriverError(f"native resume checkpoint source is not a directory: {source}")
+    target = row_dir / "checkpoints"
+    attempt = row_dir / ".checkpoint-seed-attempt"
+    if os.path.lexists(target):
+        raise LocalDriverError(f"native resume checkpoint target already exists: {target}")
+    if os.path.lexists(attempt):
+        raise LocalDriverError(f"native resume checkpoint attempt already exists: {attempt}")
+    try:
+        seed_authenticated_checkpoint(source, attempt, target, resolved)
+    except LocalDriverError:
+        raise
+    except Exception as exc:
+        raise LocalDriverError(f"native resume checkpoint seeding failed: {exc}") from exc
+
+
+def _read_pid(path: Path) -> int | None:
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+
+
+def _read_local_process_identity(path: Path) -> tuple[ProcessIdentity | None, str | None]:
+    if not path.is_file():
+        return None, "process identity record is missing"
+    try:
+        return strict_model_validate_json(ProcessIdentity, path.read_text(encoding="utf-8")), None
+    except Exception as exc:
+        return None, f"process identity record is invalid: {exc}"
+
+
+def _verified_local_process_identity(
+    paths: Mapping[str, Path],
+    bundle: RunBundle,
+    row: RunRowSpec,
+    pid: int,
+) -> tuple[ProcessIdentity | None, str]:
+    identity, error = _read_local_process_identity(paths["process_identity"])
+    if identity is None:
+        return None, error or "process identity is unavailable"
+    if identity.run_set_id != bundle.run_set_id or identity.row_id != row.row_id:
+        return None, "process identity belongs to a different run set or row"
+    if identity.pid != pid:
+        return None, "process identity PID does not match the observed PID"
+    if _pid_alive(pid):
+        try:
+            observed_group = os.getpgid(pid)
+        except OSError as exc:
+            return None, f"process group identity is unverifiable: {exc}"
+        if observed_group != identity.process_group_id:
+            return None, "process group identity does not match the observed process group"
+    members, member_error = _process_group_member_pids(identity.process_group_id)
+    if member_error is not None:
+        return None, member_error
+    if not members:
+        return None, "process group exited before identity verification"
+    return identity, "verified"
+
+
+def _process_group_member_pids(
+    process_group_id: int,
+) -> tuple[tuple[int, ...], str | None]:
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,pgid=,stat="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return (), f"process group membership inspection failed: {exc}"
+    if result.returncode != 0:
+        return (), f"process group membership inspection exited {result.returncode}"
+    members = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 3:
+            continue
+        try:
+            pid, group = (int(value) for value in fields[:2])
+        except ValueError:
+            continue
+        if group == process_group_id and not fields[2].startswith("Z"):
+            members.append(pid)
+    return tuple(members), None
+
+
+def _authorize_local_signal(
+    paths: Mapping[str, Path],
+    bundle: RunBundle,
+    row: RunRowSpec,
+    state: RunSetState,
+    pid: int,
+) -> ProcessIdentity:
+    expected = state.rows.get(row.row_id)
+    if expected is None or expected.process_identity is None:
+        raise LocalDriverError(
+            f"refusing to signal live local row {row.row_id!r}: durable process identity is absent"
+        )
+    observed, detail = _verified_local_process_identity(paths, bundle, row, pid)
+    if observed is None or observed != expected.process_identity:
+        raise LocalDriverError(f"refusing to signal live local row {row.row_id!r}: {detail}")
+    return observed
+
+
+def _unverified_local_launch(
+    bundle: RunBundle,
+    row: RunRowSpec,
+    paths: Mapping[str, Path],
+    pid: int,
+    detail: str,
+) -> Mapping[str, Any]:
+    message = f"refusing to adopt live PID without verified process identity: {detail}"
+    discrepancy = {
+        "code": "unverified_process_identity",
+        "message": message,
+        "pid": pid,
+        "run_set_id": bundle.run_set_id,
+        "row_id": row.row_id,
+    }
+    paths["failed"].write_text(message + "\n", encoding="utf-8")
+    return {
+        "row_id": row.row_id,
+        "pid": pid,
+        "status": "failed",
+        "detail": message,
+        "event_discrepancies": [discrepancy],
+    }
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def local_driver_registration() -> DriverRegistration:
+    """Return the built-in context-aware local driver registration."""
+
+    def resolve(context: DriverConstructionContext):
+        preserve = context.configuration.get("preserve_owned_resources", False)
+        if not isinstance(preserve, bool):
+            raise TypeError("preserve_owned_resources must be a bool")
+        variant = "local-preserved" if preserve else "local-stop"
+        return LocalOrchestrationDriver.capability_envelope.realize(variant)
+
+    def factory(context: DriverConstructionContext, realized):
+        runtime = context.runtime_bindings
+        if runtime.get("collection_recovery_bindings"):
+            raise ValueError(
+                "local capability variant does not support durable remote collection recovery"
+            )
+        driver = LocalOrchestrationDriver(
+            cwd=runtime.get("cwd"),
+            python_executable=_optional_runtime_string(runtime, "python_executable"),
+            freeze_lines=runtime.get("freeze_lines"),
+            input_provider_bindings=runtime.get("input_provider_bindings", ()),
+            staged_root_bindings=runtime.get("staged_root_bindings", ()),
+            content_store_root=runtime.get("content_store_root"),
+            content_lease_seconds=runtime.get("content_lease_seconds"),
+            update_budget=_optional_runtime_int(runtime, "native_update_budget"),
+            realized_capabilities=realized,
+        )
+        if driver.realized_capabilities != realized:
+            raise ValueError("local driver factory received inconsistent realized capabilities")
+        return driver
+
+    return DriverRegistration(
+        name="local",
+        supported_capabilities=LocalOrchestrationDriver.capability_envelope,
+        resolve_capabilities=resolve,
+        factory=factory,
+    )
+
+
+def _optional_runtime_string(runtime: Mapping[str, object], key: str) -> str | None:
+    value = runtime.get(key)
+    if value is not None and not isinstance(value, str):
+        raise TypeError(f"local driver runtime binding {key!r} must be a string")
+    return value
+
+
+def _optional_runtime_int(runtime: Mapping[str, object], key: str) -> int | None:
+    value = runtime.get(key)
+    if value is not None and not isinstance(value, int):
+        raise TypeError(f"local driver runtime binding {key!r} must be an integer")
+    return value

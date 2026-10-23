@@ -1,8 +1,9 @@
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence, ValuesView
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, Optional, TypeGuard, ValuesView
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional, TypeGuard
 
 import jax.tree as jt
+import feedbax._vendor.jax_cookbook.tree as jtree
 import numpy as np
 import plotly.express as px
 import plotly.graph_objs as go
@@ -12,9 +13,9 @@ from plotly.basedatatypes import BaseTraceType
 from plotly.colors import convert_colors_to_same_type, sample_colorscale
 from plotly.subplots import make_subplots
 
-from feedbax import tree_labels
-from feedbax.bodies import SimpleFeedbackState
-from feedbax.misc import where_func_to_attr_str_tree
+from feedbax.models.feedback import SimpleFeedbackState
+from feedbax.plot import apply_default_template
+from feedbax.plot._effector import resolve_effector_endpoints, resolve_effector_trajectory_vars
 from feedbax.plot.colors import _compute_colors, arr_to_rgb
 from feedbax.plot.misc import (
     AxesLabels,
@@ -26,11 +27,19 @@ from feedbax.plot.misc import (
     tree_of_2d_timeseries_to_df,
     unshare_axes,
 )
-from feedbax.types import SeqOf, SeqOfT
-from jax_cookbook import MaskedArray
+from feedbax._vendor.jax_cookbook import MaskedArray
 
 if TYPE_CHECKING:
-    from feedbax.task import TaskTrialSpec
+    from feedbax.tasks import TaskTrialSpec
+
+# Plotly copies the process-default template into each figure as it is constructed, so
+# the Feedbax default has to be in place before any function here runs. Importing a
+# figure-drawing module is itself use of the plotting surface, unlike importing the
+# package, which entry points that never draw anything do transitively.
+apply_default_template()
+
+type SeqOf[S] = list[S] | tuple[S, ...] | ValuesView[S]
+type SeqOfT[S, Tag] = Annotated[SeqOf[S], Tag]
 
 
 def _unwrap_masked_array(x):
@@ -98,26 +107,7 @@ def effector_trajectories(
         control_labels: A tuple giving the labels for the title, x-axis, and y-axis
             of the final (controller output/force) plot. Overrides `control_label_type`.
     """
-    var_labels_ = var_labels
-
-    vars_tuple: tuple[Shaped[Array, "*batch trial time xy=2"], ...]
-    if where_data is not None:
-        vars_tuple = tuple(where_data(states))
-        if var_labels is None:
-            var_labels = where_func_to_attr_str_tree(where_data)
-
-    elif isinstance(states, SimpleFeedbackState):
-        vars_tuple = (
-            states.mechanics.effector.pos,
-            states.mechanics.effector.vel,
-            states.efferent.output,
-        )
-        if var_labels is None:
-            var_labels_ = ("Position", "Velocity", "Force")
-    else:
-        raise ValueError(
-            "If `states` is not a `SimpleFeedbackState`, `where_data` must be provided."
-        )
+    vars_tuple, var_labels_ = resolve_effector_trajectory_vars(states, where_data, var_labels)
 
     if len(vars_tuple[0].shape) > 3:
         # Collapse to a single batch dimension
@@ -193,19 +183,7 @@ def effector_trajectories(
     if endpoints is not None:
         endpoints_arr = np.array(endpoints)  # type: ignore
     else:
-        if trial_specs is not None:
-            target_specs = trial_specs.targets["mechanics.effector.pos"]
-            if target_specs.value is not None:
-                endpoints_arr = np.array(  # type: ignore
-                    [
-                        trial_specs.inits["mechanics.effector"].pos,
-                        target_specs.value[:, -1],
-                    ]
-                )
-            else:
-                endpoints_arr = None
-        else:
-            endpoints_arr = None
+        endpoints_arr = resolve_effector_endpoints(trial_specs)
 
     if endpoints_arr is not None:
         colors = [d.marker.color for d in fig.data[::n_vars]]
@@ -466,9 +444,9 @@ def trajectories[T](
         "subplots_data",
         subplot_titles,
         arg_label="subplot_titles",
-        #! The `leaves(tree_labels(...))` here will always just be range(len(vars_))
+        #! The `leaves(jtree.labels(...))` here will always just be range(len(vars_))
         #! so long as we're only dealing in sequence-likes
-        default_fn=lambda vars_: [f"<b>{label}</b>" for label in jt.leaves(tree_labels(vars_))],
+        default_fn=lambda vars_: [f"<b>{label}</b>" for label in jt.leaves(jtree.labels(vars_))],
         leaf_type=str,
     )
 

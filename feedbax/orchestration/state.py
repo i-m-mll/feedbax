@@ -1,0 +1,832 @@
+"""Run-set state document persistence and advisory locking."""
+
+from __future__ import annotations
+
+import errno
+import fcntl
+import json
+import os
+import shutil
+import stat
+import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import Field
+
+from feedbax.contracts.base import StrictModel
+from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
+from feedbax.orchestration.repo_realization import RepoRealizationPlan
+
+
+RUN_SET_STATE_SCHEMA_ID = "feedbax.orchestration.run_set_state"
+RUN_SET_STATE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_set_state.v1"
+RUN_SET_STATE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_set_state.v2"
+RUN_SET_STATE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_set_state.v3"
+RUN_SET_STATE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_set_state.v4"
+RUN_SET_STATE_SCHEMA_VERSION_V5 = "feedbax.orchestration.run_set_state.v5"
+RUN_SET_STATE_SCHEMA_VERSION = "feedbax.orchestration.run_set_state.v6"
+PROCESS_IDENTITY_SCHEMA_ID = "feedbax.orchestration.process_identity"
+PROCESS_IDENTITY_SCHEMA_VERSION = "feedbax.orchestration.process_identity.v1"
+EMERGENCY_RUN_SET_RECORD_SCHEMA_ID = "feedbax.orchestration.emergency_run_set_record"
+EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION = "feedbax.orchestration.emergency_run_set_record.v1"
+REGISTRATION_HISTORY_SCHEMA_ID = "feedbax.orchestration.registration_history"
+REGISTRATION_HISTORY_SCHEMA_VERSION = "feedbax.orchestration.registration_history.v1"
+ROW_STATUSES = ("pending", "launched", "ready", "running", "completed", "failed", "stopped")
+STAGE_STATUSES = ("pending", "running", "completed", "failed", "skipped")
+
+RowStatusName = Literal["pending", "launched", "ready", "running", "completed", "failed", "stopped"]
+StageStatusName = Literal["pending", "running", "completed", "failed", "skipped"]
+CheckStatusName = Literal["pass", "fail"]
+AcquisitionIntentState = Literal[
+    "intended",
+    "acquired",
+    "failed-unacquired",
+    "ambiguous",
+    "resolved-torn-down",
+    "ambiguous-unresolved",
+]
+PreservationState = Literal[
+    "preserve-required",
+    "preserved",
+    "release-authorized",
+    "unknown",
+]
+
+DEFAULT_CONTROL_RESERVE_BYTES = 1024 * 1024
+DEFAULT_EMERGENCY_RESERVE_BYTES = 64 * 1024
+DEFAULT_STATE_UPDATE_BYTES = 1024 * 1024
+MAX_CONTROL_RESERVE_BYTES = 64 * 1024 * 1024
+MAX_EMERGENCY_RECORD_BYTES = 32 * 1024
+STATE_LOCK_PROTOCOL = "stable-flock-v1"
+
+
+def utc_now() -> datetime:
+    """Return timezone-aware UTC now with stable second precision."""
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+class StateLockError(RuntimeError):
+    """Raised when a run-set state lock cannot be acquired."""
+
+    def __init__(self, message: str, *, error_number: int | None = None) -> None:
+        self.errno = error_number
+        super().__init__(message)
+
+
+class ControlFilesystemPreflightError(RuntimeError):
+    """Raised when the control filesystem cannot support durable state updates."""
+
+    def __init__(self, message: str, *, error_number: int | None = None) -> None:
+        self.errno = error_number
+        super().__init__(message)
+
+
+class PrimaryStatePersistenceError(OSError):
+    """The primary run-set state could not be durably replaced."""
+
+    def __init__(self, path: Path, cause: OSError) -> None:
+        self.path = path
+        self.cause = cause
+        super().__init__(
+            cause.errno,
+            f"primary run-set state persistence failed at {path}: {cause}",
+        )
+
+
+class PreflightCheckEntry(StrictModel):
+    """One named preflight check result."""
+
+    name: str
+    status: CheckStatusName
+    detail: str | None = None
+    observed: Any = None
+
+
+DEPENDENCY_SKIP_OUTCOME = "skipped-due-to-dependency"
+
+
+def dependency_skip_observed(*dependencies: str) -> dict[str, Any]:
+    """Build the canonical `observed` payload for a dependency-skipped preflight check.
+
+    Single-sources the sentinel shape so every writer of a dependency-skip result -
+    whether it fills a `PreflightCheckEntry.observed` field directly or a per-row
+    entry nested inside one - agrees on the same `outcome`/`dependencies` spelling
+    that `_is_dependency_skipped_preflight_check`-style readers inspect.
+    """
+    ordered_dependencies = list(dict.fromkeys(dependencies))
+    return {
+        "outcome": DEPENDENCY_SKIP_OUTCOME,
+        "dependencies": ordered_dependencies,
+    }
+
+
+class StageState(StrictModel):
+    """Durable state for one orchestration stage."""
+
+    status: StageStatusName = "pending"
+    attempts: int = 0
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    outputs: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+    checks: list[PreflightCheckEntry] = Field(default_factory=list)
+
+
+class ProcessIdentity(StrictModel):
+    """Durable authority for one run-owned process group."""
+
+    schema_id: Literal["feedbax.orchestration.process_identity"] = PROCESS_IDENTITY_SCHEMA_ID
+    schema_version: Literal["feedbax.orchestration.process_identity.v1"] = (
+        PROCESS_IDENTITY_SCHEMA_VERSION
+    )
+    mechanism: Literal["environment-token-v1"] = "environment-token-v1"
+    run_set_id: str = Field(min_length=1)
+    row_id: str = Field(min_length=1)
+    pid: int = Field(gt=0)
+    process_group_id: int = Field(gt=0)
+    launch_token: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RowState(StrictModel):
+    """Durable state for one row."""
+
+    status: RowStatusName = "pending"
+    event_seq_high_water_mark: int = -1
+    pid: int | None = None
+    process_identity: ProcessIdentity | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    last_event_type: str | None = None
+    event_discrepancies: list[dict[str, Any]] = Field(default_factory=list)
+    collected_outputs: dict[str, str] = Field(default_factory=dict)
+    error: str | None = None
+
+
+class AcquisitionIntent(StrictModel):
+    """One durable engine-owned record for exactly one provider create invocation."""
+
+    intent_id: str
+    datacenter_candidate: str | None = None
+    config_identity: str
+    intended_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    state: AcquisitionIntentState = "intended"
+    pod_ids: list[str] = Field(default_factory=list)
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    teardown_evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RegistrationHistoryEntry(StrictModel):
+    """One immutable registration outcome superseded by explicit recertification."""
+
+    registration_payload: dict[str, Any]
+    registration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    certificate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_certificate_ref: str = Field(min_length=1)
+
+
+class RegistrationHistory(StrictModel):
+    """Versioned fail-to-pass registration history for one run set."""
+
+    schema_id: Literal["feedbax.orchestration.registration_history"] = (
+        REGISTRATION_HISTORY_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.registration_history.v1"] = (
+        REGISTRATION_HISTORY_SCHEMA_VERSION
+    )
+    run_set_id: str = Field(min_length=1)
+    entries: list[RegistrationHistoryEntry] = Field(min_length=1, max_length=1)
+
+
+class EmergencyProviderIdentity(StrictModel):
+    """Minimal provider identity needed to recover a preserved resource."""
+
+    provider: str = Field(min_length=1)
+    resource_id: str = Field(min_length=1)
+    endpoint: str | None = None
+
+
+class EmergencyRunSetRecord(StrictModel):
+    """Bounded recovery record independent of the primary run-set state document."""
+
+    schema_id: Literal["feedbax.orchestration.emergency_run_set_record"] = (
+        EMERGENCY_RUN_SET_RECORD_SCHEMA_ID
+    )
+    schema_version: Literal["feedbax.orchestration.emergency_run_set_record.v1"] = (
+        EMERGENCY_RUN_SET_RECORD_SCHEMA_VERSION
+    )
+    run_set_id: str = Field(min_length=1)
+    recorded_at: datetime = Field(default_factory=utc_now)
+    provider_identity: EmergencyProviderIdentity
+    preservation_state: PreservationState
+    lease_state: str = Field(min_length=1)
+    custody_complete: bool
+    spend_boundary: str = Field(min_length=1)
+    primary_failure: str = Field(min_length=1)
+    next_recovery_action: str = Field(min_length=1)
+
+
+class ControlFilesystemPreflight(StrictModel):
+    """Observed capacity and reserved bytes for one control-state filesystem."""
+
+    filesystem_path: str
+    writable: Literal[True] = True
+    observed_free_bytes: int = Field(ge=0)
+    required_free_bytes: int = Field(ge=0)
+    state_update_bytes: int = Field(ge=1, le=MAX_CONTROL_RESERVE_BYTES)
+    control_reserve_bytes: int = Field(ge=0, le=MAX_CONTROL_RESERVE_BYTES)
+    emergency_reserve_bytes: int = Field(
+        ge=MAX_EMERGENCY_RECORD_BYTES,
+        le=MAX_CONTROL_RESERVE_BYTES,
+    )
+
+
+class RunSetState(StrictModel):
+    """Atomic JSON state document for one run set."""
+
+    schema_id: Literal["feedbax.orchestration.run_set_state"] = RUN_SET_STATE_SCHEMA_ID
+    schema_version: Literal["feedbax.orchestration.run_set_state.v6"] = RUN_SET_STATE_SCHEMA_VERSION
+    run_set_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    current_stage: str | None = None
+    stages: dict[str, StageState] = Field(default_factory=dict)
+    rows: dict[str, RowState] = Field(default_factory=dict)
+    provision_record: dict[str, Any] | None = None
+    provisioning_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    acquisition_intents: list[AcquisitionIntent] = Field(default_factory=list)
+    provisioning_stop_reason: str | None = None
+    environment_fingerprint: str | None = None
+    repo_realization_plan: RepoRealizationPlan | None = None
+    budget_counters: dict[str, Any] = Field(default_factory=dict)
+    certificate_ref: str | None = None
+    registration_payload: dict[str, Any] | None = None
+    abort_reason: str | None = None
+
+    def stage(self, stage_id: str) -> StageState:
+        """Return the state for ``stage_id``, defaulting to pending."""
+        return self.stages.get(stage_id, StageState())
+
+    def with_stage(self, stage_id: str, stage: StageState) -> "RunSetState":
+        """Return a copy with one stage state replaced."""
+        stages = dict(self.stages)
+        stages[stage_id] = stage
+        return self.model_copy(
+            update={"stages": stages, "current_stage": stage_id, "updated_at": utc_now()}
+        )
+
+    def with_row(self, row_id: str, row: RowState) -> "RunSetState":
+        """Return a copy with one row state replaced."""
+        rows = dict(self.rows)
+        rows[row_id] = row
+        return self.model_copy(update={"rows": rows, "updated_at": utc_now()})
+
+
+def migrate_run_set_state_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
+    """Make every legacy PID explicitly non-authoritative.
+
+    Version 5 persisted only a numeric PID. The number remains diagnostic data,
+    while the new identity field is deliberately empty so recovery cannot adopt
+    or signal a process until a current driver proves run-owned identity.
+    """
+    migrated = dict(payload)
+    rows = {}
+    for row_id, row_value in dict(migrated.get("rows", {})).items():
+        row = dict(row_value)
+        row["process_identity"] = None
+        rows[row_id] = row
+    migrated["rows"] = rows
+    migrated["schema_version"] = RUN_SET_STATE_SCHEMA_VERSION
+    return migrated
+
+
+class RunSetStateStore:
+    """Read/write helper for one run-set state document."""
+
+    def __init__(self, path: Path | str) -> None:
+        self.path = Path(path)
+        self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        self.control_reserve_path = self.path.with_suffix(self.path.suffix + ".reserve")
+        self.emergency_path = self.path.with_suffix(self.path.suffix + ".emergency.json")
+        self.emergency_lock_path = self.path.with_suffix(self.path.suffix + ".emergency.lock")
+        self.emergency_reserve_path = self.path.with_suffix(self.path.suffix + ".emergency.reserve")
+
+    def load(self) -> RunSetState:
+        """Load the current state document."""
+        payload = strict_json_loads(self.path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and payload.get("schema_version") == (
+            RUN_SET_STATE_SCHEMA_VERSION_V5
+        ):
+            payload = migrate_run_set_state_v5_to_v6(payload)
+        return RunSetState.model_validate(payload)
+
+    def save(self, state: RunSetState, *, crash_before_replace: bool = False) -> Path:
+        """Atomically write ``state`` using temp-file plus ``os.replace``."""
+        try:
+            return self._save(state, crash_before_replace=crash_before_replace)
+        except PrimaryStatePersistenceError:
+            raise
+        except OSError as exc:
+            raise PrimaryStatePersistenceError(self.path, exc) from exc
+
+    def _save(self, state: RunSetState, *, crash_before_replace: bool = False) -> Path:
+        """Perform one unwrapped atomic primary-state write."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = state.model_copy(update={"updated_at": utc_now()}).model_dump(mode="json")
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{self.path.name}.",
+            suffix=".tmp",
+            dir=str(self.path.parent),
+            text=True,
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            if crash_before_replace:
+                return tmp_path
+            os.replace(tmp_path, self.path)
+            directory_fd = os.open(self.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            return self.path
+        finally:
+            if crash_before_replace:
+                pass
+            elif tmp_path.exists():
+                tmp_path.unlink()
+
+    def preflight_and_reserve(
+        self,
+        *,
+        control_reserve_bytes: int = DEFAULT_CONTROL_RESERVE_BYTES,
+        emergency_reserve_bytes: int = DEFAULT_EMERGENCY_RESERVE_BYTES,
+        state_update_bytes: int = DEFAULT_STATE_UPDATE_BYTES,
+    ) -> ControlFilesystemPreflight:
+        """Verify control storage and durably reserve bounded recovery capacity.
+
+        The control reserve is intentionally not consumed by normal state writes. A later
+        lifecycle integration may release it for bounded collection metadata. The independent
+        emergency reserve is consumed only by :meth:`save_emergency`.
+        """
+        _validate_reserve_sizes(
+            control_reserve_bytes,
+            emergency_reserve_bytes,
+            state_update_bytes,
+        )
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        _probe_directory_writable(self.path.parent, self.path.name)
+        with _emergency_channel_lock(self.emergency_lock_path, create=True):
+            requested_reserves = tuple(
+                (path, size, _owned_regular_file_size(path) != size)
+                for path, size in (
+                    (self.control_reserve_path, control_reserve_bytes),
+                    (self.emergency_reserve_path, emergency_reserve_bytes),
+                )
+            )
+            reserve_allocation_bytes = sum(
+                size for _path, size, needs_replacement in requested_reserves if needs_replacement
+            )
+            required_free_bytes = reserve_allocation_bytes + state_update_bytes
+            observed_free_bytes = shutil.disk_usage(self.path.parent).free
+            if observed_free_bytes < required_free_bytes:
+                raise ControlFilesystemPreflightError(
+                    "control filesystem capacity preflight failed: "
+                    f"required_free_bytes={required_free_bytes} "
+                    f"observed_free_bytes={observed_free_bytes} path={self.path.parent}"
+                )
+
+            for reserve_path, reserve_size, needs_replacement in requested_reserves:
+                if needs_replacement:
+                    _reserve_file(reserve_path, reserve_size)
+        return ControlFilesystemPreflight(
+            filesystem_path=str(self.path.parent),
+            observed_free_bytes=observed_free_bytes,
+            required_free_bytes=required_free_bytes,
+            state_update_bytes=state_update_bytes,
+            control_reserve_bytes=control_reserve_bytes,
+            emergency_reserve_bytes=emergency_reserve_bytes,
+        )
+
+    def release_control_reserve(self) -> None:
+        """Release the bounded non-emergency reserve for later lifecycle-owned metadata."""
+        self.control_reserve_path.unlink(missing_ok=True)
+        _fsync_directory(self.path.parent)
+
+    def load_emergency(self) -> EmergencyRunSetRecord:
+        """Load and strictly validate the current emergency recovery record."""
+        return strict_model_validate_json(
+            EmergencyRunSetRecord, self.emergency_path.read_text(encoding="utf-8")
+        )
+
+    def save_emergency(self, record: EmergencyRunSetRecord) -> Path:
+        """Publish a recovery record using only the preallocated reserve inode.
+
+        A successful publish atomically renames the reserve over ``emergency_path`` and
+        therefore consumes the reserve name. Call :meth:`preflight_and_reserve` to
+        replenish it before a later update. If replenishment or replacement fails, an
+        already-published emergency record remains readable.
+        """
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = record.model_copy(update={"recorded_at": utc_now()}).model_dump(mode="json")
+        encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        if len(encoded) > MAX_EMERGENCY_RECORD_BYTES:
+            raise ValueError(
+                "emergency run-set record exceeds bounded channel: "
+                f"bytes={len(encoded)} maximum={MAX_EMERGENCY_RECORD_BYTES}"
+            )
+        with _emergency_channel_lock(self.emergency_lock_path, create=False):
+            if not self.emergency_reserve_path.exists():
+                raise ControlFilesystemPreflightError(
+                    "emergency channel has no reserved inode; call preflight_and_reserve "
+                    "before the first record and before each replacement"
+                )
+
+            _publish_reserved_emergency(
+                reserve_path=self.emergency_reserve_path,
+                destination_path=self.emergency_path,
+                payload=encoded,
+            )
+        return self.emergency_path
+
+    def initialize(self, state: RunSetState) -> RunSetState:
+        """Write initial state if absent; otherwise return existing state."""
+        if self.path.exists():
+            return self.load()
+        self.save(state)
+        return state
+
+    @contextmanager
+    def lock(self, *, break_stale: bool = False) -> Iterator[None]:
+        """Acquire a stable, kernel-owned advisory lock around state mutation.
+
+        The transition from the legacy unlink-on-release protocol is intentionally
+        one-way. New code can consume legacy PID-only files, but old code cannot
+        interpret a released ``stable-flock-v1`` inode. Mixed-version execution or
+        rollback therefore requires removing the persistent lock while no process is
+        using the state directory; doing so during execution would reintroduce the
+        pathname-unlink race this protocol eliminates. An empty, malformed, or PID-less
+        legacy inode also requires that offline cleanup: it may belong to a legacy writer
+        in the interval between inode creation and PID publication.
+
+        The lock guarantees one owner only while the parent directory is outside an
+        adversary's mutation authority. A malicious same-UID writer that can replace
+        entries there can install and lock a second inode. The post-critical-section
+        identity check detects that displacement and prevents the original owner from
+        reporting false success, but inode locking alone cannot prevent the overlap.
+        """
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "protocol": STATE_LOCK_PROTOCOL,
+            "pid": os.getpid(),
+            "acquired_at": time.time(),
+            "state_path": str(self.path),
+        }
+        created_lock = False
+        try:
+            descriptor = os.open(
+                self.lock_path,
+                _untrusted_open_flags(os.O_RDWR | os.O_CREAT | os.O_EXCL),
+                0o600,
+            )
+            created_lock = True
+        except FileExistsError:
+            try:
+                descriptor = os.open(
+                    self.lock_path,
+                    _untrusted_open_flags(os.O_RDWR),
+                )
+            except OSError as exc:
+                raise StateLockError(
+                    f"unable to open run-set state lock safely: {self.lock_path}: {exc}",
+                    error_number=exc.errno,
+                ) from exc
+        except OSError as exc:
+            raise StateLockError(
+                f"unable to open run-set state lock safely: {self.lock_path}: {exc}",
+                error_number=exc.errno,
+            ) from exc
+        try:
+            try:
+                _require_owned_path_inode(descriptor, self.lock_path, kind="run-set state lock")
+            except ControlFilesystemPreflightError as exc:
+                raise StateLockError(str(exc)) from exc
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                    existing = _read_lock_descriptor(descriptor)
+                    raise StateLockError(
+                        f"run-set state lock is active: {self.lock_path} "
+                        f"pid={existing.get('pid')!r}",
+                        error_number=exc.errno,
+                    ) from exc
+                raise StateLockError(
+                    f"unable to acquire run-set state lock at {self.lock_path}: {exc}",
+                    error_number=exc.errno,
+                ) from exc
+
+            try:
+                _require_owned_path_inode(descriptor, self.lock_path, kind="run-set state lock")
+            except ControlFilesystemPreflightError as exc:
+                raise StateLockError(str(exc)) from exc
+            existing = _read_lock_descriptor(descriptor)
+            if not created_lock and existing.get("protocol") != STATE_LOCK_PROTOCOL:
+                legacy_pid = existing.get("pid")
+                if type(legacy_pid) is not int or legacy_pid <= 0:
+                    raise StateLockError(
+                        "run-set state lock has no verifiable legacy owner; "
+                        "stop all writers and remove or migrate the lock offline: "
+                        f"{self.lock_path}"
+                    )
+                if _pid_alive(legacy_pid):
+                    raise StateLockError(
+                        f"run-set state lock is active: {self.lock_path} pid={legacy_pid!r}"
+                    )
+                if not break_stale:
+                    raise StateLockError(
+                        f"run-set state lock is stale: {self.lock_path} pid={legacy_pid!r}"
+                    )
+
+            encoded = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+            os.ftruncate(descriptor, 0)
+            _pwrite_all(descriptor, encoded)
+            os.fsync(descriptor)
+            try:
+                _require_owned_path_inode(descriptor, self.lock_path, kind="run-set state lock")
+            except ControlFilesystemPreflightError as exc:
+                raise StateLockError(str(exc)) from exc
+            yield
+            try:
+                _require_owned_path_inode(descriptor, self.lock_path, kind="run-set state lock")
+            except ControlFilesystemPreflightError as exc:
+                raise StateLockError(str(exc), error_number=exc.errno) from exc
+        finally:
+            os.close(descriptor)
+
+
+def _read_lock_descriptor(descriptor: int) -> dict[str, Any]:
+    try:
+        size = os.fstat(descriptor).st_size
+        payload = strict_json_loads(os.pread(descriptor, size, 0).decode("utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _owned_regular_file_size(path: Path) -> int | None:
+    """Return the size only when ``path`` safely names one unique regular inode."""
+    try:
+        descriptor = os.open(path, _untrusted_open_flags(os.O_RDONLY))
+    except OSError:
+        return None
+    try:
+        return _require_owned_path_inode(descriptor, path, kind="reserve file").st_size
+    except ControlFilesystemPreflightError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def _untrusted_open_flags(access_flags: int) -> int:
+    """Add the required non-following, nonblocking descriptor capabilities."""
+    flags = access_flags
+    for name in ("O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC"):
+        value = getattr(os, name, None)
+        if not isinstance(value, int):
+            raise OSError(
+                errno.ENOTSUP,
+                f"secure final-component opens require os.{name}",
+            )
+        flags |= value
+    return flags
+
+
+def _require_owned_path_inode(
+    descriptor: int,
+    path: Path,
+    *,
+    kind: str,
+) -> os.stat_result:
+    """Require a no-follow-opened descriptor to be the path's unique regular inode."""
+    descriptor_stat = os.fstat(descriptor)
+    if not stat.S_ISREG(descriptor_stat.st_mode):
+        raise ControlFilesystemPreflightError(f"{kind} is not a regular file: {path}")
+    if descriptor_stat.st_nlink != 1:
+        raise ControlFilesystemPreflightError(
+            f"{kind} has unexpected hard links: {path} links={descriptor_stat.st_nlink}"
+        )
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError as exc:
+        raise ControlFilesystemPreflightError(f"{kind} pathname disappeared: {path}") from exc
+    if stat.S_ISLNK(path_stat.st_mode) or (
+        descriptor_stat.st_dev,
+        descriptor_stat.st_ino,
+    ) != (path_stat.st_dev, path_stat.st_ino):
+        raise ControlFilesystemPreflightError(
+            f"{kind} pathname changed while establishing inode ownership: {path}"
+        )
+    return descriptor_stat
+
+
+def _validate_reserve_sizes(
+    control_bytes: int,
+    emergency_bytes: int,
+    state_update_bytes: int,
+) -> None:
+    if not 0 <= control_bytes <= MAX_CONTROL_RESERVE_BYTES:
+        raise ValueError(f"control reserve must be between 0 and {MAX_CONTROL_RESERVE_BYTES} bytes")
+    if not MAX_EMERGENCY_RECORD_BYTES <= emergency_bytes <= MAX_CONTROL_RESERVE_BYTES:
+        raise ValueError(
+            "emergency reserve must cover the maximum emergency record and remain bounded: "
+            f"minimum={MAX_EMERGENCY_RECORD_BYTES} maximum={MAX_CONTROL_RESERVE_BYTES}"
+        )
+    if not 1 <= state_update_bytes <= MAX_CONTROL_RESERVE_BYTES:
+        raise ValueError(
+            "state update preflight must be positive and bounded: "
+            f"minimum=1 maximum={MAX_CONTROL_RESERVE_BYTES}"
+        )
+
+
+def _probe_directory_writable(directory: Path, state_name: str) -> None:
+    try:
+        fd, probe_name = tempfile.mkstemp(prefix=f".{state_name}.", suffix=".probe", dir=directory)
+        probe_path = Path(probe_name)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+            probe_path.unlink(missing_ok=True)
+        _fsync_directory(directory)
+    except OSError as exc:
+        raise ControlFilesystemPreflightError(
+            f"control filesystem writability preflight failed: path={directory}: {exc}"
+        ) from exc
+
+
+def _reserve_file(path: Path, size: int) -> None:
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        if size:
+            if hasattr(os, "posix_fallocate"):
+                os.posix_fallocate(fd, 0, size)
+            else:
+                chunk = bytes(min(size, 1024 * 1024))
+                remaining = size
+                while remaining:
+                    written = os.write(fd, chunk[:remaining])
+                    remaining -= written
+        os.fsync(fd)
+        _require_reserved_capacity(
+            _require_owned_path_inode(fd, tmp_path, kind="new reserve file"),
+            size,
+        )
+        os.replace(tmp_path, path)
+        _fsync_directory(path.parent)
+        _require_reserved_capacity(
+            _require_owned_path_inode(fd, path, kind="published reserve file"),
+            size,
+        )
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        tmp_path.unlink(missing_ok=True)
+
+
+@contextmanager
+def _emergency_channel_lock(path: Path, *, create: bool) -> Iterator[None]:
+    """Serialize reserve replenishment and publication through one stable inode."""
+    try:
+        flags = _untrusted_open_flags(os.O_RDWR | (os.O_CREAT if create else 0))
+        descriptor = os.open(path, flags, 0o600)
+    except FileNotFoundError as exc:
+        raise ControlFilesystemPreflightError(
+            "emergency channel lock is absent; call preflight_and_reserve first"
+        ) from exc
+    except OSError as exc:
+        raise ControlFilesystemPreflightError(
+            f"unable to establish emergency channel lock at {path}: {exc}",
+            error_number=exc.errno,
+        ) from exc
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
+            raise ControlFilesystemPreflightError(
+                f"unable to acquire emergency channel lock at {path}: {exc}",
+                error_number=exc.errno,
+            ) from exc
+        _require_owned_path_inode(descriptor, path, kind="emergency channel lock")
+        if create:
+            os.fsync(descriptor)
+            _fsync_directory(path.parent)
+        yield
+        _require_owned_path_inode(descriptor, path, kind="emergency channel lock")
+    finally:
+        os.close(descriptor)
+
+
+def _publish_reserved_emergency(
+    *,
+    reserve_path: Path,
+    destination_path: Path,
+    payload: bytes,
+) -> None:
+    """Write a preallocated inode and atomically expose it without fresh allocation."""
+    try:
+        descriptor = os.open(
+            reserve_path,
+            _untrusted_open_flags(os.O_RDWR),
+        )
+    except FileNotFoundError as exc:
+        raise ControlFilesystemPreflightError(
+            "emergency reserve was consumed concurrently; an existing emergency record, "
+            "if any, remains authoritative"
+        ) from exc
+    except OSError as exc:
+        raise ControlFilesystemPreflightError(
+            f"unable to open emergency reserve safely at {reserve_path}: {exc}"
+        ) from exc
+    try:
+        descriptor_stat = _require_owned_path_inode(
+            descriptor,
+            reserve_path,
+            kind="emergency reserve",
+        )
+        _require_reserved_capacity(descriptor_stat, MAX_EMERGENCY_RECORD_BYTES)
+
+        _pwrite_all(descriptor, payload)
+        os.ftruncate(descriptor, len(payload))
+        os.fsync(descriptor)
+        _require_owned_path_inode(
+            descriptor,
+            reserve_path,
+            kind="JSON-bearing emergency reserve",
+        )
+        os.replace(reserve_path, destination_path)
+        _fsync_directory(destination_path.parent)
+        _require_owned_path_inode(
+            descriptor,
+            destination_path,
+            kind="published emergency record",
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _pwrite_all(descriptor: int, payload: bytes) -> None:
+    """Overwrite already-allocated bytes without changing the file offset."""
+    view = memoryview(payload)
+    offset = 0
+    while view:
+        written = os.pwrite(descriptor, view, offset)
+        if written <= 0:
+            raise OSError("failed to write emergency record into reserved inode")
+        offset += written
+        view = view[written:]
+
+
+def _require_reserved_capacity(stat: os.stat_result, required_bytes: int) -> None:
+    """Reject short or sparse files that cannot prove the requested capacity was reserved."""
+    allocated_blocks = getattr(stat, "st_blocks", None)
+    allocated_bytes = allocated_blocks * 512 if isinstance(allocated_blocks, int) else None
+    if stat.st_size < required_bytes or (
+        allocated_bytes is not None and allocated_bytes < required_bytes
+    ):
+        raise ControlFilesystemPreflightError(
+            "reserve file is not fully allocated: "
+            f"size_bytes={stat.st_size} allocated_bytes={allocated_bytes!r} "
+            f"required_bytes={required_bytes}; rerun preflight_and_reserve"
+        )
+
+
+def _fsync_directory(directory: Path) -> None:
+    directory_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True

@@ -3,58 +3,103 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
+import importlib
 import importlib.metadata
 import logging
-import logging.handlers as loghandlers
 import os
-import warnings
 
-from feedbax._io import load, load_with_hyperparameters, save
-from feedbax._model import (
-    AbstractModel,
-    ModelInput,
-    wrap_stateless_callable,
-    wrap_stateless_keyless_callable,
-)
-from feedbax._staged import (
-    AbstractStagedModel,
-    ModelStage,
-    pformat_model_spec,
-    pprint_model_spec,
-)
-from feedbax._tree import (
-    get_ensemble,
-    is_type,
-    leaves_of_type,
-    make_named_dict_subclass,
-    make_named_tuple_subclass,
-    move_level_to_outside,
-    random_split_like_tree,
-    tree_array_bytes,
-    tree_call,
-    tree_concatenate,
-    tree_infer_batch_size,
-    tree_key_tuples,
-    tree_labels,
-    tree_labels_of_equal_leaves,
-    tree_map_tqdm,
-    tree_map_unzip,
-    tree_prefix_expand,
-    tree_set,
-    tree_set_scalar,
-    tree_stack,
-    tree_struct_bytes,
-    tree_take,
-    tree_take_multi,
-    tree_unstack,
-    tree_unzip,
-    tree_zip,
-)
-from feedbax.intervene import is_intervenor
-from feedbax.loss import is_termtree
-from feedbax.misc import is_module
+_LAZY_EXPORTS = {
+    "BUILTIN_GRAPH_TEMPLATES": ("feedbax.compiler.templates", "BUILTIN_GRAPH_TEMPLATES"),
+    "CDENetwork": ("feedbax.models.cde", "CDENetwork"),
+    "CDENetworkState": ("feedbax.models.cde", "CDENetworkState"),
+    "Component": ("feedbax.runtime.graph", "Component"),
+    "Graph": ("feedbax.runtime.graph", "Graph"),
+    "GraphTemplateMetadata": ("feedbax.compiler.templates", "GraphTemplateMetadata"),
+    "LoweredContribution": ("feedbax.lowering", "LoweredContribution"),
+    "LowererExecutionError": ("feedbax.lowering", "LowererExecutionError"),
+    "LowererRegistration": ("feedbax.lowering", "LowererRegistration"),
+    "OrderedLowererRegistry": ("feedbax.lowering", "OrderedLowererRegistry"),
+    "Selection": ("feedbax.runtime.selectors", "Selection"),
+    "Wire": ("feedbax.runtime.graph", "Wire"),
+    "AbstractTask": ("feedbax.tasks", "AbstractTask"),
+    "DELAYED_CENTER_OUT_PRESET": ("feedbax.tasks.presets", "DELAYED_CENTER_OUT_PRESET"),
+    "DelayedReaches": ("feedbax.tasks", "DelayedReaches"),
+    "DelayedReachTaskInputs": ("feedbax.tasks", "DelayedReachTaskInputs"),
+    "SimpleReaches": ("feedbax.tasks", "SimpleReaches"),
+    "TaskTrialSpec": ("feedbax.tasks", "TaskTrialSpec"),
+    "TrialTimeline": ("feedbax.tasks", "TrialTimeline"),
+    "WhereDict": ("feedbax.runtime.mapping", "WhereDict"),
+    "centreout_endpoints": ("feedbax.tasks", "centreout_endpoints"),
+    "delayed_center_out_reaches_params": (
+        "feedbax.tasks.presets",
+        "delayed_center_out_reaches_params",
+    ),
+    "eval_ensemble_on_trials": ("feedbax.tasks", "eval_ensemble_on_trials"),
+    "forceless_task_inputs": ("feedbax.tasks", "_forceless_task_inputs"),
+    "gen_epoch_lengths": ("feedbax.tasks", "gen_epoch_lengths"),
+    "get_masks": ("feedbax.tasks", "get_masks"),
+    "get_masked_seqs": ("feedbax.tasks", "get_masked_seqs"),
+    "get_scalar_epoch_seq": ("feedbax.tasks", "get_scalar_epoch_seq"),
+    "is_intervenor": ("feedbax.intervene", "is_intervenor"),
+    "is_termtree": ("feedbax.objectives.loss", "is_termtree"),
+    "init_state_from_component": ("feedbax.runtime.graph", "init_state_from_component"),
+    "network_template_graph": ("feedbax.compiler.templates", "network_template_graph"),
+    "pos_only_states": ("feedbax.tasks", "_pos_only_states"),
+    "prepare_trial": ("feedbax.tasks", "prepare_trial"),
+    "recurrent_controller_template_graph": (
+        "feedbax.compiler.templates",
+        "recurrent_controller_template_graph",
+    ),
+    "select": ("feedbax.runtime.selectors", "select"),
+    "simple_feedback_template_graph": (
+        "feedbax.compiler.templates",
+        "simple_feedback_template_graph",
+    ),
+}
 
-# from feedbax._logging import enable_central_logging
+# from feedbax.config.logging import enable_logging_handlers
+
+__all__ = [
+    "AbstractTask",
+    "BUILTIN_GRAPH_TEMPLATES",
+    "CDENetwork",
+    "CDENetworkState",
+    "Component",
+    "DelayedReaches",
+    "DelayedReachTaskInputs",
+    "DELAYED_CENTER_OUT_PRESET",
+    "Graph",
+    "GraphTemplateMetadata",
+    "LOG_LEVEL",
+    "LoweredContribution",
+    "LowererExecutionError",
+    "LowererRegistration",
+    "OrderedLowererRegistry",
+    "Selection",
+    "SimpleReaches",
+    "TaskTrialSpec",
+    "TrialTimeline",
+    "WhereDict",
+    "Wire",
+    "__version__",
+    "centreout_endpoints",
+    "delayed_center_out_reaches_params",
+    "eval_ensemble_on_trials",
+    "forceless_task_inputs",
+    "gen_epoch_lengths",
+    "init_state_from_component",
+    "is_intervenor",
+    "is_termtree",
+    "get_masks",
+    "get_masked_seqs",
+    "get_scalar_epoch_seq",
+    "network_template_graph",
+    "pos_only_states",
+    "prepare_trial",
+    "recurrent_controller_template_graph",
+    "select",
+    "simple_feedback_template_graph",
+]
 
 
 __version__ = importlib.metadata.version("feedbax")
@@ -72,3 +117,14 @@ LOG_LEVEL = os.environ.get("FEEDBAX_LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
 
 logger = logging.getLogger(__package__)
 logger.addHandler(logging.NullHandler())
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attr_name = _LAZY_EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    value = getattr(importlib.import_module(module_name), attr_name)
+    globals()[name] = value
+    return value

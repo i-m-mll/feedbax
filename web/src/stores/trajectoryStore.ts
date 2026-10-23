@@ -1,0 +1,281 @@
+import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
+import type {
+  TrajectoryDataset,
+  TrajectoryMetadata,
+  TrajectoryData,
+  PlaybackState,
+} from '@/types/trajectory';
+import {
+  fetchTrajectoryDatasets,
+  fetchTrajectoryMetadata,
+  fetchTrajectory,
+  filterTrajectories,
+} from '@/api/client';
+import { withStoreActionFeedback } from '@/stores/storeActions';
+
+interface TrajectoryStoreState {
+  // Data
+  datasets: TrajectoryDataset[];
+  activeDataset: string | null;
+  metadata: TrajectoryMetadata | null;
+  filteredIndices: number[] | null;
+  activeIndex: number | null;
+  trajectoryData: TrajectoryData | null;
+  loading: boolean;
+  error: string | null;
+
+  // Playback
+  playback: PlaybackState;
+
+  // Filters
+  filterBodyIdx: number | null;
+  filterTaskType: number | null;
+
+  // Display options
+  showTargetTrace: boolean;
+  toggleTargetTrace: () => void;
+
+  // Actions
+  loadDatasets: () => Promise<void>;
+  selectDataset: (name: string) => Promise<void>;
+  applyFilter: (bodyIdx: number | null, taskType: number | null) => Promise<void>;
+  selectTrajectory: (index: number) => Promise<void>;
+
+  // Playback actions
+  setFrame: (frame: number) => void;
+  togglePlay: () => void;
+  setSpeed: (speed: number) => void;
+  stepForward: () => void;
+  stepBackward: () => void;
+}
+
+type PersistedTrajectoryState = Pick<
+  TrajectoryStoreState,
+  'activeDataset' | 'activeIndex' | 'filterBodyIdx' | 'filterTaskType' | 'showTargetTrace'
+> & {
+  playbackSpeed: number;
+};
+
+const defaultPlayback: PlaybackState = {
+  playing: false,
+  speed: 1,
+  frame: 0,
+  totalFrames: 0,
+};
+
+const DEFAULT_PERSISTED_TRAJECTORY: PersistedTrajectoryState = {
+  activeDataset: null,
+  activeIndex: null,
+  filterBodyIdx: null,
+  filterTaskType: null,
+  showTargetTrace: true,
+  playbackSpeed: 1,
+};
+
+export const useTrajectoryStore = create<TrajectoryStoreState>()(
+  persist(
+    (set, get) => ({
+  // Data
+  datasets: [],
+  activeDataset: null,
+  metadata: null,
+  filteredIndices: null,
+  activeIndex: null,
+  trajectoryData: null,
+  loading: false,
+  error: null,
+
+  // Playback
+  playback: { ...defaultPlayback },
+
+  // Filters
+  filterBodyIdx: null,
+  filterTaskType: null,
+
+  // Display options
+  showTargetTrace: true,
+  toggleTargetTrace: () => {
+    set((state) => ({ showTargetTrace: !state.showTargetTrace }));
+  },
+
+  // Actions
+  loadDatasets: async () => {
+    set({ loading: true, error: null });
+    const datasets = await withStoreActionFeedback(
+      () => fetchTrajectoryDatasets(),
+      {
+        errorToast: 'Failed to load trajectory datasets.',
+        toastId: 'trajectory-datasets-load-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!datasets) return;
+    set({ datasets, loading: false });
+  },
+
+  selectDataset: async (name: string) => {
+    set({
+      activeDataset: name,
+      metadata: null,
+      filteredIndices: null,
+      activeIndex: null,
+      trajectoryData: null,
+      loading: true,
+      error: null,
+      playback: { ...defaultPlayback, speed: get().playback.speed },
+    });
+    const metadata = await withStoreActionFeedback(
+      () => fetchTrajectoryMetadata(name),
+      {
+        errorToast: 'Failed to load trajectory metadata.',
+        toastId: 'trajectory-metadata-load-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!metadata) return;
+    set({ metadata, loading: false });
+    // Apply current filters after loading metadata
+    const { filterBodyIdx, filterTaskType } = get();
+    await get().applyFilter(filterBodyIdx, filterTaskType);
+  },
+
+  applyFilter: async (bodyIdx: number | null, taskType: number | null) => {
+    const { activeDataset } = get();
+    if (!activeDataset) return;
+
+    set({
+      filterBodyIdx: bodyIdx,
+      filterTaskType: taskType,
+      loading: true,
+      error: null,
+    });
+
+    const filters: { body_idx?: number; task_type?: number } = {};
+    if (bodyIdx !== null) filters.body_idx = bodyIdx;
+    if (taskType !== null) filters.task_type = taskType;
+
+    const result = await withStoreActionFeedback(
+      () => filterTrajectories(activeDataset, filters),
+      {
+        errorToast: 'Failed to filter trajectories.',
+        toastId: 'trajectory-filter-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!result) return;
+    set({ filteredIndices: result.indices, loading: false });
+
+    // Auto-select first trajectory from filtered results
+    if (result.indices.length > 0) {
+      await get().selectTrajectory(result.indices[0]);
+    } else {
+      set({ activeIndex: null, trajectoryData: null });
+    }
+  },
+
+  selectTrajectory: async (index: number) => {
+    const { activeDataset } = get();
+    if (!activeDataset) return;
+
+    set({ activeIndex: index, loading: true, error: null });
+    const data = await withStoreActionFeedback(
+      () => fetchTrajectory(activeDataset, index),
+      {
+        errorToast: 'Failed to load trajectory.',
+        toastId: 'trajectory-load-error',
+        onError: (err) => set({ error: String(err), loading: false }),
+      },
+    );
+    if (!data) return;
+    set({
+      trajectoryData: data,
+      loading: false,
+      playback: {
+        ...defaultPlayback,
+        speed: get().playback.speed,
+        totalFrames: data.timestamps.length,
+      },
+    });
+  },
+
+  // Playback actions
+  setFrame: (frame: number) => {
+    set((state) => ({
+      playback: { ...state.playback, frame },
+    }));
+  },
+
+  togglePlay: () => {
+    set((state) => ({
+      playback: { ...state.playback, playing: !state.playback.playing },
+    }));
+  },
+
+  setSpeed: (speed: number) => {
+    set((state) => ({
+      playback: { ...state.playback, speed },
+    }));
+  },
+
+  stepForward: () => {
+    set((state) => {
+      const next = Math.min(state.playback.frame + 1, state.playback.totalFrames - 1);
+      return { playback: { ...state.playback, frame: next, playing: false } };
+    });
+  },
+
+  stepBackward: () => {
+    set((state) => {
+      const prev = Math.max(state.playback.frame - 1, 0);
+      return { playback: { ...state.playback, frame: prev, playing: false } };
+    });
+  },
+    }),
+    {
+      name: 'feedbax-studio-trajectory',
+      storage: createJSONStorage(() => window.localStorage),
+      version: 1,
+      migrate: (persistedState): PersistedTrajectoryState => {
+        const persisted =
+          persistedState && typeof persistedState === 'object'
+            ? (persistedState as Partial<PersistedTrajectoryState>)
+            : {};
+        return {
+          ...DEFAULT_PERSISTED_TRAJECTORY,
+          ...persisted,
+          playbackSpeed:
+            typeof persisted.playbackSpeed === 'number'
+              ? persisted.playbackSpeed
+              : DEFAULT_PERSISTED_TRAJECTORY.playbackSpeed,
+        };
+      },
+      merge: (persistedState, currentState) => {
+        const persisted =
+          persistedState && typeof persistedState === 'object'
+            ? (persistedState as Partial<PersistedTrajectoryState>)
+            : {};
+        return {
+          ...currentState,
+          activeDataset: persisted.activeDataset ?? currentState.activeDataset,
+          activeIndex: persisted.activeIndex ?? currentState.activeIndex,
+          filterBodyIdx: persisted.filterBodyIdx ?? currentState.filterBodyIdx,
+          filterTaskType: persisted.filterTaskType ?? currentState.filterTaskType,
+          showTargetTrace: persisted.showTargetTrace ?? currentState.showTargetTrace,
+          playback: {
+            ...currentState.playback,
+            speed: persisted.playbackSpeed ?? currentState.playback.speed,
+          },
+        };
+      },
+      partialize: (state) => ({
+        activeDataset: state.activeDataset,
+        activeIndex: state.activeIndex,
+        filterBodyIdx: state.filterBodyIdx,
+        filterTaskType: state.filterTaskType,
+        showTargetTrace: state.showTargetTrace,
+        playbackSpeed: state.playback.speed,
+      }),
+    },
+  )
+);

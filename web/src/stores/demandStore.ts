@@ -1,0 +1,177 @@
+import { create } from 'zustand';
+import type { FigureRequest, FigureRequestStatus } from '@/types/analysis';
+
+interface DemandState {
+  /** Map from node ID to its figure generation request state. */
+  requests: Record<string, FigureRequest>;
+
+  /** Start a generation request for an analysis node. */
+  requestGeneration: (nodeId: string) => void;
+
+  /** Update the status of a generation request. */
+  setStatus: (nodeId: string, status: FigureRequestStatus, extra?: Partial<FigureRequest>) => void;
+
+  /** Mark a request as complete with figure hash(es). */
+  setResult: (nodeId: string, figureHash: string) => void;
+
+  /** Mark a request as complete with multiple figure hashes. */
+  setResults: (nodeId: string, figureHashes: string[]) => void;
+
+  /** Complete a request only while its request ID is still active. */
+  setResultForRequest: (nodeId: string, requestId: string, figureHash: string) => boolean;
+
+  /** Mark a request as failed. */
+  setError: (nodeId: string, error: string) => void;
+
+  /** Fail a request only while its request ID is still active. */
+  setErrorForRequest: (nodeId: string, requestId: string, error: string) => boolean;
+
+  /** Clear a request (reset to idle). */
+  clearRequest: (nodeId: string) => void;
+
+  /** Get the status for a node, defaulting to idle. */
+  getStatus: (nodeId: string) => FigureRequestStatus;
+}
+
+export const useDemandStore = create<DemandState>((set, get) => ({
+  requests: {},
+
+  requestGeneration: (nodeId) =>
+    set((state) => ({
+      requests: {
+        ...state.requests,
+        [nodeId]: {
+          nodeId,
+          status: 'running',
+          requestedAt: Date.now(),
+          figureHash: undefined,
+          error: undefined,
+          completedAt: undefined,
+        },
+      },
+    })),
+
+  setStatus: (nodeId, status, extra) =>
+    set((state) => ({
+      requests: {
+        ...state.requests,
+        [nodeId]: {
+          ...state.requests[nodeId],
+          nodeId,
+          status,
+          ...extra,
+        },
+      },
+    })),
+
+  setResult: (nodeId, figureHash) =>
+    set((state) => ({
+      requests: {
+        ...state.requests,
+        [nodeId]: {
+          ...state.requests[nodeId],
+          nodeId,
+          status: 'ready',
+          figureHash,
+          completedAt: Date.now(),
+          error: undefined,
+        },
+      },
+    })),
+
+  setResults: (nodeId, figureHashes) =>
+    set((state) => ({
+      requests: {
+        ...state.requests,
+        [nodeId]: {
+          ...state.requests[nodeId],
+          nodeId,
+          status: 'ready',
+          figureHash: figureHashes[0],
+          completedAt: Date.now(),
+          error: undefined,
+        },
+      },
+    })),
+
+  setResultForRequest: (nodeId, requestId, figureHash) => {
+    let updated = false;
+    set((state) => {
+      const request = state.requests[nodeId];
+      if (request?.status !== 'running' || request.figureHash !== requestId) {
+        return state;
+      }
+      updated = true;
+      return {
+        requests: {
+          ...state.requests,
+          [nodeId]: {
+            ...request,
+            status: 'ready',
+            figureHash,
+            completedAt: Date.now(),
+            error: undefined,
+          },
+        },
+      };
+    });
+    return updated;
+  },
+
+  setError: (nodeId, error) =>
+    set((state) => ({
+      requests: {
+        ...state.requests,
+        [nodeId]: {
+          ...state.requests[nodeId],
+          nodeId,
+          status: 'error',
+          error,
+          completedAt: Date.now(),
+        },
+      },
+    })),
+
+  setErrorForRequest: (nodeId, requestId, error) => {
+    let updated = false;
+    set((state) => {
+      const request = state.requests[nodeId];
+      if (request?.status !== 'running' || request.figureHash !== requestId) {
+        return state;
+      }
+      updated = true;
+      return {
+        requests: {
+          ...state.requests,
+          [nodeId]: {
+            ...request,
+            status: 'error',
+            error,
+            completedAt: Date.now(),
+          },
+        },
+      };
+    });
+    return updated;
+  },
+
+  clearRequest: (nodeId) =>
+    set((state) => ({
+      requests: {
+        ...state.requests,
+        [nodeId]: {
+          nodeId,
+          status: 'idle',
+          figureHash: undefined,
+          error: undefined,
+          requestedAt: undefined,
+          completedAt: undefined,
+        },
+      },
+    })),
+
+  getStatus: (nodeId) => {
+    const req = get().requests[nodeId];
+    return req?.status ?? 'idle';
+  },
+}));

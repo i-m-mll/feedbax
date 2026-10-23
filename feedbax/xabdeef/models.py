@@ -5,30 +5,25 @@
 """
 
 from collections.abc import Callable
-from functools import partial
-import logging
 from typing import Optional
 
 import equinox as eqx
-import jax
-import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import PRNGKeyArray
 
-from feedbax import get_ensemble
-from feedbax.bodies import SimpleFeedback
+from feedbax.models.feedback import SimpleFeedback
 from feedbax.mechanics.plant import DirectForceInput
-from feedbax.misc import identity_func
-from feedbax._model import AbstractModel
-from feedbax.iterate import Iterator
 from feedbax.mechanics import Mechanics
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.nn import PopulationStructure, SimpleStagedNetwork
-from feedbax.noise import HalfNormal2Vector, Multiplicative, Normal
-from feedbax.task import AbstractTask
+from feedbax.models.networks import PopulationStructure, SimpleStagedNetwork
+from feedbax.models.cde import CDENetwork
+from feedbax.runtime.noise import Multiplicative, Normal
+from feedbax.tasks import AbstractTask
 
 
-logger = logging.getLogger(__name__)
+def identity_func(x):
+    """The identity function."""
+    return x
 
 
 def point_mass_nn(
@@ -48,6 +43,7 @@ def point_mass_nn(
     tau_rise: float = 0.0,
     tau_decay: float = 0.0,
     population_structure: Optional[PopulationStructure] = None,
+    sisu_gating: str = "additive",
     *,
     key: PRNGKeyArray,
 ):
@@ -74,6 +70,9 @@ def point_mass_nn(
         velocity_damping: Decays the velocity of the point mass.
         tau_rise: The time constant for the rise of the first-order actuation filter.
         tau_decay: The time constant for the decay of the first-order actuation filter.
+        sisu_gating: How SISU is incorporated. ``"additive"`` (default) concatenates
+            SISU with the input. ``"multiplicative"`` strips SISU from the input and
+            applies it as post-hidden gain modulation.
         key: The random key to use for initializing the model.
     """
     key1, key2 = jr.split(key)
@@ -104,6 +103,7 @@ def point_mass_nn(
         hidden_type=hidden_type,
         out_nonlinearity=out_nonlinearity,
         population_structure=population_structure,
+        sisu_gating=sisu_gating,
         key=key1,
     )
     body = SimpleFeedback(
@@ -115,16 +115,99 @@ def point_mass_nn(
             # `broadcast=True` means only a single noise sample -- i.e. scale the vector, not the directions.
             Multiplicative(Normal(std=motor_noise_std)) + Normal(std=1.8 * motor_noise_std)
             # Multiplicative(
-            #     HalfNormal2Vector(std=motor_noise_std),
             #     scale_func=lambda x: jnp.linalg.norm(x, axis=-1)
             # )
-            # + HalfNormal2Vector(std=1.8 * motor_noise_std)
         ),
         tau_rise=tau_rise,
         tau_decay=tau_decay,
         key=key2,
     )
 
-    model = Iterator(body, n_steps)
+    return body
 
-    return model
+
+def cde_controller_nn(
+    task: AbstractTask,
+    n_steps: int = 100,
+    dt: float = 0.05,
+    mass: float = 1.0,
+    damping: float = 0.0,
+    hidden_dim: int = 50,
+    vf_width: int = 64,
+    vf_depth: int = 2,
+    feedback_delay_steps: int = 0,
+    feedback_noise_std: float = 0.0,
+    motor_noise_std: float = 0.0,
+    tau_rise: float = 0.0,
+    tau_decay: float = 0.0,
+    *,
+    key: PRNGKeyArray,
+) -> SimpleFeedback:
+    """Point mass controlled by a Neural CDE controller.
+
+    Follows the same structure as ``point_mass_nn`` but replaces
+    ``SimpleStagedNetwork`` with ``CDENetwork``. The CDE outputs
+    sigmoid-bounded actions in [0, 1].
+
+    Args:
+        task: The task providing trial specs and input dimensions.
+        n_steps: Number of time steps per trial.
+        dt: Duration of each time step.
+        mass: Mass of the point mass.
+        damping: Drag coefficient for the point mass.
+        hidden_dim: Dimensionality of the CDE hidden state.
+        vf_width: Width of hidden layers in the CDE vector field MLP.
+        vf_depth: Number of hidden layers in the CDE vector field MLP.
+        feedback_delay_steps: Steps of sensory feedback delay.
+        feedback_noise_std: Std of Gaussian noise on feedback.
+        motor_noise_std: Std of Gaussian noise on motor output.
+        tau_rise: Rise time constant for first-order actuation filter.
+        tau_decay: Decay time constant for first-order actuation filter.
+        key: PRNG key for initialization.
+
+    Returns:
+        A ``SimpleFeedback`` model wiring the CDE controller into a
+        point-mass sensorimotor loop.
+    """
+    key1, key2 = jr.split(key)
+
+    system = PointMass(mass=mass, damping=damping)
+    mechanics = Mechanics(DirectForceInput(system), dt)
+
+    feedback_spec = dict(
+        where=lambda state: (
+            state.plant.skeleton.pos,
+            state.plant.skeleton.vel,
+        ),
+        delay=feedback_delay_steps,
+        noise_func=Normal(std=feedback_noise_std),
+    )
+
+    # Automatically determine observation dimensionality
+    obs_dim = SimpleFeedback.get_nn_input_size(
+        task, mechanics, feedback_spec=feedback_spec
+    )
+
+    net = CDENetwork(
+        obs_dim=obs_dim,
+        hidden_dim=hidden_dim,
+        out_size=system.input_size,
+        vf_width=vf_width,
+        vf_depth=vf_depth,
+        key=key1,
+    )
+
+    body = SimpleFeedback(
+        net,
+        mechanics,
+        feedback_spec=feedback_spec,
+        motor_noise_func=(
+            Multiplicative(Normal(std=motor_noise_std))
+            + Normal(std=1.8 * motor_noise_std)
+        ),
+        tau_rise=tau_rise,
+        tau_decay=tau_decay,
+        key=key2,
+    )
+
+    return body

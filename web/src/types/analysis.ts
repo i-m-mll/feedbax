@@ -1,0 +1,345 @@
+/** Types for the analysis DAG system and figure generation. */
+
+import type { StudioSelectorRef, ValueSchema } from '@/types/workspace';
+import type { AnalysisCanvasPosition } from '@/generated/studioContracts';
+
+/** A scalar parameter value on an analysis or transform node. */
+export type AnalysisParamScalar = number | string | boolean | null;
+
+/** A structured parameter value — nested key-value pairs. */
+export type AnalysisParamObject = { [key: string]: AnalysisParamValue };
+
+/** A parameter value — scalar, array of scalars, or structured object. */
+export type AnalysisParamValue = AnalysisParamScalar | AnalysisParamScalar[] | AnalysisParamObject;
+
+/** Configuration for a transform (prep op) applied on an edge. */
+export interface TransformSpec {
+  /** Unique ID within the analysis graph. */
+  id: string;
+  /** Transform class name (e.g. "Normalize", "PCA", "Downsample"). */
+  type: string;
+  /** User-facing label. */
+  label: string;
+  /** Config parameters for this transform. */
+  params: Record<string, AnalysisParamValue>;
+}
+
+/** An analysis node in the DAG. */
+export interface AnalysisNodeSpec {
+  /** Unique ID within the analysis graph. */
+  id: string;
+  /** Analysis class name (e.g. "Violins", "Profiles", "PCA"). */
+  type: string;
+  /** User-facing label. */
+  label: string;
+  /** Category for grouping in the palette. */
+  category: string;
+  /** Input port names. */
+  inputPorts: string[];
+  /** Output port names. */
+  outputPorts: string[];
+  /** Config parameters. */
+  params: Record<string, AnalysisParamValue>;
+  /** Whether this is a dependency (smaller/muted) or a full analysis. */
+  role: 'analysis' | 'dependency';
+}
+
+// ---------------------------------------------------------------------------
+// State field path types — hierarchical selection into state/model/task data
+// ---------------------------------------------------------------------------
+
+/**
+ * Dot-separated path into the state tree.
+ * Examples: "states", "states.net.hidden", "model.step.net.readout.weight"
+ */
+export type StateFieldPath = string;
+
+/** A node in the state field hierarchy. */
+export interface StateFieldNode {
+  /** Display label for this level (e.g. "hidden", "effector"). */
+  label: string;
+  /** Full dot-separated path from root (used as handle ID). */
+  path: StateFieldPath;
+  /** Secondary/schema text retained for inspector use; not rendered inline in the tree. */
+  detail?: string | null;
+  /** Canonical selector carried by this node when it is connectable. */
+  selector?: StudioSelectorRef;
+  /** Whether this row exposes a connectable source handle. Defaults to true. */
+  connectable?: boolean;
+  /** Child fields; absent for leaf nodes. */
+  children?: StateFieldNode[];
+}
+
+/** Complete state field tree exposed by the DataSourceNode. */
+export const STATE_FIELD_TREE: StateFieldNode[] = [
+  {
+    label: 'states',
+    path: 'states',
+    children: [
+      {
+        label: 'net',
+        path: 'states.net',
+        children: [
+          { label: 'hidden', path: 'states.net.hidden' },
+          { label: 'input', path: 'states.net.input' },
+          { label: 'output', path: 'states.net.output' },
+        ],
+      },
+      {
+        label: 'mechanics',
+        path: 'states.mechanics',
+        children: [
+          {
+            label: 'effector',
+            path: 'states.mechanics.effector',
+            children: [
+              { label: 'pos', path: 'states.mechanics.effector.pos' },
+              { label: 'vel', path: 'states.mechanics.effector.vel' },
+            ],
+          },
+        ],
+      },
+      {
+        label: 'efferent',
+        path: 'states.efferent',
+        children: [
+          { label: 'output', path: 'states.efferent.output' },
+        ],
+      },
+      {
+        label: 'feedback',
+        path: 'states.feedback',
+        children: [
+          { label: 'noise', path: 'states.feedback.noise' },
+        ],
+      },
+    ],
+  },
+  {
+    label: 'model',
+    path: 'model',
+    children: [
+      {
+        label: 'step',
+        path: 'model.step',
+        children: [
+          {
+            label: 'net',
+            path: 'model.step.net',
+            children: [
+              { label: 'hidden', path: 'model.step.net.hidden' },
+              {
+                label: 'readout',
+                path: 'model.step.net.readout',
+                children: [
+                  { label: 'weight', path: 'model.step.net.readout.weight' },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+  {
+    label: 'task',
+    path: 'task',
+    children: [
+      {
+        label: 'validation_trials',
+        path: 'task.validation_trials',
+        children: [
+          { label: 'targets', path: 'task.validation_trials.targets' },
+        ],
+      },
+    ],
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Wire types
+// ---------------------------------------------------------------------------
+
+export interface AnalysisInputConsumerSpec {
+  page_id?: string | null;
+  node_id?: string | null;
+  input_port?: string | null;
+  analysis_type?: string | null;
+  role?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AnalysisInputRequirement {
+  id: string;
+  label?: string | null;
+  selector?: string | null;
+  target?: Record<string, unknown> | null;
+  retention: Record<string, unknown>;
+  value_schema?: ValueSchema | Record<string, unknown> | null;
+  consumer: AnalysisInputConsumerSpec;
+  metadata: Record<string, unknown>;
+}
+
+/** A wire in the analysis DAG. */
+export interface AnalysisWire {
+  id: string;
+  sourceId: string;
+  sourcePort: string;
+  targetId: string;
+  targetPort: string;
+  /** Whether this is an implicit data dependency (dashed/muted). */
+  implicit: boolean;
+  /** Transform applied on this edge, if any. */
+  transform?: TransformSpec;
+  /** Specific state field path selected for this wire, if any.
+   *  Undefined means the full top-level object flows through. */
+  fieldPath?: StateFieldPath;
+  /** Analysis-owned observable materialization requirement for data-source wires. */
+  inputRequirement?: AnalysisInputRequirement;
+}
+
+/** The complete analysis graph specification. */
+export interface AnalysisGraphSpec {
+  nodes: Record<string, AnalysisNodeSpec>;
+  wires: AnalysisWire[];
+  /** The data source node ID (always present as the leftmost node). */
+  dataSourceId: string;
+}
+
+/** An analysis class available in the palette. */
+export interface AnalysisClassDef {
+  /** Class name (e.g. "Violins"). */
+  name: string;
+  /** Human-readable description. */
+  description: string;
+  /** Category for grouping. */
+  category: string;
+  /** Default input port names. */
+  inputPorts: string[];
+  /** Default output port names. */
+  outputPorts: string[];
+  /** Default parameter values. */
+  defaultParams: Record<string, AnalysisParamValue>;
+  /** Icon name from lucide-react. */
+  icon: string;
+}
+
+/** An analysis package (group of related analysis classes). */
+export interface AnalysisPackage {
+  name: string;
+  description: string;
+  analyses: AnalysisClassDef[];
+}
+
+/** A fig op applied to an analysis node's figure generation pipeline. */
+export interface FigOpSpec {
+  name: string;
+  params: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+/** A final op applied to results or figures after generation. */
+export interface FinalOpSpec {
+  name: string;
+  fn_name: string;
+  params?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+/** Analysis-specific metadata attached to a node spec. */
+export interface AnalysisNodeMeta {
+  /** Whether this analysis implements make_figs(). */
+  has_make_figs: boolean;
+  /** Ordered list of fig ops in the pipeline. */
+  fig_ops: FigOpSpec[];
+  /** Final ops grouped by type (results, figs). */
+  final_ops_by_type: Record<string, FinalOpSpec[]>;
+  /** Dependency port names this analysis expects. */
+  dependency_ports: string[];
+  /** Analysis class name. */
+  analysis_class: string;
+}
+
+// ---------------------------------------------------------------------------
+// Multi-page analysis persistence types
+// ---------------------------------------------------------------------------
+
+/** Viewport state for an analysis canvas page. */
+export interface AnalysisViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+/** Extensible evaluation parametrization for an analysis page. */
+export interface EvalParametrization {
+  [key: string]: unknown;
+}
+
+/** Persisted specification for a single analysis page (tab within analysis). */
+export interface AnalysisPageSpec {
+  /** Unique page ID. */
+  id: string;
+  /** User-facing page name. */
+  name: string;
+  /** The analysis DAG graph for this page. */
+  graphSpec: AnalysisGraphSpec;
+  /** Observable input requirements consumed by this page. */
+  inputRequirements?: AnalysisInputRequirement[];
+  /** Evaluation parameters for this page. */
+  evalParams: EvalParametrization;
+  /** Viewport position/zoom for this page. */
+  viewport: AnalysisViewport;
+  /** Presentation-only positions keyed by stable semantic analysis-node ID. */
+  nodePositions?: Record<string, AnalysisCanvasPosition>;
+  /** Selected eval run ID for this page (null = none selected). */
+  evalRunId: string | null;
+  /** Expanded field paths in the DataSourceNode tree for this page. */
+  expandedFieldPaths: string[];
+}
+
+/** Snapshot of all analysis state — used by projectsStore for tab switching. */
+export interface AnalysisSnapshot {
+  /** All analysis pages. */
+  pages: AnalysisPageSpec[];
+  /** Which page is currently active (loaded into React Flow). */
+  activePageId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Figure request types
+// ---------------------------------------------------------------------------
+
+/** Status of a demand-driven figure generation request. */
+export type FigureRequestStatus = 'idle' | 'running' | 'ready' | 'error';
+
+/** Tracks a single figure generation request. */
+export interface FigureRequest {
+  nodeId: string;
+  status: FigureRequestStatus;
+  figureHash?: string;
+  /** All figure hashes produced by this generation request. */
+  figureHashes?: string[];
+  error?: string;
+  requestedAt?: number;
+  completedAt?: number;
+}
+
+/** Response from the figure generation endpoint. */
+export interface GenerateFigureResponse {
+  request_id: string;
+  status: string;
+  manifest_id?: string | null;
+}
+
+/** Response from the figure status check endpoint. */
+export interface FigureStatusResponse {
+  request_id: string;
+  status: 'pending' | 'running' | 'complete' | 'error';
+  figure_hashes?: string[];
+  manifest_id?: string | null;
+  manifest_path?: string | null;
+  artifact_ids?: string[] | null;
+  artifact_paths?: string[] | null;
+  error?: string;
+}

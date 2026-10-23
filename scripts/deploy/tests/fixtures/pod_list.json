@@ -1,0 +1,6 @@
+[
+  { "id": "pod-keep-001", "name": "feedbax-rlrmp-run-rPID-123-EU-RO-1-1-abc", "desiredStatus": "RUNNING" },
+  { "id": "pod-leak-002", "name": "feedbax-rlrmp-run-rPID-123-US-KS-2-2-def", "desiredStatus": "RUNNING" },
+  { "id": "pod-other-003", "name": "someone-elses-pod", "desiredStatus": "RUNNING" },
+  { "id": "pod-leak-004", "name": "feedbax-rlrmp-run-rPID-123-AP-IN-1-3-ghi", "desiredStatus": "EXITED" }
+]

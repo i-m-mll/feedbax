@@ -1,0 +1,190 @@
+import { describe, expect, it } from 'vitest';
+import {
+  nextMuxInputPort,
+  normalizeDynamicPorts,
+  visibleMuxInputPorts,
+  materializeMuxSpecForBindings,
+  muxHasSpareInput,
+  isNextMuxInputPort,
+  expandMuxForPort,
+} from '@/features/graph/dynamicPorts';
+import type { AcausalGraphSpec, GraphSpec } from '@/types/graph';
+import type { StudioTaskBindingSpec } from '@/types/workspace';
+
+function graph(inputPorts = ['in_0', 'in_1']): GraphSpec {
+  return {
+    nodes: {
+      mux: {
+        type: 'Mux',
+        params: { n_inputs: inputPorts.length },
+        input_ports: inputPorts,
+        output_ports: ['output'],
+      },
+      source: {
+        type: 'Gain',
+        params: {},
+        input_ports: ['input'],
+        output_ports: ['output'],
+      },
+    },
+    wires: [],
+    input_ports: [],
+    output_ports: [],
+    input_bindings: {},
+    output_bindings: {},
+  };
+}
+
+function taskBindings(...ports: string[]): StudioTaskBindingSpec {
+  return {
+    schema_version: 'feedbax.spec.studio.task_bindings.v2',
+    exposed_data: ports.map((port) => ({
+      id: port,
+      label: port,
+      kind: 'signal',
+      role: 'model_input',
+      path: `inputs.${port}`,
+      bindable: true,
+      metadata: {},
+    })),
+    bindings: ports.map((port) => ({
+      id: `task:${port}->mux:${port}`,
+      source_data_id: port,
+      target_node_id: 'mux',
+      target_port: port,
+      role: 'model_input',
+      metadata: {},
+    })),
+    metadata: {},
+  };
+}
+
+describe('dynamic graph ports', () => {
+  it('does not apply causal mux affordances to an acausal active graph', () => {
+    const interior: AcausalGraphSpec = {
+      schema_id: 'feedbax.spec.acausal_graph',
+      schema_version: 'feedbax.spec.acausal_graph.v1',
+      physical_domain: 'translational',
+      nodes: { mass: { type: 'Mass', params: {}, input_ports: [], output_ports: [] } },
+      connections: [{ a: ['mass', 'left'], b: ['mass', 'right'] }],
+      solver: { solver_type: 'euler', dt: 0.01 },
+    };
+
+    expect(visibleMuxInputPorts(interior, 'mass')).toBeNull();
+    expect(materializeMuxSpecForBindings(interior, 'mass')).toBeNull();
+    expect(nextMuxInputPort(interior, 'mass')).toBeNull();
+    expect(muxHasSpareInput(interior, 'mass')).toBe(false);
+    expect(isNextMuxInputPort(interior, 'mass', 'in_0')).toBe(false);
+    expect(expandMuxForPort(interior, 'mass', 'in_0')).toBe(interior);
+    expect(normalizeDynamicPorts(interior)).toBe(interior);
+  });
+
+  it('grows a mux to the highest wired input and shrinks trailing unused ports', () => {
+    const expanded = normalizeDynamicPorts({
+      ...graph(),
+      wires: [
+        {
+          source_node: 'source',
+          source_port: 'output',
+          target_node: 'mux',
+          target_port: 'in_2',
+        },
+      ],
+    });
+
+    expect(expanded.nodes.mux.input_ports).toEqual(['in_0', 'in_1', 'in_2']);
+    expect(expanded.nodes.mux.params.n_inputs).toBe(3);
+
+    const shrunk = normalizeDynamicPorts({
+      ...expanded,
+      wires: [],
+    });
+
+    expect(shrunk.nodes.mux.input_ports).toEqual(['in_0', 'in_1']);
+    expect(shrunk.nodes.mux.params.n_inputs).toBe(2);
+  });
+
+  it('keeps task-bound mux inputs materialized for rendering', () => {
+    const bindings = taskBindings('in_0', 'in_1', 'in_2');
+    const normalized = normalizeDynamicPorts(graph(), bindings);
+    const visible = visibleMuxInputPorts(graph(), 'mux', bindings);
+
+    expect(normalized.nodes.mux.input_ports).toEqual(['in_0', 'in_1', 'in_2']);
+    expect(nextMuxInputPort(graph(), 'mux', bindings)).toBe('in_3');
+    expect(visible?.ports).toEqual(['in_0', 'in_1', 'in_2', 'in_3']);
+    expect(visible?.nextPort).toBe('in_3');
+  });
+
+  it('shows one extra mux input only when all current inputs are occupied', () => {
+    const base = graph();
+
+    expect(nextMuxInputPort(base, 'mux')).toBeNull();
+    expect(
+      nextMuxInputPort(
+        {
+          ...base,
+          wires: [
+            {
+              source_node: 'source',
+              source_port: 'output',
+              target_node: 'mux',
+              target_port: 'in_0',
+            },
+          ],
+        },
+        'mux',
+        taskBindings('in_1')
+      )
+    ).toBe('in_2');
+  });
+
+  it('normalizes many muxes with one wire-index pass', () => {
+    const muxCount = 140;
+    const wires: GraphSpec['wires'] = Array.from({ length: muxCount }, (_, index) => ({
+      source_node: 'source',
+      source_port: 'output',
+      target_node: `mux_${index}`,
+      target_port: 'in_2',
+    }));
+    const instrumentedWires = [...wires];
+    const originalIterator = instrumentedWires[Symbol.iterator].bind(instrumentedWires);
+    let wirePasses = 0;
+    Object.defineProperty(instrumentedWires, Symbol.iterator, {
+      value: function countedIterator() {
+        wirePasses += 1;
+        return originalIterator();
+      },
+    });
+    const largeGraph: GraphSpec = {
+      nodes: {
+        source: {
+          type: 'Gain',
+          params: {},
+          input_ports: ['input'],
+          output_ports: ['output'],
+        },
+        ...Object.fromEntries(
+          Array.from({ length: muxCount }, (_, index) => [
+            `mux_${index}`,
+            {
+              type: 'Mux',
+              params: { n_inputs: 2 },
+              input_ports: ['in_0', 'in_1'],
+              output_ports: ['output'],
+            },
+          ])
+        ),
+      },
+      wires: instrumentedWires,
+      input_ports: [],
+      output_ports: [],
+      input_bindings: {},
+      output_bindings: {},
+    };
+
+    const normalized = normalizeDynamicPorts(largeGraph);
+
+    expect(normalized.nodes.mux_139.input_ports).toEqual(['in_0', 'in_1', 'in_2']);
+    expect(wirePasses).toBe(1);
+  });
+});

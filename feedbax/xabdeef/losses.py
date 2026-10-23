@@ -4,22 +4,37 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-import logging
-from collections.abc import Callable, Mapping
-from typing import Optional
-
 import jax.numpy as jnp
 
-from feedbax.loss import (
+from feedbax.objectives.loss import (
+    AbstractLoss,
     CompositeLoss,
     TargetSpec,
     TargetStateLoss,
-    power_discount,
     target_final_state,
     target_zero,
 )
 
-logger = logging.getLogger(__name__)
+class EffectorFixationLoss(AbstractLoss):
+    """Penalize effector position error while a delayed-reach trial is in hold."""
+
+    label: str = "Effector maintains fixation"
+
+    def term(self, states, trial_specs, model):
+        assert states is not None, "EffectorFixationLoss requires states"
+        assert trial_specs is not None, "EffectorFixationLoss requires trial_specs"
+
+        target_spec = trial_specs.targets.get("mechanics.effector.pos")
+        if not isinstance(target_spec, TargetSpec) or target_spec.value is None:
+            raise ValueError("EffectorFixationLoss requires an effector position TargetSpec")
+
+        effector_pos = states.mechanics.effector.pos[:, 1:]
+        loss = jnp.sum((effector_pos - target_spec.value) ** 2, axis=-1)
+
+        hold = trial_specs.inputs.hold
+        if hold.ndim == loss.ndim + 1 and hold.shape[-1] == 1:
+            hold = jnp.squeeze(hold, axis=-1)
+        return jnp.sum(loss * hold.astype(loss.dtype), axis=-1)
 
 
 def simple_reach_loss(
@@ -76,7 +91,6 @@ def simple_reach_loss(
         ),
     )
 
-
 def delayed_reach_loss(
     effector_fixation: float = 1.0,
     effector_position: float = 1.0,
@@ -125,51 +139,4 @@ def delayed_reach_loss(
             nn_output=nn_output,
             nn_hidden=nn_hidden,
         ),
-    )
-
-
-def hold_loss(
-    loss_term_weights: Optional[Mapping[str, float]] = None,
-) -> CompositeLoss:
-    """A typical loss function for a postural stabilization task.
-
-    Arguments:
-        loss_term_weights: Maps loss term names to term weights. If `None`,
-            a typical set of default weights is used.
-    """
-    if loss_term_weights is None:
-        loss_term_weights = dict(
-            effector_position=1.0,
-            effector_velocity=1e-5,
-            nn_output=1e-5,
-            nn_hidden=1e-5,
-        )
-    return CompositeLoss(
-        dict(
-            effector_position=TargetStateLoss(
-                "Effector position",
-                where=lambda state: state.mechanics.effector.pos,
-                # Euclidean distance
-                norm=lambda x: jnp.sum(x**2, axis=-1),
-                # norm=lambda *args, **kwargs: (
-                #     jnp.linalg.norm(*args, axis=-1, **kwargs) ** 2
-                # ),
-            ),
-            effector_velocity=TargetStateLoss(
-                "Effector velocity",
-                where=lambda state: state.mechanics.effector.vel,
-                spec=target_zero,
-            ),
-            nn_output=TargetStateLoss(
-                "Command",
-                where=lambda state: state.efferent.output,
-                spec=target_zero,
-            ),
-            nn_hidden=TargetStateLoss(
-                "NN activity",
-                where=lambda state: state.net.hidden,
-                spec=target_zero,
-            ),
-        ),
-        weights=loss_term_weights,
     )

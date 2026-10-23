@@ -1,0 +1,2491 @@
+from __future__ import annotations
+
+import ast
+import importlib
+import inspect
+import json
+import sys
+from pathlib import Path
+from textwrap import dedent
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import numpy as np
+import pytest
+
+import feedbax.analysis.bundles as bundle_module
+from feedbax.analysis.bundles import (
+    ANALYSIS_BUNDLE_SCHEMA_VERSION,
+    AnalysisBundleDeltaSpec,
+    AnalysisBundleSpec,
+    AnalysisSpecTemplate,
+    BundleStageOutputSpec,
+    BundleStageSpec,
+    StageArtifactDependency,
+    dry_run_staged_analysis_bundle,
+    execute_analysis_bundle,
+    execute_staged_analysis_bundle,
+    ManifestPredicate,
+    expand_analysis_bundle,
+    load_analysis_bundle,
+    predicate_matches_manifest,
+    select_bundle_manifests,
+)
+from feedbax.analysis.context import AnalysisRunContext
+from feedbax.analysis.evaluation import (
+    EvaluationRecipeExecutionError as EvaluationRunExecutionError,
+    EvaluationRecipeResult,
+    EvaluationStatesCacheCorruption,
+    execute_evaluation_run_spec,
+)
+from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, REPORT_RENDER_ROLE
+from feedbax.analysis.specs import (
+    AnalysisRecipeExecutionError,
+    AnalysisRecipeResult,
+    execute_analysis_run_spec,
+    find_manifest_by_id,
+)
+from feedbax.analysis.materialization import ContextMaterializer
+from feedbax.analysis.manifest_inputs import authenticated_manifest_ref, resolve_manifest_input
+from feedbax.contracts.expressions import Compare
+from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.base import (
+    ParentRef,
+    canonical_json_bytes,
+    sha256_bytes,
+)
+from feedbax.contracts.manifest import (
+    AnalysisRunSpec,
+    EvaluationRunManifest,
+    EvaluationRunSpec,
+    TrainingRunManifest,
+    analysis_run_manifest_id,
+    evaluation_states_cache_path,
+    load_manifest,
+    spec_payload,
+    write_manifest,
+)
+from feedbax.contracts.selection import TopKByMetricPerGroup
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.plugins.registry import ExperimentRegistry
+from feedbax.plugins.bootstrap import BootstrapState
+from tests.analysis_fixtures import ToyAnalysis, ToyArtifactProducer, build_toy_analysis_data
+
+pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]
+
+
+TOY_ANALYSIS_TYPE = "feedbax.test.toy_analysis"
+TOY_EVALUATION_TYPE = "feedbax.test.bundle_eval"
+TOY_ARTIFACT_ANALYSIS_TYPE = "feedbax.test.bundle_artifact_analysis"
+TOY_MATERIALIZER_TYPE = "feedbax.test.bundle_materializer"
+
+
+def test_spec_emitting_bundle_stages_share_one_execution_loop() -> None:
+    """Guard the shared analysis/materialization/report execution skeleton."""
+
+    for function_name in (
+        "_execute_analysis_stage",
+        "_execute_materialization_stage",
+        "_execute_report_stage",
+    ):
+        function = getattr(bundle_module, function_name)
+        tree = ast.parse(dedent(inspect.getsource(function)))
+        common_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_execute_stage_common"
+        ]
+        assert len(common_calls) == 1, function_name
+        assert not any(isinstance(node, (ast.For, ast.AsyncFor)) for node in ast.walk(tree))
+
+
+def _register_toy_analysis_recipe(
+    application_registry_bundle,
+    seen_repo_roots: list[Path | None] | None = None,
+) -> None:
+    def recipe(spec, _root, inputs, execution_context):
+        if seen_repo_roots is not None:
+            seen_repo_roots.append(execution_context.repo_root)
+        value = sum(int(resolved.states["value"]) for resolved in inputs)
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=value),
+            common_inputs={"presentation": spec.params.get("presentation", {})},
+        )
+
+    application_registry_bundle.analysis_recipes.register(TOY_ANALYSIS_TYPE, recipe)
+
+
+def _register_toy_artifact_analysis_recipe(application_registry_bundle) -> None:
+    def recipe(spec, _root, inputs, _execution_context):
+        values = [
+            int(resolved.states["value"])
+            for resolved in inputs
+            if resolved.ref.kind == "EvaluationRunManifest"
+        ]
+        return AnalysisRecipeResult(
+            analyses={"artifact_producer": ToyArtifactProducer(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=sum(values)),
+            common_inputs={"presentation": spec.params.get("presentation", {})},
+        )
+
+    application_registry_bundle.analysis_recipes.register(TOY_ARTIFACT_ANALYSIS_TYPE, recipe)
+
+
+def _register_toy_materializer_recipe(application_registry_bundle) -> None:
+    def materialize(context: AnalysisRunContext) -> dict[str, object]:
+        return {
+            "kind": "toy.bundle-materialized.v1",
+            "manifest_id": context.manifest_id,
+            "value": 23,
+        }
+
+    def recipe(_spec, _root, _inputs, _execution_context):
+        return AnalysisRecipeResult(
+            analyses={
+                "materializer": ContextMaterializer(
+                    materializer=materialize,
+                    artifact_role="toy_materialized_payload",
+                    logical_name="toy/bundle-materialized.json",
+                    schema_boundary="toy.bundle-materialized.v1",
+                )
+            },
+            data=build_toy_analysis_data(value=0),
+        )
+
+    application_registry_bundle.analysis_recipes.register(TOY_MATERIALIZER_TYPE, recipe)
+
+
+def _register_toy_evaluation_recipe(application_registry_bundle) -> None:
+    def recipe(
+        run_spec: EvaluationRunSpec,
+        _root: Path,
+        _states_path: Path,
+        _execution_context,
+    ):
+        return EvaluationRecipeResult(
+            states={"value": np.asarray(run_spec.params["n_trials"], dtype=np.int32)},
+            summary_metrics={"n_trials": run_spec.params["n_trials"]},
+        )
+
+    application_registry_bundle.evaluation_recipes.register(TOY_EVALUATION_TYPE, recipe)
+
+
+def _execute_toy_eval(
+    root: Path,
+    *,
+    n_trials: int,
+    method: str,
+    durable: bool = False,
+    application_registry_bundle,
+):
+    parent = ParentRef(
+        kind="TrainingRunManifest",
+        id=f"feedbax-training-run:{method}-{n_trials}",
+        role="training_run",
+    )
+    spec = EvaluationRunSpec(
+        evaluation_type=TOY_EVALUATION_TYPE,
+        inputs=[parent],
+        params={
+            "n_trials": n_trials,
+            **({"states_custody": "durable"} if durable else {}),
+        },
+    )
+    return execute_evaluation_run_spec(
+        spec,
+        root=root,
+        metadata={"method": method, "cell": f"{method}-{n_trials}"},
+        force=True,
+        registry=application_registry_bundle.evaluation_recipes,
+    )
+
+
+def _write_toy_training(root: Path, *, method: str, run_id: str = "toy") -> TrainingRunManifest:
+    manifest = TrainingRunManifest(
+        id=f"feedbax-training-run:{run_id}",
+        status="completed",
+        metadata={"method": method},
+    )
+    write_manifest(manifest, root=root)
+    return manifest
+
+
+def _file_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()
+    }
+
+
+def _prepare_staged_evaluation_cache_truthfulness_case(
+    root: Path,
+    application_registry_bundle,
+) -> tuple[AnalysisBundleSpec, Path, list[int], list[int]]:
+    eval_calls: list[int] = []
+    analysis_calls: list[int] = []
+
+    def eval_recipe(
+        run_spec: EvaluationRunSpec,
+        _root: Path,
+        _states_path: Path,
+        _execution_context,
+    ):
+        n_trials = int(run_spec.params["n_trials"])
+        eval_calls.append(n_trials)
+        return EvaluationRecipeResult(
+            states={"value": np.asarray(n_trials, dtype=np.int32)},
+            summary_metrics={"n_trials": n_trials},
+        )
+
+    def analysis_recipe(_spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
+        value = int(inputs[0].states["value"])
+        analysis_calls.append(value)
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=value),
+        )
+
+    application_registry_bundle.evaluation_recipes.register(TOY_EVALUATION_TYPE, eval_recipe)
+    application_registry_bundle.analysis_recipes.register(TOY_ANALYSIS_TYPE, analysis_recipe)
+    _write_toy_training(root, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="evaluation_cache_truthfulness",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 7},
+            ),
+            BundleStageSpec(
+                name="downstream",
+                kind="analysis",
+                depends_on=["eval"],
+                analysis_type=TOY_ANALYSIS_TYPE,
+                requested_outputs=["toy"],
+            ),
+        ],
+    )
+    first = execute_staged_analysis_bundle(
+        bundle, root=root, fig_dump_formats=("json",), registries=application_registry_bundle
+    )
+    evaluation_path = resolve_manifest_input(first.stages[0].manifest_refs[0], root).path
+    eval_calls.clear()
+    analysis_calls.clear()
+    return bundle, evaluation_path, eval_calls, analysis_calls
+
+
+def _write_bundle_package(
+    tmp_path: Path, monkeypatch, registry: ExperimentRegistry
+) -> ExperimentRegistry:
+    package_root = tmp_path / "toy_bundle_pkg"
+    bundle_root = package_root / "config" / "analysis_bundles"
+    bundle_root.mkdir(parents=True)
+    (package_root / ".git").mkdir()
+    for path in (
+        package_root / "__init__.py",
+        package_root / "config" / "__init__.py",
+        bundle_root / "__init__.py",
+    ):
+        path.write_text("", encoding="utf-8")
+    (bundle_root / "matrix.yml").write_text(
+        f"""
+schema_id: feedbax.spec.analysis_bundle
+schema_version: feedbax.spec.analysis_bundle.v2
+name: toy_matrix
+description: Toy matrix bundle
+predicate:
+  manifest_kind: EvaluationRunManifest
+  metadata_equals:
+    method: minimax
+templates:
+  - name: per_cell
+    mode: per-run
+    analysis_type: {TOY_ANALYSIS_TYPE}
+    requested_outputs: [toy]
+    params:
+      presentation:
+        color: red
+  - name: grouped_cells
+    mode: grouped
+    analysis_type: {TOY_ANALYSIS_TYPE}
+    requested_outputs: [toy]
+""",
+        encoding="utf-8",
+    )
+    (bundle_root / "params_match.yml").write_text(
+        f"""
+schema_id: feedbax.spec.analysis_bundle
+schema_version: feedbax.spec.analysis_bundle.v2
+name: toy_params_match
+predicate:
+  manifest_kind: EvaluationRunManifest
+  metadata_equals:
+    method: minimax
+  params_equals:
+    n_trials: 2
+templates:
+  - name: only_matching_params
+    mode: per-run
+    analysis_type: {TOY_ANALYSIS_TYPE}
+    requested_outputs: [toy]
+""",
+        encoding="utf-8",
+    )
+    (bundle_root / "missing_output.yml").write_text(
+        f"""
+schema_id: feedbax.spec.analysis_bundle
+schema_version: feedbax.spec.analysis_bundle.v2
+name: toy_missing_output
+predicate:
+  manifest_kind: EvaluationRunManifest
+  metadata_equals:
+    method: minimax
+templates:
+  - name: mismatched_output
+    mode: per-run
+    analysis_type: {TOY_ANALYSIS_TYPE}
+    requested_outputs: [missing]
+""",
+        encoding="utf-8",
+    )
+    (bundle_root / "routed.yml").write_text(
+        f"""
+schema_id: feedbax.spec.analysis_bundle
+schema_version: feedbax.spec.analysis_bundle.v2
+name: toy_routed
+description: Toy routed figure bundle
+predicate:
+  manifest_kind: EvaluationRunManifest
+  metadata_equals:
+    method: minimax
+metadata:
+  figure_routing:
+    package: toy
+    experiment: toy_experiment
+    topic: toy_topic
+    spec:
+      transform:
+        - name: toy-analysis
+templates:
+  - name: routed_cell
+    mode: per-run
+    analysis_type: {TOY_ANALYSIS_TYPE}
+    requested_outputs: [toy]
+""",
+        encoding="utf-8",
+    )
+    (bundle_root / "staged.yml").write_text(
+        f"""
+schema_id: feedbax.spec.analysis_bundle
+schema_version: feedbax.spec.analysis_bundle.v3
+name: toy_staged_cli
+predicate:
+  manifest_kind: TrainingRunManifest
+  metadata_equals:
+    method: minimax
+stages:
+  - name: eval
+    kind: evaluation
+    evaluation_type: {TOY_EVALUATION_TYPE}
+    local_params:
+      n_trials: 3
+    outputs:
+      - role: manifest
+  - name: analysis
+    kind: analysis
+    depends_on: [eval]
+    analysis_type: {TOY_ANALYSIS_TYPE}
+    requested_outputs: [toy]
+    outputs:
+      - role: manifest
+  - name: report
+    kind: report
+    depends_on: [analysis]
+    report_type: {BUNDLE_SUMMARY_REPORT_TYPE}
+    outputs:
+      - role: report
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    for module_name in [
+        name
+        for name in sys.modules
+        if name == "toy_bundle_pkg" or name.startswith("toy_bundle_pkg.")
+    ]:
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+    package = importlib.import_module("toy_bundle_pkg")
+    registry.register_package(
+        "toy",
+        package,
+        parts=[],
+        analysis_module_root="analysis",
+        training_module_root="training",
+        config_resource_root="config",
+        figure_routing={
+            "spec_dir_template": "results/{experiment}/figures/{topic}",
+            "render_dir_template": "_artifacts/{experiment}/figures/{topic}",
+            "render_format": "json",
+            "create_symlink_in_spec_dir": True,
+        },
+    )
+    return registry
+
+
+def _register_empty_bundle_package(
+    registry: ExperimentRegistry,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    package_root = tmp_path / "empty_bundle_pkg"
+    bundle_root = package_root / "config" / "analysis_bundles"
+    bundle_root.mkdir(parents=True)
+    for path in (
+        package_root / "__init__.py",
+        package_root / "config" / "__init__.py",
+        bundle_root / "__init__.py",
+    ):
+        path.write_text("", encoding="utf-8")
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    package = importlib.import_module("empty_bundle_pkg")
+    registry.register_package(
+        "empty",
+        package,
+        parts=[],
+        analysis_module_root="analysis",
+        training_module_root="training",
+        config_resource_root="config",
+    )
+
+
+def test_analysis_run_spec_executes_registered_recipe_and_records_manifest(
+    tmp_path: Path, application_registry_bundle
+):
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    eval_manifest, eval_path = _execute_toy_eval(
+        tmp_path,
+        n_trials=2,
+        method="minimax",
+        application_registry_bundle=application_registry_bundle,
+    )
+    spec = AnalysisRunSpec(
+        analysis_type=TOY_ANALYSIS_TYPE,
+        inputs=[
+            ParentRef(
+                kind="EvaluationRunManifest",
+                id=eval_manifest.id,
+                role="evaluation_run",
+                uri=str(eval_path),
+            )
+        ],
+        params={
+            "requested_outputs": ["toy"],
+            "presentation": {"display_name": "Toy"},
+        },
+    )
+
+    manifest, path = execute_analysis_run_spec(
+        spec,
+        root=tmp_path,
+        issues=["81c7149"],
+        fig_dump_formats=("json",),
+        evaluation_registry=application_registry_bundle.evaluation_recipes,
+        registry=application_registry_bundle.analysis_recipes,
+        experiment_registry=application_registry_bundle.experiment_packages,
+    )
+
+    assert path.exists()
+    assert manifest.kind == "AnalysisRunManifest"
+    assert manifest.status == "completed"
+    assert manifest.inputs[0].id == eval_manifest.id
+    assert manifest.analysis_spec.inline["analysis_type"] == TOY_ANALYSIS_TYPE
+    assert manifest.analysis_spec.inline["params"]["requested_outputs"] == ["toy"]
+    assert manifest.provenance.parents == spec.inputs
+    assert manifest.provenance.issues == ["81c7149"]
+    assert manifest.summary_metrics["analysis_count"] == 1
+    assert manifest.summary_metrics["figure_count"] == 1
+    assert load_manifest(path).id == manifest.id
+
+
+def test_analysis_run_spec_reuses_completed_manifest_without_recipe_call(
+    tmp_path: Path, application_registry_bundle
+):
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    calls: list[int] = []
+
+    def recipe(spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
+        calls.append(int(inputs[0].states["value"]))
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=int(inputs[0].states["value"])),
+        )
+
+    application_registry_bundle.analysis_recipes.register(TOY_ANALYSIS_TYPE, recipe)
+    eval_manifest, eval_path = _execute_toy_eval(
+        tmp_path,
+        n_trials=2,
+        method="minimax",
+        application_registry_bundle=application_registry_bundle,
+    )
+    spec = AnalysisRunSpec(
+        analysis_type=TOY_ANALYSIS_TYPE,
+        inputs=[
+            ParentRef(
+                kind="EvaluationRunManifest",
+                id=eval_manifest.id,
+                role="evaluation_run",
+                uri=str(eval_path),
+            )
+        ],
+        params={"requested_outputs": ["toy"]},
+    )
+
+    manifest, path = execute_analysis_run_spec(
+        spec,
+        root=tmp_path,
+        fig_dump_formats=("json",),
+        evaluation_registry=application_registry_bundle.evaluation_recipes,
+        registry=application_registry_bundle.analysis_recipes,
+        experiment_registry=application_registry_bundle.experiment_packages,
+    )
+    with patch("feedbax.analysis.specs.iter_manifest_files") as iter_files:
+        iter_files.side_effect = AssertionError("filesystem fallback should not run")
+        rerun_manifest, rerun_path = execute_analysis_run_spec(
+            spec,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+            evaluation_registry=application_registry_bundle.evaluation_recipes,
+            registry=application_registry_bundle.analysis_recipes,
+            experiment_registry=application_registry_bundle.experiment_packages,
+        )
+        indexed_manifest, indexed_path = find_manifest_by_id(
+            analysis_run_manifest_id(spec),
+            root=tmp_path,
+        )
+
+    assert calls == [2]
+    assert rerun_manifest.id == manifest.id
+    assert rerun_path == path
+    assert indexed_manifest.id == manifest.id
+    assert indexed_path == path
+
+
+def test_analysis_run_spec_rederives_missing_evaluation_states_cache(
+    tmp_path: Path, application_registry_bundle
+):
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    eval_manifest, eval_path = _execute_toy_eval(
+        tmp_path,
+        n_trials=5,
+        method="minimax",
+        application_registry_bundle=application_registry_bundle,
+    )
+    states_path = evaluation_states_cache_path(eval_manifest.id, root=tmp_path)
+    assert states_path.exists()
+    states_path.unlink()
+
+    spec = AnalysisRunSpec(
+        analysis_type=TOY_ANALYSIS_TYPE,
+        inputs=[
+            ParentRef(
+                kind="EvaluationRunManifest",
+                id=eval_manifest.id,
+                role="evaluation_run",
+                uri=str(eval_path),
+            )
+        ],
+        params={"requested_outputs": ["toy"]},
+    )
+
+    manifest, path = execute_analysis_run_spec(
+        spec,
+        root=tmp_path,
+        issues=["ad32279"],
+        fig_dump_formats=("json",),
+        evaluation_registry=application_registry_bundle.evaluation_recipes,
+        registry=application_registry_bundle.analysis_recipes,
+        experiment_registry=application_registry_bundle.experiment_packages,
+    )
+
+    assert path.exists()
+    assert states_path.exists()
+    assert manifest.status == "completed"
+    assert manifest.summary_metrics["analysis_count"] == 1
+    assert manifest.summary_metrics["figure_count"] == 1
+    assert load_manifest(eval_path).summary_metrics["n_trials"] == 5
+
+
+def test_evaluation_states_cache_corruption_fails_closed(
+    tmp_path: Path, application_registry_bundle
+):
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    parent = ParentRef(
+        kind="TrainingRunManifest",
+        id="feedbax-training-run:corrupt-states-cache",
+        role="training_run",
+    )
+    spec = EvaluationRunSpec(
+        evaluation_type=TOY_EVALUATION_TYPE,
+        inputs=[parent],
+        params={"n_trials": 4},
+    )
+    manifest, _path = execute_evaluation_run_spec(
+        spec, root=tmp_path, registry=application_registry_bundle.evaluation_recipes
+    )
+    states_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
+    states_path.write_bytes(b"not a pickle payload")
+
+    with pytest.raises(EvaluationRunExecutionError) as excinfo:
+        execute_evaluation_run_spec(
+            spec, root=tmp_path, registry=application_registry_bundle.evaluation_recipes
+        )
+
+    assert isinstance(excinfo.value.__cause__, EvaluationStatesCacheCorruption)
+    failed = load_manifest(excinfo.value.path)
+    assert failed.status == "failed"
+    assert "EvaluationStatesCacheCorruption" in failed.metadata["error"]["type"]
+
+
+def test_analysis_run_spec_prefers_durable_states_on_cache_miss(
+    tmp_path: Path, application_registry_bundle
+):
+    calls: list[int] = []
+
+    def recipe(
+        run_spec: EvaluationRunSpec,
+        _root: Path,
+        _states_path: Path,
+        _execution_context,
+    ):
+        calls.append(int(run_spec.params["n_trials"]))
+        return EvaluationRecipeResult(
+            states={"value": np.asarray(run_spec.params["n_trials"], dtype=np.int32)},
+            summary_metrics={"n_trials": run_spec.params["n_trials"]},
+        )
+
+    application_registry_bundle.evaluation_recipes.register(TOY_EVALUATION_TYPE, recipe)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    parent = ParentRef(
+        kind="TrainingRunManifest",
+        id="feedbax-training-run:durable-cache-miss",
+        role="training_run",
+    )
+    eval_spec = EvaluationRunSpec(
+        evaluation_type=TOY_EVALUATION_TYPE,
+        inputs=[parent],
+        params={"n_trials": 6, "states_custody": "durable"},
+    )
+    eval_manifest, eval_path = execute_evaluation_run_spec(
+        eval_spec,
+        root=tmp_path,
+        force=True,
+        registry=application_registry_bundle.evaluation_recipes,
+    )
+    states_path = evaluation_states_cache_path(eval_manifest.id, root=tmp_path)
+    assert states_path.exists()
+    states_path.unlink()
+
+    analysis_spec = AnalysisRunSpec(
+        analysis_type=TOY_ANALYSIS_TYPE,
+        inputs=[
+            ParentRef(
+                kind="EvaluationRunManifest",
+                id=eval_manifest.id,
+                role="evaluation_run",
+                uri=str(eval_path),
+            )
+        ],
+        params={"requested_outputs": ["toy"]},
+    )
+    manifest, _path = execute_analysis_run_spec(
+        analysis_spec,
+        root=tmp_path,
+        fig_dump_formats=("json",),
+        evaluation_registry=application_registry_bundle.evaluation_recipes,
+        registry=application_registry_bundle.analysis_recipes,
+        experiment_registry=application_registry_bundle.experiment_packages,
+    )
+
+    assert manifest.status == "completed"
+    assert calls == [6]
+    assert states_path.exists()
+
+
+def test_analysis_run_spec_records_failed_manifest_for_unknown_requested_output(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    eval_manifest, eval_path = _execute_toy_eval(
+        tmp_path,
+        n_trials=2,
+        method="minimax",
+        application_registry_bundle=application_registry_bundle,
+    )
+    spec = AnalysisRunSpec(
+        analysis_type=TOY_ANALYSIS_TYPE,
+        inputs=[
+            ParentRef(
+                kind="EvaluationRunManifest",
+                id=eval_manifest.id,
+                role="evaluation_run",
+                uri=str(eval_path),
+            )
+        ],
+        params={"requested_outputs": ["missing"]},
+    )
+
+    with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
+        execute_analysis_run_spec(
+            spec,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+            evaluation_registry=application_registry_bundle.evaluation_recipes,
+            registry=application_registry_bundle.analysis_recipes,
+            experiment_registry=application_registry_bundle.experiment_packages,
+        )
+
+    assert "requested_outputs=['missing']" in str(excinfo.value.__cause__)
+    assert "available_analysis_keys=['toy']" in str(excinfo.value.__cause__)
+    failed_manifest = load_manifest(excinfo.value.path)
+    assert failed_manifest.kind == "AnalysisRunManifest"
+    assert failed_manifest.status == "failed"
+    assert failed_manifest.metadata["error"]["type"] == "ValueError"
+
+
+def test_bundle_loading_predicates_and_per_run_grouped_expansion(
+    tmp_path: Path, monkeypatch, application_registry_bundle
+):
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    first, _first_path = _execute_toy_eval(
+        tmp_path,
+        n_trials=2,
+        method="minimax",
+        application_registry_bundle=application_registry_bundle,
+    )
+    second, _second_path = _execute_toy_eval(
+        tmp_path,
+        n_trials=4,
+        method="minimax",
+        application_registry_bundle=application_registry_bundle,
+    )
+    other, _other_path = _execute_toy_eval(
+        tmp_path,
+        n_trials=2,
+        method="baseline",
+        application_registry_bundle=application_registry_bundle,
+    )
+    _write_bundle_package(tmp_path, monkeypatch, application_registry_bundle.experiment_packages)
+
+    bundle = load_analysis_bundle(
+        "toy/matrix",
+        registry=application_registry_bundle.experiment_packages,
+    )
+    assert bundle.schema_version == ANALYSIS_BUNDLE_SCHEMA_VERSION
+    matched = select_bundle_manifests(bundle, tmp_path)
+    matched_ids = [manifest.id for manifest in matched]
+    assert set(matched_ids) == {first.id, second.id}
+    assert [
+        manifest.id
+        for manifest in select_bundle_manifests(
+            bundle,
+            tmp_path,
+            run_ids=[first.id],
+        )
+    ] == [first.id]
+
+    params_bundle = load_analysis_bundle(
+        "toy/params_match",
+        registry=application_registry_bundle.experiment_packages,
+    )
+    assert [
+        manifest.id
+        for manifest in select_bundle_manifests(
+            params_bundle,
+            tmp_path,
+        )
+    ] == [first.id]
+    assert predicate_matches_manifest(
+        ManifestPredicate(manifest_kind="EvaluationRunManifest", run_ids=[other.id]),
+        other,
+    )
+
+    expansions = expand_analysis_bundle(bundle, matched)
+    assert [(item.template_name, item.matched_run_ids) for item in expansions] == [
+        ("per_cell", (matched_ids[0],)),
+        ("per_cell", (matched_ids[1],)),
+        ("grouped_cells", tuple(matched_ids)),
+    ]
+    assert expansions[0].spec.inputs[0].id == matched_ids[0]
+    assert [ref.id for ref in expansions[2].spec.inputs] == matched_ids
+    assert expansions[0].spec.params["requested_outputs"] == ["toy"]
+
+
+def test_bundle_selection_uses_shared_manifest_predicate_query_terms(tmp_path: Path) -> None:
+    def write_training_run(
+        run_id: str,
+        *,
+        source_set: str = "sweep-a",
+        status: str = "completed",
+        checkpoint: bool = True,
+        loss: float = 1.0,
+        group: str = "baseline",
+        tags: list[str] | None = None,
+    ) -> None:
+        write_manifest(
+            TrainingRunManifest(
+                id=run_id,
+                run_set_id=source_set,
+                status=status,
+                checkpoint_custody=[ParentRef(kind="CheckpointManifest", id=f"{run_id}:checkpoint")]
+                if checkpoint
+                else [],
+                summary_metrics={"loss": loss},
+                metadata={
+                    "tags": tags or [],
+                    "studio": {"axis_coordinates": {"shape": group}},
+                },
+            ),
+            root=tmp_path,
+        )
+
+    write_training_run("run-a", loss=0.4, group="short", tags=["keep"])
+    write_training_run("run-b", loss=0.2, group="short", tags=["keep"])
+    write_training_run("run-c", loss=0.3, group="long", tags=["keep"])
+    write_training_run("run-d", loss=0.1, group="long", checkpoint=False, tags=["keep"])
+    write_training_run("run-e", source_set="other", loss=0.05, group="short", tags=["keep"])
+
+    bundle = AnalysisBundleSpec(
+        name="shared_predicate_terms",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            source_set_ids=["sweep-a"],
+            statuses=["completed"],
+            has_checkpoint=True,
+            tags=["keep"],
+            top_k_by_metric_per_group=TopKByMetricPerGroup(
+                metric_path="summary_metrics.loss",
+                group_by_path="metadata.studio.axis_coordinates.shape",
+                k=1,
+                order="asc",
+            ),
+        ),
+    )
+
+    matched = select_bundle_manifests(bundle, tmp_path)
+
+    assert [manifest.id for manifest in matched] == ["run-b", "run-c"]
+    assert predicate_matches_manifest(bundle.predicate, matched[0])
+
+
+def test_simple_bundle_rejects_explicit_unsupported_old_schema_version() -> None:
+    with pytest.raises(ValueError, match="unsupported AnalysisBundleSpec schema_version"):
+        AnalysisBundleSpec.model_validate(
+            {
+                "schema_version": "feedbax.spec.analysis_bundle.v1",
+                "name": "old_bundle",
+                "templates": [
+                    {
+                        "name": "legacy",
+                        "analysis_type": TOY_ANALYSIS_TYPE,
+                    }
+                ],
+            }
+        )
+
+
+def test_studio_synthesized_v6_bundle_payload_validates_current_stage_shape() -> None:
+    bundle = AnalysisBundleSpec.model_validate(
+        {
+            "schema_id": "feedbax.spec.analysis_bundle",
+            "schema_version": "feedbax.spec.analysis_bundle.v6",
+            "name": "studio-analysis-dag",
+            "predicate": {"manifest_kind": "EvaluationRunManifest", "run_ids": ["eval-a"]},
+            "templates": [],
+            "params_base": {"params": {}},
+            "stages": [
+                {
+                    "name": "analysis-dag",
+                    "kind": "analysis",
+                    "mode": "grouped",
+                    "analysis_type": "studio.analysis_dag",
+                    "evaluation_states_policy": "recompute",
+                    "local_params": {"page_count": 1, "active_page_id": None},
+                    "params_patches": [],
+                    "outputs": [{"role": "manifest", "required": True}],
+                }
+            ],
+            "metadata": {"source": "studio_analysis_stage", "page_count": 1},
+        }
+    )
+
+    assert bundle.stages[0].local_params == {"page_count": 1, "active_page_id": None}
+    assert bundle.stages[0].params_patches == []
+
+
+def test_bundle_templates_preserve_authored_evaluation_states_policy() -> None:
+    bundle = AnalysisBundleSpec(
+        name="policy_templates",
+        templates=[
+            AnalysisSpecTemplate(
+                name="per_run",
+                mode="per-run",
+                analysis_type=TOY_ANALYSIS_TYPE,
+                evaluation_states_policy="require_durable",
+            ),
+            AnalysisSpecTemplate(
+                name="grouped",
+                mode="grouped",
+                analysis_type=TOY_ANALYSIS_TYPE,
+                evaluation_states_policy="require_durable",
+            ),
+        ],
+    )
+    matched = [TrainingRunManifest(id="feedbax-training-run:policy", run_set_id="policy")]
+
+    expansions = expand_analysis_bundle(bundle, matched)
+
+    assert [entry.spec.evaluation_states_policy for entry in expansions] == [
+        "require_durable",
+        "require_durable",
+    ]
+
+
+def test_bundle_executes_require_durable_with_authenticated_selected_manifest(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    evaluation, _ = _execute_toy_eval(
+        tmp_path,
+        n_trials=9,
+        method="durable",
+        durable=True,
+        application_registry_bundle=application_registry_bundle,
+    )
+    bundle = AnalysisBundleSpec(
+        name="require_durable_bundle",
+        predicate=ManifestPredicate(
+            manifest_kind="EvaluationRunManifest",
+            run_ids=[evaluation.id],
+        ),
+        templates=[
+            AnalysisSpecTemplate(
+                name="durable",
+                analysis_type=TOY_ANALYSIS_TYPE,
+                evaluation_states_policy="require_durable",
+            )
+        ],
+    )
+
+    [(expansion, analysis, _)] = execute_analysis_bundle(
+        bundle, root=tmp_path, registries=application_registry_bundle
+    )
+
+    assert expansion.spec.inputs[0].metadata["ref_schema_version"] == (
+        "feedbax.ref.authenticated_manifest.v1"
+    )
+    assert analysis.evaluation_state_sources[0].source_kind == "durable"
+
+
+@pytest.mark.parametrize(
+    ("kind", "executor_name"),
+    [
+        ("analysis", "_execute_analysis_stage"),
+        ("materialization", "_execute_materialization_stage"),
+    ],
+)
+def test_staged_bundle_lowering_preserves_authored_evaluation_states_policy(
+    kind: str,
+    executor_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    application_registry_bundle,
+) -> None:
+    captured_specs: list[AnalysisRunSpec] = []
+
+    def capture_stage_common(_stage, input_groups, **kwargs):
+        captured_specs.append(kwargs["build_spec"](input_groups[0], 0))
+        return []
+
+    monkeypatch.setattr(bundle_module, "_execute_stage_common", capture_stage_common)
+    stage = BundleStageSpec(
+        name=kind,
+        kind=kind,
+        analysis_type=TOY_ANALYSIS_TYPE,
+        evaluation_states_policy="require_durable",
+    )
+    executor = getattr(bundle_module, executor_name)
+    executor(
+        stage,
+        [[ParentRef(kind="EvaluationRunManifest", id="evaluation", role="evaluation_run")]],
+        root=tmp_path,
+        issues=[],
+        bundle=AnalysisBundleSpec(name="policy_stage", stages=[stage]),
+        fig_dump_path=None,
+        fig_dump_formats=("json",),
+        execution_context=None,
+        registries=application_registry_bundle,
+    )
+
+    assert captured_specs[0].evaluation_states_policy == "require_durable"
+
+
+def test_non_analysis_bundle_stage_rejects_require_durable_policy() -> None:
+    with pytest.raises(ValueError, match="only meaningful for analysis or materialization"):
+        BundleStageSpec(
+            name="evaluation",
+            kind="evaluation",
+            evaluation_type=TOY_EVALUATION_TYPE,
+            evaluation_states_policy="require_durable",
+        )
+
+
+def test_bundle_spec_rejects_duplicate_stage_names() -> None:
+    with pytest.raises(ValueError, match="duplicate stage name 'repeated'"):
+        AnalysisBundleSpec(
+            name="duplicate_stages",
+            stages=[
+                BundleStageSpec(
+                    name="repeated",
+                    kind="analysis",
+                    analysis_type=TOY_ANALYSIS_TYPE,
+                ),
+                BundleStageSpec(
+                    name="repeated",
+                    kind="analysis",
+                    analysis_type=TOY_ANALYSIS_TYPE,
+                ),
+            ],
+        )
+
+
+def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    training = _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_staged",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 3},
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+            BundleStageSpec(
+                name="summary",
+                kind="analysis",
+                depends_on=["eval"],
+                analysis_type=TOY_ANALYSIS_TYPE,
+                requested_outputs=["toy"],
+                local_params={"variant": "summary"},
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+            BundleStageSpec(
+                name="detail",
+                kind="analysis",
+                depends_on=["eval"],
+                analysis_type=TOY_ANALYSIS_TYPE,
+                requested_outputs=["toy"],
+                local_params={"variant": "detail"},
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+            BundleStageSpec(
+                name="report",
+                kind="report",
+                depends_on=["summary", "detail"],
+                report_type=BUNDLE_SUMMARY_REPORT_TYPE,
+                outputs=[BundleStageOutputSpec(role="report")],
+            ),
+        ],
+    )
+
+    result = execute_staged_analysis_bundle(
+        bundle,
+        root=tmp_path,
+        issues=["a6af537"],
+        fig_dump_formats=("json",),
+        registries=application_registry_bundle,
+    )
+
+    assert result.matched_run_ids == [training.id]
+    assert [stage.name for stage in result.stages] == [
+        "eval",
+        "summary",
+        "detail",
+        "report",
+    ]
+    eval_ref = result.stages[0].manifest_refs[0]
+    assert eval_ref.kind == "EvaluationRunManifest"
+    assert result.stages[1].inputs == [eval_ref]
+    assert result.stages[2].inputs == [eval_ref]
+    report_inputs = result.stages[3].inputs
+    assert [ref.kind for ref in report_inputs] == [
+        "AnalysisRunManifest",
+        "AnalysisRunManifest",
+    ]
+    assert report_inputs == [
+        result.stages[1].manifest_refs[0],
+        result.stages[2].manifest_refs[0],
+    ]
+    assert result.stages[1].regeneration_specs[0].kind == "RegenerationSpec"
+    assert result.stages[3].regeneration_specs[0].kind == "RegenerationSpec"
+    assert result.report_outputs[0].status == "materialized"
+    report_manifest = resolve_manifest_input(result.stages[3].manifest_refs[0], tmp_path).manifest
+    assert report_manifest.kind == "ReportManifest"
+    assert report_manifest.regeneration_specs[0].kind == "RegenerationSpec"
+    report_artifacts = {artifact.role: artifact for artifact in report_manifest.artifacts}
+    assert set(report_artifacts) == {"report", REPORT_RENDER_ROLE}
+    assert report_artifacts[REPORT_RENDER_ROLE].media_type == "text/markdown"
+    assert report_artifacts[REPORT_RENDER_ROLE].sha256 is not None
+    assert (
+        Path(report_artifacts[REPORT_RENDER_ROLE].uri or "")
+        .read_text(encoding="utf-8")
+        .startswith("# toy_staged / report")
+    )
+
+
+def test_staged_bundle_authenticates_eval_analysis_figure_report_round_trip(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="authenticated_round_trip",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 2},
+            ),
+            BundleStageSpec(
+                name="analysis",
+                kind="analysis",
+                depends_on=["eval"],
+                analysis_type=TOY_ANALYSIS_TYPE,
+                requested_outputs=["toy"],
+            ),
+            BundleStageSpec(
+                name="figure",
+                kind="figure",
+                depends_on=["analysis"],
+                figure=FigureSpec(
+                    name="authenticated-blank",
+                    assembler="feedbax.grid_figure",
+                ),
+            ),
+            BundleStageSpec(
+                name="report",
+                kind="report",
+                depends_on=["figure"],
+                report_type=BUNDLE_SUMMARY_REPORT_TYPE,
+            ),
+        ],
+    )
+
+    execution = execute_staged_analysis_bundle(
+        bundle, root=tmp_path, registries=application_registry_bundle
+    )
+    assert [stage.kind for stage in execution.stages] == [
+        "evaluation",
+        "analysis",
+        "figure",
+        "report",
+    ]
+    for index, stage in enumerate(execution.stages):
+        ref = stage.manifest_refs[0]
+        resolved = resolve_manifest_input(ref, tmp_path)
+        assert ref.uri is None
+        assert ref.metadata["size_bytes"] == len(resolved.raw_bytes)
+        if index:
+            assert stage.inputs[-1] == execution.stages[index - 1].manifest_refs[0]
+
+    for stage in execution.stages[1:]:
+        embedded = stage.regeneration_specs[0].inline
+        assert embedded["inputs"] == [stage.inputs[0].model_dump(mode="json", exclude_none=True)]
+        assert all(
+            output.get("kind") != stage.manifest_refs[0].kind for output in embedded["outputs"]
+        )
+
+
+def test_staged_bundle_grouped_analysis_can_compose_bundle_and_dependency_inputs(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    paired_analysis_type = "feedbax.test.paired_bundle_analysis"
+    observed_inputs: list[list[tuple[str, str]]] = []
+
+    def recipe(spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
+        observed_inputs.append([(item.ref.kind, item.ref.id) for item in inputs])
+        eval_values = [
+            int(item.states["value"]) for item in inputs if item.ref.kind == "EvaluationRunManifest"
+        ]
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=sum(eval_values)),
+            common_inputs={"presentation": spec.params.get("presentation", {})},
+        )
+
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    application_registry_bundle.analysis_recipes.register(paired_analysis_type, recipe)
+    training = _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_paired_eval",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="short_eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 3},
+            ),
+            BundleStageSpec(
+                name="long_eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 5},
+            ),
+            BundleStageSpec(
+                name="comparison",
+                kind="analysis",
+                depends_on=["short_eval", "long_eval"],
+                include_bundle_inputs=True,
+                analysis_type=paired_analysis_type,
+                requested_outputs=["toy"],
+                local_params={"variant": "paired"},
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+        ],
+    )
+
+    result = execute_staged_analysis_bundle(
+        bundle, root=tmp_path, fig_dump_formats=("json",), registries=application_registry_bundle
+    )
+
+    short_eval_ref = result.stages[0].manifest_refs[0]
+    long_eval_ref = result.stages[1].manifest_refs[0]
+    comparison_stage = result.stages[2]
+
+    assert comparison_stage.inputs == [
+        ParentRef(kind="TrainingRunManifest", id=training.id, role="training_run"),
+        short_eval_ref,
+        long_eval_ref,
+    ]
+    assert observed_inputs == [
+        [
+            ("TrainingRunManifest", training.id),
+            ("EvaluationRunManifest", short_eval_ref.id),
+            ("EvaluationRunManifest", long_eval_ref.id),
+        ]
+    ]
+    analysis_manifest = resolve_manifest_input(comparison_stage.manifest_refs[0], tmp_path).manifest
+    assert analysis_manifest.inputs == comparison_stage.inputs
+    assert analysis_manifest.provenance.parents == comparison_stage.inputs
+
+
+def test_staged_bundle_rerun_reuses_eval_and_analysis_manifests(
+    tmp_path: Path, application_registry_bundle
+) -> None:
+    eval_calls: list[int] = []
+    analysis_calls: list[int] = []
+
+    def eval_recipe(
+        run_spec: EvaluationRunSpec,
+        _root: Path,
+        _states_path: Path,
+        _execution_context,
+    ):
+        n_trials = int(run_spec.params["n_trials"])
+        eval_calls.append(n_trials)
+        return EvaluationRecipeResult(
+            states={"value": np.asarray(n_trials, dtype=np.int32)},
+            summary_metrics={"n_trials": n_trials},
+        )
+
+    def analysis_recipe(_spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
+        value = int(inputs[0].states["value"])
+        analysis_calls.append(value)
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=value),
+        )
+
+    application_registry_bundle.evaluation_recipes.register(TOY_EVALUATION_TYPE, eval_recipe)
+    application_registry_bundle.analysis_recipes.register(TOY_ANALYSIS_TYPE, analysis_recipe)
+    _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_cache_reuse",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 7},
+            ),
+            BundleStageSpec(
+                name="summary",
+                kind="analysis",
+                depends_on=["eval"],
+                analysis_type=TOY_ANALYSIS_TYPE,
+                requested_outputs=["toy"],
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+        ],
+    )
+
+    first = execute_staged_analysis_bundle(
+        bundle, root=tmp_path, fig_dump_formats=("json",), registries=application_registry_bundle
+    )
+    second = execute_staged_analysis_bundle(
+        bundle, root=tmp_path, fig_dump_formats=("json",), registries=application_registry_bundle
+    )
+
+    assert eval_calls == [7]
+    assert analysis_calls == [7]
+    assert second.stages[0].manifest_refs == first.stages[0].manifest_refs
+    assert second.stages[1].manifest_refs == first.stages[1].manifest_refs
+
+    analysis_manifest = resolve_manifest_input(first.stages[1].manifest_refs[0], tmp_path).manifest
+    analysis_spec = AnalysisRunSpec.model_validate(analysis_manifest.analysis_spec.inline)
+    evaluation_input = resolve_manifest_input(first.stages[0].manifest_refs[0], tmp_path)
+    evaluation_input.path.write_bytes(evaluation_input.raw_bytes + b"\n")
+    with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
+        execute_analysis_run_spec(
+            analysis_spec,
+            root=tmp_path,
+            evaluation_registry=application_registry_bundle.evaluation_recipes,
+            registry=application_registry_bundle.analysis_recipes,
+            experiment_registry=application_registry_bundle.experiment_packages,
+        )
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    assert "size mismatch" in str(excinfo.value.__cause__)
+    failed_manifest = load_manifest(excinfo.value.path)
+    assert failed_manifest.status == "failed"
+    assert failed_manifest.metadata["error"]["type"] == "ValueError"
+    assert "size mismatch" in failed_manifest.metadata["error"]["message"]
+    assert analysis_calls == [7]
+
+    rebuilt_ref = authenticated_manifest_ref(
+        evaluation_input.manifest,
+        evaluation_input.path,
+        "evaluation_run",
+    )
+    rebuilt_spec = analysis_spec.model_copy(update={"inputs": [rebuilt_ref]})
+    assert analysis_run_manifest_id(rebuilt_spec) != analysis_run_manifest_id(analysis_spec)
+
+
+def test_staged_bundle_rejects_wrong_completed_evaluation_id_before_effects(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    bundle, evaluation_path, eval_calls, analysis_calls = (
+        _prepare_staged_evaluation_cache_truthfulness_case(
+            tmp_path, application_registry_bundle=application_registry_bundle
+        )
+    )
+    cached = load_manifest(evaluation_path)
+    assert isinstance(cached, EvaluationRunManifest)
+    tampered = cached.model_copy(update={"id": "feedbax-evaluation-run:wrong"})
+    evaluation_path.write_text(tampered.model_dump_json(indent=2), encoding="utf-8")
+    before = _file_snapshot(tmp_path)
+
+    with (
+        patch.object(
+            bundle_module,
+            "execute_evaluation_run_spec",
+            wraps=bundle_module.execute_evaluation_run_spec,
+        ) as execute_evaluation,
+        patch.object(
+            bundle_module,
+            "_execute_analysis_stage",
+            wraps=bundle_module._execute_analysis_stage,
+        ) as execute_downstream,
+        pytest.raises(ValueError, match="id does not match the requested evaluation spec"),
+    ):
+        execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+            registries=application_registry_bundle,
+        )
+
+    assert eval_calls == []
+    assert analysis_calls == []
+    execute_evaluation.assert_not_called()
+    execute_downstream.assert_not_called()
+    assert _file_snapshot(tmp_path) == before
+
+
+def test_staged_bundle_rejects_wrong_completed_evaluation_spec_before_effects(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    bundle, evaluation_path, eval_calls, analysis_calls = (
+        _prepare_staged_evaluation_cache_truthfulness_case(
+            tmp_path, application_registry_bundle=application_registry_bundle
+        )
+    )
+    cached = load_manifest(evaluation_path)
+    assert isinstance(cached, EvaluationRunManifest)
+    wrong_spec = EvaluationRunSpec.model_validate(cached.evaluation_spec.inline).model_copy(
+        update={"params": {"n_trials": 8}}
+    )
+    tampered = cached.model_copy(
+        update={
+            "evaluation_spec": spec_payload(
+                "EvaluationRunSpec",
+                wrong_spec.model_dump(mode="json", exclude_none=True),
+            )
+        }
+    )
+    evaluation_path.write_text(tampered.model_dump_json(indent=2), encoding="utf-8")
+    before = _file_snapshot(tmp_path)
+
+    with (
+        patch.object(
+            bundle_module,
+            "execute_evaluation_run_spec",
+            wraps=bundle_module.execute_evaluation_run_spec,
+        ) as execute_evaluation,
+        patch.object(
+            bundle_module,
+            "_execute_analysis_stage",
+            wraps=bundle_module._execute_analysis_stage,
+        ) as execute_downstream,
+        pytest.raises(ValueError, match="evaluation_spec does not match the requested"),
+    ):
+        execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+            registries=application_registry_bundle,
+        )
+
+    assert eval_calls == []
+    assert analysis_calls == []
+    execute_evaluation.assert_not_called()
+    execute_downstream.assert_not_called()
+    assert _file_snapshot(tmp_path) == before
+
+
+def test_staged_bundle_evaluation_stage_can_request_durable_states(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    training = _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_durable_eval_stage",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 3},
+                states_custody="durable",
+                outputs=[
+                    BundleStageOutputSpec(role="manifest"),
+                    BundleStageOutputSpec(role="evaluation_states"),
+                ],
+            ),
+        ],
+    )
+
+    result = execute_staged_analysis_bundle(
+        bundle, root=tmp_path, registries=application_registry_bundle
+    )
+
+    assert result.matched_run_ids == [training.id]
+    eval_stage = result.stages[0]
+    assert eval_stage.outputs[0].status == "materialized"
+    assert eval_stage.outputs[1].status == "materialized"
+    assert eval_stage.artifact_groups["evaluation_states"][0].role == ("evaluation_states")
+    eval_manifest = resolve_manifest_input(eval_stage.manifest_refs[0], tmp_path).manifest
+    assert eval_manifest.evaluation_spec.inline["params"]["states_custody"] == "durable"
+    assert eval_manifest.artifacts[0].role == "evaluation_states"
+
+
+def test_staged_bundle_records_optional_output_statuses(
+    tmp_path: Path, application_registry_bundle
+) -> None:
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_optional_statuses",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 1},
+            ),
+            BundleStageSpec(
+                name="analysis",
+                kind="analysis",
+                depends_on=["eval"],
+                analysis_type=TOY_ANALYSIS_TYPE,
+                requested_outputs=["toy"],
+                outputs=[
+                    BundleStageOutputSpec(role="manifest"),
+                    BundleStageOutputSpec(role="sidecar", required=False),
+                ],
+            ),
+            BundleStageSpec(
+                name="optional_sidecar",
+                kind="analysis",
+                depends_on=["analysis"],
+                analysis_type=TOY_ANALYSIS_TYPE,
+                outputs=[BundleStageOutputSpec(role="sidecar", required=False)],
+                skip_reason="sidecar disabled for this bundle",
+            ),
+            BundleStageSpec(
+                name="materializer",
+                kind="materialization",
+                depends_on=["analysis"],
+                outputs=[BundleStageOutputSpec(role="materialized_sidecar", required=False)],
+                not_applicable_reason="context-bound materializer is owned by sibling issue",
+            ),
+        ],
+    )
+
+    result = execute_staged_analysis_bundle(
+        bundle, root=tmp_path, fig_dump_formats=("json",), registries=application_registry_bundle
+    )
+
+    analysis_outputs = {output.role: output for output in result.stages[1].outputs}
+    assert analysis_outputs["manifest"].status == "materialized"
+    assert analysis_outputs["sidecar"].status == "missing"
+    assert "optional output role" in analysis_outputs["sidecar"].reason
+    assert result.stages[2].outputs[0].status == "skipped"
+    assert result.stages[2].outputs[0].reason == "sidecar disabled for this bundle"
+    assert result.stages[3].outputs[0].status == "not_applicable"
+    assert "sibling issue" in result.stages[3].outputs[0].reason
+
+
+def test_staged_bundle_runtime_condition_skips_required_outputs_and_optional_role_omits(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    observed_inputs: list[list[ParentRef]] = []
+    consumer_type = "feedbax.test.bundle_optional_role_consumer"
+
+    def consumer_recipe(_spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
+        observed_inputs.append([resolved.ref for resolved in inputs])
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=0),
+        )
+
+    application_registry_bundle.analysis_recipes.register(consumer_type, consumer_recipe)
+    _write_toy_training(tmp_path, method="minimax")
+    condition = Compare(
+        item="params",
+        path="enabled",
+        op="eq",
+        value=True,
+    )
+    bundle = AnalysisBundleSpec(
+        name="toy_condition_skip",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="gated",
+                kind="analysis",
+                analysis_type=TOY_ARTIFACT_ANALYSIS_TYPE,
+                local_params={"enabled": False},
+                run_condition=condition,
+                outputs=[
+                    BundleStageOutputSpec(role="manifest"),
+                    BundleStageOutputSpec(role="analysis_summary"),
+                ],
+            ),
+            BundleStageSpec(
+                name="downstream",
+                kind="analysis",
+                analysis_type=consumer_type,
+                depends_on_roles=[
+                    StageArtifactDependency(
+                        stage="gated",
+                        role="analysis_summary",
+                        required=False,
+                    )
+                ],
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+        ],
+    )
+
+    result = execute_staged_analysis_bundle(
+        bundle, root=tmp_path, fig_dump_formats=("json",), registries=application_registry_bundle
+    )
+
+    gated_outputs = result.stages[0].outputs
+    assert [output.status for output in gated_outputs] == ["skipped", "skipped"]
+    assert all(output.required for output in gated_outputs)
+    assert "run_condition evaluated false" in gated_outputs[0].reason
+    assert '"enabled"' in gated_outputs[0].reason
+    assert observed_inputs == [[]]
+    assert result.stages[1].outputs[0].status == "materialized"
+
+
+def test_staged_bundle_dry_run_reports_condition_skip_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    _write_toy_training(tmp_path, method="minimax")
+    before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*.json"))
+    condition = Compare(
+        item="params",
+        path="enabled",
+        op="eq",
+        value=True,
+    )
+    bundle = AnalysisBundleSpec(
+        name="toy_condition_dry_run",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="gated",
+                kind="analysis",
+                analysis_type=TOY_ARTIFACT_ANALYSIS_TYPE,
+                local_params={"enabled": False},
+                run_condition=condition,
+                outputs=[BundleStageOutputSpec(role="analysis_summary")],
+            ),
+        ],
+    )
+
+    result = dry_run_staged_analysis_bundle(bundle, root=tmp_path)
+
+    assert result.match_preview.match_count == 1
+    assert result.matched_run_ids
+    assert result.stages[0].status == "would_skip"
+    assert result.stages[0].outputs[0].status == "would_skip"
+    assert "run_condition evaluated false" in str(result.stages[0].reason)
+    assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*.json")) == before
+
+
+def test_staged_bundle_required_role_dependency_fails_closed(
+    tmp_path: Path, application_registry_bundle
+) -> None:
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_artifact_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_missing_required_role",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 2},
+            ),
+            BundleStageSpec(
+                name="producer",
+                kind="analysis",
+                depends_on=["eval"],
+                analysis_type=TOY_ARTIFACT_ANALYSIS_TYPE,
+                outputs=[BundleStageOutputSpec(role="analysis_summary")],
+            ),
+            BundleStageSpec(
+                name="consumer",
+                kind="analysis",
+                analysis_type=TOY_ANALYSIS_TYPE,
+                depends_on_roles=[
+                    StageArtifactDependency(
+                        stage="producer",
+                        role="does_not_exist",
+                    )
+                ],
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+        ],
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+            registries=application_registry_bundle,
+        )
+
+    message = str(excinfo.value)
+    assert "consumer" in message
+    assert "producer" in message
+    assert "does_not_exist" in message
+
+
+def test_staged_bundle_dry_run_reports_missing_required_role(
+    tmp_path: Path,
+) -> None:
+    _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_missing_required_role_dry_run",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="producer",
+                kind="analysis",
+                analysis_type=TOY_ARTIFACT_ANALYSIS_TYPE,
+                run_condition=Compare(
+                    item="params",
+                    path="enabled",
+                    op="eq",
+                    value=True,
+                ),
+                local_params={"enabled": False},
+                outputs=[BundleStageOutputSpec(role="analysis_summary")],
+            ),
+            BundleStageSpec(
+                name="consumer",
+                kind="analysis",
+                analysis_type=TOY_ANALYSIS_TYPE,
+                depends_on_roles=[
+                    StageArtifactDependency(stage="producer", role="analysis_summary")
+                ],
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+        ],
+    )
+
+    result = dry_run_staged_analysis_bundle(bundle, root=tmp_path)
+
+    assert result.stages[0].status == "would_skip"
+    assert result.stages[1].status == "missing"
+    assert result.stages[1].missing_roles[0].stage == "producer"
+    assert result.stages[1].missing_roles[0].role == "analysis_summary"
+    assert result.stages[1].outputs[0].status == "missing"
+
+
+def test_staged_bundle_role_dependency_binds_artifact_input_alias(
+    tmp_path: Path, application_registry_bundle
+) -> None:
+    observed_inputs: list[list[ParentRef]] = []
+    consumer_type = "feedbax.test.bundle_role_consumer"
+
+    def consumer_recipe(_spec: AnalysisRunSpec, _root: Path, inputs, _execution_context):
+        observed_inputs.append([resolved.ref for resolved in inputs])
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=0),
+        )
+
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_artifact_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    application_registry_bundle.analysis_recipes.register(consumer_type, consumer_recipe)
+    _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_role_dependency",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 4},
+            ),
+            BundleStageSpec(
+                name="producer",
+                kind="analysis",
+                depends_on=["eval"],
+                analysis_type=TOY_ARTIFACT_ANALYSIS_TYPE,
+                outputs=[BundleStageOutputSpec(role="analysis_summary")],
+            ),
+            BundleStageSpec(
+                name="consumer",
+                kind="analysis",
+                analysis_type=consumer_type,
+                depends_on_roles=[
+                    StageArtifactDependency(
+                        stage="producer",
+                        role="analysis_summary",
+                        bind_as="summary_input",
+                    )
+                ],
+                run_condition=Compare(
+                    item="summary_input",
+                    op="has_type",
+                    value="artifact_role",
+                ),
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+        ],
+    )
+
+    result = execute_staged_analysis_bundle(
+        bundle, root=tmp_path, fig_dump_formats=("json",), registries=application_registry_bundle
+    )
+
+    assert result.stages[2].outputs[0].status == "materialized"
+    assert len(observed_inputs) == 1
+    assert len(observed_inputs[0]) == 1
+    artifact_input = observed_inputs[0][0]
+    assert artifact_input.kind == "ArtifactRef"
+    assert artifact_input.role == "summary_input"
+    assert artifact_input.metadata["source_role"] == "analysis_summary"
+
+
+def test_staged_bundle_materialization_stage_emits_artifact_and_regeneration(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    _register_toy_materializer_recipe(application_registry_bundle=application_registry_bundle)
+    _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_materialization",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="materialize",
+                kind="materialization",
+                analysis_type=TOY_MATERIALIZER_TYPE,
+                outputs=[BundleStageOutputSpec(role="toy_materialized_payload")],
+            ),
+        ],
+    )
+
+    result = execute_staged_analysis_bundle(
+        bundle, root=tmp_path, registries=application_registry_bundle
+    )
+
+    stage = result.stages[0]
+    assert stage.status == "materialized"
+    assert stage.outputs[0].status == "materialized"
+    payload_ref = stage.outputs[0].artifacts[0]
+    assert payload_ref.role == "toy_materialized_payload"
+    assert json.loads(ImmutableArtifactBlobProvider(tmp_path).get_bytes(payload_ref))["value"] == 23
+    assert stage.regeneration_specs[0].kind == "RegenerationSpec"
+    manifest = resolve_manifest_input(stage.manifest_refs[0], tmp_path).manifest
+    assert manifest.artifacts[0].role == "toy_materialized_payload"
+    assert manifest.regeneration_specs[-1].kind == "RegenerationSpec"
+    assert manifest.regeneration_specs[-1].inline["parameters"]["stage"]["kind"] == (
+        "materialization"
+    )
+
+
+def test_staged_bundle_materialization_stage_rejects_non_materializer_node(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    bad_materializer_type = "feedbax.test.bundle_bad_materializer"
+
+    def recipe(_spec: AnalysisRunSpec, _root: Path, _inputs, _execution_context):
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy", cache_result=True)},
+            data=build_toy_analysis_data(value=0),
+        )
+
+    application_registry_bundle.analysis_recipes.register(bad_materializer_type, recipe)
+    _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_bad_materialization",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="bad_materialize",
+                kind="materialization",
+                analysis_type=bad_materializer_type,
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+        ],
+    )
+
+    with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
+        execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+            registries=application_registry_bundle,
+        )
+
+    assert "bad_materialize" in str(excinfo.value.__cause__)
+    assert "materialization stages require" in str(excinfo.value.__cause__)
+
+
+def test_staged_bundle_existing_execution_record_omits_new_fields(
+    tmp_path: Path, application_registry_bundle
+) -> None:
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    _write_toy_training(tmp_path, method="minimax")
+    bundle = AnalysisBundleSpec(
+        name="toy_unchanged_record",
+        predicate=ManifestPredicate(
+            manifest_kind="TrainingRunManifest",
+            metadata_equals={"method": "minimax"},
+        ),
+        stages=[
+            BundleStageSpec(
+                name="eval",
+                kind="evaluation",
+                evaluation_type=TOY_EVALUATION_TYPE,
+                local_params={"n_trials": 3},
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+            BundleStageSpec(
+                name="summary",
+                kind="analysis",
+                depends_on=["eval"],
+                analysis_type=TOY_ANALYSIS_TYPE,
+                requested_outputs=["toy"],
+                outputs=[BundleStageOutputSpec(role="manifest")],
+            ),
+        ],
+    )
+
+    result = execute_staged_analysis_bundle(
+        bundle, root=tmp_path, fig_dump_formats=("json",), registries=application_registry_bundle
+    )
+    payload = result.model_dump(mode="json", exclude_none=True)
+
+    assert "depends_on_roles" not in json.dumps(payload, sort_keys=True)
+    assert "input_artifacts" not in json.dumps(payload, sort_keys=True)
+    stage_payload = payload["stages"][1]["regeneration_specs"][0]["inline"]["parameters"]["stage"]
+    assert "depends_on_roles" not in stage_payload
+    assert "run_condition" not in stage_payload
+
+
+def test_unqualified_bundle_lookup_uses_public_registry_metadata(tmp_path: Path, monkeypatch):
+    registry = _write_bundle_package(tmp_path, monkeypatch, ExperimentRegistry())
+    _register_empty_bundle_package(registry, tmp_path, monkeypatch)
+
+    with patch.object(
+        registry,
+        "iter_package_metadata",
+        wraps=registry.iter_package_metadata,
+    ) as iter_metadata:
+        bundle = load_analysis_bundle("matrix", registry=registry)
+
+    assert iter_metadata.called
+    assert bundle.name == "toy_matrix"
+
+
+def test_analysis_bundle_fails_on_unknown_requested_output(
+    tmp_path: Path,
+    monkeypatch,
+    application_registry_bundle,
+) -> None:
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    _execute_toy_eval(
+        tmp_path,
+        n_trials=2,
+        method="minimax",
+        application_registry_bundle=application_registry_bundle,
+    )
+    _write_bundle_package(tmp_path, monkeypatch, application_registry_bundle.experiment_packages)
+    bundle = load_analysis_bundle(
+        "toy/missing_output",
+        registry=application_registry_bundle.experiment_packages,
+    )
+
+    with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
+        execute_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            fig_dump_formats=("json",),
+            registries=application_registry_bundle,
+        )
+
+    assert "requested_outputs=['missing']" in str(excinfo.value.__cause__)
+    assert "available_analysis_keys=['toy']" in str(excinfo.value.__cause__)
+
+
+def test_analysis_cli_runs_bundle_against_manifest_root(
+    tmp_path: Path, monkeypatch, capsys, application_registry_bundle
+):
+    seen_repo_roots: list[Path | None] = []
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_analysis_recipe(application_registry_bundle, seen_repo_roots=seen_repo_roots)
+    first, _first_path = _execute_toy_eval(
+        tmp_path,
+        n_trials=2,
+        method="minimax",
+        application_registry_bundle=application_registry_bundle,
+    )
+    second, _second_path = _execute_toy_eval(
+        tmp_path,
+        n_trials=4,
+        method="minimax",
+        application_registry_bundle=application_registry_bundle,
+    )
+    _write_bundle_package(tmp_path, monkeypatch, application_registry_bundle.experiment_packages)
+
+    from feedbax.bin import analysis as analysis_cli
+
+    analysis_cli.main(
+        [
+            "--bundle",
+            "toy/matrix",
+            "--manifest-root",
+            str(tmp_path),
+            "--repo-root",
+            str(tmp_path),
+            "--fig-dump-dir",
+            str(tmp_path / "figures"),
+            "--fig-dump-formats",
+            "json",
+            "--issue",
+            "81c7149",
+        ],
+        bootstrap_state=BootstrapState(application_registry_bundle, ()),
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    expected_ids = [item["matched_run_ids"][0] for item in output if item["template"] == "per_cell"]
+    assert set(expected_ids) == {first.id, second.id}
+    assert [(item["template"], item["matched_run_ids"]) for item in output] == [
+        ("per_cell", [expected_ids[0]]),
+        ("per_cell", [expected_ids[1]]),
+        ("grouped_cells", expected_ids),
+    ]
+    for item in output:
+        manifest = load_manifest(item["manifest_path"])
+        assert manifest.kind == "AnalysisRunManifest"
+        assert manifest.status == "completed"
+        assert manifest.metadata["bundle"]["name"] == "toy_matrix"
+        assert manifest.provenance.issues == ["81c7149"]
+    assert seen_repo_roots == [tmp_path.resolve()] * 3
+
+
+def test_analysis_cli_runs_staged_bundle_with_addressable_outputs(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    application_registry_bundle,
+) -> None:
+    seen_repo_roots: list[Path | None] = []
+
+    def evaluation_recipe(run_spec, _root, _states_path, execution_context):
+        seen_repo_roots.append(execution_context.repo_root)
+        return EvaluationRecipeResult(
+            states={"value": np.asarray(run_spec.params["n_trials"], dtype=np.int32)},
+            summary_metrics={"n_trials": run_spec.params["n_trials"]},
+        )
+
+    application_registry_bundle.evaluation_recipes.register(TOY_EVALUATION_TYPE, evaluation_recipe)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    training = _write_toy_training(tmp_path, method="minimax")
+    _write_bundle_package(tmp_path, monkeypatch, application_registry_bundle.experiment_packages)
+
+    from feedbax.bin import analysis as analysis_cli
+
+    analysis_cli.main(
+        [
+            "--bundle",
+            "toy/staged",
+            "--manifest-root",
+            str(tmp_path),
+            "--repo-root",
+            str(tmp_path),
+            "--fig-dump-dir",
+            str(tmp_path / "figures"),
+            "--fig-dump-formats",
+            "json",
+            "--issue",
+            "7e4cf6b",
+        ],
+        bootstrap_state=BootstrapState(application_registry_bundle, ()),
+    )
+
+    stdout = capsys.readouterr().out
+    payload = json.loads(stdout)
+    assert stdout == f"{json.dumps(payload, indent=2, sort_keys=True)}\n"
+    assert payload["schema_id"] == "feedbax.manifest.analysis_bundle_execution"
+    assert payload["bundle_name"] == "toy_staged_cli"
+    assert payload["matched_run_ids"] == [training.id]
+    assert [stage["name"] for stage in payload["stages"]] == [
+        "eval",
+        "analysis",
+        "report",
+    ]
+    assert payload["stages"][0]["manifest_refs"][0]["kind"] == ("EvaluationRunManifest")
+    analysis_stage = payload["stages"][1]
+    assert analysis_stage["manifest_refs"][0]["kind"] == "AnalysisRunManifest"
+    assert analysis_stage["artifact_groups"]["figure"]
+    for artifact in analysis_stage["artifact_groups"]["figure"]:
+        assert Path(artifact["uri"]).exists()
+    report_stage = payload["stages"][2]
+    assert report_stage["manifest_refs"][0]["kind"] == "ReportManifest"
+    assert payload["report_outputs"][0]["status"] == "materialized"
+    assert Path(payload["report_outputs"][0]["artifacts"][0]["uri"]).exists()
+    assert seen_repo_roots == [tmp_path.resolve()]
+
+
+def test_analysis_cli_keeps_bundle_progress_off_json_stdout(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    application_registry_bundle,
+) -> None:
+    from feedbax.bin import analysis as analysis_cli
+
+    def fake_execute_analysis_bundle(*_args, **_kwargs):
+        analysis_cli.rich.get_console().print("Computing analysis nodes...")
+        return [
+            (
+                SimpleNamespace(
+                    bundle_name="toy_matrix",
+                    template_name="per_cell",
+                    mode="per-run",
+                    matched_run_ids=("feedbax-evaluation-run:toy",),
+                ),
+                SimpleNamespace(id="feedbax-analysis-run:toy"),
+                tmp_path / "manifests" / "analysis_runs" / "toy.json",
+            )
+        ]
+
+    monkeypatch.setattr(
+        analysis_cli,
+        "load_analysis_bundle",
+        lambda *_args, **_kwargs: SimpleNamespace(templates=[object()], stages=[]),
+    )
+    monkeypatch.setattr(
+        analysis_cli,
+        "resolve_analysis_bundle_authoring",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("direct bundle routing must not invoke delta resolution")
+        ),
+    )
+    monkeypatch.setattr(analysis_cli, "execute_analysis_bundle", fake_execute_analysis_bundle)
+
+    analysis_cli.main(
+        [
+            "--bundle",
+            "toy/matrix",
+            "--manifest-root",
+            str(tmp_path),
+            "--fig-dump-dir",
+            str(tmp_path / "figures"),
+            "--fig-dump-formats",
+            "json",
+        ],
+        bootstrap_state=BootstrapState(application_registry_bundle, ()),
+    )
+
+    captured = capsys.readouterr()
+    assert "Computing analysis nodes" not in captured.out
+    assert "Computing analysis nodes" in captured.err
+    assert json.loads(captured.out) == [
+        {
+            "bundle": "toy_matrix",
+            "template": "per_cell",
+            "mode": "per-run",
+            "matched_run_ids": ["feedbax-evaluation-run:toy"],
+            "manifest_id": "feedbax-analysis-run:toy",
+            "manifest_path": str(tmp_path / "manifests" / "analysis_runs" / "toy.json"),
+        }
+    ]
+
+
+def test_analysis_cli_resolves_composed_package_resource_with_explicit_repo_root(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    application_registry_bundle,
+) -> None:
+    from feedbax.bin import analysis as analysis_cli
+
+    _write_bundle_package(tmp_path, monkeypatch, application_registry_bundle.experiment_packages)
+    base = AnalysisBundleSpec(
+        name="composed_cli",
+        templates=[
+            AnalysisSpecTemplate(
+                name="grouped",
+                mode="grouped",
+                analysis_type=TOY_ANALYSIS_TYPE,
+            )
+        ],
+    ).model_dump(mode="json")
+    (tmp_path / "base.json").write_text(json.dumps(base), encoding="utf-8")
+    base_sha = sha256_bytes(canonical_json_bytes(base))
+    delta = {
+        "schema_id": "feedbax.spec.analysis_bundle_delta",
+        "schema_version": "feedbax.spec.analysis_bundle_delta.v1",
+        "parent": {"ref": "base.json", "sha256": base_sha},
+        "deltas": [{"layer_id": "cli", "patches": []}],
+    }
+    resource = tmp_path / "toy_bundle_pkg" / "config" / "analysis_bundles" / "composed.yml"
+    resource.write_text(json.dumps(delta), encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_execute(bundle, **kwargs):
+        captured["bundle"] = bundle
+        captured["repo_root"] = kwargs["repo_root"]
+        return []
+
+    monkeypatch.setattr(analysis_cli, "execute_analysis_bundle", fake_execute)
+
+    analysis_cli.main(
+        [
+            "--bundle",
+            "toy/composed",
+            "--repo-root",
+            str(tmp_path),
+            "--manifest-root",
+            str(tmp_path),
+        ],
+        bootstrap_state=BootstrapState(application_registry_bundle, ()),
+    )
+
+    assert isinstance(captured["bundle"], AnalysisBundleDeltaSpec)
+    assert captured["repo_root"] == tmp_path
+    assert json.loads(capsys.readouterr().out) == []
+
+
+def test_analysis_cli_fails_closed_without_cross_executor_fallback(
+    tmp_path: Path,
+    monkeypatch,
+    application_registry_bundle,
+) -> None:
+    from feedbax.bin import analysis as analysis_cli
+
+    staged_bundle = SimpleNamespace(name="staged", templates=[], stages=[object()])
+    legacy_called = False
+
+    def fail_staged(*_args, **_kwargs):
+        raise RuntimeError("staged execution failed")
+
+    def record_legacy(*_args, **_kwargs):
+        nonlocal legacy_called
+        legacy_called = True
+        return []
+
+    monkeypatch.setattr(
+        analysis_cli,
+        "load_analysis_bundle",
+        lambda *_args, **_kwargs: staged_bundle,
+    )
+    monkeypatch.setattr(analysis_cli, "execute_staged_analysis_bundle", fail_staged)
+    monkeypatch.setattr(analysis_cli, "execute_analysis_bundle", record_legacy)
+
+    with pytest.raises(RuntimeError, match="staged execution failed"):
+        analysis_cli.main(
+            [
+                "--bundle",
+                "toy/staged",
+                "--manifest-root",
+                str(tmp_path),
+                "--fig-dump-formats",
+                "json",
+            ],
+            bootstrap_state=BootstrapState(application_registry_bundle, ()),
+        )
+
+    assert not legacy_called
+
+
+def test_analysis_cli_legacy_error_does_not_fallback_to_staged_executor(
+    tmp_path: Path,
+    monkeypatch,
+    application_registry_bundle,
+) -> None:
+    from feedbax.bin import analysis as analysis_cli
+
+    legacy_bundle = SimpleNamespace(name="legacy", templates=[object()], stages=[])
+    staged_called = False
+
+    def fail_legacy(*_args, **_kwargs):
+        raise RuntimeError("legacy execution failed")
+
+    def record_staged(*_args, **_kwargs):
+        nonlocal staged_called
+        staged_called = True
+
+    monkeypatch.setattr(
+        analysis_cli,
+        "load_analysis_bundle",
+        lambda *_args, **_kwargs: legacy_bundle,
+    )
+    monkeypatch.setattr(analysis_cli, "execute_analysis_bundle", fail_legacy)
+    monkeypatch.setattr(analysis_cli, "execute_staged_analysis_bundle", record_staged)
+
+    with pytest.raises(RuntimeError, match="legacy execution failed"):
+        analysis_cli.main(
+            [
+                "--bundle",
+                "toy/legacy",
+                "--manifest-root",
+                str(tmp_path),
+                "--fig-dump-formats",
+                "json",
+            ],
+            bootstrap_state=BootstrapState(application_registry_bundle, ()),
+        )
+
+    assert not staged_called
+
+
+@pytest.mark.parametrize(
+    "bundle",
+    [
+        SimpleNamespace(name="empty", templates=[], stages=[]),
+        SimpleNamespace(name="mixed", templates=[object()], stages=[object()]),
+    ],
+    ids=["empty", "mixed"],
+)
+def test_analysis_cli_rejects_ambiguous_bundle_shape_before_execution(
+    bundle,
+    tmp_path: Path,
+    monkeypatch,
+    application_registry_bundle,
+) -> None:
+    from feedbax.bin import analysis as analysis_cli
+
+    monkeypatch.setattr(analysis_cli, "load_analysis_bundle", lambda *_args, **_kwargs: bundle)
+    legacy = patch.object(analysis_cli, "execute_analysis_bundle")
+    staged = patch.object(analysis_cli, "execute_staged_analysis_bundle")
+    with legacy as legacy_executor, staged as staged_executor:
+        with pytest.raises(ValueError, match="exactly one non-empty execution shape"):
+            analysis_cli.main(
+                [
+                    "--bundle",
+                    "toy/invalid",
+                    "--manifest-root",
+                    str(tmp_path),
+                ],
+                bootstrap_state=BootstrapState(application_registry_bundle, ()),
+            )
+
+    legacy_executor.assert_not_called()
+    staged_executor.assert_not_called()
+
+
+def test_bundle_context_projects_figures_through_registered_routing(
+    tmp_path: Path,
+    monkeypatch,
+    application_registry_bundle,
+) -> None:
+    _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
+    _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
+    _eval_manifest, _eval_path = _execute_toy_eval(
+        tmp_path,
+        n_trials=2,
+        method="minimax",
+        application_registry_bundle=application_registry_bundle,
+    )
+    registry = _write_bundle_package(
+        tmp_path, monkeypatch, application_registry_bundle.experiment_packages
+    )
+    bundle = load_analysis_bundle("toy/routed", registry=registry)
+
+    outputs = execute_analysis_bundle(
+        bundle,
+        root=tmp_path,
+        issues=["3fb7e70"],
+        fig_dump_formats=("json",),
+        registries=application_registry_bundle,
+    )
+
+    assert len(outputs) == 1
+    _expansion, manifest, _path = outputs[0]
+    assert manifest.summary_metrics["figure_count"] == 1
+    assert manifest.summary_metrics["artifact_count"] == 1
+    canonical = manifest.artifacts[0]
+    assert canonical.role == "figure"
+    assert Path(canonical.uri).exists()
+    assert canonical.metadata["relative_path"].startswith("artifacts/")
+
+    projection = canonical.metadata["figure_routing"]
+    spec_path = Path(projection["spec_path"])
+    render_path = Path(projection["render_path"])
+    symlink_path = Path(projection["symlink_path"])
+    assert spec_path == (
+        tmp_path
+        / "toy_bundle_pkg"
+        / "results"
+        / "toy_experiment"
+        / "figures"
+        / "toy_topic"
+        / "spec.json"
+    )
+    assert render_path == (
+        tmp_path
+        / "toy_bundle_pkg"
+        / "_artifacts"
+        / "toy_experiment"
+        / "figures"
+        / "toy_topic"
+        / "figure.fig.json"
+    )
+    assert spec_path.exists()
+    assert render_path.exists()
+    assert symlink_path.is_symlink()
+    assert symlink_path.resolve() == render_path
+
+    routed_spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    assert routed_spec["analysis"]["manifest_id"] == manifest.id
+    assert routed_spec["analysis"]["analysis_type"] == TOY_ANALYSIS_TYPE
+    assert routed_spec["analysis"]["analysis_name"] == "toy_analysis"
+    assert routed_spec["plot_kwargs"]["params"]["result_value"] == 3
+    assert routed_spec["transform"] == [{"name": "toy-analysis"}]
+    assert manifest.metadata["bundle"]["metadata"]["figure_routing"]["package"] == "toy"

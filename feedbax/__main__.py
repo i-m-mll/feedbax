@@ -1,0 +1,1194 @@
+"""Command-line entrypoint for ``python -m feedbax``."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import importlib
+import json
+import pickle
+import sys
+import time
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+from pydantic import TypeAdapter
+
+from feedbax.bin.staged_inputs import add_staged_input_arguments
+from feedbax.contracts.checkpoints import CheckpointForkPlan
+from feedbax.contracts.checkpoint_initialization import CheckpointInitializationPlan
+from feedbax.contracts.artifact_custody import ContentBinding
+from feedbax.contracts.experiment_envelope import (
+    ExperimentEnvelopeCompilerError,
+    ExperimentEnvelopeRejection,
+    dispatch_experiment_envelope,
+    missing_outputs,
+)
+from feedbax.contracts.project_experiment import (
+    ProjectExperimentDeclarationError,
+    load_project_declaration,
+    project_declaration_path,
+)
+from feedbax.contracts.migrations import default_spec_registry
+from feedbax.contracts.run_matrix import ExecutionDependency
+from feedbax.contracts.training import (
+    TrainingProgramRegistry,
+    TrainingRunSpec,
+    resolve_training_run_spec,
+    validate_training_run_spec_semantics,
+)
+from feedbax.governance.science_surface import (
+    build_parser as build_science_surface_parser,
+    run_cli as run_science_surface_cli,
+)
+from feedbax.plugins.composition import compose_application
+from feedbax.orchestration.events import RunEventEmitter
+from feedbax.training.executor import (
+    execute_training_run_spec,
+    prepare_training_manifest_metadata_projection,
+)
+from feedbax.training.interruption import RunInterruptionController
+from feedbax.training.preparation import (
+    ExecutionPreparationPlan,
+    ExecutionPreparationRequest,
+    lower_zero_level_preparation_plan,
+    materialize_execution_preparation,
+    require_execution_preparation_provider,
+)
+from feedbax.training.worker_validation import resolve_execution_mapping
+from feedbax.training.manifest_preflight import (
+    preflight_training_run_manifest_payloads,
+    validate_training_run_spec,
+)
+from feedbax.training.checkpoint_custody import (
+    CheckpointForkPlanBindings,
+    RunContractProjectionEvidence,
+    classify_checkpoint_fork_plan_derived_digests,
+    fork_checkpoint_plan,
+    fork_checkpoint_transaction,
+    relock_checkpoint_fork_plan_file,
+    validate_checkpoint_fork_execution_dependencies,
+)
+
+
+def _read_json(path: str) -> dict[str, Any]:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _read_pickle(path: str) -> Any:
+    with Path(path).open("rb") as stream:
+        return pickle.load(stream)
+
+
+def _load_checkpoint_fork_plan_bindings(
+    path: str,
+    training_method_registry: TrainingProgramRegistry,
+) -> CheckpointForkPlanBindings:
+    manifest_path = Path(path).resolve()
+    payload = _read_json(str(manifest_path))
+    expected = "feedbax.runtime.checkpoint_fork_plan_bindings"
+    if (payload.get("schema_id"), payload.get("schema_version")) != (expected, f"{expected}.v1"):
+        raise ValueError("checkpoint fork binding manifest has unsupported schema identity")
+    base = manifest_path.parent
+
+    def resolved(raw: str) -> Path:
+        candidate = Path(raw)
+        return candidate if candidate.is_absolute() else base / candidate
+
+    def loaded(name: str, loader: Any) -> dict[str, Any]:
+        return {key: loader(str(resolved(value))) for key, value in payload.get(name, {}).items()}
+
+    run_specs = {
+        key: validate_training_run_spec_semantics(
+            TrainingRunSpec.model_validate(value),
+            training_method_registry,
+        )
+        for key, value in loaded("run_specs", _read_json).items()
+    }
+    return CheckpointForkPlanBindings(
+        checkpoint_roots={
+            key: resolved(value) for key, value in payload["checkpoint_roots"].items()
+        },
+        run_specs=run_specs,
+        slot_templates=loaded("slot_templates", _read_pickle),
+        segment_history_templates=loaded("segment_history_templates", _read_pickle),
+        population_member_ids=loaded("population_member_ids", _read_json),
+    )
+
+
+def _load_run_contract_historical_evidence(
+    path: str | None,
+) -> dict[str, RunContractProjectionEvidence]:
+    """Load a JSON mapping of target_id to authenticated historical evidence."""
+    if path is None:
+        return {}
+    payload = _read_json(path)
+    entries = payload.get("targets", payload) if isinstance(payload, Mapping) else {}
+    evidence: dict[str, RunContractProjectionEvidence] = {}
+    for target_id, item in entries.items():
+        evidence[target_id] = RunContractProjectionEvidence(
+            canonical_projection=item["canonical_projection"],
+            recorded_sha256=item["recorded_sha256"],
+            recorded_algorithm_version=item["recorded_algorithm_version"],
+            training_run_spec_schema_id=item["training_run_spec_schema_id"],
+            training_run_spec_schema_version=item["training_run_spec_schema_version"],
+            evidence_refs=tuple(item.get("evidence_refs", ())),
+        )
+    return evidence
+
+
+def _load_callable(ref: str | None):
+    if ref is None:
+        return None
+    module_name, _, function_name = ref.partition(":")
+    if not module_name or not function_name:
+        raise ValueError("callable references must be module:function")
+    module = importlib.import_module(module_name)
+    return getattr(module, function_name)
+
+
+def _load_slot_transforms(refs: Sequence[str] | None) -> dict[str, Any]:
+    transforms: dict[str, Any] = {}
+    for ref in refs or ():
+        slot, sep, callable_ref = ref.partition("=")
+        if not sep or not slot or not callable_ref:
+            raise ValueError("--slot-transform entries must use SLOT=module:function")
+        transforms[slot] = _load_callable(callable_ref)
+    return transforms
+
+
+def _checkpoint_fork_targets(args: argparse.Namespace) -> list[str]:
+    targets: list[str] = []
+    targets.extend(args.target or ())
+    targets.extend(args.targets or ())
+    if not targets:
+        raise ValueError("checkpoint fork requires at least one --target or --targets entry")
+    return targets
+
+
+def _parse_checkpoint_fork_target(raw: str) -> tuple[Path, Path]:
+    spec, sep, root = raw.partition(":")
+    if not sep or not spec or not root:
+        raise ValueError("checkpoint fork targets must use '<run-spec-json>:<checkpoint-root>'")
+    return Path(spec), Path(root)
+
+
+def _progress_loss(metrics: Mapping[str, Any]) -> float | None:
+    value = metrics.get("train_loss")
+    if value is None:
+        for key, candidate in metrics.items():
+            if str(key).endswith("loss"):
+                value = candidate
+                break
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _console_progress_printer(started_at: float):
+    def print_progress(event: Mapping[str, Any]) -> None:
+        coordinate = event.get("coordinate", {})
+        coordinate = coordinate if isinstance(coordinate, Mapping) else {}
+        metrics = event.get("metrics", {})
+        metrics = metrics if isinstance(metrics, Mapping) else {}
+        batch = int(coordinate.get("program_step") or 0)
+        phase = str(coordinate.get("phase") or "unknown")
+        loss = _progress_loss(metrics)
+        loss_text = "nan" if loss is None else f"{loss:.6g}"
+        elapsed = time.perf_counter() - started_at
+        print(
+            f"phase={phase} batch={batch} loss={loss_text} elapsed={elapsed:.2f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    return print_progress
+
+
+def _execute_experiment_workflow(args: argparse.Namespace, registries: Any) -> int:
+    """Execute one compiled experiment target's whole dependency closure.
+
+    Exit codes are the documented workflow contract: 0 executed, 2 a stable
+    typed rejection with an actionable diagnostic on stderr, 1 infrastructure
+    failure.
+    """
+    from feedbax.analysis.fulfillment import FulfillmentAdmissionError
+    from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
+    from feedbax.analysis.fulfillment_custody import FulfillmentDriftError
+    from feedbax.workflow.derivation import WorkflowDerivationError
+    from feedbax.workflow.execution import WorkflowExecutionError
+    from feedbax.workflow.experiment import execute_experiment_workflow
+    from feedbax.workflow.plan import (
+        WorkflowPlanError,
+        UnsupportedWorkflowPlanVersionError,
+    )
+    from feedbax.analysis.execution_context import (
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        StagedExecutionContextError,
+    )
+    from feedbax.bin.staged_inputs import staged_execution_context
+
+    repo_root = Path(args.repo_root).resolve()
+    out_dir = Path(args.out_dir)
+    if not out_dir.is_absolute():
+        out_dir = repo_root / out_dir
+    # The staged surface is proved before the closure is even planned. A root
+    # bound to a name no descriptor declares, an unreadable descriptor, and a
+    # binding flag with no descriptor at all are each a declaration that cannot
+    # be honored, and none of them is a reason to run part of a closure first.
+    try:
+        declared_context = staged_execution_context(args)
+    except (StagedExecutionContextError, ValueError) as rejection:
+        print(f"{type(rejection).__name__}: {rejection}", file=sys.stderr)
+        return 2
+    environment = FulfillmentEnvironment(
+        root=Path(args.receipt_root).resolve(),
+        registries=registries,
+        repo_root=repo_root,
+        execution_context=(
+            EMPTY_STAGED_EXECUTION_CONTEXT if declared_context is None else declared_context
+        ),
+        issues=tuple(args.issue or ()),
+    )
+    try:
+        fulfillment = execute_experiment_workflow(
+            args.target, output_directory=out_dir, environment=environment
+        )
+    except (
+        ExperimentEnvelopeRejection,
+        FulfillmentAdmissionError,
+        WorkflowDerivationError,
+        FulfillmentDriftError,
+        WorkflowExecutionError,
+        WorkflowPlanError,
+        StagedExecutionContextError,
+        UnsupportedWorkflowPlanVersionError,
+    ) as rejection:
+        print(f"{type(rejection).__name__}: {rejection}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"workflow execution failed on infrastructure: {exc}", file=sys.stderr)
+        return 1
+    json.dump(fulfillment.summary(), fp=sys.stdout, indent=2, sort_keys=True)
+    print()
+    return 0
+
+
+def _preflight_experiment_envelope(args: argparse.Namespace, registries) -> int:
+    """Compile one authored envelope with the single built-in dialect compiler.
+
+    Exit codes are the documented authoring contract: 0 accepted, 2 rejected
+    with an actionable diagnostic on stderr, 1 infrastructure failure. There is
+    no compiler registry to consult: an envelope declaring any schema other than
+    the built-in dialect is rejected by name.
+    """
+    envelope_path = Path(args.envelope)
+    repo_root = Path(args.repo_root).resolve()
+    out_dir = Path(args.out_dir)
+    if not out_dir.is_absolute():
+        out_dir = repo_root / out_dir
+    try:
+        envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(f"cannot read experiment envelope {envelope_path}: {exc}", file=sys.stderr)
+        return 1
+    try:
+        envelope_ref = str(envelope_path.resolve().relative_to(repo_root))
+    except ValueError:
+        print(
+            f"experiment envelope {envelope_path} is outside repo root {repo_root}",
+            file=sys.stderr,
+        )
+        return 1
+    # Which layout and budgets apply is read from the stated root's declaration
+    # file, which is data, before the compiler runs. Nothing is scanned for and
+    # nothing is inferred: an unreadable or unsupported declaration stops here,
+    # and a root that declares nothing dispatches without one so that a schema
+    # whose compiler needs no declaration still runs. The Feedbax dialect's own
+    # compiler says it needs one rather than being told so here.
+    declaration_path = project_declaration_path(repo_root)
+    declaration = None
+    if declaration_path.exists():
+        try:
+            declaration = load_project_declaration(repo_root)
+        except ProjectExperimentDeclarationError as exc:
+            print(f"cannot load the project declaration: {exc}", file=sys.stderr)
+            return 1
+        if not declaration.owns_envelope_ref(envelope_ref):
+            print(
+                f"experiment envelope {envelope_ref} lies outside the envelope directory "
+                f"{declaration.envelope_directory!r} that {declaration_path} declares",
+                file=sys.stderr,
+            )
+            return 1
+    try:
+        result = dispatch_experiment_envelope(
+            envelope,
+            envelope_path=envelope_path,
+            repo_root=repo_root,
+            out_dir=out_dir,
+            project_declaration=declaration,
+            figure_templates=registries.figures.templates(),
+        )
+    except ExperimentEnvelopeRejection as rejection:
+        print(rejection.render(), file=sys.stderr)
+        return 2
+    except ExperimentEnvelopeCompilerError as exc:
+        print(f"experiment envelope dispatch failed: {exc}", file=sys.stderr)
+        return 1
+    absent = missing_outputs(result, out_dir)
+    if absent:
+        print(
+            f"compiler reported outputs it did not write: {list(absent)}",
+            file=sys.stderr,
+        )
+        return 1
+    json.dump(
+        result.model_dump(mode="json", exclude_none=True),
+        fp=sys.stdout,
+        indent=2,
+        sort_keys=True,
+    )
+    print()
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the engine parser every `python -m feedbax` command is dispatched from.
+
+    The unified ``feedbax`` console script routes engine subcommands here, so the
+    two entry points can never drift into two different command inventories.
+    """
+    parser = argparse.ArgumentParser(prog="python -m feedbax")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    migration_parser = subparsers.add_parser(
+        "migrate-content-store",
+        help="Offline conversion of legacy custody into canonical content references.",
+    )
+    migration_source = migration_parser.add_mutually_exclusive_group(required=True)
+    migration_source.add_argument("--packet-v1")
+    migration_source.add_argument("--staged-root-v1")
+    migration_source.add_argument("--run-bundle-v12")
+    migration_source.add_argument(
+        "--path-backed-json",
+        help="JSON mapping of provenance refs to explicit absolute source paths.",
+    )
+    migration_parser.add_argument("--source-root")
+    migration_parser.add_argument("--source-roots-json")
+    migration_parser.add_argument("--destination-store", required=True)
+    migration_parser.add_argument("--receipt")
+    execute_parser = subparsers.add_parser(
+        "execute-training-run-spec",
+        help="Execute a TrainingRunSpec and emit a native TrainingRunManifest.",
+    )
+    execute_parser.add_argument("spec", help="TrainingRunSpec JSON path")
+    execute_parser.add_argument("--manifest-root", help="Manifest root override")
+    execute_parser.add_argument("--checkpoint-root", help="Checkpoint custody root override")
+    execute_parser.add_argument("--checkpoint-source-root")
+    execute_parser.add_argument("--checkpoint-initialization-plan")
+    execute_parser.add_argument("--checkpoint-fork-plan")
+    execute_parser.add_argument("--checkpoint-fork-bindings")
+    execute_parser.add_argument("--checkpoint-fork-target-id")
+    execute_parser.add_argument("--checkpoint-content-store")
+    execute_parser.add_argument("--checkpoint-source-binding")
+    execute_parser.add_argument("--run-id", help="Stable run id override")
+    execute_parser.add_argument("--initial-slots", help="JSON path for simple initial slots")
+    execute_parser.add_argument(
+        "--training-payload",
+        help="Optional external training payload JSON",
+    )
+    execute_parser.add_argument("--training-payload-kind", default="TrainingRunSpec")
+    execute_parser.add_argument("--training-payload-schema-id")
+    execute_parser.add_argument("--training-payload-schema-version")
+    execute_parser.add_argument("--training-payload-ref")
+    execute_parser.add_argument(
+        "--manifest-metadata-projection",
+        help="Governed training-manifest metadata projection envelope JSON path",
+    )
+    execution_context_group = execute_parser.add_mutually_exclusive_group()
+    execution_context_group.add_argument(
+        "--execution-context",
+        help=(
+            "NativeExecutionProducerContext JSON carrying assembly identities, row "
+            "provenance, and diagnostics inputs"
+        ),
+    )
+    execution_context_group.add_argument(
+        "--execution-context-json",
+        help="Inline NativeExecutionProducerContext JSON supplied by orchestration",
+    )
+    execute_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers Feedbax training methods or governed "
+            "manifest metadata projections before validation; may be repeated."
+        ),
+    )
+    execute_parser.add_argument("--resume", action="store_true")
+    execute_parser.add_argument("--stop-after-barrier")
+    execute_parser.add_argument(
+        "--update-budget",
+        type=int,
+        help=(
+            "Execute at most this positive delta in completed training batches, "
+            "checkpoint the terminal batch, and exit successfully."
+        ),
+    )
+    execute_parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable the default stderr progress printer.",
+    )
+    preflight_parser = subparsers.add_parser(
+        "preflight-training-run-manifest",
+        help="Validate final TrainingRunManifest spec payloads without training.",
+    )
+    preflight_parser.add_argument("spec", help="TrainingRunSpec JSON path")
+    preflight_parser.add_argument("--row-id", help="Row id for failure context")
+    preflight_parser.add_argument(
+        "--training-payload",
+        help="Optional external training payload JSON",
+    )
+    preflight_parser.add_argument("--training-payload-kind", default="TrainingRunSpec")
+    preflight_parser.add_argument("--training-payload-schema-id")
+    preflight_parser.add_argument("--training-payload-schema-version")
+    preflight_parser.add_argument("--training-payload-ref")
+    preflight_parser.add_argument(
+        "--manifest-metadata-projection",
+        help="Governed training-manifest metadata projection envelope JSON path",
+    )
+    preflight_parser.add_argument("--task-binding-spec")
+    preflight_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers Feedbax training methods or governed "
+            "manifest metadata projections before validation; may be repeated."
+        ),
+    )
+    envelope_parser = subparsers.add_parser(
+        "preflight-experiment-envelope",
+        help=(
+            "Compile one authored experiment envelope with the single built-in dialect compiler."
+        ),
+    )
+    envelope_parser.add_argument("envelope", help="Authored experiment envelope JSON path")
+    envelope_parser.add_argument(
+        "--out-dir",
+        default="generated",
+        help="Directory the compiler writes its compile lock and document into.",
+    )
+    envelope_parser.add_argument(
+        "--repo-root",
+        default=".",
+        help="Repository root the envelope's relative references resolve against.",
+    )
+    envelope_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers a downstream experiment envelope compiler "
+            "before dispatch; may be repeated."
+        ),
+    )
+    fulfill_parser = subparsers.add_parser(
+        "execute-experiment-workflow",
+        help=(
+            "Execute one compiled experiment target's dependency closure from the compile "
+            "locks and documents in an output directory."
+        ),
+    )
+    fulfill_parser.add_argument(
+        "target",
+        help="Envelope path or compiled name of the artifact to fulfill.",
+    )
+    fulfill_parser.add_argument(
+        "--out-dir",
+        default="generated",
+        help="Directory holding the compile locks and compiled documents.",
+    )
+    fulfill_parser.add_argument(
+        "--receipt-root",
+        required=True,
+        help="Receipt root every admitted and executed manifest lives beneath.",
+    )
+    fulfill_parser.add_argument(
+        "--repo-root",
+        default=".",
+        help="Repository root the compiled documents' relative references resolve against.",
+    )
+    fulfill_parser.add_argument(
+        "--issue",
+        action="append",
+        help="Issue reference recorded on produced manifests; may be repeated.",
+    )
+    fulfill_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers evaluation, analysis, figure, or report "
+            "implementations before the walk; may be repeated."
+        ),
+    )
+    # The same staged-input surface `feedbax-analysis run` exposes. A receipt
+    # root stays what it is — output and admission custody, and one candidate
+    # manifest authority — and is never read as an inferred provider root.
+    add_staged_input_arguments(fulfill_parser)
+    checkpoint_root = subparsers.add_parser(
+        "checkpoint",
+        help="Checkpoint custody maintenance commands.",
+    )
+    checkpoint_subparsers = checkpoint_root.add_subparsers(
+        dest="checkpoint_command",
+        required=True,
+    )
+    fork_parser = checkpoint_subparsers.add_parser(
+        "fork",
+        help="Fork one custody checkpoint to one or more target run contracts.",
+    )
+    fork_parser.add_argument("--source", required=True, help="Source checkpoint root")
+    fork_parser.add_argument(
+        "--target",
+        action="append",
+        help="Target as '<TrainingRunSpec JSON>:<checkpoint root>'; may be repeated.",
+    )
+    fork_parser.add_argument(
+        "--targets",
+        nargs="+",
+        help="One or more '<TrainingRunSpec JSON>:<checkpoint root>' targets.",
+    )
+    fork_parser.add_argument(
+        "--expected-slots",
+        help=(
+            "Optional pickle containing target checkpoint slot templates. If omitted, "
+            "the source slots after transforms are used as strict-load templates."
+        ),
+    )
+    fork_parser.add_argument(
+        "--slot-transform",
+        action="append",
+        help="Per-slot transform as SLOT=module:function; may be repeated.",
+    )
+    fork_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers Feedbax training methods before "
+            "TrainingRunSpec validation; may be repeated."
+        ),
+    )
+    fork_parser.add_argument("--tool-version", help="Tool version to record in provenance")
+    plan_parser = checkpoint_subparsers.add_parser(
+        "fork-plan",
+        help="Execute one content-pinned portable checkpoint fork plan.",
+    )
+    plan_parser.add_argument("--plan", required=True, help="CheckpointForkPlan JSON")
+    plan_parser.add_argument(
+        "--dependencies", required=True, help="Typed execution-dependency JSON or JSON path"
+    )
+    plan_parser.add_argument("--bindings", required=True, help="Runtime bindings v1 JSON")
+    plan_parser.add_argument(
+        "--plugin",
+        action="append",
+        help="Import a module that registers methods or durable fork transforms.",
+    )
+    relock_parser = checkpoint_subparsers.add_parser(
+        "relock",
+        help="Classify or migrate a content-pinned checkpoint fork plan's derived digests.",
+    )
+    relock_parser.add_argument("--plan", required=True, help="CheckpointForkPlan JSON path")
+    relock_parser.add_argument("--bindings", required=True, help="Runtime bindings v1 JSON")
+    relock_mode = relock_parser.add_mutually_exclusive_group(required=True)
+    relock_mode.add_argument(
+        "--check",
+        action="store_true",
+        help="Report the per-field drift classification and exit nonzero on any drift.",
+    )
+    relock_mode.add_argument(
+        "--write",
+        action="store_true",
+        help="Migrate supported run-contract algorithm drift and rewrite the plan in place.",
+    )
+    relock_parser.add_argument(
+        "--historical-evidence",
+        help=(
+            "JSON path mapping target_id to authenticated historical run-contract "
+            "projection evidence."
+        ),
+    )
+    relock_parser.add_argument(
+        "--requalification",
+        action="append",
+        help="Required re-qualification duty recorded with the migration; may be repeated.",
+    )
+    relock_parser.add_argument(
+        "--owner-attestation",
+        action="store_true",
+        help=(
+            "Enter the explicit owner-attestation path when authenticated historical "
+            "evidence is unavailable; records proof_mode 'owner-attestation'."
+        ),
+    )
+    relock_parser.add_argument(
+        "--plugin",
+        action="append",
+        help="Import a module that registers methods before run-spec validation.",
+    )
+
+    harness_parser = subparsers.add_parser(
+        "matrix-harness",
+        help="Materialize evaluation condition rows with manifests and custody records.",
+    )
+    harness_parser.add_argument(
+        "spec", help="EvaluationRunMatrixSpec or EvaluationRunMatrixDeltaSpec JSON path"
+    )
+    harness_parser.add_argument("--manifest-root", required=True)
+    harness_parser.add_argument("--repo-root")
+    harness_parser.add_argument(
+        "--plugin",
+        action="append",
+        help=(
+            "Import a module that registers Feedbax training methods and analysis recipes; "
+            "may be repeated."
+        ),
+    )
+    harness_parser.add_argument(
+        "--escape-hatch-reason",
+        help="Required reason when materializing a flat spec outside the row model.",
+    )
+    harness_parser.add_argument("--parent-manifest-root")
+    harness_parser.add_argument("--execution-descriptor")
+    harness_parser.add_argument("--artifact-provider", action="append")
+    harness_parser.add_argument("--checkpoint-custody", action="append")
+    harness_parser.add_argument("--orchestration-bundle")
+    harness_parser.add_argument("--orchestration-inputs-root")
+    harness_parser.add_argument("--orchestration-row-id")
+    harness_parser.add_argument("--lifecycle-result")
+    harness_parser.add_argument(
+        "--batch",
+        action="store_true",
+        help=(
+            "Execute the whole matrix through its registered batch recipe; this bypasses "
+            "the execution policy's per-row row-count refusal."
+        ),
+    )
+    harness_parser.add_argument(
+        "--locked-spec",
+        help=(
+            "Require the runtime matrix's exact ordered row_id sequence to equal the locked "
+            "evaluation matrix sequence; the locked document may be either authoring kind."
+        ),
+    )
+    harness_parser.add_argument(
+        "--execution-policy",
+        help=(
+            "JSON policy requiring positive-integer per_row_max_rows, non-blank "
+            "threshold_source, and override_flag set to --allow-large-per-row."
+        ),
+    )
+    harness_parser.add_argument(
+        "--allow-large-per-row",
+        action="store_true",
+        help=(
+            "Explicitly bypass an execution policy's oversized per-row refusal; the decision "
+            "is recorded in matrix-harness evidence."
+        ),
+    )
+
+    build_science_surface_parser(
+        subparsers.add_parser(
+            "check-project-science-surface",
+            help=(
+                "Deny-by-default gate: check a downstream project's production Python against "
+                "the science-surface policy ratified on a protected baseline ref."
+            ),
+        )
+    )
+
+    return parser
+
+
+def engine_command_names() -> tuple[str, ...]:
+    """Return every subcommand name this parser registers, in stable order.
+
+    The unified ``feedbax`` console script asks for this inventory rather than
+    keeping a copy of it, so the two entry points cannot advertise two different
+    sets of engine commands.
+    """
+    return tuple(
+        sorted(
+            name
+            for action in build_parser()._actions
+            if isinstance(action, argparse._SubParsersAction)
+            for name in action.choices
+        )
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    command_started_at = time.perf_counter()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "migrate-content-store":
+        if args.packet_v1:
+            from feedbax.contracts.manifest_packet import migrate_manifest_packet_v1
+
+            receipt = migrate_manifest_packet_v1(
+                args.packet_v1,
+                destination_root=args.destination_store,
+            )
+        elif args.staged_root_v1:
+            if args.source_root is None:
+                parser.error("--staged-root-v1 requires --source-root")
+            from feedbax.orchestration.staged_root_custody import migrate_staged_root_v1
+
+            _binding, receipt = migrate_staged_root_v1(
+                _read_json(args.staged_root_v1),
+                source_root=args.source_root,
+                destination_store=args.destination_store,
+            )
+        elif args.run_bundle_v12:
+            if args.source_roots_json is None:
+                parser.error("--run-bundle-v12 requires --source-roots-json")
+            from feedbax.orchestration.staged_root_custody import (
+                migrate_run_bundle_staged_roots_v12,
+            )
+
+            _bindings, receipt = migrate_run_bundle_staged_roots_v12(
+                _read_json(args.run_bundle_v12),
+                source_roots=_read_json(args.source_roots_json),
+                destination_store=args.destination_store,
+            )
+        else:
+            from feedbax.contracts.artifact_store import migrate_path_backed_content
+
+            sources = _read_json(args.path_backed_json)
+            _refs, receipt = migrate_path_backed_content(
+                sources,
+                destination_store=args.destination_store,
+            )
+        rendered = receipt.model_dump_json(indent=2) + "\n"
+        if args.receipt:
+            receipt_path = Path(args.receipt)
+            receipt_path.write_text(rendered, encoding="utf-8")
+        else:
+            sys.stdout.write(rendered)
+        return 0
+    if args.command == "check-project-science-surface":
+        return run_science_surface_cli(
+            root=args.root, policy=args.policy, baseline_ref=args.baseline_ref
+        )
+    bootstrap_state = asyncio.run(
+        compose_application(modules=tuple(getattr(args, "plugin", None) or ()))
+    )
+    registries = bootstrap_state.bundle
+    if args.command == "matrix-harness":
+        from feedbax.analysis.harness import main as harness_main
+
+        harness_argv = [args.spec, "--manifest-root", args.manifest_root]
+        if args.repo_root is not None:
+            harness_argv.extend(("--repo-root", args.repo_root))
+        for module_name in args.plugin or ():
+            harness_argv.extend(("--plugin", module_name))
+        if args.escape_hatch_reason is not None:
+            harness_argv.extend(("--escape-hatch-reason", args.escape_hatch_reason))
+        if args.parent_manifest_root is not None:
+            harness_argv.extend(("--parent-manifest-root", args.parent_manifest_root))
+        if args.execution_descriptor is not None:
+            harness_argv.extend(("--execution-descriptor", args.execution_descriptor))
+        for binding in args.artifact_provider or ():
+            harness_argv.extend(("--artifact-provider", binding))
+        for binding in args.checkpoint_custody or ():
+            harness_argv.extend(("--checkpoint-custody", binding))
+        for option, value in (
+            ("--orchestration-bundle", args.orchestration_bundle),
+            ("--orchestration-inputs-root", args.orchestration_inputs_root),
+            ("--orchestration-row-id", args.orchestration_row_id),
+            ("--lifecycle-result", args.lifecycle_result),
+        ):
+            if value is not None:
+                harness_argv.extend((option, value))
+        if args.batch:
+            harness_argv.append("--batch")
+        if args.locked_spec is not None:
+            harness_argv.extend(("--locked-spec", args.locked_spec))
+        if args.execution_policy is not None:
+            harness_argv.extend(("--execution-policy", args.execution_policy))
+        if args.allow_large_per_row:
+            harness_argv.append("--allow-large-per-row")
+        return harness_main(harness_argv, bootstrap_state=bootstrap_state)
+    if args.command == "preflight-experiment-envelope":
+        return _preflight_experiment_envelope(args, registries)
+    if args.command == "execute-experiment-workflow":
+        return _execute_experiment_workflow(args, registries)
+    if args.command == "execute-training-run-spec":
+        run_spec = validate_training_run_spec(_read_json(args.spec))
+        if run_spec.graph.inline is None:
+            raise ValueError("execute-training-run-spec requires an inline graph document")
+        from feedbax.compiler import DocumentRoot, GraphDocument, compile_graph
+        from feedbax.contracts.authored_canonical import canonical_sha256
+
+        executable_graph = compile_graph(
+            GraphDocument(
+                graph=run_spec.graph.inline,
+                trial_root=DocumentRoot(
+                    schema_id="feedbax.spec.training.task",
+                    schema_version="1",
+                    content_sha256=canonical_sha256(run_spec.task.model_dump(mode="json")),
+                ),
+                objective_root=DocumentRoot(
+                    schema_id=run_spec.objective.schema_id or "feedbax.objective_slot",
+                    schema_version=run_spec.objective.schema_version or "1",
+                    content_sha256=canonical_sha256(
+                        run_spec.objective.model_dump(mode="json", exclude_none=True)
+                    ),
+                ),
+            ),
+            registries.components,
+        )
+        resolved_method = resolve_training_run_spec(run_spec, registries.training_programs)
+        method_registration = resolved_method.registration
+        preparation_registration = registries.execution_preparations.get(run_spec.method_ref.key)
+        mapping_levels, _slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
+        if method_registration.requires_execution_preparation:
+            require_execution_preparation_provider(
+                method_ref=run_spec.method_ref.key,
+                preparation_registry=registries.execution_preparations,
+            )
+        if mapping_levels and args.initial_slots:
+            raise ValueError(
+                "--initial-slots is invalid when mapping_levels are active; mapped runs require "
+                "a Feedbax-owned execution-preparation plan"
+            )
+        if preparation_registration is not None and args.initial_slots:
+            raise ValueError(
+                "--initial-slots cannot be combined with an execution-preparation provider for "
+                f"method_ref {run_spec.method_ref.key!r}"
+            )
+        initial_slots = _read_json(args.initial_slots) if args.initial_slots else None
+        preparation = None
+        if preparation_registration is not None:
+            prepared = registries.execution_preparations.prepare(
+                ExecutionPreparationRequest(
+                    run_spec=run_spec,
+                    executable_graph=executable_graph,
+                    method_payload=resolved_method.payload,
+                    method_contract=resolved_method.contract,
+                    effective_phase=resolved_method.effective_phase,
+                    run_id=args.run_id,
+                    resume=args.resume,
+                )
+            )
+            if isinstance(prepared, ExecutionPreparationPlan):
+                if mapping_levels:
+                    prepared = materialize_execution_preparation(
+                        ExecutionPreparationRequest(
+                            run_spec=run_spec,
+                            executable_graph=executable_graph,
+                            method_payload=resolved_method.payload,
+                            method_contract=resolved_method.contract,
+                            effective_phase=resolved_method.effective_phase,
+                            run_id=args.run_id,
+                            resume=args.resume,
+                        ),
+                        prepared,
+                        provider_identity=preparation_registration.owner,
+                    )
+                else:
+                    prepared = lower_zero_level_preparation_plan(
+                        prepared, resume_template=args.resume
+                    )
+            preparation = prepared
+            initial_slots = None
+        training_payload = _read_json(args.training_payload) if args.training_payload else None
+        metadata_projection = (
+            _read_json(args.manifest_metadata_projection)
+            if args.manifest_metadata_projection
+            else None
+        )
+        execution_context = (
+            _read_json(args.execution_context)
+            if args.execution_context
+            else (json.loads(args.execution_context_json) if args.execution_context_json else None)
+        )
+        initialization_plan = (
+            CheckpointInitializationPlan.model_validate(
+                default_spec_registry.migrate(
+                    "CheckpointInitializationPlan",
+                    _read_json(args.checkpoint_initialization_plan),
+                ).payload
+            )
+            if args.checkpoint_initialization_plan
+            else None
+        )
+        fork_plan = (
+            CheckpointForkPlan.model_validate(
+                default_spec_registry.migrate(
+                    "CheckpointForkPlan", _read_json(args.checkpoint_fork_plan)
+                ).payload
+            )
+            if args.checkpoint_fork_plan
+            else None
+        )
+        fork_bindings = (
+            _load_checkpoint_fork_plan_bindings(
+                args.checkpoint_fork_bindings, registries.training_programs
+            )
+            if args.checkpoint_fork_bindings
+            else None
+        )
+        checkpoint_provider = None
+        if args.checkpoint_content_store:
+            # Persistence is a CLI/runtime adapter; the scientific executor receives
+            # only the portable ArtifactBlobProvider contract.
+            from feedbax.persistence import ImmutableArtifactBlobProvider
+
+            checkpoint_provider = ImmutableArtifactBlobProvider(
+                Path(args.checkpoint_content_store).resolve()
+            )
+        source_binding = (
+            ContentBinding.model_validate(_read_json(args.checkpoint_source_binding))
+            if args.checkpoint_source_binding
+            else None
+        )
+        started_at = time.perf_counter()
+        emitter = RunEventEmitter.from_env(render_batch_lines=False)
+        with RunInterruptionController() as interruption:
+            try:
+                result = execute_training_run_spec(
+                    run_spec,
+                    run_id=args.run_id,
+                    preparation=preparation,
+                    initial_slots=initial_slots,
+                    manifest_root=args.manifest_root,
+                    checkpoint_root=args.checkpoint_root,
+                    checkpoint_source_root=args.checkpoint_source_root,
+                    checkpoint_initialization_plan=initialization_plan,
+                    checkpoint_fork_plan=fork_plan,
+                    checkpoint_fork_plan_bindings=fork_bindings,
+                    checkpoint_fork_target_id=args.checkpoint_fork_target_id,
+                    checkpoint_content_provider=checkpoint_provider,
+                    checkpoint_source_content_binding=source_binding,
+                    registry=registries.training_programs,
+                    training_spec_payload=training_payload,
+                    training_spec_payload_kind=args.training_payload_kind,
+                    training_spec_payload_schema_id=args.training_payload_schema_id,
+                    training_spec_payload_schema_version=args.training_payload_schema_version,
+                    training_spec_payload_ref=args.training_payload_ref,
+                    manifest_metadata_projection=metadata_projection,
+                    resume=args.resume,
+                    stop_after_barrier=args.stop_after_barrier,
+                    update_budget=args.update_budget,
+                    progress_callback=(
+                        None if args.no_progress else _console_progress_printer(started_at)
+                    ),
+                    run_event_emitter=emitter,
+                    cancellation_probe=lambda _coordinate: interruption.poll(),
+                    execution_started_at_monotonic=command_started_at,
+                    execution_start_semantics="worker_command_entry",
+                    execution_context=execution_context,
+                )
+            finally:
+                if emitter is not None:
+                    emitter.close()
+        json.dump(
+            {
+                "run_id": result.run_id,
+                "status": result.status,
+                "start_completed_batches": result.start_completed_batches,
+                "end_completed_batches": result.end_completed_batches,
+                "payload_binding_status": result.payload_binding_status,
+                "manifest_path": str(result.manifest_path),
+                "manifest_payload": result.manifest.model_dump(mode="json", exclude_none=True),
+            },
+            fp=sys.stdout,
+            indent=2,
+            sort_keys=True,
+        )
+        print()
+        return 1 if result.status == "failed" else 0
+    if args.command == "preflight-training-run-manifest":
+        training_payload = _read_json(args.training_payload) if args.training_payload else None
+        metadata_projection = (
+            _read_json(args.manifest_metadata_projection)
+            if args.manifest_metadata_projection
+            else None
+        )
+        task_binding_spec = _read_json(args.task_binding_spec) if args.task_binding_spec else None
+        run_spec = validate_training_run_spec(_read_json(args.spec))
+        payloads = preflight_training_run_manifest_payloads(
+            run_spec,
+            training_spec_payload=training_payload,
+            training_spec_payload_kind=args.training_payload_kind,
+            training_spec_payload_schema_id=args.training_payload_schema_id,
+            training_spec_payload_schema_version=args.training_payload_schema_version,
+            training_spec_payload_ref=args.training_payload_ref,
+            task_binding_spec=task_binding_spec,
+            row_id=args.row_id,
+            spec_path=args.spec,
+        )
+        projection_custody = prepare_training_manifest_metadata_projection(
+            metadata_projection,
+            registry=registries.training_programs,
+            run_spec=run_spec,
+            training_spec_payload=training_payload,
+            training_spec_payload_kind=args.training_payload_kind,
+            training_spec_payload_schema_id=args.training_payload_schema_id,
+            training_spec_payload_schema_version=args.training_payload_schema_version,
+        )
+        output = payloads.model_dump()
+        if projection_custody is not None:
+            output["metadata_projection_custody"] = projection_custody.model_dump(
+                mode="json",
+                exclude_none=True,
+            )
+        json.dump(output, fp=sys.stdout, indent=2, sort_keys=True)
+        print()
+        return 0
+    if args.command == "checkpoint":
+        if args.checkpoint_command == "fork-plan":
+            plan = CheckpointForkPlan.model_validate(
+                default_spec_registry.migrate("CheckpointForkPlan", _read_json(args.plan)).payload
+            )
+            dependency_json = (
+                args.dependencies
+                if args.dependencies.lstrip().startswith("[")
+                else Path(args.dependencies).read_text(encoding="utf-8")
+            )
+            dependencies = TypeAdapter(list[ExecutionDependency]).validate_json(dependency_json)
+            validate_checkpoint_fork_execution_dependencies(plan, dependencies)
+            bindings = _load_checkpoint_fork_plan_bindings(
+                args.bindings,
+                registries.training_programs,
+            )
+            results = fork_checkpoint_plan(plan, bindings)
+            json.dump(
+                {
+                    "targets": {
+                        target_id: {
+                            "transaction_id": result.manifest.transaction_id,
+                        }
+                        for target_id, result in sorted(results.items())
+                    },
+                },
+                fp=sys.stdout,
+                indent=2,
+                sort_keys=True,
+            )
+            print()
+            return 0
+        if args.checkpoint_command == "relock":
+            bindings = _load_checkpoint_fork_plan_bindings(
+                args.bindings,
+                registries.training_programs,
+            )
+            evidence = _load_run_contract_historical_evidence(args.historical_evidence)
+            if args.write:
+                result = relock_checkpoint_fork_plan_file(
+                    args.plan,
+                    bindings,
+                    requalification_requirements=args.requalification or (),
+                    historical_evidence=evidence,
+                    owner_attestation=args.owner_attestation,
+                )
+                json.dump(
+                    {
+                        "status": "migrated",
+                        "source_plan_canonical_sha256": result.source_plan_canonical_sha256,
+                        "target_plan_canonical_sha256": result.target_plan_canonical_sha256,
+                        "record": result.record.model_dump(mode="json", exclude_none=True),
+                    },
+                    fp=sys.stdout,
+                    indent=2,
+                    sort_keys=True,
+                )
+                print()
+                return 0
+            plan = CheckpointForkPlan.model_validate(
+                default_spec_registry.migrate("CheckpointForkPlan", _read_json(args.plan)).payload
+            )
+            classification = classify_checkpoint_fork_plan_derived_digests(
+                plan, bindings, historical_evidence=evidence
+            )
+            has_drift = any(not item.is_unchanged for item in classification.classifications)
+            json.dump(
+                {
+                    "status": "drift" if has_drift else "clean",
+                    "targets": {
+                        item.target_id: {
+                            "run_contract_class": item.run_contract_class,
+                            "sentinel_input_drift_paths": list(item.sentinel_input_drift_paths),
+                            "proof_mode": item.proof_mode,
+                            "difference_paths": list(item.difference_paths),
+                        }
+                        for item in classification.classifications
+                    },
+                },
+                fp=sys.stdout,
+                indent=2,
+                sort_keys=True,
+            )
+            print()
+            return 1 if has_drift else 0
+        if args.checkpoint_command == "fork":
+            expected_slots = _read_pickle(args.expected_slots) if args.expected_slots else None
+            slot_transforms = _load_slot_transforms(args.slot_transform)
+            target_summaries: list[dict[str, Any]] = []
+            had_error = False
+            for raw_target in _checkpoint_fork_targets(args):
+                summary: dict[str, Any] = {"target": raw_target}
+                try:
+                    spec_path, checkpoint_root = _parse_checkpoint_fork_target(raw_target)
+                    run_spec = validate_training_run_spec_semantics(
+                        TrainingRunSpec.model_validate(_read_json(str(spec_path))),
+                        registries.training_programs,
+                    )
+                    phase_program = run_spec.worker_execution.method_contract.phase_program
+                    result = fork_checkpoint_transaction(
+                        args.source,
+                        checkpoint_root,
+                        target_run_spec=run_spec,
+                        target_phase_program=phase_program,
+                        expected_slots=expected_slots,
+                        slot_transforms=slot_transforms,
+                        tool_version=args.tool_version,
+                    )
+                    summary.update(
+                        {
+                            "status": "ok",
+                            "spec": str(spec_path),
+                            "root": str(checkpoint_root),
+                            "transaction_id": result.manifest.transaction_id,
+                            "manifest_path": str(result.manifest_path),
+                            "latest_pointer_path": str(result.latest_pointer_path),
+                            "slot_transfer_modes": dict(result.slot_transfer_modes),
+                        }
+                    )
+                except Exception as exc:
+                    had_error = True
+                    summary.update(
+                        {
+                            "status": "error",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        }
+                    )
+                target_summaries.append(summary)
+            json.dump(
+                {"targets": target_summaries},
+                fp=sys.stdout,
+                indent=2,
+                sort_keys=True,
+            )
+            print()
+            return 1 if had_error else 0
+    parser.error(f"Unhandled command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

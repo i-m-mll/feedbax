@@ -1,6 +1,6 @@
 # Dynamical systems
 
-::: feedbax.dynamics.LTISystem
+::: feedbax.mechanics.dynamics.LTISystem
     options:
         members: [
             'vector_field',
@@ -11,7 +11,7 @@
 
 ## Abstract base classes
 
-::: feedbax.dynamics.AbstractDynamicalSystem
+::: feedbax.mechanics.dynamics.AbstractDynamicalSystem
     options:
         members: [
             'vector_field',

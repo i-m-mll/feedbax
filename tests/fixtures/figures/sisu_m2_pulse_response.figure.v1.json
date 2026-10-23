@@ -1,0 +1,453 @@
+{
+  "schema_id": "feedbax.spec.figure",
+  "schema_version": "feedbax.spec.figure.v2",
+  "name": "sisu-m2-terminal-pulse-response",
+  "assembler": "feedbax.grid_figure",
+  "assembler_params": {
+    "width": 1500,
+    "height": 820,
+    "title": "M2 matched mid-reach lateral pulse response",
+    "horizontal_spacing": 0.07,
+    "vertical_spacing": 0.14,
+    "legend_x": 1.02,
+    "legend_y": 1.0,
+    "legend_xanchor": "left",
+    "legend_yanchor": "top",
+    "margin": {"l": 76, "r": 250, "t": 92, "b": 76},
+    "template": "plotly_white"
+  },
+  "inputs": [],
+  "input_authorities": [],
+  "panels": [
+    {
+      "name": "discrete_peak",
+      "title": "Discrete — peak deviation",
+      "row": 1,
+      "col": 1,
+      "axes_labels": {
+        "x": "Conditioning level",
+        "y": "Peak absolute lateral deviation (m)"
+      }
+    },
+    {
+      "name": "discrete_recovery",
+      "title": "Discrete — recovery",
+      "row": 1,
+      "col": 2,
+      "axes_labels": {
+        "x": "Conditioning level",
+        "y": "Restricted recovery time (s)"
+      }
+    },
+    {
+      "name": "discrete_profile",
+      "title": "Discrete — signed response profile",
+      "row": 1,
+      "col": 3,
+      "axes_labels": {
+        "x": "Time from trial start (s)",
+        "y": "Target-lateral deviation (m)"
+      }
+    },
+    {
+      "name": "discrete_trajectory",
+      "title": "Discrete — perturbed trajectories",
+      "row": 1,
+      "col": 4,
+      "axes_labels": {
+        "x": "Position x (m)",
+        "y": "Position y (m)"
+      }
+    },
+    {
+      "name": "continuous_peak",
+      "title": "Continuous — peak deviation",
+      "row": 2,
+      "col": 1,
+      "axes_labels": {
+        "x": "Conditioning level",
+        "y": "Peak absolute lateral deviation (m)"
+      }
+    },
+    {
+      "name": "continuous_recovery",
+      "title": "Continuous — recovery",
+      "row": 2,
+      "col": 2,
+      "axes_labels": {
+        "x": "Conditioning level",
+        "y": "Restricted recovery time (s)"
+      }
+    },
+    {
+      "name": "continuous_profile",
+      "title": "Continuous — signed response profile",
+      "row": 2,
+      "col": 3,
+      "axes_labels": {
+        "x": "Time from trial start (s)",
+        "y": "Target-lateral deviation (m)"
+      }
+    },
+    {
+      "name": "continuous_trajectory",
+      "title": "Continuous — perturbed trajectories",
+      "row": 2,
+      "col": 4,
+      "axes_labels": {
+        "x": "Position x (m)",
+        "y": "Position y (m)"
+      }
+    }
+  ],
+  "trace_families": [
+    {
+      "name": "discrete-even-conditioning",
+      "index": {"values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]},
+      "values": [0.0, 0.2, 0.23916263490008038, 0.28599382966174575, 0.3419951893353394, 0.4089623530229582, 0.48904256961953774, 0.5848035476425733, 0.6993157867655626, 0.8362510309503736, 1.0],
+      "colorscale": "Blues",
+      "trace": {
+        "name": "discrete-even-{index}",
+        "constructor": "feedbax.profile_curves",
+        "panel": "discrete_profile",
+        "required": true,
+        "params": {"label": "Even s={value:.3f}"},
+        "data": {
+          "x": {"item": "pulse_discrete", "path": "artifact_payloads.pulse_discrete.planar_trajectories.time_s"},
+          "y": {"item": "pulse_discrete", "path": "artifact_payloads.pulse_discrete.profiles.lateral_even_mean.{index}"}
+        }
+      }
+    },
+    {
+      "name": "discrete-odd-conditioning",
+      "index": {"values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]},
+      "values": [0.0, 0.2, 0.23916263490008038, 0.28599382966174575, 0.3419951893353394, 0.4089623530229582, 0.48904256961953774, 0.5848035476425733, 0.6993157867655626, 0.8362510309503736, 1.0],
+      "colorscale": "Reds",
+      "trace": {
+        "name": "discrete-odd-{index}",
+        "constructor": "feedbax.profile_curves",
+        "panel": "discrete_profile",
+        "required": true,
+        "params": {"label": "Odd s={value:.3f}"},
+        "data": {
+          "x": {"item": "pulse_discrete", "path": "artifact_payloads.pulse_discrete.planar_trajectories.time_s"},
+          "y": {"item": "pulse_discrete", "path": "artifact_payloads.pulse_discrete.profiles.lateral_odd_mean.{index}"}
+        }
+      }
+    },
+    {
+      "name": "continuous-even-conditioning",
+      "index": {"values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]},
+      "values": [0.0, 0.2, 0.23916263490008038, 0.28599382966174575, 0.3419951893353394, 0.4089623530229582, 0.48904256961953774, 0.5848035476425733, 0.6993157867655626, 0.8362510309503736, 1.0],
+      "colorscale": "Oranges",
+      "trace": {
+        "name": "continuous-even-{index}",
+        "constructor": "feedbax.profile_curves",
+        "panel": "continuous_profile",
+        "required": true,
+        "params": {"label": "Even s={value:.3f}"},
+        "data": {
+          "x": {"item": "pulse_continuous", "path": "artifact_payloads.pulse_continuous.planar_trajectories.time_s"},
+          "y": {"item": "pulse_continuous", "path": "artifact_payloads.pulse_continuous.profiles.lateral_even_mean.{index}"}
+        }
+      }
+    },
+    {
+      "name": "continuous-odd-conditioning",
+      "index": {"values": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]},
+      "values": [0.0, 0.2, 0.23916263490008038, 0.28599382966174575, 0.3419951893353394, 0.4089623530229582, 0.48904256961953774, 0.5848035476425733, 0.6993157867655626, 0.8362510309503736, 1.0],
+      "colorscale": "Purples",
+      "trace": {
+        "name": "continuous-odd-{index}",
+        "constructor": "feedbax.profile_curves",
+        "panel": "continuous_profile",
+        "required": true,
+        "params": {"label": "Odd s={value:.3f}"},
+        "data": {
+          "x": {"item": "pulse_continuous", "path": "artifact_payloads.pulse_continuous.planar_trajectories.time_s"},
+          "y": {"item": "pulse_continuous", "path": "artifact_payloads.pulse_continuous.profiles.lateral_odd_mean.{index}"}
+        }
+      }
+    }
+  ],
+  "traces": [
+    {
+      "name": "discrete-peak",
+      "constructor": "feedbax.scalar_scatter",
+      "panel": "discrete_peak",
+      "required": true,
+      "params": {
+        "label": "Discrete",
+        "color": "rgb(37,99,235)"
+      },
+      "data": {
+        "x": {
+          "item": "pulse_discrete",
+          "path": "artifact_payloads.pulse_discrete.conditioning_levels"
+        },
+        "y": {
+          "item": "pulse_discrete",
+          "path": "artifact_payloads.pulse_discrete.profiles.peak_absolute_deviation_mean"
+        }
+      }
+    },
+    {
+      "name": "discrete-recovery",
+      "constructor": "feedbax.scalar_scatter",
+      "panel": "discrete_recovery",
+      "required": true,
+      "params": {
+        "label": "Discrete",
+        "color": "rgb(37,99,235)"
+      },
+      "data": {
+        "x": {
+          "item": "pulse_discrete",
+          "path": "artifact_payloads.pulse_discrete.conditioning_levels"
+        },
+        "y": {
+          "item": "pulse_discrete",
+          "path": "artifact_payloads.pulse_discrete.recovery.restricted_mean_s"
+        }
+      }
+    },
+    {
+      "name": "discrete-command-pulse",
+      "constructor": "feedbax.vrect",
+      "panel": "discrete_profile",
+      "required": true,
+      "params": {
+        "fillcolor": "rgba(148, 163, 184, 0.24)",
+        "opacity": 0.18,
+        "line_width": 0.0,
+        "event_line_width": 1.5
+      },
+      "data": {
+        "x": {
+          "item": "pulse_discrete",
+          "path": "artifact_payloads.pulse_discrete.command_time_axis.time_s"
+        },
+        "perturbation_timing": {
+          "schema_id": "feedbax.spec.perturbation_timing",
+          "schema_version": "feedbax.spec.perturbation_timing.v1",
+          "applicability": {
+            "item": "pulse_discrete",
+            "path": "artifact_payloads.pulse_discrete.command_time_axis.perturbation_timing.applicability"
+          },
+          "sample_count": {
+            "item": "pulse_discrete",
+            "path": "artifact_payloads.pulse_discrete.command_time_axis.perturbation_timing.sample_count"
+          },
+          "start_index": {
+            "item": "pulse_discrete",
+            "path": "artifact_payloads.pulse_discrete.command_time_axis.perturbation_timing.start_index"
+          },
+          "duration": {
+            "item": "pulse_discrete",
+            "path": "artifact_payloads.pulse_discrete.command_time_axis.perturbation_timing.duration"
+          }
+        }
+      }
+    },
+    {
+      "name": "discrete-trajectories",
+      "constructor": "feedbax.trajectory_2d",
+      "panel": "discrete_trajectory",
+      "required": true,
+      "params": {
+        "label": "Discrete pulse cohort",
+        "colorscale": "RdBu",
+        "colorscale_axis": 1,
+        "line_width": 1.0,
+        "show_mean": false,
+        "affected_color": "rgba(255, 160, 160, 0.65)",
+        "affected_line_width": 6.0,
+        "affected_marker_size": 10.0
+      },
+      "data": {
+        "trajectories": {
+          "item": "pulse_discrete",
+          "path": "artifact_payloads.pulse_discrete.planar_trajectories.mean_values"
+        },
+        "perturbation_timing": {
+          "schema_id": "feedbax.spec.perturbation_timing",
+          "schema_version": "feedbax.spec.perturbation_timing.v1",
+          "applicability": {
+            "item": "pulse_discrete",
+            "path": "artifact_payloads.pulse_discrete.planar_trajectories.perturbation_timing.applicability"
+          },
+          "sample_count": {
+            "item": "pulse_discrete",
+            "path": "artifact_payloads.pulse_discrete.planar_trajectories.perturbation_timing.sample_count"
+          },
+          "start_index": {
+            "item": "pulse_discrete",
+            "path": "artifact_payloads.pulse_discrete.planar_trajectories.perturbation_timing.start_index"
+          },
+          "duration": {
+            "item": "pulse_discrete",
+            "path": "artifact_payloads.pulse_discrete.planar_trajectories.perturbation_timing.duration"
+          }
+        }
+      }
+    },
+    {
+      "name": "continuous-peak",
+      "constructor": "feedbax.scalar_scatter",
+      "panel": "continuous_peak",
+      "required": true,
+      "params": {
+        "label": "Continuous",
+        "color": "rgb(234,88,12)"
+      },
+      "data": {
+        "x": {
+          "item": "pulse_continuous",
+          "path": "artifact_payloads.pulse_continuous.conditioning_levels"
+        },
+        "y": {
+          "item": "pulse_continuous",
+          "path": "artifact_payloads.pulse_continuous.profiles.peak_absolute_deviation_mean"
+        }
+      }
+    },
+    {
+      "name": "continuous-recovery",
+      "constructor": "feedbax.scalar_scatter",
+      "panel": "continuous_recovery",
+      "required": true,
+      "params": {
+        "label": "Continuous",
+        "color": "rgb(234,88,12)"
+      },
+      "data": {
+        "x": {
+          "item": "pulse_continuous",
+          "path": "artifact_payloads.pulse_continuous.conditioning_levels"
+        },
+        "y": {
+          "item": "pulse_continuous",
+          "path": "artifact_payloads.pulse_continuous.recovery.restricted_mean_s"
+        }
+      }
+    },
+    {
+      "name": "continuous-command-pulse",
+      "constructor": "feedbax.vrect",
+      "panel": "continuous_profile",
+      "required": true,
+      "params": {
+        "fillcolor": "rgba(148, 163, 184, 0.24)",
+        "opacity": 0.18,
+        "line_width": 0.0,
+        "event_line_width": 1.5
+      },
+      "data": {
+        "x": {
+          "item": "pulse_continuous",
+          "path": "artifact_payloads.pulse_continuous.command_time_axis.time_s"
+        },
+        "perturbation_timing": {
+          "schema_id": "feedbax.spec.perturbation_timing",
+          "schema_version": "feedbax.spec.perturbation_timing.v1",
+          "applicability": {
+            "item": "pulse_continuous",
+            "path": "artifact_payloads.pulse_continuous.command_time_axis.perturbation_timing.applicability"
+          },
+          "sample_count": {
+            "item": "pulse_continuous",
+            "path": "artifact_payloads.pulse_continuous.command_time_axis.perturbation_timing.sample_count"
+          },
+          "start_index": {
+            "item": "pulse_continuous",
+            "path": "artifact_payloads.pulse_continuous.command_time_axis.perturbation_timing.start_index"
+          },
+          "duration": {
+            "item": "pulse_continuous",
+            "path": "artifact_payloads.pulse_continuous.command_time_axis.perturbation_timing.duration"
+          }
+        }
+      }
+    },
+    {
+      "name": "continuous-trajectories",
+      "constructor": "feedbax.trajectory_2d",
+      "panel": "continuous_trajectory",
+      "required": true,
+      "params": {
+        "label": "Continuous pulse cohort",
+        "colorscale": "PuOr",
+        "colorscale_axis": 1,
+        "line_width": 1.0,
+        "show_mean": false,
+        "affected_color": "rgba(255, 160, 160, 0.65)",
+        "affected_line_width": 6.0,
+        "affected_marker_size": 10.0
+      },
+      "data": {
+        "trajectories": {
+          "item": "pulse_continuous",
+          "path": "artifact_payloads.pulse_continuous.planar_trajectories.mean_values"
+        },
+        "perturbation_timing": {
+          "schema_id": "feedbax.spec.perturbation_timing",
+          "schema_version": "feedbax.spec.perturbation_timing.v1",
+          "applicability": {
+            "item": "pulse_continuous",
+            "path": "artifact_payloads.pulse_continuous.planar_trajectories.perturbation_timing.applicability"
+          },
+          "sample_count": {
+            "item": "pulse_continuous",
+            "path": "artifact_payloads.pulse_continuous.planar_trajectories.perturbation_timing.sample_count"
+          },
+          "start_index": {
+            "item": "pulse_continuous",
+            "path": "artifact_payloads.pulse_continuous.planar_trajectories.perturbation_timing.start_index"
+          },
+          "duration": {
+            "item": "pulse_continuous",
+            "path": "artifact_payloads.pulse_continuous.planar_trajectories.perturbation_timing.duration"
+          }
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "issue": "085e43f",
+    "classification": "config",
+    "report_role": "k5_pulse_response",
+    "input_binding_contracts": [
+      {
+        "input_role": "pulse_discrete",
+        "kind": "AnalysisRunManifest",
+        "analysis_type": "rlrmp2.reach_context_lateral_pulse_reduction",
+        "artifact_role": "reach_context_lateral_pulse_result",
+        "artifact_provider": "results",
+        "payload_schema_id": "rlrmp2.analysis.reach_context_lateral_pulse",
+        "payload_schema_version": "rlrmp2.analysis.reach_context_lateral_pulse.v1",
+        "manifest_status": "completed"
+      },
+      {
+        "input_role": "pulse_continuous",
+        "kind": "AnalysisRunManifest",
+        "analysis_type": "rlrmp2.reach_context_lateral_pulse_reduction",
+        "artifact_role": "reach_context_lateral_pulse_result",
+        "artifact_provider": "results",
+        "payload_schema_id": "rlrmp2.analysis.reach_context_lateral_pulse",
+        "payload_schema_version": "rlrmp2.analysis.reach_context_lateral_pulse.v1",
+        "manifest_status": "completed"
+      }
+    ],
+    "timing_contract": {
+      "time_axis": "command_time_axis.perturbation_timing",
+      "trajectory": "planar_trajectories.perturbation_timing",
+      "command_interval": "[k0,k1)",
+      "affected_state_samples": "[k0+1,k1+1)",
+      "single_step": "exact_line",
+      "bounded_multi_step": "region",
+      "full_trial": "caption_only_no_marker",
+      "nominal": "no_marker"
+    },
+    "trajectory_cohort_contract": "The 2D panel retains every authenticated target, replicate, conditioning, and pulse-sign trajectory; the public trajectory constructor colors the pulse-sign axis and does not compute a cross-cohort mean. Conditioning and even/odd response remain explicit in the adjacent 11-level time-profile families."
+  }
+}

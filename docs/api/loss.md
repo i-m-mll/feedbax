@@ -1,21 +1,21 @@
 # Loss functions
 
-::: feedbax.loss.CompositeLoss
+::: feedbax.objectives.loss.CompositeLoss
 
-::: feedbax.loss.EffectorPositionLoss
+::: feedbax.objectives.loss.EffectorPositionLoss
 
-::: feedbax.loss.EffectorStraightPathLoss
+::: feedbax.objectives.loss.EffectorStraightPathLoss
 
-::: feedbax.loss.EffectorFixationLoss
+::: feedbax.objectives.loss.EffectorFixationLoss
 
-::: feedbax.loss.EffectorFinalVelocityLoss
+::: feedbax.objectives.loss.EffectorFinalVelocityLoss
 
-::: feedbax.loss.NetworkOutputLoss
+::: feedbax.objectives.loss.NetworkOutputLoss
 
-::: feedbax.loss.NetworkActivityLoss
+::: feedbax.objectives.loss.NetworkActivityLoss
 
-::: feedbax.loss.power_discount
+::: feedbax.objectives.loss.power_discount
 
 ## Abstract base classes 
 
-::: feedbax.loss.AbstractLoss
+::: feedbax.objectives.loss.AbstractLoss

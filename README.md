@@ -1,7 +1,11 @@
 > [!NOTE]
-> **Feedbax is under active development, with a major release planned for Q2 2026.** Feel free to explore, but know that things will soon look somewhat different (and improved!).
+> **Feedbax is under active development while the eager graph architecture and Studio workflow stabilize.** Feel free to explore, but know that things will continue to change.
 
-# Getting started
+<p align="center">
+  <img src="docs/assets/mandible.png" alt="Mandible logo" width="100" height="100">
+</p>
+
+# Feedbax
 
 Feedbax is a [JAX](https://jax.readthedocs.io/en/latest/beginner_guide.html#beginner-guide) library for optimal feedback control with neural networks.
 
@@ -19,7 +23,7 @@ Feedbax makes it easy to:
 - swap out components of models, and write new components.
 <!-- - track the progress of a training run in Tensorboard. -->
 
-Feedbax is in active [development](#development). Expect some changes in the near future. In particular, I intend to [replace](https://github.com/i-m-mll/feedbax/discussions/28#discussioncomment-10153895) the staged model approach with a simpler lazy-executing DAG framework.
+Feedbax is in active [development](#development). Expect some changes in the near future. The staged model approach has been replaced by an explicit eager graph architecture.
 
 ## Feedbax is a JAX library
 
@@ -44,6 +48,131 @@ For best performance, [install JAX](https://jax.readthedocs.io/en/latest/install
 
 Documentation is available [here](https://docs.lprt.ca/feedbax).
 
+## Web UI
+
+Feedbax includes a web interface for visually constructing and training models. To start both the backend API and frontend dev server:
+
+```bash
+./scripts/dev.sh
+```
+
+Or run them separately:
+
+```bash
+# Backend (FastAPI on port 8000)
+uv run uvicorn feedbax.web.app:app --reload --port 8000
+
+# Frontend (Vite/React on port 3008)
+cd web && npm run dev
+```
+
+Then open http://localhost:3008 in your browser.
+
+## Building application packages on feedbax
+
+Feedbax is a library.  Domain-specific research projects (e.g., **rlrmp**) are
+*application packages* that depend on feedbax and extend it with their own
+models, tasks, analyses, and training pipelines.
+
+### Editable install (required)
+
+Application packages must be installed as editable installs — not published to
+PyPI.  `feedbax.plot.save_figure` resolves output directories relative to the
+package's git repository root by walking up from `package.__file__` until it
+finds a `.git` directory.  If the package is pip-installed into site-packages
+rather than checked out locally, that walk fails and figures would be written
+to the wrong place.  Install with:
+
+```bash
+uv pip install -e /path/to/your-package
+```
+
+### Registration via entry points
+
+Application packages register themselves with the feedbax plugin system via a
+`[project.entry-points."feedbax.plugins"]` section in `pyproject.toml` and a
+typed `PluginRegistration` object.
+
+**`pyproject.toml`:**
+
+```toml
+[project.entry-points."feedbax.plugins"]
+rlrmp = "rlrmp:PLUGIN_REGISTRATION"
+```
+
+**`rlrmp/__init__.py`:**
+
+```python
+from importlib import import_module
+
+from feedbax.plugins import (
+    EXPERIMENT_PACKAGES,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+)
+
+
+def _register(context):
+    context.registry(EXPERIMENT_PACKAGES).register_package(
+        name="rlrmp",
+        package_module=import_module("rlrmp"),
+        parts=["part1", "part2", "part2_5"],
+        analysis_module_root="modules.analysis",
+        training_module_root="modules.training",
+        config_resource_root="config",
+        figure_routing={
+            "spec_dir_template": "results/{experiment}/figures/{topic}",
+            "render_dir_template": "_artifacts/{experiment}/figures/{topic}",
+            "spec_format": "json",
+            "render_format": "html",
+            "create_symlink_in_spec_dir": True,
+        },
+    )
+
+
+PLUGIN_REGISTRATION = PluginRegistration(
+    declaration=PluginDeclaration(
+        plugin_id="rlrmp",
+        version="1.0.0",
+        families=(FamilyRequirement("experiment_packages"),),
+    ),
+    register=_register,
+)
+```
+
+### `figure_routing` config schema
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `spec_dir_template` | `str` | Path template for the spec JSON directory, relative to repo root. `{experiment}` and `{topic}` are substituted at save time. |
+| `render_dir_template` | `str` | Path template for the heavy figure render directory (typically gitignored). |
+| `spec_format` | `str` | Always `"json"` for now. |
+| `render_format` | `str` | Figure format: `"html"` (default), `"json"` (Plotly JSON), `"png"`, `"svg"`. |
+| `create_symlink_in_spec_dir` | `bool` | If `True`, creates a relative symlink in the spec dir pointing at the render file. |
+
+### Saving figures
+
+```python
+from feedbax.plot import save_figure
+
+paths = save_figure(
+    fig,           # plotly or matplotlib Figure
+    spec,          # dict: inputs, transform, plot_kwargs, seed
+    package="rlrmp",
+    experiment="part2_5",
+    topic="adversarial_losses",
+)
+# paths["spec_path"]    → results/part2_5/figures/adversarial_losses/spec.json
+# paths["render_path"]  → _artifacts/part2_5/figures/adversarial_losses/figure.html
+# paths["symlink_path"] → results/part2_5/figures/adversarial_losses/figure.html (symlink)
+```
+
+The spec JSON receives automatic augmentation: SHA-256 digests for every input
+artifact, installed package versions, and a UTC timestamp.
+
+> **Full docs** for the integration pattern are tracked in the documentation tree as the plugin and figure-routing APIs evolve.
+
 ## Development
 
 I started to develop Feedbax while learning JAX. My short-term objective has been to support my own use cases—graduate research in the neuroscience of motor control—but I've also tried to design something reusable and general.
@@ -56,4 +185,3 @@ There are many features, especially pre-built models and tasks, that could still
 
 - Thanks to my PhD supervisor Gunnar Blohm and to the rest of our [lab](http://compneurosci.com/), as well as to Dominik Endres and Stephen H. Scott for discussions that have directly influenced this project
 - Special thanks to [Patrick Kidger](https://github.com/patrick-kidger), whose JAX libraries and their documentation often serve as examples to me
-

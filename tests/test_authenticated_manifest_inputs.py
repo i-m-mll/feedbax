@@ -1,0 +1,386 @@
+from __future__ import annotations
+
+import os
+import hashlib
+from pathlib import Path
+import shutil
+
+import pytest
+
+from feedbax.analysis.figures import execute_figure_spec
+from feedbax.analysis.manifest_inputs import (
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+    AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    authenticated_manifest_ref,
+    is_authenticated_manifest_ref,
+    resolve_manifest_input,
+)
+from feedbax.analysis.reports import (
+    execute_report_spec,
+)
+from feedbax.analysis.specs import (
+    AnalysisRecipeExecutionError,
+    execute_analysis_run_spec,
+)
+from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.base import ParentRef
+from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
+    AnalysisRunSpec,
+    EvaluationRunManifest,
+    ReportSpec,
+    TrainingRunManifest,
+    canonical_manifest_path,
+    load_manifest,
+    spec_payload,
+    write_manifest,
+)
+
+
+def _manifest(root: Path, *, manifest_id: str = "feedbax-evaluation-run:test"):
+    manifest = EvaluationRunManifest(
+        id=manifest_id,
+        status="completed",
+        evaluation_spec=spec_payload(
+            "EvaluationRunSpec",
+            {"evaluation_type": "test.authenticated", "inputs": [], "params": {}},
+        ),
+    )
+    path = write_manifest(manifest, root=root)
+    return manifest, path, authenticated_manifest_ref(manifest, path, "evaluation_run")
+
+
+def _training_manifest(root: Path, *, manifest_id: str = "feedbax-training-run:test"):
+    manifest = TrainingRunManifest(id=manifest_id, status="completed")
+    path = write_manifest(manifest, root=root)
+    return manifest, path, authenticated_manifest_ref(manifest, path, "training_run")
+
+
+#: Staged-input authentication is kind-agnostic, so a training subject has to
+#: accept and refuse through exactly the same path as a post-training subject.
+staged_kinds = pytest.mark.parametrize(
+    "build_manifest",
+    [_manifest, _training_manifest],
+    ids=["evaluation", "training"],
+)
+
+
+def _analysis_manifest(root: Path):
+    manifest = AnalysisRunManifest(
+        id="feedbax-analysis-run:authenticated-input",
+        status="completed",
+        analysis_spec=spec_payload(
+            "AnalysisRunSpec",
+            {"analysis_type": "test.authenticated.source", "inputs": [], "params": {}},
+        ),
+    )
+    path = write_manifest(manifest, root=root)
+    return manifest, path, authenticated_manifest_ref(manifest, path, "analysis_run")
+
+
+def _file_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()
+    }
+
+
+@staged_kinds
+def test_authenticated_manifest_ref_is_portable_and_relocation_invariant(
+    tmp_path: Path, build_manifest
+) -> None:
+    source = tmp_path / "source"
+    manifest, path, ref = build_manifest(source)
+    assert ref.uri is None
+    assert ref.metadata["ref_schema_id"] == AUTHENTICATED_MANIFEST_REF_SCHEMA_ID
+    assert ref.metadata["ref_schema_version"] == AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION
+    assert ref.metadata["size_bytes"] == path.stat().st_size
+    assert is_authenticated_manifest_ref(ref)
+    canonical = resolve_manifest_input(ref, source)
+    assert canonical.manifest == manifest
+    assert canonical.path == canonical_manifest_path(manifest.kind, manifest.id, root=source)
+
+    relocated = tmp_path / "relocated"
+    shutil.copytree(source, relocated)
+    resolved = resolve_manifest_input(ref, relocated)
+    assert resolved.manifest == manifest
+    assert resolved.raw_bytes == path.read_bytes()
+
+
+@staged_kinds
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("manifest_sha256", "0" * 64, "SHA-256 mismatch"),
+        ("size_bytes", 0, "size mismatch"),
+        ("size_bytes", True, "invalid byte size"),
+        ("ref_schema_id", "unknown", "schema_id"),
+        ("ref_schema_version", "unknown", "schema_version"),
+    ],
+)
+def test_authenticated_manifest_ref_rejects_bad_profile(
+    tmp_path: Path, build_manifest, field: str, value: object, match: str
+) -> None:
+    _manifest_obj, _path, ref = build_manifest(tmp_path)
+    bad = ref.model_copy(update={"metadata": {**ref.metadata, field: value}})
+    with pytest.raises(ValueError, match=match):
+        resolve_manifest_input(bad, tmp_path)
+
+
+def test_authenticated_manifest_ref_rejects_partial_profile(tmp_path: Path) -> None:
+    _manifest_obj, _path, ref = _manifest(tmp_path)
+    partial = ref.model_copy(update={"metadata": {"ref_schema_id": ref.metadata["ref_schema_id"]}})
+    with pytest.raises(ValueError, match="incomplete"):
+        is_authenticated_manifest_ref(partial)
+
+
+def test_exact_training_parent_hash_metadata_is_not_staged_profile() -> None:
+    exact_parent = ParentRef(
+        kind="TrainingRunManifest",
+        id="feedbax-training-run:exact",
+        role="training_run",
+        uri=f"artifact://sha256/{'a' * 64}",
+        metadata={
+            "manifest_sha256": "a" * 64,
+            "certificate_sha256": "b" * 64,
+            "size_bytes": 1234,
+            "run_set_id": "run-set",
+            "row_id": "row-1",
+            "planned_run_id": "feedbax-training-run:exact",
+            "manifest_status": "completed",
+            "registration_status": "completed",
+            "conformance_overall": "pass",
+        },
+    )
+    assert not is_authenticated_manifest_ref(exact_parent)
+
+
+def test_authenticated_manifest_ref_rejects_wrong_typed_bytes(tmp_path: Path) -> None:
+    raw = b'{"kind":"EvaluationRunManifest","id":"typed-but-incomplete"}\n'
+    path = tmp_path / "typed.json"
+    path.write_bytes(raw)
+    ref = ParentRef(
+        kind="EvaluationRunManifest",
+        id="typed-but-incomplete",
+        metadata={
+            "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
+            "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+            "manifest_sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw),
+        },
+    )
+    with pytest.raises(ValueError):
+        resolve_manifest_input(ref, tmp_path, runtime_locator=path.name)
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        "",
+        "/tmp/manifest.json",
+        "file:///tmp/manifest.json",
+        "../manifest.json",
+        "%2e%2e/manifest.json",
+        "%2Ftmp/manifest.json",
+        "manifests\\evaluation_runs\\manifest.json",
+        "manifest.json?query=1",
+        "manifest.json#fragment",
+    ],
+)
+def test_authenticated_manifest_ref_rejects_unsafe_locator(tmp_path: Path, locator: str) -> None:
+    _manifest_obj, _path, ref = _manifest(tmp_path)
+    with pytest.raises(ValueError):
+        resolve_manifest_input(ref, tmp_path, runtime_locator=locator)
+
+
+@staged_kinds
+def test_authenticated_manifest_ref_rejects_tamper_kind_and_id(
+    tmp_path: Path, build_manifest
+) -> None:
+    _manifest_obj, path, ref = build_manifest(tmp_path)
+    original = path.read_text(encoding="utf-8")
+    path.write_text(original.replace('"completed"', '"pending"'), encoding="utf-8")
+    with pytest.raises(ValueError, match="size mismatch|SHA-256 mismatch"):
+        resolve_manifest_input(ref, tmp_path)
+
+    _other, other_path, other_ref = build_manifest(tmp_path / "other", manifest_id="other")
+    wrong_id_ref = other_ref.model_copy(update={"id": "declared-id"})
+    with pytest.raises(ValueError, match="id mismatch"):
+        resolve_manifest_input(
+            wrong_id_ref,
+            tmp_path / "other",
+            runtime_locator=other_path.relative_to(tmp_path / "other"),
+        )
+
+    wrong_kind_ref = other_ref.model_copy(update={"kind": "AnalysisRunManifest"})
+    with pytest.raises(ValueError, match="kind mismatch"):
+        resolve_manifest_input(
+            wrong_kind_ref,
+            tmp_path / "other",
+            runtime_locator=other_path.relative_to(tmp_path / "other"),
+        )
+
+
+@staged_kinds
+def test_authenticated_manifest_ref_rejects_missing_symlink_directory_and_fifo(
+    tmp_path: Path, build_manifest
+) -> None:
+    _manifest_obj, path, ref = build_manifest(tmp_path)
+    relative = path.relative_to(tmp_path)
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        resolve_manifest_input(ref, tmp_path)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir()
+    with pytest.raises(ValueError):
+        resolve_manifest_input(ref, tmp_path)
+    path.rmdir()
+
+    target = tmp_path / "target.json"
+    target.write_bytes(b"{}")
+    path.symlink_to(target)
+    with pytest.raises(ValueError):
+        resolve_manifest_input(ref, tmp_path)
+    path.unlink()
+
+    real_dir = tmp_path / "real-manifest-directory"
+    real_dir.mkdir()
+    path.parent.rmdir()
+    path.parent.symlink_to(real_dir, target_is_directory=True)
+    with pytest.raises(ValueError):
+        resolve_manifest_input(ref, tmp_path)
+    path.parent.unlink()
+    path.parent.mkdir()
+
+    fifo = tmp_path.joinpath(*relative.parts[:-1], "manifest.fifo")
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError):
+        resolve_manifest_input(ref, tmp_path, runtime_locator=fifo.relative_to(tmp_path))
+
+
+@staged_kinds
+def test_authenticated_manifest_ref_rejects_hardlink(tmp_path: Path, build_manifest) -> None:
+    _manifest_obj, path, ref = build_manifest(tmp_path)
+    os.link(path, tmp_path / "second-link.json")
+
+    with pytest.raises(ValueError, match="exactly one hard link"):
+        resolve_manifest_input(ref, tmp_path)
+
+
+def test_legacy_manifest_ref_makes_no_authenticated_claim(tmp_path: Path) -> None:
+    legacy = ParentRef(
+        kind="EvaluationRunManifest",
+        id="legacy",
+        uri=str(tmp_path / "legacy.json"),
+    )
+    assert not is_authenticated_manifest_ref(legacy)
+    with pytest.raises(ValueError, match="makes no authenticated claim"):
+        resolve_manifest_input(legacy, tmp_path)
+
+
+def test_analysis_integrity_failure_precedes_recipe_and_cache_effects(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    _manifest_obj, _path, ref = _analysis_manifest(tmp_path)
+    bad_ref = ref.model_copy(
+        update={"metadata": {**ref.metadata, "size_bytes": ref.metadata["size_bytes"] + 1}}
+    )
+    spec = AnalysisRunSpec(
+        analysis_type="test.authenticated.no_effect_analysis",
+        inputs=[bad_ref],
+    )
+    calls: list[object] = []
+
+    def recipe(run_spec, root, inputs, execution_context):
+        calls.append((run_spec, root, inputs, execution_context))
+        raise AssertionError("analysis recipe must not run")
+
+    application_registry_bundle.analysis_recipes.register(spec.analysis_type, recipe)
+    before = _file_snapshot(tmp_path)
+    with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
+        execute_analysis_run_spec(
+            spec,
+            root=tmp_path,
+            registry=application_registry_bundle.analysis_recipes,
+            evaluation_registry=application_registry_bundle.evaluation_recipes,
+            experiment_registry=application_registry_bundle.experiment_packages,
+        )
+    assert isinstance(excinfo.value.__cause__, ValueError)
+    assert "size mismatch" in str(excinfo.value.__cause__)
+    assert calls == []
+
+    failed = load_manifest(excinfo.value.path)
+    assert isinstance(failed, AnalysisRunManifest)
+    assert failed.status == "failed"
+    assert failed.metadata["error"]["type"] == "ValueError"
+    assert "size mismatch" in failed.metadata["error"]["message"]
+
+    after = _file_snapshot(tmp_path)
+    failed_relative_path = str(excinfo.value.path.relative_to(tmp_path))
+    assert set(after) == set(before) | {failed_relative_path}
+    assert all(
+        after[path] == contents
+        for path, contents in before.items()
+        if path != "index/feedbax.sqlite"
+    )
+    assert not (tmp_path / "cache").exists()
+
+
+def test_figure_integrity_failure_precedes_render_and_filesystem_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    application_registry_bundle,
+) -> None:
+    _manifest_obj, _path, ref = _analysis_manifest(tmp_path)
+    bad_ref = ref.model_copy(update={"metadata": {**ref.metadata, "manifest_sha256": "0" * 64}})
+    calls: list[object] = []
+
+    def build_figures(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("figure rendering must not run")
+
+    monkeypatch.setattr("feedbax.analysis.figures._build_figures", build_figures)
+    before = _file_snapshot(tmp_path)
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        execute_figure_spec(
+            FigureSpec(
+                name="authenticated-no-effect",
+                assembler="feedbax.grid_figure",
+                inputs=[bad_ref],
+            ),
+            root=tmp_path,
+            registry=application_registry_bundle.figures,
+        )
+    assert calls == []
+    assert _file_snapshot(tmp_path) == before
+
+
+def test_report_integrity_failure_precedes_recipe_and_filesystem_effects(
+    tmp_path: Path,
+    application_registry_bundle,
+) -> None:
+    _manifest_obj, _path, ref = _analysis_manifest(tmp_path)
+    metadata = dict(ref.metadata)
+    metadata.pop("size_bytes")
+    bad_ref = ref.model_copy(update={"metadata": metadata})
+    spec = ReportSpec(
+        report_type="test.authenticated.no_effect_report",
+        inputs=[bad_ref],
+    )
+    calls: list[object] = []
+
+    def recipe(report_spec, root, inputs):
+        calls.append((report_spec, root, inputs))
+        raise AssertionError("report recipe must not run")
+
+    application_registry_bundle.report_recipes.register(spec.report_type, recipe)
+    before = _file_snapshot(tmp_path)
+    with pytest.raises(ValueError, match="incomplete"):
+        execute_report_spec(
+            spec,
+            root=tmp_path,
+            registry=application_registry_bundle.report_recipes,
+        )
+    assert calls == []
+    assert _file_snapshot(tmp_path) == before

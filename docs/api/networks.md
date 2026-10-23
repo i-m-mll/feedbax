@@ -1,9 +1,9 @@
 # Neural networks
 
-::: feedbax.nn.orthogonal_gru_cell
+::: feedbax.models.networks.orthogonal_gru_cell
 
-::: feedbax.nn.NetworkState
+::: feedbax.models.networks.NetworkState
 
-::: feedbax.nn.SimpleStagedNetwork
+::: feedbax.models.networks.SimpleStagedNetwork
 
 

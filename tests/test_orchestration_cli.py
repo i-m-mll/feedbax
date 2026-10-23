@@ -1,0 +1,1123 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import hashlib
+import sys
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import ANY
+
+import pytest
+
+from feedbax.bin import orchestrate
+import feedbax.plugins.bootstrap as plugin_bootstrap
+from feedbax.contracts.run_matrix import (
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+    TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+)
+from feedbax.contracts.spec_storage import training_spec_sha256
+from feedbax.contracts.studio_training import (
+    StudioTrainingAssemblySpec,
+    StudioTrainingIdentityAdapter,
+)
+from feedbax.contracts.training import (
+    LossTermSpec,
+    ObjectiveSlotSpec,
+    TaskSpec,
+    TrainingConfig,
+    TrainingRunSpec,
+    WorkerExecutionSpec,
+    evolve_training_program,
+    standard_supervised_effective_phase_spec,
+    standard_supervised_method_contract,
+    standard_supervised_training_program,
+    standard_supervised_method_payload,
+    standard_supervised_method_ref,
+    default_training_program_registry,
+)
+from feedbax.orchestration import (
+    AssemblyCompilerRegistry,
+    AssemblyContext,
+    BudgetPolicy,
+    CompiledExecutionRow,
+    CompiledRunSet,
+    CompilerIdentity,
+    DeploymentPolicy,
+    DeploymentResourceRequest,
+    EmergencyProviderIdentity,
+    EmergencyRunSetRecord,
+    EnvironmentDeclaration,
+    LaunchPolicy,
+    RowLaunchSpec,
+    RunAssemblyRequest,
+    RunBundle,
+    RunEventEmitter,
+    RunSetState,
+    RunSetStateStore,
+    SchemaArtifactRef,
+    StageState,
+    StateLockError,
+    assemble_run_bundle,
+)
+from feedbax.orchestration.drivers.local import LocalOrchestrationDriver
+import feedbax.orchestration.drivers.local as local_driver_module
+from feedbax.orchestration.conformance import CheckRegistry, pass_check
+from feedbax.orchestration.drivers.runpod import RunPodOrchestrationDriver
+from feedbax.orchestration.stages import PreflightFailed
+from feedbax.plugins import (
+    TRAINING_PROGRAMS,
+    BootstrapState,
+    FamilyRequirement,
+    PluginDeclaration,
+    PluginRegistration,
+    bootstrap_application,
+    new_registration_context,
+)
+from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.orchestration.state import RowState
+from feedbax.training.row_lowering import TrainingRowLowererRegistry
+from feedbax.training.run_matrix import _validate_training_payload
+from feedbax.training.spec_storage import (
+    TRAINING_RUN_MATRIX_COMPILER_ID,
+    TRAINING_RUN_MATRIX_COMPILER_VERSION,
+    register_training_run_matrix_compiler,
+)
+from feedbax.orchestration.revision import resolve_feedbax_revision
+
+
+_PLUGIN_METHOD_REF = "tests/orchestration_plugin/v1"
+_PLUGIN_SCHEMA_ID = "tests.spec.orchestration_plugin"
+_PLUGIN_SCHEMA_VERSION = "tests.spec.orchestration_plugin.v1"
+
+
+class _FixtureCompiler:
+    def __init__(self, launches: list[tuple[str, RowLaunchSpec]]) -> None:
+        self.launches = launches
+
+    def compile(
+        self,
+        *,
+        authored: dict[str, Any],
+        run_set_id: str,
+        context: AssemblyContext,
+    ) -> CompiledRunSet:
+        del run_set_id, context
+        return CompiledRunSet(
+            rows=[
+                CompiledExecutionRow(
+                    row_id=row_id,
+                    payload=authored,
+                    resolved_semantics={**authored, "fixture_row_id": row_id},
+                    immutable_inputs=[],
+                    launch=launch,
+                )
+                for row_id, launch in self.launches
+            ]
+        )
+
+
+def _deployment_policy(driver: str = "local") -> DeploymentPolicy:
+    return DeploymentPolicy(
+        driver=driver,
+        venue="local" if driver == "local" else "remote",
+        cloud_authorized=driver == "runpod",
+        review_required=False,
+        review_authorized=False,
+        resources=DeploymentResourceRequest(
+            gpu_id="NVIDIA GeForce RTX 4090" if driver == "runpod" else None,
+            regions=["CA-MTL-1", "US-OR-1"] if driver == "runpod" else [],
+        ),
+    )
+
+
+def _assembly_request(
+    tmp_path: Path,
+    *,
+    launches: list[tuple[str, RowLaunchSpec]] | None = None,
+    driver: str = "local",
+    environment: EnvironmentDeclaration | None = None,
+    max_wall_clock_seconds: float = 10.0,
+) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry]:
+    spec = StudioTrainingAssemblySpec(total_batches=1)
+    authored_path = tmp_path / "studio-training.json"
+    authored_bytes = spec.model_dump_json(exclude_none=True).encode("utf-8")
+    authored_path.parent.mkdir(parents=True, exist_ok=True)
+    authored_path.write_bytes(authored_bytes)
+    request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
+        authored=SchemaArtifactRef(
+            schema_id=spec.schema_id,
+            schema_version=spec.schema_version,
+            artifact_id=f"fixture:{hashlib.sha256(authored_bytes).hexdigest()}",
+            sha256=hashlib.sha256(authored_bytes).hexdigest(),
+            uri=str(authored_path),
+        ),
+        compiler=CompilerIdentity(
+            compiler_id="feedbax.test.cli",
+            compiler_version="feedbax.test.cli.v1",
+        ),
+        deployment_policy=_deployment_policy(driver),
+        environment=environment or EnvironmentDeclaration(python_version="3.12"),
+        launch_policy=LaunchPolicy(max_parallel_rows=2),
+        budget=BudgetPolicy(max_wall_clock_seconds=max_wall_clock_seconds),
+        orchestration_root=str(tmp_path),
+    )
+    registry = AssemblyCompilerRegistry()
+    registry.register(
+        schema_id=spec.schema_id,
+        compiler_id=request.compiler.compiler_id,
+        compiler_version=request.compiler.compiler_version,
+        compiler=_FixtureCompiler(
+            launches or [("row-a", RowLaunchSpec(command=[sys.executable, "-c", "pass"]))]
+        ),
+        identity_adapter=StudioTrainingIdentityAdapter(),
+    )
+    return request, registry
+
+
+def _bundle(
+    tmp_path: Path,
+    *,
+    run_set_id: str = "2026-01-02-cli",
+    launches: list[tuple[str, RowLaunchSpec]] | None = None,
+    driver: str = "local",
+    environment: EnvironmentDeclaration | None = None,
+    max_wall_clock_seconds: float = 10.0,
+) -> RunBundle:
+    request, registry = _assembly_request(
+        tmp_path,
+        launches=launches,
+        driver=driver,
+        environment=environment,
+        max_wall_clock_seconds=max_wall_clock_seconds,
+    )
+    return assemble_run_bundle(
+        request,
+        run_set_id=run_set_id,
+        context=AssemblyContext(custody_root=tmp_path / "custody"),
+        registry=registry,
+    )
+
+
+def _write_request(request: RunAssemblyRequest, path: Path) -> Path:
+    path.write_text(request.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_bundle(bundle: RunBundle, path: Path) -> Path:
+    path.write_text(bundle.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def _register_orchestration_plugin_method(registry: Any) -> None:
+    contract = standard_supervised_method_contract().model_copy(
+        update={
+            "method_ref": _PLUGIN_METHOD_REF,
+            "method_payload_schema_version": _PLUGIN_SCHEMA_VERSION,
+        }
+    )
+    registry.register_program(
+        evolve_training_program(
+            standard_supervised_training_program(),
+            method_ref=_PLUGIN_METHOD_REF,
+            payload_schema_id=_PLUGIN_SCHEMA_ID,
+            payload_schema_version=_PLUGIN_SCHEMA_VERSION,
+            contract_compiler=lambda _payload: contract,
+            rejected_payload_versions=(),
+            owner="tests.test_orchestration_cli",
+            package="tests",
+        )
+    )
+
+
+def _standard_training_run_payload() -> dict[str, Any]:
+    return TrainingRunSpec(
+        graph={
+            "inline": {
+                "nodes": {
+                    "gain": {
+                        "type": "Gain",
+                        "params": {"gain": 1.0},
+                        "input_ports": ["input"],
+                        "output_ports": ["output"],
+                    }
+                },
+                "wires": [],
+                "input_ports": ["input"],
+                "output_ports": ["output"],
+                "input_bindings": {"input": ("gain", "input")},
+                "output_bindings": {"output": ("gain", "output")},
+            }
+        },
+        task=TaskSpec(type="ToyTask", params={"n_steps": 1}),
+        training_config=TrainingConfig(n_batches=1, batch_size=1, learning_rate=0.01),
+        objective=ObjectiveSlotSpec(
+            loss=LossTermSpec(
+                type="target_state",
+                label="target",
+                selector="port:gain.output",
+                target_value=[0.0],
+            )
+        ),
+        method_ref=standard_supervised_method_ref(),
+        method_payload=standard_supervised_method_payload(),
+        worker_execution=WorkerExecutionSpec(
+            method_contract=standard_supervised_method_contract(),
+            effective_phase=standard_supervised_effective_phase_spec(),
+        ),
+    ).model_dump(mode="json", exclude_none=True)
+
+
+def _plugin_training_run_payload() -> dict[str, Any]:
+    payload = _standard_training_run_payload()
+    payload["method_ref"] = {
+        "package": "tests",
+        "name": "orchestration_plugin",
+        "version": "v1",
+    }
+    method_payload = standard_supervised_method_payload().model_dump(mode="json", exclude_none=True)
+    method_payload["schema_id"] = _PLUGIN_SCHEMA_ID
+    method_payload["schema_version"] = _PLUGIN_SCHEMA_VERSION
+    method_payload["payload"]["optimizer"]["params"]["learning_rate"] = 0.01
+    payload["method_payload"] = method_payload
+    worker_execution = payload["worker_execution"]
+    worker_execution["method_contract"]["method_ref"] = _PLUGIN_METHOD_REF
+    worker_execution["method_contract"]["method_payload_schema_version"] = _PLUGIN_SCHEMA_VERSION
+    worker_execution["effective_phase"]["method_ref"] = _PLUGIN_METHOD_REF
+    return payload
+
+
+def _matrix_request(
+    tmp_path: Path,
+    *,
+    training_run_payload: dict[str, Any],
+) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry]:
+    base_path = tmp_path / "training-base.json"
+    base_path.write_text(json.dumps(training_run_payload), encoding="utf-8")
+    matrix = {
+        "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+        "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+        "name": "orchestration plugin discovery",
+        "base": {
+            "kind": "authored_intent",
+            "ref": base_path.name,
+            "content_hash": training_spec_sha256(training_run_payload),
+        },
+        "rows": [{"row_id": "plugin-row", "seed": 7}],
+    }
+    authored_bytes = json.dumps(matrix, sort_keys=True).encode("utf-8")
+    authored_path = tmp_path / "training-matrix.json"
+    authored_path.write_bytes(authored_bytes)
+    request = RunAssemblyRequest(
+        feedbax_revision=resolve_feedbax_revision(),
+        authored=SchemaArtifactRef(
+            schema_id=TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            schema_version=TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            artifact_id=f"fixture:{hashlib.sha256(authored_bytes).hexdigest()}",
+            sha256=hashlib.sha256(authored_bytes).hexdigest(),
+            uri=str(authored_path),
+        ),
+        compiler=CompilerIdentity(
+            compiler_id=TRAINING_RUN_MATRIX_COMPILER_ID,
+            compiler_version=TRAINING_RUN_MATRIX_COMPILER_VERSION,
+        ),
+        deployment_policy=_deployment_policy(),
+        environment=EnvironmentDeclaration(python_version="3.12"),
+        launch_policy=LaunchPolicy(max_parallel_rows=1),
+        budget=BudgetPolicy(max_wall_clock_seconds=10.0),
+        orchestration_root=str(tmp_path / "orchestration"),
+    )
+    registry = AssemblyCompilerRegistry()
+    method_registry = default_training_program_registry()
+    register_training_run_matrix_compiler(
+        registry,
+        method_registry=method_registry,
+        row_validator=lambda payload, row_id: _validate_training_payload(
+            payload, row_id=row_id, method_registry=method_registry
+        ),
+        row_lowerer=TrainingRowLowererRegistry().lower,
+    )
+    return request, registry
+
+
+def _plugin_matrix_request(tmp_path: Path) -> tuple[RunAssemblyRequest, AssemblyCompilerRegistry]:
+    return _matrix_request(tmp_path, training_run_payload=_plugin_training_run_payload())
+
+
+def _save_state(bundle: RunBundle, state: RunSetState) -> None:
+    bundle.run_set_dir.mkdir(parents=True, exist_ok=True)
+    _write_bundle(bundle, bundle.run_set_dir / "bundle.json")
+    RunSetStateStore(bundle.run_set_dir / "state.json").save(state)
+
+
+def test_preflight_loads_non_builtin_training_method_entry_point_before_matrix_assembly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = PluginRegistration(
+        PluginDeclaration(
+            "tests.orchestration_method",
+            "1",
+            1,
+            families=(FamilyRequirement("training_programs"),),
+        ),
+        lambda context: _register_orchestration_plugin_method(context.registry(TRAINING_PROGRAMS)),
+    )
+    monkeypatch.setattr(
+        plugin_bootstrap,
+        "_installed_entry_points",
+        lambda _group: (
+            SimpleNamespace(
+                name="orchestration-method",
+                value="tests:PLUGIN_REGISTRATION",
+                load=lambda: registration,
+            ),
+        ),
+    )
+    request, _ = _plugin_matrix_request(tmp_path)
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
+    monkeypatch.chdir(tmp_path)
+
+    assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 0
+
+
+@pytest.mark.parametrize("command", ["preflight", "launch"])
+def test_matrix_commands_load_training_plugins_before_request_validation(
+    command: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, _ = _assembly_request(tmp_path)
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
+    events: list[str] = []
+    state = asyncio.run(
+        bootstrap_application(new_registration_context(local_component_source=None))
+    )
+
+    async def compose() -> object:
+        events.append("bootstrap")
+        return state
+
+    monkeypatch.setattr(orchestrate, "compose_application", compose)
+    monkeypatch.setattr(
+        orchestrate,
+        "_load_assembly_request",
+        lambda _path: events.append("request") or request,
+    )
+
+    class FakeEngine:
+        def run(self, **_kwargs: Any) -> RunSetState:
+            return RunSetState(
+                run_set_id="plugin-order",
+                rows={"row": RowState(status="completed")},
+                stages={
+                    "PREFLIGHT": StageState(
+                        status="completed",
+                        checks=[{"name": "fixture_pass", "status": "pass"}],
+                    )
+                },
+            )
+
+    monkeypatch.setattr(orchestrate, "_request_engine", lambda *_args, **_kwargs: FakeEngine())
+
+    assert orchestrate.main([command, "--assembly-request", str(request_path)]) == 0
+    assert events == ["bootstrap", "request"]
+
+
+def test_shadow_launch_rejects_provider_capable_request_before_engine_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, _ = _assembly_request(tmp_path, driver="runpod")
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
+    monkeypatch.setattr(orchestrate, "_load_assembly_request", lambda _path: request)
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail(
+            "provider-capable shadow launch must not build an engine"
+        ),
+    )
+    assert orchestrate.main(["shadow-launch", "--assembly-request", str(request_path)]) == 1
+
+
+def test_shadow_launch_evidence_requires_one_verified_native_continuation_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row_id = "golden-row"
+    run_set_dir = tmp_path / "shadow-run"
+    row_dir = run_set_dir / "rows" / row_id
+    row_dir.mkdir(parents=True)
+    (row_dir / "training-diagnostics.json").write_text(
+        json.dumps({"segment_completed_batches": 1}), encoding="utf-8"
+    )
+    (row_dir / "stdout.log").write_text(
+        json.dumps({"payload_binding_status": "verified"}) + "\n", encoding="utf-8"
+    )
+    bundle = SimpleNamespace(
+        deployment_policy=_deployment_policy(),
+        rows=[
+            SimpleNamespace(
+                row_id=row_id,
+                launch=SimpleNamespace(command=[sys.executable, "-m", "feedbax", "--resume"]),
+                execution=SimpleNamespace(
+                    row_provenance=SimpleNamespace(planned_run_id="feedbax-training-run:golden")
+                ),
+            )
+        ],
+        run_set_dir=run_set_dir,
+        run_set_id="shadow-run",
+    )
+    state = RunSetState(
+        run_set_id="shadow-run",
+        rows={row_id: RowState(status="completed")},
+        stages={
+            "MONITOR": StageState(status="completed"),
+            "COLLECT": StageState(status="completed"),
+        },
+    )
+    monkeypatch.setattr(orchestrate, "canonical_run_bundle_sha256", lambda _bundle: "a" * 64)
+
+    evidence = orchestrate._shadow_launch_evidence(bundle, state)
+
+    assert evidence.provider_readiness == "not_evaluated"
+    assert evidence.exercised_through_stage == "COLLECT"
+    assert evidence.rows[0].segment_completed_batches == 1
+    assert state.stage("CERTIFY").status == "pending"
+    assert state.stage("REGISTER").status == "pending"
+
+    (row_dir / "stdout.log").write_text(
+        json.dumps({"payload_binding_status": "verified"}) + "\nextra log line\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="multiple stdout log lines are not accepted"):
+        orchestrate._shadow_launch_evidence(bundle, state)
+
+
+def test_broken_installed_plugin_fails_before_builtin_matrix_engine_or_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    monkeypatch.setattr(
+        plugin_bootstrap,
+        "_installed_entry_points",
+        lambda _group: [
+            SimpleNamespace(
+                name="broken-orchestration-method",
+                value="broken.plugin:PLUGIN_REGISTRATION",
+                load=lambda: (_ for _ in ()).throw(RuntimeError("broken plugin")),
+            )
+        ],
+    )
+    request, _ = _matrix_request(
+        tmp_path,
+        training_run_payload=_standard_training_run_payload(),
+    )
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("assembly engine must not be constructed"),
+    )
+    assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 1
+    assert (
+        capsys.readouterr()
+        .err.strip()
+        .endswith("failed to load 'broken-orchestration-method': broken plugin")
+    )
+
+
+def test_status_line_format_is_stable(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    run_set_dir = bundle.run_set_dir
+    event_path = run_set_dir / "events" / "row-a.events.jsonl"
+    event_path.parent.mkdir(parents=True, exist_ok=True)
+    RunEventEmitter(
+        run_set_id=bundle.run_set_id,
+        row_id="row-a",
+        path=event_path,
+        heartbeat_seconds=None,
+    ).emit_progress(
+        {"batch": 3, "total_batches": 8, "loss": 0.125, "phase": "train"},
+        batch=3,
+        total_batches=8,
+        force=True,
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"row-a": RowState(status="running", event_seq_high_water_mark=0)},
+        stages={
+            "ASSEMBLE": StageState(status="completed"),
+            "PREFLIGHT": StageState(status="completed"),
+            "LAUNCH": StageState(status="completed"),
+        },
+    )
+
+    line = orchestrate.format_status_line(
+        state,
+        "row-a",
+        run_set_dir=run_set_dir,
+        now_ms=event_path.stat().st_mtime_ns // 1_000_000 + 10_000,
+    )
+
+    assert line.startswith("row=row-a status=running batch=3/8 last_loss=0.125 last_event_age_s=")
+    assert " seq=0 stages=ASSEMBLE:completed,PREFLIGHT:completed,PROVISION:pending" in line
+
+
+def test_json_status_validates_state_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
+    bundle = _bundle(tmp_path, run_set_id="json-status")
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={"row-a": RowState(status="completed")},
+    )
+    _save_state(bundle, state)
+
+    assert orchestrate.main(["status", "--run-set", bundle.run_set_id, "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert RunSetState.model_validate(payload).run_set_id == "json-status"
+
+
+def test_status_prefers_active_emergency_recovery_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
+    bundle = _bundle(tmp_path, run_set_id="emergency-status")
+    store = RunSetStateStore(bundle.run_set_dir / "state.json")
+    store.save(RunSetState(run_set_id=bundle.run_set_id))
+    store.preflight_and_reserve()
+    store.save_emergency(
+        EmergencyRunSetRecord(
+            run_set_id=bundle.run_set_id,
+            provider_identity=EmergencyProviderIdentity(
+                provider="fixture-provider",
+                resource_id="resource-123",
+            ),
+            preservation_state="preserve-required",
+            lease_state="resource preserved",
+            custody_complete=False,
+            spend_boundary='{"semantics":"driver-observed"}',
+            primary_failure="primary run-set state persistence failed",
+            next_recovery_action="collect declared outputs before teardown",
+        )
+    )
+
+    assert orchestrate.main(["status", "--run-set", bundle.run_set_id, "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    recovery = EmergencyRunSetRecord.model_validate(payload)
+    assert recovery.preservation_state == "preserve-required"
+    assert recovery.provider_identity.resource_id == "resource-123"
+    assert recovery.next_recovery_action == "collect declared outputs before teardown"
+
+    store.path.write_text("{invalid primary state", encoding="utf-8")
+    assert orchestrate.main(["status", "--run-set", bundle.run_set_id, "--json"]) == 1
+    fallback = EmergencyRunSetRecord.model_validate_json(capsys.readouterr().out)
+    assert fallback == recovery
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (PreflightFailed("bad bundle"), orchestrate.EXIT_PREFLIGHT),
+        (StateLockError("locked"), orchestrate.EXIT_LOCK),
+        (RuntimeError("other"), orchestrate.EXIT_OTHER),
+        (
+            RunSetState(
+                run_set_id="set",
+                rows={"row": RowState(status="failed")},
+            ),
+            orchestrate.EXIT_ROW_FAILURE,
+        ),
+        (
+            RunSetState(
+                run_set_id="set",
+                rows={"row": RowState(status="stopped")},
+                abort_reason="budget-exceeded",
+            ),
+            orchestrate.EXIT_BUDGET,
+        ),
+    ],
+)
+def test_exit_code_classes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    result: BaseException | RunSetState,
+    expected: int,
+) -> None:
+    request, _ = _assembly_request(tmp_path)
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
+
+    class FakeEngine:
+        def run(self) -> RunSetState:
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+    monkeypatch.setattr(orchestrate, "_request_engine", lambda *_args, **_kwargs: FakeEngine())
+
+    assert orchestrate.main(["launch", "--assembly-request", str(request_path)]) == expected
+
+
+def test_watch_exits_after_all_rows_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
+    bundle = _bundle(
+        tmp_path,
+        run_set_id="watch-terminal",
+        launches=[
+            ("a", RowLaunchSpec(command=[sys.executable, "-c", "pass"])),
+            ("b", RowLaunchSpec(command=[sys.executable, "-c", "pass"])),
+        ],
+    )
+    events_dir = bundle.run_set_dir / "events"
+    for row_id in ("a", "b"):
+        emitter = RunEventEmitter(
+            run_set_id=bundle.run_set_id,
+            row_id=row_id,
+            path=events_dir / f"{row_id}.events.jsonl",
+            heartbeat_seconds=None,
+        )
+        emitter.emit_terminal("complete", {"row": row_id})
+        emitter.close()
+    _save_state(
+        bundle,
+        RunSetState(
+            run_set_id=bundle.run_set_id,
+            rows={"a": RowState(status="completed"), "b": RowState(status="completed")},
+        ),
+    )
+
+    assert orchestrate.main(["watch", "--run-set", bundle.run_set_id, "--poll-interval", "0"]) == 0
+
+    assert capsys.readouterr().out.splitlines() == [
+        'row=a seq=0 type=complete payload={"row":"a"}',
+        'row=b seq=0 type=complete payload={"row":"b"}',
+    ]
+
+
+def test_collect_and_teardown_are_idempotent_after_completed_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
+    bundle = _bundle(tmp_path, run_set_id="idempotent")
+    stages = {stage: StageState(status="completed") for stage in orchestrate.STAGE_ORDER}
+    _save_state(
+        bundle,
+        RunSetState(
+            run_set_id=bundle.run_set_id,
+            rows={"row-a": RowState(status="completed")},
+            stages=stages,
+        ),
+    )
+
+    assert orchestrate.main(["collect", "--run-set", bundle.run_set_id]) == 0
+    assert orchestrate.main(["collect", "--run-set", bundle.run_set_id]) == 0
+    assert orchestrate.main(["teardown", "--run-set", bundle.run_set_id]) == 0
+    assert orchestrate.main(["teardown", "--run-set", bundle.run_set_id, "--force"]) == 0
+
+
+def test_certify_explicitly_retries_a_completed_failed_certificate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+
+    def run_existing(_run_set_id: str, **kwargs: Any) -> RunSetState:
+        calls.append(("run", kwargs))
+        return RunSetState(
+            run_set_id="failed-certificate",
+            rows={"row-a": RowState(status="completed")},
+            stages={
+                "CERTIFY": StageState(
+                    status="completed",
+                    outputs={"overall": "pass"},
+                )
+            },
+        )
+
+    monkeypatch.setattr(orchestrate, "_run_existing", run_existing)
+
+    assert orchestrate.main(["certify", "--run-set", "failed-certificate"]) == 0
+    assert calls == [
+        (
+            "run",
+            {
+                "conformance_registry": ANY,
+                "training_method_registry": ANY,
+                "driver_registry": ANY,
+                "plugin_provenance": (),
+                "stop_after_stage": "CERTIFY",
+                "retry_failed_certification": True,
+            },
+        ),
+    ]
+
+
+def test_two_row_local_driver_demo_through_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orch"))
+    script = tmp_path / "row.py"
+    script.write_text(
+        """
+from pathlib import Path
+import os
+from feedbax.orchestration.events import RunEventEmitter
+
+row = os.environ["FEEDBAX_ROW_ID"]
+row_dir = Path(os.environ["FEEDBAX_ROW_DIR"])
+with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
+    emitter.emit("ready", {"row": row})
+    emitter.emit_progress(
+        {"phase": "train", "batch": 1, "total_batches": 1, "loss": 0.5},
+        batch=1,
+        total_batches=1,
+        force=True,
+    )
+    (row_dir / "payload.json").write_text('{"row": "%s"}\\n' % row, encoding="utf-8")
+    emitter.emit_terminal("complete", {"row": row})
+""".strip(),
+        encoding="utf-8",
+    )
+    request, registry = _assembly_request(
+        tmp_path / "orch",
+        launches=[
+            (
+                "row-a",
+                RowLaunchSpec(
+                    command=[sys.executable, str(script)],
+                    collect=["payload.json"],
+                ),
+            ),
+            (
+                "row-b",
+                RowLaunchSpec(
+                    command=[sys.executable, str(script)],
+                    collect=["payload.json"],
+                ),
+            ),
+        ],
+    )
+    request_path = _write_request(request, tmp_path / "assembly-request.json")
+
+    class FastLocalDriver(LocalOrchestrationDriver):
+        seen_bindings = ()
+
+        def __init__(self, **kwargs: Any) -> None:
+            kwargs.pop("cwd", None)
+            kwargs.pop("freeze_lines", None)
+            super().__init__(cwd=tmp_path, freeze_lines=("feedbax==test",), **kwargs)
+            type(self).seen_bindings = self.input_provider_bindings
+
+    monkeypatch.setattr(local_driver_module, "LocalOrchestrationDriver", FastLocalDriver)
+    monkeypatch.setattr(
+        orchestrate,
+        "build_default_assembly_registry",
+        lambda **_kwargs: registry,
+    )
+    bundle = replace(
+        new_application_registry_bundle(local_component_source=None),
+        conformance_checks=CheckRegistry({"fixture_pass": lambda _row: pass_check("fixture_pass")}),
+    )
+    bundle.seal()
+
+    async def compose() -> BootstrapState:
+        return BootstrapState(bundle=bundle, provenance=())
+
+    monkeypatch.setattr(orchestrate, "compose_application", compose)
+
+    assert orchestrate.main(["preflight", "--assembly-request", str(request_path)]) == 0
+    assert (
+        orchestrate.main(
+            [
+                "launch",
+                "--assembly-request",
+                str(request_path),
+                "--driver",
+                "local",
+                "--resume-run-set",
+                "local-demo",
+            ]
+        )
+        == 0
+    )
+    assert orchestrate.main(["status", "--run-set", "local-demo"]) == 0
+    assert orchestrate.main(["certify", "--run-set", "local-demo"]) == 0
+    assert orchestrate.main(["teardown", "--run-set", "local-demo"]) == 0
+    assert (
+        orchestrate.main(
+            [
+                "resume",
+                "--run-set",
+                "local-demo",
+                "--input-provider",
+                f"checkpoint.inputs={tmp_path}",
+            ]
+        )
+        == 0
+    )
+    assert FastLocalDriver.seen_bindings[0].name == "checkpoint.inputs"
+
+    status_lines = [
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("row=")
+    ]
+    assert status_lines == [
+        "row=row-a status=completed batch=1/1 last_loss=0.5 "
+        "last_event_age_s=0 seq=2 stages=ASSEMBLE:completed,PREFLIGHT:completed,"
+        "PROVISION:completed,REALIZE_ENV:completed,STAGE_INPUTS:completed,"
+        "SMOKE:completed,LAUNCH:completed,MONITOR:completed,COLLECT:completed,CERTIFY:completed,"
+        "TEARDOWN:completed,REGISTER:completed",
+        "row=row-b status=completed batch=1/1 last_loss=0.5 "
+        "last_event_age_s=0 seq=2 stages=ASSEMBLE:completed,PREFLIGHT:completed,"
+        "PROVISION:completed,REALIZE_ENV:completed,STAGE_INPUTS:completed,"
+        "SMOKE:completed,LAUNCH:completed,MONITOR:completed,COLLECT:completed,CERTIFY:completed,"
+        "TEARDOWN:completed,REGISTER:completed",
+    ]
+
+
+def test_runpod_driver_is_constructed_from_typed_deployment_policy(tmp_path: Path) -> None:
+    bundle = _bundle(
+        tmp_path,
+        driver="runpod",
+        environment=EnvironmentDeclaration(
+            python_version="3.12",
+            image_id="runpod/pytorch:1.0.3",
+            metadata={
+                "runpod_pod_id": "pod-123",
+                "runpod_ssh_host": "198.51.100.10",
+                "runpod_ssh_port": 2222,
+                "runpod_path_patches": [
+                    {
+                        "remote_file": "/workspace/feedbax/pyproject.toml",
+                        "from": "/local/feedbax",
+                        "to": "/workspace/feedbax",
+                    }
+                ],
+            },
+        ),
+    )
+
+    bindings = orchestrate._input_provider_bindings([f"checkpoint.inputs={tmp_path}"])
+    registries = new_application_registry_bundle(local_component_source=None)
+    driver = orchestrate._construct_driver(
+        bundle,
+        driver_registry=registries.drivers,
+        input_provider_bindings=bindings,
+        training_method_registry=default_training_program_registry(),
+    )
+
+    assert isinstance(driver, RunPodOrchestrationDriver)
+    assert driver.config.pod_id == "pod-123"
+    assert driver.config.gpu_id == "NVIDIA GeForce RTX 4090"
+    assert driver.config.datacenters == ("CA-MTL-1", "US-OR-1")
+    assert driver.config.path_patches[0][0] == "/workspace/feedbax/pyproject.toml"
+    assert driver.input_provider_bindings == bindings
+
+
+def test_collection_recovery_binding_requires_row_and_absolute_root(tmp_path: Path) -> None:
+    bindings = orchestrate._collection_recovery_bindings([f"r5={tmp_path}"])
+
+    assert bindings[0].row_id == "r5"
+    assert Path(bindings[0].root) == tmp_path
+    with pytest.raises(ValueError, match="ROW=ABSOLUTE_PATH"):
+        orchestrate._collection_recovery_bindings(["r5=relative"])
+
+
+def test_certify_cli_accepts_input_provider_binding(tmp_path: Path) -> None:
+    args = orchestrate.build_parser().parse_args(
+        [
+            "certify",
+            "--run-set",
+            "run-set",
+            "--input-provider",
+            f"checkpoint.source={tmp_path}",
+        ]
+    )
+
+    assert orchestrate._input_provider_bindings(args.input_provider)[0].name == (
+        "checkpoint.source"
+    )
+
+
+def test_resume_bootstraps_before_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+    state = asyncio.run(
+        bootstrap_application(new_registration_context(local_component_source=None))
+    )
+
+    async def compose() -> object:
+        calls.append(("bootstrap", {}))
+        return state
+
+    monkeypatch.setattr(orchestrate, "compose_application", compose)
+    monkeypatch.setattr(
+        orchestrate,
+        "_run_existing",
+        lambda *_args, **kwargs: (
+            calls.append(("run", kwargs))
+            or RunSetState(
+                run_set_id="resumed",
+                rows={"row-a": RowState(status="completed")},
+            )
+        ),
+    )
+
+    assert orchestrate.main(["resume", "--run-set", "resumed"]) == 0
+    assert calls[0] == ("bootstrap", {})
+    assert calls[1][0] == "run"
+
+
+@pytest.mark.parametrize("version", ["v1", "v2", "v3", "v4", "v5", "v6", "v7"])
+def test_load_bundle_rejects_legacy_versions_for_launch(tmp_path: Path, version: str) -> None:
+    path = tmp_path / "bundle-v1.json"
+    payload = _bundle(tmp_path).model_dump(mode="json")
+    payload["schema_version"] = f"feedbax.orchestration.run_bundle.{version}"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="reassemble from a current RunAssemblyRequest"):
+        orchestrate._load_bundle(path)
+
+
+def test_load_assembly_request_rejects_v1_without_review_authorization(tmp_path: Path) -> None:
+    request, _ = _assembly_request(tmp_path)
+    payload = request.model_dump(mode="json")
+    payload["schema_version"] = "feedbax.spec.run_assembly_request.v1"
+    path = tmp_path / "request-v1.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="re-author a current v9 request"):
+        orchestrate._load_assembly_request(path)
+
+
+@pytest.mark.parametrize("command", ["preflight", "launch"])
+def test_asserted_feedbax_checkout_mismatch_fails_before_engine_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    """``--feedbax-checkout`` is a runtime residence assertion, checked before any work."""
+    request, _ = _assembly_request(tmp_path)
+    path = _write_request(request, tmp_path / "assembly-request.json")
+    wrong_checkout = tmp_path / "not" / "the" / "installed" / "checkout"
+    wrong_checkout.mkdir(parents=True)
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("engine must not be constructed"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "assemble_run_bundle",
+        lambda *_args, **_kwargs: pytest.fail("nothing must be assembled"),
+    )
+
+    exit_code = orchestrate.main(
+        [
+            command,
+            "--assembly-request",
+            str(path),
+            "--feedbax-checkout",
+            str(wrong_checkout),
+        ]
+    )
+
+    assert exit_code == orchestrate.EXIT_PREFLIGHT
+
+
+def test_asserted_feedbax_checkout_is_never_recorded_in_the_request(tmp_path: Path) -> None:
+    """The asserted checkout path is machine-local and must stay off the durable spec."""
+    request, _ = _assembly_request(tmp_path)
+
+    assert "feedbax_checkout" not in request.model_dump(mode="json")
+    assert "feedbax-checkout" not in _write_request(
+        request, tmp_path / "assembly-request.json"
+    ).read_text(encoding="utf-8")
+
+
+def test_launch_driver_override_conflict_fails_before_engine_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, _ = _assembly_request(tmp_path)
+    path = _write_request(request, tmp_path / "assembly-request.json")
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("engine must not be constructed"),
+    )
+
+    assert (
+        orchestrate.main(["launch", "--assembly-request", str(path), "--driver", "runpod"])
+        == orchestrate.EXIT_OTHER
+    )
+
+
+def test_launch_dry_run_binds_rows_without_credentials_or_stage_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request, _ = _assembly_request(tmp_path, driver="runpod")
+    path = _write_request(request, tmp_path / "assembly-request.json")
+    bundle = _bundle(tmp_path / "bundle", driver="runpod")
+    monkeypatch.setattr(orchestrate, "assemble_run_bundle", lambda *_args, **_kwargs: bundle)
+    monkeypatch.setattr(
+        orchestrate,
+        "load_runpod_api_key",
+        lambda: pytest.fail("dry-run must not load RunPod credentials"),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "_request_engine",
+        lambda *_args, **_kwargs: pytest.fail("dry-run must not create a stage engine"),
+    )
+    assert orchestrate.main(["launch", "--assembly-request", str(path), "--dry-run"]) == 0
+
+    output = capsys.readouterr().out
+    assert "row=row-a dry-run=accepted" in output
+
+
+def test_launch_dry_run_rejects_local_deployment_policy(tmp_path: Path) -> None:
+    request, _ = _assembly_request(tmp_path, driver="local")
+    path = _write_request(request, tmp_path / "assembly-request.json")
+
+    assert orchestrate.main(["launch", "--assembly-request", str(path), "--dry-run"]) == (
+        orchestrate.EXIT_OTHER
+    )
+
+
+def test_launch_cli_exposes_deadman_request_overrides() -> None:
+    args = orchestrate.build_parser().parse_args(
+        [
+            "launch",
+            "--assembly-request",
+            "assembly-request.json",
+            "--deadman",
+            "--deadman-silence-seconds",
+            "900",
+            "--input-provider",
+            "/invalid-relative",
+        ]
+    )
+
+    assert args.deadman is True
+    assert args.deadman_silence_seconds == 900
+    with pytest.raises(ValueError, match="NAME=ABSOLUTE_PATH"):
+        orchestrate._input_provider_bindings(args.input_provider)

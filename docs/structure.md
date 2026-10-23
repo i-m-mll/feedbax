@@ -9,27 +9,25 @@ Feedbax includes a number of different types of modules. This page summarizes th
 
     Likewise, if you see a variable annotated as `task: AbstractTask` in the source code, that means that the value of `task` should be some type of task—not yet specified.
 
-    Note that one abstract class may inherit from another, resulting in a more specific—but still general—type of module. For example, every `AbstractStagedModel` is an `AbstractModel` that specializes in defining its computation as a sequence of named state operations.
+    Note that one abstract class may inherit from another, resulting in a more specific—but still general—type of module. In the current architecture, models are built from graph-based components rather than staged operations.
 
     Developers, note that Feedbax is designed according to the [abstract-final pattern](https://docs.kidger.site/equinox/pattern/).
 
 ## Models and states
 
-The base class for all types of models is [`AbstractModel`][feedbax.AbstractModel]. It defines how any model subclass should depend on a particular type of state [PyTree](/feedbax/examples/pytrees). Each type of state PyTree is a final subclass of `equinox.Module`.
+The base class for all types of models is [`Component`][feedbax.runtime.graph.Component]. Models are explicit graphs of components ([`Graph`][feedbax.runtime.graph.Graph]) with named ports and wires. Each type of state PyTree is a final subclass of `equinox.Module`.
 
-Note that Feedbax models are immutable. We cannot modify a model in-place: we have to replace it with an altered copy. Therefore a model cannot modify its own attributes from within, and states are not stored as attributes of a model object itself. Instead, an `AbstractModel` is like a function that receives a state PyTree, and returns an altered copy.
+Note that Feedbax models are immutable. We cannot modify a model in-place: we have to replace it with an altered copy. Therefore a model cannot modify its own attributes from within, and states are not stored as attributes of a model object itself. Instead, a `Component` is like a function that receives inputs and state, and returns updated outputs and state.
 
-Most Feedbax models are *staged* models. Their base class is `AbstractStagedModel`, which inherits from `AbstractModel`. It defines how a model may be built as a sequence of operations ("stages") on the type of state PyTree it depends on. For example, `SimpleFeedback` is an `AbstractStagedModel` that is defined as a series of operations on a `SimpleFeedbackState`.
-
-Generally, an `AbstractStagedModel` defines a single step through a model. However, we're interested in models that operate on their state for multiple time steps. Therefore we wrap our single-step model in an [`AbstractIterator`][feedbax.iterate.AbstractIterator], which is essentially a loop. Usually we'll use [`Iterator`][feedbax.iterate.Iterator], which iterates the model and remembers the history of all of its states.
+Most Feedbax models are graphs of components. Each component performs a single step; iteration is handled externally or by cycles in the graph. When a graph contains a feedback cycle, it internally iterates using `lax.scan`, producing a history of component states.
 
 ## Tasks and losses
 
 In Feedbax, models are trained to perform tasks. Typically, this means running the model through trials of the task, then scoring its performance, then getting an updated model that should perform slightly better on the next set of trials.
 
-The base class for all types of tasks is [`AbstractTask`][feedbax.task.AbstractTask]. It provides 1) specifications for training trials, 2) specifications for validation trials, 3) a loss function, which scores a model's performance on a trial, and 4) methods for running a model on a given set of trials.
+The base class for all types of tasks is [`AbstractTask`][feedbax.tasks.AbstractTask]. It provides 1) specifications for training trials, 2) specifications for validation trials, 3) a loss function, which scores a model's performance on a trial, and 4) methods for running a model on a given set of trials.
 
-[Trial specifications][feedbax.task.TaskTrialSpec] are always composed of three things:
+[Trial specifications][feedbax.tasks.TaskTrialSpec] are always composed of three things:
 
 1. Data with which to initialize one or more parts of a model's state, prior to a trial;
 2. Target data which the loss function will use to score the history of a model's states, over a trial;
@@ -37,23 +35,44 @@ The base class for all types of tasks is [`AbstractTask`][feedbax.task.AbstractT
 
 The loss function is not defined within the `AbstractTask`, but merely assigned to it as an attribute. This is because two tasks that are otherwise identical might vary in terms of their scoring mechanism. Therefore we specify the specific loss function we want to use, when we construct an instance of a particular type of task.
 
-The base class for all loss functions is [`AbstractLoss`][feedbax.loss.AbstractLoss]. A loss computation takes as input the states of a model across a trial, as well as the complete specification for that trial.
+The base class for all loss functions is [`AbstractLoss`][feedbax.objectives.loss.AbstractLoss]. A loss computation takes as input the states of a model across a trial, as well as the complete specification for that trial.
 
-Most types of loss are "simple" losses, which define one particular scoring mechanism. For example, [`NetworkActivityLoss`][feedbax.loss.NetworkActivityLoss] defines a penalty for the non-zero activities of the units ("neurons") in a model's neural network. Training on this loss will favour reducing the activity in the network as much as possible, given the other constraints.
+Most types of loss are "simple" losses, which define one particular scoring mechanism. For example, [`NetworkActivityLoss`][feedbax.objectives.loss.NetworkActivityLoss] defines a penalty for the non-zero activities of the units ("neurons") in a model's neural network. Training on this loss will favour reducing the activity in the network as much as possible, given the other constraints.
 
-The class [`CompositeLoss`][feedbax.loss.CompositeLoss] is used to aggregate (say, sum) multiple loss terms into a single loss function. Scoring of a task is usually based on multiple criteria, so the loss function that is assigned to an `AbstractTask` is usually a `CompositeLoss`.
+The class [`CompositeLoss`][feedbax.objectives.loss.CompositeLoss] is used to aggregate (say, sum) multiple loss terms into a single loss function. Scoring of a task is usually based on multiple criteria, so the loss function that is assigned to an `AbstractTask` is usually a `CompositeLoss`.
 
 ## Training
 
-A [`TaskTrainer`][feedbax.train.TaskTrainer] is used to [train](/feedbax/examples/1_train#training-the-model) a model to perform a task, over a sequence of many batches of training trials provided by an `AbstractTask`.
+Training runs are described by structured executor specs and run through
+`feedbax.training.executor`. The executor owns phase progress, checkpoint
+custody, and manifest emission so training state can be resumed and audited
+through the same contract surfaces used by workers.
 
-At the end of a training run, a `TaskTrainer` returns not just the trained model, but also a [`TaskTrainerHistory`][feedbax.train.TaskTrainerHistory] object. Normally this contains the value of the loss over all the batches. However, depending on the arguments given to `TaskTrainer`, it may also contain other information, like 1) the trial specifications on which the model was trained, or 2) the history of the model's trained parameters.
+Checkpoint custody can fork one validated transaction into multiple target
+run-contract roots without rewriting unchanged blobs. On remote pods, stage the
+source checkpoint once and run `python -m feedbax checkpoint fork` on the pod so
+hardlinks are created on the target filesystem. Sync the source checkpoint as
+the durable transfer unit; ordinary `rsync` without `-H` re-duplicates
+hardlinked fork trees.
 
-A `TaskTrainer` may also be used to train a set of [model replicates](/feedbax/examples/4_vmap) in parallel.
+### Artifact publication
+
+`feedbax.contracts.publication` is the storage-neutral authority for blob,
+artifact-version, provenance, publication, and checkpoint-set records. Every
+portable reference includes an identity, SHA-256 digest, and byte size. The local
+`BlobStore` keeps one suffixless content-addressed file per digest; logical names
+and media types live in artifact records rather than filesystem aliases.
+
+Publication stages and verifies immutable blobs first, then commits the artifact,
+checkpoint, provenance, and receipt rows in one transaction. Replaying the same
+idempotency key and canonical request returns the committed receipt; reusing a key
+for different bytes fails closed. The durable catalog accepts only
+`feedbax.publication.v1`; unsupported versions are rejected before the current
+tables are created or changed.
 
 ## Interventions
 
-A core feature of Feedbax is the ability to modify models and tasks with [interventions](/feedbax/examples/3_intervening). The base class for interventions is `AbstractIntervenor`. Each type of intervention specifies a state operation, which may be inserted into the usual sequence of state operations of an `AbstractStagedModel`.
+A core feature of Feedbax is the ability to modify models and tasks with [interventions](/feedbax/examples/3_intervening). Interventions are regular components inserted into graphs via graph surgery, and their parameters live in the unified `State`.
 
 ## Components of feedback models
 
@@ -67,11 +86,11 @@ There are three main types of components, here.
 
 In control theory, the neural network is a *controller*. In reinforcement learning, we'd call it an *agent*—or at a given moment, a *policy*.
 
-So far there isn't an `AbstractNetwork` or `AbstractController` that defines how controllers should behave in general. If you want to be able to intervene on the hidden state of your network while also having a separate readout or encoding layers, then [`SimpleStagedNetwork`][feedbax.nn.SimpleStagedNetwork] is suitable. Otherwise, you can [use](/feedbax/examples/5_model_stages#using-non-staged-components) arbitrarily complex neural networks as controllers.
+So far there isn't an `AbstractNetwork` or `AbstractController` that defines how controllers should behave in general. If you want to be able to intervene on the hidden state of your network while also having a separate readout or encoding layers, then [`SimpleStagedNetwork`][feedbax.models.networks.SimpleStagedNetwork] is suitable. Otherwise, you can [use](/feedbax/examples/5_model_stages#using-non-staged-components) arbitrarily complex neural networks as controllers.
 
 ### Channels
 
-[`Channel`][feedbax.channel.Channel] is a model of delayed, noisy transmission of data. It's a modified [queue](https://en.wikipedia.org/wiki/Queue_(abstract_data_type)): it stores a number of samples of data in the order they were received; each time it receives a new sample, the oldest sample in the queue is pushed out the back, and the new one enters at the front. Noise is added to the oldest sample before it is returned.
+[`Channel`][feedbax.runtime.channel.Channel] is a model of delayed, noisy transmission of data. It's a modified [queue](https://en.wikipedia.org/wiki/Queue_(abstract_data_type)): it stores a number of samples of data in the order they were received; each time it receives a new sample, the oldest sample in the queue is pushed out the back, and the new one enters at the front. Noise is added to the oldest sample before it is returned.
 
 `Channel` is used by `SimpleFeedback` to model sensory feedback, but it can also be used wherever delayed, noisy transmission is required in a model.
 
@@ -82,10 +101,9 @@ Biomechanical models describe the physics of simplified limbs. Generally, there 
 1. Differential equations, which describe the evolution of the limb state over time depending on applied forces.
 2. Kinematic (geometric) relationships between state variables. For example, the force generated by a muscle can be calculated directly from the muscle's current length and the velocity of its contraction, and these in turn can be calculated from the current angles and angular velocities of the joints spanned by the muscle.
 
-Both of these aspects are captured by an [`AbstractPlant`][feedbax.mechanics.plant.AbstractPlant]. In particular, `AbstractPlant` is a subtype of both
+Both of these aspects are captured by an [`AbstractPlant`][feedbax.mechanics.plant.AbstractPlant]. In particular, `AbstractPlant` is a subtype of
 
-1. `AbstractStagedModel`: The stages of an `AbstractPlant` describe its kinematic state operations;
-2. [`AbstractDynamicalSystem`][feedbax.dynamics.AbstractDynamicalSystem], which is the base class for all modules that define a `vector_field` returning state derivatives. In particular, `AbstractPlant` can aggregate the vector fields of multiple dynamical components into a single vector field describing the continuous dynamics of the full biomechanical model.
+1. [`AbstractDynamicalSystem`][feedbax.mechanics.dynamics.AbstractDynamicalSystem], which is the base class for all modules that define a `vector_field` returning state derivatives. In particular, `AbstractPlant` can aggregate the vector fields of multiple dynamical components into a single vector field describing the continuous dynamics of the full biomechanical model.
 
 Each type of `AbstractPlant` defines continuous dynamics, which must be discretized and associated with a numerical solver. To do this, we [wrap](/feedbax/examples/1_train#building-the-model-ourselves-using-core-feedbax) an `AbstractPlant` as a [`Mechanics`][feedbax.mechanics.Mechanics] object. `Mechanics` uses [Diffrax](https://github.com/patrick-kidger/diffrax) for numerical integration.
 

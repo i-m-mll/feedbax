@@ -108,6 +108,7 @@ nav:
   - 'index.md'
   - Why JAX?: 'examples/pytrees.ipynb'
   - Top-down view of Feedbax: 'structure.md'
+  - Learning with Differentiable Physics: 'learning_paradigms.md'
   - Examples:
     - Feedbax 101:
       - 1. Training a pre-built model: 'examples/0_train_simple.ipynb'
@@ -141,10 +142,10 @@ nav:
       - 'api/muscle.md'
     - 'api/task.md'
     - 'api/loss.md'
-    - 'api/trainer.md'
     - 'api/state.md'
     - 'api/tree.md'
     - 'api/serialisation.md'
     - Analysis and visualisation:
       - 'api/plot.md'
+      - Composable figure specifications: 'api/figures.md'
       - 'api/dimred.md'

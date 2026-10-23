@@ -1,6 +1,6 @@
 [project]
 name = "feedbax"
-version = "0.1.2"
+version = "0.2.0"
 description = "Optimal feedback control + interventions in JAX."
 # url = ""
 authors = [
@@ -34,16 +34,89 @@ dependencies = [
     "equinox>=0.11.12",
     "jax>=0.5.2",
     "jaxtyping>=0.2.38",
-    "matplotlib>=3.10.1",
     "numpy>=2.2.3",
     "optax>=0.2.4",
+    "optimistix>=0.0.10",
     "plotly>=6.0.0",
+    "pydantic>=2.0",
+    "rich>=14.1.0",
+    "ruamel-yaml>=0.18.0",
+    "treescope>=0.1.1",
+    "tqdm>=4.67.1",
+    "rfc8785>=0.1.4",
+]
+
+[project.optional-dependencies]
+analysis = [
+    "dill>=0.3.9",
+    "pyperclip>=1.9.0",
+    "scikit-learn>=1.6.1",
+]
+config = [
+    "ruamel-yaml>=0.18.0",
+]
+persistence = [
+    "matplotlib>=3.10.1",
+    "pyexiv2>=2.15.3",
+]
+training = [
+    "tensorboardx>=2.6.2.2",
+]
+viz = [
+    "kaleido==0.2.1",
+    "matplotlib>=3.10.1",
+    "pandas>=2.1.0",
     "polars>=1.24.0",
+    "pyexiv2>=2.15.3",
+    "pyperclip>=1.9.0",
+    "scikit-learn>=1.6.1",
+    "seaborn>=0.13.2",
+]
+web = [
+    "fastapi>=0.110.0",
+    "httpx>=0.27.0",
+    "uvicorn>=0.29.0",
+]
+notebook = [
+    "ipyfilechooser>=0.6.0",
+    "ipywidgets>=8.1.5",
+    "notebook>=7.4.1",
+    "ruamel-yaml>=0.18.0",
+]
+mjx = [
+    "mujoco>=3.0.0",
+    "mujoco-mjx>=0.1.0",
+]
+all = [
+    "dill>=0.3.9",
+    "fastapi>=0.110.0",
+    "httpx>=0.27.0",
+    "ipyfilechooser>=0.6.0",
+    "ipywidgets>=8.1.5",
+    "kaleido==0.2.1",
+    "matplotlib>=3.10.1",
+    "mujoco>=3.0.0",
+    "mujoco-mjx>=0.1.0",
+    "notebook>=7.4.1",
+    "pandas>=2.1.0",
+    "polars>=1.24.0",
+    "pyexiv2>=2.15.3",
+    "pyperclip>=1.9.0",
+    "ruamel-yaml>=0.18.0",
+    "scikit-learn>=1.6.1",
     "seaborn>=0.13.2",
     "tensorboardx>=2.6.2.2",
-    "tqdm>=4.67.1",
-    "jax-cookbook",
+    "uvicorn>=0.29.0",
 ]
+
+[project.scripts]
+feedbax = "feedbax.cli:main"
+feedbax-run = "feedbax.bin.run:main"
+feedbax-analysis = "feedbax.bin.analysis:main"
+feedbax-figure = "feedbax.bin.figure:main"
+feedbax-train = "feedbax.bin.train:main"
+feedbax-provider = "feedbax.bin.provider:main"
+feedbax-orchestrate = "feedbax.bin.orchestrate:main"
 
 [project.urls]
 repository = "https://github.com/i-m-mll/feedbax"
@@ -52,17 +125,18 @@ documentation = "https://docs.lprt.ca/feedbax"
 [tool.uv]
 config-settings = { editable-mode = "compat" }
 
-#! TODO: Replace at release
-[tool.uv.sources.jax-cookbook]
-path = "../../../05 Utils/jax-cookbook"
-editable = true
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "mujoco>=3.0.0",
+    "mujoco-mjx>=0.1.0",
+    "pyright>=1.1.407",
+    "pytest>=9.0.2",
+    "pytest-xdist>=3.8.0",
+    "scipy>=1.17.1",
     "ruff>=0.12.11",
 ]
 
@@ -71,6 +145,9 @@ packages = ["feedbax"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["feedbax"]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
 
 [tool.pyright]
 include = ["feedbax", "tests"]
@@ -87,6 +164,22 @@ target-version = ['py310', 'py311', 'py312']
 include = 'feedbax\/.*\.pyi?$'
 line-length = 88
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers -n auto -m 'not optional_mjx and not optional_ppo and not slow'"
+markers = [
+    "slow: tests that are too expensive for every local or CI pass",
+    "optional_mjx: MJX simulation and integration tests run only when explicitly selected",
+    "optional_ppo: PPO rollout and training tests run only when explicitly selected",
+    "feedbax_contract: Feedbax contract-surface tests for downstream consumers",
+    "graph_spec_contract: GraphSpec schema, migration, and runtime contract tests",
+    "provider_contract: provider API and manifest contract tests",
+    "worker_contract: worker method, phase, checkpoint, and execution contract tests",
+    "migration_contract: durable structured-spec migration and rejection tests",
+    "analysis_recipe_contract: analysis, evaluation, report, and regeneration contract tests",
+    "no_silent_substitution_contract: structural gate for silent default/fallback patterns",
+    "strict_json_boundary_contract: structural gate for authority-boundary JSON parsing",
+]
 
 [tool.ruff]
 cache-dir = "~/.cache/ruff"
@@ -101,7 +194,7 @@ unfixable = ["F401"]
 
 [tool.ruff.lint.per-file-ignores]
 # Scripts often need to run things before importing more things
-"src/feedbax_experiments/bin/*.py" = ["E402"]
+"feedbax/bin/*.py" = ["E402"]
 
 [tool.ruff.format]
 indent-style = "space"
