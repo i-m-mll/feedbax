@@ -2,7 +2,7 @@
 > **Feedbax is under active development.** Feel free to explore, but know that things are unstable and likely to change, and that the documentation is deprecated.
 
 <p align="center">
-  <img src="docs/assets/mandible.png" alt="Mandible logo" width="100" height="100">
+  <img src="docs/assets/feedbax-studio.png" alt="Feedbax Studio logo" width="100" height="100">
 </p>
 
 # Feedbax
