@@ -6,16 +6,16 @@ from typing import TYPE_CHECKING, Optional
 import equinox as eqx
 import jax.numpy as jnp
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 from equinox import Module, field
 from feedbax.tasks import AbstractTask
-from jax_cookbook import (
+from feedbax._vendor.jax_cookbook import (
     LDict,
     compose,
     is_module,
     is_type,
 )
-from jax_cookbook._func import compose_
+from feedbax._vendor.jax_cookbook._func import compose_
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.analysis.analysis import (

@@ -10,6 +10,9 @@ and the engine inventory is read from the engine parser rather than copied.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+import textwrap
 import tomllib
 from pathlib import Path
 from typing import Any, Sequence
@@ -217,6 +220,48 @@ def test_help_lists_every_delegated_and_engine_command(
 def test_every_help_spelling_succeeds(capsys: pytest.CaptureFixture[str], flag: str) -> None:
     assert cli.main([flag]) == 0
     assert "usage: feedbax <command>" in capsys.readouterr().out
+
+
+def test_top_level_help_does_not_import_optional_analysis_dependencies() -> None:
+    script = textwrap.dedent(
+        """
+        import importlib.abc
+        import sys
+
+        blocked = {
+            "dill",
+            "jax_cookbook",
+            "matplotlib",
+            "pandas",
+            "polars",
+            "pyexiv2",
+            "pyperclip",
+            "seaborn",
+            "sklearn",
+        }
+
+        class BlockOptionalImports(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname.partition(".")[0] in blocked:
+                    raise ModuleNotFoundError(fullname)
+                return None
+
+        sys.meta_path.insert(0, BlockOptionalImports())
+        from feedbax.cli import main
+
+        assert main(["--help"]) == 0
+        assert blocked.isdisjoint(sys.modules)
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_no_command_is_a_usage_error_on_stderr(capsys: pytest.CaptureFixture[str]) -> None:

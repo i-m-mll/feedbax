@@ -68,15 +68,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 #: loaded from package resources, so an absent one is an unusable wheel.
 TEMPLATE_MEMBER = "feedbax/governance/templates/agent_instructions.v1.md"
 
-#: Extras the installed framework needs to run its own CLI. The bare wheel's
-#: declared dependencies are enough for ``feedbax init`` but not for
-#: ``feedbax --help``, because the engine parser imports the plugin bootstrap,
-#: which imports ``feedbax.analysis``, which imports plotly at module scope.
-#: That is a packaging defect in the framework, recorded here rather than
-#: hidden: a project that pins what ``feedbax init`` writes into its
-#: ``pyproject.toml`` cannot run the commands this fixture runs.
-INSTALL_EXTRAS = "analysis"
-
 PROJECT_NAME = "vantry-study"
 PACKAGE_NAME = "vantry_study"
 
@@ -341,7 +332,7 @@ def framework(tmp_path_factory: pytest.TempPathFactory) -> InstalledFramework:
             "install",
             "--python",
             environment / "bin" / "python",
-            f"feedbax[{INSTALL_EXTRAS}] @ {wheel}",
+            f"feedbax @ {wheel}",
             *_git_source_requirements(),
         ],
         cwd=root,
@@ -353,7 +344,11 @@ def framework(tmp_path_factory: pytest.TempPathFactory) -> InstalledFramework:
             [
                 installed.python,
                 "-c",
-                "import pathlib, feedbax; print(pathlib.Path(feedbax.__file__).parent)",
+                (
+                    "import importlib.util, pathlib, feedbax; "
+                    "assert importlib.util.find_spec('jax_cookbook') is None; "
+                    "print(pathlib.Path(feedbax.__file__).parent)"
+                ),
             ],
             cwd=root,
         ).stdout.strip()

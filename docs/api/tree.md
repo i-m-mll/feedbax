@@ -1,7 +1,8 @@
 # PyTree operations
 
-Generic PyTree helpers live in `jax_cookbook.tree`. Feedbax keeps only task-specific
-callable evaluation helpers locally.
+Generic PyTree helpers are currently bundled privately in
+`feedbax._vendor.jax_cookbook.tree`. Feedbax keeps only task-specific callable
+evaluation helpers in its public modules.
 
 ## Task callable evaluation
 

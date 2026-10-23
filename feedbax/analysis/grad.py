@@ -9,10 +9,10 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 from jax.flatten_util import ravel_pytree
-from jax_cookbook import is_none
-from jax_cookbook.misc import construct_tuple_like
+from feedbax._vendor.jax_cookbook import is_none
+from feedbax._vendor.jax_cookbook.misc import construct_tuple_like
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.analysis.analysis import AbstractAnalysis

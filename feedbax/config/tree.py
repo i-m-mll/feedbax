@@ -14,16 +14,16 @@ import jax as jax
 import jax.numpy as jnp
 import jax.tree as jt
 import jax.tree_util as jtu
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 from feedbax.intervene import is_intervenor
-from jax_cookbook import (
+from feedbax._vendor.jax_cookbook import (
     LDict,
     LDictConstructor,
     anyf,
     hash_callable,
     is_type,
 )
-from jax_cookbook._func import falsef
+from feedbax._vendor.jax_cookbook._func import falsef
 from jaxtyping import Array, PyTree
 
 from feedbax.config import STRINGS

@@ -49,7 +49,7 @@ from feedbax.contracts.expressions import (
     evaluate_query,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from jax_cookbook import arrays_to_lists
+from feedbax._vendor.jax_cookbook import arrays_to_lists
 
 if TYPE_CHECKING:
     from feedbax.plugins.registry import ExperimentRegistry

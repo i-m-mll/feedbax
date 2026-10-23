@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 import plotly.graph_objects as go
-from jax_cookbook.progress import piter
+from feedbax._vendor.jax_cookbook.progress import piter
 from jaxtyping import PyTree
 
 from feedbax.analysis._dependencies import compute_dependency_results

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tarfile
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
@@ -89,7 +90,17 @@ def _install_and_assert_wheel(
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     environment = root / "environment"
-    _run(["uv", "venv", "--system-site-packages", str(environment)], cwd=root)
+    _run(
+        [
+            "uv",
+            "venv",
+            "--python",
+            sys.executable,
+            "--system-site-packages",
+            str(environment),
+        ],
+        cwd=root,
+    )
     python = environment / "bin" / "python"
     _run(
         ["uv", "pip", "install", "--python", str(python), "--no-deps", str(wheel)],

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Deterministic RunPod deploy for the rlrmp/feedbax/jax-cookbook workflow.
+# Deterministic RunPod deploy for the rlrmp/feedbax workflow.
 #
 # Training rows run as separate OS processes, so JAX's persistent compilation
 # cache is enabled by default for launch commands. Rows share cache entries when
@@ -26,9 +26,7 @@ source "$SCRIPT_DIR/lib_run_prep.sh"
 source "$SCRIPT_DIR/lib_checkout_provenance.sh"
 FEEDBAX_ROOT="${FEEDBAX_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd -P)}"
 PROJECTS_ROOT="${PROJECTS_ROOT:-$(cd "$FEEDBAX_ROOT/../.." && pwd -P)}"
-UTILS_ROOT="${UTILS_ROOT:-$(cd "$FEEDBAX_ROOT/../../.." && pwd -P)/05 Utils}"
 RLRMP_ROOT="${RLRMP_ROOT:-$PROJECTS_ROOT/rlrmp}"
-JAX_COOKBOOK_ROOT="${JAX_COOKBOOK_ROOT:-$UTILS_ROOT/jax-cookbook}"
 
 RUNPOD_IMAGE="${RUNPOD_IMAGE:-runpod/pytorch:1.0.3-cu1281-torch290-ubuntu2204}"
 RUNPOD_GPU_ID="${RUNPOD_GPU_ID:-NVIDIA GeForce RTX 5090}"
@@ -66,7 +64,6 @@ ACQUIRE_LOCK_FILE="${ACQUIRE_LOCK_FILE:-${TMPDIR:-/tmp}/runpod_acquire_${RUNPOD_
 
 REMOTE_RLRMP_ROOT="${REMOTE_RLRMP_ROOT:-}"
 REMOTE_FEEDBAX_ROOT="${REMOTE_FEEDBAX_ROOT:-}"
-REMOTE_JAX_COOKBOOK_ROOT="${REMOTE_JAX_COOKBOOK_ROOT:-}"
 REMOTE_RUN_DIR="${REMOTE_RUN_DIR:-}"
 REMOTE_SENTINEL_DIR="${REMOTE_SENTINEL_DIR:-}"
 REMOTE_ARTIFACTS_DIR="${REMOTE_ARTIFACTS_DIR:-}"
@@ -308,15 +305,12 @@ default_path_patches() {
     if [ -n "${PATH_PATCHES:-}" ]; then
         return 0
     fi
-    PATH_PATCHES="$(printf '%s\n%s\n' \
-        "$REMOTE_RLRMP_ROOT/pyproject.toml|$FEEDBAX_ROOT|$REMOTE_FEEDBAX_ROOT" \
-        "$REMOTE_FEEDBAX_ROOT/pyproject.toml|$JAX_COOKBOOK_ROOT|$REMOTE_JAX_COOKBOOK_ROOT")"
+    PATH_PATCHES="$REMOTE_RLRMP_ROOT/pyproject.toml|$FEEDBAX_ROOT|$REMOTE_FEEDBAX_ROOT"
 }
 
 finalize_remote_defaults() {
     REMOTE_RLRMP_ROOT="${REMOTE_RLRMP_ROOT:-$RUNPOD_VOLUME_MOUNT/rlrmp}"
     REMOTE_FEEDBAX_ROOT="${REMOTE_FEEDBAX_ROOT:-$RUNPOD_VOLUME_MOUNT/feedbax}"
-    REMOTE_JAX_COOKBOOK_ROOT="${REMOTE_JAX_COOKBOOK_ROOT:-$RUNPOD_VOLUME_MOUNT/jax-cookbook}"
     REMOTE_RUN_DIR="${REMOTE_RUN_DIR:-$RUNPOD_VOLUME_MOUNT/feedbax_runs/runpod-deploy}"
     REMOTE_SENTINEL_DIR="${REMOTE_SENTINEL_DIR:-$REMOTE_RUN_DIR/sentinels}"
     REMOTE_ARTIFACTS_DIR="${REMOTE_ARTIFACTS_DIR:-$REMOTE_RLRMP_ROOT/_artifacts}"
@@ -967,7 +961,6 @@ rsync_repo() {
 sync_repos() {
     rsync_repo rlrmp "$RLRMP_ROOT" "$REMOTE_RLRMP_ROOT"
     rsync_repo feedbax "$FEEDBAX_ROOT" "$REMOTE_FEEDBAX_ROOT"
-    rsync_repo jax-cookbook "$JAX_COOKBOOK_ROOT" "$REMOTE_JAX_COOKBOOK_ROOT"
 }
 
 apply_path_patches() {

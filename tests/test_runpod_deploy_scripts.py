@@ -33,8 +33,7 @@ def run_script(
 def write_config(tmp_path: Path) -> Path:
     rlrmp = tmp_path / "rlrmp"
     feedbax = tmp_path / "feedbax"
-    cookbook = tmp_path / "jax-cookbook"
-    for root in (rlrmp, feedbax, cookbook):
+    for root in (rlrmp, feedbax):
         root.mkdir()
         (root / "pyproject.toml").write_text("[project]\nname = 'placeholder'\n")
 
@@ -44,7 +43,6 @@ def write_config(tmp_path: Path) -> Path:
             [
                 f"RLRMP_ROOT={str(rlrmp)!r}",
                 f"FEEDBAX_ROOT={str(feedbax)!r}",
-                f"JAX_COOKBOOK_ROOT={str(cookbook)!r}",
                 "RUNPOD_NAME='test-runpod-deploy'",
                 "REMOTE_RUN_DIR='/workspace/feedbax_runs/test-runpod-deploy'",
             ]

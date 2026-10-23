@@ -3,7 +3,7 @@ from enum import Enum
 from pathlib import Path
 
 from ruamel.yaml import YAML, nodes
-from jax_cookbook import LDict
+from feedbax._vendor.jax_cookbook import LDict
 
 
 class _YamlLiteral:

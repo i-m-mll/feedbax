@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any, Optional, Tuple, TypeAlias
 
 import equinox as eqx
 import jax.tree as jt
-import jax_cookbook.tree as jtree
-from jax_cookbook import is_module
+import feedbax._vendor.jax_cookbook.tree as jtree
+from feedbax._vendor.jax_cookbook import is_module
 from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.runtime.batch import BatchInfo

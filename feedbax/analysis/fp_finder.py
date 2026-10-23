@@ -18,7 +18,7 @@ import jax.tree as jt
 import numpy as np
 import optax
 from equinox import Module
-from jax_cookbook import is_module
+from feedbax._vendor.jax_cookbook import is_module
 from jaxtyping import Array, Bool, Float, PRNGKeyArray, PyTree
 
 from feedbax.analysis.math import squareform_pdist

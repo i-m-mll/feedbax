@@ -15,7 +15,7 @@ import plotly
 import plotly.graph_objects as go
 import pyexiv2
 import pyperclip as clip
-from jax_cookbook import is_type
+from feedbax._vendor.jax_cookbook import is_type
 
 from feedbax.config import STRINGS
 from feedbax.plot import apply_default_template

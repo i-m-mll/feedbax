@@ -319,12 +319,14 @@ def _banned_violations(root: Path, policy: ScienceSurfacePolicy) -> list[Surface
     reported: set[str] = set()
     for pattern in policy.banned_paths:
         try:
-            matches = sorted(root.glob(pattern))
+            matches = set(root.glob(pattern))
+            if pattern == "**" or pattern.endswith("/**"):
+                matches.update(root.glob(f"{pattern}/*"))
         except (ValueError, IndexError) as exc:
             raise ScienceSurfacePolicyError(
                 f"science-surface policy banned_paths pattern {pattern!r} is not a valid glob: {exc}"
             ) from exc
-        for match in matches:
+        for match in sorted(matches):
             if _is_skipped(match, root) or match.relative_to(root).as_posix() in reported:
                 continue
             reported.add(match.relative_to(root).as_posix())

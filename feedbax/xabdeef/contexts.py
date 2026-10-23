@@ -10,7 +10,7 @@ from typing import Optional
 import equinox as eqx
 from jaxtyping import PRNGKeyArray
 
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 from feedbax.runtime.graph import Component
 from feedbax.tasks import AbstractTask, SimpleReaches
 from feedbax.xabdeef.losses import simple_reach_loss

@@ -45,7 +45,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 import jax.tree_util as jtu
 from equinox import AbstractVar, Module
-from jax_cookbook.misc import moving_avg, softmin
+from feedbax._vendor.jax_cookbook.misc import moving_avg, softmin
 from jaxtyping import Array, ArrayLike, Float, PyTree
 
 from feedbax.runtime.graph import Component

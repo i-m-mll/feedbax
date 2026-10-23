@@ -6,7 +6,7 @@ from typing import Any, NamedTuple, Optional
 
 import equinox as eqx
 from equinox import Module
-from jax_cookbook import LDict
+from feedbax._vendor.jax_cookbook import LDict
 from jaxtyping import Array, ArrayLike, PyTree
 
 from feedbax.config.namespace import TreeNamespace

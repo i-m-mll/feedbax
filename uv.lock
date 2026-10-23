@@ -592,11 +592,11 @@ dependencies = [
     { name = "diffrax" },
     { name = "equinox" },
     { name = "jax" },
-    { name = "jax-cookbook" },
     { name = "jaxtyping" },
     { name = "numpy" },
     { name = "optax" },
     { name = "optimistix" },
+    { name = "plotly" },
     { name = "pydantic" },
     { name = "rfc8785" },
     { name = "rich" },
@@ -618,11 +618,9 @@ all = [
     { name = "mujoco-mjx" },
     { name = "notebook" },
     { name = "pandas" },
-    { name = "plotly" },
     { name = "polars" },
     { name = "pyexiv2" },
     { name = "pyperclip" },
-    { name = "rich" },
     { name = "ruamel-yaml" },
     { name = "scikit-learn" },
     { name = "seaborn" },
@@ -631,9 +629,7 @@ all = [
 ]
 analysis = [
     { name = "dill" },
-    { name = "plotly" },
     { name = "pyperclip" },
-    { name = "rich" },
     { name = "scikit-learn" },
 ]
 config = [
@@ -647,23 +643,19 @@ notebook = [
     { name = "ipyfilechooser" },
     { name = "ipywidgets" },
     { name = "notebook" },
-    { name = "plotly" },
     { name = "ruamel-yaml" },
 ]
 persistence = [
     { name = "matplotlib" },
-    { name = "plotly" },
     { name = "pyexiv2" },
 ]
 training = [
-    { name = "rich" },
     { name = "tensorboardx" },
 ]
 viz = [
     { name = "kaleido" },
     { name = "matplotlib" },
     { name = "pandas" },
-    { name = "plotly" },
     { name = "polars" },
     { name = "pyexiv2" },
     { name = "pyperclip" },
@@ -703,7 +695,6 @@ requires-dist = [
     { name = "ipywidgets", marker = "extra == 'all'", specifier = ">=8.1.5" },
     { name = "ipywidgets", marker = "extra == 'notebook'", specifier = ">=8.1.5" },
     { name = "jax", specifier = ">=0.5.2" },
-    { name = "jax-cookbook", git = "https://github.com/i-m-mll/jax-cookbook.git?rev=95060b2448cafb0783ecdc7220818eab9a61c630" },
     { name = "jaxtyping", specifier = ">=0.2.38" },
     { name = "kaleido", marker = "extra == 'all'", specifier = "==0.2.1" },
     { name = "kaleido", marker = "extra == 'viz'", specifier = "==0.2.1" },
@@ -721,11 +712,7 @@ requires-dist = [
     { name = "optimistix", specifier = ">=0.0.10" },
     { name = "pandas", marker = "extra == 'all'", specifier = ">=2.1.0" },
     { name = "pandas", marker = "extra == 'viz'", specifier = ">=2.1.0" },
-    { name = "plotly", marker = "extra == 'all'", specifier = ">=6.0.0" },
-    { name = "plotly", marker = "extra == 'analysis'", specifier = ">=6.0.0" },
-    { name = "plotly", marker = "extra == 'notebook'", specifier = ">=6.0.0" },
-    { name = "plotly", marker = "extra == 'persistence'", specifier = ">=6.0.0" },
-    { name = "plotly", marker = "extra == 'viz'", specifier = ">=6.0.0" },
+    { name = "plotly", specifier = ">=6.0.0" },
     { name = "polars", marker = "extra == 'all'", specifier = ">=1.24.0" },
     { name = "polars", marker = "extra == 'viz'", specifier = ">=1.24.0" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -736,10 +723,7 @@ requires-dist = [
     { name = "pyperclip", marker = "extra == 'analysis'", specifier = ">=1.9.0" },
     { name = "pyperclip", marker = "extra == 'viz'", specifier = ">=1.9.0" },
     { name = "rfc8785", specifier = ">=0.1.4" },
-    { name = "rich", specifier = ">=13.9.4" },
-    { name = "rich", marker = "extra == 'all'", specifier = ">=13.9.4" },
-    { name = "rich", marker = "extra == 'analysis'", specifier = ">=13.9.4" },
-    { name = "rich", marker = "extra == 'training'", specifier = ">=13.9.4" },
+    { name = "rich", specifier = ">=14.1.0" },
     { name = "ruamel-yaml", specifier = ">=0.18.0" },
     { name = "ruamel-yaml", marker = "extra == 'all'", specifier = ">=0.18.0" },
     { name = "ruamel-yaml", marker = "extra == 'config'", specifier = ">=0.18.0" },
@@ -1019,19 +1003,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/30/a9/25416e7a89442598593076020e16391e258055ac47ae02b09ca7b15f5835/jax-0.5.2.tar.gz", hash = "sha256:2aef7d1912df329470c47ce8f2e6521c105e84aa620311494048c391235087c6", size = 2036694, upload-time = "2025-03-05T02:36:03.628Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/77/6f/0da6e0bc90e738fc63c584d65bef326f76a6550343ae1c243647bd1880fd/jax-0.5.2-py3-none-any.whl", hash = "sha256:d80954d90e2cce57498b6e9c23a6402c2c39edf86d4f808813ab1d1e97672e34", size = 2366814, upload-time = "2025-03-05T02:35:59.322Z" },
-]
-
-[[package]]
-name = "jax-cookbook"
-version = "0.1.0"
-source = { git = "https://github.com/i-m-mll/jax-cookbook.git?rev=95060b2448cafb0783ecdc7220818eab9a61c630#95060b2448cafb0783ecdc7220818eab9a61c630" }
-dependencies = [
-    { name = "equinox" },
-    { name = "jax" },
-    { name = "jaxtyping" },
-    { name = "numpy" },
-    { name = "rich" },
-    { name = "tqdm" },
 ]
 
 [[package]]

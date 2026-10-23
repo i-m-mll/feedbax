@@ -8,12 +8,12 @@ from typing import Literal, NamedTuple, Optional, TypeVar, Union
 import feedbax.plot as fbp
 import jax.tree as jt
 import plotly.colors as plc
-from jax_cookbook import is_type
+from feedbax._vendor.jax_cookbook import is_type
 from jaxtyping import PyTree
 
 from feedbax.config import PLOTLY_CONFIG
 from feedbax.config.namespace import TreeNamespace
-from jax_cookbook import LDict
+from feedbax._vendor.jax_cookbook import LDict
 
 logger = logging.getLogger(__name__)
 

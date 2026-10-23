@@ -7,12 +7,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Generic, Optional, Self, TypeVar, Union
+from uuid import uuid4
 
 import equinox as eqx
 import jax.tree as jt
 import jax.tree_util as jtu
 from equinox import Module
-from jax_cookbook import is_module, is_none
+from feedbax._vendor.jax_cookbook import is_module, is_none
 from jaxtyping import PyTree
 
 from feedbax.analysis.types import AnalysisInputData
@@ -216,7 +217,7 @@ class CallWithDeps:
     def __init__(self, *pos_specs: Any, **kw_specs: Any):
         self.pos_specs = pos_specs
         self.kw_specs = kw_specs
-        self._port_prefix = f"__cwd_{id(self):x}"
+        self._port_prefix = f"__cwd_{uuid4().hex}"
         self._counter = 0
 
     def _alloc_port(self) -> str:

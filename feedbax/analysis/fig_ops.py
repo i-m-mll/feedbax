@@ -11,7 +11,7 @@ import equinox as eqx
 import jax.tree as jt
 import plotly.graph_objects as go
 from equinox import field
-from jax_cookbook import LDict, is_type
+from feedbax._vendor.jax_cookbook import LDict, is_type
 from jaxtyping import Array, PyTree
 
 from feedbax.analysis.types import AnalysisInputData

@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 import equinox as eqx
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 from jaxtyping import PRNGKeyArray, PyTree
 
 
