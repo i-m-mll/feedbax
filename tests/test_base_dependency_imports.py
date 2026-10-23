@@ -12,7 +12,6 @@ from pathlib import Path
 
 
 IMPORT_TO_DISTRIBUTION_OVERRIDES = {
-    "jax_cookbook": "jax-cookbook",
     "ruamel": "ruamel-yaml",
     "sklearn": "scikit-learn",
 }
@@ -21,18 +20,14 @@ IMPORT_TO_DISTRIBUTION_OVERRIDES = {
 # remove entries as those modules move optional imports behind lazy loaders or ImportError guards.
 OPTIONAL_NAMESPACE_IMPORT_ALLOWLIST = {
     ("feedbax.analysis", "dill"): "analysis extra module imports dill at module import time",
-    ("feedbax.analysis", "plotly"): "analysis extra module imports plotly at module import time",
     ("feedbax.analysis", "pyperclip"): "analysis extra module imports pyperclip at module import time",
     ("feedbax.analysis", "scikit-learn"): "analysis extra module imports sklearn at module import time",
-    ("feedbax.bin.analysis", "plotly"): "analysis CLI belongs to the analysis extra",
     ("feedbax.persistence", "matplotlib"): (
         "persistence extra module imports matplotlib at module import time"
     ),
-    ("feedbax.persistence", "plotly"): "persistence extra module imports plotly at module import time",
     ("feedbax.persistence", "pyexiv2"): "persistence extra module imports pyexiv2 at module import time",
     ("feedbax.plot", "matplotlib"): "viz extra module imports matplotlib at module import time",
     ("feedbax.plot", "pandas"): "viz extra module imports pandas at module import time",
-    ("feedbax.plot", "plotly"): "viz extra module imports plotly at module import time",
     ("feedbax.plot", "polars"): "viz extra module imports polars at module import time",
     ("feedbax.plot", "pyexiv2"): "viz extra module imports pyexiv2 at module import time",
     ("feedbax.plot", "pyperclip"): "viz extra module imports pyperclip at module import time",

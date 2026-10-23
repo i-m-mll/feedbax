@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from jax_cookbook import LDict
+from feedbax._vendor.jax_cookbook import LDict
 
 import feedbax.config as config
 from feedbax.config.batch import load_batch_config

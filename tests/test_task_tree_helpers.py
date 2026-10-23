@@ -1,7 +1,7 @@
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 
 from feedbax.runtime.mapping import WhereDict
 from feedbax.intervene.schedule import evaluate_intervenor_params

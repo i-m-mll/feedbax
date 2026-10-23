@@ -4,7 +4,7 @@ from importlib import resources
 from itertools import product
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, cast
 
-from jax_cookbook.tree import expand_split_keys
+from feedbax._vendor.jax_cookbook.tree import expand_split_keys
 
 from feedbax.config.yaml import _YamlLiteral, get_yaml_loader
 from feedbax.config.utils import deep_merge

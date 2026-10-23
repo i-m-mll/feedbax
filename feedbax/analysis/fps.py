@@ -9,7 +9,7 @@ import jax.random as jr
 import jax.tree as jt
 import plotly.graph_objects as go
 from equinox import field
-from jax_cookbook import LDict
+from feedbax._vendor.jax_cookbook import LDict
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 from optax import GradientTransformation
 

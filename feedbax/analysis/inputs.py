@@ -12,7 +12,7 @@ import equinox as eqx
 import jax.tree as jt
 import jax.tree_util as jtu
 from equinox import Module
-from jax_cookbook import is_module, is_none
+from feedbax._vendor.jax_cookbook import is_module, is_none
 from jaxtyping import PyTree
 
 from feedbax.analysis.types import AnalysisInputData

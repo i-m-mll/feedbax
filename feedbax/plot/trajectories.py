@@ -3,7 +3,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Optional, TypeGuard
 
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 import numpy as np
 import plotly.express as px
 import plotly.graph_objs as go
@@ -27,7 +27,7 @@ from feedbax.plot.misc import (
     tree_of_2d_timeseries_to_df,
     unshare_axes,
 )
-from jax_cookbook import MaskedArray
+from feedbax._vendor.jax_cookbook import MaskedArray
 
 if TYPE_CHECKING:
     from feedbax.tasks import TaskTrialSpec

@@ -3,7 +3,7 @@ from typing import Literal, Optional, TypeVar
 
 import equinox as eqx
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 import numpy as np
 import plotly.graph_objs as go
 from jaxtyping import Array, Float, PyTree
@@ -15,7 +15,7 @@ from feedbax.plot.colors import (
     color_add_alpha,
 )
 from feedbax.plot.misc import AggMode, _agg_circular, _agg_standard, _maybe_unwrap
-from jax_cookbook import MaskedArray
+from feedbax._vendor.jax_cookbook import MaskedArray
 
 # Plotly copies the process-default template into each figure as it is constructed, so
 # the Feedbax default has to be in place before any function here runs. Importing a
@@ -63,7 +63,7 @@ def profiles(
     Supports MaskedArray leaves (duck-typed via .data/.mask attributes), which are
     converted to NaN-masked arrays for aggregation.
     """
-    from jax_cookbook import MaskedArray, is_type
+    from feedbax._vendor.jax_cookbook import MaskedArray, is_type
 
     # Treat MaskedArray as a leaf throughout processing
     is_leaf_ma = is_type(MaskedArray)

@@ -35,7 +35,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-from jax_cookbook import is_type
+from feedbax._vendor.jax_cookbook import is_type
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError
 

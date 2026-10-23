@@ -14,8 +14,8 @@ import jax.numpy as jnp
 import jax.tree as jt
 import optax  # type: ignore
 from equinox import field
-from jax_cookbook.misc import mse
-from jax_cookbook.progress import piter
+from feedbax._vendor.jax_cookbook.misc import mse
+from feedbax._vendor.jax_cookbook.progress import piter
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.objectives.loss import AbstractLoss, TermTree

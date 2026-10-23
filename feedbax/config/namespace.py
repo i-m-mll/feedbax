@@ -8,7 +8,7 @@ from typing import Any, TypeVar
 import equinox as eqx
 import jax.tree as jt
 import jax.tree_util as jtu
-from jax_cookbook import LDict, anyf, is_type
+from feedbax._vendor.jax_cookbook import LDict, anyf, is_type
 from jaxtyping import ArrayLike, PyTree
 
 TNS_REPR_INDENT_STR = "  "

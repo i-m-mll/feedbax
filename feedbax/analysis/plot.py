@@ -12,11 +12,11 @@ from typing import Any, Concatenate, Generic, Optional, ParamSpec, Self, TypeVar
 import equinox as eqx
 import feedbax.plot as fbp
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 import plotly.graph_objects as go
-from jax_cookbook import LDict, is_type
-from jax_cookbook.misc import deep_merge
-from jax_cookbook.progress import map_rich
+from feedbax._vendor.jax_cookbook import LDict, is_type
+from feedbax._vendor.jax_cookbook.misc import deep_merge
+from feedbax._vendor.jax_cookbook.progress import map_rich
 from jaxtyping import Array, PyTree
 
 from feedbax.analysis.analysis import (
@@ -202,7 +202,7 @@ class ScatterPlots(AbstractPlotter[SinglePort, FigFnParams]):
         }
 
         # Import MaskedArray and anyf to handle masked arrays properly
-        from jax_cookbook import MaskedArray, anyf
+        from feedbax._vendor.jax_cookbook import MaskedArray, anyf
 
         # Use dummy *args to convince the static checker that `FigFnParams` is satisfied
         # (the ParamSpec could specify more args, but we only use it for kwargs).

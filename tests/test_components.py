@@ -6,8 +6,8 @@ import pytest
 
 import feedbax.components.equinox as graph_eqx
 import feedbax.runtime.components as runtime_components
-import jax_cookbook.tree as jtree
-from jax_cookbook.tree import filter_spec_leaves
+import feedbax._vendor.jax_cookbook.tree as jtree
+from feedbax._vendor.jax_cookbook.tree import filter_spec_leaves
 from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.components import ElementwiseAffineModulator
 from feedbax.runtime.graph import init_state_from_component

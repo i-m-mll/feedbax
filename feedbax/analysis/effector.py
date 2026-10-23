@@ -5,12 +5,12 @@ from typing import Annotated, Literal, Optional
 
 import feedbax.plot as fbp
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 import plotly.graph_objects as go
 from equinox import Module, field
 from feedbax.plot import AxesLabels
 from feedbax.tasks import AbstractTask
-from jax_cookbook import is_module, is_type
+from feedbax._vendor.jax_cookbook import is_module, is_type
 from jaxtyping import Array, PyTree
 
 from feedbax.analysis.types import AnalysisInputData, VarSpec

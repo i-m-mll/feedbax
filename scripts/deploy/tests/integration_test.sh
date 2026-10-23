@@ -882,14 +882,13 @@ fi
 # ---------------------------------------------------------------------------
 section "W8 declared baseline preflight fails before launch and stages valid baseline"
 
-W8="$WORK/w8"; mkdir -p "$W8/rlrmp" "$W8/jax"
+W8="$WORK/w8"; mkdir -p "$W8/rlrmp"
 cat > "$W8/spec_missing.json" <<JSON
 {"user_confirmed":true,"resume":{"baseline_checkpoint":"_artifacts/run/checkpoints","completed_batches":42}}
 JSON
 
 set +e
 RLRMP_ROOT="$W8/rlrmp" \
-JAX_COOKBOOK_ROOT="$W8/jax" \
 RUNPOD_RUN_CONFIG_FILE="$W8/run-config.json" \
 SKIP_IMAGE_CHECK=1 \
 bash "$DEPLOY_DIR/runpod_deploy.sh" --dry-run --pod-id pod-w8 --ssh-host dry --ssh-port 22 \
@@ -917,7 +916,6 @@ cat > "$W8/spec_ok.json" <<JSON
 JSON
 set +e
 RLRMP_ROOT="$W8/rlrmp" \
-JAX_COOKBOOK_ROOT="$W8/jax" \
 RUNPOD_RUN_CONFIG_FILE="$W8/run-config.json" \
 REMOTE_DEPLOY_CONFIG_PATH="/workspace/feedbax_runs/latest-run-config.json" \
 SKIP_IMAGE_CHECK=1 \

@@ -4,12 +4,12 @@ import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 from equinox import filter_vmap as vmap
 from feedbax.intervene import is_intervenor
 from feedbax.tasks import AbstractTask
 from jax import lax
-from jax_cookbook import LDict, MaskedArray, is_module, is_type
+from feedbax._vendor.jax_cookbook import LDict, MaskedArray, is_module, is_type
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.analysis.analysis import get_validation_trial_specs

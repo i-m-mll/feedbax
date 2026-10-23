@@ -7,7 +7,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import jax.tree as jt
 from jax.core import Tracer
-from jax_cookbook import LDict, is_module, is_type
+from feedbax._vendor.jax_cookbook import LDict, is_module, is_type
 from jaxtyping import Array, PyTree
 import numpy as np
 

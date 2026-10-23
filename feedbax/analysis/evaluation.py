@@ -35,7 +35,6 @@ import shutil
 import tempfile
 from typing import Any, Sequence
 
-import dill as pickle
 import jax.tree_util as jtu
 from pydantic import BaseModel, Field, model_validator
 
@@ -1267,6 +1266,8 @@ def _cache_corruption(path: Path, reason: str) -> EvaluationStatesCacheCorruptio
 
 def load_evaluation_states_cache(path: Path, *, manifest_id: str) -> Any:
     """Load a versioned evaluation-states cache payload."""
+    import dill as pickle
+
     try:
         with path.open("rb") as stream:
             payload = pickle.load(stream)
@@ -1295,6 +1296,8 @@ def load_evaluation_states_cache(path: Path, *, manifest_id: str) -> Any:
 
 def write_evaluation_states_cache(path: Path, *, manifest_id: str, states: Any) -> None:
     """Write a versioned evaluation-states cache payload."""
+    import dill as pickle
+
     with path.open("wb") as stream:
         pickle.dump(
             {

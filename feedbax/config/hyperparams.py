@@ -6,8 +6,8 @@ from typing import Literal, Optional, TypeVar
 
 import equinox as eqx
 import jax.tree as jt
-import jax_cookbook.tree as jtree
-from jax_cookbook import LDict, anyf, is_type, where_attr_strs_to_func
+import feedbax._vendor.jax_cookbook.tree as jtree
+from feedbax._vendor.jax_cookbook import LDict, anyf, is_type, where_attr_strs_to_func
 from jaxtyping import PyTree
 
 from feedbax.config import STRINGS, load_config

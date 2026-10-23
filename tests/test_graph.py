@@ -4,7 +4,7 @@ from equinox.nn import StateIndex
 import jax
 import jax.numpy as jnp
 
-from jax_cookbook.tree import filter_spec_leaves
+from feedbax._vendor.jax_cookbook.tree import filter_spec_leaves
 from feedbax.runtime.graph import (
     Component,
     Graph,

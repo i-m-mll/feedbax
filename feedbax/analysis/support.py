@@ -11,9 +11,9 @@ import types
 from typing import Any, Optional, get_origin
 
 import jax.tree as jt
-import jax_cookbook.tree as jtree
-from jax_cookbook import is_type
-from jax_cookbook._func import wrap_to_accept_var_kwargs
+import feedbax._vendor.jax_cookbook.tree as jtree
+from feedbax._vendor.jax_cookbook import is_type
+from feedbax._vendor.jax_cookbook._func import wrap_to_accept_var_kwargs
 
 logger = logging.getLogger(__name__)
 

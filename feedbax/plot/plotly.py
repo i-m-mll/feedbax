@@ -19,7 +19,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objs as go
 import polars as pl
-from jax_cookbook import identity
+from feedbax._vendor.jax_cookbook import identity
 from jaxtyping import Array, Float
 from plotly.subplots import make_subplots
 
@@ -426,7 +426,7 @@ def activity_heatmap(
         of the hidden layer of the network:
 
         ```python
-        import jax_cookbook.tree as jtree
+        import feedbax._vendor.jax_cookbook.tree as jtree
 
         states = task.eval(model, key=key_eval)  # States for all validation trials.
         states_trial0 = jtree.take(states, 0)

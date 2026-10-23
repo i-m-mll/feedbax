@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 import numpy as np
 import plotly.graph_objects as go
-from jax_cookbook import is_type
+from feedbax._vendor.jax_cookbook import is_type
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.plot import apply_default_template

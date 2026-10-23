@@ -12,7 +12,7 @@ from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component

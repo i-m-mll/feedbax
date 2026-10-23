@@ -2,9 +2,8 @@
 
 from collections.abc import Mapping
 from pathlib import Path
+import pickle
 from typing import Any
-
-import dill as pickle
 
 
 RESULTS_CACHE_SUBDIR = "results"
@@ -32,9 +31,11 @@ def _load_analysis_result_cache(
     analysis_id: str,
     inputs_hash: str,
 ) -> Any:
+    import dill
+
     try:
         with open(cache_path, "rb") as f:
-            payload = pickle.load(f)
+            payload = dill.load(f)
     except _CACHE_LOAD_ERRORS as exc:
         raise AnalysisResultCacheCorruption(str(exc)) from exc
 
@@ -66,8 +67,10 @@ def _write_analysis_result_cache(
     inputs_hash: str,
     result: Any,
 ) -> None:
+    import dill
+
     with open(cache_path, "wb") as f:
-        pickle.dump(
+        dill.dump(
             {
                 "schema_version": ANALYSIS_RESULT_CACHE_SCHEMA_VERSION,
                 "analysis_id": analysis_id,

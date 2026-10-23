@@ -22,11 +22,11 @@ from typing import Any, Callable, Dict, Optional, Set
 
 import equinox as eqx
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 from jax.tree_util import treedef_is_leaf
-from jax_cookbook import is_type
-from jax_cookbook.progress import progress_piter
-from jax_cookbook.tree import collect_aux_data
+from feedbax._vendor.jax_cookbook import is_type
+from feedbax._vendor.jax_cookbook.progress import progress_piter
+from feedbax._vendor.jax_cookbook.tree import collect_aux_data
 from jaxtyping import PyTree
 
 from feedbax.analysis.analysis import (

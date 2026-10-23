@@ -1,4 +1,4 @@
-from jax_cookbook import allf, anyf, notf
+from feedbax._vendor.jax_cookbook import allf, anyf, notf
 
 
 def test_anyf_returns_true_when_any_predicate_matches():

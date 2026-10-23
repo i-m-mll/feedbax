@@ -4,10 +4,10 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 import plotly.graph_objects as go
 from equinox import field
-from jax_cookbook import LDict, is_type
+from feedbax._vendor.jax_cookbook import LDict, is_type
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf

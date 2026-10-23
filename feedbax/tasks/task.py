@@ -37,7 +37,7 @@ import jax.random as jr
 import jax.tree as jt
 import numpy as np
 from equinox import AbstractVar, Module, field
-from jax_cookbook import is_module, is_none, is_type
+from feedbax._vendor.jax_cookbook import is_module, is_none, is_type
 from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
 from feedbax.runtime.mapping import WhereDict

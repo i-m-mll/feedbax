@@ -3,7 +3,7 @@ from typing import Any, Literal, NamedTuple, Optional, TypeAlias, TypeGuard
 
 import equinox as eqx
 import jax.tree as jt
-import jax_cookbook.tree as jtree
+import feedbax._vendor.jax_cookbook.tree as jtree
 import numpy as np
 import plotly.graph_objs as go
 import polars as pl

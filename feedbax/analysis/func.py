@@ -3,8 +3,8 @@ from typing import Any, Concatenate, Optional, ParamSpec, TypeAlias, TypeVar
 
 import equinox as eqx
 import jax.tree as jt
-from jax_cookbook import map_rich
-from jax_cookbook.misc import construct_tuple_like
+from feedbax._vendor.jax_cookbook import map_rich
+from feedbax._vendor.jax_cookbook.misc import construct_tuple_like
 from jaxtyping import PyTree
 
 from feedbax.analysis.analysis import (
