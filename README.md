@@ -5,7 +5,7 @@
   <img src="docs/assets/mandible.png" alt="Mandible logo" width="100" height="100">
 </p>
 
-# Getting started
+# Feedbax
 
 Feedbax is a [JAX](https://jax.readthedocs.io/en/latest/beginner_guide.html#beginner-guide) library for optimal feedback control with neural networks.
 
