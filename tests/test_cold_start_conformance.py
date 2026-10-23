@@ -344,7 +344,11 @@ def framework(tmp_path_factory: pytest.TempPathFactory) -> InstalledFramework:
             [
                 installed.python,
                 "-c",
-                "import pathlib, feedbax; print(pathlib.Path(feedbax.__file__).parent)",
+                (
+                    "import importlib.util, pathlib, feedbax; "
+                    "assert importlib.util.find_spec('jax_cookbook') is None; "
+                    "print(pathlib.Path(feedbax.__file__).parent)"
+                ),
             ],
             cwd=root,
         ).stdout.strip()

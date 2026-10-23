@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import importlib.util
 from pathlib import Path
 import tomllib
 
@@ -59,7 +58,3 @@ def test_feedbax_has_no_external_cookbook_import_or_distribution_dependency() ->
     lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
     assert 'name = "jax-cookbook"' not in lock
     assert "github.com/i-m-mll/jax-cookbook" not in lock
-
-
-def test_external_cookbook_namespace_is_not_installed() -> None:
-    assert importlib.util.find_spec("jax_cookbook") is None
