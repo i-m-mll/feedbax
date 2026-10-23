@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Generic, Optional, Self, TypeVar, Union
+from uuid import uuid4
 
 import equinox as eqx
 import jax.tree as jt
@@ -216,7 +217,7 @@ class CallWithDeps:
     def __init__(self, *pos_specs: Any, **kw_specs: Any):
         self.pos_specs = pos_specs
         self.kw_specs = kw_specs
-        self._port_prefix = f"__cwd_{id(self):x}"
+        self._port_prefix = f"__cwd_{uuid4().hex}"
         self._counter = 0
 
     def _alloc_port(self) -> str:
