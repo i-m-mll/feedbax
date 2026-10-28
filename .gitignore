@@ -50,6 +50,7 @@ tmp*
 .zellij-session
 *.insyncdl
 _debris/
+.unfrack/
 .feedbax_cache/
 
 # training checkpoints

@@ -75,7 +75,7 @@ from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from tests.analysis_fixtures import build_toy_analysis_data
+from tests.support.analysis_fixtures import build_toy_analysis_data
 
 
 _STAGED_PROVIDER_ANALYSIS_TYPE = "feedbax.test.staged_figure_provider"

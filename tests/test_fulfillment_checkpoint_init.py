@@ -56,7 +56,7 @@ from feedbax.contracts.staged_execution import (
 )
 from feedbax.training.checkpoint_custody import write_checkpoint_transaction
 
-from tests.fake_project_experiment.products import QuillonOutputs
+from tests.support.fake_project_experiment.products import QuillonOutputs
 from tests.test_checkpoint_custody import _coordinate, _minimax_slots, _run_spec
 
 CUSTODY_BINDING = "training-checkpoints"

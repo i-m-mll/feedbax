@@ -16,7 +16,7 @@ because Feedbax owns the one dialect and the one compiler for it. Everything
 ``quillon`` contributes to a compiled document, it contributes as *data inside*
 native Feedbax composition deltas: dotted paths, values, recipe ids, and
 input-role strings. What ``quillon`` does register through the ordinary plugin
-bootstrap is genuine science — its recipes, in :mod:`tests.workflow_cli_plugin`.
+bootstrap is genuine science — its recipes, in :mod:`tests.support.workflow_cli_plugin`.
 
 :data:`PROJECT_DECLARATION_DOCUMENT` is the single source of truth for the
 declaration. :data:`PROJECT_DECLARATION` is that same document parsed against
@@ -41,7 +41,7 @@ from feedbax.contracts.project_experiment import (
 )
 
 PROJECT = "quillon"
-DECLARATION_SOURCE = f"tests.fake_project_experiment:{PROJECT_DECLARATION_FILENAME}"
+DECLARATION_SOURCE = f"tests.support.fake_project_experiment:{PROJECT_DECLARATION_FILENAME}"
 
 ENVELOPE_DIRECTORY = "studies"
 OUTPUT_DIRECTORY = "compiled"

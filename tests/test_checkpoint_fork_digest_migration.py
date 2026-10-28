@@ -52,7 +52,7 @@ from feedbax.training.checkpoint_custody import (
     _compatible_stored_canonical_projection,
 )
 from tests.test_checkpoint_custody import _minimax_slots, _run_spec
-from tests.checkpoint_minimax_plugin import PLUGIN_MODULE as CHECKPOINT_MINIMAX_PLUGIN
+from tests.support.checkpoint_minimax_plugin import PLUGIN_MODULE as CHECKPOINT_MINIMAX_PLUGIN
 
 pytestmark = pytest.mark.migration_contract
 

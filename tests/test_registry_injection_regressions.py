@@ -14,7 +14,7 @@ from feedbax.contracts.manifest import (
     load_manifest,
 )
 from feedbax.plugins.application import new_application_registry_bundle
-from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
 def test_analysis_recompute_uses_injected_evaluation_registry(tmp_path: Path) -> None:

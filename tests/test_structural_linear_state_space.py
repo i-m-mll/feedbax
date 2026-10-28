@@ -19,7 +19,7 @@ from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_VERSION,
 )
 from feedbax.compiler.serialization import graph_to_spec
-from tests.graph_compiler_test_support import spec_to_graph
+from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.migrations import UnsupportedComponentMigration, migrate_graph_spec
 from feedbax.mechanics import (
     STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,

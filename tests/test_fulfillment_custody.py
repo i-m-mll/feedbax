@@ -55,7 +55,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
 from feedbax.analysis.specs import AnalysisRecipeResult
-from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
 class _Recipes:

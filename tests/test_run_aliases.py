@@ -47,7 +47,7 @@ from feedbax.plugins import (
     bootstrap_application,
     new_registration_context,
 )
-from tests.analysis_fixtures import (
+from tests.support.analysis_fixtures import (
     ToyAnalysis,
     build_toy_analysis_data,
     execute_toy_evaluation,

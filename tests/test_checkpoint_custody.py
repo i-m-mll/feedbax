@@ -111,7 +111,7 @@ from feedbax.orchestration.input_materialization import (
 from feedbax.persistence import ImmutableArtifactBlobProvider
 from feedbax.runtime.components import Activation, GRU, identity_activation
 from feedbax.runtime.graph import Graph
-from tests.checkpoint_minimax_plugin import (
+from tests.support.checkpoint_minimax_plugin import (
     PLUGIN_MODULE as CHECKPOINT_MINIMAX_PLUGIN,
     checkpoint_minimax_effective_phase,
     checkpoint_minimax_method_contract,

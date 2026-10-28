@@ -62,7 +62,7 @@ function hex(value: string): string {
 }
 
 const vector = JSON.parse(
-  readFileSync(new URL('../../../conformance/canonical_json_v2.json', import.meta.url), 'utf8')
+  readFileSync(new URL('../../../tests/fixtures/canonical_json_v2.json', import.meta.url), 'utf8')
 ) as ConformanceVector;
 
 describe('canonical_json_v2 shared conformance', () => {

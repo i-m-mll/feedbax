@@ -24,7 +24,7 @@ from feedbax.compiler.builders import build_component
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.models.cde import CDENetwork
 from feedbax.runtime.graph import Component, Graph
-from tests.graph_compiler_test_support import spec_to_graph
+from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION, RepresentationSpec
 from feedbax.plugins.application import COMPONENTS, new_registration_context
 from feedbax.plugins.bootstrap import (

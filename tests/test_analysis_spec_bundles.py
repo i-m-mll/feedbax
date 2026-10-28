@@ -69,7 +69,7 @@ from feedbax.contracts.selection import TopKByMetricPerGroup
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.plugins.bootstrap import BootstrapState
-from tests.analysis_fixtures import ToyAnalysis, ToyArtifactProducer, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, ToyArtifactProducer, build_toy_analysis_data
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]
 

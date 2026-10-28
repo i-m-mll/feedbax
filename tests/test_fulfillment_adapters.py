@@ -43,7 +43,7 @@ from feedbax.contracts.manifest import (
     load_manifest,
     report_manifest_id,
 )
-from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
 AUTHORED_FIGURE = {

@@ -96,14 +96,14 @@ from feedbax.contracts.manifest import (
     load_manifest,
 )
 
-from tests.fake_project_experiment.products import (
+from tests.support.fake_project_experiment.products import (
     BULLETIN_TYPE,
     CONDENSE_TYPE,
     PROBE_TYPE,
     QuillonOutputs,
     planned,
 )
-from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 DIGEST = "b" * 64
 

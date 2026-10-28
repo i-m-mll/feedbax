@@ -72,8 +72,8 @@ from feedbax.contracts.experiment_compile_lock import (
 from feedbax.contracts.figures import FIGURE_COMPOSITION_SPEC_SCHEMA_ID
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
 
-from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
-from tests.fake_project_experiment.products import (
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.fake_project_experiment.products import (
     CONDENSE_TYPE,
     PROBE_TYPE,
     QuillonOutputs,

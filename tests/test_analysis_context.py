@@ -42,7 +42,7 @@ from feedbax.persistence.artifact_custody import (
     ArtifactBlobIntegrityError,
     ImmutableArtifactBlobProvider,
 )
-from tests.analysis_fixtures import (
+from tests.support.analysis_fixtures import (
     ARTIFACT_PRODUCER_CALLS,
     ToyAnalysis,
     ToyArtifactProducer,

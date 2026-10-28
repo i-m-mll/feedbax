@@ -43,7 +43,7 @@ from feedbax.contracts.applicability_rules import (
 )
 from feedbax.contracts.experiment_compile_lock import NotApplicableReference
 
-from tests.fake_project_experiment.products import QuillonOutputs
+from tests.support.fake_project_experiment.products import QuillonOutputs
 
 
 @pytest.fixture
@@ -137,7 +137,7 @@ def test_the_producer_cannot_state_a_role_path_the_rule_does_not_decide() -> Non
 def test_the_compiler_emits_its_per_row_omission_through_the_table(tmp_path: Path) -> None:
     from feedbax.envelope import kernel_for
 
-    from tests.fake_project_experiment import (
+    from tests.support.fake_project_experiment import (
         PROJECT_DECLARATION,
         envelope_path,
         write_repo,

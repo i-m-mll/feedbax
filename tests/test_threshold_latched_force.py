@@ -15,7 +15,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler import GraphCompilationError
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec
 from feedbax.compiler.serialization import graph_to_spec
-from tests.graph_compiler_test_support import spec_to_graph
+from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.migrations import UnsupportedComponentMigration
 from feedbax.intervene import (
     PlanarTargetRelativeSelector,

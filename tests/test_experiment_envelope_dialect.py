@@ -65,7 +65,7 @@ from feedbax.contracts.figures import ComparisonPolicySpec
 from feedbax.envelope import kernel_for
 from feedbax.envelope.compile import authored_layer_of
 
-from tests.fake_project_experiment import (
+from tests.support.fake_project_experiment import (
     ANALYSIS_ENVELOPE,
     EVALUATION_ENVELOPE,
     FIGURE_ENVELOPE,
@@ -1117,7 +1117,7 @@ def test_a_project_word_travels_as_data_and_reaches_the_compiled_document(
 def test_a_value_the_output_model_refuses_is_a_rejection_not_a_bad_document(
     repo: Path,
 ) -> None:
-    from tests.fake_project_experiment import write_envelope
+    from tests.support.fake_project_experiment import write_envelope
 
     envelope = dict(ANALYSIS_ENVELOPE)
     envelope["analysis"] = {

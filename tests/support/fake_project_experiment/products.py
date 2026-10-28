@@ -1,6 +1,6 @@
 """The fake project's compiled outputs: real locks over real Feedbax specs.
 
-:mod:`tests.fake_project_experiment` proves ``quillon`` can drive the generic
+:mod:`tests.support.fake_project_experiment` proves ``quillon`` can drive the generic
 compile engine. This module proves the *other* end of the same pipe: what a
 compile leaves on disk, and what fulfillment reads back from it.
 
@@ -52,7 +52,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
 )
 from feedbax.contracts.run_matrix import TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID
 
-from tests.fake_project_experiment import BASE_DIRECTORY, ENVELOPE_DIRECTORY, OUTPUT_DIRECTORY
+from tests.support.fake_project_experiment import BASE_DIRECTORY, ENVELOPE_DIRECTORY, OUTPUT_DIRECTORY
 
 #: The one dialect every authored envelope declares, engine-owned since the
 #: project compiler seam was closed.
@@ -70,7 +70,7 @@ QUILLON_CONTRACT = CompilerContract(
     contract_version="quillon.compiler_contract.v1",
 )
 QUILLON_IMPLEMENTATION = CompilerImplementation(
-    code_unit="tests.fake_project_experiment.products", packages=("feedbax",)
+    code_unit="tests.support.fake_project_experiment.products", packages=("feedbax",)
 )
 
 

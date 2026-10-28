@@ -44,7 +44,7 @@ from feedbax.contracts.project_experiment import (
 import feedbax.plugins as plugins
 from feedbax.plugins.composition import compose_application
 
-import tests.fake_project_experiment as fixture
+import tests.support.fake_project_experiment as fixture
 
 
 def _budget(tmp_path: Path) -> AuthoringBudgetResource:

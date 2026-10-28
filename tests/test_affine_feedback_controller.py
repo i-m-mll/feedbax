@@ -9,7 +9,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.control.affine import AffineFeedbackController
 from feedbax.runtime.graph import Graph, init_state_from_component
 from feedbax.compiler.serialization import graph_to_spec
-from tests.graph_compiler_test_support import spec_to_graph
+from tests.support.graph_compiler_test_support import spec_to_graph
 
 
 def test_affine_feedback_controller_static_gain_and_bias() -> None:

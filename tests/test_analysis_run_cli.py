@@ -48,7 +48,7 @@ from feedbax.contracts.staged_execution import (
     StagedCheckpointCustodySpec,
     StagedExecutionDescriptor,
 )
-from tests.analysis_fixtures import (
+from tests.support.analysis_fixtures import (
     ToyAnalysis,
     build_toy_analysis_data,
     execute_toy_evaluation,

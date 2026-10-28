@@ -26,7 +26,7 @@ from feedbax.plugins import (
     PluginRegistration,
 )
 
-PLUGIN_MODULE = "tests.checkpoint_minimax_plugin"
+PLUGIN_MODULE = "tests.support.checkpoint_minimax_plugin"
 METHOD_REF = "tests/checkpoint_minimax/v1"
 PAYLOAD_SCHEMA_ID = "tests.spec.training_method.checkpoint_minimax_payload"
 PAYLOAD_SCHEMA_VERSION = f"{PAYLOAD_SCHEMA_ID}.v1"

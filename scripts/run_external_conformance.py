@@ -12,7 +12,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = ROOT / "external" / "feedbax_conformance_fixture"
+FIXTURE = ROOT / "tests" / "fixtures" / "downstream"
 
 
 def _run(command: list[str], *, cwd: Path, env: dict[str, str]) -> None:

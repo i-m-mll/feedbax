@@ -36,7 +36,7 @@ from feedbax.envelope import (
     kernel_for,
 )
 
-from tests.fake_project_experiment import (
+from tests.support.fake_project_experiment import (
     ENVELOPE_DIRECTORY,
     OUTPUT_DIRECTORY,
     PROJECT_DECLARATION,

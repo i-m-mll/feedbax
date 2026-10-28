@@ -237,7 +237,7 @@ The ratified semantics are deliberately narrow:
 - calculate_array_minmax imports without matplotlib or Plotly, filters nonfinite values, applies symmetric authored padding to the finite union, and uses a deterministic zero-span scale; PanelAxis data-derived groups apply that exact public computation to every declared member
 
 The versioned fixture-policy manifest is
-`external/feedbax_conformance_fixture/src/feedbax_external_conformance/policy_manifest.v2.json`.
+`tests/fixtures/downstream/src/feedbax_external_conformance/policy_manifest.v2.json`.
 Its row-level `public_api` blocks are the structured authority for stable imports
 and commands. The additional `plugin-bootstrap.plugin_api` block owns the plugin
 family, callback, support, and consumer relationships. This rendering reproduces

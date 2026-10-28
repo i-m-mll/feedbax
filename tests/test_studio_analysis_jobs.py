@@ -32,7 +32,7 @@ from feedbax.contracts.studio_api import GenerateAnalysisRequest
 from feedbax.web.api.analysis import _run_analysis_sync, _spec_for_analysis_request
 from feedbax.web.app import create_app
 from feedbax.plugins.bootstrap import BootstrapState
-from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
 TOY_JOB_EVAL_TYPE = "feedbax.test.studio_job_eval"
