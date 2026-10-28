@@ -28,7 +28,7 @@ from feedbax.models.networks import (
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.compiler import builders as graph_builders
 from feedbax.compiler.serialization import graph_to_spec
-from tests.graph_compiler_test_support import spec_to_graph
+from tests.support.graph_compiler_test_support import spec_to_graph
 
 
 def _linear_constraint_spec(mask) -> GraphSpec:

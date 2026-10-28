@@ -16,7 +16,7 @@ from feedbax.contracts.domain import (
     DomainTheme,
 )
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from tests.graph_compiler_test_support import spec_to_graph
+from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.web.api import domains as domains_api
 

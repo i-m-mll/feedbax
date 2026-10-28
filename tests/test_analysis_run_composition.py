@@ -41,7 +41,7 @@ from feedbax.contracts.manifest import (
     ANALYSIS_RUN_SPEC_SCHEMA_VERSION,
     AnalysisRunSpec,
 )
-from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
 _EXECUTION_ANALYSIS_TYPE = "example.velocity_profiles"

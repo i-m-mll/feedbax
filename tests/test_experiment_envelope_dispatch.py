@@ -40,7 +40,7 @@ from feedbax.contracts.experiment_envelope_dialect import (
 from feedbax.envelope import canonical_sha256
 from feedbax.plugins.composition import compose_application
 
-import tests.fake_project_experiment as fixture
+import tests.support.fake_project_experiment as fixture
 
 FOREIGN_SCHEMA = "tests.fake_experiment.v1"
 

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE_SRC = ROOT / "external" / "feedbax_conformance_fixture" / "src"
+FIXTURE_SRC = ROOT / "tests" / "fixtures" / "downstream" / "src"
 
 
 @pytest.fixture
@@ -568,7 +568,7 @@ assert "matplotlib" not in sys.modules
 def test_fixture_analysis_dependency_does_not_require_matplotlib() -> None:
     feedbax_payload = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     fixture_payload = tomllib.loads(
-        (ROOT / "external" / "feedbax_conformance_fixture" / "pyproject.toml").read_text(
+        (ROOT / "tests" / "fixtures" / "downstream" / "pyproject.toml").read_text(
             encoding="utf-8"
         )
     )

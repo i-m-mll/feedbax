@@ -47,7 +47,7 @@ edits the list explicitly after inspecting the ratchet diff.
 
 ## Clean-installed external fixture
 
-`external/feedbax_conformance_fixture` is the repo-owned downstream-author
+`tests/fixtures/downstream` is the repo-owned downstream-author
 example and vertical extension of this kit. It is separately packaged and
 keeps fixture-specific builders private to that package. The fixture reuses
 `check_material_dependency_contract` rather than copying its admission

@@ -14,7 +14,7 @@ from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.models.networks import PopulationStructure, SimpleStagedNetwork
 from feedbax.runtime.graph import Graph
-from tests.graph_compiler_test_support import spec_to_graph
+from tests.support.graph_compiler_test_support import spec_to_graph
 
 
 def _registry_cases() -> list[pytest.ParameterSet]:

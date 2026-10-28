@@ -23,7 +23,7 @@ from feedbax.analysis.specs import (
 )
 from feedbax.analysis.reports import ReportRecipeResult
 from feedbax.contracts.manifest import AnalysisRunSpec, EvaluationRunSpec, ReportSpec
-from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
 def test_public_validation_protocols_are_importable_from_stable_paths() -> None:

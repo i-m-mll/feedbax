@@ -40,7 +40,7 @@ from feedbax.compiler.serialization import (
     prototypes_from_task_bindings,
 )
 from feedbax.compiler import GraphCompilationError
-from tests.graph_compiler_test_support import spec_to_graph
+from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.compiler.prototypes import output_prototypes_for_node
 from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.runtime.state import CartesianState

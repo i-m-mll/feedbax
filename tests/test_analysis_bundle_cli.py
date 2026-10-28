@@ -58,7 +58,7 @@ from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
 )
 from feedbax.plugins.bootstrap import BootstrapState
-from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]
 

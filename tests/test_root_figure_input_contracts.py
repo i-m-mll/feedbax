@@ -76,7 +76,7 @@ from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.envelope import kernel_for
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
-from tests.fake_project_experiment import (
+from tests.support.fake_project_experiment import (
     PROJECT_DECLARATION,
     envelope_path,
     write_repo,

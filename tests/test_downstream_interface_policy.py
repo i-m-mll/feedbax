@@ -30,11 +30,12 @@ from feedbax.plugins import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "external" / "feedbax_conformance_fixture" / "src"))
+sys.path.insert(0, str(ROOT / "tests" / "fixtures" / "downstream" / "src"))
 POLICY_MANIFEST = (
     ROOT
-    / "external"
-    / "feedbax_conformance_fixture"
+    / "tests"
+    / "fixtures"
+    / "downstream"
     / "src"
     / "feedbax_external_conformance"
     / "policy_manifest.v2.json"
@@ -246,7 +247,7 @@ def test_plugin_api_checker_rejects_facade_inventory_drift(
 
 
 def test_ratified_rows_bind_v14_and_have_no_pending_coverage() -> None:
-    fixture = ROOT / "external" / "feedbax_conformance_fixture"
+    fixture = ROOT / "tests" / "fixtures" / "downstream"
     manifest = json.loads(
         (fixture / "src/feedbax_external_conformance/policy_manifest.v2.json").read_text(
             encoding="utf-8"

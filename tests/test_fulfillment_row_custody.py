@@ -84,14 +84,14 @@ from feedbax.contracts.row_index import (
 )
 from feedbax.envelope import kernel_for
 
-from tests.fake_project_experiment import (
+from tests.support.fake_project_experiment import (
     PROJECT_DECLARATION,
     ROW_CUSTODY_REF,
     ROW_INDEX_BASE,
     envelope_path,
     write_repo,
 )
-from tests.fake_project_experiment.products import QuillonOutputs
+from tests.support.fake_project_experiment.products import QuillonOutputs
 
 #: One authenticated survey manifest per row, as a receipt layer would record.
 ROW_MANIFESTS = {

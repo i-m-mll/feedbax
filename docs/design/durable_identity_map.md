@@ -19,7 +19,7 @@ not a generated inventory of every field or source location.
 - `canonical_json_v2` is the strict cross-language JSON domain. It rejects
   non-JSON values, cycles, non-string keys, non-finite numbers, unsafe
   integers, and lone surrogates. Python and TypeScript share the conformance
-  vectors in `conformance/canonical_json_v2.json`.
+  vectors in `tests/fixtures/canonical_json_v2.json`.
 - Training-spec storage and publication records retain their separately named
   byte contracts. Similar JSON rules do not make their digests interchangeable
   with either canonical JSON version.

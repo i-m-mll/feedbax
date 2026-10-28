@@ -19,7 +19,7 @@ from feedbax.analysis.materialization import (
     read_json_payload,
 )
 from feedbax.contracts.manifest import AnalysisRunSpec, load_manifest
-from tests.analysis_fixtures import build_toy_analysis_data
+from tests.support.analysis_fixtures import build_toy_analysis_data
 
 
 def _array_closing_materializer(value: float):

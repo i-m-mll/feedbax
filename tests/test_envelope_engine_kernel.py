@@ -113,7 +113,7 @@ from feedbax.envelope.compile import (
 from feedbax.envelope.entrypoint import DECLARED_LAYERS
 from feedbax.training.run_matrix import materialize_adapted_run_matrix
 
-from tests.fake_project_experiment import (
+from tests.support.fake_project_experiment import (
     ANALYSIS_BASE,
     ENVELOPE_DIRECTORY,
     OUTPUT_DIRECTORY,
@@ -1605,7 +1605,7 @@ def test_an_envelope_that_no_longer_compiles_is_a_finding_not_an_exception(
 
 
 def _survey_payload() -> dict[str, Any]:
-    from tests.fake_project_experiment import SURVEY_PAYLOAD
+    from tests.support.fake_project_experiment import SURVEY_PAYLOAD
 
     return dict(SURVEY_PAYLOAD)
 
@@ -3913,7 +3913,7 @@ def test_malformed_nested_bundle_authority_uses_output_model_and_closed_rejectio
 
 
 def test_rooted_figure_feeds_existing_row_expansion(repo: Path) -> None:
-    from tests.fake_project_experiment import FIGURE_BASE, ROW_INDEX_BASE
+    from tests.support.fake_project_experiment import FIGURE_BASE, ROW_INDEX_BASE
 
     base = json.loads((repo / FIGURE_BASE).read_text())
     authority = _layer_root_authority(
@@ -3945,7 +3945,7 @@ def test_rooted_figure_feeds_existing_row_expansion(repo: Path) -> None:
 def test_row_expansion_derives_the_multi_row_figure_from_the_row_index(
     repo: Path,
 ) -> None:
-    from tests.fake_project_experiment import ROW_INDEX_BASE
+    from tests.support.fake_project_experiment import ROW_INDEX_BASE
 
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-plot"), repo_root=repo)
 
@@ -4091,7 +4091,7 @@ def test_the_custody_declaration_leaves_the_compiled_figure_untouched(
 def test_composition_compiles_to_a_composition_document_pinning_its_parent(
     repo: Path,
 ) -> None:
-    from tests.fake_project_experiment import FIGURE_BASE
+    from tests.support.fake_project_experiment import FIGURE_BASE
 
     outcome = kernel().compile_envelope_file(envelope_path(repo, "widened-overlay"), repo_root=repo)
 
@@ -4119,7 +4119,7 @@ def test_the_same_base_under_two_modes_produces_two_different_families(
 
 
 def test_a_composition_document_is_not_an_experiment_parent(repo: Path) -> None:
-    from tests.fake_project_experiment import FIGURE_BASE
+    from tests.support.fake_project_experiment import FIGURE_BASE
 
     write_json(
         repo / "bases" / "composed.figure_composition.json",
@@ -4164,7 +4164,7 @@ def test_a_row_index_that_is_not_one_is_refused_by_identity(repo: Path) -> None:
 
 
 def test_a_selector_that_resolves_to_no_rows_is_an_empty_selection(repo: Path) -> None:
-    from tests.fake_project_experiment import ROW_INDEX_BASE
+    from tests.support.fake_project_experiment import ROW_INDEX_BASE
 
     envelope = _read(repo, "widened-plot")
     envelope["figure"]["rows"] = {
@@ -4279,7 +4279,7 @@ def test_the_compiled_report_is_the_document_workflow_plans_against(
 
 def test_a_row_slice_is_expressed_as_a_tag_over_the_same_row_index(repo: Path) -> None:
     """A slice is a selection over the index, not a list inside the envelope."""
-    from tests.fake_project_experiment import ROW_INDEX_BASE
+    from tests.support.fake_project_experiment import ROW_INDEX_BASE
 
     index = json.loads((repo / ROW_INDEX_BASE).read_text())
     index["rows"][1]["tags"] = ["survey", "held-out"]
@@ -4396,7 +4396,7 @@ def test_removing_a_tag_the_base_does_not_state_is_still_refused(repo: Path) -> 
 
 def _report_base_figure(repo: Path, **figure: Any) -> None:
     """Give the report base one ordered-figure entry at the bound role."""
-    from tests.fake_project_experiment import REPORT_BASE
+    from tests.support.fake_project_experiment import REPORT_BASE
 
     document = json.loads((repo / REPORT_BASE).read_text())
     document["params"]["sections"][0]["figures"] = [
@@ -4485,7 +4485,7 @@ def test_a_bound_role_carries_the_digest_of_the_figure_it_is_bound_to(
 
 
 def test_a_report_binding_refuses_a_target_without_an_authored_input_role(repo: Path) -> None:
-    from tests.fake_project_experiment import REPORT_BASE
+    from tests.support.fake_project_experiment import REPORT_BASE
 
     document = json.loads((repo / REPORT_BASE).read_text())
     document["params"]["sections"][0]["tables"] = [{"columns": ["arm"], "rows": [["near"]]}]
@@ -4569,7 +4569,7 @@ def test_a_role_the_document_says_nothing_about_stays_a_lock_only_binding(
 def test_binding_state_is_reconciled_only_inside_a_report_type_feedbax_owns(
     repo: Path,
 ) -> None:
-    from tests.fake_project_experiment import REPORT_BASE
+    from tests.support.fake_project_experiment import REPORT_BASE
 
     _report_base_figure(repo, figure_spec_sha256="a" * 64)
     document = json.loads((repo / REPORT_BASE).read_text())
@@ -4609,7 +4609,7 @@ def test_a_not_applicable_section_states_the_applicability_its_bytes_never_carri
     repo: Path,
 ) -> None:
     """The base section describes only content, which is the whole gap."""
-    from tests.fake_project_experiment import REPORT_BASE
+    from tests.support.fake_project_experiment import REPORT_BASE
 
     _report_base_figure(repo, figure_spec_sha256="a" * 64, applicability="included")
     _report_bindings(repo, [SECTION_NOT_APPLICABLE_BINDING])
@@ -4648,7 +4648,7 @@ def test_a_section_already_stating_its_bound_applicability_is_replaced_not_added
     repo: Path,
 ) -> None:
     """A contradicting inherited descriptor is rewritten; an agreeing one is left."""
-    from tests.fake_project_experiment import REPORT_BASE
+    from tests.support.fake_project_experiment import REPORT_BASE
 
     document = json.loads((repo / REPORT_BASE).read_text())
     document["params"]["sections"][0]["applicability"] = "included"
@@ -4754,7 +4754,7 @@ def test_an_authored_delta_is_free_when_the_bindings_derive_nothing(repo: Path) 
 
 def test_recompiling_a_reconciled_section_derives_no_further_patch(repo: Path) -> None:
     """A reconciled base is a fixed point: the second compile changes nothing."""
-    from tests.fake_project_experiment import REPORT_BASE
+    from tests.support.fake_project_experiment import REPORT_BASE
 
     _report_base_figure(repo, figure_spec_sha256="a" * 64, applicability="included")
     _report_bindings(repo, [SECTION_NOT_APPLICABLE_BINDING])
@@ -4820,7 +4820,7 @@ def test_a_role_path_is_unchecked_where_the_params_model_is_not_the_authority(
     repo: Path,
 ) -> None:
     """Nothing here reaches into params a recipe owns, not even to refuse a path."""
-    from tests.fake_project_experiment import REPORT_BASE
+    from tests.support.fake_project_experiment import REPORT_BASE
 
     document = json.loads((repo / REPORT_BASE).read_text())
     document["report_type"] = "quillon.bulletin"
@@ -4846,7 +4846,7 @@ def test_a_not_applicable_section_that_still_tabulates_is_refused_not_emptied(
     compiled params are therefore refused by the content model itself, which is
     the honest outcome: the engine never silently deletes authored tables.
     """
-    from tests.fake_project_experiment import REPORT_BASE
+    from tests.support.fake_project_experiment import REPORT_BASE
 
     document = json.loads((repo / REPORT_BASE).read_text())
     document["params"]["sections"][0]["tables"] = [{"columns": ["arm"], "rows": [["near"]]}]
@@ -4864,7 +4864,7 @@ def test_a_params_node_the_contract_gives_no_applicability_stays_lock_only(
     repo: Path,
 ) -> None:
     """A scalar table is a node the model knows and states no applicability for."""
-    from tests.fake_project_experiment import REPORT_BASE
+    from tests.support.fake_project_experiment import REPORT_BASE
 
     document = json.loads((repo / REPORT_BASE).read_text())
     document["params"]["sections"][0]["tables"] = [{"columns": ["arm"], "rows": [["near"]]}]
@@ -4941,7 +4941,7 @@ def test_an_evaluation_authors_further_staged_prerequisites_into_its_lock(
     exactly one reference, so a matrix whose base named a second prerequisite had
     no way to be fulfilled at all.
     """
-    from tests.fake_project_experiment import EVALUATION_BASE
+    from tests.support.fake_project_experiment import EVALUATION_BASE
 
     outcome = _authored(
         repo,
@@ -4986,7 +4986,7 @@ def test_an_evaluation_authors_further_staged_prerequisites_into_its_lock(
 
 
 def test_a_prerequisite_may_not_take_the_subjects_own_binding_name(repo: Path) -> None:
-    from tests.fake_project_experiment import EVALUATION_BASE
+    from tests.support.fake_project_experiment import EVALUATION_BASE
 
     with pytest.raises(ExperimentEnvelopeRejection) as caught:
         _authored(
@@ -5092,7 +5092,7 @@ def test_a_checkpoint_only_training_layer_compiles(repo: Path) -> None:
     rows are initialized from, which is a change to the runs themselves and is
     recorded where every other authenticated input is, in the lock.
     """
-    from tests.fake_project_experiment import TRAINING_BASE
+    from tests.support.fake_project_experiment import TRAINING_BASE
 
     outcome = _authored(
         repo,
@@ -5133,7 +5133,7 @@ def test_a_training_layer_contributing_nothing_at_all_is_still_refused(
     repo: Path,
 ) -> None:
     """The relaxation is exactly one construct wide, not an empty-layer licence."""
-    from tests.fake_project_experiment import TRAINING_BASE
+    from tests.support.fake_project_experiment import TRAINING_BASE
 
     with pytest.raises(ExperimentEnvelopeRejection) as caught:
         _authored(

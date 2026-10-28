@@ -26,7 +26,7 @@ from feedbax.contracts.experiment_compile_lock import EvaluationSubjectBinding, 
 from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import load_manifest
 
-from tests.fake_project_experiment.products import (
+from tests.support.fake_project_experiment.products import (
     BULLETIN_TYPE,
     PROBE_TYPE,
     QuillonOutputs,
@@ -177,7 +177,7 @@ def test_the_cli_exits_zero_and_prints_the_walk(
     outputs: QuillonOutputs, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     target = _pair(outputs)
-    code = _cli(outputs, target, tmp_path / "cli-receipts", "tests.workflow_cli_plugin")
+    code = _cli(outputs, target, tmp_path / "cli-receipts", "tests.support.workflow_cli_plugin")
     assert code == 0
     summary = json.loads(capsys.readouterr().out)
     assert summary["target"] == "report:study-bulletin"
@@ -188,7 +188,7 @@ def test_the_cli_exits_two_on_a_stable_typed_rejection(
     outputs: QuillonOutputs, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     outputs.probe("known")
-    code = _cli(outputs, "unknown", tmp_path / "cli-receipts", "tests.workflow_cli_plugin")
+    code = _cli(outputs, "unknown", tmp_path / "cli-receipts", "tests.support.workflow_cli_plugin")
     assert code == 2
     assert "CompiledOutputError" in capsys.readouterr().err
 
@@ -207,7 +207,7 @@ def test_the_cli_exits_two_when_the_closure_still_needs_training(
             )
         ],
     )
-    code = _cli(outputs, "sweep-probe", tmp_path / "cli-receipts", "tests.workflow_cli_plugin")
+    code = _cli(outputs, "sweep-probe", tmp_path / "cli-receipts", "tests.support.workflow_cli_plugin")
     assert code == 2
     assert "ExternalOperationError" in capsys.readouterr().err
 
@@ -253,7 +253,7 @@ def _fulfill_cli(outputs: QuillonOutputs, target: str, receipt_root: Path, *extr
             "--receipt-root",
             str(receipt_root),
             "--plugin",
-            "tests.workflow_cli_plugin",
+            "tests.support.workflow_cli_plugin",
             *extra,
         ]
     )

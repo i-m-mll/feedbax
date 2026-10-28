@@ -57,7 +57,7 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
-from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]

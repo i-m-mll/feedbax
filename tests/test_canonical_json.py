@@ -40,7 +40,7 @@ from feedbax.studio.draft_hash import (
 )
 
 
-VECTOR_PATH = Path(__file__).resolve().parents[1] / "conformance/canonical_json_v2.json"
+VECTOR_PATH = Path(__file__).resolve().parents[1] / "tests/fixtures/canonical_json_v2.json"
 
 
 class _UnsupportedLeaf:

@@ -50,7 +50,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.run_matrix import TrainingRowProvenance
 from feedbax.training.run_matrix import MaterializedMatrixRow
-from tests.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from feedbax.web.app import create_app
 from feedbax.contracts.graph import (
     GraphMetadata,

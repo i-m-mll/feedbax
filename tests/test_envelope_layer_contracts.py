@@ -1215,8 +1215,9 @@ class TestRatifiedEnvelopePolicyRows:
         manifest = json.loads(
             (
                 root
-                / "external"
-                / "feedbax_conformance_fixture"
+                / "tests"
+                / "fixtures"
+                / "downstream"
                 / "src"
                 / "feedbax_external_conformance"
                 / "policy_manifest.v2.json"

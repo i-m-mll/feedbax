@@ -83,7 +83,11 @@ from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loa
 pytestmark = [pytest.mark.feedbax_contract]
 
 BUDGET_FIXTURE = (
-    Path(__file__).parent / "fake_project_experiment" / "budgets" / "quillon.envelope_budgets.json"
+    Path(__file__).parent
+    / "support"
+    / "fake_project_experiment"
+    / "budgets"
+    / "quillon.envelope_budgets.json"
 )
 
 

@@ -36,7 +36,7 @@ FIGURE_API_START = "<!-- figure-api-inventory:start -->"
 FIGURE_API_END = "<!-- figure-api-inventory:end -->"
 INSTRUCTION_FILE = ROOT / "AGENTS.md"
 POLICY_DOCUMENT = ROOT / "docs" / "design" / "downstream_interface_stability.md"
-FIXTURE_ROOT = ROOT / "external" / "feedbax_conformance_fixture"
+FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "downstream"
 sys.path.insert(0, str(FIXTURE_ROOT / "src"))
 POLICY_MANIFEST = FIXTURE_ROOT / "src" / "feedbax_external_conformance" / "policy_manifest.v2.json"
 DRIVER_POLICY_SCHEMAS = {
