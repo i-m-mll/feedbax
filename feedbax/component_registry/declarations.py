@@ -363,6 +363,11 @@ class ComponentParamContract:
         validated = self.require(authored)
         values = validated.model_dump(mode="python")
         values.update(context)
+        return self.build_resolved(values)
+
+    def build_resolved(self, params: Mapping[str, Any]) -> "Component":
+        """Construct canonical compiler parameters without reapplying their schema."""
+        values = dict(params)
         if self.builder is not None:
             return self.builder(values)
         if self.runtime_type is None:

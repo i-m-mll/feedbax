@@ -3071,8 +3071,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             owner_module="feedbax.compiler",
             emitted_by=("feedbax.compiler.compile_graph",),
             consumed_by=("feedbax.compiler.ExecutableGraph",),
-            description="Normalized immutable semantic graph with source and key schedules.",
-            rejected_old_versions=("1",),
+            description="Canonical executable semantic graph with source and key schedules.",
+            rejected_old_versions=("1", "2"),
             required_tests=("tests/test_graph_compiler.py",),
         ),
         _family(
@@ -3083,7 +3083,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.compiler.compile_graph",),
             consumed_by=("compiler evidence readers",),
             description="Successful graph compilation evidence with structured diagnostics.",
-            rejected_old_versions=("1", "2"),
+            rejected_old_versions=("1", "2", "3"),
             required_tests=("tests/test_graph_compiler.py",),
         ),
         _family(

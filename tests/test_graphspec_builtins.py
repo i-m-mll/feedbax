@@ -1303,7 +1303,7 @@ def test_dynamics_matrix_perturb_graphspec_requires_explicit_mass() -> None:
         )
 
     diagnostic = caught.value.record.diagnostics[0]
-    assert diagnostic.code == "compiler.type_resolution.unresolved_component_type"
+    assert diagnostic.code == "compiler.constraint_solving.invalid_component_parameters"
     assert "mass: Field required (missing)" in diagnostic.observed_condition
 
 
@@ -1614,7 +1614,7 @@ def test_channel_rejects_unknown_noise_model() -> None:
         )
 
     diagnostic = caught.value.record.diagnostics[0]
-    assert diagnostic.code == "compiler.type_resolution.unresolved_component_type"
+    assert diagnostic.code == "compiler.constraint_solving.invalid_component_parameters"
     assert "noise_model" in diagnostic.observed_condition
     assert "literal_error" in diagnostic.observed_condition
     assert "Only canonical Channel noise parameters are accepted" in diagnostic.observed_condition
