@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from feedbax.component_registry import required_interior_domain
 from feedbax.contracts.authored_canonical import canonical_sha256
-from feedbax.contracts.graph import GraphSpec, SemanticAnchor
+from feedbax.contracts.graph import ComponentSpec, GraphSpec, SemanticAnchor
 from feedbax.contracts.scientific_compiler_schema import (
     COMPILATION_FAILURE_SCHEMA_ID,
     COMPILATION_FAILURE_SCHEMA_VERSION,
@@ -25,13 +25,17 @@ from feedbax.compiler.prototypes import (
     normalize_derived_dimensions,
     normalize_stateful_prototypes,
 )
-from feedbax.compiler.serialization import _instantiate_graph
+from feedbax.compiler.serialization import (
+    _instantiate_graph,
+    _split_lowering_metadata,
+    _validate_dynamic_component_ports,
+)
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 
 
 GRAPH_COMPILER_ID = "feedbax.graph.compiler"
-GRAPH_COMPILER_VERSION = "1"
+GRAPH_COMPILER_VERSION = "2"
 KEY_SCHEDULE_ID = "feedbax.graph_key_schedule.execution_order_split.v1"
 
 
@@ -180,9 +184,7 @@ class CompilationRecord(BaseModel):
     @field_validator("schema_version")
     @classmethod
     def reject_unsupported_version(cls, value: str) -> str:
-        return _require_version(
-            "CompilationRecord", value, COMPILATION_RECORD_SCHEMA_VERSION
-        )
+        return _require_version("CompilationRecord", value, COMPILATION_RECORD_SCHEMA_VERSION)
 
 
 class CompilationFailureRecord(BaseModel):
@@ -230,7 +232,8 @@ def _require_version(family: str, value: str, current: str) -> str:
     if value != current:
         raise ValueError(
             f"Unsupported {family} schema version: source_version={value!r}; "
-            f"current_version={current!r}; migration_intentionally_absent=yes"
+            f"current_version={current!r}; migration_intentionally_absent=yes; "
+            "recompile the authored GraphDocument"
         )
     return value
 
@@ -310,9 +313,7 @@ def _source_map(
                     if node_id in authored_graph.nodes
                     else "/graph"
                 ),
-                origin=(
-                    "authored" if node_id in authored_graph.nodes else "compiler-generated"
-                ),
+                origin=("authored" if node_id in authored_graph.nodes else "compiler-generated"),
                 authored_anchor=SemanticAnchor(
                     semantic_document_sha256=document_sha256,
                     authored_path=(
@@ -347,15 +348,43 @@ def _source_map(
             )
         ),
     ]
+    for node_id, subgraph in sorted((graph.subgraphs or {}).items()):
+        authored_subgraph = (authored_graph.subgraphs or {}).get(node_id)
+        if not isinstance(subgraph, GraphSpec) or not isinstance(authored_subgraph, GraphSpec):
+            continue
+        nested_map = _source_map(
+            GraphDocument(graph=authored_subgraph),
+            authored_subgraph,
+            subgraph,
+            document_sha256,
+        )
+        prefix = f"/graph/subgraphs/{_json_pointer_token(node_id)}"
+        for entry in nested_map.entries:
+            authored_path = prefix + entry.authored_path.removeprefix("/graph")
+            entries.append(
+                entry.model_copy(
+                    update={
+                        "resolved_path": prefix + entry.resolved_path.removeprefix("/graph"),
+                        "authored_path": authored_path,
+                        "authored_anchor": entry.authored_anchor.model_copy(
+                            update={
+                                "authored_path": authored_path,
+                            }
+                        ),
+                    }
+                )
+            )
     if document.trial_root is not None:
-        entries.append(GraphSourceMapEntry(
-            resolved_path="/trial_root",
-            authored_path="/trial_root",
-            authored_anchor=SemanticAnchor(
-                semantic_document_sha256=document_sha256,
+        entries.append(
+            GraphSourceMapEntry(
+                resolved_path="/trial_root",
                 authored_path="/trial_root",
-            ),
-        ))
+                authored_anchor=SemanticAnchor(
+                    semantic_document_sha256=document_sha256,
+                    authored_path="/trial_root",
+                ),
+            )
+        )
     if document.objective_root is not None:
         entries.append(
             GraphSourceMapEntry(
@@ -384,38 +413,117 @@ def _resolved_digest(
     )
 
 
-def _require_component_types(graph: GraphSpec, component_registry: Any) -> None:
-    resolver = getattr(component_registry, "resolve_component_spec", None)
-    should_resolve = getattr(component_registry, "should_resolve_component_spec", None)
-    getter = getattr(component_registry, "get", None)
+def _map_component_nodes(
+    graph: GraphSpec,
+    operation: Callable[[str, ComponentSpec], ComponentSpec],
+    *,
+    document_sha256: str,
+    path: str = "/graph",
+    phase: CompilerPhase = CompilerPhase.TYPE_RESOLUTION,
+) -> GraphSpec:
+    nodes: dict[str, ComponentSpec] = {}
     for node_id, node in graph.nodes.items():
-        if required_interior_domain(node.type, component_registry) is not None:
-            continue
-        if callable(resolver) and callable(should_resolve) and should_resolve(
+        anchor = SemanticAnchor(
+            semantic_document_sha256=document_sha256,
+            authored_path=f"{path}/nodes/{_json_pointer_token(node_id)}",
+        )
+        nodes[node_id] = _compile_phase(
+            phase=phase,
+            code=(
+                "compiler.type_resolution.unresolved_component_type"
+                if phase is CompilerPhase.TYPE_RESOLUTION
+                else "compiler.constraint_solving.invalid_component_parameters"
+            ),
+            anchor=anchor,
+            document_sha256=document_sha256,
+            expected="the component has a registered canonical type and valid effective parameters",
+            action="correct the component identity, version, or parameters at the authored node",
+            operation=lambda node_id=node_id, node=node: operation(node_id, node),
+        )
+    subgraphs = {
+        node_id: (
+            _map_component_nodes(
+                subgraph,
+                operation,
+                document_sha256=document_sha256,
+                path=f"{path}/subgraphs/{_json_pointer_token(node_id)}",
+                phase=phase,
+            )
+            if isinstance(subgraph, GraphSpec)
+            else subgraph
+        )
+        for node_id, subgraph in (graph.subgraphs or {}).items()
+    }
+    return graph.model_copy(update={"nodes": nodes, "subgraphs": subgraphs or None})
+
+
+def _resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
+    resolver = getattr(registry, "resolve_component_spec", None)
+    should_resolve = getattr(registry, "should_resolve_component_spec", None)
+    if (
+        callable(resolver)
+        and callable(should_resolve)
+        and should_resolve(
             node.type,
             param_schema_version=node.param_schema_version,
-        ):
-            resolver(
-                node.type,
-                node.params,
-                param_schema_version=node.param_schema_version,
-            )
-        elif callable(getter) and getter(node.type) is None:
-            names = getattr(component_registry, "names", None)
-            known = names() if callable(names) else []
-            raise ValueError(
-                f"node {node_id!r} names unregistered component type {node.type!r}. "
-                f"Known component types: {known!r}"
-            )
-    for subgraph in (graph.subgraphs or {}).values():
-        if isinstance(subgraph, GraphSpec):
-            _require_component_types(subgraph, component_registry)
+        )
+    ):
+        params, lowering_metadata = _split_lowering_metadata(node)
+        resolution = resolver(
+            node.type,
+            params,
+            param_schema_version=node.param_schema_version,
+            complete_params=False,
+        )
+        return node.model_copy(
+            update={
+                "type": resolution.type_id,
+                "params": {**resolution.params, **lowering_metadata},
+                "param_schema_version": resolution.param_schema_version,
+            }
+        )
+    if required_interior_domain(node.type, registry) is not None:
+        return node
+    if registry.get(node.type) is None:
+        raise ValueError(
+            f"Unregistered component type {node.type!r}. "
+            f"Known component types: {registry.names()!r}"
+        )
+    return node
 
 
-def _has_derived_dimensions(graph: GraphSpec) -> bool:
-    return bool(graph.derived_dimensions) or any(
-        isinstance(subgraph, GraphSpec) and _has_derived_dimensions(subgraph)
-        for subgraph in (graph.subgraphs or {}).values()
+def _complete_component_node(
+    node_name: str,
+    node: ComponentSpec,
+    registry: Any,
+) -> ComponentSpec:
+    meta = registry.get(node.type)
+    if meta is None:
+        return node
+    if meta.is_composite:
+        return node.model_copy(update={"params": {}})
+    params, lowering_metadata = _split_lowering_metadata(node)
+    context = {
+        key: value for key, value in params.items() if key in meta.params.build_context_fields
+    }
+    effective = meta.params.require(
+        {key: value for key, value in params.items() if key not in context}
+    ).model_dump(mode="python")
+    params = {**effective, **context}
+    inputs, outputs = _validate_dynamic_component_ports(
+        node_name,
+        node.type,
+        params,
+        node.input_ports,
+        node.output_ports,
+        component_registry=registry,
+    )
+    return node.model_copy(
+        update={
+            "params": {**params, **lowering_metadata},
+            "input_ports": list(inputs),
+            "output_ports": list(outputs),
+        }
     )
 
 
@@ -444,27 +552,10 @@ def compile_graph(
         action="correct the authored graph payload or migrate it through a registered schema",
         operation=parse_graph,
     )
-    def resolve_component_types() -> GraphSpec:
-        graph_with_derived_dimensions = (
-            normalize_derived_dimensions(
-                authored_graph,
-                input_prototypes,
-                component_registry=component_registry,
-            )
-            if _has_derived_dimensions(authored_graph)
-            else authored_graph
-        )
-        _require_component_types(graph_with_derived_dimensions, component_registry)
-        return graph_with_derived_dimensions
-
-    typed_graph = _compile_phase(
-        phase=CompilerPhase.TYPE_RESOLUTION,
-        code="compiler.type_resolution.unresolved_component_type",
-        anchor=graph_anchor,
+    typed_graph = _map_component_nodes(
+        authored_graph,
+        lambda node_id, node: _resolve_component_node(node, component_registry),
         document_sha256=document_sha256,
-        expected="every authored component type resolves exactly once in the supplied registry",
-        action="register the missing component declaration or correct its authored type identity",
-        operation=resolve_component_types,
     )
     graph = _compile_phase(
         phase=CompilerPhase.COMPOSITE_AND_ACAUSAL_LOWERING,
@@ -473,7 +564,15 @@ def compile_graph(
         document_sha256=document_sha256,
         expected="every authored lowering rule produces one valid literal semantic graph",
         action="correct the authored composite, acausal, or channel-adapter declaration",
-        operation=lambda: materialize_additive_channel_adapters(typed_graph),
+        operation=lambda: _map_component_nodes(
+            materialize_additive_channel_adapters(typed_graph),
+            lambda node_id, node: (
+                _resolve_component_node(node, component_registry)
+                if node.param_schema_version is None
+                else node
+            ),
+            document_sha256=document_sha256,
+        ),
     )
 
     def solve_constraints() -> GraphSpec:
@@ -482,10 +581,16 @@ def compile_graph(
             input_prototypes,
             component_registry=component_registry,
         )
-        return normalize_stateful_prototypes(
+        normalized = normalize_stateful_prototypes(
             normalized,
             input_prototypes,
             component_registry=component_registry,
+        )
+        return _map_component_nodes(
+            normalized,
+            lambda node_id, node: _complete_component_node(node_id, node, component_registry),
+            document_sha256=document_sha256,
+            phase=CompilerPhase.CONSTRAINT_SOLVING,
         )
 
     graph = _compile_phase(
@@ -510,7 +615,7 @@ def compile_graph(
     )
 
     def build_schedule() -> tuple[Graph, tuple[str, ...]]:
-        executable = _instantiate_graph(graph, component_registry, input_prototypes)
+        executable = _instantiate_graph(graph, component_registry)
         return executable, tuple(executable._execution_order)
 
     executable, node_order = _compile_phase(

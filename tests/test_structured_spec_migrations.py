@@ -1767,8 +1767,8 @@ def test_default_policy_matrix_covers_registered_emitted_families() -> None:
 def test_scientific_compiler_families_are_registered_and_fail_closed() -> None:
     expected = {
         "GraphDocument": ("feedbax.graph_document", "1"),
-        "ResolvedGraph": ("feedbax.resolved_graph", "2"),
-        "CompilationRecord": ("feedbax.graph_compilation_record", "3"),
+        "ResolvedGraph": ("feedbax.resolved_graph", "3"),
+        "CompilationRecord": ("feedbax.graph_compilation_record", "4"),
         "CompilationFailureRecord": ("feedbax.graph_compilation_failure", "1"),
     }
 
