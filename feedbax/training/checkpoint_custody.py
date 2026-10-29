@@ -158,6 +158,7 @@ LATEST_POINTER_NAME = "latest.json"
 TRANSACTIONS_DIR_NAME = "transactions"
 MANIFEST_NAME = "manifest.json"
 CHECKPOINT_SET_NAME = "checkpoint-set.json"
+CHECKPOINT_SLOT_SERIALIZER = "feedbax.training.checkpoint_custody.pickle.v2"
 CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID = "feedbax.archive.training_checkpoint_custody"
 CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION = "feedbax.archive.training_checkpoint_custody.v1"
 CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE = (
@@ -462,7 +463,7 @@ def _published_checkpoint_set(
             state_type=slot.role,
             array_structure_id=slot.structural_abi_fingerprint.fingerprint_sha256,
             codec_schema_id="feedbax.training.checkpoint_custody.pickle",
-            codec_schema_version="feedbax.training.checkpoint_custody.pickle.v1",
+            codec_schema_version=_supported_slot_serializer(slot),
             blob=BlobRef(digest=slot.sha256, size_bytes=slot.size_bytes),
         )
         for slot in manifest.slots
@@ -2219,7 +2220,7 @@ def _resolve_checkpoint_custody_ref(
         )
         try:
             value = _deserialize_checkpoint_slot(slot, blob_path)
-        except (CheckpointIntegrityError, OSError) as exc:
+        except (CheckpointIntegrityError, CheckpointCompatibilityError, OSError) as exc:
             raise CheckpointReferenceResolutionError(str(exc)) from exc
         try:
             _validate_decoded_slot_integrity(slot, value)
@@ -5768,7 +5769,9 @@ def _load_checkpoint_transaction_by_id(
         )
     slots: dict[str, Any] = {}
     for slot in manifest.slots:
-        slots[slot.slot] = pickle.loads(_read_blob(slot, manifest_path.parent / slot.relative_path))
+        slots[slot.slot] = _deserialize_checkpoint_slot(
+            slot, manifest_path.parent / slot.relative_path
+        )
     return _LoadedCheckpointTransaction(
         root=root_path,
         latest_pointer=CheckpointLatestPointer(
@@ -7139,8 +7142,23 @@ def _validate_population_identities(
             )
 
 
+def _supported_slot_serializer(slot: CheckpointSlotBlobRef) -> str:
+    provenance = slot.structural_abi_fingerprint.environment_provenance
+    serializer = None if provenance is None else provenance.serializer
+    if serializer != CHECKPOINT_SLOT_SERIALIZER:
+        raise CheckpointCompatibilityError(
+            f"checkpoint slot {slot.slot!r} uses unsupported serializer {serializer!r}; "
+            f"supported serializer is {CHECKPOINT_SLOT_SERIALIZER!r}. "
+            "Use the producer version of Feedbax to export the checkpoint and explicitly "
+            "adapt it to the current initialization representation; no automatic migration "
+            "is supplied."
+        )
+    return serializer
+
+
 def _deserialize_checkpoint_slot(slot: CheckpointSlotBlobRef, path: Path) -> Any:
     """Deserialize one hash-verified slot blob without resume transformations."""
+    _supported_slot_serializer(slot)
     blob_bytes = _read_blob(slot, path)
     try:
         return pickle.loads(blob_bytes)
@@ -7742,6 +7760,7 @@ def require_checkpoint_semantic_state_equal(
 
 def _serializer_versions() -> SerializerVersionRecord:
     return SerializerVersionRecord(
+        serializer=CHECKPOINT_SLOT_SERIALIZER,
         feedbax_version=feedbax_version(),
         jax_version=getattr(jax, "__version__", None),
         equinox_version=_package_version("equinox"),
