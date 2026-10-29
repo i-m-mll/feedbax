@@ -1,3 +1,4 @@
+from copy import deepcopy
 from types import SimpleNamespace
 
 import equinox as eqx
@@ -167,20 +168,44 @@ def test_preparation_timer_excludes_host_shape_preflight(monkeypatch):
     assert executor.preparation_telemetry["kernel_preparation_seconds"] == 4
 
 
-@pytest.mark.parametrize("invalid", ["shape", "dtype", "unknown"])
-def test_invalid_mapped_output_fails_before_update_or_checkpoint(invalid):
+@pytest.mark.parametrize("mapped", [False, True])
+@pytest.mark.parametrize("invalid", ["shape", "dtype", "tree", "category", "static", "unknown"])
+def test_invalid_numerical_output_fails_before_update_or_checkpoint(mapped, invalid):
     def update(slots, context):
         if invalid == "unknown":
             return {"unknown": slots["model"]}
-        value = jnp.zeros((4,)) if invalid == "shape" else slots["model"].astype(jnp.int32)
-        return {"model": value}
+        if invalid == "shape":
+            value = jnp.zeros((9,), dtype=jnp.float32)
+        elif invalid == "dtype":
+            value = slots["model"].astype(jnp.int32)
+        elif invalid == "tree":
+            value = {"parameters": slots["model"]}
+        elif invalid == "category":
+            value = 0.0
+        else:
+            value = {**slots["model"], "mode": "eval"}
+        return {"model": value, "batch_counter": slots["batch_counter"] + 1}
 
-    executor, _, slots = runtime(update, mapped=True)
-    with pytest.raises(WorkerContractValidationError, match="kernel preparation failed"):
-        executor.preflight(
-            slots, run_id="invalid", context={"rate": jnp.asarray(1.0), "schedule_origin_step": 0}
+    executor, _, slots = runtime(update, mapped=mapped)
+    executor.program.phases[0].max_steps = 1
+    if invalid == "static":
+        slots["model"] = {"parameters": slots["model"], "mode": "train"}
+    before = deepcopy({name: value for name, value in slots.items() if name != "objective"})
+    before["objective"] = dict(slots["objective"])
+    progress = []
+    with pytest.raises(WorkerContractValidationError) as error:
+        executor.run(
+            slots,
+            run_id="invalid",
+            context={"rate": jnp.asarray(1.0), "schedule_origin_step": 0},
+            progress_callback=progress.append,
         )
+    assert f"/update_steps/{executor.program.update_steps[0].name}/writes" in str(error.value)
+    if invalid != "unknown":
+        assert "/model" in str(error.value)
     assert executor.checkpoint_store.visits() == ()
+    assert progress == []
+    assert eqx.tree_equal(slots, before)
     np.testing.assert_array_equal(slots["batch_counter"], 0)
 
 

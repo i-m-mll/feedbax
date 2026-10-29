@@ -407,7 +407,6 @@ class PhaseProgramExecutor:
                     started = time.perf_counter()
                     inputs = kernel.project(slots, dict(context or {}))
                     numeric_slots, _ = inputs
-                    output_shapes = []
 
                     def numerical_call(selected_slots, selected_context):
                         if mapped_step:
@@ -430,39 +429,24 @@ class PhaseProgramExecutor:
                             )(mapped, shared, selected_context)
                         else:
                             updates = kernel.update(selected_slots, selected_context)
-                        # Capture the ABI during lowering, without a second discovery trace.
-                        output_shapes.append(
-                            jt.map(
-                                lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype)
-                                if eqx.is_array(x)
-                                else x,
-                                updates,
-                            )
+                        output_template = jt.map(
+                            lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype)
+                            if eqx.is_array(x)
+                            else x,
+                            updates,
+                        )
+                        self._validate_destination_updates(
+                            step.name,
+                            step.writes,
+                            output_template,
+                            slots,
+                            fixed_static=True,
                         )
                         return updates
 
-                    executable = eqx.filter_jit(numerical_call).lower(*inputs).compile()
-                    updates = output_shapes[0]
-                    for name, value in updates.items():
-                        if name not in slots:
-                            continue
-                        expected_static = eqx.filter(slots[name], lambda x: not eqx.is_array(x))
-                        output_static = eqx.filter(
-                            value,
-                            lambda x: not isinstance(x, jax.ShapeDtypeStruct)
-                            and not eqx.is_array(x),
-                        )
-                        if eqx.tree_equal(expected_static, output_static) is not True:
-                            raise ValueError(
-                                f"numerical write {name!r} changes destination static structure/value"
-                            )
                     if mapped_step and set(step.writes) & self._shared_slots:
                         raise ValueError("mapped numerical step writes shared slots")
-                    if mapped_step:
-                        self._validate_mapped_updates(step.name, step.writes, updates, slots)
-                    unknown = set(updates) - set(step.writes)
-                    if unknown:
-                        raise ValueError(f"undeclared numerical writes: {sorted(unknown)!r}")
+                    executable = eqx.filter_jit(numerical_call).lower(*inputs).compile()
                     self._prepared_numerical[step.name] = _PreparedNumericalUpdate(
                         kernel,
                         executable,
@@ -484,7 +468,7 @@ class PhaseProgramExecutor:
                             coordinate.model_copy(update={"phase": phase.name}),
                             dict(context or {}),
                         )
-                        self._validate_mapped_updates(step.name, step.writes, updates, slots)
+                        self._validate_destination_updates(step.name, step.writes, updates, slots)
 
             except Exception as exc:
                 raise WorkerContractValidationError(
@@ -653,7 +637,7 @@ class PhaseProgramExecutor:
                                 f"prepared numerical execution failed: {exc}",
                             ) from exc
                         if self._active_axis is not None and self._active_axis in step.axes:
-                            self._validate_mapped_updates(
+                            self._validate_destination_updates(
                                 step.name, step.writes, updates, current_slots
                             )
                     elif self._active_axis is not None and self._active_axis in step.axes:
@@ -671,7 +655,7 @@ class PhaseProgramExecutor:
                             coordinate,
                             checkpoint_context,
                         )
-                        self._validate_mapped_updates(
+                        self._validate_destination_updates(
                             step.name, step.writes, updates, current_slots
                         )
                     else:
@@ -860,12 +844,14 @@ class PhaseProgramExecutor:
             start_completed_batches=initial_batch,
         )
 
-    def _validate_mapped_updates(
+    def _validate_destination_updates(
         self,
         step_name: str,
         declared_writes: Sequence[str],
         updates: Mapping[str, Any],
         input_slots: Mapping[str, Any],
+        *,
+        fixed_static: bool = False,
     ) -> None:
         unknown = sorted(set(updates) - set(declared_writes))
         if unknown:
@@ -878,14 +864,14 @@ class PhaseProgramExecutor:
             if slot not in input_slots:
                 raise WorkerContractValidationError(
                     f"/phase_program/update_steps/{step_name}/writes/{slot}",
-                    "mapped write destination is absent from executor state",
+                    "write destination is absent from executor state",
                 )
             output_leaves, output_def = jt.flatten(value)
             input_leaves, input_def = jt.flatten(input_slots[slot])
             if output_def != input_def:
                 raise WorkerContractValidationError(
                     f"/phase_program/update_steps/{step_name}/writes/{slot}",
-                    "mapped write must retain destination PyTree definition",
+                    "write must retain destination PyTree definition",
                 )
             for leaf_index, (source, target) in enumerate(
                 zip(input_leaves, output_leaves, strict=True)
@@ -895,14 +881,19 @@ class PhaseProgramExecutor:
                 if source_array != target_array:
                     raise WorkerContractValidationError(
                         f"/phase_program/update_steps/{step_name}/writes/{slot}/{leaf_index}",
-                        "mapped write changes array/static leaf category",
+                        "write changes array/static leaf category",
                     )
                 if source_array and (source.shape != target.shape or source.dtype != target.dtype):
                     raise WorkerContractValidationError(
                         f"/phase_program/update_steps/{step_name}/writes/{slot}/{leaf_index}",
-                        "mapped write changes destination shape or dtype; "
+                        "write changes destination shape or dtype; "
                         f"expected={source.shape!r}/{source.dtype}, "
                         f"observed={target.shape!r}/{target.dtype}",
+                    )
+                if fixed_static and not source_array and eqx.tree_equal(source, target) is not True:
+                    raise WorkerContractValidationError(
+                        f"/phase_program/update_steps/{step_name}/writes/{slot}/{leaf_index}",
+                        "numerical write changes destination static value",
                     )
 
     def _result(
