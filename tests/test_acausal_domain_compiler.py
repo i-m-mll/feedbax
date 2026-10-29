@@ -212,3 +212,140 @@ def test_acausal_solver_mapping(solver_name: str, solver_cls: type, implicit: bo
         assert isinstance(system.root_finder, optx.Newton)
     else:
         assert system.root_finder is None
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("explicit_order", [False, True])
+def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested, explicit_order):
+    from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
+    from feedbax.contracts.migrations import migrate_acausal_graph_spec
+
+    spec = AcausalGraphSpec(
+        schema_id="feedbax.spec.acausal_graph",
+        schema_version="feedbax.spec.acausal_graph.v1",
+        physical_domain="rotational",
+        nodes={
+            "a": ComponentSpec(type="Inertia", params={"inertia": 2.0}),
+            "b": ComponentSpec(type="Inertia", params={"inertia": 3.0}),
+            "gear": ComponentSpec(type="GearRatio", params={"ratio": 2.0}),
+            "wall": ComponentSpec(type="RotationalGround"),
+            "spring": ComponentSpec(type="TorsionalSpring", params={"stiffness": 4.0}),
+            "drive": ComponentSpec(
+                type="ActuationInput", params={"port_name": "u", "source_kind": "torque"}
+            ),
+            "angle": ComponentSpec(
+                type="SensorOutput", params={"port_name": "qb", "quantity": "angle"}
+            ),
+            "velocity": ComponentSpec(
+                type="SensorOutput", params={"port_name": "vb", "quantity": "angular_velocity"}
+            ),
+            "torque": ComponentSpec(
+                type="SensorOutput", params={"port_name": "tb", "quantity": "torque"}
+            ),
+        },
+        connections=[
+            {"a": a, "b": b}
+            for a, b in [
+                (("a", "flange"), ("gear", "flange_a")),
+                (("b", "flange"), ("gear", "flange_b")),
+                (("wall", "flange"), ("spring", "flange_a")),
+                (("spring", "flange_b"), ("a", "flange")),
+                (("drive", "flange"), ("a", "flange")),
+                (("angle", "flange"), ("b", "flange")),
+                (("velocity", "flange"), ("b", "flange")),
+                (("torque", "flange"), ("b", "flange")),
+            ]
+        ],
+        solver={"solver_type": "euler", "dt": 0.01},
+    )
+    if explicit_order:
+        spec = spec.model_copy(
+            update={
+                "nodes": {
+                    **spec.nodes,
+                    **{
+                        name: spec.nodes[name].model_copy(
+                            update={"params": {**spec.nodes[name].params, "order": order}}
+                        )
+                        for name, order in (("velocity", 0), ("torque", 1), ("angle", 2))
+                    },
+                }
+            }
+        )
+    if nested:
+        inner = AcausalGraphSpec(
+            physical_domain="rotational",
+            nodes={
+                "gear": spec.nodes["gear"],
+                "left": ComponentSpec(type="BoundaryPort", params={"port_name": "flange_a"}),
+                "right": ComponentSpec(type="BoundaryPort", params={"port_name": "flange_b"}),
+            },
+            connections=[
+                {"a": ("left", "flange"), "b": ("gear", "flange_a")},
+                {"a": ("right", "flange"), "b": ("gear", "flange_b")},
+            ],
+            solver=spec.solver,
+        )
+        spec = spec.model_copy(
+            update={
+                "nodes": {
+                    **spec.nodes,
+                    "gear": ComponentSpec(
+                        type="AcausalSystem", input_ports=["flange_a", "flange_b"]
+                    ),
+                },
+                "subgraphs": {"gear": inner},
+            }
+        )
+    import json
+
+    payload = json.loads(spec.model_dump_json())
+    loaded = AcausalGraphSpec.model_validate(migrate_acausal_graph_spec(payload).payload)
+    report = compile_acausal_authoring_report(
+        loaded, node_path=["plant"], component_registry=_registry()
+    )
+    assert report.status == "ok", report.diagnostics
+    assert report.summary["n_equations"] == 2
+    assert report.summary["n_states"] == 2
+    system = compile_acausal_graph(loaded, "plant", _registry())
+    assert system.output_ports == (("vb", "tb", "qb") if explicit_order else ("qb", "tb", "vb"))
+    state = system.init_state(key=jax.random.PRNGKey(0))
+    outputs, state = system({"u": jnp.array([14.0])}, state, key=jax.random.PRNGKey(1))
+    assert outputs["vb"] == pytest.approx(0.02)
+    assert outputs["tb"] == pytest.approx(6.0)
+    outputs, _ = system({"u": jnp.array([14.0])}, state, key=jax.random.PRNGKey(2))
+    assert outputs["qb"] == pytest.approx(0.0002)
+
+    # A boundary-bearing child does not excuse an enclosing massless free coordinate.
+    unsupported = loaded.model_copy(
+        update={
+            "nodes": {
+                **loaded.nodes,
+                "a": ComponentSpec(type="AngleSensor"),
+                "b": ComponentSpec(type="AngleSensor"),
+            }
+        }
+    )
+    invalid_report = compile_acausal_authoring_report(
+        unsupported, node_path=["plant"], component_registry=_registry()
+    )
+    assert invalid_report.status == "error"
+    assert any(d.code == "acausal.unbalanced" for d in invalid_report.diagnostics)
+
+
+def test_invalid_persisted_gear_has_actionable_authoring_diagnostic():
+    from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
+
+    spec = AcausalGraphSpec(
+        physical_domain="rotational",
+        nodes={"gear": ComponentSpec(type="GearRatio", params={"ratio": 0.0})},
+        solver={"solver_type": "euler", "dt": 0.01},
+    )
+    report = compile_acausal_authoring_report(
+        spec, node_path=["plant"], component_registry=_registry()
+    )
+    assert report.status == "error"
+    assert any(
+        d.code == "acausal.gear_constraint" and "finite and nonzero" in d.message
+        for d in report.diagnostics
+    )

@@ -10,7 +10,7 @@ import diffrax as dfx
 import optimistix as optx
 
 from feedbax.acausal.base import AcausalConnection, AcausalElement
-from feedbax.acausal.analysis import StructuralAnalysis, analyze_system
+from feedbax.acausal.analysis import GearConstraintError, StructuralAnalysis, analyze_system
 from feedbax.acausal.rotational import (
     AngleSensor,
     AngularVelocitySensor,
@@ -176,6 +176,15 @@ def compile_acausal_graph(
         component_registry=component_registry,
         path=node_name,
     )
+    for kind, bindings, ports in (
+        ("input", flattened.input_bindings, interface.input_ports),
+        ("output", flattened.output_bindings, interface.output_ports),
+    ):
+        if set(bindings) != set(ports):
+            raise ValueError(
+                f"Acausal compiler internal error for node {node_name!r}: flattened "
+                f"{kind} bindings {tuple(bindings)!r} do not match derived interface {ports!r}"
+            )
     solver_type, root_finder = _solver_runtime(interior_spec.solver)
     system = AcausalSystem(
         elements=flattened.elements,
@@ -183,8 +192,8 @@ def compile_acausal_graph(
         dt=interior_spec.solver.dt,
         solver_type=solver_type,
         root_finder=root_finder,
-        input_bindings=flattened.input_bindings or None,
-        output_bindings=flattened.output_bindings or None,
+        input_bindings={name: flattened.input_bindings[name] for name in interface.input_ports},
+        output_bindings={name: flattened.output_bindings[name] for name in interface.output_ports},
     )
 
     if system.input_ports != interface.input_ports:
@@ -290,6 +299,7 @@ def _diagnose_acausal_spec(
     *,
     component_registry: Any,
     path: str,
+    nested: bool = False,
 ) -> list[DomainDiagnostic]:
     diagnostics: list[DomainDiagnostic] = []
     if not graph.nodes:
@@ -313,6 +323,7 @@ def _diagnose_acausal_spec(
                 subgraph,
                 component_registry=component_registry,
                 path=f"{path}.{node_id}",
+                nested=True,
             )
         )
     if graph.physical_domain == "planar_multibody":
@@ -326,13 +337,27 @@ def _diagnose_acausal_spec(
                 path=path,
             )
             diagnostics.extend(_diagnose_flattened_domains(graph, flattened, path))
-            if not any(diagnostic.severity == "error" for diagnostic in diagnostics):
+            has_external_nodes = nested and any(
+                node.type == "BoundaryPort" for node in graph.nodes.values()
+            )
+            if not has_external_nodes and not any(
+                diagnostic.severity == "error" for diagnostic in diagnostics
+            ):
                 diagnostics.extend(
                     _diagnose_structural_analysis(analyze_system(
                         flattened.elements,
                         flattened.connections,
                     ))
                 )
+        except GearConstraintError as exc:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.gear_constraint",
+                    message=str(exc),
+                    node_ids=[path],
+                )
+            )
         except Exception as exc:  # noqa: BLE001 - converted to structured report.
             diagnostics.append(
                 DomainDiagnostic(
