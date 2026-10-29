@@ -101,6 +101,7 @@ from .declarations import (
     declare_component,
 )
 from .templates import register_builtin_graph_templates
+from .prototypes import array_prototype, prototype_params, migrate_stateful_v1
 
 
 class _Registry(Protocol):
@@ -210,7 +211,7 @@ def _extract_channel_params(component: Any, model: Any) -> Any:
     values = {
         "delay": int(component.delay),
         **_channel_noise_values(component),
-        "input_shape": _prototype_shape(component.input_proto),
+        **prototype_params(component.input_proto),
     }
     return type(model).model_validate({name: values[name] for name in type(model).model_fields})
 
@@ -1078,7 +1079,7 @@ def stateful_passthrough_output_prototype(
 
     proto = inputs.get("input")
     if proto is None:
-        proto = _array_proto_from_shape(params.get("input_shape"))
+        proto = array_prototype(params)
     if proto is None:
         raise _missing_input("input", component="stateful passthrough")
     return {"output": proto}
@@ -1714,12 +1715,14 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 context_adapters={"input_shape": ("input_proto", "array_prototype")}
             ),
+            param_schema_version="2",
             category="Signal Processing",
             description="Discrete delay buffer.",
             parameter_fields=[
                 ParameterField(name="delay", type="int", default=1, min=0, required=True),
                 ParameterField(name="init_value", type="float", default=0.0, required=False),
                 ParameterField(name="input_shape", type="array", default=None, required=False),
+                ParameterField(name="input_dtype", type="str", default=None, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1731,6 +1734,19 @@ def register_builtin_components(registry: _Registry) -> None:
             output_prototype_fn=stateful_passthrough_output_prototype,
         )
     )
+    registry.register_migration(
+        ComponentMigration(
+            source_type="DelayLine",
+            target_type="DelayLine",
+            owner="feedbax",
+            source_param_schema_version="1",
+            target_param_schema_version="2",
+            migration_id="feedbax.component.DelayLine.params.v1-to-v2",
+            migrate_params=migrate_stateful_v1,
+            description="Preserve stateful declarations with optional inferred input dtype.",
+        )
+    )
+
     registry.register(
         declare_component(
             name="MLP",
@@ -2326,6 +2342,7 @@ def register_builtin_components(registry: _Registry) -> None:
             builder=_builders._build_channel,
             extractor=_extract_channel_params,
             override_reason="noise composition and prototype shape require authored recovery",
+            param_schema_version="2",
             category="Channels",
             description="Delay and noise for a signal.",
             parameter_fields=[
@@ -2361,6 +2378,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(name="noise_role", type="str", default=None, required=False),
                 ParameterField(name="noise_timing", type="str", default=None, required=False),
                 ParameterField(name="input_shape", type="array", default=None, required=False),
+                ParameterField(name="input_dtype", type="str", default=None, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2372,6 +2390,19 @@ def register_builtin_components(registry: _Registry) -> None:
             output_prototype_fn=stateful_passthrough_output_prototype,
         )
     )
+    registry.register_migration(
+        ComponentMigration(
+            source_type="Channel",
+            target_type="Channel",
+            owner="feedbax",
+            source_param_schema_version="1",
+            target_param_schema_version="2",
+            migration_id="feedbax.component.Channel.params.v1-to-v2",
+            migrate_params=migrate_stateful_v1,
+            description="Preserve stateful declarations with optional inferred input dtype.",
+        )
+    )
+
     registry.register(
         declare_component(
             name="FeedbackChannels",
@@ -2436,6 +2467,7 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 context_adapters={"input_shape": ("input_proto", "array_prototype")}
             ),
+            param_schema_version="2",
             category="Channels",
             description="First-order low-pass filter.",
             parameter_fields=[
@@ -2446,6 +2478,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(name="dt", type="float", default=0.001, min=0.0, required=True),
                 ParameterField(name="init_value", type="float", default=0.0, required=False),
                 ParameterField(name="input_shape", type="array", default=None, required=False),
+                ParameterField(name="input_dtype", type="str", default=None, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2457,6 +2490,19 @@ def register_builtin_components(registry: _Registry) -> None:
             output_prototype_fn=stateful_passthrough_output_prototype,
         )
     )
+    registry.register_migration(
+        ComponentMigration(
+            source_type="FirstOrderFilter",
+            target_type="FirstOrderFilter",
+            owner="feedbax",
+            source_param_schema_version="1",
+            target_param_schema_version="2",
+            migration_id="feedbax.component.FirstOrderFilter.params.v1-to-v2",
+            migrate_params=migrate_stateful_v1,
+            description="Preserve stateful declarations with optional inferred input dtype.",
+        )
+    )
+
     registry.register(
         declare_component(
             name="CurlField",

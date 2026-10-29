@@ -303,10 +303,9 @@ def _build_channel(params: Mapping[str, Any]) -> Channel:
     delay = int(params.get("delay", 0))
     noise = _noise_params(params)
     noise_func = _build_noise_func(noise)
-    input_proto = None
-    input_shape = params.get("input_shape")
-    if isinstance(input_shape, (list, tuple)):
-        input_proto = jnp.zeros(tuple(int(dim) for dim in input_shape))
+    from feedbax.component_registry.prototypes import array_prototype
+
+    input_proto = array_prototype(params)
     return Channel(
         delay=delay,
         noise_func=noise_func,
@@ -641,6 +640,7 @@ def build_component(
     params: Mapping[str, Any],
     *,
     component_registry: Any,
+    params_resolved: bool = False,
 ) -> Component:
     """Build a leaf component from a GraphSpec node."""
     meta = component_registry.get(node_type)
@@ -666,7 +666,7 @@ def build_component(
     if unsupported_message is not None:
         raise NotImplementedError(unsupported_message)
     try:
-        return meta.builder(params)
+        return meta.params.build_resolved(params) if params_resolved else meta.builder(params)
     except ValueError as exc:
         if node_type == "PenzaiAdapter" and "builder_name" in str(exc):
             raise ValueError(

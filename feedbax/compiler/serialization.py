@@ -3,7 +3,11 @@ from __future__ import annotations
 from typing import Any, Literal, Mapping, Sequence, cast
 
 from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
-from feedbax.contracts.component import DynamicPortPolicyError, validate_dynamic_port_layout
+from feedbax.contracts.component import (
+    DynamicPortPolicyError,
+    derive_dynamic_port_layout,
+    validate_dynamic_port_layout,
+)
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
@@ -16,8 +20,6 @@ from feedbax.contracts.array_values import (
     _parse_array_value_payload,
     materialize_array_value,
 )
-from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
-from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
 from feedbax.runtime.parameter_constraints import (
     apply_parameter_constraints,
@@ -29,8 +31,6 @@ from feedbax.compiler.builders import (
 )
 from feedbax.compiler.domain_compilers import get_domain_compiler
 from feedbax.compiler.prototypes import (
-    normalize_derived_dimensions,
-    normalize_stateful_prototypes,
     prototypes_from_task_bindings,
 )
 from feedbax.component_registry import builtin_domain_registry
@@ -195,121 +195,24 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
 def _instantiate_graph(
     spec: GraphSpec,
     component_registry: Any,
-    input_prototypes: Mapping[tuple[str, str], Any] | None = None,
 ) -> Graph:
     """Instantiate a resolved graph for the graph compiler."""
     execution_registry = component_registry
     metadata_registry = component_registry
-    migration = migrate_graph_spec(spec)
-    spec = GraphSpec.model_validate(migration.payload)
-    component_bindings: dict[str, ComponentBinding] = {}
-    resolved_nodes: dict[str, ComponentSpec] = {}
-    for node_name, node_spec in spec.nodes.items():
-        node_params, lowering_metadata = _split_lowering_metadata(node_spec)
-        if component_registry.should_resolve_component_spec(
-            node_spec.type,
-            param_schema_version=node_spec.param_schema_version,
-        ):
-            unresolved_meta = component_registry.get(node_spec.type)
-            if (
-                unresolved_meta is not None
-                and unresolved_meta.is_composite
-                and node_spec.param_schema_version in (None, unresolved_meta.param_schema_version)
-            ):
-                resolved_nodes[node_name] = node_spec.model_copy(update={"params": {}})
-                component_bindings[node_name] = ComponentBinding(
-                    type_id=node_spec.type,
-                    param_schema_version=unresolved_meta.param_schema_version,
-                )
-                continue
-            context_fields = (
-                unresolved_meta.params.build_context_fields
-                if unresolved_meta is not None
-                else frozenset()
-            )
-            build_context = {
-                key: value for key, value in node_params.items() if key in context_fields
-            }
-            resolution = component_registry.resolve_component_spec(
-                node_spec.type,
-                {
-                    key: value
-                    for key, value in node_params.items()
-                    if key not in context_fields
-                },
-                param_schema_version=node_spec.param_schema_version,
-            )
-            resolved_nodes[node_name] = node_spec.model_copy(
-                update={
-                    "type": resolution.type_id,
-                    "params": {
-                        **resolution.params,
-                        **build_context,
-                        **lowering_metadata,
-                    },
-                    "param_schema_version": resolution.param_schema_version,
-                }
-            )
-            component_bindings[node_name] = ComponentBinding(
-                type_id=resolution.type_id,
-                param_schema_version=resolution.meta.param_schema_version,
-            )
-        else:
-            resolved_nodes[node_name] = node_spec
-    spec = spec.model_copy(update={"nodes": resolved_nodes})
+    component_bindings = {
+        node_name: ComponentBinding(
+            type_id=node.type,
+            param_schema_version=node.param_schema_version,
+        )
+        for node_name, node in spec.nodes.items()
+        if node.param_schema_version is not None
+    }
     spec, authored_array_values = _materialize_graph_component_params(spec)
-    spec = materialize_additive_channel_adapters(spec)
-    spec = normalize_derived_dimensions(
-        spec,
-        input_prototypes,
-        component_registry=metadata_registry,
-    )
-    spec = normalize_stateful_prototypes(
-        spec,
-        input_prototypes,
-        component_registry=metadata_registry,
-    )
 
     nodes: dict[str, Component] = {}
     for node_name, node_spec in spec.nodes.items():
         node_type = node_spec.type
         node_params, _ = _split_lowering_metadata(node_spec)
-        resolve_component_spec = getattr(metadata_registry, "resolve_component_spec", None)
-        should_resolve_component_spec = getattr(
-            metadata_registry,
-            "should_resolve_component_spec",
-            None,
-        )
-        if (
-            node_name not in component_bindings
-            and callable(resolve_component_spec)
-            and callable(should_resolve_component_spec)
-            and should_resolve_component_spec(
-                node_type,
-                param_schema_version=node_spec.param_schema_version,
-            )
-        ):
-            unresolved_meta = metadata_registry.get(node_type)
-            context_fields = (
-                unresolved_meta.params.build_context_fields
-                if unresolved_meta is not None
-                else frozenset()
-            )
-            build_context = {
-                key: value for key, value in node_params.items() if key in context_fields
-            }
-            resolution = resolve_component_spec(
-                node_type,
-                {key: value for key, value in node_params.items() if key not in context_fields},
-                param_schema_version=node_spec.param_schema_version,
-            )
-            node_type = resolution.type_id
-            node_params = {**resolution.params, **build_context}
-            component_bindings[node_name] = ComponentBinding(
-                type_id=resolution.type_id,
-                param_schema_version=resolution.meta.param_schema_version,
-            )
-
         required_domain = required_interior_domain(node_type, metadata_registry)
         if required_domain is None and metadata_registry is not execution_registry:
             required_domain = required_interior_domain(node_type, execution_registry)
@@ -404,6 +307,7 @@ def _instantiate_graph(
             node_type,
             params,
             component_registry=execution_registry,
+            params_resolved=True,
         )
         if (
             tuple(component.input_ports) != declared_input_ports
@@ -474,8 +378,7 @@ def _validate_dynamic_component_ports(
     meta = component_registry.get(node_type)
     if meta is None or meta.dynamic_port_policy is None:
         return tuple(input_ports), tuple(output_ports)
-    layout = component_registry.dynamic_port_layout(node_type, params)
-    assert layout is not None
+    layout = derive_dynamic_port_layout(meta.dynamic_port_policy, params)
     declared_inputs = tuple(input_ports) or layout.input_ports
     declared_outputs = tuple(output_ports) or layout.output_ports
     try:

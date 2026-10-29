@@ -134,8 +134,13 @@ protected delivery and owner-ratification step.
 - Amend `graph-compiler` so `feedbax.compiler` additionally guarantees
   `CompilationFailureRecord`, `CompilerDiagnostic`, `CompilerPhase`,
   `DiagnosticSeverity`, and `GraphCompilationError`. The candidate schemas are
-  `feedbax.graph_compilation_record` v3 and `feedbax.graph_compilation_failure` v1;
-  earlier and unknown record versions reject rather than being restamped.
+  `feedbax.resolved_graph` v3, `feedbax.graph_compilation_record` v4, and
+  `feedbax.graph_compilation_failure` v1, produced by compiler version 2.
+  Earlier and unknown resolved-graph and compilation-record versions reject
+  with a request to recompile the authored `GraphDocument`; they are not
+  restamped as evidence of the current resolved semantics. `GraphDocument`,
+  authored checkpoint and manifest identities, and the resolved digest preimage
+  retain their existing definitions.
 
 ## Proposed canonical content-store amendment
 

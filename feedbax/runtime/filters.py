@@ -24,7 +24,7 @@ from feedbax.runtime.state import StateBounds
 class FilterState(eqx.Module):
     """Holds the current filtered signal and solver state."""
 
-    output: jax.Array
+    output: PyTree[Array]
     solver: PyTree
 
 
@@ -75,11 +75,18 @@ class FirstOrderFilter(Component):
         state: FilterState,
         input: PyTree[jax.Array],
     ) -> FilterState:
-        tau = jnp.where(input >= state.output, self.tau_rise, self.tau_decay)
+        def derivative(value, output):
+            tau = jnp.where(
+                value >= output,
+                jnp.asarray(self.tau_rise, dtype=output.dtype),
+                jnp.asarray(self.tau_decay, dtype=output.dtype),
+            )
+            return (value - output) / tau
+
         return eqx.tree_at(
             lambda s: s.output,
             state,
-            (input - state.output) / tau,
+            jt.map(derivative, input, state.output),
         )
 
     @cached_property
@@ -107,9 +114,17 @@ class FirstOrderFilter(Component):
         )
 
         output_state = eqx.tree_at(
-            lambda s: s.solver,
+            lambda s: (s.output, s.solver),
             output_state,
-            solver_state,
+            (
+                jt.map(
+                    lambda value, previous: value.astype(previous.dtype),
+                    output_state.output,
+                    filter_state.output,
+                ),
+                solver_state,
+            ),
+            is_leaf=lambda value: value is None,
         )
         state = state.set(self.state_index, output_state)
         return {"output": output_state.output}, state
