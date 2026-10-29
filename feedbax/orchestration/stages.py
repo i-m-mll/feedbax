@@ -3139,6 +3139,22 @@ class StageEngine:
             return stopped.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
 
         assert decision.action == "stop"
+        request_stop = None
+        if any(
+            row.status in ("launched", "ready", "running") for row in state.rows.values()
+        ):
+            request_stop = self._driver_hook(
+                DriverHook.CHECKPOINT_STOP,
+                "request_stop_at_checkpoint",
+            )
+            if request_stop is None:
+                self.store.save(
+                    state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
+                )
+                raise OrchestrationStageError(
+                    f"driver {self.driver.realized_capabilities.driver_name!r} does not support "
+                    "checkpoint-safe stop; explicitly request terminate for immediate termination"
+                )
         for row in self.bundle.rows:
             row_state = state.rows[row.row_id]
             if row_state.status in ("completed", "failed", "stopped"):
@@ -3155,24 +3171,8 @@ class StageEngine:
                     ),
                 )
                 continue
-            request_stop = self._driver_hook(
-                DriverHook.CHECKPOINT_STOP,
-                "request_stop_at_checkpoint",
-            )
-            if request_stop is not None:
-                request_stop(self.bundle, row, state)
-            else:
-                self.driver.stop_row(self.bundle, row, state)
-                state = state.with_row(
-                    row.row_id,
-                    row_state.model_copy(
-                        update={
-                            "status": "stopped",
-                            "completed_at": utc_now(),
-                            "error": "operator-stop-after-checkpoint",
-                        }
-                    ),
-                )
+            assert request_stop is not None
+            request_stop(self.bundle, row, state)
         return state.model_copy(
             update={
                 "abort_reason": "operator-stop-after-checkpoint",

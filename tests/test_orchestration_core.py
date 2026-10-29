@@ -3477,6 +3477,75 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     assert budget_state.registration_payload["status"] == "aborted"
 
 
+@pytest.mark.parametrize("status", ["launched", "ready", "running"])
+def test_monitor_rejects_unsupported_checkpoint_stop_without_row_effects(
+    tmp_path: Path, status: str,
+) -> None:
+    bundle = _bundle(tmp_path, rows=[_compiled_row("pending"), _compiled_row("active")])
+    driver = FakeDriver()
+    decision = CancellationDecision("stop", "test", 123.0)
+    engine = StageEngine(bundle=bundle, driver=driver, interruption_probe=lambda: decision)
+    state = engine._initial_state().with_row("active", RowState(status=status))
+    engine.store.initialize(state)
+
+    with pytest.raises(OrchestrationStageError, match="checkpoint-safe stop.*terminate"):
+        engine._run_stage("MONITOR", state)
+
+    persisted = engine.store.load()
+    assert persisted.stage("MONITOR").status == "failed"
+    assert persisted.rows == state.rows
+    assert persisted.abort_reason is None
+    assert persisted.budget_counters["cancellation"] == decision.as_provenance()
+    assert driver.calls == []
+
+
+@pytest.mark.parametrize("driver_type", [LocalOrchestrationDriver, RunPodOrchestrationDriver])
+def test_checkpoint_stop_waits_for_active_rows_and_stops_pending_rows(
+    tmp_path: Path, driver_type: type,
+) -> None:
+    class CheckpointDriver(FakeDriver):
+        realized_capabilities = driver_type.realized_capabilities if (
+            driver_type is LocalOrchestrationDriver
+        ) else driver_type.capability_envelope.realize("engine-acquired")
+
+        def request_stop_at_checkpoint(self, bundle, row, state):
+            self._call(f"checkpoint-stop:{row.row_id}")
+
+    bundle = _bundle(tmp_path, rows=[_compiled_row("pending"), _compiled_row("active")])
+    driver = CheckpointDriver()
+    engine = StageEngine(bundle=bundle, driver=driver)
+    state = engine._initial_state().with_row("active", RowState(status="running"))
+    decision = CancellationDecision("stop", "test", 123.0)
+
+    stopped = engine._apply_interruption(state, decision)
+
+    assert driver.calls == ["checkpoint-stop:active"]
+    assert stopped.rows["active"] == state.rows["active"]
+    assert stopped.rows["pending"].status == "stopped"
+    assert stopped.abort_reason == "operator-stop-after-checkpoint"
+    assert stopped.budget_counters["cancellation"] == decision.as_provenance()
+
+
+def test_pending_stop_and_explicit_termination_do_not_require_checkpoint_hook(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row")])
+    driver = FakeDriver()
+    engine = StageEngine(bundle=bundle, driver=driver)
+    pending = engine._initial_state()
+
+    stopped = engine._apply_interruption(pending, CancellationDecision("stop", "test", 123.0))
+
+    assert stopped.rows["row"].status == "stopped"
+    assert driver.calls == []
+    active = pending.with_row("row", RowState(status="running"))
+    terminated = engine._apply_interruption(
+        active, CancellationDecision("terminate", "test", 124.0)
+    )
+
+    assert terminated.rows["row"].status == "stopped"
+    assert terminated.rows["row"].error == terminated.abort_reason == "operator-terminate"
+    assert driver.calls == ["stop:row"]
+
+
 def test_local_monitor_requests_checkpoint_stop_and_records_provenance(tmp_path: Path) -> None:
     script = tmp_path / "interruptible_row.py"
     script.write_text(
