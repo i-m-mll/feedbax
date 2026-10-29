@@ -39,6 +39,7 @@ from feedbax._vendor.jax_cookbook import is_type
 import numpy as np
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from feedbax._atomic import write_bytes_atomic as _write_bytes_atomic
 from feedbax._secure_fs import (
     SecurePathRigor,
     directory_open_flags,
@@ -7815,23 +7816,6 @@ def _durable_json_bytes(payload: Mapping[str, Any]) -> bytes:
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_bytes_atomic(path, _durable_json_bytes(payload))
-
-
-def _write_bytes_atomic(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
-        raise
 
 
 def _sha256_file(path: Path) -> str:

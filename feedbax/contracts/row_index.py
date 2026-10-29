@@ -26,14 +26,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 import json
-import os
 from pathlib import Path
 import re
-import tempfile
 from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
+from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.base import (
     ParentRef,
     StrictModel,
@@ -670,21 +669,7 @@ def write_row_index_custody_bindings(
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     text = serialize_row_index_custody_bindings(document)
-    handle, temporary_name = tempfile.mkstemp(
-        dir=str(target.parent),
-        prefix=f".{target.name}.",
-        suffix=".tmp",
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, target)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+    write_bytes_atomic(target, text.encode("utf-8"))
     return target
 
 

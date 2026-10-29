@@ -55,12 +55,12 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
-import tempfile
 from typing import Any, Literal
 import uuid
 
 from pydantic import Field, model_validator
 
+from feedbax._atomic import write_bytes_atomic
 from feedbax.analysis.fulfillment import (
     AdmissionOutcome,
     AdmittedManifestBytes,
@@ -959,7 +959,7 @@ def _quarantine_bytes(
                 f"quarantine entry {destination} holds different bytes than its own SHA-256 names"
             )
     else:
-        _write_bytes_atomically(data, path=destination)
+        write_bytes_atomic(destination, data)
     return QuarantinedBytes(
         origin=origin,
         role=role,
@@ -1052,7 +1052,7 @@ def _publish_manifest_bytes(manifest: AnyManifest, *, path: Path, root: Path) ->
     bytes or the fully written replacement, never a partial candidate.
     """
     data = manifest.model_dump_json(indent=2, exclude_none=True).encode("utf-8") + b"\n"
-    _write_bytes_atomically(data, path=path)
+    write_bytes_atomic(path, data)
     index_manifest_file(path, root=root)
     return sha256_bytes(data)
 
@@ -1075,27 +1075,8 @@ def _publish_repair_record(
         / safe_manifest_key(record.manifest_id)
     )
     path = directory / f"{failed_manifest_sha256}.json"
-    _write_bytes_atomically(
+    write_bytes_atomic(
+        path,
         record.model_dump_json(indent=2).encode("utf-8") + b"\n",
-        path=path,
     )
     return path
-
-
-def _write_bytes_atomically(data: bytes, *, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = tempfile.NamedTemporaryFile(
-        dir=path.parent,
-        prefix=".fulfillment-staging-",
-        delete=False,
-    )
-    staging = Path(handle.name)
-    try:
-        with handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(staging, path)
-    except BaseException:
-        staging.unlink(missing_ok=True)
-        raise
