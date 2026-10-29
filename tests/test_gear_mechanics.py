@@ -279,3 +279,55 @@ def test_branch_with_inverse_path_and_colocated_inertias():
     assert readings["b_TorqueSensor"] == pytest.approx(8.0)
     # Kinetic energy grows only by the drive power across all three shafts.
     assert 2 * 0.3 * 1 + 4 * 0.6 * 2 + 9 * 0.2 * (2 / 3) == pytest.approx(22 * 0.3)
+
+
+def test_grounded_net_torque_has_known_zero_acceleration_under_load():
+    elements = {
+        "wall": RotationalGround("wall"),
+        "inertia": Inertia("inertia", inertia=2.0),
+        "drive": TorqueSource("drive"),
+        "net": TorqueSensor("net"),
+    }
+    connections = [
+        _connection((name, "flange"), ("wall", "flange")) for name in ("inertia", "drive", "net")
+    ]
+    layout, _, params, sensors = assemble_system(elements, connections)
+    assert layout.total_size == 0
+    assert sensors(jnp.zeros(0), jnp.array([14.0]), params)["net"] == pytest.approx(0.0)
+
+
+def test_free_net_torque_requires_solved_acceleration():
+    elements = {"drive": TorqueSource("drive"), "net": TorqueSensor("net")}
+    with pytest.raises(ValueError, match="no solved acceleration.*requires inertia"):
+        assemble_system(elements, [_connection(("drive", "flange"), ("net", "flange"))])
+
+
+def test_prescribed_net_effort_requires_acceleration_authority():
+    from feedbax.acausal import ForceSensor, Mass, PrescribedMotion
+
+    elements = {
+        "driver": PrescribedMotion("driver"),
+        "mass": Mass("mass"),
+        "net": ForceSensor("net"),
+    }
+    connections = [_connection((name, "flange"), ("driver", "flange")) for name in ("mass", "net")]
+    with pytest.raises(ValueError, match="prescribed velocity inputs do not supply acceleration"):
+        assemble_system(elements, connections)
+
+
+def test_prescribed_coordinate_and_velocity_observations_use_supplied_values():
+    from feedbax.acausal import PositionSensor, PrescribedMotion, VelocitySensor
+
+    elements = {
+        "driver": PrescribedMotion("driver"),
+        "position": PositionSensor("position"),
+        "velocity": VelocitySensor("velocity"),
+    }
+    connections = [
+        _connection((name, "flange"), ("driver", "flange")) for name in ("position", "velocity")
+    ]
+    layout, _, params, sensors = assemble_system(elements, connections)
+    assert layout.total_size == 0
+    outputs = sensors(jnp.zeros(0), jnp.array([0.4, -0.3]), params)
+    assert outputs["position"] == pytest.approx(0.4)
+    assert outputs["velocity"] == pytest.approx(-0.3)
