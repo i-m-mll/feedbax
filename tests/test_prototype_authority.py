@@ -544,3 +544,144 @@ def test_prototype_dependencies_defer_without_reinterpreting_parameters() -> Non
     compiled = compile_graph(GraphDocument(graph=graph), registry)
     assert compiled.resolved.graph.nodes["delay"].params["input_shape"] == [1]
     assert compiled.resolved.graph.nodes["base"].params["value"] == value
+
+
+def test_parameter_determined_prototypes_are_equivalent_across_subgraph_boundaries() -> None:
+    from feedbax.runtime.graph import init_state_from_component
+
+    linear = ComponentSpec(
+        type="Linear",
+        params={"input_size": 2, "output_size": 3},
+        input_ports=["input"],
+        output_ports=["output"],
+    )
+    body = GraphSpec(
+        nodes={"linear": linear},
+        input_ports=["input"],
+        input_bindings={"input": ("linear", "input")},
+        output_ports=["output"],
+        output_bindings={"output": ("linear", "output")},
+    )
+    results = []
+    for nested in (False, True):
+        source = "body" if nested else "linear"
+        spec = GraphSpec(
+            nodes={
+                source: ComponentSpec(
+                    type="Subgraph", input_ports=["input"], output_ports=["output"]
+                )
+                if nested
+                else linear,
+                "delay": ComponentSpec(
+                    type="DelayLine",
+                    params={"delay": 1},
+                    input_ports=["input"],
+                    output_ports=["output"],
+                ),
+            },
+            subgraphs={"body": body} if nested else None,
+            wires=[
+                dict(
+                    source_node=source,
+                    source_port="output",
+                    target_node="delay",
+                    target_port="input",
+                )
+            ],
+            input_ports=["input"],
+            input_bindings={"input": (source, "input")},
+            output_ports=["output"],
+            output_bindings={"output": ("delay", "output")},
+        )
+        compiled = compile_graph(
+            GraphDocument(graph=spec), ComponentRegistry(load_user_components=False)
+        )
+        assert compiled.resolved.graph.nodes["delay"].params["input_shape"] == [3]
+        graph = compiled.graph
+
+        def step(state, value):
+            outputs, state, _ = graph.step({"input": value}, state, key=jax.random.PRNGKey(0))
+            return state, outputs["output"]
+
+        _, output = jax.lax.scan(step, init_state_from_component(graph), jnp.ones((2, 2)))
+        assert output.shape == (2, 3)
+        results.append(output)
+    assert jnp.array_equal(*results)
+
+
+@pytest.mark.parametrize(
+    ("rule_patch", "shape", "reason"),
+    [
+        ({"node": "ghost"}, (2,), "targets missing node 'ghost'"),
+        ({"port": "ghost"}, None, "targets missing input port linear.ghost"),
+        ({"axis": 2}, (2,), "cannot select a positive dimension"),
+        ({}, (0,), "cannot select a positive dimension"),
+        ({}, None, "could not resolve a prototype"),
+    ],
+)
+def test_invalid_derived_rules_reject_in_compilation_and_studio(rule_patch, shape, reason) -> None:
+    from feedbax.compiler import GraphCompilationError
+    from feedbax.studio.schema import validate_graph_connection_schema
+    from feedbax.contracts.graph import StudioTaskBindingSpec
+
+    rule = {"node": "linear", "param": "input_size", "port": "input", **rule_patch}
+    rules = [rule]
+    if "port" in rule_patch:
+        rules.insert(0, {"node": "linear", "param": "input_size", "port": "input"})
+    graph = GraphSpec(
+        nodes={
+            "linear": ComponentSpec(
+                type="Linear",
+                params={"input_size": 2, "output_size": 3},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        derived_dimensions=rules,
+        input_ports=["input"],
+        input_bindings={"input": ("linear", "input")},
+    )
+    prototypes = {} if shape is None else {("__graph__", "input"): jnp.zeros(shape)}
+    registry = ComponentRegistry(load_user_components=False)
+    with pytest.raises(GraphCompilationError) as caught:
+        compile_graph(GraphDocument(graph=graph), registry, prototypes)
+    assert reason in caught.value.record.diagnostics[0].observed_condition
+    if rule_patch.get("node") == "ghost":
+        assert (
+            caught.value.record.diagnostics[0].source_anchor.authored_path
+            == "/graph/derived_dimensions/0"
+        )
+    bindings = (
+        StudioTaskBindingSpec()
+        if shape is None
+        else StudioTaskBindingSpec.model_validate(
+            {
+                "exposed_data": [
+                    {
+                        "id": "signal",
+                        "label": "Signal",
+                        "kind": "signal",
+                        "role": "model_input",
+                        "path": "inputs.signal",
+                        "bindable": True,
+                        "expected_shape": list(shape),
+                    }
+                ],
+                "bindings": [
+                    {
+                        "id": "signal",
+                        "source_data_id": "signal",
+                        "target_node_id": "linear",
+                        "target_port": "input",
+                        "role": "model_input",
+                    }
+                ],
+            }
+        )
+    )
+    issues = validate_graph_connection_schema(
+        graph, "/graph", bindings, component_registry=registry
+    )
+    issue = next(issue for issue in issues if issue.type == "derived_dimension_unresolved")
+    assert reason in issue.message
+    assert issue.location["path"] == f"/graph/derived_dimensions/{len(rules) - 1}"

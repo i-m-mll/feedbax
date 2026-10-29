@@ -160,6 +160,23 @@ class _Completion:
             except (KeyError, TypeError, ValueError) as exc:
                 self.fail(name, exc)
                 self.nodes[name] = node
+        for index, rule in enumerate(self.graph.derived_dimensions):
+            node = self.nodes.get(rule.node)
+            if node is None:
+                reason = f"targets missing node {rule.node!r}"
+            elif rule.source != "input_port":
+                reason = f"uses unsupported source {rule.source!r}"
+            elif rule.port not in node.input_ports:
+                reason = f"targets missing input port {rule.node}.{rule.port}"
+            else:
+                continue
+            self.errors.setdefault(
+                rule.node,
+                ParameterResolutionError(
+                    f"{path}/derived_dimensions/{index}",
+                    DerivedDimensionError(f"Derived dimension rule {index} {reason}", rule=rule),
+                ),
+            )
         for name, subgraph in (self.graph.subgraphs or {}).items():
             if isinstance(subgraph, GraphSpec):
                 self.children[name] = _Completion(
@@ -230,15 +247,9 @@ class _Completion:
 
     def dimensions(self, name: str) -> list[tuple[Any, int]] | None:
         result = []
-        node = self.nodes[name]
         for index, rule in enumerate(self.graph.derived_dimensions):
             if rule.node != name:
                 continue
-            if rule.source != "input_port" or rule.port not in node.input_ports:
-                raise DerivedDimensionError(
-                    f"Derived dimension rule {index} targets unsupported input {name}.{rule.port}",
-                    rule=rule,
-                )
             shape = shape_from_proto(self.inputs.get((name, rule.port)))
             if shape is None:
                 return None
@@ -359,12 +370,6 @@ class _Completion:
                 for port in node.input_ports
                 if (name, port) in self.inputs
             }
-            if (
-                node.input_ports
-                and not inputs
-                and not any(wire.source_node == name for wire in self.graph.wires)
-            ):
-                return False
             from feedbax.compiler.serialization import _materialize_component_param_value
 
             params = _materialize_component_param_value(node.params, declarations={}, path=())
@@ -439,7 +444,15 @@ class _Completion:
                             self.deferred[wire.source_node],
                         )
                     )
-            rule = next((rule for rule in self.graph.derived_dimensions if rule.node == name), None)
+            rule = next(
+                (
+                    rule
+                    for rule in self.graph.derived_dimensions
+                    if rule.node == name
+                    and shape_from_proto(self.inputs.get((name, rule.port))) is None
+                ),
+                None,
+            )
             cause = (
                 DerivedDimensionError(
                     f"Derived dimension for {name}.{rule.param} could not resolve a prototype "

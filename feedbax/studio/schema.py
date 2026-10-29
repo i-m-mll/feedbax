@@ -584,7 +584,7 @@ def _parameter_resolution_issues(
                 if isinstance(cause, DerivedDimensionConflict)
                 else "derived_dimension_unresolved"
             )
-            graph_path = error.authored_path.rsplit("/nodes/", 1)[0]
+            graph_path = error.authored_path.rsplit("/", 2)[0]
             graph = resolution.graph
             for name in graph_path.split("/")[3::2]:
                 graph = graph.subgraphs[name.replace("~1", "/").replace("~0", "~")]
