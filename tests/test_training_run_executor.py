@@ -72,7 +72,13 @@ from feedbax.contracts.spec_storage import (
     training_spec_canonical_bytes,
     training_spec_sha256,
 )
+from tests.support.training_fixtures import synthetic_supervised_update_kernels
+from tests.support.training_fixtures import synthetic_training_program_registry
+from tests.support.training_fixtures import synthetic_supervised_training_program
 from feedbax.contracts.training import (
+    default_training_program_registry,
+    standard_supervised_training_program,
+    MethodRefSpec,
     GovernedScheduleProjection,
     LrScheduleSpec,
     LossTermSpec,
@@ -94,13 +100,10 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     WorkerExecutionSpec,
     evolve_training_program,
-    standard_supervised_update_kernels,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
-    standard_supervised_training_program,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
-    default_training_program_registry,
 )
 from feedbax.contracts.worker import (
     AxisCoordinateSpec,
@@ -238,7 +241,7 @@ def _run_spec() -> TrainingRunSpec:
 
 
 def _resolved_method(spec: TrainingRunSpec):
-    return default_training_program_registry().resolve_execution(
+    return synthetic_training_program_registry().resolve_execution(
         spec.method_ref,
         spec.method_payload,
         worker_execution=spec.worker_execution,
@@ -430,7 +433,7 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
         spec, checkpoint_root, restored_count=restored_count
     )
     program = evolve_training_program(
-        standard_supervised_training_program(),
+        synthetic_supervised_training_program(),
         contract_compiler=lambda _payload: spec.worker_execution.method_contract,
         optimizer_step_extractor=optimizer_step,
         update_kernels_factory=lambda _payload: {
@@ -1218,7 +1221,7 @@ def test_nan_detector_keeps_inf_only_metrics_healthy_with_one_transfer(
 
     monkeypatch.setattr(training_executor.jax, "device_get", counted_device_get)
     spec = _run_spec()
-    registry = default_training_program_registry()
+    registry = synthetic_training_program_registry()
     observed = training_executor._nan_attribution_detection(
         run_spec=spec,
         run_id="inf-only",
@@ -1242,7 +1245,7 @@ def test_nan_detector_keeps_inf_only_metrics_healthy_with_one_transfer(
 def test_nan_detection_caps_offending_leaf_exemplars() -> None:
     spec = _run_spec()
     detection = training_executor._nan_attribution_detection(
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_spec=spec,
         run_id="leaf-cap",
         resolved_method=_resolved_method(spec),
@@ -1277,7 +1280,7 @@ def test_nan_detection_metric_cap_keeps_the_tripping_nan_metric() -> None:
     metrics["z_tripping_nan"] = jnp.nan
 
     detection = training_executor._nan_attribution_detection(
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_spec=spec,
         run_id="metric-cap",
         resolved_method=_resolved_method(spec),
@@ -1338,7 +1341,7 @@ def test_nan_detection_captures_mapped_false_predicate_components() -> None:
         array_axis=0,
     )
     detection = training_executor._nan_attribution_detection(
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_spec=spec,
         run_id="predicate-attribution",
         resolved_method=_resolved_method(spec),
@@ -1370,7 +1373,7 @@ def test_nan_detection_captures_mapped_false_predicate_components() -> None:
 def test_nan_detection_survives_corrupt_batch_authority() -> None:
     spec = _run_spec()
     detection = training_executor._nan_attribution_detection(
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_spec=spec,
         run_id="corrupt-batch-authority",
         resolved_method=_resolved_method(spec),
@@ -2533,7 +2536,7 @@ def test_mapped_executor_rejects_loose_prestacked_and_scalar_preparation(kwargs)
         match="active mapping levels require a Feedbax-materialized execution preparation",
     ):
         execute_training_run_spec(
-            _mapped_run_spec(), registry=default_training_program_registry(), **kwargs
+            _mapped_run_spec(), registry=synthetic_training_program_registry(), **kwargs
         )
 
 
@@ -2544,7 +2547,7 @@ def test_mapped_executor_rejects_public_construction_and_forged_no_seal() -> Non
 
     with pytest.raises(TrainingRunExecutorError, match="lacks Feedbax provenance seal"):
         execute_training_run_spec(
-            _mapped_run_spec(), registry=default_training_program_registry(), preparation=forged
+            _mapped_run_spec(), registry=synthetic_training_program_registry(), preparation=forged
         )
 
 
@@ -2560,7 +2563,7 @@ def test_sealed_mapped_preparation_rejects_copy_and_mutated_nested_content() -> 
     object.__setattr__(noncallable, "restored_schedule_context_binder", object())
     with pytest.raises(TrainingRunExecutorError, match="must be callable"):
         execute_training_run_spec(
-            spec, registry=default_training_program_registry(), preparation=noncallable
+            spec, registry=synthetic_training_program_registry(), preparation=noncallable
         )
 
     immutable_mapping = type(preparation.initial_slots)
@@ -2572,7 +2575,7 @@ def test_sealed_mapped_preparation_rejects_copy_and_mutated_nested_content() -> 
     )
     with pytest.raises(TrainingRunExecutorError, match="mutable mapping"):
         execute_training_run_spec(
-            spec, registry=default_training_program_registry(), preparation=nested
+            spec, registry=synthetic_training_program_registry(), preparation=nested
         )
 
     history = _valid_materialized_preparation(spec)
@@ -2583,7 +2586,7 @@ def test_sealed_mapped_preparation_rejects_copy_and_mutated_nested_content() -> 
     )
     with pytest.raises(TrainingRunExecutorError, match="contains BatchHistory"):
         execute_training_run_spec(
-            spec, registry=default_training_program_registry(), preparation=history
+            spec, registry=synthetic_training_program_registry(), preparation=history
         )
 
     wrong_shape = _valid_materialized_preparation(spec)
@@ -2594,7 +2597,7 @@ def test_sealed_mapped_preparation_rejects_copy_and_mutated_nested_content() -> 
     )
     with pytest.raises(TrainingRunExecutorError, match="leading axis size 5"):
         execute_training_run_spec(
-            spec, registry=default_training_program_registry(), preparation=wrong_shape
+            spec, registry=synthetic_training_program_registry(), preparation=wrong_shape
         )
 
 
@@ -2612,14 +2615,14 @@ def test_mapped_executor_rejects_stale_fingerprint_and_run_spec_identity() -> No
     object.__setattr__(stale, "identity", replace(stale.identity, fingerprint="0" * 64))
     with pytest.raises(TrainingRunExecutorError, match="fingerprint is stale"):
         execute_training_run_spec(
-            spec, registry=default_training_program_registry(), preparation=stale
+            spec, registry=synthetic_training_program_registry(), preparation=stale
         )
 
     valid = _valid_materialized_preparation(spec)
     changed_spec = spec.model_copy(update={"metadata": {"identity_drift": True}})
     with pytest.raises(TrainingRunExecutorError, match="does not match TrainingRunSpec"):
         execute_training_run_spec(
-            changed_spec, registry=default_training_program_registry(), preparation=valid
+            changed_spec, registry=synthetic_training_program_registry(), preparation=valid
         )
 
 
@@ -2646,7 +2649,7 @@ def test_mapped_executor_rejects_stale_coordinate_rng_and_provider_identity(
 
     with pytest.raises(TrainingRunExecutorError, match=message):
         execute_training_run_spec(
-            spec, registry=default_training_program_registry(), preparation=preparation
+            spec, registry=synthetic_training_program_registry(), preparation=preparation
         )
 
 
@@ -2785,7 +2788,7 @@ def _chunked_registry(
         }
     )
     contract = contract.model_copy(update={"phase_program": program, "state_slots": state_slots})
-    base_kernel = standard_supervised_update_kernels()[
+    base_kernel = synthetic_supervised_update_kernels()[
         "feedbax.training.standard_supervised.gradient_update"
     ]
 
@@ -2837,7 +2840,7 @@ def _interval_registry(*, total_updates: int) -> tuple[TrainingProgramRegistry, 
             payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
             payload_model=StandardSupervisedMethodPayload,
             contract_factory=lambda: contract,
-            update_kernels_factory=lambda _payload: standard_supervised_update_kernels(),
+            update_kernels_factory=lambda _payload: synthetic_supervised_update_kernels(),
             owner="tests.test_training_run_executor",
             package="feedbax",
         )
@@ -2886,7 +2889,7 @@ def _history_registry(*, stop_after_program_step: int) -> tuple[TrainingProgramR
             ],
         }
     )
-    base_kernel = standard_supervised_update_kernels()[
+    base_kernel = synthetic_supervised_update_kernels()[
         "feedbax.training.standard_supervised.gradient_update"
     ]
 
@@ -2907,7 +2910,7 @@ def _history_registry(*, stop_after_program_step: int) -> tuple[TrainingProgramR
     registry = TrainingProgramRegistry()
     registry.register_program(
         evolve_training_program(
-            standard_supervised_training_program(),
+            synthetic_supervised_training_program(),
             contract_compiler=lambda _payload: contract,
             update_kernels_factory=lambda _payload: {
                 "feedbax.training.standard_supervised.gradient_update": gradient_update
@@ -2958,7 +2961,7 @@ def _nan_registry(
     base_registration = registry.resolve(standard_supervised_method_ref(), path="/method_ref")
     assert base_registration.contract_factory is not None
     contract = base_registration.contract_factory()
-    base_kernel = standard_supervised_update_kernels()[
+    base_kernel = synthetic_supervised_update_kernels()[
         "feedbax.training.standard_supervised.gradient_update"
     ]
 
@@ -2978,7 +2981,7 @@ def _nan_registry(
     runtime_registry = TrainingProgramRegistry()
     runtime_registry.register_program(
         evolve_training_program(
-            standard_supervised_training_program(),
+            synthetic_supervised_training_program(),
             contract_compiler=lambda _payload: contract,
             update_kernels_factory=lambda _payload: {
                 "feedbax.training.standard_supervised.gradient_update": gradient_update
@@ -3034,7 +3037,7 @@ class _RlrmpManifestProjectionValues(BaseModel):
 
 
 def _projection_registry() -> TrainingProgramRegistry:
-    registry = default_training_program_registry()
+    registry = synthetic_training_program_registry()
     registry.register_manifest_metadata_projection(
         TrainingManifestMetadataProjectionRegistration(
             source_payload_kind="RLRMPRunSpec",
@@ -3072,7 +3075,7 @@ def test_execute_training_run_spec_emits_native_manifest_and_checkpoint(
     checkpoint_root = tmp_path / "checkpoint-custody"
     result = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="toy-run",
         initial_slots=_initial_slots(),
         manifest_root=tmp_path,
@@ -3197,7 +3200,7 @@ def test_program_metadata_projection_is_the_default_custody_provider(tmp_path: P
         optimizer_kind: str
 
     program = evolve_training_program(
-        standard_supervised_training_program(),
+        synthetic_supervised_training_program(),
         metadata_projector=TrainingMethodMetadataProjector(
             schema_id="feedbax.tests.standard_metadata",
             schema_version="feedbax.tests.standard_metadata.v1",
@@ -3232,7 +3235,7 @@ def test_program_metadata_projection_rejects_reserved_collision_before_output(
         runtime_telemetry: bool
 
     program = evolve_training_program(
-        standard_supervised_training_program(),
+        synthetic_supervised_training_program(),
         metadata_projector=TrainingMethodMetadataProjector(
             schema_id="feedbax.tests.collision_metadata",
             schema_version="feedbax.tests.collision_metadata.v1",
@@ -3257,7 +3260,7 @@ def test_program_metadata_projection_rejects_reserved_collision_before_output(
 def test_projection_free_manifest_serialization_remains_absent(tmp_path: Path) -> None:
     result = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="no-projection",
         initial_slots=_initial_slots(),
         manifest_root=tmp_path,
@@ -3282,7 +3285,7 @@ def test_reserved_metadata_policy_matches_all_constructed_feedbax_root_keys(
     context = _execution_context(collection_root=tmp_path / "row")
     result = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         initial_slots=_initial_slots(),
         manifest_root=tmp_path / "runs",
         execution_context=context,
@@ -3373,7 +3376,7 @@ def test_manifest_metadata_projection_rejects_reserved_collision_before_output(
         runtime_telemetry: bool
 
     payload = _corrected_rlrmp_payload()
-    registry = default_training_program_registry()
+    registry = synthetic_training_program_registry()
     registry.register_manifest_metadata_projection(
         TrainingManifestMetadataProjectionRegistration(
             source_payload_kind="RLRMPRunSpec",
@@ -3413,7 +3416,7 @@ def test_manifest_metadata_projection_rejects_reserved_feedbax_namespace(
         feedbax_downstream_marker: bool
 
     payload = _corrected_rlrmp_payload()
-    registry = default_training_program_registry()
+    registry = synthetic_training_program_registry()
     registry.register_manifest_metadata_projection(
         TrainingManifestMetadataProjectionRegistration(
             source_payload_kind="RLRMPRunSpec",
@@ -3475,7 +3478,7 @@ def test_manifest_metadata_projection_rejects_unregistered_source_before_output(
             _run_spec(),
             initial_slots=_initial_slots(),
             manifest_root=tmp_path,
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             training_spec_payload=payload,
             training_spec_payload_kind="RLRMPRunSpec",
             training_spec_payload_schema_id="rlrmp.run_spec",
@@ -3598,7 +3601,7 @@ def test_native_execution_context_emits_one_identity_manifest_and_typed_diagnost
 
     result = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         initial_slots=_initial_slots(),
         manifest_root=manifest_root,
         execution_context=context,
@@ -3696,7 +3699,7 @@ def test_native_execution_rejects_payload_binding_drift_before_side_effects(
     with pytest.raises(TrainingRunExecutorError, match=drift):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             initial_slots=_initial_slots(),
             manifest_root=tmp_path / "manifest-root",
             checkpoint_root=tmp_path / "checkpoint-root",
@@ -3720,7 +3723,7 @@ def test_native_execution_rejects_explicit_payload_ref_drift_before_side_effects
     ):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             initial_slots=_initial_slots(),
             manifest_root=tmp_path / "manifest-root",
             checkpoint_root=tmp_path / "checkpoint-root",
@@ -3738,7 +3741,7 @@ def test_optimizer_step_extractor_rejects_invalid_output_before_checkpoint_write
     invalid: object,
 ) -> None:
     program = evolve_training_program(
-        standard_supervised_training_program(),
+        synthetic_supervised_training_program(),
         optimizer_step_extractor=lambda _payload, _runtime: invalid,
     )
     registry = TrainingProgramRegistry()
@@ -3779,7 +3782,7 @@ def test_native_execution_rejects_invalid_local_payload_custody_before_side_effe
     with pytest.raises(TrainingRunExecutorError, match="custody"):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             initial_slots=_initial_slots(),
             manifest_root=tmp_path / "manifest-root",
             checkpoint_root=tmp_path / "checkpoint-root",
@@ -3803,7 +3806,7 @@ def test_native_execution_allows_non_local_payload_custody_binding(tmp_path: Pat
 
     result = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         initial_slots=_initial_slots(),
         manifest_root=tmp_path / "manifest-root",
         checkpoint_root=tmp_path / "checkpoint-root",
@@ -3876,7 +3879,7 @@ def test_update_budget_rejects_non_positive_and_boolean_values(
     ):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             initial_slots=_initial_slots(),
             manifest_root=tmp_path / "manifests",
             checkpoint_root=tmp_path / "checkpoints",
@@ -3891,7 +3894,7 @@ def test_native_execution_rejects_non_planned_run_id_before_side_effects(
     with pytest.raises(TrainingRunExecutorError, match="planned_run_id"):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             run_id="row-label-is-not-execution-identity",
             initial_slots=_initial_slots(),
             manifest_root=tmp_path / "manifest-root",
@@ -3913,7 +3916,7 @@ def test_native_manifest_conflict_fails_before_partial_outputs(tmp_path: Path) -
     with pytest.raises(ManifestEmissionConflictError, match="already exists"):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             initial_slots=_initial_slots(),
             manifest_root=tmp_path / "manifest-root",
             checkpoint_root=tmp_path / "checkpoint-root",
@@ -3942,7 +3945,7 @@ def test_native_diagnostics_conflict_fails_before_training_or_checkpoint_side_ef
     with pytest.raises(DiagnosticsEmissionConflictError, match="before execution"):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             initial_slots=_initial_slots(),
             manifest_root=tmp_path / "manifest-root",
             checkpoint_root=tmp_path / "checkpoint-root",
@@ -4050,7 +4053,7 @@ def test_executor_runs_manifest_payload_preflight_before_execution_setup() -> No
     with pytest.raises(TrainingRunManifestPreflightError, match="RLRMPRunSpec"):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             run_id="bad-preflight",
             initial_slots=None,
             training_spec_payload=_bad_rlrmp_payload(),
@@ -4087,7 +4090,7 @@ def test_execute_training_run_spec_kernel_context_reaches_kernels_and_guards(
     events: list[tuple[str, object]] = []
 
     base_registration = registry.resolve(standard_supervised_method_ref(), path="/method_ref")
-    base_kernel = standard_supervised_update_kernels()[
+    base_kernel = synthetic_supervised_update_kernels()[
         "feedbax.training.standard_supervised.gradient_update"
     ]
 
@@ -4146,7 +4149,7 @@ def test_execute_training_run_spec_rejects_reserved_kernel_context_keys(
     with pytest.raises(TrainingRunExecutorError, match="executor-reserved keys"):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             run_id="reserved-context",
             initial_slots=_initial_slots(arrays=True),
             manifest_root=tmp_path,
@@ -4407,7 +4410,7 @@ def test_unconsumed_checkpoint_policy_fields_fail_loudly_before_execution(
     with pytest.raises(NotImplementedError, match=error):
         execute_training_run_spec(
             spec,
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             run_id=f"unsupported-{field}",
             initial_slots=_initial_slots(arrays=True),
             manifest_root=tmp_path,
@@ -4563,7 +4566,7 @@ def test_execute_training_run_spec_propagates_progress_callback_errors(
     with pytest.raises(RuntimeError, match="callback failed"):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             run_id="callback-failure",
             initial_slots=_initial_slots(),
             manifest_root=tmp_path,
@@ -4582,7 +4585,7 @@ def test_execute_training_run_spec_resumes_through_checkpoint_custody(
     checkpoint_root = tmp_path / "checkpoint-custody"
     execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="interrupted",
         initial_slots=_initial_slots(arrays=True),
         manifest_root=tmp_path,
@@ -4592,7 +4595,7 @@ def test_execute_training_run_spec_resumes_through_checkpoint_custody(
 
     resumed = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="resumed",
         initial_slots=_initial_slots(arrays=True),
         manifest_root=tmp_path,
@@ -4649,7 +4652,7 @@ def test_execute_training_run_spec_continues_through_initialization_plan(
     initial_slots = _initial_slots(arrays=True)
     source = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="plan-source",
         initial_slots=initial_slots,
         manifest_root=tmp_path / "source-manifests",
@@ -4679,7 +4682,7 @@ def test_execute_training_run_spec_continues_through_initialization_plan(
 
     continued = execute_training_run_spec(
         continuation_spec,
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="plan-continuation",
         initial_slots=initial_slots,
         manifest_root=tmp_path / "continued-manifests",
@@ -4710,7 +4713,7 @@ def test_execute_training_run_spec_warm_start_keeps_optimizer_and_state_fresh(
     slots = _initial_slots(arrays=True)
     source = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="warm-source",
         initial_slots=slots,
         checkpoint_root=tmp_path / "source",
@@ -4721,7 +4724,7 @@ def test_execute_training_run_spec_warm_start_keeps_optimizer_and_state_fresh(
     assert binding is not None
     initialized = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="warm-target",
         initial_slots=slots,
         checkpoint_root=tmp_path / "target",
@@ -4753,7 +4756,7 @@ def test_execute_training_run_spec_graph_change_uses_fork_transform_and_canonica
     }
     source = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="graph-source",
         initial_slots=source_slots,
         manifest_root=tmp_path / "source-manifests",
@@ -4844,7 +4847,7 @@ def test_execute_training_run_spec_graph_change_uses_fork_transform_and_canonica
     with pytest.raises(TrainingRunExecutorError, match="requires explicit schedule"):
         execute_training_run_spec(
             target_spec,
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             run_id="invalid-graph-target",
             initial_slots=target_slots,
             manifest_root=tmp_path / "invalid-manifests",
@@ -4860,7 +4863,7 @@ def test_execute_training_run_spec_graph_change_uses_fork_transform_and_canonica
 
     continued = execute_training_run_spec(
         target_spec,
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="graph-target",
         initial_slots=target_slots,
         manifest_root=tmp_path / "target-manifests",
@@ -4893,7 +4896,7 @@ def test_execute_training_run_spec_initialization_plan_rejects_wrong_source(
     initial_slots = _initial_slots(arrays=True)
     source = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="declared-source",
         initial_slots=initial_slots,
         manifest_root=tmp_path / "source-manifests",
@@ -4912,7 +4915,7 @@ def test_execute_training_run_spec_initialization_plan_rejects_wrong_source(
     with pytest.raises(TrainingRunExecutorError, match="resolves a different transaction"):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             run_id="wrong-source-target",
             initial_slots=initial_slots,
             manifest_root=tmp_path / "target-manifests",
@@ -4944,7 +4947,7 @@ def test_same_row_resume_realizes_segment_lineage_and_cadence(
     )
     source = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         initial_slots=_initial_slots(arrays=True),
         manifest_root=tmp_path / "source-manifests",
         checkpoint_root=checkpoint_root,
@@ -4959,7 +4962,7 @@ def test_same_row_resume_realizes_segment_lineage_and_cadence(
     )
     resumed = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         initial_slots=_initial_slots(arrays=True),
         manifest_root=tmp_path / "resumed-manifests",
         checkpoint_root=checkpoint_root,
@@ -4999,7 +5002,7 @@ def test_same_row_resume_progress_fails_closed_without_consistent_authority(
 ) -> None:
     result = execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="source",
         initial_slots=_initial_slots(arrays=True),
         manifest_root=tmp_path,
@@ -5342,7 +5345,7 @@ def test_nan_detection_projects_segment_schedule_at_later_global_coordinate() ->
     slots["batch_counter"] = jnp.asarray(12, dtype=jnp.int32)
 
     detection = training_executor._nan_attribution_detection(
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_spec=spec,
         run_id="nan-segment-coordinate",
         resolved_method=replace(resolved, program=program),
@@ -5785,7 +5788,7 @@ def test_partial_run_resume_matches_uninterrupted_chunked_execution(
 
 def test_execute_training_run_spec_rejects_invalid_spec_before_launch_with_path() -> None:
     with pytest.raises(TrainingRunExecutorError, match="/initial_slots"):
-        execute_training_run_spec(_run_spec(), registry=default_training_program_registry())
+        execute_training_run_spec(_run_spec(), registry=synthetic_training_program_registry())
 
 
 def test_execute_training_run_spec_unknown_method_ref_reports_available_registry() -> None:
@@ -5796,7 +5799,7 @@ def test_execute_training_run_spec_unknown_method_ref_reports_available_registry
 
     with pytest.raises(TrainingRunExecutorError) as excinfo:
         execute_training_run_spec(
-            payload, registry=default_training_program_registry(), initial_slots=_initial_slots()
+            payload, registry=synthetic_training_program_registry(), initial_slots=_initial_slots()
         )
 
     message = str(excinfo.value)
@@ -5811,7 +5814,7 @@ def test_execute_training_run_spec_manifest_root_injection_and_conflict(
     root = tmp_path / "injected"
     execute_training_run_spec(
         _run_spec(),
-        registry=default_training_program_registry(),
+        registry=synthetic_training_program_registry(),
         run_id="stable-id",
         initial_slots=_initial_slots(),
         manifest_root=root,
@@ -5823,7 +5826,7 @@ def test_execute_training_run_spec_manifest_root_injection_and_conflict(
     with pytest.raises(ManifestEmissionConflictError, match="already exists"):
         execute_training_run_spec(
             _run_spec(),
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
             run_id="stable-id",
             initial_slots={**_initial_slots(), "model": 5},
             manifest_root=root,
@@ -5839,7 +5842,7 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     cache_dir = tmp_path / "jax-cache"
     cache_dir.mkdir()
     (cache_dir / "preexisting-cache-entry").write_bytes(b"cache")
-    spec = _run_spec()
+    spec = _synthetic_cli_run_spec()
     _write_json(spec_path, spec.model_dump(mode="json"))
     _write_json(slots_path, _initial_slots())
     _write_json(
@@ -5856,6 +5859,7 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
             "-m",
             "feedbax",
             "execute-training-run-spec",
+            "--plugin", "tests.support.training_fixtures",
             str(spec_path),
             "--manifest-root",
             str(tmp_path / "runs"),
@@ -5926,7 +5930,7 @@ def test_execute_training_run_spec_cli_returns_nonzero_for_failed_result(
     spec_path = tmp_path / "training-run-spec.json"
     slots_path = tmp_path / "initial-slots.json"
     manifest_path = tmp_path / "manifest.json"
-    _write_json(spec_path, _run_spec().model_dump(mode="json"))
+    _write_json(spec_path, _synthetic_cli_run_spec().model_dump(mode="json"))
     _write_json(slots_path, _initial_slots())
     manifest = TrainingRunManifest(
         id="feedbax-training-run:cli-failed",
@@ -5953,6 +5957,7 @@ def test_execute_training_run_spec_cli_returns_nonzero_for_failed_result(
     exit_code = feedbax_main.main(
         [
             "execute-training-run-spec",
+            "--plugin", "tests.support.training_fixtures",
             str(spec_path),
             "--initial-slots",
             str(slots_path),
@@ -5971,7 +5976,7 @@ def test_execute_training_run_spec_cli_forwards_authored_checkpoint_plans(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    spec = _run_spec()
+    spec = _synthetic_cli_run_spec()
     spec_path = tmp_path / "spec.json"
     slots_path = tmp_path / "slots.json"
     init_path = tmp_path / "initialization.json"
@@ -6031,6 +6036,7 @@ def test_execute_training_run_spec_cli_forwards_authored_checkpoint_plans(
     monkeypatch.setattr(feedbax_main, "execute_training_run_spec", fake_execute)
     common = [
         "execute-training-run-spec",
+            "--plugin", "tests.support.training_fixtures",
         str(spec_path),
         "--initial-slots",
         str(slots_path),
@@ -6093,3 +6099,89 @@ def test_preflight_training_run_manifest_cli_reports_normalized_payload(
     assert payload["training_spec"]["kind"] == "RLRMPRunSpec"
     assert payload["training_spec"]["schema_version"] == "rlrmp.run_spec.v2"
     assert payload["training_spec"]["sha256"]
+
+
+def test_default_supervised_dispatch_rejects_before_publication(tmp_path: Path) -> None:
+    events = []
+    with pytest.raises(TrainingRunExecutorError) as error:
+        execute_training_run_spec(
+            _run_spec(),
+            registry=default_training_program_registry(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifests",
+            checkpoint_root=tmp_path / "checkpoints",
+            execution_context=_execution_context(collection_root=tmp_path / "published"),
+            progress_callback=events.append,
+        )
+    message = str(error.value)
+    assert "feedbax/standard_supervised/v1" in message
+    assert "real runtime" in message and "training plugin" in message
+    assert events == []
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_explicit_numerical_registration_executes_zero_gradient_step(tmp_path: Path) -> None:
+    calls = []
+
+    def gradient_update(slots, coordinate, context):
+        calls.append(coordinate.program_step)
+        model = slots["model"]
+        loss, gradient = jax.value_and_grad(lambda value: jnp.square(value - 1.0))(model)
+        return {
+            "model": model - 0.1 * gradient,
+            "optimizer": {"count": slots["optimizer"]["count"] + 1},
+            "prng": slots["prng"],
+            "train_loss": float(loss),
+            "batch_counter": slots["batch_counter"] + 1,
+        }
+
+    registry = TrainingProgramRegistry()
+    registry.register_program(evolve_training_program(
+        standard_supervised_training_program(),
+        update_kernels_factory=lambda _payload: {
+            "feedbax.training.standard_supervised.gradient_update": gradient_update,
+        },
+    ))
+    slots = {**_initial_slots(), "model": jnp.array(1.0)}
+    result = execute_training_run_spec(
+        _run_spec(), registry=registry, initial_slots=slots,
+        manifest_root=tmp_path / "manifests", checkpoint_root=tmp_path / "checkpoints",
+    )
+    assert calls == [0]
+    assert result.final_slots["model"] == 1.0
+    assert result.final_slots["train_loss"] == 0.0
+    assert result.final_slots["batch_counter"] == 1
+    assert result.manifest_path.exists()
+    assert len(result.checkpoint_writes) == 1
+
+
+def _synthetic_cli_run_spec():
+    spec = _run_spec()
+    method = "tests/synthetic_supervised/v1"
+    worker = spec.worker_execution.model_copy(update={
+        "method_contract": spec.worker_execution.method_contract.model_copy(
+            update={"method_ref": method}),
+        "effective_phase": spec.worker_execution.effective_phase.model_copy(
+            update={"method_ref": method}),
+    })
+    return spec.model_copy(update={
+        "method_ref": MethodRefSpec(package="tests", name="synthetic_supervised", version="v1"),
+        "worker_execution": worker,
+    })
+
+
+def test_default_supervised_cli_rejects_before_graph_construction(tmp_path, monkeypatch):
+    import feedbax.compiler as compiler
+
+    def unexpected_graph(*_args, **_kwargs):
+        pytest.fail("unavailable runtime must reject before graph construction")
+
+    monkeypatch.setattr(compiler, "compile_graph", unexpected_graph)
+    spec_path = tmp_path / "spec.json"
+    _write_json(spec_path, _run_spec().model_dump(mode="json"))
+    with pytest.raises(ValueError, match="feedbax/standard_supervised/v1.*real runtime"):
+        feedbax_main.main([
+            "execute-training-run-spec", str(spec_path),
+            "--manifest-root", str(tmp_path / "manifests"),
+        ])
+    assert list(tmp_path.iterdir()) == [spec_path]

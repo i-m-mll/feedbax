@@ -25,6 +25,8 @@ from feedbax.contracts.run_matrix import (
     apply_override_patches,
 )
 from feedbax.contracts.run_composition import CompositionNode, InlineIntentParent
+from tests.support.training_fixtures import synthetic_supervised_update_kernels
+from tests.support.training_fixtures import synthetic_training_program_registry
 from feedbax.contracts.training import (
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -35,12 +37,10 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     WorkerExecutionSpec,
     declare_training_program,
-    default_training_program_registry,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
-    standard_supervised_update_kernels,
 )
 from feedbax.training.run_matrix import (
     RunMatrixError,
@@ -141,7 +141,7 @@ def _declared_standard_registry() -> TrainingProgramRegistry:
             payload_schema_version=envelope.schema_version,
             payload_model=_DeclaredStandardPayload,
             contract_compiler=lambda _payload: standard_supervised_method_contract(),
-            update_kernels_factory=standard_supervised_update_kernels,
+            update_kernels_factory=synthetic_supervised_update_kernels,
         )
     )
     return registry
@@ -222,7 +222,7 @@ def test_matrix_v5_object_materializes_without_v6_reinterpretation(tmp_path: Pat
     materialized = materialize_run_matrix(
         legacy,
         repo_root=tmp_path,
-        method_registry=default_training_program_registry(),
+        method_registry=synthetic_training_program_registry(),
     )
 
     assert materialized.run_set_manifest.metadata["matrix_schema_version"] == (

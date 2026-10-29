@@ -16,6 +16,7 @@ from feedbax.contracts.checkpoints import (
     RunContractBinding,
     ScheduleStateWindowSpec,
 )
+from tests.support.training_fixtures import synthetic_training_program_registry
 from feedbax.contracts.training import (
     GovernedScheduleProjection,
     LossTermSpec,
@@ -36,7 +37,6 @@ from feedbax.contracts.training import (
     standard_supervised_method_contract,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
-    default_training_program_registry,
     resolve_training_run_spec,
 )
 from feedbax.orchestration.schedule_eval import (
@@ -103,7 +103,7 @@ def _with_method_schedule(
     run_spec: TrainingRunSpec,
     values: tuple[float, float, float] | None,
 ) -> object:
-    resolved = resolve_training_run_spec(run_spec, default_training_program_registry())
+    resolved = resolve_training_run_spec(run_spec, synthetic_training_program_registry())
     assert resolved.program is not None
     if values is None:
         projector = None
@@ -214,7 +214,7 @@ def test_source_history_projection_accepts_continuation_bearing_run_spec() -> No
 def test_lineage_projector_uses_segment_origin_for_boundary_and_later_call() -> None:
     request = _continuation()
     run_spec = _run_spec(continuation=request)
-    resolved = resolve_training_run_spec(run_spec, default_training_program_registry())
+    resolved = resolve_training_run_spec(run_spec, synthetic_training_program_registry())
     assert resolved.program is not None
 
     def project_segment_schedule(_payload, coordinates, lineage):

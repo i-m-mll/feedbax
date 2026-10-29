@@ -144,7 +144,8 @@ def _write_plugin(path: Path) -> None:
         import jax.numpy as jnp
         from pydantic import BaseModel
         from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowLoweringResult
-        from feedbax.contracts.training import ScheduleProjection, DeclaredTrainingProgram, TrainingMethodScheduleProjector, declare_training_program, standard_supervised_method_contract, standard_supervised_update_kernels
+        from tests.support.training_fixtures import synthetic_supervised_update_kernels
+        from feedbax.contracts.training import ScheduleProjection, DeclaredTrainingProgram, TrainingMethodScheduleProjector, declare_training_program, standard_supervised_method_contract
         from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, TRAINING_PROGRAMS
         from feedbax.training.preparation import ExecutionPreparationResult
         from feedbax.training.row_lowering import TrainingRowLowererRegistration, training_row_lowerer_implementation_sha256
@@ -157,7 +158,7 @@ def _write_plugin(path: Path) -> None:
             return standard_supervised_method_contract().model_copy(update={{"method_ref": {METHOD_REF!r}, "method_payload_schema_version": {METHOD_VERSION!r}}})
 
         def kernels(payload):
-            return standard_supervised_update_kernels(payload)
+            return synthetic_supervised_update_kernels(payload)
 
         def project_schedules(payload, coordinates):
             return ScheduleProjection(complete=True, schedules={{}})

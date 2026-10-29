@@ -46,6 +46,8 @@ from feedbax.contracts.spec_storage import (
     training_spec_canonical_bytes,
     training_spec_sha256,
 )
+from tests.support.training_fixtures import synthetic_training_program_registry
+from tests.support.training_fixtures import synthetic_supervised_training_program
 from feedbax.contracts.training import (
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -54,12 +56,10 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     TrainingProgramRowLoweringFacet,
     WorkerExecutionSpec,
-    default_training_program_registry,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
-    standard_supervised_training_program,
 )
 from feedbax.orchestration import (
     AssemblyCompilerRegistry,
@@ -107,7 +107,7 @@ _LOWERER_VERSION = f"{_LOWERER_ID}.v1"
 
 
 def _lowerer_plugin(plugin_id: str = "tests.downstream") -> PluginRegistration:
-    baseline = standard_supervised_training_program()
+    baseline = synthetic_supervised_training_program()
     program = replace(
         baseline,
         declaration=replace(
@@ -653,7 +653,7 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
     registry = AssemblyCompilerRegistry()
     register_training_run_matrix_compiler(
         registry,
-        method_registry=default_training_program_registry(),
+        method_registry=synthetic_training_program_registry(),
         row_lowerer=lowerers.lower,
         row_validator=lambda payload, _row_id: TrainingRunSpec.model_validate(payload),
     )
@@ -912,7 +912,7 @@ def _assemble_governed_parent(
     registry = AssemblyCompilerRegistry()
     register_training_run_matrix_compiler(
         registry,
-        method_registry=default_training_program_registry(),
+        method_registry=synthetic_training_program_registry(),
         row_lowerer=lowerers.lower,
         row_validator=lambda payload, _row_id: TrainingRunSpec.model_validate(payload),
     )
@@ -1005,7 +1005,8 @@ def test_installed_plugin_replays_identical_rows_across_fresh_processes(
         """
 from feedbax.contracts.run_composition import CompositionNode, flatten_composition
 from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowLoweringResult
-from feedbax.contracts.training import TrainingProgramRowLoweringFacet, standard_supervised_training_program
+from feedbax.contracts.training import TrainingProgramRowLoweringFacet
+from tests.support.training_fixtures import synthetic_supervised_training_program
 from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, TRAINING_PROGRAMS
 from dataclasses import replace
 from feedbax.training.row_lowering import TrainingRowLowererRegistration, training_row_lowerer_implementation_sha256
@@ -1023,7 +1024,7 @@ def register(context):
                 lowerer_version="tests.downstream-row.v1",
             )],
         )
-    baseline = standard_supervised_training_program()
+    baseline = synthetic_supervised_training_program()
     registration = TrainingRowLowererRegistration(
         authored_schema_id="tests.spec.downstream_authored_row",
         authored_schema_version="tests.spec.downstream_authored_row.v1",

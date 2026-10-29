@@ -827,6 +827,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _execute_experiment_workflow(args, registries)
     if args.command == "execute-training-run-spec":
         run_spec = validate_training_run_spec(_read_json(args.spec))
+        resolved_method = resolve_training_run_spec(run_spec, registries.training_programs)
         if run_spec.graph.inline is None:
             raise ValueError("execute-training-run-spec requires an inline graph document")
         from feedbax.compiler import DocumentRoot, GraphDocument, compile_graph
@@ -850,7 +851,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             registries.components,
         )
-        resolved_method = resolve_training_run_spec(run_spec, registries.training_programs)
         method_registration = resolved_method.registration
         preparation_registration = registries.execution_preparations.get(run_spec.method_ref.key)
         mapping_levels, _slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
