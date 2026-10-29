@@ -187,6 +187,13 @@ def _single_node_spec(
         ("node", port): jnp.zeros(prototype_shape, dtype=params.get("input_dtype"))
         for port in input_ports
     }
+    if component_type == "Demux":
+        prototypes[("node", "input")] = jnp.zeros(sum(params["sizes"]))
+    elif component_type == "AffineValueComposer":
+        block_size = int(params["output_block_size"])
+        prototypes[("node", "base")] = jnp.zeros(block_size)
+        prototypes[("node", "gain")] = jnp.zeros_like(jnp.asarray(params["gain_init"]))
+        prototypes[("node", "bias")] = jnp.zeros(block_size)
     return spec, prototypes
 
 
