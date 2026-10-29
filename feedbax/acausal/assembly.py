@@ -357,12 +357,9 @@ def _make_vector_field(
                     resolved_node = _resolve(_node_key, _epg)
                     if resolved_node == canon_first:
                         connected_through.extend(tvars)
-                sensor_through = (
-                    f"{sensor_elem.name}.{port_name}.{port.through_var}"
-                )
                 through_sources = [
                     tv for tv in set(connected_through)
-                    if tv != sensor_through and tv not in mass_through_vars
+                    if tv not in sensor_through_vars and tv not in mass_through_vars
                 ]
                 sum_vars = tuple(sorted(through_sources))
         sensor_eval_infos.append({
