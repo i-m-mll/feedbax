@@ -65,7 +65,7 @@ from feedbax.runtime.components import (
     Subtract,
     Sum,
 )
-from feedbax.runtime.filters import FirstOrderFilter
+from feedbax.runtime.filters import FirstOrderFilter, require_real_floating_filter_prototype
 from feedbax.intervene.intervene import (
     AddNoise,
     AddNoiseParams,
@@ -1085,6 +1085,16 @@ def stateful_passthrough_output_prototype(
     return {"output": proto}
 
 
+def first_order_filter_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the filter signal prototype after checking its numerical domain."""
+    outputs = stateful_passthrough_output_prototype(params, inputs)
+    require_real_floating_filter_prototype(outputs["output"])
+    return outputs
+
+
 def linear_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
@@ -1159,6 +1169,15 @@ def demux_output_prototype(
         raise ValueError(f"Demux input final dimension {width} does not match sum(sizes) {total}")
     prefix = shape[:-1]
     return {f"out_{index}": jnp.zeros((*prefix, size)) for index, size in enumerate(sizes)}
+
+
+def affine_composer_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    for port in ("base", "state"):
+        _required_input(inputs, port, component="AffineValueComposer")
+    return affine_value_composer_output_prototype(params, inputs)
 
 
 def switch_output_prototype(
@@ -2487,7 +2506,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=stateful_passthrough_output_prototype,
+            output_prototype_fn=first_order_filter_output_prototype,
         )
     )
     registry.register_migration(
@@ -2770,7 +2789,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
                 outputs={"value": PortType(dtype="vector")},
             ),
-            output_prototype_fn=affine_value_composer_output_prototype,
+            output_prototype_fn=affine_composer_output_prototype,
             param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
             supported_param_schema_versions=[AFFINE_VALUE_COMPOSER_SCHEMA_VERSION],
         )

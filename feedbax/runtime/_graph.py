@@ -4,41 +4,45 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from collections import deque
 from collections.abc import Iterable, Mapping
+from heapq import heapify, heappop, heappush
 
 
 def topological_sort(adjacency: Mapping[str, Iterable[str]]) -> list[str]:
-    """Return a topological ordering of a directed acyclic graph.
+    """Return the topological order with lexical priority among ready node IDs.
 
-    If cycles remain, the remaining nodes are appended in input order.
+    If cycles remain, the remaining nodes are appended in lexical order.
     """
-    nodes = list(adjacency.keys())
-    indegree = {node: 0 for node in nodes}
+    adjacency = _canonical_adjacency(adjacency)
+    indegree = {node: 0 for node in adjacency}
 
-    for src, targets in adjacency.items():
+    for targets in adjacency.values():
         for tgt in targets:
-            if tgt not in indegree:
-                indegree[tgt] = 0
-                nodes.append(tgt)
             indegree[tgt] += 1
 
-    queue = deque([node for node in nodes if indegree[node] == 0])
+    queue = [node for node in adjacency if indegree[node] == 0]
+    heapify(queue)
     order: list[str] = []
 
     while queue:
-        node = queue.popleft()
+        node = heappop(queue)
         order.append(node)
-        for tgt in adjacency.get(node, ()):  # allow missing keys
+        for tgt in adjacency[node]:
             indegree[tgt] -= 1
             if indegree[tgt] == 0:
-                queue.append(tgt)
+                heappush(queue, tgt)
 
-    if len(order) < len(nodes):
-        remaining = [node for node in nodes if node not in order]
-        order.extend(remaining)
+    if len(order) < len(adjacency):
+        completed = set(order)
+        order.extend(node for node in adjacency if node not in completed)
 
     return order
+
+
+def _canonical_adjacency(adjacency: Mapping[str, Iterable[str]]) -> dict[str, tuple[str, ...]]:
+    targets = {node: tuple(sorted(set(edges))) for node, edges in adjacency.items()}
+    nodes = set(targets).union(*(set(edges) for edges in targets.values()))
+    return {node: targets.get(node, ()) for node in sorted(nodes)}
 
 
 def detect_cycles_and_sort(
@@ -46,18 +50,17 @@ def detect_cycles_and_sort(
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Detect cycle-forming edges and return a topological order.
 
-    Uses DFS to identify back edges. The remaining acyclic graph is then
-    topologically sorted.
+    Uses lexical DFS traversal to identify back edges deterministically. The
+    remaining acyclic graph uses lexical priority among ready node IDs.
     """
-    nodes = list(adjacency.keys())
+    adjacency = _canonical_adjacency(adjacency)
+    nodes = tuple(adjacency)
     visited: dict[str, int] = {node: 0 for node in nodes}  # 0=unseen,1=visiting,2=done
     back_edges: list[tuple[str, str]] = []
 
     def dfs(node: str) -> None:
         visited[node] = 1
-        for tgt in adjacency.get(node, ()):  # allow missing keys
-            if tgt not in visited:
-                visited[tgt] = 0
+        for tgt in adjacency[node]:
             if visited[tgt] == 0:
                 dfs(tgt)
             elif visited[tgt] == 1:
