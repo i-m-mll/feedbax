@@ -65,7 +65,7 @@ from feedbax.runtime.components import (
     Subtract,
     Sum,
 )
-from feedbax.runtime.filters import FirstOrderFilter
+from feedbax.runtime.filters import FirstOrderFilter, require_real_floating_filter_prototype
 from feedbax.intervene.intervene import (
     AddNoise,
     AddNoiseParams,
@@ -1083,6 +1083,16 @@ def stateful_passthrough_output_prototype(
     if proto is None:
         raise _missing_input("input", component="stateful passthrough")
     return {"output": proto}
+
+
+def first_order_filter_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the filter signal prototype after checking its numerical domain."""
+    outputs = stateful_passthrough_output_prototype(params, inputs)
+    require_real_floating_filter_prototype(outputs["output"])
+    return outputs
 
 
 def linear_output_prototype(
@@ -2487,7 +2497,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=stateful_passthrough_output_prototype,
+            output_prototype_fn=first_order_filter_output_prototype,
         )
     )
     registry.register_migration(

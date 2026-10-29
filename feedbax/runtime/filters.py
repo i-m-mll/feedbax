@@ -21,6 +21,17 @@ from feedbax.runtime.graph import Component
 from feedbax.runtime.state import StateBounds
 
 
+def require_real_floating_filter_prototype(prototype: PyTree[Array]) -> None:
+    """Require the real floating state domain of FirstOrderFilter."""
+    for index, leaf in enumerate(jt.leaves(prototype)):
+        dtype = getattr(leaf, "dtype", None)
+        if dtype is None or not jnp.issubdtype(dtype, jnp.floating):
+            raise ValueError(
+                "FirstOrderFilter requires real floating state leaves; "
+                f"prototype leaf {index} has dtype {dtype!s}"
+            )
+
+
 class FilterState(eqx.Module):
     """Holds the current filtered signal and solver state."""
 
@@ -65,6 +76,7 @@ class FirstOrderFilter(Component):
         self.state_index = StateIndex(self._initial_state)
 
     def _initial_state_value(self, input_proto: PyTree[Array]) -> FilterState:
+        require_real_floating_filter_prototype(input_proto)
         output_init = jt.map(lambda x: jnp.full_like(x, self.init_value), input_proto)
         solver_init = self.solver.init(self._term, 0, self.dt, output_init, None)
         return FilterState(output=output_init, solver=solver_init)
