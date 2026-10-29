@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from types import FunctionType
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -820,6 +821,53 @@ def test_semantic_state_root_ignores_pickle_memo_identity_but_preserves_semantic
     assert root(shared_value) == root(unshared_value)
     assert root({"left": shared, "right": shared + " changed"}) != root(shared_value)
     assert root({"left": "a", "right": "b"}) != root({"left": "b", "right": "a"})
+
+
+def _semantic_model_root(value: object) -> str:
+    return custody_module.semantic_state_root_sha256(
+        slot="model",
+        role="model",
+        value=value,
+        structural_abi_fingerprint=custody_module.structural_abi_fingerprint(value),
+        materialized_axes=None,
+        population=None,
+    )
+
+
+def test_semantic_state_root_retains_prior_supported_value_projection() -> None:
+    value = {
+        "array": jnp.asarray([0.5, 1.0], dtype=jnp.float32),
+        "count": 3,
+        "label": "retained",
+        "flag": True,
+        "none": None,
+        "tuple": (2.5, b"x"),
+    }
+    assert _semantic_model_root(value) == (
+        "8ed77d8c455e9f631b8a94c18c904127567569f71c04fe9c3b210fd0f4a77797"
+    )
+
+
+def test_global_function_leaf_identity_survives_pickle_and_discriminates_functions() -> None:
+    restored = pickle.loads(pickle.dumps(identity_activation))
+    baseline = custody_module.structural_abi_fingerprint(identity_activation)
+    assert custody_module.structural_abi_fingerprint(restored) == baseline
+    assert _semantic_model_root(restored) == _semantic_model_root(identity_activation)
+    assert _semantic_model_root(_different_stable_activation) != _semantic_model_root(restored)
+    assert custody_module.structural_abi_fingerprint(_different_stable_activation) != baseline
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        _closure_activation(),
+        lambda value: value,
+        FunctionType(identity_activation.__code__, identity_activation.__globals__),
+    ],
+)
+def test_ambiguous_function_leaf_remains_unsupported(value) -> None:
+    with pytest.raises(CheckpointSemanticStateUnsupported, match="unsupported or ambiguous"):
+        _semantic_model_root(value)
 
 
 def test_semantic_state_root_projects_nested_typed_dataclass_state() -> None:
@@ -2998,11 +3046,50 @@ def test_environment_provenance_drift_warns_but_load_and_fork_succeed(
     assert forked.source_provenance_notices[0].code == "environment_provenance_mismatch"
 
 
-@pytest.mark.parametrize("serializer", ["v1", "unknown", "missing"])
+@pytest.mark.parametrize("equinox_version", ["0.13.1", "0.13.8"])
+def test_released_equinox_producer_line_admitted(tmp_path: Path, equinox_version: str) -> None:
+    run_spec, program, result = _write_minimax_checkpoint(tmp_path)
+    payload = json.loads(result.manifest_path.read_text())
+    for slot in payload["slots"]:
+        slot["structural_abi_fingerprint"]["environment_provenance"]["equinox_version"] = (
+            equinox_version
+        )
+    _rewrite_manifest_and_latest(result, payload)
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+    np.testing.assert_array_equal(loaded.slots["controller"], _minimax_slots()["controller"])
+
+
+@pytest.mark.parametrize(
+    ("serializer", "equinox_version"),
+    [(version, "0.13.1") for version in ("v1", "v2", "unknown", "missing")]
+    + [
+        ("v3", version)
+        for version in (
+            "0.11.12",
+            "0.13.0",
+            None,
+            "invalid",
+            "0.14.1",
+            "1.13.1",
+            "0.13.2rc1",
+            "0.13.2.dev0",
+            "0.13.1+local",
+            "0.13.1.post1",
+            "0.13.1.1",
+            "1!0.13.1",
+        )
+    ],
+)
 @pytest.mark.parametrize("reader", ["resume", "fork", "reference", "history_parent"])
 def test_unsupported_checkpoint_codec_refuses_before_unpickle(
     tmp_path: Path,
     serializer: str,
+    equinox_version: str | None,
     reader: str,
 ) -> None:
     source_root = tmp_path / "source"
@@ -3011,6 +3098,7 @@ def test_unsupported_checkpoint_codec_refuses_before_unpickle(
     payload = _replace_resolver_slot_blob(result, "controller", _TouchMarkerOnUnpickle(marker))
     for slot in payload["slots"]:
         fingerprint = slot["structural_abi_fingerprint"]
+        fingerprint["environment_provenance"]["equinox_version"] = equinox_version
         if serializer == "missing":
             fingerprint["environment_provenance"] = None
         else:
@@ -3028,9 +3116,11 @@ def test_unsupported_checkpoint_codec_refuses_before_unpickle(
     authenticated = authenticate_published_checkpoint_custody(source_root)
     assert authenticated.manifest.transaction_id == result.manifest.transaction_id
     error = (
-        CheckpointReferenceResolutionError if reader == "reference" else CheckpointCompatibilityError
+        CheckpointReferenceResolutionError
+        if reader == "reference"
+        else CheckpointCompatibilityError
     )
-    with pytest.raises(error, match="unsupported serializer.*producer version"):
+    with pytest.raises(error, match="unsupported.*producer version"):
         if reader == "resume":
             load_latest_checkpoint(
                 source_root,
@@ -4453,7 +4543,7 @@ def test_interrupted_adam_resume_matches_uninterrupted_next_step_and_output(tmp_
         expected_slots=interrupted,
     )
     assert {slot.codec_schema_version for slot in written.checkpoint_set.slots} == {
-        "feedbax.training.checkpoint_custody.pickle.v2"
+        "feedbax.training.checkpoint_custody.pickle.v3"
     }
     resumed = step(loaded.slots)
     for actual, expected in zip(jax.tree.leaves(resumed), jax.tree.leaves(continuous), strict=True):

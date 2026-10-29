@@ -304,7 +304,7 @@ def test_prepared_studio_gru_checkpoint_continues_next_adam_step(tmp_path):
         slots=slots,
     )
     assert {slot.codec_schema_version for slot in written.checkpoint_set.slots} == {
-        "feedbax.training.checkpoint_custody.pickle.v2"
+        "feedbax.training.checkpoint_custody.pickle.v3"
     }
     loaded = load_latest_checkpoint(
         tmp_path,

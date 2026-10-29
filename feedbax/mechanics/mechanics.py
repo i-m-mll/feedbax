@@ -13,7 +13,6 @@ Supports two execution paths:
 
 from __future__ import annotations
 
-from functools import cached_property
 import logging
 from typing import Optional, Type
 
@@ -23,7 +22,7 @@ from equinox import Module, field
 from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, PRNGKeyArray, PyTree
+from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax._ode import ode_init, ode_step, restore_storage_dtypes
 from feedbax.mechanics.dynamics import LinearSystem
@@ -166,7 +165,7 @@ class Mechanics(Component):
 
         self.state_index = StateIndex(initial_state)
 
-    @cached_property
+    @property
     def _term(self) -> dfx.AbstractTerm:
         return dfx.ODETerm(self.plant.vector_field)
 
@@ -402,7 +401,6 @@ class Mechanics(Component):
 
         # Augment state with F (force-filter output): x_aug = [x_s, F]
         I_u = jnp.eye(m_u, dtype=A_s.dtype)
-        Z_u = jnp.zeros((m_u, m_u), dtype=A_s.dtype)
         Z_su = jnp.zeros((n_s, m_u), dtype=A_s.dtype)
         Z_us = jnp.zeros((m_u, n_s), dtype=A_s.dtype)
 

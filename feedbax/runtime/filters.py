@@ -4,7 +4,6 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from functools import cached_property
 from typing import Optional, Type
 
 import diffrax as dfx
@@ -98,7 +97,7 @@ class FirstOrderFilter(Component):
 
         return jt.map(derivative, input, state)
 
-    @cached_property
+    @property
     def _term(self) -> dfx.AbstractTerm:
         return dfx.ODETerm(self.vector_field)
 

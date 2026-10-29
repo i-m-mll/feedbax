@@ -37,6 +37,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 from feedbax._vendor.jax_cookbook import is_type
 import numpy as np
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from feedbax._atomic import write_bytes_atomic as _write_bytes_atomic
@@ -158,7 +159,7 @@ LATEST_POINTER_NAME = "latest.json"
 TRANSACTIONS_DIR_NAME = "transactions"
 MANIFEST_NAME = "manifest.json"
 CHECKPOINT_SET_NAME = "checkpoint-set.json"
-CHECKPOINT_SLOT_SERIALIZER = "feedbax.training.checkpoint_custody.pickle.v2"
+CHECKPOINT_SLOT_SERIALIZER = "feedbax.training.checkpoint_custody.pickle.v3"
 CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID = "feedbax.archive.training_checkpoint_custody"
 CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION = "feedbax.archive.training_checkpoint_custody.v1"
 CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE = (
@@ -7153,6 +7154,29 @@ def _supported_slot_serializer(slot: CheckpointSlotBlobRef) -> str:
             "adapt it to the current initialization representation; no automatic migration "
             "is supplied."
         )
+    equinox_version = provenance.equinox_version
+    try:
+        producer = Version(equinox_version) if equinox_version is not None else None
+    except InvalidVersion:
+        producer = None
+    if (
+        producer is None
+        or producer.epoch != 0
+        or len(producer.release) != 3
+        or producer.release[:2] != (0, 13)
+        or producer < Version("0.13.1")
+        or producer.is_prerelease
+        or producer.is_devrelease
+        or producer.is_postrelease
+        or producer.local is not None
+    ):
+        raise CheckpointCompatibilityError(
+            f"checkpoint slot {slot.slot!r} uses serializer {serializer!r} with unsupported "
+            f"producer Equinox {equinox_version!r}; supported representation is released "
+            "Equinox 0.13.x with patch version >= 1. Use the producer version of Feedbax "
+            "to export the checkpoint and explicitly adapt it to the supported runtime "
+            "representation; no automatic migration is supplied."
+        )
     return serializer
 
 
@@ -7245,7 +7269,12 @@ def _leaf_fingerprint(path: Any, leaf: Any) -> SlotLeafFingerprint:
             sharding=str(getattr(array, "sharding", None)),
             layout=str(getattr(array, "layout", None)),
         )
-    static_repr = repr(leaf).encode("utf-8", errors="replace")
+    identity = _stable_function_identity(leaf) if isinstance(leaf, FunctionType) else None
+    static_repr = (
+        identity.semantic_name.encode("utf-8")
+        if identity is not None
+        else repr(leaf).encode("utf-8", errors="replace")
+    )
     return SlotLeafFingerprint(
         path=path_text,
         leaf_type=_qualified_type_name(leaf),
@@ -7284,17 +7313,10 @@ def _semantic_structural_abi_projection(
     )
 
 
-_ANONYMOUS_STATE_INDEX_MARKERS = (
-    re.compile(
-        r"(StateIndex\[\('init',\), \('marker',\), \()"
-        r"<object object at 0x[0-9a-fA-F]+>"
-        r"(,\)\])"
-    ),
-    re.compile(
-        r"(StateIndex\[\(Missing, )"
-        r"<object object at 0x[0-9a-fA-F]+>"
-        r"(\)\])"
-    ),
+_ANONYMOUS_STATE_INDEX_MARKER = re.compile(
+    r"(StateIndex\[\('init',\), \(\('marker', )"
+    r"<object object at 0x[0-9a-fA-F]+>"
+    r"(\),\)\])"
 )
 
 
@@ -7312,8 +7334,7 @@ def _canonical_structural_abi_treedef(
     *,
     value: Any | None = None,
 ) -> str:
-    for pattern in _ANONYMOUS_STATE_INDEX_MARKERS:
-        treedef = pattern.sub(r"\1<anonymous StateIndex marker>\2", treedef)
+    treedef = _ANONYMOUS_STATE_INDEX_MARKER.sub(r"\1<anonymous StateIndex marker>\2", treedef)
     if value is None:
         return treedef
     identities = _stable_treedef_function_identities(value)
@@ -7360,9 +7381,12 @@ def _collect_stable_function_identities(
     value: Any,
     identities: list[_StableFunctionIdentity],
 ) -> bool:
-    static_field_values = getattr(value, "static_field_values", None)
-    if isinstance(static_field_values, tuple):
-        return _collect_stable_function_identities(static_field_values, identities)
+    static_fields = getattr(value, "static_fields", None)
+    if isinstance(static_fields, tuple):
+        return all(
+            _collect_stable_function_identities(field_value, identities)
+            for _, field_value in static_fields
+        )
     if inspect.isclass(value):
         return True
     if isinstance(value, FunctionType):
@@ -7462,6 +7486,10 @@ def _semantic_value_projection(
         }
     if leaf is None:
         return {"kind": "none", "value": None}
+    if isinstance(leaf, FunctionType):
+        identity = _stable_function_identity(leaf)
+        if identity is not None:
+            return {"kind": "global_function", "identity": identity.semantic_name}
     if type(leaf) is bool:
         return {"kind": "bool", "value": leaf}
     if type(leaf) is int:
