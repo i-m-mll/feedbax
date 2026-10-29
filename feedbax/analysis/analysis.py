@@ -603,13 +603,16 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         result = None
         cache_path = None
 
-        if self.cache_result:
+        use_result_cache = self.cache_result and (
+            analysis_context is None or analysis_context.use_result_cache
+        )
+        if use_result_cache:
             cache_path, result = _try_load_result_from_cache()
 
         if result is None:
             result = _run_compute()
 
-        if self.cache_result and cache_path is not None:
+        if use_result_cache and cache_path is not None:
             try:
                 _write_analysis_result_cache(
                     cache_path,
@@ -639,6 +642,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         **kwargs,
     ) -> PyTree[go.Figure]:
         """Generate figures with fig-ops and figure final-ops applied."""
+        from feedbax.plot import apply_default_template
+
+        apply_default_template()
 
         # Transform dependencies prior to making figures
         prepped_kwargs = self._run_prep_ops(data, kwargs)

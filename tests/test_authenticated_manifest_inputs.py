@@ -278,9 +278,11 @@ def test_legacy_manifest_ref_makes_no_authenticated_claim(tmp_path: Path) -> Non
         resolve_manifest_input(legacy, tmp_path)
 
 
+@pytest.mark.parametrize("cache_policy", [{}, {"use_cache": False}, {"force": True}])
 def test_analysis_integrity_failure_precedes_recipe_and_cache_effects(
     tmp_path: Path,
     application_registry_bundle,
+    cache_policy,
 ) -> None:
     _manifest_obj, _path, ref = _analysis_manifest(tmp_path)
     bad_ref = ref.model_copy(
@@ -305,6 +307,7 @@ def test_analysis_integrity_failure_precedes_recipe_and_cache_effects(
             registry=application_registry_bundle.analysis_recipes,
             evaluation_registry=application_registry_bundle.evaluation_recipes,
             experiment_registry=application_registry_bundle.experiment_packages,
+            **cache_policy,
         )
     assert isinstance(excinfo.value.__cause__, ValueError)
     assert "size mismatch" in str(excinfo.value.__cause__)
