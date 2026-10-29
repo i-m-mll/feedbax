@@ -686,6 +686,11 @@ class LocalOrchestrationDriver:
                 os.killpg(identity.process_group_id, signal.SIGINT)
             except ProcessLookupError:
                 pass
+            except PermissionError as exc:
+                if not _owned_process_group_exited(identity.process_group_id, process):
+                    raise LocalDriverError(
+                        f"could not signal verified local row process group {identity.process_group_id}"
+                    ) from exc
             except OSError as exc:
                 raise LocalDriverError(
                     f"could not signal verified local row process group {identity.process_group_id}"

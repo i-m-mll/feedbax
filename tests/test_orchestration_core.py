@@ -4896,6 +4896,84 @@ def test_local_stop_reconciles_exit_during_signal_authorization(
             stop(bundle, row, state)
 
 
+@pytest.mark.parametrize("transition", ["exited", "live", "unowned", "members", "unknown", "io_error"])
+def test_local_checkpoint_stop_reconciles_exit_during_signal_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transition: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    row = bundle.row("row-a")
+    identity = ProcessIdentity(
+        run_set_id=bundle.run_set_id,
+        row_id=row.row_id,
+        pid=4321,
+        process_group_id=4321,
+        launch_token="a" * 64,
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={row.row_id: RowState(status="running", pid=identity.pid, process_identity=identity)},
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    driver.provision(bundle, state)
+    sentinels = bundle.run_set_dir / "sentinels"
+    (sentinels / f"{row.row_id}.pid").write_text(str(identity.pid))
+    (sentinels / f"{row.row_id}.process.json").write_text(identity.model_dump_json())
+
+    class OwnedProcess:
+        pid = identity.pid
+        exited = False
+
+        def poll(self) -> int | None:
+            return 0 if self.exited else None
+
+    process = OwnedProcess()
+    if transition != "unowned":
+        driver._processes[row.row_id] = process  # type: ignore[assignment]
+    attempts: list[tuple[int, int]] = []
+    inspections: list[int] = []
+
+    def inspect_members(pgid: int) -> tuple[tuple[int, ...], str | None]:
+        inspections.append(pgid)
+        assert pgid == identity.process_group_id
+        if not attempts:
+            return (identity.pid,), None
+        return (
+            (9876,) if transition == "members" else (),
+            "inspection failed" if transition == "unknown" else None,
+        )
+
+    def exit_during_signal(pgid: int, signum: int) -> None:
+        assert inspections == [identity.process_group_id]
+        assert (pgid, signum) == (identity.process_group_id, signal.SIGINT)
+        attempts.append((pgid, signum))
+        process.exited = transition != "live"
+        if transition == "io_error":
+            raise OSError(errno.EIO, "input/output error")
+        raise PermissionError(errno.EPERM, "operation not permitted")
+
+    monkeypatch.setattr("feedbax.orchestration.drivers.local._pid_alive", lambda pid: True)
+    monkeypatch.setattr("feedbax.orchestration.drivers.local._process_group_alive", lambda pgid: True)
+    monkeypatch.setattr(os, "getpgid", lambda pid: identity.process_group_id)
+    monkeypatch.setattr(os, "killpg", exit_during_signal)
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.local._process_group_member_pids", inspect_members,
+    )
+
+    if transition == "exited":
+        assert driver.request_stop_at_checkpoint(bundle, row, state) == {
+            "row_id": row.row_id, "pid": identity.pid, "status": "stop_requested",
+        }
+        assert inspections == [identity.process_group_id] * 2
+    else:
+        with pytest.raises(LocalDriverError, match="could not signal verified local row"):
+            driver.request_stop_at_checkpoint(bundle, row, state)
+    assert attempts == [(identity.process_group_id, signal.SIGINT)]
+    assert not (sentinels / f"{row.row_id}.failed").exists()
+    assert not (sentinels / f"{row.row_id}.done").exists()
+
+
 def test_local_stop_accepts_eperm_only_after_owned_process_group_exits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
