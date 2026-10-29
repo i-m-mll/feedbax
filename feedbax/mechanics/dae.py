@@ -72,7 +72,6 @@ class DAEComponent(Component, Generic[StateT]):
     solver: dfx.AbstractSolver = field(static=True)
     root_finder: Optional[optx.AbstractRootFinder] = field(static=True)
     state_index: StateIndex
-    _initial_state: DAEState[StateT] = field(static=True)
 
     def __init__(
         self,
@@ -129,8 +128,8 @@ class DAEComponent(Component, Generic[StateT]):
             self._term, 0.0, self.dt, system_state, init_input
         )
 
-        self._initial_state = DAEState(system=system_state, solver=solver_state)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = DAEState(system=system_state, solver=solver_state)
+        self.state_index = StateIndex(initial_state)
 
     @cached_property
     def _term(self) -> dfx.ODETerm:

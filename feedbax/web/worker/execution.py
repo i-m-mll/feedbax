@@ -11,6 +11,7 @@ import time
 from typing import Any, Callable
 
 import equinox as eqx
+from equinox.nn import StateIndex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -1082,7 +1083,11 @@ def _trainable_filter(graph: Graph, trainable_nodes: tuple[str, ...]):
     for node_name in trainable_nodes:
         if node_name not in graph.nodes:
             continue
-        node_filter = jt.map(eqx.is_inexact_array, graph.nodes[node_name])
+        node_filter = jt.map(
+            eqx.is_inexact_array,
+            graph.nodes[node_name],
+            is_leaf=lambda value: isinstance(value, StateIndex),
+        )
         filter_spec = eqx.tree_at(
             lambda g, name=node_name: g.nodes[name],
             filter_spec,

@@ -459,7 +459,7 @@ def test_graph_with_state_view_preserves_fields_and_subclass() -> None:
     def state_view(node_states):
         return node_states
 
-    def state_consistency(state):
+    def state_consistency(graph, state):
         return state
 
     graph = _RuntimeCallbackGraph(
@@ -496,7 +496,7 @@ def test_graph_with_state_consistency_preserves_fields_and_subclass() -> None:
     def state_view(node_states):
         return node_states
 
-    def state_consistency(state):
+    def state_consistency(graph, state):
         return state
 
     graph = _RuntimeCallbackGraph(

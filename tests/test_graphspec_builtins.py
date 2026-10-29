@@ -543,7 +543,7 @@ def test_feedback_channels_materialize_point_mass_selector() -> None:
     assert isinstance(feedback.channels.noise_func, Normal)
     assert feedback.channels.noise_func.std == 0.05
 
-    selected = feedback.specs.where(mechanics._initial_state)
+    selected = feedback.specs.where(mechanics.state_index.init)
     assert len(selected) == 2
     assert selected[0].shape == (2,)
     assert selected[1].shape == (2,)

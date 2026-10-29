@@ -32,7 +32,6 @@ class AffineFeedbackController(Component):
     output_size: int = field(static=True)
     is_time_varying: bool = field(static=True)
     state_index: StateIndex
-    _initial_state: int = field(static=True)
 
     def __init__(
         self,
@@ -62,8 +61,8 @@ class AffineFeedbackController(Component):
         self.input_size = int(gain_array.shape[-1])
         self.output_size = int(gain_array.shape[-2])
         self.is_time_varying = gain_array.ndim == 3
-        self._initial_state = 0
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = 0
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,

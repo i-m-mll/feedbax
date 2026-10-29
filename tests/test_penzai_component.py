@@ -383,7 +383,7 @@ class TestPenzaiStateManager:
         """Test creating empty state manager."""
         manager = PenzaiStateManager.empty()
 
-        assert manager._initial_state == {}
+        assert manager.state_index.init == {}
 
     def test_state_initialization(self):
         """Test state is properly initialized."""
@@ -425,9 +425,8 @@ class TestPenzaiStateManager:
         monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
         manager = PenzaiStateManager(
             state_index=StateIndex({("running",): jnp.array([1.0])}),
-            _initial_state={("running",): jnp.array([1.0])},
         )
-        state = State(manager).set(manager.state_index, manager._initial_state)
+        state = State(manager).set(manager.state_index, manager.state_index.init)
 
         with pytest.raises(NotImplementedError, match="cannot safely rebind"):
             manager.bind_state(MockPenzaiLayer(jnp.eye(1), jnp.zeros(1)), state)

@@ -297,13 +297,11 @@ class CurlField(Component):
     output_ports = ("force",)
 
     params_index: StateIndex
-    _initial_state: CurlFieldParams = field(static=True)
     label: str = field(default="curl_field", static=True)
 
     def __init__(self, params: Optional[CurlFieldParams] = None, label: str = "curl_field"):
         if params is None:
             params = CurlFieldParams(active=False)
-        self._initial_state = params
         self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
@@ -333,13 +331,11 @@ class FixedField(Component):
     output_ports = ("force",)
 
     params_index: StateIndex
-    _initial_state: FixedFieldParams = field(static=True)
     label: str = field(default="fixed_field", static=True)
 
     def __init__(self, params: Optional[FixedFieldParams] = None, label: str = "fixed_field"):
         if params is None:
             params = FixedFieldParams(active=False)
-        self._initial_state = params
         self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
@@ -373,7 +369,6 @@ class ThresholdLatchedForce(Component):
 
     params_index: StateIndex
     latch_index: StateIndex
-    _initial_state: ThresholdLatchedForceParams = field(static=True)
     state_selector: ThresholdStateSelector = field(static=True)
     direction: Literal["increasing", "decreasing"] = field(static=True)
     dt: float = field(static=True)
@@ -394,7 +389,6 @@ class ThresholdLatchedForce(Component):
             params = ThresholdLatchedForceParams(active=False)
         if float(jnp.asarray(params.ramp_duration)) < 0:
             raise ValueError("ramp_duration must be non-negative")
-        self._initial_state = params
         self.params_index = StateIndex(_strong_typed(params))
         self.latch_index = StateIndex(
             ThresholdLatchState(
@@ -494,12 +488,12 @@ class ThresholdLatchedForce(Component):
         return {
             "state_selector": self.state_selector.to_param(),
             "direction": self.direction,
-            "threshold": float(self._initial_state.threshold),
-            "force": jnp.asarray(self._initial_state.force).tolist(),
-            "lateral_force": float(self._initial_state.lateral_force),
-            "ramp_duration": float(self._initial_state.ramp_duration),
-            "scale": float(self._initial_state.scale),
-            "active": bool(self._initial_state.active),
+            "threshold": float(self.params_index.init.threshold),
+            "force": jnp.asarray(self.params_index.init.force).tolist(),
+            "lateral_force": float(self.params_index.init.lateral_force),
+            "ramp_duration": float(self.params_index.init.ramp_duration),
+            "scale": float(self.params_index.init.scale),
+            "active": bool(self.params_index.init.active),
             "dt": self.dt,
             "label": self.label,
         }
@@ -532,7 +526,6 @@ class DynamicsMatrixPerturb(Component):
     output_ports = ("force",)
 
     params_index: StateIndex
-    _initial_state: DynamicsMatrixPerturbParams = field(static=True)
     label: str = field(default="dynamics_matrix_perturb", static=True)
     mass: float = field(static=True)
 
@@ -549,7 +542,6 @@ class DynamicsMatrixPerturb(Component):
             )
         if params is None:
             params = DynamicsMatrixPerturbParams(active=False)
-        self._initial_state = params
         self.params_index = StateIndex(_strong_typed(params))
         self.label = label
         self.mass = require_positive_finite("DynamicsMatrixPerturb.mass", mass)
@@ -585,7 +577,6 @@ class AddNoise(Component):
 
     noise_func: Callable[[PRNGKeyArray, Array], Array] = field(default_factory=Normal)
     params_index: StateIndex
-    _initial_state: AddNoiseParams = field(static=True)
     label: str = field(default="add_noise", static=True)
 
     def __init__(
@@ -599,7 +590,6 @@ class AddNoise(Component):
         if noise_func is None:
             noise_func = Normal()
         self.noise_func = noise_func
-        self._initial_state = params
         self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
@@ -626,7 +616,6 @@ class NetworkClamp(Component):
     output_ports = ("output",)
 
     params_index: StateIndex
-    _initial_state: NetworkIntervenorParams = field(static=True)
     label: str = field(default="network_clamp", static=True)
 
     def __init__(
@@ -636,7 +625,6 @@ class NetworkClamp(Component):
     ):
         if params is None:
             params = NetworkIntervenorParams(active=False)
-        self._initial_state = params
         self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
@@ -667,7 +655,6 @@ class NetworkConstantInput(Component):
     output_ports = ("output",)
 
     params_index: StateIndex
-    _initial_state: NetworkIntervenorParams = field(static=True)
     label: str = field(default="network_constant_input", static=True)
 
     def __init__(
@@ -677,7 +664,6 @@ class NetworkConstantInput(Component):
     ):
         if params is None:
             params = NetworkIntervenorParams(active=False)
-        self._initial_state = params
         self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 
@@ -708,7 +694,6 @@ class ConstantInput(Component):
     output_ports = ("output",)
 
     params_index: StateIndex
-    _initial_state: ConstantInputParams = field(static=True)
     label: str = field(default="constant_input", static=True)
 
     def __init__(
@@ -718,7 +703,6 @@ class ConstantInput(Component):
     ):
         if params is None:
             params = ConstantInputParams(active=False)
-        self._initial_state = params
         self.params_index = StateIndex(_strong_typed(params))
         self.label = label
 

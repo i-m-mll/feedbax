@@ -108,7 +108,6 @@ class CDENetwork(Component):
     dtype: object = field(static=True)
 
     state_index: StateIndex
-    _initial_state: CDENetworkState = field(static=True)
 
     input_ports = ("input", "feedback")
     output_ports = ("output", "hidden")
@@ -211,7 +210,6 @@ class CDENetwork(Component):
             output=jnp.zeros(out_size, dtype=dtype),
             obs_prev=jnp.zeros(obs_dim, dtype=dtype),
         )
-        self._initial_state = init_state
         self.state_index = StateIndex(init_state)
 
     def _cde_step(

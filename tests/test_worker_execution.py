@@ -810,13 +810,13 @@ def test_post_serialization_cleanup_failure_reports_residual_path(
         ("constrained", [0.9710375071, 0.7839561701, 0.6168751121], [-0.6854143143] * 4),
         (
             "recurrent",
-            [0.8857897520, 0.2848538458, 0.0856052786],
-            [-0.1402324885, -0.1338457614, -0.1295092553, -0.1263912469],
+            [0.8857897520, 0.3174341917, 0.1139833331],
+            [-0.2304591388, -0.2057695985, -0.1899056733, -0.1794523597],
         ),
     ],
 )
 def test_studio_update_preserves_seeded_training(fixture, expected_losses, expected_output):
-    """Compare seeded updates to the pre-AOT executor's numerical acceptance fixtures."""
+    """Preserve seeded updates with reset templates excluded from optimizer ownership."""
     from feedbax.training.studio_executor import StudioUpdateKernel
 
     graph_spec = _linear_graph_spec()

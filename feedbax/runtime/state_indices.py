@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypeVar
+
+import jax.tree_util as jtu
 
 from equinox.nn import StateIndex
 import jax.tree as jt
@@ -46,3 +48,31 @@ def align_state_indices_like(target_tree: PyTree, template_tree: PyTree) -> PyTr
             "target_tree and template_tree must have the same PyTree structure for "
             "StateIndex marker alignment"
         ) from exc
+
+
+_Model = TypeVar("_Model")
+
+
+def prepare_component(component: _Model) -> _Model:
+    """Return a model with state markers determined by typed PyTree occurrence paths.
+
+    Initial values remain dynamic leaves and are retained unchanged. Preparing the
+    outer complete model gives independently composed children distinct state slots.
+    """
+
+    def prepare_index(path, value):
+        if not isinstance(value, StateIndex):
+            return value
+        marker = tuple(
+            (type(entry), type(entry.key), entry.key)
+            if isinstance(entry, jtu.DictKey)
+            else (type(entry), entry)
+            for entry in path
+        )
+        index = StateIndex(value.init)
+        object.__setattr__(index, "marker", marker)
+        return index
+
+    return jtu.tree_map_with_path(
+        prepare_index, component, is_leaf=lambda value: isinstance(value, StateIndex)
+    )

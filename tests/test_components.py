@@ -138,7 +138,7 @@ def test_runtime_neural_components_default_trainable_leaves_to_float32():
     assert linear.layer.weight.dtype == jnp.float32
     assert mlp.linears[0].weight.dtype == jnp.float32
     assert gru.cell.weight_ih.dtype == jnp.float32
-    assert gru._initial_state.hidden.dtype == jnp.float32
+    assert gru.state_index.init.hidden.dtype == jnp.float32
 
 
 def test_runtime_named_activations_use_shared_static_callables():
@@ -206,7 +206,7 @@ def test_simplestagednetwork_defaults_trainable_leaves_to_float32_with_float64_i
         assert net.hidden.weight_ih.dtype == jnp.float32
         assert net.hidden.weight_hh.dtype == jnp.float32
         assert net.readout.weight.dtype == jnp.float32
-        assert net._initial_state.hidden.dtype == jnp.float32
+        assert net.state_index.init.hidden.dtype == jnp.float32
         assert outputs["output"].dtype == jnp.float32
         assert outputs["output"].shape == (1,)
 
@@ -224,7 +224,7 @@ def test_simplestagednetwork_preserves_explicit_float64_trainable_leaves():
         assert net.hidden.weight_ih.dtype == jnp.float64
         assert net.hidden.weight_hh.dtype == jnp.float64
         assert net.readout.weight.dtype == jnp.float64
-        assert net._initial_state.hidden.dtype == jnp.float64
+        assert net.state_index.init.hidden.dtype == jnp.float64
 
 
 def test_simplestagednetwork_rejects_custom_factory_that_cannot_honor_dtype():

@@ -108,7 +108,6 @@ class Mechanics(Component):
     backend: Optional[PhysicsBackend]
     remat_substep: bool = field(static=True)
     state_index: StateIndex
-    _initial_state: MechanicsState = field(static=True)
 
     def __init__(
         self,
@@ -147,7 +146,7 @@ class Mechanics(Component):
         if backend is not None:
             # Backend path: initialize via backend
             physics_state = backend.init_state(plant, key=key)
-            self._initial_state = MechanicsState(
+            initial_state = MechanicsState(
                 plant=physics_state.plant,
                 effector=physics_state.effector,
                 solver=physics_state.aux,
@@ -160,11 +159,11 @@ class Mechanics(Component):
                 self._term, 0, self.dt, plant_state, init_input
             )
             effector = self.plant.skeleton.effector(plant_state.skeleton)
-            self._initial_state = MechanicsState(
+            initial_state = MechanicsState(
                 plant=plant_state, effector=effector, solver=solver_state
             )
 
-        self.state_index = StateIndex(self._initial_state)
+        self.state_index = StateIndex(initial_state)
 
     @cached_property
     def _term(self) -> dfx.AbstractTerm:

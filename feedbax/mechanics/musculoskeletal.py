@@ -119,7 +119,6 @@ class RigidTendonMusculoskeletalArm(Component):
     # Integration
     dt: float
     state_index: StateIndex
-    _initial_state: MusculoskeletalState = field(static=True)
 
     # Curve instances (shared across muscles)
     force_length: ForceLengthCurve = field(static=True)
@@ -221,14 +220,14 @@ class RigidTendonMusculoskeletalArm(Component):
             for i, mp in enumerate(self.muscle_params)
         ])
 
-        self._initial_state = MusculoskeletalState(
+        initial_state = MusculoskeletalState(
             arm=init_arm,
             activations=init_activations,
             fiber_lengths=init_fiber_lengths,
             fiber_velocities=jnp.zeros(actual_n_muscles),
             forces=jnp.zeros(actual_n_muscles),
         )
-        self.state_index = StateIndex(self._initial_state)
+        self.state_index = StateIndex(initial_state)
 
     @cached_property
     def _arm_a(self) -> tuple[Array, Array, Array]:

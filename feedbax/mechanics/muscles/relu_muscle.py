@@ -47,7 +47,6 @@ class ReluMuscle(Component):
     min_activation: float = 0.0
     dt: float = 0.01
     state_index: StateIndex
-    _initial_state: Float[Array, ""] = field(static=True)
 
     def __init__(
         self,
@@ -73,8 +72,8 @@ class ReluMuscle(Component):
         self.tau_deactivation = tau_deactivation
         self.min_activation = min_activation
         self.dt = dt
-        self._initial_state = jnp.zeros(()) + initial_activation
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = jnp.zeros(()) + initial_activation
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,
