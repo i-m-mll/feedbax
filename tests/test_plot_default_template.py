@@ -16,6 +16,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 
 def _run_probe(source: str) -> dict:
     """Run *source* in a fresh interpreter and return the JSON object it prints."""
@@ -24,6 +26,7 @@ def _run_probe(source: str) -> dict:
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
         cwd=Path(__file__).resolve().parents[1],
     )
     assert result.returncode == 0, result.stderr
@@ -132,3 +135,84 @@ def test_constructed_figures_still_carry_the_feedbax_template() -> None:
     assert probe["before"] == "plotly"
     assert probe["after"] == "plotly_white"
     assert probe["figure_bgcolor"] == probe["expected_bgcolor"]
+
+
+def test_serialization_import_preserves_the_process_template() -> None:
+    probe = _run_probe(
+        "import json, plotly.io as pio\n"
+        "import feedbax.plot.utils\n"
+        "print(json.dumps({'default': pio.templates.default}))\n"
+    )
+    assert probe["default"] == "plotly"
+
+
+@pytest.mark.parametrize(
+    ("selection", "authored", "expected"),
+    [
+        ("", None, "plotly_white"),
+        (
+            "from feedbax.bin.analysis import _apply_plotly_template_default\n"
+            "_apply_plotly_template_default('plotly')\n",
+            None,
+            "plotly",
+        ),
+        ("pio.templates.default = 'simple_white'\n", None, "simple_white"),
+        ("", "plotly_dark", "plotly_dark"),
+    ],
+)
+def test_analysis_callbacks_preserve_template_choices(selection, authored, expected) -> None:
+    probe = _run_probe(
+        "import json, plotly.io as pio\n"
+        + selection
+        + "from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data\n"
+        "class AuthoredAnalysis(ToyAnalysis):\n"
+        "    def make_figs(self, data, *, result, **kwargs):\n"
+        "        figs = super().make_figs(data, result=result, **kwargs)\n"
+        f"        authored = {authored!r}\n"
+        "        if authored is not None:\n"
+        "            figs['main'].update_layout(template=authored)\n"
+        "        return figs\n"
+        "data = build_toy_analysis_data()\n"
+        "analysis = AuthoredAnalysis(variant='toy')\n"
+        "fig = analysis._make_figs_with_ops(data, {'value': 3})['main']\n"
+        "from feedbax.plot.utils import savefig\n"
+        "import tempfile\n"
+        "from pathlib import Path\n"
+        "with tempfile.TemporaryDirectory() as directory:\n"
+        "    savefig(fig, 'figure', Path(directory), ['json'])\n"
+        "    saved = json.loads((Path(directory) / 'figure.json').read_text())\n"
+        "print(json.dumps({'template': saved['layout']['template'],\n"
+        f"    'expected': pio.templates[{expected!r}].to_plotly_json()}}))\n"
+    )
+    assert probe["template"] == probe["expected"]
+
+
+def test_first_and_repeated_analysis_bytes_match_across_processes() -> None:
+    source = """
+import hashlib, json, tempfile
+from pathlib import Path
+from feedbax.analysis.context import AnalysisRunContext
+from feedbax.analysis.execution import run_analyses_with_context
+from feedbax.contracts.manifest import AnalysisRunSpec
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+
+hashes = []
+with tempfile.TemporaryDirectory() as directory:
+    for _ in range(3):
+        context = AnalysisRunContext(
+            spec=AnalysisRunSpec(analysis_type='test.repeated'), root=Path(directory)
+        )
+        run_analyses_with_context(
+            {'toy': ToyAnalysis(variant='toy')}, build_toy_analysis_data(), context,
+            fig_dump_formats=['html', 'json'],
+        )
+        hashes.append({
+            artifact.logical_name: hashlib.sha256(Path(artifact.uri).read_bytes()).hexdigest()
+            for artifact in context.artifacts
+        })
+print(json.dumps({'hashes': hashes}))
+"""
+    first = _run_probe(source)["hashes"]
+    second = _run_probe(source)["hashes"]
+    assert len(first[0]) == 2
+    assert all(hashes == first[0] for hashes in [*first, *second])

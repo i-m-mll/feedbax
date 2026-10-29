@@ -17,7 +17,6 @@ from pathlib import Path
 # Since we're using pickle to cache states which may contain JAX arrays, we rely on JAX's
 # implicit handling of arrays during pickling (it should work for CPU arrays and most
 # host-accessible device arrays).
-import plotly.io as pio
 import rich
 
 from feedbax.analysis.bundles import (
@@ -50,6 +49,7 @@ from feedbax.config import (
     PLOTLY_CONFIG,
 )
 from feedbax.config.yaml import get_yaml_loader
+from feedbax.plot import apply_default_template
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.contracts.run_aliases import RunAliasCatalog
 from feedbax.plugins.bootstrap import BootstrapState
@@ -82,7 +82,7 @@ def _apply_plotly_template_default(requested: str | None = None) -> None:
         requested: Explicit template name from a CLI flag, or `None` to use the
             project default from `PLOTLY_CONFIG`.
     """
-    pio.templates.default = requested or PLOTLY_CONFIG.templates.default
+    apply_default_template(requested or PLOTLY_CONFIG.templates.default)
 
 
 @contextmanager

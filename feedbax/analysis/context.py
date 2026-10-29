@@ -78,7 +78,11 @@ class AnalysisArtifactFile:
 
 @dataclass
 class AnalysisRunContext:
-    """Execution context for writing analysis outputs without requiring Studio DB state."""
+    """Execution context for writing analysis outputs without requiring Studio DB state.
+
+    ``use_result_cache`` controls result-cache reads and writes throughout the
+    computation graph. It does not affect authenticated input resolution.
+    """
 
     spec: AnalysisRunSpec
     root: Path | str | None = None
@@ -89,6 +93,7 @@ class AnalysisRunContext:
     metadata: dict[str, Any] | None = None
     experiment_registry: ExperimentRegistry | None = None
     index_manifest: bool = True
+    use_result_cache: bool = True
     _artifacts: list[ArtifactRef] = field(default_factory=list, init=False)
     _regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = field(
         default_factory=list,
