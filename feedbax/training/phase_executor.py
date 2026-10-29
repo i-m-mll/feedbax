@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.tree as jt
 import numpy as np
 
@@ -31,8 +32,56 @@ UpdateKernel = Callable[
 ProgressCallback = Callable[[ProgressCoordinate], None]
 MethodObservationCallback = Callable[[ProgressCoordinate], None]
 StepGuard = Callable[
-    [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], "StepGuardResult | None"
+    [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any], "_StepObservation"],
+    "StepGuardResult | None",
 ]
+
+
+@jax.jit
+def _numeric_nan_flags(metrics: tuple[tuple[Any, ...], ...]) -> jax.Array:
+    if not metrics:
+        return jnp.zeros((0,), dtype=jnp.bool_)
+    return jnp.stack(
+        [jnp.any(jnp.stack([jnp.any(jnp.isnan(leaf)) for leaf in leaves])) for leaves in metrics]
+    )
+
+
+def _metric_nan_flags(metrics: Mapping[str, Any]) -> tuple[tuple[str, ...], jax.Array]:
+    names = []
+    numeric = []
+    for name, value in sorted(metrics.items()):
+        leaves = []
+        for leaf in jt.leaves(value):
+            try:
+                array = leaf if isinstance(leaf, (jax.Array, np.ndarray)) else np.asarray(leaf)
+                if jnp.issubdtype(array.dtype, jnp.number):
+                    leaves.append(array)
+            except (TypeError, ValueError):
+                continue
+        if leaves:
+            names.append(name)
+            numeric.append(tuple(leaves))
+    return tuple(names), _numeric_nan_flags(tuple(numeric))
+
+
+@dataclass(frozen=True)
+class _StepObservation:
+    tripped_metrics: tuple[str, ...]
+    raw_batches: Any
+    mapped: bool = False
+    authority_error: WorkerContractValidationError | None = None
+
+    def completed_batches(self) -> int:
+        if self.authority_error is not None:
+            raise self.authority_error
+        values = self.raw_batches if self.mapped else (self.raw_batches,)
+        path = "/phase_program/batch_progress"
+        batches = [PhaseProgramExecutor._batch_progress_value(value, path) for value in values]
+        if any(value != batches[0] for value in batches[1:]):
+            raise WorkerContractValidationError(
+                path, f"mapped batch-progress authorities diverged: {batches!r}"
+            )
+        return batches[0]
 
 
 def _is_shareable_jax_array(value: Any) -> bool:
@@ -457,8 +506,13 @@ class PhaseProgramExecutor:
                         "metrics": self._progress_metrics(current_slots),
                     }
                 )
+                observation = self._step_observation(
+                    current_slots, coordinate, include_health=step_guard is not None
+                )
                 if step_guard is not None:
-                    guard_result = step_guard(current_slots, coordinate, checkpoint_context)
+                    guard_result = step_guard(
+                        current_slots, coordinate, checkpoint_context, observation
+                    )
                     if guard_result is not None and guard_result.halt:
                         halted_slots = (
                             current_slots if guard_result.slots is None else guard_result.slots
@@ -475,7 +529,7 @@ class PhaseProgramExecutor:
                             checkpoints=self.checkpoint_store.as_dict(),
                             checkpoint_visits=self.checkpoint_store.visits(),
                         )
-                completed_batches = self._completed_training_batches(current_slots, coordinate)
+                completed_batches = observation.completed_batches()
                 if completed_batches < previous_completed_batch:
                     raise WorkerContractValidationError(
                         "/phase_program/batch_progress",
@@ -709,34 +763,43 @@ class PhaseProgramExecutor:
         slots: Mapping[str, Any],
         coordinate: ProgressCoordinate,
     ) -> int:
+        return self._step_observation(slots, coordinate, include_health=False).completed_batches()
+
+    def _step_observation(
+        self,
+        slots: Mapping[str, Any],
+        coordinate: ProgressCoordinate,
+        *,
+        include_health: bool = True,
+    ) -> _StepObservation:
+        names, flags = _metric_nan_flags(coordinate.metrics) if include_health else ((), ())
         authority = self.program.batch_progress
-        if authority is None:
-            return coordinate.program_step
-        path = "/phase_program/batch_progress"
-        if authority.slot not in slots:
-            raise WorkerContractValidationError(
-                f"{path}/slot",
-                f"declared batch-progress slot {authority.slot!r} is missing",
-            )
-        values = (
-            [
-                self._slice_mapped_value(slots[authority.slot], instance)
-                for instance in range(self._mapped_size or 0)
-            ]
-            if authority.slot in self._mapped_slots
-            else [slots[authority.slot]]
+        error = None
+        mapped = False
+        raw = coordinate.program_step
+        if authority is not None:
+            try:
+                if authority.slot not in slots:
+                    raise WorkerContractValidationError(
+                        "/phase_program/batch_progress/slot",
+                        f"declared batch-progress slot {authority.slot!r} is missing",
+                    )
+                raw = self._batch_progress_field(
+                    slots[authority.slot], authority.field_path, "/phase_program/batch_progress"
+                )
+                mapped = authority.slot in self._mapped_slots and isinstance(
+                    raw, (jax.Array, np.ndarray)
+                )
+            except WorkerContractValidationError as exc:
+                error = exc
+                raw = None
+        observed_flags, observed_raw = jax.device_get((flags, raw))
+        return _StepObservation(
+            tuple(name for name, flag in zip(names, observed_flags, strict=True) if flag),
+            observed_raw,
+            mapped,
+            error,
         )
-        resolved = [
-            self._batch_progress_field(value, authority.field_path, path) for value in values
-        ]
-        observed = jax.device_get(resolved)
-        batches = [self._batch_progress_value(value, path) for value in observed]
-        if any(value != batches[0] for value in batches[1:]):
-            raise WorkerContractValidationError(
-                path,
-                f"mapped batch-progress authorities diverged: {batches!r}",
-            )
-        return batches[0]
 
     @staticmethod
     def _slice_mapped_value(value: Any, instance: int) -> Any:
