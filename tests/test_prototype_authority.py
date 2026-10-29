@@ -199,7 +199,10 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
         nodes={
             "source": ComponentSpec(type="Sum", input_ports=["a"], output_ports=["output"]),
             "target": ComponentSpec(
-                type="DelayLine", input_ports=["input"], output_ports=["output"]
+                type="DelayLine",
+                params={"delay": 1},
+                input_ports=["input"],
+                output_ports=["output"],
             ),
         },
         wires=[
@@ -242,3 +245,150 @@ def test_direct_filter_preserves_structured_signal_dtypes() -> None:
     assert outputs["velocity"][0].dtype == jnp.float32
     assert jnp.allclose(outputs["position"][:, 0], jnp.array([0.02, 0.0396, 0.058808]), atol=1e-4)
     assert jnp.allclose(outputs["velocity"][0][:, 0], jnp.array([0.02, 0.0396, 0.058808]))
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None:
+    from pydantic import BaseModel, field_validator
+    from feedbax.runtime.components import Gain
+    from feedbax.runtime.graph import init_state_from_component
+
+    calls = {"source": 0, "relay": 0}
+
+    class SourceParams(BaseModel):
+        width: int
+
+        @field_validator("width")
+        @classmethod
+        def normalize_width(cls, value):
+            calls["source"] += 1
+            return value + 1
+
+    class RelayParams(BaseModel):
+        width: int
+
+        @field_validator("width")
+        @classmethod
+        def record_completion(cls, value):
+            calls["relay"] += 1
+            return value
+
+    registry = ComponentRegistry(load_user_components=False)
+    registry.register_component_type(
+        "NormalizedSource",
+        builder=lambda params: Constant(jnp.ones(params["width"])),
+        param_model=SourceParams,
+        output_ports=["output"],
+        output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])},
+    )
+    registry.register_component_type(
+        "DerivedRelay",
+        builder=lambda params: Gain(gain=1.0),
+        param_model=RelayParams,
+        input_ports=["input"],
+        output_ports=["output"],
+        output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])},
+    )
+    leaf = GraphSpec(
+        nodes={
+            "source": ComponentSpec(
+                type="NormalizedSource", params={"width": 2}, output_ports=["output"]
+            ),
+            "relay": ComponentSpec(
+                type="DerivedRelay", input_ports=["input"], output_ports=["output"]
+            ),
+            "delay": ComponentSpec(
+                type="DelayLine",
+                params={"delay": 1},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            dict(
+                source_node="source", source_port="output", target_node="relay", target_port="input"
+            ),
+            dict(
+                source_node="relay", source_port="output", target_node="delay", target_port="input"
+            ),
+        ],
+        derived_dimensions=[dict(node="relay", param="width", port="input")],
+        output_ports=["output"],
+        output_bindings={"output": ("delay", "output")},
+    )
+    spec = (
+        GraphSpec(
+            nodes={"nested": ComponentSpec(type="Subgraph", output_ports=["output"])},
+            subgraphs={"nested": leaf},
+            output_ports=["output"],
+            output_bindings={"output": ("nested", "output")},
+        )
+        if nested
+        else leaf
+    )
+    calls.update(source=0, relay=0)
+    compiled = compile_graph(GraphDocument(graph=spec), registry)
+    assert calls == {"source": 1, "relay": 1}
+    canonical = compiled.resolved.graph.subgraphs["nested"] if nested else compiled.resolved.graph
+    assert (
+        canonical.nodes["source"].params["width"] == canonical.nodes["relay"].params["width"] == 3
+    )
+    assert canonical.nodes["delay"].params["input_shape"] == [3]
+    graph = compiled.graph
+
+    def step(state, _):
+        outputs, state, _ = graph.step({}, state, key=jax.random.PRNGKey(0))
+        return state, outputs["output"]
+
+    _, outputs = jax.lax.scan(step, init_state_from_component(graph), None, length=3)
+    assert outputs.shape == (3, 3)
+    assert jnp.array_equal(outputs, jnp.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]))
+    calls.update(source=0, relay=0)
+    studio = enumerate_studio_schema_registry(
+        build_default_studio_workspace(label="Normalized parameters"),
+        graph=spec,
+        component_registry=registry,
+    )
+    assert calls == {"source": 1, "relay": 1}
+    assert not [issue for issue in studio.issues if issue.type.startswith("derived_dimension")]
+    output = next(port for port in studio.ports if port.port == "output" and port.node_id is None)
+    assert output.value_schema.shape == [3]
+
+
+def test_parameter_normalizer_cannot_contradict_derived_dimension() -> None:
+    from pydantic import BaseModel, field_validator
+    from feedbax.compiler import GraphCompilationError
+    from feedbax.runtime.components import Gain
+
+    class ContradictoryParams(BaseModel):
+        width: int
+
+        @field_validator("width")
+        @classmethod
+        def normalize_width(cls, value):
+            return value + 1
+
+    registry = ComponentRegistry(load_user_components=False)
+    registry.register_component_type(
+        "ContradictoryRelay",
+        builder=lambda params: Gain(gain=1.0),
+        param_model=ContradictoryParams,
+        input_ports=["input"],
+        output_ports=["output"],
+        output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])},
+    )
+    spec = GraphSpec(
+        nodes={
+            "relay": ComponentSpec(
+                type="ContradictoryRelay", input_ports=["input"], output_ports=["output"]
+            )
+        },
+        input_ports=["input"],
+        input_bindings={"input": ("relay", "input")},
+        derived_dimensions=[dict(node="relay", param="width", port="input")],
+    )
+    with pytest.raises(GraphCompilationError) as caught:
+        compile_graph(GraphDocument(graph=spec), registry, {("__graph__", "input"): jnp.zeros(3)})
+    diagnostic = caught.value.record.diagnostics[0]
+    assert diagnostic.source_anchor.authored_path == "/graph/nodes/relay"
+    assert "finalized 4 but derived 3" in diagnostic.observed_condition
