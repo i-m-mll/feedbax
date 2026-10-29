@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
 
 from feedbax.analysis.evaluation_compaction import EvaluationBatchFragment
@@ -514,13 +515,10 @@ def _get_materialized(
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    write_bytes_atomic(
+        path, (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        mode=0o666,
     )
-    temporary.replace(path)
 
 
 __all__ = [

@@ -13,7 +13,8 @@ import matplotlib.pyplot as plt
 import plotly.graph_objs as go
 import pytest
 
-from feedbax.plot.io import _figure_render_filename, _sha256, save_figure, save_figure_with_spec
+from feedbax.contracts.base import sha256_file
+from feedbax.plot.io import _figure_render_filename, save_figure, save_figure_with_spec
 from feedbax.plugins.registry import ExperimentRegistry
 
 pytestmark = pytest.mark.feedbax_contract
@@ -38,17 +39,6 @@ def input_file(tmp_path: Path) -> Path:
     p = tmp_path / "artifact.bin"
     p.write_bytes(b"hello feedbax")
     return p
-
-
-# ---------------------------------------------------------------------------
-# _sha256 helper
-# ---------------------------------------------------------------------------
-
-
-def test_sha256_matches_hashlib(input_file: Path) -> None:
-    """_sha256 must agree with hashlib.sha256 on the same file."""
-    expected = hashlib.sha256(input_file.read_bytes()).hexdigest()
-    assert _sha256(input_file) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +93,7 @@ def test_repeated_saves_produce_byte_identical_spec(tmp_path: Path, input_file: 
         digests.append(spec_path.read_bytes())
 
     assert digests[0] == digests[1]
-    assert _sha256(tmp_path / "first" / "figure.json") == _sha256(
+    assert sha256_file(tmp_path / "first" / "figure.json") == sha256_file(
         tmp_path / "second" / "figure.json"
     )
 

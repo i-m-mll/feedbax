@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
+from feedbax.contracts.base import sha256_file
 from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
 
 from feedbax.contracts.training import (
@@ -4906,7 +4907,7 @@ def build_deadman_watchdog_command(
 def verify_collected_payload(dest_dir: Path, expected_sha256: str) -> None:
     """Verify that at least one collected file matches the expected SHA-256."""
     for path in dest_dir.rglob("*"):
-        if path.is_file() and _sha256_file(path) == expected_sha256:
+        if path.is_file() and sha256_file(path) == expected_sha256:
             return
     raise RunPodDriverError(f"payload sha256 mismatch under {dest_dir}")
 
@@ -4916,7 +4917,7 @@ def _registered_row_payload(row: RunRowSpec) -> dict[str, Any] | None:
     if ref.uri is None:
         return None
     path = Path(ref.uri)
-    if _sha256_file(path) != ref.sha256:
+    if sha256_file(path) != ref.sha256:
         raise RunPodDriverError(f"registered payload digest mismatch for row {row.row_id!r}")
     payload = strict_json_loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
@@ -5133,14 +5134,6 @@ def _int_or_none(value: Any) -> int | None:
 
 def _looks_remote_path(value: str) -> bool:
     return value.startswith("/")
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _sq(value: str) -> str:

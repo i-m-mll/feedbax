@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import JsonValue
 
+from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.strict_json import strict_json_loads
 
 from feedbax.analysis.execution_context import StagedExecutionContext
@@ -612,8 +613,8 @@ def reclaim_evaluation_batch_caches(
             if len(data) != entry["size_bytes"] or sha256_bytes(data) != entry["sha256"]:
                 raise ValueError("pending evaluation raw cache identity drifted")
             entry["status"] = "deleting"
-            _atomic_write_json(intent_path, intent)
         if entry["status"] == "deleting":
+            _atomic_write_json(intent_path, intent)
             if path.exists():
                 data = path.read_bytes()
                 if len(data) != entry["size_bytes"] or sha256_bytes(data) != entry["sha256"]:
@@ -1297,13 +1298,10 @@ def _normalize_legacy_reclamation_checkpoint(payload: Mapping[str, Any]) -> dict
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    write_bytes_atomic(
+        path, (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        mode=0o666,
     )
-    temporary.replace(path)
 
 
 __all__ = [
