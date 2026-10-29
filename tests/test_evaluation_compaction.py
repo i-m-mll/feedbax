@@ -1137,7 +1137,7 @@ def test_fragment_failure_retains_raw_cache(tmp_path: Path, failure: str) -> Non
 
 
 @pytest.mark.parametrize("status", ["pending", "deleting"])
-@pytest.mark.parametrize("boundary", ["file", "directory"])
+@pytest.mark.parametrize("boundary", ["file", "directory", "ancestor", "unsupported"])
 def test_reclamation_sync_failure_retains_cache_until_durable_intent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1195,17 +1195,28 @@ def test_reclamation_sync_failure_retains_cache_until_durable_intent(
         if is_directory:
             intent_path = next(custody_root.glob("**/reclamation-intents/*.json"))
             data = intent_path.read_bytes()
+            observed = os.fstat(descriptor)
+            parent_stat = intent_path.parent.stat()
+            sync_boundary = (
+                "directory"
+                if (observed.st_dev, observed.st_ino) == (parent_stat.st_dev, parent_stat.st_ino)
+                else "ancestor"
+            )
         else:
+            sync_boundary = "file"
             staged = next(
                 path
                 for path in custody_root.rglob("*")
                 if path.is_file() and path.stat().st_ino == os.fstat(descriptor).st_ino
             )
             data = staged.read_bytes()
-        if json.loads(data)["entries"][0]["status"] == status and is_directory == (
-            boundary == "directory"
+        requested_boundary = "directory" if boundary == "unsupported" else boundary
+        if (
+            json.loads(data)["entries"][0]["status"] == status
+            and sync_boundary == requested_boundary
         ):
-            raise OSError(errno.EIO, "reclamation intent sync failed")
+            error_number = errno.ENOTSUP if boundary == "unsupported" else errno.EIO
+            raise OSError(error_number, "reclamation intent sync failed")
         fsync(descriptor)
 
     def reclaim():
@@ -1225,7 +1236,7 @@ def test_reclamation_sync_failure_retains_cache_until_durable_intent(
         patch.setattr(_atomic.os, "fsync", interrupt_sync)
         with pytest.raises(OSError, match="reclamation intent sync failed"):
             reclaim()
-        if status == "deleting" and boundary == "directory":
+        if status == "deleting" and boundary != "file":
             with pytest.raises(OSError, match="reclamation intent sync failed"):
                 reclaim()
     assert cache_path.read_bytes() == cache_bytes

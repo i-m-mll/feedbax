@@ -113,7 +113,7 @@ def test_publication_flushes_exact_bytes_before_replace_and_syncs_directory(
     monkeypatch.setattr(_atomic.os, "fsync", sync)
     monkeypatch.setattr(_atomic.os, "replace", publish)
     _atomic.write_bytes_atomic(destination, data)
-    assert events == ["file", "replace", "directory"]
+    assert events == ["file", "replace", *(["directory"] * len(destination.resolve().parents))]
 
 
 def test_publication_preserves_caller_permission_policy(tmp_path: Path) -> None:
@@ -125,3 +125,61 @@ def test_publication_preserves_caller_permission_policy(tmp_path: Path) -> None:
     private = tmp_path / "private"
     _atomic.write_bytes_atomic(private, b"private")
     assert stat.S_IMODE(private.stat().st_mode) == expected_mode & 0o600
+
+
+@pytest.mark.parametrize("error_number", [errno.EINVAL, errno.ENOTSUP])
+def test_unsupported_directory_sync_cannot_report_durable_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_number: int,
+) -> None:
+    destination = tmp_path / "record"
+    fsync = os.fsync
+
+    def sync(descriptor):
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError(error_number, "directory sync unsupported")
+        fsync(descriptor)
+
+    monkeypatch.setattr(_atomic.os, "fsync", sync)
+    with pytest.raises(OSError, match="directory sync unsupported"):
+        _atomic.write_bytes_atomic(destination, b"visible but unconfirmed")
+    assert destination.read_bytes() == b"visible but unconfirmed"
+    assert list(tmp_path.iterdir()) == [destination]
+
+
+def test_nested_publication_resyncs_namespace_ancestors_on_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "new-parent" / "new-child" / "record"
+    fsync = os.fsync
+    synced = []
+    fail_ancestor = True
+    ancestors = tuple(destination.parent.resolve().parents)
+
+    def sync(descriptor):
+        nonlocal fail_ancestor
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            observed = os.fstat(descriptor)
+            directory = next(
+                path
+                for path in (destination.parent.resolve(), *ancestors)
+                if path.stat().st_ino == observed.st_ino and path.stat().st_dev == observed.st_dev
+            )
+            synced.append(directory)
+            if directory == tmp_path.resolve() and fail_ancestor:
+                raise OSError(errno.EIO, "ancestor sync failed")
+        fsync(descriptor)
+
+    monkeypatch.setattr(_atomic.os, "fsync", sync)
+    for _ in range(2):
+        with pytest.raises(OSError, match="ancestor sync failed"):
+            _atomic.write_bytes_atomic(destination, b"candidate")
+        assert destination.read_bytes() == b"candidate"
+        assert not list(tmp_path.rglob("*.tmp"))
+    synced.clear()
+    fail_ancestor = False
+    _atomic.write_bytes_atomic(destination, b"durable")
+    assert synced == [destination.parent.resolve(), *ancestors]
+    assert destination.read_bytes() == b"durable"
