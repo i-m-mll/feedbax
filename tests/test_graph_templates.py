@@ -425,7 +425,6 @@ def test_graph_input_recurrent_initializer_feeds_prototype_inference() -> None:
         spec,
         {("__graph__", "seed"): jnp.zeros((3,))},
         {},
-        component_registry={},
     )
 
     assert input_prototypes[("gain", "input")].shape == (3,)
@@ -545,7 +544,6 @@ def test_node_output_recurrent_initializer_feeds_prototype_inference() -> None:
         spec,
         {("__graph__", "context"): jnp.zeros((3,))},
         {},
-        component_registry={},
     )
 
     assert input_prototypes[("gain", "input")].shape == (3,)
@@ -1027,5 +1025,5 @@ def test_spec_to_graph_rejects_missing_source_output_prototype() -> None:
         output_bindings={"output": ("sink", "output")},
     )
 
-    with pytest.raises(ValueError, match="Gain node 'gain' port 'input'"):
+    with pytest.raises(ValueError, match="Gain node 'gain'.*input prototype 'input'"):
         spec_to_graph(spec, ComponentRegistry(load_user_components=False))

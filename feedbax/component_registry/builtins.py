@@ -1369,6 +1369,7 @@ def register_builtin_components(registry: _Registry) -> None:
             input_ports=["input"],
             output_ports=["output"],
             icon="SlidersHorizontal",
+            output_prototype_fn=input_passthrough_output_prototype,
             port_types=PortTypeSpec(
                 inputs={"input": PortType(dtype="any")},
                 outputs={"output": PortType(dtype="any")},

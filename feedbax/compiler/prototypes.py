@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from math import prod
 from typing import Any, Mapping
 
 import jax
@@ -16,11 +15,13 @@ from feedbax.contracts.graph import (
     require_causal_subgraph,
     validate_subgraph_domain,
 )
-from feedbax.component_registry import format_missing_interior_message, required_interior_domain
+from feedbax.component_registry import (
+    ComponentRegistry,
+    format_missing_interior_message,
+    required_interior_domain,
+)
 from feedbax.component_registry.declarations import MissingPrototypeInput
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
-from feedbax.runtime.state import CartesianState
-from feedbax.runtime.state_feedback import state_feedback_output_prototype
 
 
 STATEFUL_PROTOTYPE_TYPES = {"Channel", "DelayLine", "FirstOrderFilter"}
@@ -61,14 +62,6 @@ def shape_from_proto(proto: Any) -> list[int] | None:
     if len(leaves) != 1 or not hasattr(leaves[0], "shape"):
         return None
     return [int(dim) for dim in leaves[0].shape]
-
-
-def _proto_from_shape_spec(shape: Any) -> Any:
-    if not isinstance(shape, (list, tuple)):
-        return None
-    if shape and all(isinstance(item, (list, tuple)) for item in shape):
-        return tuple(jnp.zeros(tuple(int(dim) for dim in item)) for item in shape)
-    return jnp.zeros(tuple(int(dim) for dim in shape))
 
 
 def proto_from_value(value: Any) -> Any:
@@ -229,23 +222,6 @@ def _defer_or_raise(reason: str, *, strict: bool) -> dict[str, Any]:
     return {}
 
 
-def _required_input(
-    input_prototypes: Mapping[tuple[str, str], Any],
-    node_name: str,
-    node_type: str,
-    port: str,
-    *,
-    strict: bool,
-) -> Any | None:
-    proto = input_prototypes.get((node_name, port))
-    if proto is None:
-        _defer_or_raise(
-            f"{node_type} node {node_name!r} port {port!r} requires an input prototype",
-            strict=strict,
-        )
-    return proto
-
-
 def _lookup_registry_meta(component_registry: Any, name: str) -> Any | None:
     if component_registry is None:
         return None
@@ -303,7 +279,7 @@ def _registered_output_prototypes(
     try:
         outputs = output_prototype_fn(params, node_inputs)
     except MissingPrototypeInput as exc:
-        return _defer_or_raise(str(exc), strict=strict)
+        return _defer_or_raise(f"{node_spec.type} node {node_name!r}: {exc}", strict=strict)
     if not isinstance(outputs, Mapping):
         raise TypeError(
             f"Output prototype function for {node_spec.type!r} node {node_name!r} "
@@ -321,7 +297,8 @@ def output_prototypes_for_node(
     *,
     strict: bool = True,
 ) -> dict[str, Any]:
-    params = node_spec.params
+    if component_registry is None:
+        component_registry = ComponentRegistry(load_user_components=False)
     node_type = node_spec.type
 
     required_domain = required_interior_domain(node_type, component_registry)
@@ -377,181 +354,9 @@ def output_prototypes_for_node(
     if registered_outputs is not None:
         return registered_outputs
 
-    if node_type == "Constant":
-        return {"output": proto_from_value(params.get("value", 0.0))}
-    if node_type in {"Ramp", "Sine", "Pulse"}:
-        value = params.get("amplitude", params.get("slope", 1.0))
-        return {"output": proto_from_value(value)}
-    if node_type == "Noise":
-        return {"output": jnp.zeros(tuple(int(dim) for dim in params.get("shape", [1])))}
-    if node_type in {"Gain", "Saturation"}:
-        proto = _required_input(input_prototypes, node_name, node_type, "input", strict=strict)
-        return {"output": proto} if proto is not None else {}
-    if node_type in {"Sum", "Multiply"}:
-        proto = input_prototypes.get((node_name, "a"))
-        if proto is None:
-            proto = input_prototypes.get((node_name, "b"))
-        if proto is None:
-            return _defer_or_raise(
-                f"{node_type} node {node_name!r} requires an input prototype for port 'a' or 'b'",
-                strict=strict,
-            )
-        return {"output": proto}
-    if node_type == "Ravel":
-        proto = _required_input(input_prototypes, node_name, node_type, "input", strict=strict)
-        if proto is None:
-            return {}
-        leaves = jt.leaves(proto)
-        if not leaves or any(not hasattr(leaf, "shape") for leaf in leaves):
-            return _defer_or_raise(
-                f"Ravel node {node_name!r} port 'input' prototype is not array-shaped",
-                strict=strict,
-            )
-        return {"output": jnp.zeros((sum(prod(leaf.shape) for leaf in leaves),))}
-    if node_type in STATEFUL_PROTOTYPE_TYPES:
-        proto = input_prototypes.get((node_name, "input"))
-        if proto is None:
-            proto = explicit_proto(params, node_name=node_name, node_type=node_type)
-        if proto is None:
-            return _defer_or_raise(
-                f"{node_type} node {node_name!r} port 'input' requires an input prototype",
-                strict=strict,
-            )
-        return {"output": proto}
-    if node_type == "Linear":
-        return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
-    if node_type == "MLP":
-        return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
-    if node_type in {"GRU", "VanillaRNN"}:
-        hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
-        return {"output": hidden, "hidden": hidden}
-    if node_type == "LSTM":
-        hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
-        return {"output": hidden, "hidden": hidden, "cell": hidden}
-    if node_type == "Mux":
-        available_ports = [
-            port for port in node_spec.input_ports if (node_name, port) in input_prototypes
-        ]
-        if len(available_ports) < 2:
-            return _defer_or_raise(
-                f"Mux {node_name!r} needs at least two connected inputs",
-                strict=strict,
-            )
-        missing_ports = [
-            port for port in node_spec.input_ports if (node_name, port) not in input_prototypes
-        ]
-        if missing_ports:
-            return _defer_or_raise(
-                f"Mux node {node_name!r} is missing input prototypes for ports "
-                + ", ".join(repr(port) for port in missing_ports),
-                strict=strict,
-            )
-        parts = [input_prototypes[(node_name, port)] for port in node_spec.input_ports]
-        if not parts:
-            return _defer_or_raise(
-                f"Mux node {node_name!r} requires at least one input port",
-                strict=strict,
-            )
-        shapes = [shape_from_proto(part) for part in parts]
-        if any(shape is None or len(shape) != 1 for shape in shapes):
-            return _defer_or_raise(
-                f"Mux node {node_name!r} input prototypes must be one-dimensional arrays",
-                strict=strict,
-            )
-        return {"output": jnp.zeros((sum(shape[0] for shape in shapes if shape),))}
-    if node_type == "Input":
-        proto = input_prototypes.get((node_name, "input"))
-        if proto is None:
-            return _defer_or_raise(
-                f"Input node {node_name!r} port 'input' requires an input prototype",
-                strict=strict,
-            )
-        return {str(params.get("output_port", "output")): proto}
-    if node_type == "Subtract":
-        proto = input_prototypes.get((node_name, "a"))
-        if proto is None:
-            proto = input_prototypes.get((node_name, "b"))
-        if proto is None:
-            return _defer_or_raise(
-                f"Subtract node {node_name!r} requires input prototype 'a' or 'b'",
-                strict=strict,
-            )
-        return {"out": proto}
-    if node_type == "Reshape":
-        if (node_name, "input") not in input_prototypes:
-            return _defer_or_raise(
-                f"Reshape node {node_name!r} port 'input' requires an input prototype",
-                strict=strict,
-            )
-        shape = params.get("shape", params.get("output_shape", [1, 1]))
-        if not isinstance(shape, (list, tuple)):
-            return _defer_or_raise(
-                f"Reshape node {node_name!r} requires 'shape' as a list",
-                strict=strict,
-            )
-        return {"output": jnp.zeros(tuple(int(dim) for dim in shape))}
-    if node_type == "MatMul":
-        if (node_name, "a") not in input_prototypes or (node_name, "b") not in input_prototypes:
-            return _defer_or_raise(
-                f"MatMul node {node_name!r} requires input prototypes 'a' and 'b'",
-                strict=strict,
-            )
-        a = input_prototypes[(node_name, "a")]
-        b = input_prototypes[(node_name, "b")]
-        return {"out": jnp.matmul(jnp.zeros_like(a), jnp.zeros_like(b))}
-    if node_type in {"Scale", "Sigmoid"}:
-        proto = input_prototypes.get((node_name, "input"))
-        if proto is None:
-            return _defer_or_raise(
-                f"{node_type} node {node_name!r} port 'input' requires an input prototype",
-                strict=strict,
-            )
-        return {"output": proto}
-    if node_type in {"PointMass", "TwoLinkArm", "Arm6MuscleRigidTendon"}:
-        effector = CartesianState()
-        return {"effector": effector, "state": effector}
-    if node_type in {"LinearStateSpace", "StructuralLinearStateSpace"}:
-        A = jnp.asarray(params["A"])
-        B = jnp.asarray(params["B"])
-        state_dim = int(A.shape[0])
-        pos_start, pos_stop = (int(value) for value in params.get("pos_slice", [0, 2]))
-        vel_start, vel_stop = (int(value) for value in params.get("vel_slice", [2, 4]))
-        force_dim = int(B.shape[1]) if B.ndim == 2 else 0
-        return {
-            "effector": CartesianState(
-                pos=jnp.zeros((pos_stop - pos_start,), dtype=A.dtype),
-                vel=jnp.zeros((vel_stop - vel_start,), dtype=A.dtype),
-                force=jnp.zeros((force_dim,), dtype=A.dtype),
-            ),
-            "state": jnp.zeros((state_dim,), dtype=A.dtype),
-        }
-    if node_type == "StateFeedbackSelector":
-        node_inputs = {
-            port: input_prototypes[(node_name, port)]
-            for port in node_spec.input_ports
-            if (node_name, port) in input_prototypes
-        }
-        return state_feedback_output_prototype(params, node_inputs)
-    if node_type == "ElementwiseAffineModulator":
-        signal = input_prototypes.get((node_name, "signal"))
-        if signal is not None:
-            return {"output": signal}
-        signal_shape = params.get("signal_shape")
-        proto = array_proto_from_shape(signal_shape)
-        if proto is not None:
-            return {"output": proto}
-        return _defer_or_raise(
-            f"ElementwiseAffineModulator node {node_name!r} requires signal prototype "
-            "or signal_shape",
-            strict=strict,
-        )
-    if node_type == "FeedbackChannels":
-        proto = _proto_from_shape_spec(params.get("input_shape"))
-        if proto is None:
-            proto = (jnp.zeros(2), jnp.zeros(2))
-        return {"feedback": proto}
     raise ValueError(
-        f"Node {node_name!r} has unsupported component type {node_type!r} for prototype inference"
+        f"Node {node_name!r} of component type {node_type!r} has no registered "
+        "output prototype rule; register ComponentCompilerFacet.output_prototype_fn"
     )
 
 
@@ -597,6 +402,8 @@ def infer_node_input_prototypes(
     subgraphs: Mapping[str, GraphSubgraphSpec],
     component_registry: Any = None,
 ) -> dict[tuple[str, str], Any]:
+    if component_registry is None:
+        component_registry = ComponentRegistry(load_user_components=False)
     input_prototypes: dict[tuple[str, str], Any] = dict(external_input_prototypes)
     for graph_port, (node_name, node_port) in spec.input_bindings.items():
         graph_proto = external_input_prototypes.get(("__graph__", graph_port))
