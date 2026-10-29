@@ -88,6 +88,7 @@ from feedbax.contracts.base import (
 from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
     AnalysisDataProduct,
+    AnalysisOutputDescriptor,
     AnyManifest,
     load_manifest_bytes,
     normalize_manifest_spec_payloads,
@@ -97,7 +98,7 @@ from feedbax.persistence.manifest_index import index_manifest_file
 
 
 FULFILLMENT_PROJECTION_SCHEMA_ID = "feedbax.fulfillment.output_projection"
-FULFILLMENT_PROJECTION_SCHEMA_VERSION = "feedbax.fulfillment.output_projection.v1"
+FULFILLMENT_PROJECTION_SCHEMA_VERSION = "feedbax.fulfillment.output_projection.v2"
 #: Versions this loader accepts, mapped to the version they migrate to.
 FULFILLMENT_PROJECTION_MIGRATION_TABLE: dict[str, str] = {}
 
@@ -141,7 +142,8 @@ class ProductProjection(StrictModel):
     ``product_identity_hash`` are excluded because they hash manifest bytes,
     which carry ``created_at`` and are therefore not byte-reproducible.
     ``materialization`` is excluded because it records machine-local storage
-    locations.
+    locations. Scientific output descriptors are retained in full, including
+    their value schemas and semantics-preserving source provenance.
     """
 
     role: str
@@ -153,10 +155,36 @@ class ProductProjection(StrictModel):
     checkpoint_policy: dict[str, Any] = Field(default_factory=dict)
     rollout_policy: dict[str, Any] = Field(default_factory=dict)
     descriptor_basis_hash: str | None = None
+    output_descriptors: list[AnalysisOutputDescriptor] | None = None
     artifacts: list[ArtifactProjection] = Field(default_factory=list)
 
 
-class OutputProjection(StrictModel):
+def _reject_incomplete_projection(data: Any, *, label: str) -> None:
+    if isinstance(data, Mapping) and data.get("schema_version") == (
+        "feedbax.fulfillment.output_projection.v1"
+    ):
+        raise ValueError(
+            f"unsupported {label} schema_version: v1 omits scientific output descriptors; "
+            "regenerate v2 projections from retained manifests and rerun rebuild verification"
+        )
+
+
+class _ProjectionEnvelope(StrictModel):
+    """Current verification identity shared by projections and their reports."""
+
+    schema_id: Literal["feedbax.fulfillment.output_projection"] = FULFILLMENT_PROJECTION_SCHEMA_ID
+    schema_version: Literal["feedbax.fulfillment.output_projection.v2"] = (
+        FULFILLMENT_PROJECTION_SCHEMA_VERSION
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_incomplete_version(cls, data: Any) -> Any:
+        _reject_incomplete_projection(data, label=cls.__name__)
+        return data
+
+
+class OutputProjection(_ProjectionEnvelope):
     """The canonical comparable structure one executed node produces.
 
     This is the whole of what a rebuild compares. It contains exactly the
@@ -165,12 +193,6 @@ class OutputProjection(StrictModel):
     no manifest bytes, no timestamps, and no machine-local location.
     """
 
-    schema_id: Literal["feedbax.fulfillment.output_projection"] = (
-        FULFILLMENT_PROJECTION_SCHEMA_ID
-    )
-    schema_version: Literal["feedbax.fulfillment.output_projection.v1"] = (
-        FULFILLMENT_PROJECTION_SCHEMA_VERSION
-    )
     node_kind: FulfillmentNodeKind
     manifest_kind: str
     manifest_id: str
@@ -180,29 +202,17 @@ class OutputProjection(StrictModel):
     summaries: dict[str, Any] = Field(default_factory=dict)
 
 
-class ProjectionDifference(StrictModel):
+class ProjectionDifference(_ProjectionEnvelope):
     """One projection field on which a rebuild disagreed with the receipt."""
 
-    schema_id: Literal["feedbax.fulfillment.output_projection"] = (
-        FULFILLMENT_PROJECTION_SCHEMA_ID
-    )
-    schema_version: Literal["feedbax.fulfillment.output_projection.v1"] = (
-        FULFILLMENT_PROJECTION_SCHEMA_VERSION
-    )
     field_path: str
     expected: Any = None
     observed: Any = None
 
 
-class NodeRebuildOutcome(StrictModel):
+class NodeRebuildOutcome(_ProjectionEnvelope):
     """The structured result of rebuilding one node as verification."""
 
-    schema_id: Literal["feedbax.fulfillment.output_projection"] = (
-        FULFILLMENT_PROJECTION_SCHEMA_ID
-    )
-    schema_version: Literal["feedbax.fulfillment.output_projection.v1"] = (
-        FULFILLMENT_PROJECTION_SCHEMA_VERSION
-    )
     node_key: str
     node_kind: FulfillmentNodeKind
     manifest_id: str
@@ -290,10 +300,13 @@ def migrate_output_projection(payload: OutputProjection | Mapping[str, Any]) -> 
 
     Unknown and removed versions fail closed with the family, current version,
     and migration table named. There is no inference and no compatibility shim.
+    Version 1 omitted scientific descriptors and cannot be migrated without
+    the retained manifest; regenerate the projection and verification instead.
     """
     if isinstance(payload, OutputProjection):
         return OutputProjection.model_validate(payload.model_dump(mode="json"))
     data = dict(payload)
+    _reject_incomplete_projection(data, label="OutputProjection")
     _require_schema_identity(
         data,
         schema_id=FULFILLMENT_PROJECTION_SCHEMA_ID,
@@ -409,6 +422,7 @@ def _product_projection(product: AnalysisDataProduct) -> ProductProjection:
         checkpoint_policy=dict(product.checkpoint_policy),
         rollout_policy=dict(product.rollout_policy),
         descriptor_basis_hash=product.descriptor_basis_hash,
+        output_descriptors=product.output_descriptors,
         artifacts=[_artifact_projection(artifact) for artifact in product.artifacts],
     )
 
