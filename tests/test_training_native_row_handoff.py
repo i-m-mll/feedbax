@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -1608,6 +1609,77 @@ def _invoke_checkpoint_seed_protocol(
     )
 
 
+def _assert_checkpoint_seed_rejects_staged_attack(
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+    source: Path,
+    attempt: Path,
+    target: Path,
+    resolved: ResolvedAssemblyInput,
+    *,
+    boundary_hook: str,
+    attack: Callable[[], None],
+    expected_error: str,
+) -> None:
+    staged = threading.Event()
+    staging_errors: list[Exception] = []
+    with socket.socket() as rendezvous:
+        rendezvous.bind(("127.0.0.1", 0))
+        rendezvous.listen(1)
+        rendezvous.settimeout(10)
+        address = rendezvous.getsockname()
+        # Instrument the subprocess boundary while preserving its real custody checks.
+        handshake = f"""
+import socket
+
+def checkpoint_attack():
+    with socket.create_connection({address!r}, timeout=10) as rendezvous:
+        rendezvous.sendall(b"R")
+        if rendezvous.recv(1) != b"1":
+            raise RuntimeError("checkpoint attack was not staged")
+
+"""
+        boundary = "source_descriptor = os.open(source, flags)"
+        script = native_execution.SECURE_CHECKPOINT_SEED_SCRIPT
+        assert script.count(boundary) == 1
+        script = script.replace(boundary, handshake + boundary_hook + "\n" + boundary)
+        monkeypatch.setattr(native_execution, "SECURE_CHECKPOINT_SEED_SCRIPT", script)
+        monkeypatch.setattr(runpod, "SECURE_CHECKPOINT_SEED_SCRIPT", script)
+
+        def stage_attack() -> None:
+            try:
+                with rendezvous.accept()[0] as connection:
+                    connection.settimeout(10)
+                    assert connection.recv(1) == b"R"
+                    attack()
+                    staged.set()
+                    connection.sendall(b"1")
+            except Exception as exc:
+                staging_errors.append(exc)
+
+        thread = threading.Thread(target=stage_attack)
+        thread.start()
+        rejection = None
+        try:
+            _invoke_checkpoint_seed_protocol(protocol, source, attempt, target, resolved)
+        except (NativeExecutionContextError, subprocess.CalledProcessError) as exc:
+            rejection = exc
+        finally:
+            thread.join(timeout=15)
+
+    assert not thread.is_alive(), "checkpoint attacker did not finish"
+    assert not staging_errors, f"checkpoint attack staging failed: {staging_errors!r}"
+    assert staged.is_set(), "checkpoint attack never reached the selected boundary"
+    assert rejection is not None, "staged checkpoint attack was not rejected"
+    detail = (
+        rejection.stderr if isinstance(rejection, subprocess.CalledProcessError) else str(rejection)
+    )
+    assert expected_error in detail, (
+        f"staged checkpoint attack failed for an unrelated reason: {detail}"
+    )
+    assert not target.exists()
+
+
 @pytest.mark.parametrize("protocol", ["local", "remote"])
 @pytest.mark.parametrize("replacement", [False, True], ids=["tampered", "replaced"])
 def test_checkpoint_seed_reauthenticates_stable_post_stage_source(
@@ -1648,6 +1720,7 @@ def test_checkpoint_seed_reauthenticates_stable_post_stage_source(
 def test_checkpoint_seed_rejects_attempt_path_swap(
     tmp_path: Path,
     protocol: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle = _assemble_lowered_bundle(
         tmp_path / f"{protocol}-attempt-swap-bundle",
@@ -1662,34 +1735,35 @@ def test_checkpoint_seed_rejects_attempt_path_swap(
     resolved = _write_authenticated_checkpoint_tree(
         source,
         bundle.resolved_inputs[0],
-        slot_bytes=b"x" * (64 * 1024 * 1024),
     )
     attempt = tmp_path / f"{protocol}-attempt-swap"
     target = tmp_path / f"{protocol}-attempt-swap-target"
     displaced = tmp_path / f"{protocol}-authenticated-attempt"
-    swapped = threading.Event()
 
     def swap_attempt() -> None:
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if (attempt / "latest.json").is_file():
-                attempt.rename(displaced)
-                attempt.mkdir()
-                (attempt / "attacker.txt").write_text("replacement", encoding="utf-8")
-                swapped.set()
-                return
-            time.sleep(0.001)
+        attempt.rename(displaced)
+        attempt.mkdir()
+        (attempt / "attacker.txt").write_text("replacement", encoding="utf-8")
+        assert (displaced / "latest.json").is_file()
+        assert (attempt / "attacker.txt").is_file()
 
-    thread = threading.Thread(target=swap_attempt)
-    thread.start()
-    try:
-        with pytest.raises((NativeExecutionContextError, subprocess.CalledProcessError)):
-            _invoke_checkpoint_seed_protocol(protocol, source, attempt, target, resolved)
-    finally:
-        thread.join()
+    _assert_checkpoint_seed_rejects_staged_attack(
+        monkeypatch,
+        protocol,
+        source,
+        attempt,
+        target,
+        resolved,
+        boundary_hook="""
+original_authenticate_checkpoint = authenticate_checkpoint
 
-    assert swapped.is_set()
-    assert not target.exists()
+def authenticate_checkpoint(root_descriptor):
+    checkpoint_attack()
+    return original_authenticate_checkpoint(root_descriptor)
+""",
+        attack=swap_attempt,
+        expected_error="authenticated checkpoint attempt changed before publication",
+    )
     assert (attempt / "attacker.txt").is_file()
 
 
@@ -1719,83 +1793,39 @@ def test_checkpoint_seed_rejects_governed_leaf_replacement_after_digest_read(
     governed_leaf = attempt / Path(manifest_uri).parent / "slots" / "model.bin"
     attacker_leaf = tmp_path / f"{protocol}-attacker-model.bin"
     attacker_leaf.write_bytes(b"attacker-slot!!")
-    replaced = threading.Event()
-    staging_errors: list[Exception] = []
+    leaf_parts = governed_leaf.relative_to(attempt).parts
 
-    with socket.socket() as rendezvous:
-        rendezvous.bind(("127.0.0.1", 0))
-        rendezvous.listen(1)
-        rendezvous.settimeout(10)
-        address = rendezvous.getsockname()
-        leaf_parts = governed_leaf.relative_to(attempt).parts
-        # Wrap the shared script only in this test, after bytes and identity are captured.
-        boundary_hook = f"""
-import socket
+    def replace_after_read() -> None:
+        os.replace(attacker_leaf, governed_leaf)
+        assert governed_leaf.read_bytes() == b"attacker-slot!!"
+
+    _assert_checkpoint_seed_rejects_staged_attack(
+        monkeypatch,
+        protocol,
+        source,
+        attempt,
+        target,
+        resolved,
+        boundary_hook=f"""
 original_read_regular = read_regular
 
 def read_regular(parent_descriptor, parts):
     result = original_read_regular(parent_descriptor, parts)
     if parts == {leaf_parts!r}:
-        with socket.create_connection({address!r}, timeout=10) as rendezvous:
-            rendezvous.sendall(b"R")
-            if rendezvous.recv(1) != b"1":
-                raise RuntimeError("checkpoint replacement attack was not staged")
+        checkpoint_attack()
     return result
-
-"""
-        boundary = "source_descriptor = os.open(source, flags)"
-        script = native_execution.SECURE_CHECKPOINT_SEED_SCRIPT
-        assert script.count(boundary) == 1
-        script = script.replace(boundary, boundary_hook + boundary)
-        monkeypatch.setattr(native_execution, "SECURE_CHECKPOINT_SEED_SCRIPT", script)
-        monkeypatch.setattr(runpod, "SECURE_CHECKPOINT_SEED_SCRIPT", script)
-
-        def replace_after_read() -> None:
-            try:
-                with rendezvous.accept()[0] as connection:
-                    connection.settimeout(10)
-                    assert connection.recv(1) == b"R"
-                    os.replace(attacker_leaf, governed_leaf)
-                    assert governed_leaf.read_bytes() == b"attacker-slot!!"
-                    replaced.set()
-                    connection.sendall(b"1")
-            except Exception as exc:
-                staging_errors.append(exc)
-
-        thread = threading.Thread(target=replace_after_read)
-        thread.start()
-        rejection = None
-        try:
-            _invoke_checkpoint_seed_protocol(protocol, source, attempt, target, resolved)
-        except (NativeExecutionContextError, subprocess.CalledProcessError) as exc:
-            rejection = exc
-        finally:
-            thread.join(timeout=15)
-
-    assert not thread.is_alive(), "checkpoint replacement attacker did not finish"
-    assert not staging_errors, f"checkpoint replacement staging failed: {staging_errors!r}"
-    assert replaced.is_set(), "checkpoint replacement attack never reached the read boundary"
-    assert rejection is not None, "staged checkpoint replacement was not rejected"
-    detail = (
-        rejection.stderr if isinstance(rejection, subprocess.CalledProcessError) else str(rejection)
+""",
+        attack=replace_after_read,
+        expected_error="checkpoint governed pathname changed",
     )
-    assert "checkpoint governed pathname changed" in detail, (
-        f"staged checkpoint replacement failed for an unrelated reason: {detail}"
-    )
-    assert not target.exists()
 
 
 @pytest.mark.parametrize("protocol", ["local", "remote"])
 def test_secure_checkpoint_clone_rejects_concurrent_source_mutation(
     tmp_path: Path,
     protocol: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    changing = source / "checkpoint.bin"
-    changing.write_bytes(b"0" * (32 * 1024 * 1024))
-    attempt = tmp_path / f"{protocol}-attempt"
-    target = tmp_path / f"{protocol}-target"
     bundle = _assemble_lowered_bundle(
         tmp_path / f"{protocol}-mutation-bundle",
         gain=2,
@@ -1805,45 +1835,60 @@ def test_secure_checkpoint_clone_rejects_concurrent_source_mutation(
         ),
         input_kind="checkpoint-custody-archive",
     )
-    resolved = bundle.resolved_inputs[0]
-    stop = threading.Event()
-    mutations = 0
+    source = tmp_path / "source"
+    original_bytes = b"original-model"
+    resolved = _write_authenticated_checkpoint_tree(
+        source,
+        bundle.resolved_inputs[0],
+        slot_bytes=original_bytes,
+    )
+    manifest_uri = resolved.custody.materializer.expected_parent_ref.uri
+    slot_path = Path(manifest_uri).parent / "slots" / "model.bin"
+    positive_target = tmp_path / "unmodified-target"
+    _invoke_checkpoint_seed_protocol(
+        protocol,
+        source,
+        tmp_path / "unmodified-attempt",
+        positive_target,
+        resolved,
+    )
+    assert (positive_target / slot_path).read_bytes() == original_bytes
+    assert (positive_target / "latest.json").read_bytes() == (source / "latest.json").read_bytes()
+
+    changing = source / slot_path
+    source_identity = (changing.stat().st_dev, changing.stat().st_ino)
 
     def mutate() -> None:
-        nonlocal mutations
-        value = 0
-        while not stop.is_set():
-            with changing.open("r+b", buffering=0) as handle:
-                handle.write(bytes([value]))
-                os.fsync(handle.fileno())
-            value = 1 - value
-            mutations += 1
+        with changing.open("r+b", buffering=0) as handle:
+            handle.write(b"X")
+            os.fsync(handle.fileno())
+        assert changing.read_bytes() == b"X" + original_bytes[1:]
 
-    thread = threading.Thread(target=mutate)
-    thread.start()
-    try:
-        if protocol == "local":
-            with pytest.raises(NativeExecutionContextError, match="authenticated checkpoint seed"):
-                seed_authenticated_checkpoint(source, attempt, target, resolved)
-        else:
-            result = subprocess.run(
-                [
-                    "bash",
-                    "-lc",
-                    build_native_resume_seed_command(
-                        str(source), str(attempt), str(target), resolved
-                    ),
-                ],
-                capture_output=True,
-                text=True,
-            )
-            assert result.returncode != 0
-    finally:
-        stop.set()
-        thread.join()
-    assert mutations > 0
-    assert not target.exists()
+    _assert_checkpoint_seed_rejects_staged_attack(
+        monkeypatch,
+        protocol,
+        source,
+        tmp_path / "mutated-attempt",
+        tmp_path / "mutated-target",
+        resolved,
+        boundary_hook=f"""
+original_read = os.read
+mutation_staged = False
 
+def read_then_mutate(descriptor, size):
+    global mutation_staged
+    chunk = original_read(descriptor, size)
+    info = os.fstat(descriptor)
+    if chunk and not mutation_staged and (info.st_dev, info.st_ino) == {source_identity!r}:
+        mutation_staged = True
+        checkpoint_attack()
+    return chunk
+
+os.read = read_then_mutate
+""",
+        attack=mutate,
+        expected_error="source entry changed during checkpoint clone: model.bin",
+    )
 
 def test_local_driver_executes_authenticated_custody_continuation_with_parent_lineage(
     tmp_path: Path,
