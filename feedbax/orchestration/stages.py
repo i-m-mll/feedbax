@@ -2759,6 +2759,29 @@ class StageEngine:
     def _run_teardown(self, state: RunSetState, *, abort: bool) -> RunSetState:
         self._prepare_emergency_for_teardown(state)
         stage = state.stage(STAGE_TEARDOWN)
+        execution_started = state.stage(STAGE_LAUNCH).started_at is not None or any(
+            row.started_at is not None
+            or row.pid is not None
+            or row.status in {"launched", "ready", "running", "completed"}
+            for row in state.rows.values()
+        )
+        if (
+            self._destructive_ephemeral_teardown()
+            and execution_started
+            and not self._custody_complete(state)
+        ):
+            error = "destructive teardown blocked: executed outputs require completed collection"
+            blocked = stage.model_copy(
+                update={
+                    "status": "failed",
+                    "attempts": stage.attempts + 1,
+                    "started_at": stage.started_at or utc_now(),
+                    "error": error,
+                    "outputs": {"teardown": "blocked", "abort_path": abort},
+                }
+            )
+            self.store.save(state.with_stage(STAGE_TEARDOWN, blocked))
+            raise CustodyPreservationRequired(error)
         if stage.status == "completed":
             return state
         failure_log_collection: dict[str, Any] | None = None
