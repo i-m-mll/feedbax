@@ -19,6 +19,7 @@ from feedbax.training.worker_validation import (
     resolve_execution_mapping,
     WorkerContractValidationError,
 )
+from tests.test_graph import _make_node_output_initialized_cycle
 
 
 def runtime(update, *, mapped=False):
@@ -225,3 +226,51 @@ def test_one_kernel_prepares_distinct_scalar_and_mapped_steps():
     )
     assert traces == [(2,), (3, 2)]
     assert len(executor._prepared_numerical) == 2
+
+
+@pytest.mark.parametrize("mapped", [False, True])
+def test_recurrent_graph_update_retains_abi_and_learns_trial_initializer(mapped):
+    def loss(model):
+        outputs, _ = model(
+            {"context": jnp.asarray(3.0)},
+            model.init_state(key=jax.random.key(0)),
+            key=jax.random.key(0),
+            n_steps=2,
+        )
+        return jnp.sum(outputs["out"])
+
+    def update(slots, context):
+        value, gradient = eqx.filter_value_and_grad(loss)(slots["model"])
+        model = eqx.tree_at(
+            lambda graph: graph.nodes["encoder"].factor,
+            slots["model"],
+            slots["model"].nodes["encoder"].factor
+            - context["rate"] * gradient.nodes["encoder"].factor,
+        )
+        return {
+            "model": model,
+            "optimizer": slots["optimizer"],
+            "prng": slots["prng"],
+            "train_loss": value,
+            "batch_counter": slots["batch_counter"] + 1,
+        }
+
+    executor, _, slots = runtime(update, mapped=mapped)
+    executor.program.phases[0].max_steps = 1
+    graph = _make_node_output_initialized_cycle(encoder_factor=2.0).prepare()
+    slots["model"] = eqx.filter_vmap(lambda _: graph)(jnp.arange(3)) if mapped else graph
+    structure = jax.tree.structure(slots["model"])
+    static = eqx.filter(slots["model"], lambda value: not eqx.is_array(value))
+    context = {"rate": jnp.asarray(0.1), "schedule_origin_step": 0}
+    executor.preflight(slots, run_id="graph", context=context)
+    assert jax.tree.structure(slots["model"]) == structure
+    np.testing.assert_array_equal(slots["batch_counter"], 0)
+    result = executor.run(slots, run_id="graph", context=context)
+    learned = result.slots["model"]
+    assert jax.tree.structure(learned) == structure
+    assert eqx.tree_equal(eqx.filter(learned, lambda value: not eqx.is_array(value)), static)
+    np.testing.assert_allclose(result.slots["train_loss"], 7.0)
+    np.testing.assert_allclose(learned.nodes["encoder"].factor, 1.775)
+    evaluate_loss = eqx.filter_vmap(loss) if mapped else loss
+    np.testing.assert_allclose(evaluate_loss(learned), 6.49375)
+    np.testing.assert_array_equal(result.slots["batch_counter"], 1)
