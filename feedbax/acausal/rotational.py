@@ -95,10 +95,10 @@ class GearRatio(AcausalElement):
 
         angle_b   = ratio * angle_a
         omega_b   = ratio * omega_a
-        torque_a  = ratio * torque_b   (power conservation)
+        reaction_a + ratio * reaction_b = 0   (zero reaction power)
 
-    During assembly, port_b across variables are *eliminated* and expressed
-    in terms of port_a's variables scaled by the ratio.
+    Assembly pulls shaft efforts and inertias back to one coordinate;
+    physical shaft observables retain their ratio scaling.
 
     Ports:
         flange_a (input shaft), flange_b (output shaft) -- rotational.

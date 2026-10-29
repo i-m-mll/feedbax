@@ -14,17 +14,13 @@ from collections.abc import Mapping
 from typing import Callable, Optional, Type
 
 import diffrax as dfx
-import equinox as eqx
 from equinox import Module, field
-from equinox.nn import State, StateIndex
-import jax
+from equinox.nn import State
 import jax.numpy as jnp
-import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
-from feedbax.runtime.graph import Component
-from feedbax.mechanics.dae import DAEComponent, DAEState
+from feedbax.mechanics.dae import DAEComponent
 from feedbax.acausal.assembly import assemble_system
 from feedbax.acausal.base import (
     AcausalConnection,
@@ -83,7 +79,6 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
     _layout: StateLayout = field(static=True)
     _compiled_vf: Callable = field(static=True)
     _compiled_sensor_fn: Callable = field(static=True)
-    _output_indices: dict[str, int] = field(static=True)
     _input_bindings: dict[str, str] = field(static=True)
     _output_bindings: dict[str, str] = field(static=True)
     _input_size_val: int = field(static=True)
@@ -134,7 +129,7 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         # ---- Ports -------------------------------------------------------
         element_input_names: list[str] = []
         for vname, _idx in sorted(layout._inputs.items(), key=lambda item: item[1]):
-            label = vname.split(".")[0]
+            label = layout._input_specs[vname][0]
             if label not in element_input_names:
                 element_input_names.append(label)
 
@@ -176,14 +171,6 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
             output_port_names + ("state",) if include_state_port else output_port_names
         )
 
-        # Output index map: sensor_label -> state-vector index
-        out_idx: dict[str, int] = {}
-        for label, var_fqn in layout._outputs.items():
-            canon = layout.resolve(var_fqn)
-            if canon in layout._differential:
-                out_idx[label] = layout.var_index(canon)
-        self._output_indices = out_idx
-
         self._input_size_val = max(len(layout._inputs), 1)
 
         # ---- DAEComponent base init -------------------------------------
@@ -212,11 +199,8 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         return AcausalSystemState(y=y0)
 
     def extract_outputs(self, state: AcausalSystemState) -> dict[str, PyTree]:
-        """Read sensor values from the state vector."""
-        outputs: dict[str, PyTree] = {}
-        for label, idx in self._output_indices.items():
-            outputs[label] = state.y[idx]
-        return outputs
+        """Leave sensor extraction to __call__, where actual inputs are available."""
+        return {}
 
     @property
     def input_size(self) -> int:

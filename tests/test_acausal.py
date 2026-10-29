@@ -592,12 +592,8 @@ class TestRotationalDomain:
 
         dae_after = sys.state_view(state)
         vel_after = float(dae_after.system.y[1])
-        # At node A the inertia sees spring.flange_a torque plus gear-
-        # transmitted torque from node B.  For a spring spanning both sides
-        # of the gear: accel = (1 + ratio) * k * (ratio - 1) * theta / J.
-        expected_accel = (
-            (1.0 + ratio) * stiffness * (ratio - 1.0) / inertia
-        )
+        # U = k/2 * (theta_b - theta_a)^2; acceleration opposes dU/dtheta_a.
+        expected_accel = -stiffness * (ratio - 1.0) ** 2 / inertia
         expected_vel = dt * expected_accel
         assert abs(vel_after - expected_vel) < 1e-6, (
             f"Expected {expected_vel}, got {vel_after}"
