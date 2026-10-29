@@ -2462,23 +2462,61 @@ def test_lr_metric_without_batch_authority_or_mapped_diagnostics_fails_closed(
         )
 
 
-def test_mapped_preflight_fails_before_execution_and_batch_authority_must_sync() -> None:
+@pytest.mark.parametrize("rejection", ["unsafe_trace", "divergent_authority"])
+def test_mapped_preflight_fails_before_execution_and_batch_authority_must_sync(rejection) -> None:
     def tracer_unsafe(slots, coordinate, context):
         del coordinate, context
         return {"model": int(slots["model"])}
 
-    executor, _ = _mapped_phase_executor(tracer_unsafe)
-    with pytest.raises(WorkerContractValidationError, match="preflight failed"):
-        executor.preflight(_mapped_slots(), run_id="mapped", context={})
-
     def divergent(slots, coordinate, context):
         updates = _mapped_scalar_kernel(slots, coordinate, context)
-        updates["batch_counter"] = slots["batch_counter"] + slots["model"].astype(jnp.int32)
+        updates["batch_counter"] = slots["batch_counter"] + slots["model"].astype(
+            slots["batch_counter"].dtype
+        )
         return updates
 
-    executor, _ = _mapped_phase_executor(divergent)
-    with pytest.raises(WorkerContractValidationError, match="authorities diverged"):
-        executor.run(_mapped_slots(), run_id="mapped")
+    unsafe = rejection == "unsafe_trace"
+    executor, _ = _mapped_phase_executor(tracer_unsafe if unsafe else divergent)
+    slots = _mapped_slots()
+    initial_slots = deepcopy(slots)
+    progress = []
+    observations = []
+    executed = []
+
+    def observe_execution(current_slots, coordinate, context, observation):
+        executed.append((deepcopy(current_slots), coordinate))
+
+    message = "kernel preparation failed" if unsafe else "authorities diverged"
+    with pytest.raises(WorkerContractValidationError, match=message) as caught:
+        executor.preflight(slots, run_id="mapped", context={})
+        executor.run(
+            slots,
+            run_id="mapped",
+            progress_callback=progress.append,
+            method_observation_callback=observations.append,
+            step_guard=observe_execution,
+            checkpoint_interval=1,
+            progress_interval=1,
+        )
+
+    if unsafe:
+        assert caught.value.path == "/phase_program/update_steps/supervised_gradient_update"
+        assert isinstance(caught.value.__cause__, jax.errors.ConcretizationTypeError)
+        assert executed == []
+    else:
+        assert caught.value.path == "/phase_program/batch_progress"
+        assert len(executed) == 1
+        candidate, coordinate = executed[0]
+        assert candidate["model"].tolist() == [1, 2, 3, 4, 5]
+        assert candidate["optimizer"].tolist() == [1] * 5
+        assert candidate["batch_counter"].tolist() == [0, 1, 2, 3, 4]
+        assert coordinate.program_step == 1
+
+    assert eqx.tree_equal(slots, initial_slots)
+    assert progress == []
+    assert observations == []
+    assert executor.checkpoint_store.as_dict() == {}
+    assert executor.checkpoint_store.visits() == ()
 
 
 @pytest.mark.parametrize("boundary", ["preflight", "runtime"])
