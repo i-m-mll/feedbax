@@ -221,7 +221,7 @@ class WorkerHttpDriver:
         row_id = require_worker_job_id(row.row_id)
         paths = _row_paths(bundle, row_id)
         dest_dir = bundle.run_set_dir / "collected" / row_id
-        check_collection_destinations(bundle)
+        check_collection_destinations(bundle, rows=(row,))
         if not paths["event_log"].exists():
             return {}
         dest = dest_dir / paths["event_log"].name

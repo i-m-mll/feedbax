@@ -507,6 +507,11 @@ class StageEngine:
             with self.store.lock(break_stale=break_stale_lock):
                 state = self.store.initialize(initial)
                 state = self._hydrate_completed_assembly(state)
+                if self.bundle is not None and state.stage(STAGE_PREFLIGHT).status == "completed":
+                    try:
+                        check_collection_destinations(self.bundle)
+                    except (CollectionDestinationError, OSError) as exc:
+                        raise PreflightFailed(f"collection-destinations: {exc}") from exc
                 self._restore_driver_from_provision_record(state)
                 with signal_supervisor.defer_signals():
                     state = self._reconcile_acquisition_intents(state)

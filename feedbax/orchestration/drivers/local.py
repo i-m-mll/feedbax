@@ -699,7 +699,7 @@ class LocalOrchestrationDriver:
     ) -> Mapping[str, str]:
         paths = _row_paths(bundle, row.row_id)
         dest_dir = bundle.run_set_dir / "collected" / row.row_id
-        check_collection_destinations(bundle)
+        check_collection_destinations(bundle, rows=(row,))
         collected: dict[str, str] = {}
         sources = row.launch.collect or [str(paths["event_log"])]
         failed_row = state.rows[row.row_id].status == "failed"

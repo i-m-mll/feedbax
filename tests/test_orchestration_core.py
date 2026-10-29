@@ -6109,3 +6109,97 @@ def test_collection_consumes_same_filesystem_staging_without_copy(
     assert destination.stat().st_ino == identity
     payload = destination / "checkpoint" if directory else destination
     assert payload.read_bytes() == b"checkpoint"
+
+
+@pytest.mark.parametrize("directory", [False, True])
+@pytest.mark.parametrize("failure", ["symlink-source", "copy-failure", "commit-failure", "post-commit"])
+def test_collection_failed_replacement_preserves_output_and_can_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory: bool, failure: str,
+) -> None:
+    import feedbax.orchestration.collection_destination as publication
+
+    bundle = _bundle(tmp_path)
+    destination = bundle.run_set_dir / "collected" / "row-a" / "result"
+    destination.parent.mkdir(parents=True)
+    source = tmp_path / "source"
+    if directory:
+        destination.mkdir()
+        (destination / "data").write_bytes(b"old")
+        source.mkdir()
+        (source / "data").write_bytes(b"new")
+    else:
+        destination.write_bytes(b"old")
+        source.write_bytes(b"new")
+    original_inode = destination.stat().st_ino
+    with monkeypatch.context() as patch:
+        if failure == "symlink-source":
+            source.rename(tmp_path / "real-source")
+            source.symlink_to(tmp_path / "real-source", target_is_directory=directory)
+        elif failure == "copy-failure":
+            def fail_copy(*args, **kwargs):
+                raise OSError("injected copy failure")
+            patch.setattr(publication, "copy_collection_member", fail_copy)
+        elif failure == "commit-failure":
+            def fail_commit(*args, **kwargs):
+                raise OSError("injected commit failure")
+            patch.setattr(publication, "rename_exchange", fail_commit)
+        else:
+            original_recheck = publication.recheck_directory_chain
+            checks = 0
+            def fail_after_commit(*args, **kwargs):
+                nonlocal checks
+                checks += 1
+                if checks == 2:
+                    raise OSError("injected post-commit failure")
+                return original_recheck(*args, **kwargs)
+            patch.setattr(publication, "recheck_directory_chain", fail_after_commit)
+        with pytest.raises((publication.CollectionDestinationError, OSError)):
+            publication.publish_collection_output(bundle, source, destination)
+    old_payload = destination / "data" if directory else destination
+    assert old_payload.read_bytes() == b"old"
+    assert destination.stat().st_ino == original_inode
+    assert not list(destination.parent.glob(".collection-*"))
+    if failure == "symlink-source":
+        source.unlink()
+        (tmp_path / "real-source").rename(source)
+    publication.publish_collection_output(bundle, source, destination)
+    new_payload = destination / "data" if directory else destination
+    assert new_payload.read_bytes() == b"new"
+    assert not list(destination.parent.glob(".collection-*"))
+
+
+def test_completed_preflight_resume_rejects_replaced_destination_before_driver(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    driver = FakeDriver()
+    state = StageEngine(bundle=bundle, driver=driver).run(stop_after_stage=STAGE_PREFLIGHT)
+    assert state.stage(STAGE_PREFLIGHT).status == "completed"
+    driver.calls.clear()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (bundle.run_set_dir / "collected").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(PreflightFailed, match="collection-destinations"):
+        StageEngine(bundle=bundle, driver=driver).run()
+    assert driver.calls == []
+    assert list(outside.iterdir()) == []
+
+
+def test_collection_destination_checks_do_not_traverse_retained_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from feedbax.orchestration.collection_destination import check_collection_destinations
+
+    bundle = _bundle(tmp_path, rows=[_compiled_row(f"row-{i}") for i in range(10)])
+    retained = bundle.run_set_dir / "collected" / "row-0" / "checkpoints"
+    retained.mkdir(parents=True)
+    for i in range(1000):
+        (retained / f"{i}.bin").touch()
+    original_stat = os.stat
+    calls = 0
+    def count_stat(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_stat(*args, **kwargs)
+    monkeypatch.setattr(os, "stat", count_stat)
+    for row in bundle.rows:
+        check_collection_destinations(bundle, rows=(row,))
+    assert calls < 2000
