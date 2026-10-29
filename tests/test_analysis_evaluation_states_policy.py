@@ -720,9 +720,11 @@ def test_source_evidence_round_trips_and_historical_manifest_has_none(
     assert registry_migration.payload["evaluation_state_resolution_diagnostics"] == []
 
 
+@pytest.mark.parametrize("cache_policy", [{}, {"use_cache": False}, {"force": True}])
 def test_authenticated_manifest_authority_round_trips_in_source_evidence(
     tmp_path: Path,
     application_registry_bundle,
+    cache_policy,
 ) -> None:
     _register_evaluation(application_registry_bundle=application_registry_bundle)
     _register_analysis(application_registry_bundle=application_registry_bundle)
@@ -745,6 +747,7 @@ def test_authenticated_manifest_authority_round_trips_in_source_evidence(
         evaluation_registry=application_registry_bundle.evaluation_recipes,
         registry=application_registry_bundle.analysis_recipes,
         experiment_registry=application_registry_bundle.experiment_packages,
+        **cache_policy,
     )
 
     source = load_manifest(path).evaluation_state_sources[0]

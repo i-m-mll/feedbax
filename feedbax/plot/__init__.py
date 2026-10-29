@@ -41,7 +41,7 @@ _PUBLIC_ATTR_MODULES = {
     "unregister_figure_template": ".constructors",
 }
 
-def apply_default_template() -> str:
+def apply_default_template(requested: str | None = None) -> str:
     """Install the Feedbax default Plotly template, once, on first use of the plot surface.
 
     Assigning `plotly.io.templates.default` loads and validates the named template out of
@@ -57,6 +57,10 @@ def apply_default_template() -> str:
     the Feedbax default unless a caller says otherwise — without depending on the order
     in which plotting modules happen to be imported.
 
+    Args:
+        requested: Explicit process template selection. This takes precedence even
+            when it names Plotly's stock default and marks initialization complete.
+
     Returns:
         The Plotly template name in effect for this process.
     """
@@ -65,7 +69,10 @@ def apply_default_template() -> str:
     # Deferred so that importing this package does not import or mutate Plotly.
     import plotly.io as pio  # noqa: PLC0415
 
-    if not _default_template_applied:
+    if requested is not None:
+        pio.templates.default = requested
+        _default_template_applied = True
+    elif not _default_template_applied:
         _default_template_applied = True
         if pio.templates.default == _PLOTLY_STOCK_DEFAULT:
             pio.templates.default = DEFAULT_TEMPLATE

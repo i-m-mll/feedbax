@@ -1146,6 +1146,9 @@ def execute_analysis_run_spec(
 
     Delta-authored specs are flattened against their content-pinned parents
     (which requires ``repo_root``) before execution.
+
+    ``use_cache=False`` or ``force=True`` disables receipt reuse and analysis-result
+    cache reads and writes for the selected analyses and their dependencies.
     """
     run_spec, flattened = resolve_analysis_run_authoring(
         spec,
@@ -1199,6 +1202,7 @@ def execute_analysis_run_spec(
         issues=issues,
         metadata=metadata,
         experiment_registry=experiment_registry,
+        use_result_cache=use_cache and not force,
     )
 
     try:

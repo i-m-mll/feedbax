@@ -28,6 +28,7 @@ from feedbax.analysis.execution_context import (
 )
 from feedbax.contracts.analysis_composition import AnalysisRunDeltaSpec
 from feedbax.bin import analysis as analysis_cli
+from feedbax import plot as feedbax_plot
 from feedbax.config import PLOTLY_CONFIG
 from feedbax.config.yaml import get_yaml_loader
 from feedbax.contracts.base import (
@@ -80,14 +81,16 @@ def toy_analysis_recipe(analysis_state):
     return analysis_state.analysis_recipes
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def restore_plotly_template():
     """Restore the process-global Plotly template default after the test."""
     previous = pio.templates.default
+    previous_applied = feedbax_plot._default_template_applied
     try:
         yield
     finally:
         pio.templates.default = previous
+        feedbax_plot._default_template_applied = previous_applied
 
 
 def _toy_spec_payload(root: Path) -> dict:
