@@ -7,6 +7,7 @@ import asyncio
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+from tests.support.training_fixtures import synthetic_supervised_update_kernels
 from feedbax.contracts.training import (
     DeclaredTrainingProgram,
     MethodPayloadEnvelope,
@@ -14,7 +15,6 @@ from feedbax.contracts.training import (
     TrainingProgramRegistry,
     declare_training_program,
     standard_supervised_method_contract,
-    standard_supervised_update_kernels,
 )
 from feedbax.plugins import (
     BootstrapError,
@@ -53,7 +53,7 @@ def _program(*, prepare=None) -> DeclaredTrainingProgram[Payload]:
                 "method_payload_schema_version": SCHEMA_VERSION,
             }
         ),
-        update_kernels_factory=standard_supervised_update_kernels,
+        update_kernels_factory=synthetic_supervised_update_kernels,
         preparation_provider=prepare,
         owner="tests",
         package="tests",

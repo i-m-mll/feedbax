@@ -24,6 +24,7 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
 )
 from feedbax.contracts.spec_storage import training_spec_sha256
+from tests.support.training_fixtures import synthetic_supervised_update_kernels
 from feedbax.contracts.training import (
     ArtifactPolicySpec,
     MethodExtensionsSpec,
@@ -34,6 +35,7 @@ from feedbax.contracts.training import (
     RUN_CONTROL_SPEC_SCHEMA_VERSION,
     RunControlSpec,
     TrainingConfig,
+    standard_supervised_training_program,
     TrainingMethodAuthoringContribution,
     TrainingMethodAuthoringHook,
     DeclaredTrainingProgram,
@@ -44,7 +46,6 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     WorkerExecutionSpec,
     standard_supervised_method_contract,
-    standard_supervised_update_kernels,
 )
 from feedbax.contracts.worker import AxisSpec, MappingLevelSpec, SlotAxisBindingSpec
 from feedbax.training.authoring import (
@@ -220,7 +221,7 @@ def authoring_registry():
             payload_schema_version=PAYLOAD_SCHEMA_VERSION,
             payload_model=TypedPayload,
             contract_compiler=lambda _payload: holder["contract"].model_copy(deep=True),
-            update_kernels_factory=standard_supervised_update_kernels,
+            update_kernels_factory=synthetic_supervised_update_kernels,
             authoring_hook=TrainingMethodAuthoringHook(
                 lowerer_id="example.typed_method.authoring",
                 lowerer_version="example.typed_method.authoring.v1",
@@ -468,7 +469,7 @@ def test_authoring_rejects_missing_schema_low_level_and_missing_hook() -> None:
             payload_schema_version=PAYLOAD_SCHEMA_VERSION,
             payload_model=TypedPayload,
             contract_factory=_method_contract,
-            update_kernels_factory=standard_supervised_update_kernels,
+            update_kernels_factory=synthetic_supervised_update_kernels,
         )
     )
     with pytest.raises(TrainingMethodAuthoringError, match="low-level-only"):
@@ -486,7 +487,7 @@ def test_authoring_rejects_missing_schema_low_level_and_missing_hook() -> None:
             payload_schema_version=PAYLOAD_SCHEMA_VERSION,
             payload_model=TypedPayload,
             contract_compiler=lambda _payload: _method_contract(),
-            update_kernels_factory=standard_supervised_update_kernels,
+            update_kernels_factory=synthetic_supervised_update_kernels,
         )
     )
     with pytest.raises(TrainingMethodAuthoringError, match="has no authoring_hook"):
@@ -656,7 +657,7 @@ def test_authoring_rejects_reserved_duplicate_hook_identity_before_callback() ->
             payload_schema_version=PAYLOAD_SCHEMA_VERSION,
             payload_model=TypedPayload,
             contract_compiler=lambda _payload: _method_contract(),
-            update_kernels_factory=standard_supervised_update_kernels,
+            update_kernels_factory=synthetic_supervised_update_kernels,
             authoring_hook=TrainingMethodAuthoringHook(
                 lowerer_id=TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY.lowerer_id,
                 lowerer_version=TRAINING_METHOD_AUTHORING_LOWERER_IDENTITY.lowerer_version,
@@ -695,7 +696,7 @@ def test_authoring_hook_rejects_empty_identity(field: str) -> None:
         payload_schema_version=PAYLOAD_SCHEMA_VERSION,
         payload_model=TypedPayload,
         contract_compiler=lambda _payload: _method_contract(),
-        update_kernels_factory=standard_supervised_update_kernels,
+        update_kernels_factory=synthetic_supervised_update_kernels,
         authoring_hook=hook,
     )
 
@@ -956,6 +957,7 @@ def test_fresh_process_plugin_derives_same_authoring_lowerer(tmp_path: Path) -> 
         """
 from pydantic import BaseModel, ConfigDict
 
+from tests.support.training_fixtures import synthetic_supervised_update_kernels
 from feedbax.contracts.training import (
     TrainingConfig,
     TrainingMethodAuthoringContribution,
@@ -963,7 +965,6 @@ from feedbax.contracts.training import (
     DeclaredTrainingProgram,
     declare_training_program,
     standard_supervised_method_contract,
-    standard_supervised_update_kernels,
 )
 from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, TRAINING_PROGRAMS
 
@@ -981,7 +982,7 @@ DESCRIPTOR = declare_training_program(
         payload_schema_version="tests.spec.fresh_method.v1",
         payload_model=Payload,
         contract_compiler=lambda _payload: standard_supervised_method_contract(),
-        update_kernels_factory=standard_supervised_update_kernels,
+        update_kernels_factory=synthetic_supervised_update_kernels,
         authoring_hook=TrainingMethodAuthoringHook(
             lowerer_id="tests.fresh.authoring",
             lowerer_version="tests.fresh.authoring.v1",
@@ -1064,3 +1065,30 @@ print(json.dumps({
             ],
         }
     )
+
+
+def test_authored_standard_program_without_numerical_runtime_fails_closed():
+    registry = TrainingProgramRegistry()
+    program = evolve_training_program(
+        standard_supervised_training_program(),
+        authoring_hook=TrainingMethodAuthoringHook(
+            lowerer_id="tests.standard.authoring", lowerer_version="v1",
+            domain=lambda _payload: {},
+            graph=lambda _payload: {"inline": _minimal_graph()},
+            task=lambda _payload: {"type": "ToyTask", "params": {"n_steps": 1}},
+            objective=lambda _payload: {
+                "loss": {"type": "target_state", "label": "target",
+                         "selector": "port:gain.output"},
+            },
+            compile=lambda _payload: pytest.fail("unavailable runtime cannot author a run"),
+        ),
+    )
+    registry.register_program(program)
+    row = _authored_row().model_copy(update={
+        "payload": {}, "payload_hash": training_spec_sha256({}),
+    })
+    with pytest.raises(TrainingMethodAuthoringError,
+                       match="feedbax/standard_supervised/v1.*real runtime"):
+        compile_training_method_authoring(
+            row, method_ref=program.method_ref, registry=registry,
+        )

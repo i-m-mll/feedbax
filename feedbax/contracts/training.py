@@ -1418,39 +1418,14 @@ def standard_supervised_effective_phase_spec() -> EffectivePhaseSpec:
     )
 
 
-def standard_supervised_update_kernels(
-    _payload: BaseModel | None = None,
+def _unavailable_standard_supervised_runtime(
+    _payload: StandardSupervisedMethodPayload,
 ) -> Mapping[str, Callable[..., Mapping[str, Any]]]:
-    """Return generic kernels for the standard supervised worker declaration.
-
-    The kernel is intentionally method-neutral: it updates declared slots and lets
-    real trainers provide richer kernels by overriding the registry entry.
-    """
-
-    def gradient_update(
-        slots: Mapping[str, Any],
-        coordinate: ProgressCoordinate,
-        context: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        del context
-        updates: dict[str, Any] = {
-            "model": slots["model"],
-            "optimizer": slots["optimizer"],
-            "prng": slots["prng"],
-            "train_loss": float(coordinate.program_step + 1),
-            "batch_counter": slots["batch_counter"] + 1,
-        }
-        model = slots["model"]
-        optimizer = slots["optimizer"]
-        if isinstance(optimizer, Mapping) and "count" in optimizer:
-            updates["optimizer"] = {**dict(optimizer), "count": optimizer["count"] + 1}
-            try:
-                updates["model"] = model + optimizer["count"]
-            except TypeError:
-                updates["model"] = model
-        return updates
-
-    return {"feedbax.training.standard_supervised.gradient_update": gradient_update}
+    raise ValueError(
+        f"training method {STANDARD_SUPERVISED_METHOD_REF!r} has no built-in numerical runtime; "
+        "its payload does not bind a task or rollout. Register a real runtime for this method "
+        "or install a training plugin that supplies one."
+    )
 
 
 def standard_supervised_training_program() -> DeclaredTrainingProgram[
@@ -1463,7 +1438,7 @@ def standard_supervised_training_program() -> DeclaredTrainingProgram[
         payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
         payload_model=StandardSupervisedMethodPayload,
         contract_compiler=lambda _payload: standard_supervised_method_contract(),
-        update_kernels_factory=standard_supervised_update_kernels,
+        update_kernels_factory=_unavailable_standard_supervised_runtime,
         schedule_projector=TrainingMethodScheduleProjector(
             projector_id="feedbax.training.standard_supervised.schedule_projection",
             projector_version="v1",

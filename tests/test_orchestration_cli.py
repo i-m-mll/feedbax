@@ -23,6 +23,8 @@ from feedbax.contracts.studio_training import (
     StudioTrainingAssemblySpec,
     StudioTrainingIdentityAdapter,
 )
+from tests.support.training_fixtures import synthetic_training_program_registry
+from tests.support.training_fixtures import synthetic_supervised_training_program
 from feedbax.contracts.training import (
     LossTermSpec,
     ObjectiveSlotSpec,
@@ -33,10 +35,8 @@ from feedbax.contracts.training import (
     evolve_training_program,
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
-    standard_supervised_training_program,
     standard_supervised_method_payload,
     standard_supervised_method_ref,
-    default_training_program_registry,
 )
 from feedbax.orchestration import (
     AssemblyCompilerRegistry,
@@ -221,7 +221,7 @@ def _register_orchestration_plugin_method(registry: Any) -> None:
     )
     registry.register_program(
         evolve_training_program(
-            standard_supervised_training_program(),
+            synthetic_supervised_training_program(),
             method_ref=_PLUGIN_METHOD_REF,
             payload_schema_id=_PLUGIN_SCHEMA_ID,
             payload_schema_version=_PLUGIN_SCHEMA_VERSION,
@@ -331,7 +331,7 @@ def _matrix_request(
         orchestration_root=str(tmp_path / "orchestration"),
     )
     registry = AssemblyCompilerRegistry()
-    method_registry = default_training_program_registry()
+    method_registry = synthetic_training_program_registry()
     register_training_run_matrix_compiler(
         registry,
         method_registry=method_registry,
@@ -921,7 +921,7 @@ def test_runpod_driver_is_constructed_from_typed_deployment_policy(tmp_path: Pat
         bundle,
         driver_registry=registries.drivers,
         input_provider_bindings=bindings,
-        training_method_registry=default_training_program_registry(),
+        training_method_registry=synthetic_training_program_registry(),
     )
 
     assert isinstance(driver, RunPodOrchestrationDriver)
