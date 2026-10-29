@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,6 +16,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.artifact_store import (
     _retention_artifact_payload,
     _validate_retention_artifact_ref_metadata,
@@ -2033,17 +2033,7 @@ def write_manifest(
         and manifest.schema_version == EVALUATION_RUN_MANIFEST_SCHEMA_VERSION
         else manifest.model_dump_json(indent=2, exclude_none=True)
     )
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("x", encoding="utf-8") as stream:
-            stream.write(serialized)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
+    write_bytes_atomic(path, (serialized + "\n").encode("utf-8"), mode=0o666)
     if index:
         from feedbax.persistence.manifest_index import index_manifest_file
 
