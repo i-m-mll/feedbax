@@ -246,3 +246,29 @@ def test_compliant_tendon_override_uses_mixed_boundary(solver_type):
     expected = 0.5 - 0.25 * np.exp(-model.dt / model.muscle_params.tau_activation)
     np.testing.assert_allclose(physical.activation, expected, atol=2e-5)
     assert jnp.isfinite(outputs["force"])
+
+
+class ParameterDecayDAE(DecayDAE):
+    rate: jax.Array
+
+    def __init__(self, rate):
+        self.rate = rate
+        super().__init__(dt=0.01, solver_type=dfx.Tsit5)
+
+    def vector_field(self, t, state, input):
+        return jt.map(lambda value: -self.rate * value, state)
+
+
+def test_array_dynamics_parameter_and_gradient_remain_live():
+    def response(rate):
+        model = ParameterDecayDAE(rate).prepare()
+        state = model.init_state(key=jax.random.PRNGKey(0))
+        outputs, _ = model({"input": jnp.zeros(1)}, state, key=jax.random.PRNGKey(0))
+        return outputs["state"].y[0]
+
+    value_and_grad = jax.jit(jax.value_and_grad(response))
+    for rate in [jnp.array(1.0), jnp.array(2.0)]:
+        value, grad = value_and_grad(rate)
+        expected = np.exp(-float(rate) * 0.01) * (1 + 1e-10)
+        np.testing.assert_allclose(value, expected, atol=1e-12)
+        np.testing.assert_allclose(grad, -0.01 * expected, atol=1e-12)
