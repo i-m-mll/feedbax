@@ -1094,7 +1094,106 @@ def test_mapped_batch_authority_preserves_host_integer_semantics(authority) -> N
     )
 
     assert completed == expected
+    assert training_executor._terminal_completed_batches(
+        program=executor.program,
+        final_slots=slots,
+        fallback=0,
+        require_authority=True,
+        slot_axis_bindings=executor.slot_axis_bindings,
+    ) == expected
 
+
+
+
+@pytest.mark.parametrize("counter", [2**100, True, -1, 1.5, "missing", "diverged"])
+def test_strict_step_observation_combines_health_and_uncoerced_authority(
+    monkeypatch: pytest.MonkeyPatch, counter,
+) -> None:
+    executor, _ = _mapped_phase_executor(_mapped_scalar_kernel)
+    slots = _mapped_slots()
+    if counter == "missing":
+        del slots["batch_counter"]
+    else:
+        slots["batch_counter"] = (
+            jnp.arange(5, dtype=jnp.int32) if counter == "diverged" else counter
+        )
+    coordinate = ProgressCoordinate(
+        run_id="strict-observation", phase="train_batch",
+        metrics={"loss": (jnp.array([0.0, jnp.nan]), "label"), "infinite": jnp.inf},
+    )
+    transfers = []
+    device_get = jax.device_get
+
+    def counted_device_get(value):
+        transfers.append(value)
+        return device_get(value)
+
+    monkeypatch.setattr(phase_executor.jax, "device_get", counted_device_get)
+    observation = executor._step_observation(slots, coordinate)
+    assert observation.tripped_metrics == ("loss",)
+    assert len(transfers) == 1
+    if counter == 2**100:
+        assert observation.completed_batches() == counter
+    else:
+        with pytest.raises(WorkerContractValidationError):
+            observation.completed_batches()
+
+
+
+def test_mapped_observation_resolves_nested_authority_without_slicing_slot_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor, _ = _mapped_phase_executor(_mapped_scalar_kernel)
+    executor.program.batch_progress.field_path = ["nested", "counter"]
+    slots = _mapped_slots()
+    slots["batch_counter"] = {
+        "nested": {"counter": jnp.full((5,), 7, dtype=jnp.int32)},
+        "unrelated": jnp.ones((5, 100)),
+    }
+
+    def unexpected_slice(*args):
+        raise AssertionError("authority lookup sliced an unrelated runtime tree")
+
+    monkeypatch.setattr(executor, "_slice_mapped_value", unexpected_slice)
+    monkeypatch.setattr(training_executor, "_instance_runtime_slots", unexpected_slice)
+    coordinate = ProgressCoordinate(run_id="nested-counter", phase="train_batch")
+    assert executor._step_observation(slots, coordinate).completed_batches() == 7
+    assert training_executor._terminal_completed_batches(
+        program=executor.program,
+        final_slots=slots,
+        fallback=0,
+        require_authority=True,
+        slot_axis_bindings=executor.slot_axis_bindings,
+    ) == 7
+
+def test_strict_guard_precedes_corrupt_authority_and_stops_before_next_update() -> None:
+    spec = _mapped_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 3
+    updates = []
+    observed = []
+
+    def kernel(slots, coordinate, context):
+        updates.append(coordinate.program_step)
+        result = _mapped_scalar_kernel(slots, coordinate, context)
+        result["train_loss"] = jnp.asarray(jnp.nan)
+        result["batch_counter"] = jnp.asarray(-1, dtype=jnp.int32)
+        return result
+
+    def guard(slots, coordinate, context, observation):
+        assert observation.tripped_metrics == ("train_loss",)
+        with pytest.raises(WorkerContractValidationError):
+            observation.completed_batches()
+        raise FloatingPointError("strict NaN decision")
+
+    executor, _ = _mapped_phase_executor(kernel, spec)
+    with pytest.raises(FloatingPointError, match="strict NaN decision"):
+        executor.run(
+            _mapped_slots(), run_id="strict-order", step_guard=guard,
+            method_observation_callback=observed.append, checkpoint_interval=1,
+        )
+    assert updates == [0]
+    assert observed == []
+    assert executor.checkpoint_store.visits() == ()
 
 def test_nan_detector_keeps_inf_only_metrics_healthy_with_one_transfer(
     monkeypatch: pytest.MonkeyPatch,
