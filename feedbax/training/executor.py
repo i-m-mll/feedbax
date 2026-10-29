@@ -709,6 +709,12 @@ def execute_training_run_spec(
     requires the source's canonical content binding and publishes every output
     checkpoint through that immutable content provider.
     """
+    started_at = (
+        time.perf_counter()
+        if execution_started_at_monotonic is None
+        else execution_started_at_monotonic
+    )
+    cache_before = _compilation_cache_snapshot()
     run_spec = _validate_spec(spec)
     mapping_levels, slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
     loose_preparation = any(
@@ -1156,7 +1162,7 @@ def execute_training_run_spec(
             context=executor_context,
         )
     except ValueError as exc:
-        raise TrainingRunExecutorError(f"mapped execution preflight failed: {exc}") from exc
+        raise TrainingRunExecutorError(f"kernel preparation preflight failed: {exc}") from exc
     if loaded_resume_checkpoint is not None:
         checkpoint_store.remember(loaded_resume_checkpoint)
     live_history_events: list[dict[str, Any]] = []
@@ -1180,13 +1186,7 @@ def execute_training_run_spec(
         else segment_start_batch
     )
     total_batches = int(run_spec.training_config.n_batches or 0)
-    started_at = (
-        time.perf_counter()
-        if execution_started_at_monotonic is None
-        else execution_started_at_monotonic
-    )
-    cache_before = _compilation_cache_snapshot()
-    runtime_telemetry: dict[str, Any] = {}
+    runtime_telemetry: dict[str, Any] = dict(executor.preparation_telemetry)
     cancellation: CancellationDecision | None = None
 
     def observe_cancellation(coordinate: ProgressCoordinate) -> None:
@@ -3235,12 +3235,14 @@ def _live_progress_callback(
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> Callable[[ProgressCoordinate], None]:
     ready_emitted = False
+    first_progress_recorded = False
 
     def emit(coordinate: ProgressCoordinate) -> None:
-        nonlocal ready_emitted
+        nonlocal ready_emitted, first_progress_recorded
         bindings = dict(slot_axis_bindings or {})
         event = _history_event(coordinate, bindings)
-        if runtime_telemetry is not None and not runtime_telemetry:
+        if runtime_telemetry is not None and not first_progress_recorded:
+            first_progress_recorded = True
             runtime_telemetry.update(
                 _first_progress_telemetry(
                     started_at=started_at if started_at is not None else time.perf_counter(),

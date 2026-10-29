@@ -179,7 +179,7 @@ from feedbax.training.preparation import (
     validate_materialized_execution_preparation,
 )
 from feedbax.training.optimizers import build_optimizer
-from feedbax.training.phase_executor import PhaseProgramExecutor
+from feedbax.training.phase_executor import NumericalUpdateKernel, PhaseProgramExecutor
 from feedbax.training.worker_validation import (
     WorkerContractValidationError,
     resolve_execution_mapping,
@@ -405,10 +405,9 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
 
     kernel_calls = 0
 
-    def kernel(slots, coordinate, context):
+    def numerical_kernel(slots, context):
         nonlocal kernel_calls
         kernel_calls += 1
-        del coordinate
         model, optimizer_state, learning_rate = transition(
             slots["model"], slots["optimizer"], context["optimizer"]
         )
@@ -419,6 +418,8 @@ def test_restored_schedule_context_rebuilds_mapped_jit_optimizer(
             "train_loss": learning_rate,
             "batch_counter": slots["batch_counter"] + 1,
         }
+
+    kernel = NumericalUpdateKernel(numerical_kernel, ("optimizer",), excluded_slots=("objective",))
 
     def optimizer_step(_payload, runtime):
         return int(runtime["optimizer"][-1].count)
@@ -723,7 +724,7 @@ def test_mapped_preflight_failure_has_no_publication_side_effects(
     manifest_root = tmp_path / "manifest"
     checkpoint_root = tmp_path / "checkpoints"
 
-    with pytest.raises(TrainingRunExecutorError, match="mapped execution preflight failed"):
+    with pytest.raises(TrainingRunExecutorError, match="kernel preparation preflight failed"):
         execute_training_run_spec(
             spec,
             preparation=preparation,
@@ -6185,3 +6186,37 @@ def test_default_supervised_cli_rejects_before_graph_construction(tmp_path, monk
             "--manifest-root", str(tmp_path / "manifests"),
         ])
     assert list(tmp_path.iterdir()) == [spec_path]
+
+
+def test_numerical_preparation_telemetry_survives_first_progress(tmp_path, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(training_executor.time, "perf_counter", lambda: clock[0])
+    def numeric(slots, context):
+        clock[0] += 7
+        return {
+            "model": slots["model"] + 1,
+            "optimizer": slots["optimizer"], "prng": slots["prng"],
+            "train_loss": jnp.asarray(1.), "batch_counter": slots["batch_counter"] + 1,
+        }
+    kernel = NumericalUpdateKernel(numeric, excluded_slots=("objective",))
+    spec = _mapped_run_spec()
+    registry = _mapped_test_registry(spec, kernel)
+    events = []
+    event_path = tmp_path / "events.jsonl"
+    emitter = RunEventEmitter(run_set_id="time", row_id="row", path=event_path, heartbeat_seconds=None)
+    try:
+        result = execute_training_run_spec(
+            spec, registry=registry, preparation=_valid_materialized_preparation(spec),
+            manifest_root=tmp_path / "runs", checkpoint_root=tmp_path / "checkpoints",
+            progress_callback=events.append, run_event_emitter=emitter,
+        )
+    finally:
+        emitter.close()
+    telemetry = result.manifest.summary_metrics["runtime_telemetry"]
+    assert telemetry["kernel_preparation_seconds"] == 7
+    assert telemetry["start_to_first_progress_seconds"] == 7
+    assert telemetry["measurement_start_semantics"] == "executor_entry"
+    assert telemetry["compile_time_estimate_seconds"] is None
+    assert events[0]["runtime_telemetry"] == telemetry
+    ready = next(event for event in RunEventReader(event_path).read_all() if event.type == "ready")
+    assert ready.payload["runtime_telemetry"] == telemetry
