@@ -608,6 +608,8 @@ def test_main_removes_sealed_temporary_tree_after_pytest_exit(
     external_directory.chmod(0o555)
     observed_root = None
 
+    monkeypatch.delenv("FEEDBAX_JAX_COMPILATION_CACHE_DIR", raising=False)
+    monkeypatch.delenv("FEEDBAX_JAX_TEST_CACHE_ROOT", raising=False)
     monkeypatch.setenv("TMPDIR", str(caller_root))
     monkeypatch.setenv("FULL_SUITE_LOCK_DIR", str(tmp_path / "lock"))
     monkeypatch.setenv("FEEDBAX_FULL_SUITE_DISABLE_XDIST", "1")
@@ -625,6 +627,7 @@ def test_main_removes_sealed_temporary_tree_after_pytest_exit(
     def run_pytest(command, *, cwd, env, check):
         nonlocal observed_root
         observed_root = Path(env["TMPDIR"])
+        assert Path(env["FEEDBAX_JAX_TEST_CACHE_ROOT"]) == observed_root / "jax-cache"
         assert cwd == repo_root
         assert check is False
         assert observed_root.parent == caller_root
@@ -659,6 +662,8 @@ def test_main_removes_sealed_temporary_tree_after_interruption(monkeypatch, tmp_
     caller_root.mkdir()
     observed_root = None
 
+    monkeypatch.delenv("FEEDBAX_JAX_COMPILATION_CACHE_DIR", raising=False)
+    monkeypatch.delenv("FEEDBAX_JAX_TEST_CACHE_ROOT", raising=False)
     monkeypatch.setenv("TMPDIR", str(caller_root))
     monkeypatch.setenv("FULL_SUITE_LOCK_DIR", str(tmp_path / "lock"))
     monkeypatch.setenv("FEEDBAX_FULL_SUITE_DISABLE_XDIST", "1")
@@ -676,6 +681,7 @@ def test_main_removes_sealed_temporary_tree_after_interruption(monkeypatch, tmp_
     def interrupt_pytest(command, *, cwd, env, check):
         nonlocal observed_root
         observed_root = Path(env["TMPDIR"])
+        assert Path(env["FEEDBAX_JAX_TEST_CACHE_ROOT"]) == observed_root / "jax-cache"
         sealed_snapshot = observed_root / "sealed-repo-snapshot"
         sealed_snapshot.mkdir()
         sealed_file = sealed_snapshot / "partial-fixture.bin"

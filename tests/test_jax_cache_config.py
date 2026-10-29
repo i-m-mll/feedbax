@@ -1,71 +1,145 @@
+import json
+import os
+from pathlib import Path
 import subprocess
+import sys
+
+import pytest
 
 
-def _loaded_conftest(pytestconfig):
-    for plugin in pytestconfig.pluginmanager.get_plugins():
-        if str(getattr(plugin, "__file__", "")).endswith("tests/conftest.py"):
-            return plugin
-    raise AssertionError("tests/conftest.py plugin was not loaded")
+@pytest.mark.parametrize(
+    ("outcome", "workers", "override", "returncode"),
+    [
+        ("success", "0", "default", 0),
+        ("failure", "0", "root", 1),
+        ("collection", "0", "default", 2),
+        ("interrupt", "0", "default", 2),
+        ("success", "2", "default", 0),
+        ("success", "0", "exact", 0),
+        ("success", "0", "disabled", 0),
+    ],
+)
+def test_invocation_cache_lifecycle(tmp_path, outcome, workers, override, returncode):
+    """Observe real processes, cache bytes, xdist inheritance, and cleanup boundaries."""
+    repo = Path(__file__).resolve().parents[1]
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    cache_parent = tmp_path / "cache parent"
+    cache_parent.mkdir()
+    sentinel = cache_parent / "caller-owned"
+    sentinel.write_bytes(b"keep")
+    records = tmp_path / "records"
+    records.mkdir()
+    conftest = (repo / "tests" / "conftest.py").read_text()
+    conftest += r"""
 
+import json
 
-def test_repo_cache_root_is_namespaced_by_source_fingerprint(
-    monkeypatch, pytestconfig, tmp_path
-) -> None:
-    test_conftest = _loaded_conftest(pytestconfig)
-    common_dir = tmp_path / "common"
-    repo_root = tmp_path / "repo"
-    calls: list[tuple[str, ...]] = []
-    monkeypatch.delenv("FEEDBAX_JAX_TEST_CACHE_ROOT", raising=False)
-    monkeypatch.setenv("FEEDBAX_JAX_CACHE_INVOCATION_ID", "test-invocation")
+def pytest_sessionstart(session):
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "controller")
+    cache = jax.config.jax_compilation_cache_dir
+    Path(os.environ["CACHE_RECORDS"], worker + ".json").write_text(json.dumps(cache))
+"""
+    (corpus / "conftest.py").write_text(conftest)
+    if outcome == "collection":
+        source = "raise RuntimeError('collection witness')"
+    else:
+        source = r"""
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import jax
+import jax.numpy as jnp
 
-    def fake_run(args, **kwargs):
-        calls.append(tuple(args))
-        if args == ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"]:
-            return subprocess.CompletedProcess(args, 0, stdout=f"{common_dir}\n", stderr="")
-        if args == ["git", "rev-parse", "--verify", "HEAD"]:
-            return subprocess.CompletedProcess(args, 0, stdout=b"abcdef1234567890\n", stderr=b"")
-        if args[:5] == ["git", "diff", "--no-ext-diff", "--binary", "HEAD"]:
-            return subprocess.CompletedProcess(
-                args, 0, stdout=b"diff --git a/feedbax/x b/feedbax/x", stderr=b""
+def test_cache():
+    expected = os.environ.get("FEEDBAX_JAX_COMPILATION_CACHE_DIR")
+    if expected:
+        child = subprocess.check_output([
+            sys.executable, "-c",
+            "from feedbax.orchestration.drivers.local import resolve_jax_compilation_cache_dir; "
+            "print(resolve_jax_compilation_cache_dir())",
+        ], text=True, timeout=10).strip()
+        assert child == expected
+        assert jax.config.jax_compilation_cache_dir == expected
+        assert float(jax.jit(lambda x: x + 1)(jnp.array(2.0))) == 3
+        assert any(Path(expected).iterdir())
+    outcome = os.environ["CACHE_OUTCOME"]
+    if outcome == "interrupt":
+        signal.raise_signal(signal.SIGINT)
+    assert outcome != "failure"
+"""
+    (corpus / "test_witness.py").write_text(source)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(
+            (
+                "FEEDBAX_JAX_",
+                "FEEDBAX_DISABLE_JAX_",
+                "PYTEST_",
             )
-        raise AssertionError(f"unexpected command: {args}")
-
-    monkeypatch.setattr(test_conftest.subprocess, "run", fake_run)
-
-    cache_root = test_conftest._repo_cache_root(repo_root)
-
-    assert cache_root.parent.parent == common_dir / "feedbax_test_cache"
-    assert cache_root.parent.name.startswith("abcdef123456-")
-    assert len(cache_root.parent.name) == len("abcdef123456-") + 16
-    assert cache_root.name == "test-invocation"
-    assert any(call[:5] == ("git", "diff", "--no-ext-diff", "--binary", "HEAD") for call in calls)
-
-
-def test_repo_cache_root_uses_full_suite_cache_base_without_losing_isolation(
-    monkeypatch, pytestconfig, tmp_path
-) -> None:
-    test_conftest = _loaded_conftest(pytestconfig)
-    base_dir = tmp_path / "suite-cache"
-    repo_root = tmp_path / "repo"
-    calls: list[tuple[str, ...]] = []
-    monkeypatch.setenv("FEEDBAX_JAX_TEST_CACHE_ROOT", str(base_dir))
-    monkeypatch.setenv("FEEDBAX_JAX_CACHE_INVOCATION_ID", "gw0-pid")
-
-    def fake_run(args, **kwargs):
-        calls.append(tuple(args))
-        if args == ["git", "rev-parse", "--verify", "HEAD"]:
-            return subprocess.CompletedProcess(args, 0, stdout=b"abcdef1234567890\n", stderr=b"")
-        if args[:5] == ["git", "diff", "--no-ext-diff", "--binary", "HEAD"]:
-            return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
-        raise AssertionError(f"unexpected command: {args}")
-
-    monkeypatch.setattr(test_conftest.subprocess, "run", fake_run)
-
-    cache_root = test_conftest._repo_cache_root(repo_root)
-
-    assert cache_root.parent.parent == base_dir
-    assert cache_root.parent.name.startswith("abcdef123456-")
-    assert cache_root.name == "gw0-pid"
-    assert not any(
-        call == ("git", "rev-parse", "--path-format=absolute", "--git-common-dir") for call in calls
+        )
+    }
+    env.update(
+        {
+            "PYTHONPATH": str(repo),
+            "TMPDIR": str(cache_parent),
+            "CACHE_RECORDS": str(records),
+            "CACHE_OUTCOME": outcome,
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        }
     )
+    if override == "root":
+        env["FEEDBAX_JAX_TEST_CACHE_ROOT"] = str(cache_parent)
+    elif override == "exact":
+        env["FEEDBAX_JAX_COMPILATION_CACHE_DIR"] = str(cache_parent / "explicit")
+        env["FEEDBAX_JAX_TEST_CACHE_ROOT"] = str(cache_parent / "unused")
+    elif override == "disabled":
+        env["FEEDBAX_DISABLE_JAX_COMPILATION_CACHE"] = "1"
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-p",
+        "xdist.plugin",
+        "-n",
+        workers,
+        "--dist=each",
+        "-q",
+        "-o",
+        "addopts=",
+        "--basetemp",
+        str(tmp_path / "pytest-temp"),
+    ]
+    caches = []
+    for _ in range(2 if override == "default" and outcome == "success" else 1):
+        result = subprocess.run(
+            command, cwd=corpus, env=env, capture_output=True, text=True, timeout=25, check=False
+        )
+        assert result.returncode == returncode, result.stdout + result.stderr
+        observed = {path.stem: json.loads(path.read_text()) for path in records.glob("*.json")}
+        if override == "disabled":
+            assert set(observed.values()) == {None}
+        else:
+            assert len(set(observed.values())) == 1, observed
+            cache = Path(observed["controller"])
+            caches.append(cache)
+            if override == "exact":
+                assert cache == cache_parent / "explicit"
+                assert sum(path.stat().st_size for path in cache.rglob("*") if path.is_file()) > 0
+            else:
+                assert not cache.exists()
+                assert list(cache_parent.iterdir()) == [sentinel]
+                retained = sum(
+                    path.stat().st_size
+                    for path in cache_parent.rglob("*")
+                    if path.is_file() and path != sentinel
+                )
+                assert retained == 0
+        if workers == "2":
+            assert set(observed) == {"controller", "gw0", "gw1"}
+    if len(caches) == 2:
+        assert caches[0] != caches[1]
+    assert sentinel.read_bytes() == b"keep"
