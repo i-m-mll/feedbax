@@ -20,7 +20,12 @@ from feedbax.contracts.scientific_compiler_schema import (
     RESOLVED_GRAPH_SCHEMA_ID,
     RESOLVED_GRAPH_SCHEMA_VERSION,
 )
-from feedbax.compiler.resolution import resolve_component_node, resolve_graph_parameters
+from feedbax.compiler.resolution import (
+    ParameterResolutionError,
+    resolve_component_node,
+    resolve_graph_parameters,
+)
+from feedbax.component_registry.declarations import ComponentParamValidationError
 from feedbax.compiler.serialization import (
     _instantiate_graph,
 )
@@ -277,8 +282,14 @@ def _compile_phase(
     except GraphCompilationError:
         raise
     except (KeyError, TypeError, ValueError) as exc:
+        cause = exc.cause if isinstance(exc, ParameterResolutionError) else exc
         diagnostic = CompilerDiagnostic(
-            code=code,
+            code=(
+                "compiler.constraint_solving.invalid_component_parameters"
+                if phase is CompilerPhase.CONSTRAINT_SOLVING
+                and isinstance(cause, ComponentParamValidationError)
+                else code
+            ),
             phase=phase,
             severity=DiagnosticSeverity.ERROR,
             source_anchor=(
@@ -298,7 +309,7 @@ def _compile_phase(
                 document_sha256=document_sha256,
                 diagnostics=(diagnostic,),
             )
-        ) from exc
+        ) from cause
 
 
 def _json_pointer_token(value: str) -> str:

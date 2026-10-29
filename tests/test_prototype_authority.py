@@ -199,7 +199,10 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
         nodes={
             "source": ComponentSpec(type="Sum", input_ports=["a"], output_ports=["output"]),
             "target": ComponentSpec(
-                type="DelayLine", params={"delay": 1}, input_ports=["input"], output_ports=["output"]
+                type="DelayLine",
+                params={"delay": 1},
+                input_ports=["input"],
+                output_ports=["output"],
             ),
         },
         wires=[
@@ -297,8 +300,9 @@ def test_integer_source_filter_is_rejected_during_compilation() -> None:
     )
     with pytest.raises(
         GraphCompilationError, match="FirstOrderFilter requires real floating state leaves"
-    ):
+    ) as caught:
         compile_graph(GraphDocument(graph=spec), registry)
+    assert caught.value.record.diagnostics[0].source_anchor.authored_path == "/graph/nodes/filter"
     assert registry.get("FirstOrderFilter").param_schema_version == "2"
 
 
@@ -447,3 +451,96 @@ def test_parameter_normalizer_cannot_contradict_derived_dimension() -> None:
     diagnostic = caught.value.record.diagnostics[0]
     assert diagnostic.source_anchor.authored_path == "/graph/nodes/relay"
     assert "finalized 4 but derived 3" in diagnostic.observed_condition
+
+
+def test_recurrent_constant_initializer_seeds_final_state_dtype_and_shape() -> None:
+    graph = GraphSpec(
+        nodes={
+            "delay": ComponentSpec(
+                type="DelayLine",
+                params={"delay": 1},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+        },
+        wires=[
+            dict(
+                source_node="delay",
+                source_port="output",
+                target_node="delay",
+                target_port="input",
+                temporality="recurrent",
+                recurrent_initializer={
+                    "kind": "constant",
+                    "value": [1.0, 2.0, 3.0],
+                    "dtype": "float16",
+                },
+            )
+        ],
+    )
+    compiled = compile_graph(
+        GraphDocument(graph=graph), ComponentRegistry(load_user_components=False)
+    )
+    params = compiled.resolved.graph.nodes["delay"].params
+    assert params["input_shape"] == [3]
+    assert params["input_dtype"] == "float16"
+    assert compiled.graph.nodes["delay"].input_proto.dtype == jnp.float16
+
+
+def test_prototype_dependencies_defer_without_reinterpreting_parameters() -> None:
+    from feedbax.contracts.array_values import (
+        ARRAY_VALUE_SCHEMA_ID,
+        ARRAY_VALUE_SCHEMA_VERSION,
+        ConstantArrayValueSpec,
+    )
+
+    registry = ComponentRegistry(load_user_components=False)
+    value = ConstantArrayValueSpec(
+        schema_id=ARRAY_VALUE_SCHEMA_ID,
+        schema_version=ARRAY_VALUE_SCHEMA_VERSION,
+        encoding="constant",
+        shape=[1],
+        dtype="float32",
+        nonfinite="forbid",
+        value=2.0,
+    ).model_dump(mode="json")
+    graph = GraphSpec(
+        nodes={
+            "base": ComponentSpec(
+                type="Constant", params={"value": value}, output_ports=["output"]
+            ),
+            "state": ComponentSpec(
+                type="Constant", params={"value": value}, output_ports=["output"]
+            ),
+            "affine": ComponentSpec(
+                type="AffineValueComposer",
+                params={
+                    "schema_version": "feedbax.component.affine_value_composer.v1",
+                    "output_block_size": 1,
+                    "feature_rules": [{"kind": "identity", "state_slice": [0, 1]}],
+                },
+                input_ports=["base", "state"],
+                output_ports=["value"],
+            ),
+            "delay": ComponentSpec(
+                type="DelayLine",
+                params={"delay": 1},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            dict(
+                source_node="base", source_port="output", target_node="affine", target_port="base"
+            ),
+            dict(
+                source_node="state", source_port="output", target_node="affine", target_port="state"
+            ),
+            dict(
+                source_node="affine", source_port="value", target_node="delay", target_port="input"
+            ),
+        ],
+    )
+    compiled = compile_graph(GraphDocument(graph=graph), registry)
+    assert compiled.resolved.graph.nodes["delay"].params["input_shape"] == [1]
+    assert compiled.resolved.graph.nodes["base"].params["value"] == value

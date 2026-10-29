@@ -307,10 +307,7 @@ def enumerate_studio_schema_registry(
         return registry
 
     task_binding_spec = scenario.task_binding_spec
-    authoring_graph = normalize_graph_for_studio_authoring(
-        graph,
-        component_registry=component_registry,
-    )
+    authoring_graph = normalize_graph_for_studio_authoring(graph)
     task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
         task_binding_spec,
         authoring_graph,
@@ -586,6 +583,16 @@ def _parameter_resolution_issues(
                 "derived_dimension_conflict"
                 if isinstance(cause, DerivedDimensionConflict)
                 else "derived_dimension_unresolved"
+            )
+            graph_path = error.authored_path.rsplit("/nodes/", 1)[0]
+            graph = resolution.graph
+            for name in graph_path.split("/")[3::2]:
+                graph = graph.subgraphs[name.replace("~1", "/").replace("~0", "~")]
+            index = next(
+                (i for i, rule in enumerate(graph.derived_dimensions) if rule == cause.rule), 0
+            )
+            location["path"] = (
+                base_path + graph_path.removeprefix("/graph") + f"/derived_dimensions/{index}"
             )
             location.update({"node": cause.rule.node, "param": cause.rule.param})
             if isinstance(cause, DerivedDimensionConflict):

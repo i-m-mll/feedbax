@@ -8,7 +8,11 @@ from typing import Any, Mapping
 import jax.numpy as jnp
 import jax.tree as jt
 
-from feedbax.component_registry import ComponentRegistry, required_interior_domain
+from feedbax.component_registry import (
+    ComponentRegistry,
+    format_missing_interior_message,
+    required_interior_domain,
+)
 from feedbax.component_registry.declarations import MissingPrototypeInput
 from feedbax.contracts.acausal_interface import normalize_acausal_interfaces_for_graph
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
@@ -19,7 +23,6 @@ from feedbax.compiler.prototypes import (
     STATEFUL_PROTOTYPE_TYPES,
     array_proto_from_shape,
     explicit_proto,
-    proto_from_value,
     shape_from_proto,
     validate_or_add_input_shape,
     _lookup_output_prototype_fn,
@@ -146,6 +149,7 @@ class _Completion:
         self.inputs: dict[tuple[str, str], Any] = {}
         self.outputs: dict[tuple[str, str], Any] = {}
         self.published: set[str] = set()
+        self.deferred: dict[str, ValueError] = {}
         self.children: dict[str, _Completion] = {}
         self.errors: dict[str, ParameterResolutionError] = {}
         for name, node in self.graph.nodes.items():
@@ -208,7 +212,9 @@ class _Completion:
                 if kind == "zeros":
                     proto = array_proto_from_shape(initial.get("shape"))
                 elif kind == "constant" and "value" in initial:
-                    proto = proto_from_value(initial["value"])
+                    proto = jnp.zeros_like(
+                        jnp.asarray(initial["value"], dtype=initial.get("dtype"))
+                    )
                 elif kind == "graph-input":
                     proto = external.get(("__graph__", initial.get("source")))
                 elif kind == "node-output":
@@ -248,6 +254,14 @@ class _Completion:
 
     def complete(self, name: str) -> bool:
         if name in self.completed:
+            node = self.completed[name]
+            if node.type in STATEFUL_PROTOTYPE_TYPES and (name, "input") in self.inputs:
+                validate_or_add_input_shape(
+                    node.params,
+                    self.inputs[(name, "input")],
+                    node_name=name,
+                    node_type=node.type,
+                )
             return False
         node = self.nodes[name]
         dimensions = self.dimensions(name)
@@ -255,6 +269,14 @@ class _Completion:
             return False
         params = dict(node.params)
         for rule, derived in dimensions:
+            if rule.param in params and params[rule.param] is None:
+                raise DerivedDimensionConflict(
+                    f"Derived dimension conflict for {name}.{rule.param}: declared null but derived {derived}; "
+                    "omit the parameter when using derived_dimensions",
+                    rule=rule,
+                    declared=None,
+                    derived=derived,
+                )
             if rule.param not in params:
                 params[rule.param] = derived
         prototype = None
@@ -274,7 +296,13 @@ class _Completion:
             declared = final.params.get(rule.param)
             if isinstance(declared, bool) or not isinstance(declared, int) or declared != derived:
                 raise DerivedDimensionConflict(
-                    f"Derived dimension conflict for {name}.{rule.param}: finalized {declared!r} "
+                    f"Derived dimension conflict for {name}.{rule.param}: "
+                    + (
+                        f"declared {node.params[rule.param]!r}, "
+                        if rule.param in node.params
+                        else ""
+                    )
+                    + f"finalized {declared!r} "
                     f"but derived {derived} from {name}.{rule.port}; omit conflicting authored values "
                     "or correct the parameter normalizer",
                     rule=rule,
@@ -292,6 +320,20 @@ class _Completion:
         if name in self.published or name not in self.completed:
             return False
         node = self.completed[name]
+        domain = required_interior_domain(node.type, self.registry)
+        if domain is not None and name not in (self.graph.subgraphs or {}):
+            if node.type == "Network":
+                raise ValueError(
+                    f"Network node {name!r} requires a subgraph; no subgraph was provided. "
+                    "Open it in Studio to generate the internal architecture, then save again."
+                )
+            raise ValueError(
+                format_missing_interior_message(
+                    node_name=name,
+                    node_type=node.type,
+                    domain_id=domain,
+                )
+            )
         if node.type in STATEFUL_PROTOTYPE_TYPES and (name, "input") in self.inputs:
             validate_or_add_input_shape(
                 node.params,
@@ -312,20 +354,24 @@ class _Completion:
                     )
                 self.published.add(name)
                 return False
-            if any(
-                (wire.target_node, wire.target_port) not in self.inputs
-                for wire in self.graph.wires
-                if wire.target_node == name
-            ):
-                return False
             inputs = {
                 port: self.inputs[(name, port)]
                 for port in node.input_ports
                 if (name, port) in self.inputs
             }
+            if (
+                node.input_ports
+                and not inputs
+                and not any(wire.source_node == name for wire in self.graph.wires)
+            ):
+                return False
+            from feedbax.compiler.serialization import _materialize_component_param_value
+
+            params = _materialize_component_param_value(node.params, declarations={}, path=())
             try:
-                outputs = fn(node.params, inputs)
-            except MissingPrototypeInput:
+                outputs = fn(params, inputs)
+            except MissingPrototypeInput as exc:
+                self.deferred[name] = ValueError(f"{node.type} node {name!r}: {exc}")
                 return False
             if not isinstance(outputs, Mapping):
                 raise TypeError(f"Output prototype rule for {node.type!r} must return a mapping")
@@ -385,6 +431,14 @@ class _Completion:
         for name, node in self.nodes.items():
             if name in self.errors or name in self.completed:
                 continue
+            for wire in self.graph.wires:
+                if wire.target_node == name and wire.source_node in self.deferred:
+                    errors.append(
+                        ParameterResolutionError(
+                            f"{self.path}/nodes/{_token(wire.source_node)}",
+                            self.deferred[wire.source_node],
+                        )
+                    )
             rule = next((rule for rule in self.graph.derived_dimensions if rule.node == name), None)
             cause = (
                 DerivedDimensionError(
@@ -399,20 +453,6 @@ class _Completion:
                 )
             )
             errors.append(ParameterResolutionError(f"{self.path}/nodes/{_token(name)}", cause))
-        for wire in self.graph.wires:
-            if (
-                wire.target_node,
-                wire.target_port,
-            ) not in self.inputs and wire.target_node not in self.errors:
-                errors.append(
-                    ParameterResolutionError(
-                        f"{self.path}/nodes/{_token(wire.target_node)}",
-                        ValueError(
-                            f"Unresolved prototype dependency {wire.source_node}.{wire.source_port} "
-                            f"-> {wire.target_node}.{wire.target_port}"
-                        ),
-                    )
-                )
         graph = self.graph.model_copy(
             update={"nodes": {**self.nodes, **self.completed}, "subgraphs": subgraphs or None}
         )
