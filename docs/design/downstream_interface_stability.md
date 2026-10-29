@@ -134,13 +134,24 @@ protected delivery and owner-ratification step.
 - Amend `graph-compiler` so `feedbax.compiler` additionally guarantees
   `CompilationFailureRecord`, `CompilerDiagnostic`, `CompilerPhase`,
   `DiagnosticSeverity`, and `GraphCompilationError`. The candidate schemas are
-  `feedbax.resolved_graph` v3, `feedbax.graph_compilation_record` v4, and
-  `feedbax.graph_compilation_failure` v1, produced by compiler version 2.
+  `feedbax.resolved_graph` v4, `feedbax.graph_compilation_record` v5, and
+  `feedbax.graph_compilation_failure` v1, produced by compiler version 3.
   Earlier and unknown resolved-graph and compilation-record versions reject
   with a request to recompile the authored `GraphDocument`; they are not
   restamped as evidence of the current resolved semantics. `GraphDocument`,
   authored checkpoint and manifest identities, and the resolved digest preimage
   retain their existing definitions.
+  Compiler evidence with an earlier or unknown compiler version also rejects
+  with recompilation guidance, including historical failure records.
+- Every runtime `Graph`, including nested and direct programmatic graphs, uses
+  canonical topological order with lexical node-ID priority among ready nodes.
+  Adjacency traversal and cycle diagnostics are deterministic. The schedule
+  `feedbax.graph_key_schedule.canonical_topological_split.v2` splits each step's
+  key by node count and assigns the split keys in this order. Nested schedules
+  derive from their graphs and this algorithm; no second schedule tree is stored.
+  Historical seeded replay requires the pinned historical implementation.
+  Unchanged authored graph, checkpoint, or manifest hashes establish authored
+  identity, not bitwise seeded replay under the new scheduler.
 
 ## Proposed canonical content-store amendment
 
