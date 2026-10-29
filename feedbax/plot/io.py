@@ -4,7 +4,6 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-import hashlib
 import importlib.metadata
 import json
 import logging
@@ -16,6 +15,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal, Optional
 
+from feedbax.contracts.base import sha256_file
 from feedbax.plot.lifecycle import close_figure
 
 logger = logging.getLogger(__name__)
@@ -123,15 +123,6 @@ def _find_repo_root(package_module: ModuleType) -> Path:
     )
 
 
-def _sha256(path: str | Path) -> str:
-    """Return the hex SHA-256 digest of a file."""
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _package_version(name: str) -> str:
     """Return installed version string for *name*, or ``'unknown'`` if not found."""
     try:
@@ -230,7 +221,7 @@ def save_figure_with_spec(
             entry = dict(entry)  # copy so we don't mutate
             path = Path(entry["path"])
             if "sha256" not in entry:
-                entry["sha256"] = _sha256(path)
+                entry["sha256"] = sha256_file(path)
             entry["path"] = str(path)  # normalise to str for JSON serialisation
             resolved_inputs.append(entry)
         enriched["inputs"] = resolved_inputs

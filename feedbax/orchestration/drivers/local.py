@@ -20,6 +20,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from feedbax.contracts.base import sha256_file
 from feedbax.contracts.strict_json import (
     StrictJsonError,
     strict_json_loads,
@@ -375,7 +376,7 @@ class LocalOrchestrationDriver:
                 raise LocalDriverError(
                     f"registered execution payload is not materialized for row {row.row_id!r}"
                 )
-            if _sha256_file(source) != row.execution.payload.sha256:
+            if sha256_file(source) != row.execution.payload.sha256:
                 raise LocalDriverError(
                     f"registered execution payload digest mismatch for row {row.row_id!r}"
                 )
@@ -727,7 +728,7 @@ class LocalOrchestrationDriver:
         payload_sha256 = row.launch.metadata.get("payload_sha256")
         if payload_sha256 and collected:
             first = Path(next(iter(collected.values())))
-            if first.is_file() and _sha256_file(first) != str(payload_sha256):
+            if first.is_file() and sha256_file(first) != str(payload_sha256):
                 raise LocalDriverError(f"payload sha256 mismatch for row {row.row_id!r}")
         return collected
 
@@ -942,7 +943,7 @@ def _verify_successful_evaluation_terminal_custody(
         root=bundle.run_set_dir,
         directory=False,
     )
-    if _sha256_file(expected_certificate) != certificate_sha256:
+    if sha256_file(expected_certificate) != certificate_sha256:
         raise LocalDriverError("evaluation reclamation requires a durable passing certificate")
     try:
         certificate = strict_model_validate_json(
@@ -1353,14 +1354,6 @@ def _git_patch_sha256(cwd: Path) -> str:
     h = hashlib.sha256()
     h.update(diff.encode("utf-8"))
     h.update(untracked.encode("utf-8"))
-    return h.hexdigest()
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            h.update(chunk)
     return h.hexdigest()
 
 
