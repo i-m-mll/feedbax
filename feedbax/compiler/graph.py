@@ -29,8 +29,8 @@ from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_
 
 
 GRAPH_COMPILER_ID = "feedbax.graph.compiler"
-GRAPH_COMPILER_VERSION = "2"
-KEY_SCHEDULE_ID = "feedbax.graph_key_schedule.execution_order_split.v1"
+GRAPH_COMPILER_VERSION = "3"
+KEY_SCHEDULE_ID = "feedbax.graph_key_schedule.canonical_topological_split.v2"
 
 
 class CompilerPhase(StrEnum):
@@ -121,7 +121,7 @@ class GraphSourceMap(BaseModel):
 
 
 class GraphKeySchedule(BaseModel):
-    """Versioned contract for assigning per-step keys to graph nodes."""
+    """Split by node count in canonical topological order at every graph depth."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -180,6 +180,11 @@ class CompilationRecord(BaseModel):
     def reject_unsupported_version(cls, value: str) -> str:
         return _require_version("CompilationRecord", value, COMPILATION_RECORD_SCHEMA_VERSION)
 
+    @field_validator("compiler_version", mode="before")
+    @classmethod
+    def reject_unsupported_compiler(cls, value: str) -> str:
+        return _require_compiler_version(value)
+
 
 class CompilationFailureRecord(BaseModel):
     """Durable compiler evidence for a compilation that produced no resolved IR."""
@@ -199,6 +204,11 @@ class CompilationFailureRecord(BaseModel):
         return _require_version(
             "CompilationFailureRecord", value, COMPILATION_FAILURE_SCHEMA_VERSION
         )
+
+    @field_validator("compiler_version", mode="before")
+    @classmethod
+    def reject_unsupported_compiler(cls, value: str) -> str:
+        return _require_compiler_version(value)
 
 
 class GraphCompilationError(ValueError):
@@ -220,6 +230,16 @@ class ExecutableGraph:
     graph: Graph
     resolved: ResolvedGraph
     record: CompilationRecord
+
+
+def _require_compiler_version(value: str) -> str:
+    if value != GRAPH_COMPILER_VERSION:
+        raise ValueError(
+            f"Unsupported graph compiler version: source_version={value!r}; "
+            f"current_version={GRAPH_COMPILER_VERSION!r}; "
+            "recompile the authored GraphDocument to obtain current compiler evidence"
+        )
+    return value
 
 
 def _require_version(family: str, value: str, current: str) -> str:

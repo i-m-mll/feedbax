@@ -3072,8 +3072,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.compiler.compile_graph",),
             consumed_by=("feedbax.compiler.ExecutableGraph",),
             description="Canonical executable semantic graph with source and key schedules.",
-            rejected_old_versions=("1", "2"),
-            required_tests=("tests/test_graph_compiler.py",),
+            rejected_old_versions=("1", "2", "3"),
+            required_tests=("tests/test_graph_compiler.py", "tests/test_graph_key_schedule.py"),
         ),
         _family(
             "CompilationRecord",
@@ -3083,8 +3083,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.compiler.compile_graph",),
             consumed_by=("compiler evidence readers",),
             description="Successful graph compilation evidence with structured diagnostics.",
-            rejected_old_versions=("1", "2", "3"),
-            required_tests=("tests/test_graph_compiler.py",),
+            rejected_old_versions=("1", "2", "3", "4"),
+            required_tests=("tests/test_graph_compiler.py", "tests/test_graph_key_schedule.py"),
         ),
         _family(
             "CompilationFailureRecord",
@@ -6256,6 +6256,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     )
                 )
             )
+            if family.kind in {"ResolvedGraph", "CompilationRecord"}:
+                remediation = (
+                    "Historical compiler evidence cannot establish current resolved "
+                    "semantics; recompile the authored GraphDocument."
+                )
             if family.kind == "AuthoringBudget" and old_version == AUTHORING_BUDGET_SCHEMA_VERSION_V1:
                 remediation = AUTHORING_BUDGET_V1_REJECTION_REASON
             registry.reject_version(

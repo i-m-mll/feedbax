@@ -199,10 +199,7 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
         nodes={
             "source": ComponentSpec(type="Sum", input_ports=["a"], output_ports=["output"]),
             "target": ComponentSpec(
-                type="DelayLine",
-                params={"delay": 1},
-                input_ports=["input"],
-                output_ports=["output"],
+                type="DelayLine", params={"delay": 1}, input_ports=["input"], output_ports=["output"]
             ),
         },
         wires=[
@@ -227,24 +224,82 @@ def test_direct_filter_preserves_structured_signal_dtypes() -> None:
     from feedbax.runtime.filters import FirstOrderFilter
     from feedbax.runtime.graph import init_state_from_component
 
-    prototype = {
-        "position": jnp.zeros(2, dtype=jnp.float16),
-        "velocity": (jnp.zeros(1, dtype=jnp.float32),),
-    }
-    component = FirstOrderFilter(input_proto=prototype)
-    state = init_state_from_component(component)
-    values = jax.tree.map(lambda value: jnp.ones((3, *value.shape), dtype=value.dtype), prototype)
+    with jax.experimental.enable_x64():
+        prototype = {
+            "position": jnp.zeros(2, dtype=jnp.float16),
+            "velocity": (jnp.zeros(1, dtype=jnp.float32),),
+            "acceleration": jnp.zeros(1, dtype=jnp.float64),
+        }
+        component = FirstOrderFilter(input_proto=prototype)
+        state = init_state_from_component(component)
+        values = jax.tree.map(
+            lambda value: jnp.ones((3, *value.shape), dtype=value.dtype), prototype
+        )
 
-    def step(carry, value):
-        outputs, carry = component({"input": value}, carry, key=jax.random.PRNGKey(0))
-        return carry, outputs["output"]
+        def step(carry, value):
+            outputs, carry = component({"input": value}, carry, key=jax.random.PRNGKey(0))
+            return carry, outputs["output"]
 
-    _, outputs = jax.lax.scan(step, state, values)
-    assert jax.tree.structure(outputs) == jax.tree.structure(prototype)
-    assert outputs["position"].dtype == jnp.float16
-    assert outputs["velocity"][0].dtype == jnp.float32
-    assert jnp.allclose(outputs["position"][:, 0], jnp.array([0.02, 0.0396, 0.058808]), atol=1e-4)
-    assert jnp.allclose(outputs["velocity"][0][:, 0], jnp.array([0.02, 0.0396, 0.058808]))
+        _, outputs = jax.lax.scan(step, state, values)
+        assert jax.tree.structure(outputs) == jax.tree.structure(prototype)
+        assert outputs["position"].dtype == jnp.float16
+        assert outputs["velocity"][0].dtype == jnp.float32
+        assert jnp.allclose(
+            outputs["position"][:, 0], jnp.array([0.02, 0.0396, 0.058808]), atol=1e-4
+        )
+        assert jnp.allclose(outputs["velocity"][0][:, 0], jnp.array([0.02, 0.0396, 0.058808]))
+        assert outputs["acceleration"].dtype == jnp.float64
+        assert jnp.allclose(outputs["acceleration"][:, 0], jnp.array([0.02, 0.0396, 0.058808]))
+        assert all(bool(jnp.all(jnp.isfinite(value))) for value in jax.tree.leaves(outputs))
+
+
+@pytest.mark.parametrize("dtype", [jnp.int32, jnp.bool_, jnp.complex64])
+def test_filter_rejects_non_real_floating_state_leaves(dtype) -> None:
+    from feedbax.runtime.filters import FirstOrderFilter
+
+    registry = ComponentRegistry(load_user_components=False)
+    invalid = jnp.zeros(2, dtype=dtype)
+    for prototype in (invalid, {"valid": jnp.zeros(2), "invalid": (invalid,)}):
+        with pytest.raises(
+            ValueError, match="FirstOrderFilter requires real floating state leaves"
+        ):
+            FirstOrderFilter(input_proto=prototype)
+        with pytest.raises(
+            ValueError, match="FirstOrderFilter requires real floating state leaves"
+        ):
+            registry.get("FirstOrderFilter").output_prototype_fn({}, {"input": prototype})
+
+
+def test_integer_source_filter_is_rejected_during_compilation() -> None:
+    from feedbax.compiler import GraphCompilationError
+
+    registry = ComponentRegistry(load_user_components=False)
+    spec = GraphSpec(
+        nodes={
+            "source": ComponentSpec(type="Constant", params={"value": 1}, output_ports=["output"]),
+            "filter": ComponentSpec(
+                type="FirstOrderFilter",
+                params=registry.get("FirstOrderFilter").default_params,
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            dict(
+                source_node="source",
+                source_port="output",
+                target_node="filter",
+                target_port="input",
+            )
+        ],
+        output_ports=["output"],
+        output_bindings={"output": ("filter", "output")},
+    )
+    with pytest.raises(
+        GraphCompilationError, match="FirstOrderFilter requires real floating state leaves"
+    ):
+        compile_graph(GraphDocument(graph=spec), registry)
+    assert registry.get("FirstOrderFilter").param_schema_version == "2"
 
 
 @pytest.mark.parametrize("nested", [False, True])
