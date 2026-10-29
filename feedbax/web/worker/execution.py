@@ -318,6 +318,12 @@ def run_training_graph(
         cfg=cfg,
         grad_clip=grad_clip,
     )
+    current_graph = compiled.graph
+
+    def observe_model(graph: Graph) -> None:
+        nonlocal current_graph
+        current_graph = graph
+
     registry = studio_training_registry(
         compiled=compiled,
         optimizer=optimizer,
@@ -325,6 +331,7 @@ def run_training_graph(
         stop_event=stop_event,
         rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),
         evaluate_loss_fn=_evaluate_loss,
+        observe_model=observe_model,
     )
 
     def _emit_executor_progress(event: Mapping[str, Any]) -> None:
@@ -359,7 +366,7 @@ def run_training_graph(
                     "job_id": job_id,
                     "program_step": progress_event["program_step"],
                     "trajectory": _trajectory_snapshot(
-                        compiled.graph,
+                        current_graph,
                         compiled,
                         key=jr.PRNGKey(progress_event["program_step"]),
                     ),
