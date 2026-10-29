@@ -1765,6 +1765,7 @@ def test_worker_http_collection_rechecks_destination_without_outside_writes(tmp_
     from feedbax.orchestration.collection_destination import CollectionDestinationError
 
     bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-collect")
+    row.launch = SimpleNamespace(collect=[])
     bundle.rows = [row]
     source = bundle.run_set_dir / "events" / "job-collect.events.jsonl"
     source.write_text("event evidence")

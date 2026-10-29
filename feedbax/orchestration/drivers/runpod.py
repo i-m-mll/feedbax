@@ -2607,7 +2607,7 @@ class RunPodOrchestrationDriver:
             self._collection_recovery_evidence[row.row_id] = recovered.evidence
             return recovered.outputs
         dest_dir = bundle.run_set_dir / "collected" / row.row_id
-        check_collection_destinations(bundle)
+        check_collection_destinations(bundle, rows=(row,))
         remote_run_dir = self._remote_run_dir(bundle)
         sources = row.launch.collect or [
             f"rows/{row.row_id}",
@@ -3296,7 +3296,7 @@ class RunPodOrchestrationDriver:
         """Pull remote logs before failure teardown destroys the pod."""
         del state
         destination = bundle.run_set_dir / "failure-logs"
-        check_collection_destinations(bundle)
+        check_collection_destinations(bundle, rows=())
         with tempfile.TemporaryDirectory(prefix="feedbax-failure-logs-") as staging:
             staged = Path(staging) / "failure-logs"
             staged.mkdir()
