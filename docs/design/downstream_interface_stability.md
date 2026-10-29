@@ -92,7 +92,7 @@ its neighboring helpers or re-export locations into the contract.
 | `component-registration` | `feedbax.component_registry` | `ComponentBuilder`, `DeclaredComponent`, `declare_component`, `ComponentResolution`, `ComponentRegistry`, `ComponentMigration`, `ComponentMigrationPack` | Neutral component declarations with layer-local facets, namespaced registration, owner-matched migration packs, deterministic resolution, and the stable methods `ComponentRegistry.register_component_type`, `register_migration`, `register_migration_pack`, and `resolve_component_spec`. `feedbax.spec.component_definition.v3` is current; v1 migrates to v2 port kinds and v2 migrates to v3 dynamic-port policy. Dynamic layouts derive only from declared policy and parameters and reject mismatches. `ComponentDefinition` remains Studio data, not a separately guaranteed Python import. | `component_registration_and_migration`, `dynamic_component_ports` |
 | `structured-migrations` | `feedbax.contracts.migrations` | `SchemaMigration`, `SpecSchemaFamily`, `SpecFamilyMigrationPolicy`, `SpecMigrationResult`, `SpecSchemaRegistry`, `UnknownSpecFamily`, `UnsupportedMigrationPath`, `UnsupportedSpecVersion`, `MissingComponentOwner`, `UnsupportedComponentMigration`, `default_spec_registry`, `migrate_structured_spec_payload`, `migrate_graph_spec` | Versionless input rejects unless the caller deliberately selects `assume_current`; deterministic migration records retain source and target identities; unsupported paths fail closed. | `component_registration_and_migration`, `component_param_array_values` |
 | `graph-spec` | `feedbax.contracts.graph` | `ComponentSpec`, `GraphProject`, `GraphSpec`, `ParamSchema`, `ParamValue`, `SemanticAnchor`, `StudioValueSpec`, `WireSpec`, `WorkspaceDocument` | `feedbax.spec.graph.v5` is current. The registered chain migrates legacy `1.0.0` to v2, v2 to v3, v3 to v4, and v4 to v5; unknown versions reject. `feedbax.workspace_document` version `1` owns graph and analysis presentation plus workspace-, stage-, and scenario-level view state separately from semantic graph identity. `feedbax.spec.studio.workspace.v1`, `feedbax.spec.studio.stage.v1`, and `feedbax.spec.studio.scenario.v2` migrate to presentation-free v2, v2, and v3 semantic records respectively; older mixed `GraphProject` payloads move their presentation fields into the workspace document. | `component_param_array_values` |
-| `graph-compiler` | `feedbax.compiler` | `GraphDocument`, `DocumentRoot`, `ResolvedGraph`, `ExecutableGraph`, `CompilationRecord`, `GraphSourceMap`, `GraphSourceMapEntry`, `GraphKeySchedule`, `compile_graph` | `feedbax.graph_document` version `1`, `feedbax.resolved_graph` version `2`, and `feedbax.graph_compilation_record` version `2` are current and reject unknown versions. `compile_graph` accepts semantic documents only, applies the registered GraphSpec migration chain, emits source-map entries with revision-pinned semantic anchors, records truthful authored versus compiler-generated origins, and assigns node keys in deterministic runtime execution order. | `component_param_array_values`, `dynamic_component_ports` |
+| `graph-compiler` | `feedbax.compiler` | `GraphDocument`, `DocumentRoot`, `ResolvedGraph`, `ExecutableGraph`, `CompilationRecord`, `CompilationFailureRecord`, `CompilerDiagnostic`, `CompilerPhase`, `DiagnosticSeverity`, `GraphCompilationError`, `GraphSourceMap`, `GraphSourceMapEntry`, `GraphKeySchedule`, `compile_graph` | `feedbax.graph_document` version `1`, `feedbax.resolved_graph` version `4`, `feedbax.graph_compilation_record` version `5`, and `feedbax.graph_compilation_failure` version `1` are current. Earlier resolved-graph and compilation-record versions and earlier or unknown compiler versions reject with authored-document recompilation guidance. Compiler version `3` resolves effective component semantics once, preserves revision-pinned source anchors and authored/generated origins, and assigns node keys through canonical recursive topological scheduling. Authored identity does not promise historical bitwise seeded replay. | `component_param_array_values`, `dynamic_component_ports` |
 | `value-identity` | `feedbax.contracts.value_identity` and the same names at `feedbax.contracts` | `ValueIdentityRecord`, `authored_value_sha256`, `semantic_value_sha256`, `realization_value_sha256`, `value_identity_record` | `feedbax.value_identity.v1` is the only accepted record. Authored identity follows canonical declared encoding, semantic identity follows normalized exact numeric meaning, and realization identity additionally binds layout and backend. Other versions reject. | `value_identity` |
 | `material-admission` | `feedbax.contracts.material_dependencies` and the same names at `feedbax.contracts` | `AdmissionWaiver`, `MaterialDependency`, `MaterialDependencySet`, `MaterialDependencyValue`, `validate_material_dependency_admission` | Material dependencies use `feedbax.spec.material_dependencies.v1`; the exact narrow waiver uses `feedbax.spec.admission_waiver.v1`. Versionless and other versions reject. Material identity excludes incidental provenance and declaration order; a waiver binds exactly one declared dependency and never bypasses material authenticity. Observation, result, and digest helpers are implementation details rather than independent guarantees. | `material_dependencies` |
 | `custody-persistence` | `feedbax.orchestration` | `PrimaryStatePersistenceError`, `CustodyPreservationRequired`, `RunSetState`, `RunSetStateStore`, `StageEngine` | `feedbax.orchestration.run_set_state.v6` is current; v5 migrates by adding nullable process identity to each row, and versions v0 through v4 reject. Primary persistence failure retains its typed `OSError` cause; destructive ephemeral teardown is blocked by the typed custody exception until collection is durably complete, then occurs exactly once. | `custody_persistence_recovery` |
@@ -125,33 +125,28 @@ These are behavior and durable-shape contracts. They are checked against the
 runtime mapping and focused boundary tests, not inferred by searching for
 ordinary path words or JSON field names in downstream text.
 
-## Proposed scientific compiler contract amendment
+## Scientific compiler evidence and seeded execution
 
-This section describes candidate bytes only. It is not part of the owner-ratified
-guarantee block above and becomes stable downstream policy only through the parent-owned
-protected delivery and owner-ratification step.
+The `graph-compiler` row defines the public imports and admitted evidence schemas.
+Current evidence is produced by compiler version 3. Earlier and unknown
+resolved-graph, compilation-record, and compiler versions reject with a request
+to recompile the authored `GraphDocument`; historical failure records follow the
+same compiler-version rule. Records are never restamped as evidence of current
+resolved semantics. `GraphDocument`, authored checkpoint and manifest identities,
+and the resolved digest preimage retain their existing definitions.
 
-- Amend `graph-compiler` so `feedbax.compiler` additionally guarantees
-  `CompilationFailureRecord`, `CompilerDiagnostic`, `CompilerPhase`,
-  `DiagnosticSeverity`, and `GraphCompilationError`. The candidate schemas are
-  `feedbax.resolved_graph` v4, `feedbax.graph_compilation_record` v5, and
-  `feedbax.graph_compilation_failure` v1, produced by compiler version 3.
-  Earlier and unknown resolved-graph and compilation-record versions reject
-  with a request to recompile the authored `GraphDocument`; they are not
-  restamped as evidence of the current resolved semantics. `GraphDocument`,
-  authored checkpoint and manifest identities, and the resolved digest preimage
-  retain their existing definitions.
-  Compiler evidence with an earlier or unknown compiler version also rejects
-  with recompilation guidance, including historical failure records.
-- Every runtime `Graph`, including nested and direct programmatic graphs, uses
-  canonical topological order with lexical node-ID priority among ready nodes.
-  Adjacency traversal and cycle diagnostics are deterministic. The schedule
-  `feedbax.graph_key_schedule.canonical_topological_split.v2` splits each step's
-  key by node count and assigns the split keys in this order. Nested schedules
-  derive from their graphs and this algorithm; no second schedule tree is stored.
-  Historical seeded replay requires the pinned historical implementation.
-  Unchanged authored graph, checkpoint, or manifest hashes establish authored
-  identity, not bitwise seeded replay under the new scheduler.
+Every runtime `Graph`, including nested and direct programmatic graphs, uses
+canonical topological order with lexical node-ID priority among ready nodes.
+Adjacency traversal and cycle diagnostics are deterministic. The schedule
+`feedbax.graph_key_schedule.canonical_topological_split.v2` splits each step's
+key by node count and assigns split keys in this order. Nested schedules derive
+from their graphs and this algorithm; no second schedule tree is stored.
+
+Historical seeded replay requires the pinned historical implementation.
+Unchanged authored graph, checkpoint, or manifest hashes establish authored
+identity, not bitwise seeded replay under the current scheduler. Explicit
+rejection prevents evidence produced under previous resolved semantics from
+being treated as current compiler evidence.
 
 ## Proposed canonical content-store amendment
 
