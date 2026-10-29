@@ -153,6 +153,31 @@ def _make_vector_field(
     for node, efforts in node_efforts.items():
         require(efforts, f"force balance for {node!r}")
 
+    effort_sensors = {}
+    for label in layout._outputs:
+        elem = elements[label]
+        port_name, slot = elem.sensor_output
+        port = elem.ports[port_name]
+        if slot != port.through_var:
+            continue
+        position = f"{elem.name}.{port_name}.{port.across_vars[0]}"
+        node = _resolve(position, physical_aliases)
+        root, factors = coordinates[velocity_for_node[node]]
+        if root not in layout._grounded:
+            if root in layout._inputs:
+                raise ValueError(
+                    f"Net effort sensor {label!r} requires acceleration of prescribed "
+                    f"coordinate {root!r}; prescribed velocity inputs do not supply acceleration"
+                )
+            if root not in indices or not any(
+                node_masses.get(member) for member in groups[indices[root]]
+            ):
+                raise ValueError(
+                    f"Net effort sensor {label!r} has no solved acceleration for free "
+                    f"coordinate {root!r}: its reduced group requires inertia"
+                )
+        effort_sensors[label] = (node, root, factors)
+
     def scale(factors, params):
         value = 1.0
         for key, exponent in factors:
@@ -209,17 +234,14 @@ def _make_vector_field(
         acceleration = accelerations(vals, params)
         outputs = {}
         for label, name in layout._outputs.items():
-            elem = elements[label]
-            port_name, slot = elem.sensor_output
-            port = elem.ports[port_name]
-            if slot != port.through_var:
+            if label not in effort_sensors:
                 outputs[label] = vals[name]
                 continue
-            position = f"{elem.name}.{port_name}.{port.across_vars[0]}"
-            node = _resolve(position, physical_aliases)
-            velocity = velocity_for_node[node]
-            root, factors = coordinates[velocity]
-            local_acceleration = acceleration.get(indices.get(root), 0.0) * scale(factors, params)
+            node, root, factors = effort_sensors[label]
+            if root in layout._grounded:
+                local_acceleration = 0.0
+            else:
+                local_acceleration = acceleration[indices[root]] * scale(factors, params)
             outputs[label] = (
                 sum(params[key] for key in node_masses.get(node, ())) * local_acceleration
             )
