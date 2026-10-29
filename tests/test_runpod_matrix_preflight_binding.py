@@ -437,6 +437,7 @@ def test_authority_only_cli_authenticates_content_pinned_custom_lowered_bundle(
 
     checks = {check.name: check for check in run_authority_preflight_checks(bundle)}
     assert set(checks) == {
+        "collection-destinations",
         "schema-current",
         "feedbax-revision-pin",
         "row-identity",

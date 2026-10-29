@@ -121,7 +121,7 @@ def test_subgraph_missing_interior_behavior_remains_unchanged() -> None:
         }
     )
 
-    with pytest.raises(ValueError, match="Missing subgraph spec for 'nested'"):
+    with pytest.raises(ValueError, match="Subgraph node 'nested' requires a subgraph"):
         spec_to_graph(graph, ComponentRegistry(load_user_components=False))
 
 
@@ -139,10 +139,7 @@ def test_legacy_network_missing_interior_behavior_remains_unchanged() -> None:
 
     with pytest.raises(
         ValueError,
-        match=(
-            "Network node 'network' has no subgraph. Open it in Studio to generate "
-            "the internal architecture, then save again."
-        ),
+        match="Network node 'network' requires a subgraph.*Open it in Studio",
     ):
         spec_to_graph(graph, ComponentRegistry(load_user_components=False))
 
