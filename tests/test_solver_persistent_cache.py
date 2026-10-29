@@ -22,10 +22,17 @@ _PROBE = dedent(
     from feedbax.runtime.filters import FirstOrderFilter
 
     class CacheHits(logging.Handler):
-        count = 0
+        def __init__(self):
+            super().__init__()
+            self.modules = []
+            self.solver_keys = []
         def emit(self, record):
-            if 'Persistent compilation cache hit' in record.getMessage():
-                self.count += 1
+            message = record.getMessage()
+            if 'Persistent compilation cache hit' in message:
+                module, key = record.args
+                self.modules.append(module)
+                if module == 'jit_ode_step':
+                    self.solver_keys.append(key)
     hits = CacheHits()
     logger = logging.getLogger('jax._src.compiler')
     logger.setLevel(logging.DEBUG)
@@ -71,7 +78,8 @@ _PROBE = dedent(
             np.testing.assert_allclose(value, 4-2*np.exp(-.001/tau), atol=1e-12)
             np.testing.assert_allclose(grad, -2*np.exp(-.001/tau)*.001/tau**2, atol=1e-12)
             values[f'tau-{tau}'] = [float(value), float(grad)]
-    print(json.dumps({'values': values, 'cache_hits': hits.count}))
+    print(json.dumps({'values': values, 'cache_modules': hits.modules,
+                      'solver_cache_keys': hits.solver_keys}))
     """
 )
 
@@ -87,5 +95,5 @@ def test_solver_response_survives_warm_persistent_cache(tmp_path):
         )
         assert process.returncode == 0, process.stdout + process.stderr
         results.append(json.loads(process.stdout))
-    assert results[1]["cache_hits"] > 0
+    assert results[1]["solver_cache_keys"], results[1]["cache_modules"]
     assert results[1]["values"] == results[0]["values"]
