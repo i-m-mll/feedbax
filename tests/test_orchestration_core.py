@@ -4746,6 +4746,78 @@ def test_local_driver_recovers_and_stops_exact_owned_process_group(tmp_path: Pat
     assert not _process_group_alive(identity.process_group_id)
 
 
+@pytest.mark.parametrize("method", ["stop_row", "request_stop_at_checkpoint"])
+@pytest.mark.parametrize("transition", ["exited", "live", "members", "unknown", "replaced", "unowned"])
+def test_local_stop_reconciles_exit_during_signal_authorization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transition: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    row = bundle.row("row-a")
+    identity = ProcessIdentity(
+        run_set_id=bundle.run_set_id,
+        row_id=row.row_id,
+        pid=4321,
+        process_group_id=4321,
+        launch_token="a" * 64,
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={row.row_id: RowState(status="running", pid=identity.pid, process_identity=identity)},
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    driver.provision(bundle, state)
+    sentinels = bundle.run_set_dir / "sentinels"
+    (sentinels / f"{row.row_id}.pid").write_text(str(identity.pid))
+    recorded = (
+        identity.model_copy(update={"launch_token": "b" * 64})
+        if transition == "replaced"
+        else identity
+    )
+    (sentinels / f"{row.row_id}.process.json").write_text(recorded.model_dump_json())
+
+    class OwnedProcess:
+        pid = identity.pid
+        exited = False
+
+        def poll(self) -> int | None:
+            return 0 if self.exited else None
+
+    process = OwnedProcess()
+    if transition != "unowned":
+        driver._processes[row.row_id] = process  # type: ignore[assignment]
+
+    def exit_during_getpgid(pid: int) -> int:
+        assert pid == identity.pid
+        process.exited = transition != "live"
+        raise ProcessLookupError(errno.ESRCH, "no such process")
+
+    def refuse_signal(*args) -> None:
+        pytest.fail("an unverified or exited group must never receive a signal")
+
+    monkeypatch.setattr("feedbax.orchestration.drivers.local._pid_alive", lambda pid: True)
+    monkeypatch.setattr("feedbax.orchestration.drivers.local._process_group_alive", lambda pgid: True)
+    monkeypatch.setattr(os, "getpgid", exit_during_getpgid)
+    monkeypatch.setattr(os, "killpg", refuse_signal)
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.local._process_group_member_pids",
+        lambda pgid: (
+            (9876,) if transition == "members" else (),
+            "inspection failed" if transition == "unknown" else None,
+        ),
+    )
+    stop = getattr(driver, method)
+    if transition == "exited":
+        expected = "stopped" if method == "stop_row" else "stop_requested"
+        assert stop(bundle, row, state)["status"] == expected
+        assert stop(bundle, row, state)["status"] == expected
+    else:
+        with pytest.raises(LocalDriverError, match="refusing to signal live local row"):
+            stop(bundle, row, state)
+
+
 def test_local_stop_accepts_eperm_only_after_owned_process_group_exits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

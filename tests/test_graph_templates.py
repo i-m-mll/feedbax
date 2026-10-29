@@ -23,7 +23,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
-from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry import ComponentParamValidationError, ComponentRegistry
 
 
 def _network_controller_graph_spec() -> GraphSpec:
@@ -959,8 +959,14 @@ def test_spec_to_graph_rejects_missing_required_registry_param() -> None:
         spec_to_graph(spec, registry)
 
     diagnostic = caught.value.record.diagnostics[0]
-    assert diagnostic.code == "compiler.type_resolution.unresolved_component_type"
-    assert "gain: Field required (missing)" in diagnostic.observed_condition
+    assert diagnostic.severity == "error"
+    assert diagnostic.source_anchor.authored_path == "/graph/nodes/gain"
+    assert diagnostic.actionable_context["action"]
+    cause = caught.value.__cause__
+    assert isinstance(cause, ComponentParamValidationError)
+    assert [(failure.path, failure.code) for failure in cause.failures] == [
+        (("gain",), "missing")
+    ]
 
 
 def test_spec_to_graph_rejects_missing_network_subgraph_during_prototype_inference() -> None:

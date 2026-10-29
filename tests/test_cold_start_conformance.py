@@ -45,6 +45,8 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
 )
+from feedbax.contracts.authoring_budget import AuthoringBudgets, load_authoring_budget_document
+from feedbax.envelope.authoring import read_authored_document
 from feedbax.contracts.project_experiment import (
     PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
     PROJECT_EXPERIMENT_DECLARATION_SCHEMA_VERSION,
@@ -87,10 +89,8 @@ SCIENCE_REF = f"src/{PACKAGE_NAME}/science.py"
 BASE_REF = "specs/base/tally.evaluation_run_matrix.json"
 ENVELOPE_REF = "specs/experiment/wide-tally.envelope.json"
 
-#: The whole cold start must fit inside the budget the framework itself states
-#: for one authored evaluation document. Three hand-written files that together
-#: exceed what one envelope may be is not a cold start in tens of lines.
-COLD_START_LINE_BUDGET: int = DEFAULT_AUTHORING_BUDGET_LAYERS["evaluation"]["max_lines"]
+#: Fixture concision is independent of the canonical JSON authoring policy.
+COLD_START_LINE_BUDGET = 100
 
 # --------------------------------------------------------------------------
 # The three things a cold-start author writes, and nothing else
@@ -499,7 +499,7 @@ def _assert_initialization_idempotency(project: ColdStartProject) -> None:
 def _assert_authoring_budget(
     authored: ColdStartProject,
 ) -> None:
-    """Science plus base plus envelope fits inside one envelope's line budget."""
+    """The example stays concise and its JSON fits the emitted canonical policy."""
     counts = {
         relative: len((authored.root / relative).read_text(encoding="utf-8").splitlines())
         for relative in AUTHORED_SOURCES
@@ -507,6 +507,21 @@ def _assert_authoring_budget(
     assert sum(counts.values()) <= COLD_START_LINE_BUDGET, counts
     for relative, count in counts.items():
         assert count > 0, relative
+
+    budget_ref = str(authored.declaration["authoring_budget"])
+    document = load_authoring_budget_document(
+        (authored.root / budget_ref).read_bytes(), field=budget_ref
+    )
+    budgets = AuthoringBudgets.from_document(
+        document, field=budget_ref, declared_layers=DEFAULT_AUTHORING_BUDGET_LAYERS
+    )
+    for relative in (BASE_REF, ENVELOPE_REF):
+        read_authored_document(
+            (authored.root / relative).read_bytes(),
+            budgets,
+            field=relative,
+            layer_of=lambda _: "evaluation",
+        )
 
 
 def _assert_no_downstream_machinery(authored: ColdStartProject) -> None:
