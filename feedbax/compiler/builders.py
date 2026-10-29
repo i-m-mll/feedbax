@@ -303,10 +303,9 @@ def _build_channel(params: Mapping[str, Any]) -> Channel:
     delay = int(params.get("delay", 0))
     noise = _noise_params(params)
     noise_func = _build_noise_func(noise)
-    input_proto = None
-    input_shape = params.get("input_shape")
-    if isinstance(input_shape, (list, tuple)):
-        input_proto = jnp.zeros(tuple(int(dim) for dim in input_shape))
+    from feedbax.component_registry.prototypes import array_prototype
+
+    input_proto = array_prototype(params)
     return Channel(
         delay=delay,
         noise_func=noise_func,

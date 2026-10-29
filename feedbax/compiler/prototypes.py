@@ -22,6 +22,7 @@ from feedbax.component_registry import (
 )
 from feedbax.component_registry.declarations import MissingPrototypeInput
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
+from feedbax.component_registry.prototypes import array_prototype, prototype_params
 
 
 STATEFUL_PROTOTYPE_TYPES = {"Channel", "DelayLine", "FirstOrderFilter"}
@@ -58,10 +59,9 @@ def array_proto_from_shape(shape: Any) -> jax.Array | None:
 
 
 def shape_from_proto(proto: Any) -> list[int] | None:
-    leaves = jt.leaves(proto)
-    if len(leaves) != 1 or not hasattr(leaves[0], "shape"):
+    if not hasattr(proto, "shape"):
         return None
-    return [int(dim) for dim in leaves[0].shape]
+    return [int(dim) for dim in proto.shape]
 
 
 def proto_from_value(value: Any) -> Any:
@@ -171,15 +171,10 @@ def explicit_proto(
     node_name: str,
     node_type: str,
 ) -> Any | None:
-    if "input_shape" not in params:
-        return None
-    proto = array_proto_from_shape(params.get("input_shape"))
-    if proto is None:
-        raise ValueError(
-            f"{node_type} node {node_name!r} has invalid input_shape "
-            f"{params.get('input_shape')!r}; expected a list of integer dimensions"
-        )
-    return proto
+    try:
+        return array_prototype(params)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{node_type} node {node_name!r}: {exc}") from exc
 
 
 def validate_or_add_input_shape(
@@ -191,28 +186,27 @@ def validate_or_add_input_shape(
 ) -> dict[str, Any]:
     next_params = dict(params)
     explicit = explicit_proto(next_params, node_name=node_name, node_type=node_type)
-    if inferred_proto is not None and explicit is not None:
-        inferred_shape = shape_from_proto(inferred_proto)
-        explicit_shape = shape_from_proto(explicit)
-        if inferred_shape is not None and explicit_shape != inferred_shape:
-            raise ValueError(
-                f"{node_type} node {node_name!r} input_shape {explicit_shape!r} "
-                f"does not match inferred input prototype shape {inferred_shape!r} "
-                "for port 'input'"
-            )
     proto = inferred_proto if inferred_proto is not None else explicit
     if proto is None:
         raise ValueError(
             f"{node_type} node {node_name!r} port 'input' requires an input prototype. "
             "Connect it to a source with a known output shape or provide input_shape."
         )
-    shape = shape_from_proto(proto)
-    if shape is None:
-        raise ValueError(
-            f"{node_type} node {node_name!r} port 'input' prototype is not serializable "
-            "as input_shape; only single-array prototypes are currently supported"
-        )
-    next_params["input_shape"] = shape
+    try:
+        inferred = prototype_params(proto)
+    except ValueError as exc:
+        raise ValueError(f"{node_type} node {node_name!r}: {exc}") from exc
+    for name in ("input_shape", "input_dtype"):
+        declared = next_params.get(name)
+        if declared is None:
+            continue
+        declared = list(declared) if name == "input_shape" else str(jnp.dtype(declared))
+        if declared != inferred[name]:
+            raise ValueError(
+                f"{node_type} node {node_name!r} {name} {declared!r} does not match "
+                f"inferred input prototype {name} {inferred[name]!r} for port 'input'"
+            )
+    next_params.update(inferred)
     return next_params
 
 
@@ -487,6 +481,19 @@ def infer_node_input_prototypes(
                     f"existing prototype shape {current_shape!r}, "
                     f"{wire.source_node}.{wire.source_port} provides {next_shape!r}"
                 )
+            if key in input_prototypes:
+                current_dtype = getattr(input_prototypes[key], "dtype", None)
+                next_dtype = getattr(proto, "dtype", None)
+                if (
+                    current_dtype is not None
+                    and next_dtype is not None
+                    and current_dtype != next_dtype
+                ):
+                    raise ValueError(
+                        f"Graph wiring dtype mismatch at {wire.target_node}.{wire.target_port}: "
+                        f"existing prototype dtype {current_dtype}, "
+                        f"{wire.source_node}.{wire.source_port} provides {next_dtype}"
+                    )
         if not changed:
             break
 

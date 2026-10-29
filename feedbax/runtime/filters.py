@@ -75,7 +75,11 @@ class FirstOrderFilter(Component):
         state: FilterState,
         input: PyTree[jax.Array],
     ) -> FilterState:
-        tau = jnp.where(input >= state.output, self.tau_rise, self.tau_decay)
+        tau = jnp.where(
+            input >= state.output,
+            jnp.asarray(self.tau_rise, dtype=state.output.dtype),
+            jnp.asarray(self.tau_decay, dtype=state.output.dtype),
+        )
         return eqx.tree_at(
             lambda s: s.output,
             state,
@@ -98,8 +102,8 @@ class FirstOrderFilter(Component):
 
         output_state, _, _, solver_state, _ = self.solver.step(
             self._term,
-            0,
-            self.dt,
+            jnp.asarray(0, dtype=filter_state.output.dtype),
+            jnp.asarray(self.dt, dtype=filter_state.output.dtype),
             filter_state,
             input_value,
             filter_state.solver,
