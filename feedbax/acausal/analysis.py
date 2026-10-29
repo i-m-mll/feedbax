@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 from feedbax.acausal.base import (
     AcausalConnection,
@@ -40,11 +41,14 @@ class StructuralAnalysis:
 
     layout: StateLayout
     params_dict: dict[str, float]
-    node_through_vars: dict[str, list[str]]
-    gear_infos: list[dict]
-    eliminated_pre_gear: dict[str, str]
+    physical_aliases: dict[str, str]
+    coordinate_map: dict[str, tuple[str, tuple[tuple[str, int], ...]]]
     networks: tuple[StructuralNetwork, ...]
     through_equation_cycle: tuple[str, ...] | None = None
+
+
+class GearConstraintError(ValueError):
+    """An authored gear constraint cannot be reduced to a nonsingular tree."""
 
 
 class UnionFind:
@@ -88,11 +92,13 @@ def analyze_system(
     """Analyze acausal structure without importing JAX or building closures."""
 
     all_vars: dict[str, AcausalVar] = {}
+    variable_owners: dict[str, str] = {}
     params_dict: dict[str, float] = {}
 
-    for elem in elements.values():
+    for elem in sorted(elements.values(), key=lambda item: item.name):
         for signal_input in elem.signal_inputs:
             fqn = f"{elem.name}.{signal_input}"
+            variable_owners[fqn] = elem.name
             all_vars[fqn] = AcausalVar(
                 name=fqn,
                 is_differential=False,
@@ -100,34 +106,22 @@ def analyze_system(
         for port in elem.ports.values():
             for slot in port.across_vars:
                 fqn = f"{elem.name}.{port.name}.{slot}"
+                variable_owners[fqn] = elem.name
                 all_vars[fqn] = AcausalVar(name=fqn)
             through_fqn = f"{elem.name}.{port.name}.{port.through_var}"
+            variable_owners[through_fqn] = elem.name
             all_vars[through_fqn] = AcausalVar(name=through_fqn, is_differential=False)
         params_dict.update(elem.params)
 
     uf = UnionFind()
-    node_through_vars: dict[str, list[str]] = {}
 
     for conn in connections:
         port_a_obj = elements[conn.element_a].ports[conn.port_a]
-        port_b_obj = elements[conn.element_b].ports[conn.port_b]
 
         for slot in port_a_obj.across_vars:
             fqn_a = f"{conn.element_a}.{conn.port_a}.{slot}"
             fqn_b = f"{conn.element_b}.{conn.port_b}.{slot}"
             uf.union(fqn_a, fqn_b)
-
-        first_slot = port_a_obj.across_vars[0]
-        fqn_a_first = f"{conn.element_a}.{conn.port_a}.{first_slot}"
-        node_key = uf.find(fqn_a_first)
-
-        through_a = f"{conn.element_a}.{conn.port_a}.{port_a_obj.through_var}"
-        through_b = f"{conn.element_b}.{conn.port_b}.{port_b_obj.through_var}"
-        node_through_vars.setdefault(node_key, [])
-        if through_a not in node_through_vars[node_key]:
-            node_through_vars[node_key].append(through_a)
-        if through_b not in node_through_vars[node_key]:
-            node_through_vars[node_key].append(through_b)
 
     eliminated: dict[str, str] = {}
     for root, members in uf.groups().items():
@@ -142,9 +136,9 @@ def analyze_system(
     input_specs: dict[str, tuple[str, int]] = {}
     input_idx_counter = 0
     output_map: dict[str, str] = {}
-    gear_infos: list[dict] = []
+    gears: list[AcausalElement] = []
 
-    for elem in elements.values():
+    for elem in sorted(elements.values(), key=lambda item: item.name):
         for slot_idx, signal_input in enumerate(elem.signal_inputs):
             fqn = f"{elem.name}.{signal_input}"
             input_vars[fqn] = input_idx_counter
@@ -184,26 +178,82 @@ def analyze_system(
             if elem.sensor_output is not None:
                 port_name, slot_name = elem.sensor_output
                 fqn = f"{elem.name}.{port_name}.{slot_name}"
-                canonical = _resolve(fqn, eliminated)
-                output_map[elem.name] = canonical
+                output_map[elem.name] = fqn
 
         elif elem.element_type == "gear_ratio":
-            gear_infos.append({"element": elem, "ratio_key": f"{elem.name}.ratio"})
+            gears.append(elem)
 
-    eliminated_pre_gear = dict(eliminated)
+    physical_aliases = dict(eliminated)
 
-    for gear_info in gear_infos:
-        elem = gear_info["element"]
+    # Each physical across variable is q_i = s_i(params) * q_root.  Store
+    # symbolic ratio products so trainable ratios remain part of the JAX graph.
+    adjacency: dict[str, list[tuple[str, str, int]]] = {}
+    incoming: set[str] = set()
+    for elem in gears:
         for slot in elem.ports["flange_a"].across_vars:
-            fqn_a = f"{elem.name}.flange_a.{slot}"
-            fqn_b = f"{elem.name}.flange_b.{slot}"
-            canon_a = _resolve(fqn_a, eliminated)
-            canon_b = _resolve(fqn_b, eliminated)
-            if canon_b != canon_a:
-                eliminated[canon_b] = canon_a
-                all_vars[canon_b].is_eliminated = True
-                all_vars[canon_b].alias_of = canon_a
-                all_vars[canon_b].is_differential = False
+            left = _resolve(f"{elem.name}.flange_a.{slot}", physical_aliases)
+            right = _resolve(f"{elem.name}.flange_b.{slot}", physical_aliases)
+            key = f"{elem.name}.ratio"
+            if not math.isfinite(params_dict[key]) or params_dict[key] == 0:
+                raise GearConstraintError(f"Gear ratio {key!r} must be finite and nonzero")
+            adjacency.setdefault(left, []).append((right, key, 1))
+            adjacency.setdefault(right, []).append((left, key, -1))
+            incoming.add(right)
+
+    node_coordinates: dict[str, tuple[str, tuple[tuple[str, int], ...]]] = {}
+    remaining = set(adjacency)
+    while remaining:
+        component: set[str] = set()
+        pending = [min(remaining)]
+        while pending:
+            node = pending.pop()
+            if node in component:
+                continue
+            component.add(node)
+            pending.extend(other for other, _, _ in adjacency[node])
+        fixed = component & (grounded | set(input_vars))
+        if len(fixed) > 1:
+            raise GearConstraintError("Gear network has multiple grounded/prescribed coordinates")
+        candidates = fixed or (component - incoming) or component
+
+        def mechanical_names(node):
+            return tuple(
+                sorted(
+                    name
+                    for name in all_vars
+                    if _resolve(name, physical_aliases) == node
+                    and elements[variable_owners[name]].element_type != "sensor"
+                )
+            )
+
+        root = min(candidates, key=mechanical_names)
+        node_coordinates[root] = (root, ())
+        pending = [(root, None)]
+        visited: set[str] = set()
+        while pending:
+            node, parent_key = pending.pop()
+            if node in visited:
+                raise GearConstraintError("Gear constraint cycle: use an independent gear tree")
+            visited.add(node)
+            _, factors = node_coordinates[node]
+            for other, key, exponent in adjacency[node]:
+                if key == parent_key:
+                    continue
+                if other in node_coordinates:
+                    raise GearConstraintError("Gear constraint cycle: use an independent gear tree")
+                node_coordinates[other] = (root, factors + ((key, exponent),))
+                pending.append((other, key))
+        remaining -= component
+        for node in component - {root}:
+            eliminated[node] = root
+            all_vars[node].is_eliminated = True
+            all_vars[node].alias_of = root
+            all_vars[node].is_differential = False
+
+    coordinate_map = {}
+    for name in all_vars:
+        node = _resolve(name, physical_aliases)
+        coordinate_map[name] = node_coordinates.get(node, (node, ()))
 
     differential: list[str] = []
     for name, var in sorted(all_vars.items()):
@@ -235,10 +285,9 @@ def analyze_system(
     return StructuralAnalysis(
         layout=layout,
         params_dict=params_dict,
-        node_through_vars=node_through_vars,
-        gear_infos=gear_infos,
-        eliminated_pre_gear=eliminated_pre_gear,
-        networks=_build_networks(elements, connections, layout),
+        physical_aliases=physical_aliases,
+        coordinate_map=coordinate_map,
+        networks=_build_networks(elements, connections, layout, variable_owners),
         through_equation_cycle=through_equation_cycle,
     )
 
@@ -258,6 +307,7 @@ def _build_networks(
     elements: dict[str, AcausalElement],
     connections: list[AcausalConnection],
     layout: StateLayout,
+    variable_owners: dict[str, str],
 ) -> tuple[StructuralNetwork, ...]:
     element_groups: dict[str, set[str]] = {name: {name} for name in elements}
 
@@ -279,18 +329,22 @@ def _build_networks(
             sorted(
                 var_name
                 for var_name in layout._vars
-                if var_name.split(".", 1)[0] in names and not layout._vars[var_name].is_eliminated
+                if variable_owners[var_name] in names and not layout._vars[var_name].is_eliminated
             )
         )
         differential_variables = tuple(
-            var_name for var_name in layout._differential if var_name.split(".", 1)[0] in names
+            var_name for var_name in layout._differential if variable_owners[var_name] in names
         )
         equation_lhs = tuple(
             sorted(
-                eq.lhs_var
-                for elem_name in names
-                for eq in elements[elem_name].equations
-                if not eq.is_through_def
+                {
+                    _resolve(eq.lhs_var, layout._eliminated)
+                    for elem_name in names
+                    for eq in elements[elem_name].equations
+                    if not eq.is_through_def
+                    and _resolve(eq.lhs_var, layout._eliminated) not in layout._grounded
+                    and _resolve(eq.lhs_var, layout._eliminated) not in layout._inputs
+                }
             )
         )
         networks.append(
