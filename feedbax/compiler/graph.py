@@ -8,7 +8,6 @@ from typing import Any, Callable, Literal, Mapping, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from feedbax.component_registry import required_interior_domain
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, SemanticAnchor
 from feedbax.contracts.scientific_compiler_schema import (
@@ -21,14 +20,14 @@ from feedbax.contracts.scientific_compiler_schema import (
     RESOLVED_GRAPH_SCHEMA_ID,
     RESOLVED_GRAPH_SCHEMA_VERSION,
 )
-from feedbax.compiler.prototypes import (
-    normalize_derived_dimensions,
-    normalize_stateful_prototypes,
+from feedbax.compiler.resolution import (
+    ParameterResolutionError,
+    resolve_component_node,
+    resolve_graph_parameters,
 )
+from feedbax.component_registry.declarations import ComponentParamValidationError
 from feedbax.compiler.serialization import (
     _instantiate_graph,
-    _split_lowering_metadata,
-    _validate_dynamic_component_ports,
 )
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
@@ -283,11 +282,21 @@ def _compile_phase(
     except GraphCompilationError:
         raise
     except (KeyError, TypeError, ValueError) as exc:
+        cause = exc.cause if isinstance(exc, ParameterResolutionError) else exc
         diagnostic = CompilerDiagnostic(
-            code=code,
+            code=(
+                "compiler.constraint_solving.invalid_component_parameters"
+                if phase is CompilerPhase.CONSTRAINT_SOLVING
+                and isinstance(cause, ComponentParamValidationError)
+                else code
+            ),
             phase=phase,
             severity=DiagnosticSeverity.ERROR,
-            source_anchor=anchor,
+            source_anchor=(
+                anchor.model_copy(update={"authored_path": exc.authored_path})
+                if getattr(exc, "authored_path", None)
+                else anchor
+            ),
             expected_condition=expected,
             observed_condition=str(exc) or type(exc).__name__,
             actionable_context={
@@ -300,7 +309,7 @@ def _compile_phase(
                 document_sha256=document_sha256,
                 diagnostics=(diagnostic,),
             )
-        ) from exc
+        ) from cause
 
 
 def _json_pointer_token(value: str) -> str:
@@ -477,76 +486,6 @@ def _map_component_nodes(
     return graph.model_copy(update={"nodes": nodes, "subgraphs": subgraphs or None})
 
 
-def _resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
-    resolver = getattr(registry, "resolve_component_spec", None)
-    should_resolve = getattr(registry, "should_resolve_component_spec", None)
-    if (
-        callable(resolver)
-        and callable(should_resolve)
-        and should_resolve(
-            node.type,
-            param_schema_version=node.param_schema_version,
-        )
-    ):
-        params, lowering_metadata = _split_lowering_metadata(node)
-        resolution = resolver(
-            node.type,
-            params,
-            param_schema_version=node.param_schema_version,
-            complete_params=False,
-        )
-        return node.model_copy(
-            update={
-                "type": resolution.type_id,
-                "params": {**resolution.params, **lowering_metadata},
-                "param_schema_version": resolution.param_schema_version,
-            }
-        )
-    if required_interior_domain(node.type, registry) is not None:
-        return node
-    if registry.get(node.type) is None:
-        raise ValueError(
-            f"Unregistered component type {node.type!r}. "
-            f"Known component types: {registry.names()!r}"
-        )
-    return node
-
-
-def _complete_component_node(
-    node_name: str,
-    node: ComponentSpec,
-    registry: Any,
-) -> ComponentSpec:
-    meta = registry.get(node.type)
-    if meta is None:
-        return node
-    if meta.is_composite:
-        return node.model_copy(update={"params": {}})
-    params, lowering_metadata = _split_lowering_metadata(node)
-    context = {
-        key: value for key, value in params.items() if key in meta.params.build_context_fields
-    }
-    effective = meta.params.require(
-        {key: value for key, value in params.items() if key not in context}
-    ).model_dump(mode="python")
-    params = {**effective, **context}
-    inputs, outputs = _validate_dynamic_component_ports(
-        node_name,
-        node.type,
-        params,
-        node.input_ports,
-        node.output_ports,
-        component_registry=registry,
-    )
-    return node.model_copy(
-        update={
-            "params": {**params, **lowering_metadata},
-            "input_ports": list(inputs),
-            "output_ports": list(outputs),
-        }
-    )
-
-
 def compile_graph(
     document: GraphDocument,
     component_registry: Any,
@@ -574,7 +513,7 @@ def compile_graph(
     )
     typed_graph = _map_component_nodes(
         authored_graph,
-        lambda node_id, node: _resolve_component_node(node, component_registry),
+        lambda node_id, node: resolve_component_node(node, component_registry),
         document_sha256=document_sha256,
     )
     graph = _compile_phase(
@@ -587,7 +526,7 @@ def compile_graph(
         operation=lambda: _map_component_nodes(
             materialize_additive_channel_adapters(typed_graph),
             lambda node_id, node: (
-                _resolve_component_node(node, component_registry)
+                resolve_component_node(node, component_registry)
                 if node.param_schema_version is None
                 else node
             ),
@@ -596,22 +535,12 @@ def compile_graph(
     )
 
     def solve_constraints() -> GraphSpec:
-        normalized = normalize_derived_dimensions(
+        return resolve_graph_parameters(
             graph,
-            input_prototypes,
-            component_registry=component_registry,
-        )
-        normalized = normalize_stateful_prototypes(
-            normalized,
-            input_prototypes,
-            component_registry=component_registry,
-        )
-        return _map_component_nodes(
-            normalized,
-            lambda node_id, node: _complete_component_node(node_id, node, component_registry),
-            document_sha256=document_sha256,
-            phase=CompilerPhase.CONSTRAINT_SOLVING,
-        )
+            input_prototypes or {},
+            component_registry,
+            identities_resolved=True,
+        ).graph
 
     graph = _compile_phase(
         phase=CompilerPhase.CONSTRAINT_SOLVING,

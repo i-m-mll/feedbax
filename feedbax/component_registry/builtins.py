@@ -1171,6 +1171,15 @@ def demux_output_prototype(
     return {f"out_{index}": jnp.zeros((*prefix, size)) for index, size in enumerate(sizes)}
 
 
+def affine_composer_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    for port in ("base", "state"):
+        _required_input(inputs, port, component="AffineValueComposer")
+    return affine_value_composer_output_prototype(params, inputs)
+
+
 def switch_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
@@ -2780,7 +2789,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
                 outputs={"value": PortType(dtype="vector")},
             ),
-            output_prototype_fn=affine_value_composer_output_prototype,
+            output_prototype_fn=affine_composer_output_prototype,
             param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
             supported_param_schema_versions=[AFFINE_VALUE_COMPOSER_SCHEMA_VERSION],
         )

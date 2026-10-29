@@ -1938,7 +1938,7 @@ def test_studio_schema_task_data_trajectory_bindings_use_sample_view(
     assert task_data.value_schema.shape == ["time", 2]
     assert task_data.value_schema.metadata["sample_shape"] == [2]
     assert task_data.value_schema.metadata["time_axis"] == 0
-    assert network_input.value_schema.shape is None
+    assert network_input.value_schema.shape == [2]
     issue_types = {issue.type for issue in registry.issues}
     assert "task_binding_rank_mismatch" not in issue_types
     assert "task_binding_shape_mismatch" not in issue_types
