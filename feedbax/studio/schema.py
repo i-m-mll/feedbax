@@ -318,6 +318,7 @@ def enumerate_studio_schema_registry(
     schema_graph = _normalize_derived_dimensions_for_schema(
         authoring_graph,
         task_binding_spec,
+        component_registry=component_registry,
     )
     registry.ports = _enumerate_graph_ports(
         schema_graph, task_binding_spec, component_registry=component_registry
@@ -519,7 +520,11 @@ def validate_graph_connection_schema(
         )
 
     issues.extend(_mux_connected_input_issues(graph, task_binding_spec, base_path))
-    issues.extend(_derived_dimension_issues(graph, task_binding_spec, base_path))
+    issues.extend(
+        _derived_dimension_issues(
+            graph, task_binding_spec, base_path, component_registry=component_registry
+        )
+    )
     issues.extend(_instant_cycle_issues(graph, base_path))
     return issues
 
@@ -558,6 +563,8 @@ def _missing_subgraph_issues(
 def _normalize_derived_dimensions_for_schema(
     graph: GraphSpec,
     task_binding_spec: Optional[StudioTaskBindingSpec],
+    *,
+    component_registry: Any,
 ) -> GraphSpec:
     if not graph.derived_dimensions and not graph.subgraphs:
         return graph
@@ -565,6 +572,7 @@ def _normalize_derived_dimensions_for_schema(
         return normalize_derived_dimensions(
             graph,
             prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
+            component_registry=component_registry,
         )
     except DerivedDimensionError:
         return graph
@@ -574,6 +582,8 @@ def _derived_dimension_issues(
     graph: GraphSpec,
     task_binding_spec: Optional[StudioTaskBindingSpec],
     base_path: str,
+    *,
+    component_registry: Any,
 ) -> list[SchemaValidationIssue]:
     if not graph.derived_dimensions and not graph.subgraphs:
         return []
@@ -581,6 +591,7 @@ def _derived_dimension_issues(
         normalize_derived_dimensions(
             graph,
             prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
+            component_registry=component_registry,
         )
     except DerivedDimensionConflict as exc:
         return [

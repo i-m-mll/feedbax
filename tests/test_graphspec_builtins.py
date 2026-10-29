@@ -1617,10 +1617,7 @@ def test_channel_rejects_unknown_noise_model() -> None:
     assert diagnostic.code == "compiler.type_resolution.unresolved_component_type"
     assert "noise_model" in diagnostic.observed_condition
     assert "literal_error" in diagnostic.observed_condition
-    assert (
-        "Only canonical Channel noise parameters are accepted"
-        in diagnostic.observed_condition
-    )
+    assert "Only canonical Channel noise parameters are accepted" in diagnostic.observed_condition
 
 
 def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
@@ -1825,3 +1822,63 @@ def test_demux_rejects_mismatched_input_width() -> None:
 
     with pytest.raises(ValueError, match="Demux input final dimension"):
         graph({"input": jnp.arange(3.0)}, state, key=jax.random.PRNGKey(0))
+
+
+@pytest.mark.parametrize("use_registry", [False, True])
+def test_connected_sum_and_reshape_preserve_input_prototype(use_registry: bool) -> None:
+    spec = GraphSpec(
+        nodes={
+            "sum": ComponentSpec(
+                type="Sum", input_ports=["a", "b", "c", "d"], output_ports=["output"]
+            ),
+            "reshape": ComponentSpec(
+                type="Reshape",
+                params={"shape": [1, 3]},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "delay": ComponentSpec(
+                type="DelayLine",
+                params={"delay": 1},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="sum", source_port="output", target_node="reshape", target_port="input"
+            ),
+            WireSpec(
+                source_node="reshape",
+                source_port="output",
+                target_node="delay",
+                target_port="input",
+            ),
+        ],
+        input_ports=["input"],
+        input_bindings={"input": ("sum", "c")},
+        output_ports=["output"],
+        output_bindings={"output": ("delay", "output")},
+    )
+    registry = _components() if use_registry else None
+    inputs = infer_node_input_prototypes(
+        spec, {("__graph__", "input"): jnp.zeros(3, dtype=jnp.float16)}, {}, registry
+    )
+    assert inputs[("delay", "input")].shape == (1, 3)
+    assert inputs[("delay", "input")].dtype == jnp.float16
+    graph = spec_to_graph(spec, registry or _components(), inputs)
+    assert graph.nodes["delay"].input_proto.shape == (1, 3)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_supplied_registry_without_prototype_rule_is_refused(strict: bool) -> None:
+    node = ComponentSpec(type="Constant", params={"value": 1}, output_ports=["output"])
+    with pytest.raises(ValueError, match="Constant.*no registered output prototype rule"):
+        output_prototypes_for_node("source", node, {}, {}, {}, strict=strict)
+
+
+def test_registered_missing_input_defers_until_strict_resolution() -> None:
+    node = ComponentSpec(type="Reshape", input_ports=["input"], output_ports=["output"])
+    assert output_prototypes_for_node("reshape", node, {}, {}, strict=False) == {}
+    with pytest.raises(ValueError, match="reshape.*input prototype 'input'"):
+        output_prototypes_for_node("reshape", node, {}, {})
