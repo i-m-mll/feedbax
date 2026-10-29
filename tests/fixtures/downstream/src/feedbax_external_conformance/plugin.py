@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from pydantic import BaseModel, ConfigDict
-from typing import Literal, NamedTuple
+from typing import Any, Callable, Literal, Mapping, NamedTuple
+
+from feedbax.contracts.worker import ProgressCoordinate
 
 from feedbax import Component
 from feedbax.analysis.analysis import AbstractAnalysis
@@ -36,7 +39,6 @@ from feedbax.contracts.training import (
     DeclaredTrainingProgram,
     declare_training_program,
     standard_supervised_method_contract,
-    standard_supervised_training_program,
 )
 from feedbax.analysis.evaluation import EvaluationRecipeResult
 from feedbax.analysis.specs import AnalysisRecipeResult
@@ -182,8 +184,38 @@ class FixtureAnalysis(AbstractAnalysis):
         return None
 
 
+def synthetic_supervised_update_kernels(
+    _payload: BaseModel | None = None,
+) -> Mapping[str, Callable[..., Mapping[str, Any]]]:
+    """Return synthetic slot updates for lifecycle fixtures, without numerical training."""
+
+    def gradient_update(
+        slots: Mapping[str, Any],
+        coordinate: ProgressCoordinate,
+        context: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del context
+        updates: dict[str, Any] = {
+            "model": slots["model"],
+            "optimizer": slots["optimizer"],
+            "prng": slots["prng"],
+            "train_loss": float(coordinate.program_step + 1),
+            "batch_counter": slots["batch_counter"] + 1,
+        }
+        model = slots["model"]
+        optimizer = slots["optimizer"]
+        if isinstance(optimizer, Mapping) and "count" in optimizer:
+            updates["optimizer"] = {**dict(optimizer), "count": optimizer["count"] + 1}
+            try:
+                updates["model"] = model + optimizer["count"]
+            except TypeError:
+                updates["model"] = model
+        return updates
+
+    return {"feedbax.training.standard_supervised.gradient_update": gradient_update}
+
+
 def _fixture_training_program() -> DeclaredTrainingProgram:
-    baseline = standard_supervised_training_program()
     return declare_training_program(
         method_ref=_FIXTURE_METHOD_REF,
         payload_schema_id="feedbax_external_conformance.training",
@@ -197,8 +229,7 @@ def _fixture_training_program() -> DeclaredTrainingProgram:
         ),
         owner="feedbax-external-conformance",
         package="feedbax-external-conformance",
-        update_kernels_factory=baseline.update_kernels_factory,
-        guard_predicates_factory=baseline.guard_predicates_factory,
+        update_kernels_factory=synthetic_supervised_update_kernels,
         preparation_provider=_fixture_preparation,
         row_lowerers=(TrainingRowLowererRegistration(
             authored_schema_id="feedbax_external_conformance.training",

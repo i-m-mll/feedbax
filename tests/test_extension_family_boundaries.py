@@ -8,11 +8,11 @@ from dataclasses import replace
 import pytest
 
 from feedbax.analysis.evaluation_compaction import EvaluationBatchFragment
+from tests.support.training_fixtures import synthetic_supervised_training_program
 from feedbax.contracts.training import (
     TrainingProgramAuthoringFacet,
     TrainingMethodAuthoringContribution,
     TrainingMethodAuthoringHook,
-    standard_supervised_training_program,
 )
 from feedbax.plugins import (
     EVALUATION_PRODUCT_UNION_FINALIZERS,
@@ -36,7 +36,7 @@ def _projection(_payload: object) -> dict[str, object]:
 
 
 def _descriptor_plugin() -> PluginRegistration:
-    baseline = standard_supervised_training_program()
+    baseline = synthetic_supervised_training_program()
     descriptor = replace(
         baseline,
         declaration=replace(
