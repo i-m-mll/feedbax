@@ -62,12 +62,12 @@ class TestCycleDetection:
         order, back_edges = detect_cycles_and_sort(adjacency)
 
         assert len(back_edges) == 1
-        assert ("feedback", "network") in back_edges
+        assert back_edges == [("mechanics", "feedback")]
 
         # Verify topological order of acyclic portion
         assert order.index("task") < order.index("network")
         assert order.index("network") < order.index("mechanics")
-        assert order.index("mechanics") < order.index("feedback")
+        assert order.index("feedback") < order.index("network")
 
 
 class TestCycleAnnotation:

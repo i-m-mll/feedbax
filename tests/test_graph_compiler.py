@@ -144,7 +144,7 @@ def test_compilation_record_v2_rejects_after_diagnostics_schema_change() -> None
     payload = compiled.record.model_dump(mode="json")
     payload["schema_version"] = "2"
 
-    assert COMPILATION_RECORD_SCHEMA_VERSION == "4"
+    assert COMPILATION_RECORD_SCHEMA_VERSION == "5"
     assert compiled.record.diagnostics == ()
     with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
         CompilationRecord.model_validate(payload)
