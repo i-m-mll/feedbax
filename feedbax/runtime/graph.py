@@ -525,7 +525,7 @@ class Graph(Component):
         return self._with_runtime_callback("state_view_fn", state_view_fn)
 
     def with_state_consistency(self, state_consistency_fn: Callable[[Graph, State], State]) -> "Graph":
-        """Return a copy with a runtime-only graph state-consistency function attached."""
+        """Return a copy with a callback receiving the current graph and State."""
 
         if not callable(state_consistency_fn):
             raise TypeError("state_consistency_fn must be callable")

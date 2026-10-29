@@ -237,3 +237,83 @@ def test_preparation_keeps_task_parameter_and_latch_slots_independent():
     assert not bool(state.get(right.latch_index).latched)
     assert left.task_parameter_state_indices()[left.label].marker == left.params_index.marker
     assert state.get(right.params_index).scale.dtype == jnp.float32
+
+
+def test_prepared_studio_gru_checkpoint_continues_next_adam_step(tmp_path):
+    from feedbax.contracts.worker import ProgressCoordinate
+    from feedbax.training.checkpoint_custody import (
+        load_latest_checkpoint,
+        write_checkpoint_transaction,
+    )
+    from feedbax.training.studio_executor import StudioUpdateKernel
+    from tests.test_checkpoint_custody import _run_spec
+
+    key = jax.random.PRNGKey(0)
+
+    def build():
+        return Graph(nodes={"cell": GRU(2, 3, key=key)}, wires=()).prepare()
+
+    graph = build()
+    compiled = SimpleNamespace(graph=graph, trainable_filter=_trainable_filter(graph, ("cell",)))
+    optimizer = optax.adam(0.05)
+
+    def predict(model, plan, key):
+        return model.nodes["cell"]({"input": jnp.ones(2)}, model.init_state(key=key), key=key)[0]
+
+    def loss(plan, outputs):
+        return jnp.sum((outputs["output"] - 1) ** 2), {}
+
+    kernel = StudioUpdateKernel(
+        compiled=compiled, optimizer=optimizer, rollout_fn=predict, evaluate_loss_fn=loss
+    )
+
+    def initial_slots(model):
+        return {
+            "model": model,
+            "optimizer": optimizer.init(
+                eqx.partition(model, _trainable_filter(model, ("cell",)))[0]
+            ),
+            "prng": key,
+            "batch_counter": jnp.array(0, dtype=jnp.int32),
+        }
+
+    slots = initial_slots(graph)
+    for _ in range(2):
+        updated = kernel(slots)
+        slots = {name: updated[name] for name in slots}
+    uninterrupted = kernel(slots)
+    run_spec = _run_spec()
+    program = run_spec.worker_execution.method_contract.phase_program
+    written = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_train_batch",
+        coordinate=ProgressCoordinate(
+            run_id="run-2",
+            phase="train_batch",
+            program_step=2,
+            completed_barrier="after_train_batch",
+        ),
+        slots=slots,
+    )
+    assert {slot.codec_schema_version for slot in written.checkpoint_set.slots} == {
+        "feedbax.training.checkpoint_custody.pickle.v2"
+    }
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=initial_slots(build()),
+    )
+    resumed = kernel(loaded.slots)
+    assert eqx.tree_equal(resumed, uninterrupted)
+    assert eqx.tree_equal(
+        predict(resumed["model"], None, key), predict(uninterrupted["model"], None, key)
+    )
+    assert not eqx.tree_equal(
+        resumed["model"].nodes["cell"].cell, slots["model"].nodes["cell"].cell
+    )
+    assert eqx.tree_equal(
+        resumed["model"].nodes["cell"].state_index.init, graph.nodes["cell"].state_index.init
+    )
