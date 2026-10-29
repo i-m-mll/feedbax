@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ from feedbax.contracts.spec_storage import (
 from feedbax.contracts.training import (
     CheckpointProgressPolicySpec,
     LossTermSpec,
+    MethodRefSpec,
     ObjectiveSlotSpec,
     OptimizerSpec,
     StandardSupervisedMethodPayload,
@@ -44,7 +46,6 @@ from feedbax.contracts.training import (
     standard_supervised_effective_phase_spec,
     standard_supervised_method_contract,
     standard_supervised_method_payload,
-    standard_supervised_method_ref,
 )
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
@@ -110,7 +111,9 @@ from feedbax.training.diagnostics import (
 )
 from feedbax.training.executor import execute_training_run_spec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.plugins import bootstrap_application, new_registration_context
+from feedbax.plugins.application import ApplicationRegistryBundle
+from tests.support.training_fixtures import CLI_METHOD_REF, PLUGIN_REGISTRATION
 from feedbax.training.checkpoint_custody import produce_checkpoint_custody_archive
 from feedbax.training.run_matrix import _validate_training_payload
 from feedbax.training.spec_storage import (
@@ -120,6 +123,16 @@ from feedbax.training.spec_storage import (
     register_training_run_matrix_compiler,
 )
 from feedbax.orchestration.revision import resolve_feedbax_revision
+
+
+def _lifecycle_registries() -> ApplicationRegistryBundle:
+    """Use the same explicit synthetic lifecycle plugin in-process and in the CLI."""
+    return asyncio.run(
+        bootstrap_application(
+            new_registration_context(local_component_source=None),
+            registrations=(PLUGIN_REGISTRATION,),
+        )
+    ).bundle
 
 
 def _minimal_graph(gain: int) -> dict[str, Any]:
@@ -173,11 +186,15 @@ def _training_spec(
                 target_value=[0.0],
             )
         ),
-        method_ref=standard_supervised_method_ref(),
+        method_ref=MethodRefSpec(package="tests", name="synthetic_supervised", version="v1"),
         method_payload=method_payload,
         worker_execution=WorkerExecutionSpec(
-            method_contract=standard_supervised_method_contract(),
-            effective_phase=standard_supervised_effective_phase_spec(),
+            method_contract=standard_supervised_method_contract().model_copy(
+                update={"method_ref": CLI_METHOD_REF}
+            ),
+            effective_phase=standard_supervised_effective_phase_spec().model_copy(
+                update={"method_ref": CLI_METHOD_REF}
+            ),
         ),
         checkpoint_progress=CheckpointProgressPolicySpec(
             checkpoint_interval=1,
@@ -283,7 +300,7 @@ def _assemble_lowered_bundle(
         )
 
     registry = AssemblyCompilerRegistry()
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = _lifecycle_registries()
     register_training_run_matrix_compiler(
         registry,
         method_registry=registries.training_programs,
@@ -339,7 +356,7 @@ def _assemble_lowered_bundle(
     input_document = root / "resolved-input.json"
     input_document.write_text(resolve_input(request.inputs[0]).model_dump_json(), encoding="utf-8")
     request.inputs[0].locator = str(input_document)
-    return assemble_run_bundle(
+    bundle = assemble_run_bundle(
         request,
         run_set_id=f"run-set-{root.name}",
         context=AssemblyContext(
@@ -350,6 +367,26 @@ def _assemble_lowered_bundle(
             environment_digest="f" * 64,
         ),
         registry=registry,
+    )
+    return bundle.model_copy(
+        update={
+            "rows": [
+                row.model_copy(
+                    update={
+                        "launch": row.launch.model_copy(
+                            update={
+                                "command": [
+                                    *row.launch.command,
+                                    "--plugin",
+                                    "tests.support.training_fixtures",
+                                ]
+                            }
+                        )
+                    }
+                )
+                for row in bundle.rows
+            ]
+        }
     )
 
 
@@ -572,7 +609,7 @@ def test_authored_row_changes_propagate_through_assembly_identity_and_custody(
 
 
 def _executed_configuration_seed_row(root: Path) -> ConformanceRowArtifacts:
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = _lifecycle_registries()
     bundle = _assemble_lowered_bundle(
         root,
         gain=2,
@@ -671,7 +708,7 @@ def test_seed_conformance_rejects_invalid_executed_configuration_evidence(
 def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
     tmp_path: Path,
 ) -> None:
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = _lifecycle_registries()
     bundle = _assemble_lowered_bundle(tmp_path / "source", gain=2)
     row = bundle.rows[0]
     provenance = row.execution.row_provenance
@@ -723,6 +760,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         row_id=row.row_id,
         execution=row.execution,
         execution_identity_adapter=TrainingRunIdentityAdapter(),
+        training_method_registry=registries.training_programs,
         manifest_path=result.manifest_path,
         training_diagnostics=diagnostics,
         recorded_environment_fingerprint=context.environment_fingerprint,
@@ -857,6 +895,8 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         "feedbax",
         "execute-training-run-spec",
         "--resume",
+        "--plugin",
+        "tests.support.training_fixtures",
     ]
     assert resumed_row.launch.payload_routing == {
         "kind": "registered-execution-payload",
@@ -1890,10 +1930,11 @@ os.read = read_then_mutate
         expected_error="source entry changed during checkpoint clone: model.bin",
     )
 
+
 def test_local_driver_executes_authenticated_custody_continuation_with_parent_lineage(
     tmp_path: Path,
 ) -> None:
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = _lifecycle_registries()
     parent_bundle = _without_resolved_inputs(
         _assemble_lowered_bundle(tmp_path / "authenticated-parent", gain=2)
     )
