@@ -38,7 +38,6 @@ class Integrator(Component):
     dt: float
     n_dims: int = field(static=True)
     state_index: StateIndex
-    _initial_state: Array = field(static=True)
 
     def __init__(
         self,
@@ -48,8 +47,8 @@ class Integrator(Component):
     ):
         self.dt = float(dt)
         self.n_dims = n_dims
-        self._initial_state = jnp.zeros(n_dims) + initial_value
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = jnp.zeros(n_dims) + initial_value
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,
@@ -81,7 +80,6 @@ class Derivative(Component):
     dt: float
     n_dims: int = field(static=True)
     state_index: StateIndex
-    _initial_state: Array = field(static=True)
 
     def __init__(
         self,
@@ -91,8 +89,8 @@ class Derivative(Component):
     ):
         self.dt = float(dt)
         self.n_dims = n_dims
-        self._initial_state = jnp.zeros(n_dims) + initial_value
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = jnp.zeros(n_dims) + initial_value
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,
@@ -134,7 +132,6 @@ class StateSpace(Component):
     D: Array  # [p, m]
     dt: float
     state_index: StateIndex
-    _initial_state: Array = field(static=True)
 
     def __init__(
         self,
@@ -150,8 +147,8 @@ class StateSpace(Component):
         self.D = jnp.asarray(D, dtype=float)
         self.dt = float(dt)
         n = self.A.shape[0]
-        self._initial_state = jnp.zeros(n)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = jnp.zeros(n)
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,

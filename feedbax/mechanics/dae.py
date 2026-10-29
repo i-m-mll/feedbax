@@ -15,11 +15,10 @@ using diffrax implicit solvers and optimistix root finders.
 from __future__ import annotations
 
 from abc import abstractmethod
-from functools import cached_property
 from typing import ClassVar, Optional, Type, TypeVar, Generic
 
 import diffrax as dfx
-from equinox import Module, field
+from equinox import Module
 from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
@@ -27,6 +26,7 @@ import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
+from feedbax._ode import ode_init, ode_step
 from feedbax.runtime.graph import Component
 
 
@@ -69,10 +69,8 @@ class DAEComponent(Component, Generic[StateT]):
     output_ports: ClassVar[tuple[str, ...]] = ("state",)
 
     dt: float
-    solver: dfx.AbstractSolver = field(static=True)
-    root_finder: Optional[optx.AbstractRootFinder] = field(static=True)
+    solver: dfx.AbstractSolver
     state_index: StateIndex
-    _initial_state: DAEState[StateT] = field(static=True)
 
     def __init__(
         self,
@@ -99,11 +97,9 @@ class DAEComponent(Component, Generic[StateT]):
         if is_implicit:
             if root_finder is None:
                 root_finder = optx.Newton(rtol=1e-8, atol=1e-8)
-            self.root_finder = root_finder
             # Type narrowing doesn't work with issubclass, but we've verified it's implicit
-            self.solver = solver_type(root_finder=self.root_finder)  # type: ignore[call-arg]
+            self.solver = solver_type(root_finder=root_finder)  # type: ignore[call-arg]
         else:
-            self.root_finder = None
             self.solver = solver_type()
 
         if key is None:
@@ -125,14 +121,18 @@ class DAEComponent(Component, Generic[StateT]):
         # Also canonicalize input dtypes
         init_input = jt.map(make_strong_dtype, init_input)
 
-        solver_state = self.solver.init(
-            self._term, 0.0, self.dt, system_state, init_input
+        solver_state = ode_init(
+            self.solver, self._term, self.dt, system_state, init_input
         )
 
-        self._initial_state = DAEState(system=system_state, solver=solver_state)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = DAEState(system=system_state, solver=solver_state)
+        self.state_index = StateIndex(initial_state)
 
-    @cached_property
+    @property
+    def root_finder(self) -> Optional[optx.AbstractRootFinder]:
+        return self.solver.root_finder if isinstance(self.solver, dfx.AbstractImplicitSolver) else None
+
+    @property
     def _term(self) -> dfx.ODETerm:
         """Create the diffrax ODE term from the vector field."""
         # Type mismatch: diffrax uses RealScalarLike, we use jaxtyping.Scalar
@@ -219,14 +219,8 @@ class DAEComponent(Component, Generic[StateT]):
         input_value = inputs.get("input", self._get_zero_input())
 
         # Perform implicit integration step
-        new_system_state, _, _, new_solver_state, _ = self.solver.step(
-            self._term,
-            0.0,
-            self.dt,
-            dae_state.system,
-            input_value,
-            dae_state.solver,
-            made_jump=False,
+        new_system_state, new_solver_state = ode_step(
+            self.solver, self._term, self.dt, dae_state.system, input_value, dae_state.solver,
         )
 
         # Update state

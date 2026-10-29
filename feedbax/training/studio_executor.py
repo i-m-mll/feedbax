@@ -8,6 +8,7 @@ from typing import Any
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 import optax
 
@@ -65,6 +66,82 @@ def executor_method_contract(*, total_batches: int):
     return contract.model_copy(update={"phase_program": program, "state_slots": state_slots})
 
 
+class StudioUpdateKernel:
+    """AOT numerical update with fixed graph structure and device-resident operands."""
+
+    def __init__(
+        self,
+        *,
+        compiled: Any,
+        optimizer: optax.GradientTransformationExtraArgs,
+        rollout_fn: Callable[[Any, Any, Any], dict[str, Any]],
+        evaluate_loss_fn: Callable[[Any, dict[str, Any]], tuple[jax.Array, dict[str, jax.Array]]],
+    ) -> None:
+        trainable, frozen = eqx.partition(compiled.graph, compiled.trainable_filter)
+        frozen_arrays, frozen_structure = eqx.partition(frozen, eqx.is_array)
+        self._frozen_arrays = jax.device_put(frozen_arrays)
+        self._frozen_structure = frozen_structure
+        trainable_filter = compiled.trainable_filter
+        self._filter = trainable_filter
+
+        def numerical_update(trainable, optimizer_state, key, batch_counter, frozen_arrays):
+            frozen = eqx.combine(frozen_arrays, frozen_structure)
+            key, step_key = jr.split(key)
+
+            def loss_from_trainable(candidate):
+                graph = eqx.combine(candidate, frozen)
+                return evaluate_loss_fn(compiled, rollout_fn(graph, compiled, step_key))
+
+            (loss, terms), grads = eqx.filter_value_and_grad(loss_from_trainable, has_aux=True)(
+                trainable
+            )
+            updates, optimizer_state = optimizer.update(grads, optimizer_state, trainable)
+            graph = apply_parameter_constraints(
+                eqx.combine(eqx.apply_updates(trainable, updates), frozen)
+            )
+            trainable, _ = eqx.partition(graph, trainable_filter)
+            return (
+                trainable,
+                optimizer_state,
+                key,
+                batch_counter + 1,
+                {"train_loss": loss, "loss_terms": terms, "grad_norm": optax.global_norm(grads)},
+            )
+
+        # Equinox's filtered lowering separates static graph structure from array operands.
+        compile_t0 = time.perf_counter()
+        self._update = (
+            eqx.filter_jit(numerical_update)
+            .lower(
+                trainable,
+                optimizer.init(trainable),
+                jr.PRNGKey(0),
+                jnp.array(0, dtype=jnp.int32),
+                self._frozen_arrays,
+            )
+            .compile()
+        )
+        self.compile_time_ms = (time.perf_counter() - compile_t0) * 1000.0
+
+    def __call__(self, slots: Mapping[str, Any]) -> Mapping[str, Any]:
+        trainable, _ = eqx.partition(slots["model"], self._filter)
+        trainable, optimizer_state, key, count, metrics = self._update(
+            trainable,
+            slots["optimizer"],
+            slots["prng"],
+            slots["batch_counter"],
+            self._frozen_arrays,
+        )
+        graph = eqx.combine(trainable, self._frozen_arrays, self._frozen_structure)
+        return {
+            "model": graph,
+            "optimizer": optimizer_state,
+            "prng": key,
+            "batch_counter": count,
+            **metrics,
+        }
+
+
 def studio_training_registry(
     *,
     compiled: Any,
@@ -73,9 +150,17 @@ def studio_training_registry(
     stop_event: Any,
     rollout_fn: Callable[[Any, Any, Any], dict[str, Any]],
     evaluate_loss_fn: Callable[[Any, dict[str, Any]], tuple[jax.Array, dict[str, jax.Array]]],
+    observe_model: Callable[[Any], None] | None = None,
 ) -> TrainingProgramRegistry:
     """Build an executor registry whose kernel performs one Studio graph update."""
     method_contract = executor_method_contract(total_batches=total_batches)
+    kernel = StudioUpdateKernel(
+        compiled=compiled,
+        optimizer=optimizer,
+        rollout_fn=rollout_fn,
+        evaluate_loss_fn=evaluate_loss_fn,
+    )
+    compiled.metadata["numerical_compile_time_ms"] = kernel.compile_time_ms
 
     def gradient_update(
         slots: Mapping[str, Any],
@@ -83,40 +168,21 @@ def studio_training_registry(
         context: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         del context, coordinate
-        current_graph = slots["model"]
-        optimizer_state = slots["optimizer"]
-        rng_key, step_key = jr.split(slots["prng"])
         step_t0 = time.perf_counter()
-        trainable, static = eqx.partition(current_graph, compiled.trainable_filter)
-
-        def loss_from_trainable(trainable_graph):
-            candidate = eqx.combine(static, trainable_graph)
-            rollout = rollout_fn(candidate, compiled, step_key)
-            return evaluate_loss_fn(compiled, rollout)
-
-        (loss_value, loss_terms), grads = eqx.filter_value_and_grad(
-            loss_from_trainable,
-            has_aux=True,
-        )(trainable)
-        grad_norm = optax.global_norm(grads)
-        updates, optimizer_state = optimizer.update(grads, optimizer_state, trainable)
-        trainable = eqx.apply_updates(trainable, updates)
-        updated_graph = eqx.combine(static, trainable)
-        updated_graph = apply_parameter_constraints(updated_graph)
-        compiled.graph = updated_graph
-        loss = float(jax.block_until_ready(loss_value))
-        return {
-            "model": updated_graph,
-            "optimizer": optimizer_state,
-            "prng": rng_key,
-            "batch_counter": slots["batch_counter"] + 1,
-            "train_loss": loss,
-            "loss_terms": {
-                key: float(jax.block_until_ready(value)) for key, value in loss_terms.items()
-            },
-            "grad_norm": float(jax.block_until_ready(grad_norm)),
-            "step_time_ms": (time.perf_counter() - step_t0) * 1000.0,
-        }
+        updated = dict(kernel(slots))
+        jax.block_until_ready(updated)
+        loss, terms, grad_norm = jax.device_get(
+            (updated["train_loss"], updated["loss_terms"], updated["grad_norm"])
+        )
+        updated.update(
+            train_loss=float(loss),
+            loss_terms={name: float(value) for name, value in terms.items()},
+            grad_norm=float(grad_norm),
+        )
+        updated["step_time_ms"] = (time.perf_counter() - step_t0) * 1000.0
+        if observe_model is not None:
+            observe_model(updated["model"])
+        return updated
 
     def continue_training(
         slots: Mapping[str, Any],

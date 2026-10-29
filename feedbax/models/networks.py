@@ -735,7 +735,6 @@ class SimpleStagedNetwork(Component):
     sisu_alpha: Optional[Array] = None  # shape (hidden_size,) when multiplicative
 
     state_index: StateIndex
-    _initial_state: NetworkState = field(static=True)
 
     def __init__(
         self,
@@ -953,7 +952,6 @@ class SimpleStagedNetwork(Component):
                 else None
             ),
         )
-        self._initial_state = init_state
         self.state_index = StateIndex(init_state)
 
     def _add_hidden_noise(self, input, state, *, key):
@@ -1238,7 +1236,6 @@ class VanillaRNN(Component):
     activation_name: str = field(static=True)
     dtype: object = field(static=True)
     state_index: StateIndex
-    _initial_state: VanillaRNNState = field(static=True)
 
     def __init__(
         self,
@@ -1285,8 +1282,8 @@ class VanillaRNN(Component):
             key=key,
         )
         hidden = jnp.zeros(self.hidden_size, dtype=dtype)
-        self._initial_state = VanillaRNNState(hidden=hidden, output=hidden)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = VanillaRNNState(hidden=hidden, output=hidden)
+        self.state_index = StateIndex(initial_state)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         current_state: VanillaRNNState = state.get(self.state_index)

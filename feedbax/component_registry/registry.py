@@ -318,7 +318,13 @@ class ComponentRegistry:
         params: Mapping[str, Any],
         *,
         param_schema_version: str | None = None,
+        complete_params: bool = True,
     ) -> ComponentResolution:
+        """Resolve identity and migrations, optionally completing the parameter contract.
+
+        The compiler defers completion until dimensions and state prototypes are solved.
+        Deferred resolution preserves authored omissions instead of injecting defaults.
+        """
         meta = self._components.get(type_id)
         if meta is not None and self._accepts_param_schema(meta, param_schema_version):
             context = {
@@ -326,12 +332,15 @@ class ComponentRegistry:
                 for name, value in params.items()
                 if name in meta.params.build_context_fields
             }
-            validated = meta.params.require(
-                {name: value for name, value in params.items() if name not in context}
+            authored = {name: value for name, value in params.items() if name not in context}
+            effective = (
+                meta.params.require(authored).model_dump(mode="python")
+                if complete_params
+                else authored
             )
             return ComponentResolution(
                 type_id=type_id,
-                params={**validated.model_dump(mode="python"), **context},
+                params={**effective, **context},
                 param_schema_version=param_schema_version or meta.param_schema_version,
                 meta=deepcopy(meta),
             )
@@ -372,10 +381,14 @@ class ComponentRegistry:
                 f"target_param_schema_version={migrated_version!r}, "
                 f"supported={migrated_meta.supported_param_schema_versions!r}"
             )
-        validated = migrated_meta.params.require(migrated_params)
+        effective = (
+            migrated_meta.params.require(migrated_params).model_dump(mode="python")
+            if complete_params
+            else dict(migrated_params)
+        )
         return ComponentResolution(
             type_id=migrated_type,
-            params=validated.model_dump(mode="python"),
+            params=effective,
             param_schema_version=migrated_version or migrated_meta.param_schema_version,
             meta=deepcopy(migrated_meta),
             migrations=(self._migration_info(migration),),

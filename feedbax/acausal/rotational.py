@@ -22,22 +22,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from feedbax.acausal._scalar_mechanics import ROTATIONAL
 from feedbax.acausal.base import (
     AcausalElement,
-    AcausalEquation,
     AcausalPort,
     Domain,
 )
 
-
-def _fqn(element: str, port: str, slot: str) -> str:
-    """Fully-qualified variable name."""
-    return f"{element}.{port}.{slot}"
-
-
-# ---------------------------------------------------------------------------
-# Inertia
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Inertia(AcausalElement):
@@ -53,35 +44,8 @@ class Inertia(AcausalElement):
 
     def __init__(self, name: str, inertia: float = 1.0):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.ROTATIONAL,
-            across_vars=("angle", "angular_vel"),
-            through_var="torque",
-        )
-        self.params[f"{name}.inertia"] = inertia
+        ROTATIONAL.inertia(self, inertia)
 
-        angle = _fqn(name, "flange", "angle")
-        omega = _fqn(name, "flange", "angular_vel")
-
-        # d(angle)/dt = angular_vel
-        self.equations.append(AcausalEquation(
-            lhs_var=angle,
-            rhs_fn=lambda vals, _w=omega: vals[_w],
-            depends_on=(omega,),
-        ))
-        # d(angular_vel)/dt = net_torque / J  (filled by assembly)
-        self.equations.append(AcausalEquation(
-            lhs_var=omega,
-            rhs_fn=None,
-            depends_on=(),
-        ))
-        self.element_type = "mass"  # same assembly treatment as Mass
-
-
-# ---------------------------------------------------------------------------
-# TorsionalSpring
-# ---------------------------------------------------------------------------
 
 @dataclass
 class TorsionalSpring(AcausalElement):
@@ -93,42 +57,8 @@ class TorsionalSpring(AcausalElement):
 
     def __init__(self, name: str, stiffness: float = 1.0):
         super().__init__(name=name)
-        for port_name in ("flange_a", "flange_b"):
-            self.ports[port_name] = AcausalPort(
-                name=port_name,
-                domain=Domain.ROTATIONAL,
-                across_vars=("angle", "angular_vel"),
-                through_var="torque",
-            )
-        self.params[f"{name}.stiffness"] = stiffness
+        ROTATIONAL.coupling(self, "stiffness", stiffness, ROTATIONAL.coordinate)
 
-        ang_a = _fqn(name, "flange_a", "angle")
-        ang_b = _fqn(name, "flange_b", "angle")
-        tau_a = _fqn(name, "flange_a", "torque")
-        tau_b = _fqn(name, "flange_b", "torque")
-        k_key = f"{name}.stiffness"
-
-        # tau_b = k * (ang_a - ang_b)  -- spring pulls B toward A
-        self.equations.append(AcausalEquation(
-            lhs_var=tau_b,
-            rhs_fn=lambda vals, _aa=ang_a, _ab=ang_b, _k=k_key: (
-                vals[_k] * (vals[_aa] - vals[_ab])
-            ),
-            depends_on=(ang_a, ang_b),
-            is_through_def=True,
-        ))
-        # tau_a = -tau_b
-        self.equations.append(AcausalEquation(
-            lhs_var=tau_a,
-            rhs_fn=lambda vals, _tb=tau_b: -vals[_tb],
-            depends_on=(tau_b,),
-            is_through_def=True,
-        ))
-
-
-# ---------------------------------------------------------------------------
-# RotationalDamper
-# ---------------------------------------------------------------------------
 
 @dataclass
 class RotationalDamper(AcausalElement):
@@ -136,42 +66,8 @@ class RotationalDamper(AcausalElement):
 
     def __init__(self, name: str, damping: float = 1.0):
         super().__init__(name=name)
-        for port_name in ("flange_a", "flange_b"):
-            self.ports[port_name] = AcausalPort(
-                name=port_name,
-                domain=Domain.ROTATIONAL,
-                across_vars=("angle", "angular_vel"),
-                through_var="torque",
-            )
-        self.params[f"{name}.damping"] = damping
+        ROTATIONAL.coupling(self, "damping", damping, ROTATIONAL.velocity)
 
-        omega_a = _fqn(name, "flange_a", "angular_vel")
-        omega_b = _fqn(name, "flange_b", "angular_vel")
-        tau_a = _fqn(name, "flange_a", "torque")
-        tau_b = _fqn(name, "flange_b", "torque")
-        b_key = f"{name}.damping"
-
-        # tau_b = b * (omega_a - omega_b)  -- damps B toward A
-        self.equations.append(AcausalEquation(
-            lhs_var=tau_b,
-            rhs_fn=lambda vals, _wa=omega_a, _wb=omega_b, _b=b_key: (
-                vals[_b] * (vals[_wa] - vals[_wb])
-            ),
-            depends_on=(omega_a, omega_b),
-            is_through_def=True,
-        ))
-        # tau_a = -tau_b
-        self.equations.append(AcausalEquation(
-            lhs_var=tau_a,
-            rhs_fn=lambda vals, _tb=tau_b: -vals[_tb],
-            depends_on=(tau_b,),
-            is_through_def=True,
-        ))
-
-
-# ---------------------------------------------------------------------------
-# TorqueSource
-# ---------------------------------------------------------------------------
 
 @dataclass
 class TorqueSource(AcausalElement):
@@ -179,18 +75,8 @@ class TorqueSource(AcausalElement):
 
     def __init__(self, name: str):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.ROTATIONAL,
-            across_vars=("angle", "angular_vel"),
-            through_var="torque",
-        )
-        self.element_type = "force_source"
+        ROTATIONAL.one_port(self, "force_source")
 
-
-# ---------------------------------------------------------------------------
-# RotationalGround
-# ---------------------------------------------------------------------------
 
 @dataclass
 class RotationalGround(AcausalElement):
@@ -198,18 +84,8 @@ class RotationalGround(AcausalElement):
 
     def __init__(self, name: str):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.ROTATIONAL,
-            across_vars=("angle", "angular_vel"),
-            through_var="torque",
-        )
-        self.element_type = "ground"
+        ROTATIONAL.one_port(self, "ground")
 
-
-# ---------------------------------------------------------------------------
-# GearRatio
-# ---------------------------------------------------------------------------
 
 @dataclass
 class GearRatio(AcausalElement):
@@ -219,10 +95,10 @@ class GearRatio(AcausalElement):
 
         angle_b   = ratio * angle_a
         omega_b   = ratio * omega_a
-        torque_a  = ratio * torque_b   (power conservation)
+        reaction_a + ratio * reaction_b = 0   (zero reaction power)
 
-    During assembly, port_b across variables are *eliminated* and expressed
-    in terms of port_a's variables scaled by the ratio.
+    Assembly pulls shaft efforts and inertias back to one coordinate;
+    physical shaft observables retain their ratio scaling.
 
     Ports:
         flange_a (input shaft), flange_b (output shaft) -- rotational.
@@ -241,24 +117,13 @@ class GearRatio(AcausalElement):
         self.element_type = "gear_ratio"
 
 
-# ---------------------------------------------------------------------------
-# Sensors (read-only, zero through-variable)
-# ---------------------------------------------------------------------------
-
 @dataclass
 class AngleSensor(AcausalElement):
     """Reads angle at a connection node."""
 
     def __init__(self, name: str):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.ROTATIONAL,
-            across_vars=("angle", "angular_vel"),
-            through_var="torque",
-        )
-        self.element_type = "sensor"
-        self.sensor_output = ("flange", "angle")
+        ROTATIONAL.sensor(self, ROTATIONAL.coordinate)
 
 
 @dataclass
@@ -267,14 +132,7 @@ class AngularVelocitySensor(AcausalElement):
 
     def __init__(self, name: str):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.ROTATIONAL,
-            across_vars=("angle", "angular_vel"),
-            through_var="torque",
-        )
-        self.element_type = "sensor"
-        self.sensor_output = ("flange", "angular_vel")
+        ROTATIONAL.sensor(self, ROTATIONAL.velocity)
 
 
 @dataclass
@@ -283,11 +141,4 @@ class TorqueSensor(AcausalElement):
 
     def __init__(self, name: str):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.ROTATIONAL,
-            across_vars=("angle", "angular_vel"),
-            through_var="torque",
-        )
-        self.element_type = "sensor"
-        self.sensor_output = ("flange", "torque")
+        ROTATIONAL.sensor(self, ROTATIONAL.effort)

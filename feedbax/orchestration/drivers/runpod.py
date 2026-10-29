@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
+from feedbax.contracts.base import sha256_file
 from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
 
 from feedbax.contracts.training import (
@@ -46,6 +47,10 @@ from feedbax.contracts.run_matrix import (
     RUNPOD_PREFLIGHT_EVIDENCE_SCHEMA_VERSION_V4,
     TrainingRunMatrixPreflightBinding,
     training_run_matrix_preflight_binding_sha256,
+)
+from feedbax.orchestration.collection_destination import (
+    check_collection_destinations,
+    publish_collection_output,
 )
 from feedbax.orchestration.bundle import (
     ResolvedAssemblyInput,
@@ -2603,7 +2608,7 @@ class RunPodOrchestrationDriver:
             self._collection_recovery_evidence[row.row_id] = recovered.evidence
             return recovered.outputs
         dest_dir = bundle.run_set_dir / "collected" / row.row_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        check_collection_destinations(bundle, rows=(row,))
         remote_run_dir = self._remote_run_dir(bundle)
         sources = row.launch.collect or [
             f"rows/{row.row_id}",
@@ -2630,21 +2635,17 @@ class RunPodOrchestrationDriver:
                 continue
             target = dest_dir / Path(source).name
             source_kind = self._remote_collection_source_kind(remote_source)
-            delete = False
-            if source_kind == "directory":
-                if os.path.lexists(target):
-                    if target.is_symlink() or not target.is_dir():
-                        raise RunPodDriverError(f"collection directory target is unsafe: {target}")
-                else:
-                    target.mkdir()
-                remote_source = remote_source.rstrip("/") + "/"
-                rsync_target = str(target) + "/"
-                delete = True
-            else:
-                rsync_target = str(target)
-            self.transport.rsync(remote_source, rsync_target, delete=delete).check(
-                f"collect {row.row_id}:{source}"
-            )
+            with tempfile.TemporaryDirectory(prefix="feedbax-collect-") as staging:
+                staged = Path(staging) / target.name
+                delete = source_kind == "directory"
+                if delete:
+                    staged.mkdir()
+                    remote_source = remote_source.rstrip("/") + "/"
+                rsync_target = str(staged) + ("/" if delete else "")
+                self.transport.rsync(remote_source, rsync_target, delete=delete).check(
+                    f"collect {row.row_id}:{source}"
+                )
+                publish_collection_output(bundle, staged, target, consume_source=True)
             collected[Path(source).name] = str(target)
         if (
             is_native_training_command(row.launch.command)
@@ -2652,10 +2653,12 @@ class RunPodOrchestrationDriver:
         ):
             event_name = f"{row.row_id}.events.jsonl"
             event_target = bundle.run_set_dir / "events" / event_name
-            event_target.parent.mkdir(parents=True, exist_ok=True)
-            self.transport.rsync(
-                f"{remote_run_dir}/events/{event_name}", str(event_target), delete=False
-            ).check(f"collect {row.row_id}:events")
+            with tempfile.TemporaryDirectory(prefix="feedbax-events-") as staging:
+                staged = Path(staging) / event_name
+                self.transport.rsync(
+                    f"{remote_run_dir}/events/{event_name}", str(staged), delete=False
+                ).check(f"collect {row.row_id}:events")
+                publish_collection_output(bundle, staged, event_target, consume_source=True)
             collected[event_name] = str(event_target)
         payload_sha256 = row.launch.metadata.get("payload_sha256")
         if payload_sha256:
@@ -3294,13 +3297,15 @@ class RunPodOrchestrationDriver:
         """Pull remote logs before failure teardown destroys the pod."""
         del state
         destination = bundle.run_set_dir / "failure-logs"
-        destination.mkdir(parents=True, exist_ok=True)
-        self.transport.rsync(
-            f"{self._remote_run_dir(bundle)}/logs/",
-            str(destination) + "/",
-            delete=False,
-            timeout_seconds=self.config.failure_log_pull_timeout_seconds,
-        ).check("collect failure logs")
+        check_collection_destinations(bundle, rows=())
+        with tempfile.TemporaryDirectory(prefix="feedbax-failure-logs-") as staging:
+            staged = Path(staging) / "failure-logs"
+            staged.mkdir()
+            self.transport.rsync(
+                f"{self._remote_run_dir(bundle)}/logs/", str(staged) + "/", delete=False,
+                timeout_seconds=self.config.failure_log_pull_timeout_seconds,
+            ).check("collect failure logs")
+            publish_collection_output(bundle, staged, destination, consume_source=True)
         return {"failure_logs": str(destination)}
 
 
@@ -4906,7 +4911,7 @@ def build_deadman_watchdog_command(
 def verify_collected_payload(dest_dir: Path, expected_sha256: str) -> None:
     """Verify that at least one collected file matches the expected SHA-256."""
     for path in dest_dir.rglob("*"):
-        if path.is_file() and _sha256_file(path) == expected_sha256:
+        if path.is_file() and sha256_file(path) == expected_sha256:
             return
     raise RunPodDriverError(f"payload sha256 mismatch under {dest_dir}")
 
@@ -4916,7 +4921,7 @@ def _registered_row_payload(row: RunRowSpec) -> dict[str, Any] | None:
     if ref.uri is None:
         return None
     path = Path(ref.uri)
-    if _sha256_file(path) != ref.sha256:
+    if sha256_file(path) != ref.sha256:
         raise RunPodDriverError(f"registered payload digest mismatch for row {row.row_id!r}")
     payload = strict_json_loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
@@ -5133,14 +5138,6 @@ def _int_or_none(value: Any) -> int | None:
 
 def _looks_remote_path(value: str) -> bool:
     return value.startswith("/")
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _sq(value: str) -> str:

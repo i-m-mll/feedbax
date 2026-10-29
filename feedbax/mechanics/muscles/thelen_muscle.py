@@ -81,7 +81,6 @@ class RigidTendonHillMuscleThelen(Component):
     ce_5: float = field(static=True)
 
     state_index: StateIndex
-    _initial_state: Float[Array, ""] = field(static=True)
 
     def __init__(
         self,
@@ -148,8 +147,8 @@ class RigidTendonHillMuscleThelen(Component):
         self.ce_5 = 8.0 * (self.ce_Af + 1.0)
 
         # State: activation scalar
-        self._initial_state = jnp.zeros(()) + initial_activation
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = jnp.zeros(()) + initial_activation
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,

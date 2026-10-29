@@ -37,8 +37,10 @@ import jax.numpy as jnp
 import jax.tree as jt
 from feedbax._vendor.jax_cookbook import is_type
 import numpy as np
+from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from feedbax._atomic import write_bytes_atomic as _write_bytes_atomic
 from feedbax._secure_fs import (
     SecurePathRigor,
     directory_open_flags,
@@ -107,6 +109,7 @@ from feedbax.contracts.base import (
     canonical_json_bytes,
     feedbax_version,
     sha256_bytes,
+    sha256_file,
 )
 from feedbax.contracts.publication import (
     BlobRef,
@@ -156,6 +159,7 @@ LATEST_POINTER_NAME = "latest.json"
 TRANSACTIONS_DIR_NAME = "transactions"
 MANIFEST_NAME = "manifest.json"
 CHECKPOINT_SET_NAME = "checkpoint-set.json"
+CHECKPOINT_SLOT_SERIALIZER = "feedbax.training.checkpoint_custody.pickle.v3"
 CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_ID = "feedbax.archive.training_checkpoint_custody"
 CHECKPOINT_CUSTODY_ARCHIVE_SCHEMA_VERSION = "feedbax.archive.training_checkpoint_custody.v1"
 CHECKPOINT_CUSTODY_ARCHIVE_MEDIA_TYPE = (
@@ -460,7 +464,7 @@ def _published_checkpoint_set(
             state_type=slot.role,
             array_structure_id=slot.structural_abi_fingerprint.fingerprint_sha256,
             codec_schema_id="feedbax.training.checkpoint_custody.pickle",
-            codec_schema_version="feedbax.training.checkpoint_custody.pickle.v1",
+            codec_schema_version=_supported_slot_serializer(slot),
             blob=BlobRef(digest=slot.sha256, size_bytes=slot.size_bytes),
         )
         for slot in manifest.slots
@@ -1390,7 +1394,7 @@ def fingerprint_checkpoint_custody_inputs(
             continue
         paths.append(relative)
         if digest_blobs or _is_custody_metadata_file(PurePosixPath(relative)):
-            digests.append((relative, _sha256_file(path)))
+            digests.append((relative, sha256_file(path)))
     return CheckpointCustodyFingerprint(
         root_present=True,
         digested_blobs=digest_blobs,
@@ -2217,7 +2221,7 @@ def _resolve_checkpoint_custody_ref(
         )
         try:
             value = _deserialize_checkpoint_slot(slot, blob_path)
-        except (CheckpointIntegrityError, OSError) as exc:
+        except (CheckpointIntegrityError, CheckpointCompatibilityError, OSError) as exc:
             raise CheckpointReferenceResolutionError(str(exc)) from exc
         try:
             _validate_decoded_slot_integrity(slot, value)
@@ -3345,7 +3349,7 @@ def write_checkpoint_transaction(
         )
         manifest_path = tmp_dir / MANIFEST_NAME
         _write_json_atomic(manifest_path, manifest.model_dump(mode="json", exclude_none=True))
-        manifest_sha256 = _sha256_file(manifest_path)
+        manifest_sha256 = sha256_file(manifest_path)
         checkpoint_set = _published_checkpoint_set(
             run_spec=run_spec,
             manifest=manifest,
@@ -3616,7 +3620,7 @@ def _manifest_from_latest_pointer(
         raise CheckpointIntegrityError(
             f"latest pointer references missing manifest: {latest.manifest_relative_path}"
         )
-    if _sha256_file(manifest_path) != latest.manifest_sha256:
+    if sha256_file(manifest_path) != latest.manifest_sha256:
         raise CheckpointIntegrityError("latest pointer manifest hash does not match bytes")
     manifest = _load_transaction_manifest(manifest_path)
     if manifest.transaction_id != latest.transaction_id:
@@ -5531,7 +5535,7 @@ def _fork_checkpoint_transaction_from_path(
         )
         manifest_path = tmp_dir / MANIFEST_NAME
         _write_json_atomic(manifest_path, manifest.model_dump(mode="json", exclude_none=True))
-        manifest_sha256 = _sha256_file(manifest_path)
+        manifest_sha256 = sha256_file(manifest_path)
         checkpoint_set = _published_checkpoint_set(
             run_spec=target_run_spec,
             manifest=manifest,
@@ -5766,14 +5770,16 @@ def _load_checkpoint_transaction_by_id(
         )
     slots: dict[str, Any] = {}
     for slot in manifest.slots:
-        slots[slot.slot] = pickle.loads(_read_blob(slot, manifest_path.parent / slot.relative_path))
+        slots[slot.slot] = _deserialize_checkpoint_slot(
+            slot, manifest_path.parent / slot.relative_path
+        )
     return _LoadedCheckpointTransaction(
         root=root_path,
         latest_pointer=CheckpointLatestPointer(
             run_id=manifest.run_id,
             transaction_id=transaction_id,
             manifest_relative_path=str(manifest_path.relative_to(root_path)),
-            manifest_sha256=_sha256_file(manifest_path),
+            manifest_sha256=sha256_file(manifest_path),
             transaction_root_sha256=manifest.content_integrity_digest.transaction_root_sha256,
             completed_coordinate=manifest.completed_coordinate,
             completed_training_batches=manifest.completed_training_batches,
@@ -7137,8 +7143,46 @@ def _validate_population_identities(
             )
 
 
+def _supported_slot_serializer(slot: CheckpointSlotBlobRef) -> str:
+    provenance = slot.structural_abi_fingerprint.environment_provenance
+    serializer = None if provenance is None else provenance.serializer
+    if serializer != CHECKPOINT_SLOT_SERIALIZER:
+        raise CheckpointCompatibilityError(
+            f"checkpoint slot {slot.slot!r} uses unsupported serializer {serializer!r}; "
+            f"supported serializer is {CHECKPOINT_SLOT_SERIALIZER!r}. "
+            "Use the producer version of Feedbax to export the checkpoint and explicitly "
+            "adapt it to the current initialization representation; no automatic migration "
+            "is supplied."
+        )
+    equinox_version = provenance.equinox_version
+    try:
+        producer = Version(equinox_version) if equinox_version is not None else None
+    except InvalidVersion:
+        producer = None
+    if (
+        producer is None
+        or producer.epoch != 0
+        or len(producer.release) != 3
+        or producer.release[:2] != (0, 13)
+        or producer < Version("0.13.1")
+        or producer.is_prerelease
+        or producer.is_devrelease
+        or producer.is_postrelease
+        or producer.local is not None
+    ):
+        raise CheckpointCompatibilityError(
+            f"checkpoint slot {slot.slot!r} uses serializer {serializer!r} with unsupported "
+            f"producer Equinox {equinox_version!r}; supported representation is released "
+            "Equinox 0.13.x with patch version >= 1. Use the producer version of Feedbax "
+            "to export the checkpoint and explicitly adapt it to the supported runtime "
+            "representation; no automatic migration is supplied."
+        )
+    return serializer
+
+
 def _deserialize_checkpoint_slot(slot: CheckpointSlotBlobRef, path: Path) -> Any:
     """Deserialize one hash-verified slot blob without resume transformations."""
+    _supported_slot_serializer(slot)
     blob_bytes = _read_blob(slot, path)
     try:
         return pickle.loads(blob_bytes)
@@ -7225,7 +7269,12 @@ def _leaf_fingerprint(path: Any, leaf: Any) -> SlotLeafFingerprint:
             sharding=str(getattr(array, "sharding", None)),
             layout=str(getattr(array, "layout", None)),
         )
-    static_repr = repr(leaf).encode("utf-8", errors="replace")
+    identity = _stable_function_identity(leaf) if isinstance(leaf, FunctionType) else None
+    static_repr = (
+        identity.semantic_name.encode("utf-8")
+        if identity is not None
+        else repr(leaf).encode("utf-8", errors="replace")
+    )
     return SlotLeafFingerprint(
         path=path_text,
         leaf_type=_qualified_type_name(leaf),
@@ -7264,17 +7313,10 @@ def _semantic_structural_abi_projection(
     )
 
 
-_ANONYMOUS_STATE_INDEX_MARKERS = (
-    re.compile(
-        r"(StateIndex\[\('init',\), \('marker',\), \()"
-        r"<object object at 0x[0-9a-fA-F]+>"
-        r"(,\)\])"
-    ),
-    re.compile(
-        r"(StateIndex\[\(Missing, )"
-        r"<object object at 0x[0-9a-fA-F]+>"
-        r"(\)\])"
-    ),
+_ANONYMOUS_STATE_INDEX_MARKER = re.compile(
+    r"(StateIndex\[\('init',\), \(\('marker', )"
+    r"<object object at 0x[0-9a-fA-F]+>"
+    r"(\),\)\])"
 )
 
 
@@ -7292,8 +7334,7 @@ def _canonical_structural_abi_treedef(
     *,
     value: Any | None = None,
 ) -> str:
-    for pattern in _ANONYMOUS_STATE_INDEX_MARKERS:
-        treedef = pattern.sub(r"\1<anonymous StateIndex marker>\2", treedef)
+    treedef = _ANONYMOUS_STATE_INDEX_MARKER.sub(r"\1<anonymous StateIndex marker>\2", treedef)
     if value is None:
         return treedef
     identities = _stable_treedef_function_identities(value)
@@ -7340,9 +7381,12 @@ def _collect_stable_function_identities(
     value: Any,
     identities: list[_StableFunctionIdentity],
 ) -> bool:
-    static_field_values = getattr(value, "static_field_values", None)
-    if isinstance(static_field_values, tuple):
-        return _collect_stable_function_identities(static_field_values, identities)
+    static_fields = getattr(value, "static_fields", None)
+    if isinstance(static_fields, tuple):
+        return all(
+            _collect_stable_function_identities(field_value, identities)
+            for _, field_value in static_fields
+        )
     if inspect.isclass(value):
         return True
     if isinstance(value, FunctionType):
@@ -7442,6 +7486,10 @@ def _semantic_value_projection(
         }
     if leaf is None:
         return {"kind": "none", "value": None}
+    if isinstance(leaf, FunctionType):
+        identity = _stable_function_identity(leaf)
+        if identity is not None:
+            return {"kind": "global_function", "identity": identity.semantic_name}
     if type(leaf) is bool:
         return {"kind": "bool", "value": leaf}
     if type(leaf) is int:
@@ -7740,6 +7788,7 @@ def require_checkpoint_semantic_state_equal(
 
 def _serializer_versions() -> SerializerVersionRecord:
     return SerializerVersionRecord(
+        serializer=CHECKPOINT_SLOT_SERIALIZER,
         feedbax_version=feedbax_version(),
         jax_version=getattr(jax, "__version__", None),
         equinox_version=_package_version("equinox"),
@@ -7815,28 +7864,3 @@ def _durable_json_bytes(payload: Mapping[str, Any]) -> bytes:
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_bytes_atomic(path, _durable_json_bytes(payload))
-
-
-def _write_bytes_atomic(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp_name, path)
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except FileNotFoundError:
-            pass
-        raise
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

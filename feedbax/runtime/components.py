@@ -316,13 +316,12 @@ class _StepSource(Component):
     """Base class for sources driven by a step counter."""
 
     step_index: StateIndex
-    _initial_state: int = field(static=True)
     dt: float
 
     def __init__(self, dt: float = 0.01):
         self.dt = float(dt)
-        self._initial_state = 0
-        self.step_index = StateIndex(self._initial_state)
+        initial_state = 0
+        self.step_index = StateIndex(initial_state)
 
     def _step_time(self, state: State) -> tuple[float, State]:
         step = state.get(self.step_index)
@@ -477,7 +476,6 @@ class DelayLine(Component):
     init_value: float
     input_proto: PyTree
     state_index: StateIndex
-    _initial_state: tuple[PyTree, tuple[PyTree, ...]] = field(static=True)
 
     def __init__(self, delay: int = 1, init_value: float = 0.0, input_proto: PyTree | None = None):
         self.delay = int(delay)
@@ -487,8 +485,8 @@ class DelayLine(Component):
         self.input_proto = input_proto
         output = jt.map(lambda x: jnp.full_like(x, self.init_value), input_proto)
         queue = self.delay * (output,)
-        self._initial_state = (output, queue)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = (output, queue)
+        self.state_index = StateIndex(initial_state)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         output, queue = state.get(self.state_index)
@@ -625,7 +623,6 @@ class GRU(Component):
     hidden_size: int = field(static=True)
     dtype: Any = field(static=True)
     state_index: StateIndex
-    _initial_state: GRUState = field(static=True)
 
     def __init__(
         self,
@@ -640,8 +637,8 @@ class GRU(Component):
         self.dtype = dtype
         self.cell = eqx.nn.GRUCell(self.input_size, self.hidden_size, dtype=dtype, key=key)
         hidden = jnp.zeros(self.hidden_size, dtype=dtype)
-        self._initial_state = GRUState(hidden=hidden, output=hidden)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = GRUState(hidden=hidden, output=hidden)
+        self.state_index = StateIndex(initial_state)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         current_state: GRUState = state.get(self.state_index)
@@ -670,7 +667,6 @@ class LSTM(Component):
     hidden_size: int = field(static=True)
     dtype: Any = field(static=True)
     state_index: StateIndex
-    _initial_state: LSTMState = field(static=True)
 
     def __init__(
         self,
@@ -686,8 +682,8 @@ class LSTM(Component):
         self.cell = eqx.nn.LSTMCell(self.input_size, self.hidden_size, dtype=dtype, key=key)
         hidden = jnp.zeros(self.hidden_size, dtype=dtype)
         cell = jnp.zeros(self.hidden_size, dtype=dtype)
-        self._initial_state = LSTMState(hidden=hidden, cell=cell, output=hidden)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = LSTMState(hidden=hidden, cell=cell, output=hidden)
+        self.state_index = StateIndex(initial_state)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         current_state: LSTMState = state.get(self.state_index)
@@ -870,7 +866,6 @@ class RateLimiter(Component):
     dt: float
     n_dims: int = field(static=True)
     state_index: StateIndex
-    _initial_state: Array = field(static=True)
 
     def __init__(
         self,
@@ -882,8 +877,8 @@ class RateLimiter(Component):
         self.max_rate = float(max_rate)
         self.dt = float(dt)
         self.n_dims = n_dims
-        self._initial_state = jnp.zeros(n_dims) + initial_value
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = jnp.zeros(n_dims) + initial_value
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,

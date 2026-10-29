@@ -139,6 +139,8 @@ from feedbax.training.checkpoint_transform import (
     semantic_checkpoint_transform_implementation_sha256,
 )
 from feedbax.training.phase_executor import (
+    _StepObservation,
+    _metric_nan_flags,
     InMemoryCheckpointStore,
     PhaseCheckpoint,
     PhaseProgramExecutor,
@@ -173,6 +175,7 @@ from feedbax.training.diagnostics import (
     TrainingDiagnostics,
 )
 from feedbax.training.worker_validation import (
+    WorkerContractValidationError,
     WorkerExecutabilityEnvironment,
     resolve_execution_mapping,
     validate_worker_contract,
@@ -706,6 +709,12 @@ def execute_training_run_spec(
     requires the source's canonical content binding and publishes every output
     checkpoint through that immutable content provider.
     """
+    started_at = (
+        time.perf_counter()
+        if execution_started_at_monotonic is None
+        else execution_started_at_monotonic
+    )
+    cache_before = _compilation_cache_snapshot()
     run_spec = _validate_spec(spec)
     mapping_levels, slot_axis_bindings = resolve_execution_mapping(run_spec.worker_execution)
     loose_preparation = any(
@@ -1153,7 +1162,7 @@ def execute_training_run_spec(
             context=executor_context,
         )
     except ValueError as exc:
-        raise TrainingRunExecutorError(f"mapped execution preflight failed: {exc}") from exc
+        raise TrainingRunExecutorError(f"kernel preparation preflight failed: {exc}") from exc
     if loaded_resume_checkpoint is not None:
         checkpoint_store.remember(loaded_resume_checkpoint)
     live_history_events: list[dict[str, Any]] = []
@@ -1177,13 +1186,7 @@ def execute_training_run_spec(
         else segment_start_batch
     )
     total_batches = int(run_spec.training_config.n_batches or 0)
-    started_at = (
-        time.perf_counter()
-        if execution_started_at_monotonic is None
-        else execution_started_at_monotonic
-    )
-    cache_before = _compilation_cache_snapshot()
-    runtime_telemetry: dict[str, Any] = {}
+    runtime_telemetry: dict[str, Any] = dict(executor.preparation_telemetry)
     cancellation: CancellationDecision | None = None
 
     def observe_cancellation(coordinate: ProgressCoordinate) -> None:
@@ -2702,13 +2705,18 @@ def _executor_nan_guard(
     registry: TrainingProgramRegistry,
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
     schedule_lineage: CheckpointSegmentLineage,
-) -> Callable[[Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]], StepGuardResult | None]:
+) -> Callable[
+    [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any], _StepObservation],
+    StepGuardResult | None,
+]:
     def guard(
         slots: Mapping[str, Any],
         coordinate: ProgressCoordinate,
         _context: Mapping[str, Any],
+        observation: _StepObservation,
     ) -> StepGuardResult | None:
         detection = _nan_attribution_detection(
+            observation=observation,
             run_spec=run_spec,
             run_id=run_id,
             resolved_method=resolved_method,
@@ -2860,29 +2868,16 @@ def _nan_attribution_detection(
     slots: Mapping[str, Any],
     coordinate: ProgressCoordinate,
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
+    observation: _StepObservation | None = None,
 ) -> NanAttributionDetection | None:
     """Detect metric NaNs, then materialize bounded attribution only on a trip."""
 
-    names: list[str] = []
-    flags: list[jax.Array] = []
-    for name, value in sorted(coordinate.metrics.items()):
-        leaf_flags: list[jax.Array] = []
-        for leaf in jt.leaves(value, is_leaf=lambda item: item is None):
-            if leaf is None:
-                continue
-            try:
-                array = jnp.asarray(leaf)
-            except (TypeError, ValueError):
-                continue
-            if jnp.issubdtype(array.dtype, jnp.number):
-                leaf_flags.append(jnp.any(jnp.isnan(array)))
-        if leaf_flags:
-            names.append(name)
-            flags.append(jnp.any(jnp.stack(leaf_flags)))
-    if not flags:
-        return None
-    observed = jax.device_get(jnp.stack(flags))
-    tripped_names = [name for name, flag in zip(names, observed, strict=True) if flag]
+    if observation is None:
+        names, flags = _metric_nan_flags(coordinate.metrics)
+        observed = jax.device_get(flags)
+        tripped_names = tuple(name for name, flag in zip(names, observed, strict=True) if flag)
+    else:
+        tripped_names = observation.tripped_metrics
     if not tripped_names:
         return None
 
@@ -3240,12 +3235,14 @@ def _live_progress_callback(
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> Callable[[ProgressCoordinate], None]:
     ready_emitted = False
+    first_progress_recorded = False
 
     def emit(coordinate: ProgressCoordinate) -> None:
-        nonlocal ready_emitted
+        nonlocal ready_emitted, first_progress_recorded
         bindings = dict(slot_axis_bindings or {})
         event = _history_event(coordinate, bindings)
-        if runtime_telemetry is not None and not runtime_telemetry:
+        if runtime_telemetry is not None and not first_progress_recorded:
+            first_progress_recorded = True
             runtime_telemetry.update(
                 _first_progress_telemetry(
                     started_at=started_at if started_at is not None else time.perf_counter(),
@@ -3713,52 +3710,21 @@ def _terminal_completed_batches(
         )
     bindings = dict(slot_axis_bindings or {})
     authority_bindings = bindings.get(authority.slot, ())
-    if authority_bindings and authority_bindings[0].mode == "mapped":
-        values = [
-            _terminal_completed_batches(
-                program=program,
-                final_slots=_instance_runtime_slots(final_slots, bindings, instance),
-                fallback=fallback,
-                require_authority=require_authority,
-            )
-            for instance in range(authority_bindings[0].size)
-        ]
-        if any(value != values[0] for value in values[1:]):
-            raise TrainingRunExecutorError(f"{path} mapped authorities diverged: {values!r}")
-        return values[0]
-    value = final_slots[authority.slot]
-    for index, segment in enumerate(authority.field_path):
-        segment_path = f"{path}/field_path/{index}"
-        if isinstance(value, Mapping):
-            if segment not in value:
-                raise TrainingRunExecutorError(
-                    f"{segment_path}={segment!r} is missing in slot {authority.slot!r}"
-                )
-            value = value[segment]
-        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-            if not isinstance(segment, int) or segment >= len(value):
-                raise TrainingRunExecutorError(
-                    f"{segment_path}={segment!r} is not a valid index in slot {authority.slot!r}"
-                )
-            value = value[segment]
-        else:
-            raise TrainingRunExecutorError(
-                f"{segment_path} cannot traverse non-container in slot {authority.slot!r}"
-            )
     try:
-        scalar_array = np.asarray(jax.device_get(value))
-        if scalar_array.size != 1:
-            raise ValueError(f"expected one scalar, got shape={scalar_array.shape!r}")
-        batches = int(scalar_array.item())
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise TrainingRunExecutorError(
-            f"{path} resolved slot {authority.slot!r} to non-integer {value!r}"
-        ) from exc
-    if batches < 0:
-        raise TrainingRunExecutorError(
-            f"{path} resolved slot {authority.slot!r} to negative batches={batches}"
+        value = PhaseProgramExecutor._batch_progress_field(
+            final_slots[authority.slot], authority.field_path, path
         )
-    return batches
+        mapped = bool(authority_bindings and authority_bindings[0].mode == "mapped")
+        observed = jax.device_get(value)
+        values = observed if mapped and isinstance(value, (jax.Array, np.ndarray)) else (observed,)
+        batches = [PhaseProgramExecutor._batch_progress_value(item, path) for item in values]
+    except WorkerContractValidationError as exc:
+        raise TrainingRunExecutorError(
+            f"{path} resolved slot {authority.slot!r} to non-integer authority: {exc}"
+        ) from exc
+    if any(value != batches[0] for value in batches[1:]):
+        raise TrainingRunExecutorError(f"{path} mapped authorities diverged: {batches!r}")
+    return batches[0]
 
 
 def _realized_lr_trace(

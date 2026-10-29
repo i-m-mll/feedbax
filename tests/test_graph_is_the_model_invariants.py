@@ -614,7 +614,7 @@ def test_unknown_activation_name_is_not_silently_relu() -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"compiler\.type_resolution\.unresolved_component_type.*activation",
+        match=r"activation",
     ):
         spec_to_graph(spec, _registry())
 

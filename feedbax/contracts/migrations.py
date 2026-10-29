@@ -297,6 +297,8 @@ from feedbax.contracts.row_index import (
 from feedbax.contracts.authoring_budget import (
     AUTHORING_BUDGET_SCHEMA_ID,
     AUTHORING_BUDGET_SCHEMA_VERSION,
+    AUTHORING_BUDGET_SCHEMA_VERSION_V1,
+    AUTHORING_BUDGET_V1_REJECTION_REASON,
 )
 from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
@@ -3069,9 +3071,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             owner_module="feedbax.compiler",
             emitted_by=("feedbax.compiler.compile_graph",),
             consumed_by=("feedbax.compiler.ExecutableGraph",),
-            description="Normalized immutable semantic graph with source and key schedules.",
-            rejected_old_versions=("1",),
-            required_tests=("tests/test_graph_compiler.py",),
+            description="Canonical executable semantic graph with source and key schedules.",
+            rejected_old_versions=("1", "2", "3"),
+            required_tests=("tests/test_graph_compiler.py", "tests/test_graph_key_schedule.py"),
         ),
         _family(
             "CompilationRecord",
@@ -3081,8 +3083,8 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.compiler.compile_graph",),
             consumed_by=("compiler evidence readers",),
             description="Successful graph compilation evidence with structured diagnostics.",
-            rejected_old_versions=("1", "2"),
-            required_tests=("tests/test_graph_compiler.py",),
+            rejected_old_versions=("1", "2", "3", "4"),
+            required_tests=("tests/test_graph_compiler.py", "tests/test_graph_key_schedule.py"),
         ),
         _family(
             "CompilationFailureRecord",
@@ -3960,7 +3962,17 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "Per-layer authored-document caps: Feedbax owns the document and the "
                 "enforcement, the project owns the layer names and the numbers."
             ),
-            required_tests=("tests/test_envelope_engine_kernel.py",),
+            rejected_old_versions=(
+                f"{AUTHORING_BUDGET_SCHEMA_ID}.v0",
+                AUTHORING_BUDGET_SCHEMA_VERSION_V1,
+            ),
+            required_tests=("tests/test_authoring_budget.py", "tests/test_envelope_engine_kernel.py"),
+            notes=(
+                "v2 measures max_bytes using canonical_json_v1 and removes max_lines. "
+                "v1 is rejected: remove max_lines in every layer, review max_bytes "
+                "under sorted compact UTF-8 JSON, and explicitly declare v2. "
+                "No automatic migration reinterprets a source-byte policy."
+            ),
         ),
         _family(
             "FigureTemplate",
@@ -6244,6 +6256,13 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     )
                 )
             )
+            if family.kind in {"ResolvedGraph", "CompilationRecord"}:
+                remediation = (
+                    "Historical compiler evidence cannot establish current resolved "
+                    "semantics; recompile the authored GraphDocument."
+                )
+            if family.kind == "AuthoringBudget" and old_version == AUTHORING_BUDGET_SCHEMA_VERSION_V1:
+                remediation = AUTHORING_BUDGET_V1_REJECTION_REASON
             registry.reject_version(
                 family.kind,
                 old_version,

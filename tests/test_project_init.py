@@ -164,7 +164,7 @@ def test_the_written_budget_states_a_section_for_every_dialect_layer(tmp_path: P
 def test_the_ratified_training_caps_are_the_framework_defaults() -> None:
     training = project_init.DEFAULT_AUTHORING_BUDGET_LAYERS["training"]
 
-    assert training["max_lines"] == 128
+    assert "max_lines" not in training
     assert training["max_ast_nodes"] == 160
     assert training["max_depth"] == 16
 

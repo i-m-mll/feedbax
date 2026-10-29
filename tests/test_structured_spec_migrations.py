@@ -1767,8 +1767,8 @@ def test_default_policy_matrix_covers_registered_emitted_families() -> None:
 def test_scientific_compiler_families_are_registered_and_fail_closed() -> None:
     expected = {
         "GraphDocument": ("feedbax.graph_document", "1"),
-        "ResolvedGraph": ("feedbax.resolved_graph", "2"),
-        "CompilationRecord": ("feedbax.graph_compilation_record", "3"),
+        "ResolvedGraph": ("feedbax.resolved_graph", "4"),
+        "CompilationRecord": ("feedbax.graph_compilation_record", "5"),
         "CompilationFailureRecord": ("feedbax.graph_compilation_failure", "1"),
     }
 
@@ -1783,11 +1783,15 @@ def test_scientific_compiler_families_are_registered_and_fail_closed() -> None:
         assert not accepted.migrated
         rejected = family.policy.rejected_old_versions
         assert rejected
-        with pytest.raises(UnsupportedSpecVersion, match="migration_intentionally_absent=yes"):
-            default_spec_registry.migrate(
-                kind,
-                {"schema_id": schema_id, "schema_version": rejected[0]},
-            )
+        for old_version in rejected:
+            with pytest.raises(UnsupportedSpecVersion) as caught:
+                default_spec_registry.migrate(
+                    kind,
+                    {"schema_id": schema_id, "schema_version": old_version},
+                )
+            assert "migration_intentionally_absent=yes" in str(caught.value)
+            if kind in {"ResolvedGraph", "CompilationRecord"}:
+                assert "recompile the authored GraphDocument" in str(caught.value)
 
 
 def test_checkpoint_fork_plan_schema_accepts_current_and_rejects_v0() -> None:

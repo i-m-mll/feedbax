@@ -311,11 +311,15 @@ def shared_cache_root(repo_root: Path) -> Path:
     return common_dir / "feedbax_test_cache"
 
 
-def configure_jax_cache_env(cache_root: Path) -> None:
-    """Expose the shared test-cache root without forcing one exact JAX cache dir."""
-    if "FEEDBAX_JAX_COMPILATION_CACHE_DIR" in os.environ:
+def configure_jax_cache_env(
+    cache_root: Path,
+    environ: dict[str, str] | None = None,
+) -> None:
+    """Place default pytest cache allocations beneath an invocation-owned parent."""
+    env = os.environ if environ is None else environ
+    if "FEEDBAX_JAX_COMPILATION_CACHE_DIR" in env:
         return
-    os.environ.setdefault("FEEDBAX_JAX_TEST_CACHE_ROOT", str(cache_root))
+    env.setdefault("FEEDBAX_JAX_TEST_CACHE_ROOT", str(cache_root))
 
 
 def auto_worker_count() -> int:
@@ -401,7 +405,7 @@ def write_suite_profile(
         "cache_disabled": os.environ.get("FEEDBAX_DISABLE_JAX_COMPILATION_CACHE") == "1",
         "cache_scope": "explicit"
         if "FEEDBAX_JAX_COMPILATION_CACHE_DIR" in os.environ
-        else "source_and_invocation",
+        else "invocation",
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
@@ -634,7 +638,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     memo_dir = args.memo_dir or Path(
         os.environ.get("FEEDBAX_FULL_SUITE_MEMO_DIR", str(cache_root / "full_suite_memo"))
     )
-    configure_jax_cache_env(cache_root)
     configure_native_threads()
 
     runner_args = xdist_args()
@@ -724,6 +727,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             started = time.perf_counter()
             with owned_suite_temporary_root() as temporary_root:
                 env = {**os.environ, "TMPDIR": str(temporary_root)}
+                configure_jax_cache_env(temporary_root / "jax-cache", env)
                 raw_profile = temporary_root / "profile.json"
                 if args.profile_json:
                     env["FEEDBAX_SUITE_PROFILE_RAW"] = str(raw_profile)

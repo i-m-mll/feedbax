@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from abc import abstractmethod
 import dataclasses
-from functools import cached_property
 from operator import attrgetter
 from collections.abc import Callable
-from typing import ClassVar, Literal, Optional
+from copy import copy
+from typing import ClassVar, Literal, Optional, Self
 import warnings
 
 import equinox as eqx
@@ -41,65 +41,7 @@ def _is_nested_cycle_key(key: tuple[str, str]) -> bool:
 def init_state_from_component(component: "Component") -> State:
     """Collect initial state from all StateIndex instances in a component tree."""
 
-    def _state_index_init(idx: StateIndex):
-        for name in ("value", "init", "initial_value", "_value", "_init"):
-            if hasattr(idx, name):
-                return getattr(idx, name)
-        if dataclasses.is_dataclass(idx):
-            fields = dataclasses.fields(idx)
-            if len(fields) == 1:
-                return getattr(idx, fields[0].name)
-        raise ValueError("StateIndex initial value not found")
-
-    # State() constructor requires a model argument in newer equinox versions
-    # We pass the component to extract StateIndex values
-    state = State(component)
-    seen_ids: set[int] = set()
-
-    def _set_index(idx: StateIndex, init_value) -> None:
-        nonlocal state
-        idx_id = id(idx)
-        if idx_id in seen_ids:
-            return
-        seen_ids.add(idx_id)
-        state = state.set(idx, init_value)
-
-    def _iter_state_indices(obj) -> list[StateIndex]:
-        indices: list[StateIndex] = []
-        if dataclasses.is_dataclass(obj):
-            for field_obj in dataclasses.fields(obj):
-                try:
-                    value = getattr(obj, field_obj.name)
-                except Exception:
-                    continue
-                if isinstance(value, StateIndex):
-                    indices.append(value)
-        else:
-            for value in getattr(obj, "__dict__", {}).values():
-                if isinstance(value, StateIndex):
-                    indices.append(value)
-        return indices
-
-    def _walk(x):
-        nonlocal state
-        if isinstance(x, StateIndex):
-            _set_index(x, _state_index_init(x))
-            return
-
-        indices = _iter_state_indices(x)
-        if indices:
-            for idx in indices:
-                _set_index(idx, _state_index_init(idx))
-
-        children, _ = jt.flatten(x, is_leaf=lambda y: isinstance(y, StateIndex))
-        if len(children) == 1 and children[0] is x:
-            return
-        for child in children:
-            _walk(child)
-
-    _walk(component)
-    return state
-
+    return State(component)
 
 class Component(Module):
     """Base class for all graph nodes."""
@@ -117,6 +59,17 @@ class Component(Module):
     ) -> tuple[dict[str, PyTree], State]:
         """Execute the component."""
         ...
+
+    def prepare(self) -> "Self":
+        """Name state slots in this complete model before creating state or optimizers.
+
+        Reprepare after composing children into a larger model. Parameter updates retain
+        this namespace. Equinox make_with_state remains available for explicit State use,
+        but its deleted reset payloads cannot initialize or serialize reset values.
+        """
+        from feedbax.runtime.state_indices import prepare_component
+
+        return prepare_component(self)
 
     def init_state(self, *, key: PRNGKeyArray) -> State:
         """Return initial state for this component."""
@@ -301,8 +254,8 @@ class Graph(Component):
     input_ports: tuple[str, ...] = ()
     output_ports: tuple[str, ...] = ()
 
-    state_view_fn: Optional[callable] = field(default=None, static=True)
-    state_consistency_fn: Optional[callable] = field(default=None, static=True)
+    state_view_fn: Optional[Callable[[dict[str, PyTree]], PyTree]] = field(default=None, static=True)
+    state_consistency_fn: Optional[Callable[[Graph, State], State]] = field(default=None, static=True)
     checkpoint: bool = eqx.field(default=False, static=True)
     parameter_constraints: tuple[object, ...] = field(default_factory=tuple, static=True)
     component_bindings: dict[str, ComponentBinding] = field(default_factory=dict, static=True)
@@ -351,7 +304,7 @@ class Graph(Component):
 
         self._validate_node_output_recurrent_initializers()
 
-    @cached_property
+    @property
     def _cycle_analysis(self) -> tuple[tuple[str, ...], tuple[Wire, ...]]:
         return self._analyze_cycles()
 
@@ -363,7 +316,7 @@ class Graph(Component):
     def _cycle_wires(self) -> tuple[Wire, ...]:
         return self._cycle_analysis[1]
 
-    @cached_property
+    @property
     def _cycle_wire_set(self) -> set[Wire]:
         return set(self._cycle_wires)
 
@@ -478,7 +431,7 @@ class Graph(Component):
         visit(source_node)
         return upstream
 
-    @cached_property
+    @property
     def _node_output_initializer_upstream_node_set(self) -> set[str]:
         upstream: set[str] = set()
         for wire in self._cycle_wires:
@@ -559,13 +512,9 @@ class Graph(Component):
         return tuple(values)
 
     def _with_runtime_callback(self, field_name: str, fn: Callable[..., PyTree]) -> "Graph":
-        field_values = {
-            field_obj.name: getattr(self, field_obj.name)
-            for field_obj in dataclasses.fields(self)
-            if field_obj.init
-        }
-        field_values[field_name] = fn
-        return type(self)(**field_values)
+        updated = copy(self)
+        object.__setattr__(updated, field_name, fn)
+        return updated
 
     def with_state_view(self, state_view_fn: Callable[[dict[str, PyTree]], PyTree]) -> "Graph":
         """Return a copy with a runtime-only graph state-view function attached."""
@@ -574,14 +523,14 @@ class Graph(Component):
             raise TypeError("state_view_fn must be callable")
         return self._with_runtime_callback("state_view_fn", state_view_fn)
 
-    def with_state_consistency(self, state_consistency_fn: Callable[[State], State]) -> "Graph":
-        """Return a copy with a runtime-only graph state-consistency function attached."""
+    def with_state_consistency(self, state_consistency_fn: Callable[[Graph, State], State]) -> "Graph":
+        """Return a copy with a callback receiving the current graph and State."""
 
         if not callable(state_consistency_fn):
             raise TypeError("state_consistency_fn must be callable")
         return self._with_runtime_callback("state_consistency_fn", state_consistency_fn)
 
-    @cached_property
+    @property
     def _outgoing_wires(self) -> dict[tuple[str, str], list[Wire]]:
         outgoing: dict[tuple[str, str], list[Wire]] = {}
         for wire in self.wires:
@@ -643,7 +592,7 @@ class Graph(Component):
     def state_consistency_update(self, state: State) -> State:
         if self.state_consistency_fn is None:
             return state
-        return self.state_consistency_fn(state)
+        return self.state_consistency_fn(self, state)
 
     def initial_outputs(self, state_value: PyTree | None) -> dict[str, PyTree]:
         if state_value is None:
@@ -898,14 +847,18 @@ class Graph(Component):
         t: PyTree,
         rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> tuple[dict[tuple[str, str], PyTree], State]:
-        keys = jax.random.split(key, len(self._execution_order)) if self._execution_order else ()
+        execution_order, cycle_wires = self._cycle_analysis
+        cycle_wire_set = set(cycle_wires)
+        outgoing_wires = self._outgoing_wires
+        initializer_upstream_nodes = self._node_output_initializer_upstream_node_set
+        keys = jax.random.split(key, len(execution_order)) if execution_order else ()
         nested_cycle_values: dict[str, dict[tuple[str, str], PyTree]] = {}
         for port_key in tuple(port_values):
             if _is_nested_cycle_key(port_key):
                 nested_cycle_values[port_key[1]] = port_values.pop(port_key)
         next_nested_cycle_values: dict[str, dict[tuple[str, str], PyTree]] = {}
 
-        for node_name, node_key in zip(self._execution_order, keys):
+        for node_name, node_key in zip(execution_order, keys):
             node = self.nodes[node_name]
             node_inputs = {
                 port_name: port_values[(node_name, port_name)]
@@ -913,7 +866,7 @@ class Graph(Component):
                 if (node_name, port_name) in port_values
             }
             if (
-                node_name in self._node_output_initializer_upstream_node_set
+                node_name in initializer_upstream_nodes
                 and len(node_inputs) < len(node.input_ports)
             ):
                 continue
@@ -956,8 +909,8 @@ class Graph(Component):
 
             for port_name, value in node_outputs.items():
                 port_values[(node_name, port_name)] = value
-                for wire in self._outgoing_wires.get((node_name, port_name), []):
-                    if wire in self._cycle_wire_set:
+                for wire in outgoing_wires.get((node_name, port_name), []):
+                    if wire in cycle_wire_set:
                         continue
                     port_values[(wire.target_node, wire.target_port)] = value
 
@@ -1136,6 +1089,7 @@ class Graph(Component):
         init_values: dict[tuple[str, str], PyTree] = {}
         missing_reasons: dict[tuple[str, str], str] = {}
         initial_inputs = inputs or {}
+        cycle_wires = self._cycle_wires
 
         if cycle_init is not None:
             init_values.update(cycle_init)
@@ -1152,7 +1106,7 @@ class Graph(Component):
             if node.state_view(state) is not None
         }
 
-        for wire in self._cycle_wires:
+        for wire in cycle_wires:
             target_key = (wire.target_node, wire.target_port)
             if target_key in init_values:
                 continue
@@ -1216,7 +1170,7 @@ class Graph(Component):
 
         missing = [
             (wire.target_node, wire.target_port)
-            for wire in self._cycle_wires
+            for wire in cycle_wires
             if (wire.target_node, wire.target_port) not in init_values
         ]
         if missing:
@@ -1329,8 +1283,10 @@ class Graph(Component):
                 port_values[(node_name, node_port)] = inputs[ext_port]
 
         eval_state = state
-        keys = jax.random.split(key, len(self._execution_order)) if self._execution_order else ()
-        for node_name, node_key in zip(self._execution_order, keys):
+        execution_order = self._execution_order
+        outgoing_wires = self._outgoing_wires
+        keys = jax.random.split(key, len(execution_order)) if execution_order else ()
+        for node_name, node_key in zip(execution_order, keys):
             if node_name not in upstream_nodes:
                 continue
             node = self.nodes[node_name]
@@ -1361,7 +1317,7 @@ class Graph(Component):
 
             for port_name, value in node_outputs.items():
                 port_values[(node_name, port_name)] = value
-                for outgoing_wire in self._outgoing_wires.get((node_name, port_name), []):
+                for outgoing_wire in outgoing_wires.get((node_name, port_name), []):
                     if outgoing_wire.temporality != "instant":
                         continue
                     port_values[(outgoing_wire.target_node, outgoing_wire.target_port)] = value
@@ -1389,8 +1345,8 @@ class Graph(Component):
         streaming_loss_fn: Optional[Callable] = None,
         rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> tuple[dict[str, PyTree], State] | tuple[dict[str, PyTree], State, PyTree | None]:
+        trial_scope_sources = self._trial_scope_initializer_input_sources()
         if n_steps is None:
-            trial_scope_sources = self._trial_scope_initializer_input_sources()
             timed_inputs = {
                 name: value for name, value in inputs.items() if name not in trial_scope_sources
             }
@@ -1411,7 +1367,7 @@ class Graph(Component):
         scan_inputs = {
             name: value
             for name, value in inputs.items()
-            if name not in self._trial_scope_initializer_input_sources()
+            if name not in trial_scope_sources
         }
 
         # Broadcast scalar input leaves to (n_steps, ...) so they can be

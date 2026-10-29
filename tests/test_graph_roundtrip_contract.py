@@ -47,6 +47,7 @@ def _map_value(value: Any) -> Any:
 
 
 _NONE_VALUES: dict[tuple[str, str], Any] = {
+    **{(kind, "input_dtype"): "float16" for kind in ("Channel", "DelayLine", "FirstOrderFilter")},
     ("AffineFeedbackController", "bias"): [0.25],
     ("AffineFeedbackController", "feedforward"): [0.5],
     ("Channel", "input_shape"): [3],
@@ -67,9 +68,7 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
 
 _VALUES: dict[tuple[str, str], Any] = {
     ("AffineValueComposer", "schema_version"): "feedbax.component.affine_value_composer.v1",
-    ("AffineValueComposer", "feature_rules"): [
-        {"kind": "identity", "state_slice": [1, 2]}
-    ],
+    ("AffineValueComposer", "feature_rules"): [{"kind": "identity", "state_slice": [1, 2]}],
     ("Channel", "add_noise"): False,
     ("DelayedReaches", "target_visible_from_start"): True,
     ("DelayedReaches", "target_on_epochs"): [0, 2],
@@ -184,7 +183,17 @@ def _single_node_spec(
         params.get("input_shape"), list
     ):
         prototype_shape = tuple(int(dim) for dim in params["input_shape"])
-    prototypes = {("node", port): jnp.zeros(prototype_shape) for port in input_ports}
+    prototypes = {
+        ("node", port): jnp.zeros(prototype_shape, dtype=params.get("input_dtype"))
+        for port in input_ports
+    }
+    if component_type == "Demux":
+        prototypes[("node", "input")] = jnp.zeros(sum(params["sizes"]))
+    elif component_type == "AffineValueComposer":
+        block_size = int(params["output_block_size"])
+        prototypes[("node", "base")] = jnp.zeros(block_size)
+        prototypes[("node", "gain")] = jnp.zeros_like(jnp.asarray(params["gain_init"]))
+        prototypes[("node", "bias")] = jnp.zeros(block_size)
     return spec, prototypes
 
 

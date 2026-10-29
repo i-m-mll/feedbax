@@ -1792,8 +1792,8 @@ def test_primary_enospc_persists_emergency_and_blocks_delete_until_custody(
         restarted._run_teardown(durable, abort=True)
 
     assert restarted_driver.delete_calls == 0
-    collected = durable.with_stage(STAGE_COLLECT, StageState(status="completed"))
     restarted_store.preflight_and_reserve()
+    collected = restarted._run_stage(STAGE_COLLECT, durable)
     torn_down = restarted._run_teardown(collected, abort=True)
 
     assert restarted_driver.delete_calls == 1
@@ -3477,6 +3477,75 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
     assert budget_state.registration_payload["status"] == "aborted"
 
 
+@pytest.mark.parametrize("status", ["launched", "ready", "running"])
+def test_monitor_rejects_unsupported_checkpoint_stop_without_row_effects(
+    tmp_path: Path, status: str,
+) -> None:
+    bundle = _bundle(tmp_path, rows=[_compiled_row("pending"), _compiled_row("active")])
+    driver = FakeDriver()
+    decision = CancellationDecision("stop", "test", 123.0)
+    engine = StageEngine(bundle=bundle, driver=driver, interruption_probe=lambda: decision)
+    state = engine._initial_state().with_row("active", RowState(status=status))
+    engine.store.initialize(state)
+
+    with pytest.raises(OrchestrationStageError, match="checkpoint-safe stop.*terminate"):
+        engine._run_stage("MONITOR", state)
+
+    persisted = engine.store.load()
+    assert persisted.stage("MONITOR").status == "failed"
+    assert persisted.rows == state.rows
+    assert persisted.abort_reason is None
+    assert persisted.budget_counters["cancellation"] == decision.as_provenance()
+    assert driver.calls == []
+
+
+@pytest.mark.parametrize("driver_type", [LocalOrchestrationDriver, RunPodOrchestrationDriver])
+def test_checkpoint_stop_waits_for_active_rows_and_stops_pending_rows(
+    tmp_path: Path, driver_type: type,
+) -> None:
+    class CheckpointDriver(FakeDriver):
+        realized_capabilities = driver_type.realized_capabilities if (
+            driver_type is LocalOrchestrationDriver
+        ) else driver_type.capability_envelope.realize("engine-acquired")
+
+        def request_stop_at_checkpoint(self, bundle, row, state):
+            self._call(f"checkpoint-stop:{row.row_id}")
+
+    bundle = _bundle(tmp_path, rows=[_compiled_row("pending"), _compiled_row("active")])
+    driver = CheckpointDriver()
+    engine = StageEngine(bundle=bundle, driver=driver)
+    state = engine._initial_state().with_row("active", RowState(status="running"))
+    decision = CancellationDecision("stop", "test", 123.0)
+
+    stopped = engine._apply_interruption(state, decision)
+
+    assert driver.calls == ["checkpoint-stop:active"]
+    assert stopped.rows["active"] == state.rows["active"]
+    assert stopped.rows["pending"].status == "stopped"
+    assert stopped.abort_reason == "operator-stop-after-checkpoint"
+    assert stopped.budget_counters["cancellation"] == decision.as_provenance()
+
+
+def test_pending_stop_and_explicit_termination_do_not_require_checkpoint_hook(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path, rows=[_compiled_row("row")])
+    driver = FakeDriver()
+    engine = StageEngine(bundle=bundle, driver=driver)
+    pending = engine._initial_state()
+
+    stopped = engine._apply_interruption(pending, CancellationDecision("stop", "test", 123.0))
+
+    assert stopped.rows["row"].status == "stopped"
+    assert driver.calls == []
+    active = pending.with_row("row", RowState(status="running"))
+    terminated = engine._apply_interruption(
+        active, CancellationDecision("terminate", "test", 124.0)
+    )
+
+    assert terminated.rows["row"].status == "stopped"
+    assert terminated.rows["row"].error == terminated.abort_reason == "operator-terminate"
+    assert driver.calls == ["stop:row"]
+
+
 def test_local_monitor_requests_checkpoint_stop_and_records_provenance(tmp_path: Path) -> None:
     script = tmp_path / "interruptible_row.py"
     script.write_text(
@@ -3585,6 +3654,12 @@ def test_failed_local_collection_does_not_copy_raw_directories_and_teardown_recl
     assert set(collected) == {"failure.json"}
     assert Path(collected["failure.json"]).is_file()
     assert not (bundle.run_set_dir / "collected" / "failed" / "evaluation").exists()
+    state = state.with_row(
+        "failed", state.rows["failed"].model_copy(update={"collected_outputs": collected})
+    ).with_stage(
+        "COLLECT",
+        StageState(status="failed", outputs={"rows": {"failed": collected}}),
+    )
     teardown = driver.teardown(bundle, state)
     reclamation = teardown["failed_row_reclamation"]
     assert len(reclamation) == 1
@@ -3601,7 +3676,10 @@ def test_failed_local_collection_does_not_copy_raw_directories_and_teardown_recl
     ]
 
 
-def test_failed_local_teardown_retains_row_tree_before_collection(tmp_path: Path) -> None:
+@pytest.mark.parametrize("collection_status", ["pending", "failed"])
+def test_failed_local_teardown_retains_row_tree_before_collection(
+    tmp_path: Path, collection_status: str
+) -> None:
     bundle = _bundle(tmp_path, run_set_id="precollection-failure")
     row_root = bundle.run_set_dir / "rows" / "row-a"
     row_root.mkdir(parents=True)
@@ -3609,7 +3687,7 @@ def test_failed_local_teardown_retains_row_tree_before_collection(tmp_path: Path
     state = RunSetState(
         run_set_id=bundle.run_set_id,
         rows={"row-a": RowState(status="failed", error="fixture failure")},
-        stages={"COLLECT": StageState(status="pending")},
+        stages={"COLLECT": StageState(status=collection_status)},
     )
 
     result = LocalOrchestrationDriver(
@@ -4744,6 +4822,156 @@ def test_local_driver_recovers_and_stops_exact_owned_process_group(tmp_path: Pat
     assert stopped["status"] == "stopped"
     launcher._processes[row.row_id].wait(timeout=5)
     assert not _process_group_alive(identity.process_group_id)
+
+
+@pytest.mark.parametrize("method", ["stop_row", "request_stop_at_checkpoint"])
+@pytest.mark.parametrize("transition", ["exited", "live", "members", "unknown", "replaced", "unowned"])
+def test_local_stop_reconciles_exit_during_signal_authorization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    transition: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    row = bundle.row("row-a")
+    identity = ProcessIdentity(
+        run_set_id=bundle.run_set_id,
+        row_id=row.row_id,
+        pid=4321,
+        process_group_id=4321,
+        launch_token="a" * 64,
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={row.row_id: RowState(status="running", pid=identity.pid, process_identity=identity)},
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    driver.provision(bundle, state)
+    sentinels = bundle.run_set_dir / "sentinels"
+    (sentinels / f"{row.row_id}.pid").write_text(str(identity.pid))
+    recorded = (
+        identity.model_copy(update={"launch_token": "b" * 64})
+        if transition == "replaced"
+        else identity
+    )
+    (sentinels / f"{row.row_id}.process.json").write_text(recorded.model_dump_json())
+
+    class OwnedProcess:
+        pid = identity.pid
+        exited = False
+
+        def poll(self) -> int | None:
+            return 0 if self.exited else None
+
+    process = OwnedProcess()
+    if transition != "unowned":
+        driver._processes[row.row_id] = process  # type: ignore[assignment]
+
+    def exit_during_getpgid(pid: int) -> int:
+        assert pid == identity.pid
+        process.exited = transition != "live"
+        raise ProcessLookupError(errno.ESRCH, "no such process")
+
+    def refuse_signal(*args) -> None:
+        pytest.fail("an unverified or exited group must never receive a signal")
+
+    monkeypatch.setattr("feedbax.orchestration.drivers.local._pid_alive", lambda pid: True)
+    monkeypatch.setattr("feedbax.orchestration.drivers.local._process_group_alive", lambda pgid: True)
+    monkeypatch.setattr(os, "getpgid", exit_during_getpgid)
+    monkeypatch.setattr(os, "killpg", refuse_signal)
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.local._process_group_member_pids",
+        lambda pgid: (
+            (9876,) if transition == "members" else (),
+            "inspection failed" if transition == "unknown" else None,
+        ),
+    )
+    stop = getattr(driver, method)
+    if transition == "exited":
+        expected = "stopped" if method == "stop_row" else "stop_requested"
+        assert stop(bundle, row, state)["status"] == expected
+        assert stop(bundle, row, state)["status"] == expected
+    else:
+        with pytest.raises(LocalDriverError, match="refusing to signal live local row"):
+            stop(bundle, row, state)
+
+
+@pytest.mark.parametrize("transition", ["exited", "live", "unowned", "members", "unknown", "io_error"])
+def test_local_checkpoint_stop_reconciles_exit_during_signal_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transition: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    row = bundle.row("row-a")
+    identity = ProcessIdentity(
+        run_set_id=bundle.run_set_id,
+        row_id=row.row_id,
+        pid=4321,
+        process_group_id=4321,
+        launch_token="a" * 64,
+    )
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={row.row_id: RowState(status="running", pid=identity.pid, process_identity=identity)},
+    )
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=("feedbax==test",))
+    driver.provision(bundle, state)
+    sentinels = bundle.run_set_dir / "sentinels"
+    (sentinels / f"{row.row_id}.pid").write_text(str(identity.pid))
+    (sentinels / f"{row.row_id}.process.json").write_text(identity.model_dump_json())
+
+    class OwnedProcess:
+        pid = identity.pid
+        exited = False
+
+        def poll(self) -> int | None:
+            return 0 if self.exited else None
+
+    process = OwnedProcess()
+    if transition != "unowned":
+        driver._processes[row.row_id] = process  # type: ignore[assignment]
+    attempts: list[tuple[int, int]] = []
+    inspections: list[int] = []
+
+    def inspect_members(pgid: int) -> tuple[tuple[int, ...], str | None]:
+        inspections.append(pgid)
+        assert pgid == identity.process_group_id
+        if not attempts:
+            return (identity.pid,), None
+        return (
+            (9876,) if transition == "members" else (),
+            "inspection failed" if transition == "unknown" else None,
+        )
+
+    def exit_during_signal(pgid: int, signum: int) -> None:
+        assert inspections == [identity.process_group_id]
+        assert (pgid, signum) == (identity.process_group_id, signal.SIGINT)
+        attempts.append((pgid, signum))
+        process.exited = transition != "live"
+        if transition == "io_error":
+            raise OSError(errno.EIO, "input/output error")
+        raise PermissionError(errno.EPERM, "operation not permitted")
+
+    monkeypatch.setattr("feedbax.orchestration.drivers.local._pid_alive", lambda pid: True)
+    monkeypatch.setattr("feedbax.orchestration.drivers.local._process_group_alive", lambda pgid: True)
+    monkeypatch.setattr(os, "getpgid", lambda pid: identity.process_group_id)
+    monkeypatch.setattr(os, "killpg", exit_during_signal)
+    monkeypatch.setattr(
+        "feedbax.orchestration.drivers.local._process_group_member_pids", inspect_members,
+    )
+
+    if transition == "exited":
+        assert driver.request_stop_at_checkpoint(bundle, row, state) == {
+            "row_id": row.row_id, "pid": identity.pid, "status": "stop_requested",
+        }
+        assert inspections == [identity.process_group_id] * 2
+    else:
+        with pytest.raises(LocalDriverError, match="could not signal verified local row"):
+            driver.request_stop_at_checkpoint(bundle, row, state)
+    assert attempts == [(identity.process_group_id, signal.SIGINT)]
+    assert not (sentinels / f"{row.row_id}.failed").exists()
+    assert not (sentinels / f"{row.row_id}.done").exists()
 
 
 def test_local_stop_accepts_eperm_only_after_owned_process_group_exits(
@@ -5884,3 +6112,172 @@ StageEngine(bundle=bundle, driver=Driver()).run()
     persisted = RunSetStateStore(bundle.run_set_dir / "state.json").load()
     assert persisted.stage(STAGE_TEARDOWN).status == "completed"
     assert persisted.stage(STAGE_TEARDOWN).outputs["pod_absence"]["verified"] is True
+
+
+@pytest.mark.parametrize("component", ["collected", "collected/row-a", "events", "failure-logs"])
+@pytest.mark.parametrize("kind", ["symlink", "file"])
+def test_collection_destination_preflight_rejects_before_driver_action(
+    tmp_path: Path,
+    component: str,
+    kind: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = bundle.run_set_dir / component
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "symlink":
+        target.symlink_to(outside, target_is_directory=True)
+    else:
+        target.write_text("unsafe")
+    driver = FakeDriver()
+    with pytest.raises(PreflightFailed, match="collection-destinations"):
+        StageEngine(bundle=bundle, driver=driver).run()
+    assert driver.calls == []
+    assert list(outside.iterdir()) == []
+
+
+def test_collection_accepts_declared_root_alias_and_rechecks_replacement(tmp_path: Path) -> None:
+    from feedbax.orchestration.collection_destination import CollectionDestinationError
+
+    physical = tmp_path / "physical"
+    physical.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(physical, target_is_directory=True)
+    bundle = _bundle(alias, rows=[_compiled_row("row-a", collect=["result.json"])])
+    assert bundle.run_set_dir.parent == physical
+    checks = stages.run_authority_preflight_checks(bundle)
+    assert (
+        next(check for check in checks if check.name == "collection-destinations").status == "pass"
+    )
+    row_root = bundle.run_set_dir / "rows" / "row-a"
+    row_root.mkdir(parents=True, exist_ok=True)
+    (row_root / "result.json").write_text("result")
+    state = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState(status="completed")})
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=())
+    outputs = driver.collect(bundle, bundle.rows[0], state)
+    assert Path(outputs["result.json"]).read_text() == "result"
+    collected = bundle.run_set_dir / "collected"
+    collected.rename(bundle.run_set_dir / "preserved-collected")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    collected.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(CollectionDestinationError, match="unsafe|symlink|directory"):
+        driver.collect(bundle, bundle.rows[0], state)
+    assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_collection_consumes_same_filesystem_staging_without_copy(
+    tmp_path: Path, directory: bool,
+) -> None:
+    from feedbax.orchestration.collection_destination import publish_collection_output
+
+    bundle = _bundle(tmp_path)
+    staged = tmp_path / "staged-output"
+    if directory:
+        staged.mkdir()
+        (staged / "checkpoint").write_bytes(b"checkpoint")
+    else:
+        staged.write_bytes(b"checkpoint")
+    identity = staged.stat().st_ino
+    destination = bundle.run_set_dir / "collected" / "row-a" / staged.name
+    publish_collection_output(bundle, staged, destination, consume_source=True)
+    assert not staged.exists()
+    assert destination.stat().st_ino == identity
+    payload = destination / "checkpoint" if directory else destination
+    assert payload.read_bytes() == b"checkpoint"
+
+
+@pytest.mark.parametrize("directory", [False, True])
+@pytest.mark.parametrize("failure", ["symlink-source", "copy-failure", "commit-failure", "post-commit"])
+def test_collection_failed_replacement_preserves_output_and_can_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directory: bool, failure: str,
+) -> None:
+    import feedbax.orchestration.collection_destination as publication
+
+    bundle = _bundle(tmp_path)
+    destination = bundle.run_set_dir / "collected" / "row-a" / "result"
+    destination.parent.mkdir(parents=True)
+    source = tmp_path / "source"
+    if directory:
+        destination.mkdir()
+        (destination / "data").write_bytes(b"old")
+        source.mkdir()
+        (source / "data").write_bytes(b"new")
+    else:
+        destination.write_bytes(b"old")
+        source.write_bytes(b"new")
+    original_inode = destination.stat().st_ino
+    with monkeypatch.context() as patch:
+        if failure == "symlink-source":
+            source.rename(tmp_path / "real-source")
+            source.symlink_to(tmp_path / "real-source", target_is_directory=directory)
+        elif failure == "copy-failure":
+            def fail_copy(*args, **kwargs):
+                raise OSError("injected copy failure")
+            patch.setattr(publication, "copy_collection_member", fail_copy)
+        elif failure == "commit-failure":
+            def fail_commit(*args, **kwargs):
+                raise OSError("injected commit failure")
+            patch.setattr(publication, "rename_exchange", fail_commit)
+        else:
+            original_recheck = publication.recheck_directory_chain
+            checks = 0
+            def fail_after_commit(*args, **kwargs):
+                nonlocal checks
+                checks += 1
+                if checks == 2:
+                    raise OSError("injected post-commit failure")
+                return original_recheck(*args, **kwargs)
+            patch.setattr(publication, "recheck_directory_chain", fail_after_commit)
+        with pytest.raises((publication.CollectionDestinationError, OSError)):
+            publication.publish_collection_output(bundle, source, destination)
+    old_payload = destination / "data" if directory else destination
+    assert old_payload.read_bytes() == b"old"
+    assert destination.stat().st_ino == original_inode
+    assert not list(destination.parent.glob(".collection-*"))
+    if failure == "symlink-source":
+        source.unlink()
+        (tmp_path / "real-source").rename(source)
+    publication.publish_collection_output(bundle, source, destination)
+    new_payload = destination / "data" if directory else destination
+    assert new_payload.read_bytes() == b"new"
+    assert not list(destination.parent.glob(".collection-*"))
+
+
+def test_completed_preflight_resume_rejects_replaced_destination_before_driver(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path)
+    driver = FakeDriver()
+    state = StageEngine(bundle=bundle, driver=driver).run(stop_after_stage=STAGE_PREFLIGHT)
+    assert state.stage(STAGE_PREFLIGHT).status == "completed"
+    driver.calls.clear()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (bundle.run_set_dir / "collected").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(PreflightFailed, match="collection-destinations"):
+        StageEngine(bundle=bundle, driver=driver).run()
+    assert driver.calls == []
+    assert list(outside.iterdir()) == []
+
+
+def test_collection_destination_checks_do_not_traverse_retained_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from feedbax.orchestration.collection_destination import check_collection_destinations
+
+    bundle = _bundle(tmp_path, rows=[_compiled_row(f"row-{i}") for i in range(10)])
+    retained = bundle.run_set_dir / "collected" / "row-0" / "checkpoints"
+    retained.mkdir(parents=True)
+    for i in range(1000):
+        (retained / f"{i}.bin").touch()
+    original_stat = os.stat
+    calls = 0
+    def count_stat(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_stat(*args, **kwargs)
+    monkeypatch.setattr(os, "stat", count_stat)
+    for row in bundle.rows:
+        check_collection_destinations(bundle, rows=(row,))
+    assert calls < 2000

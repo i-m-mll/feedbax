@@ -20,6 +20,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from feedbax.contracts.base import sha256_file
 from feedbax.contracts.strict_json import (
     StrictJsonError,
     strict_json_loads,
@@ -29,6 +30,10 @@ from feedbax.contracts.strict_json import (
 from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_COLLECTION_OUTPUTS,
     EvaluationMatrixOrderedUnionEvidence,
+)
+from feedbax.orchestration.collection_destination import (
+    check_collection_destinations,
+    publish_collection_output,
 )
 from feedbax.orchestration.bundle import (
     ResolvedAssemblyInput,
@@ -63,6 +68,7 @@ from feedbax.orchestration.drivers.capabilities import (
 from feedbax.orchestration.drivers.native_execution import (
     native_resume_checkpoint_source,
     seed_authenticated_checkpoint,
+    uses_registered_native_execution,
 )
 from feedbax.orchestration.executor_family import executor_family_adapter
 from feedbax.orchestration.input_materialization import (
@@ -79,6 +85,7 @@ from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
 from feedbax.orchestration.state import PreflightCheckEntry, ProcessIdentity, RunSetState
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training import publish_directory_no_replace
+from feedbax.training.checkpoint_custody import authenticate_published_checkpoint_custody
 
 
 class LocalDriverError(RuntimeError):
@@ -375,7 +382,7 @@ class LocalOrchestrationDriver:
                 raise LocalDriverError(
                     f"registered execution payload is not materialized for row {row.row_id!r}"
                 )
-            if _sha256_file(source) != row.execution.payload.sha256:
+            if sha256_file(source) != row.execution.payload.sha256:
                 raise LocalDriverError(
                     f"registered execution payload digest mismatch for row {row.row_id!r}"
                 )
@@ -649,8 +656,9 @@ class LocalOrchestrationDriver:
             and _process_group_alive(expected.process_identity.process_group_id)
         )
         if pid and (_pid_alive(pid) or group_alive):
-            identity = _authorize_local_signal(paths, bundle, row, state, pid)
-            _terminate_process_group(identity.process_group_id, process=process)
+            identity = _authorize_local_signal(paths, bundle, row, state, pid, process=process)
+            if identity is not None:
+                _terminate_process_group(identity.process_group_id, process=process)
         paths["failed"].write_text("stopped\n", encoding="utf-8")
         return {"row_id": row.row_id, "pid": pid, "status": "stopped"}
 
@@ -671,11 +679,18 @@ class LocalOrchestrationDriver:
             and _process_group_alive(expected.process_identity.process_group_id)
         )
         if pid and (_pid_alive(pid) or group_alive):
-            identity = _authorize_local_signal(paths, bundle, row, state, pid)
+            identity = _authorize_local_signal(paths, bundle, row, state, pid, process=process)
+            if identity is None:
+                return {"row_id": row.row_id, "pid": pid, "status": "stop_requested"}
             try:
                 os.killpg(identity.process_group_id, signal.SIGINT)
             except ProcessLookupError:
                 pass
+            except PermissionError as exc:
+                if not _owned_process_group_exited(identity.process_group_id, process):
+                    raise LocalDriverError(
+                        f"could not signal verified local row process group {identity.process_group_id}"
+                    ) from exc
             except OSError as exc:
                 raise LocalDriverError(
                     f"could not signal verified local row process group {identity.process_group_id}"
@@ -690,10 +705,10 @@ class LocalOrchestrationDriver:
     ) -> Mapping[str, str]:
         paths = _row_paths(bundle, row.row_id)
         dest_dir = bundle.run_set_dir / "collected" / row.row_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        check_collection_destinations(bundle, rows=(row,))
         collected: dict[str, str] = {}
         sources = row.launch.collect or [str(paths["event_log"])]
-        failed_row = state.rows[row.row_id].status in {"failed", "stopped"}
+        failed_row = state.rows[row.row_id].status == "failed"
         for source in sources:
             source_path = Path(source)
             if not source_path.is_absolute():
@@ -710,21 +725,17 @@ class LocalOrchestrationDriver:
             # A failed executor may leave a large, actively-written raw/cache tree.
             # Small declared files remain useful failure evidence, but recursive
             # directory collection is terminal-output publication and is therefore
-            # forbidden until the executor has completed successfully.
+            # forbidden for failed execution. A checkpoint-stopped executor has
+            # published terminal custody that collection must authenticate.
             if failed_row and source_path.is_dir():
                 continue
             dest = dest_dir / source_path.name
-            if source_path.is_dir():
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(source_path, dest)
-            else:
-                shutil.copy2(source_path, dest)
+            publish_collection_output(bundle, source_path, dest)
             collected[source_path.name] = str(dest)
         payload_sha256 = row.launch.metadata.get("payload_sha256")
         if payload_sha256 and collected:
             first = Path(next(iter(collected.values())))
-            if first.is_file() and _sha256_file(first) != str(payload_sha256):
+            if first.is_file() and sha256_file(first) != str(payload_sha256):
                 raise LocalDriverError(f"payload sha256 mismatch for row {row.row_id!r}")
         return collected
 
@@ -752,8 +763,14 @@ class LocalOrchestrationDriver:
         failed_row_reclamation = [
             _reclaim_failed_row_tree(bundle, row)
             for row in bundle.rows
-            if state.rows[row.row_id].status in {"failed", "stopped"}
-            and state.stage("COLLECT").status in {"completed", "failed"}
+            if state.rows[row.row_id].status == "failed"
+            and _failed_row_collection_finished(state, row.row_id)
+        ]
+        stopped_row_reclamation = [
+            _reclaim_failed_row_tree(bundle, row)
+            for row in bundle.rows
+            if state.rows[row.row_id].status == "stopped"
+            and _stopped_row_custody_complete(bundle, row, state)
         ]
         successful_evaluation_reclamation = _reclaim_successful_evaluation_stores(
             bundle,
@@ -768,6 +785,7 @@ class LocalOrchestrationDriver:
             "driver": "local",
             "stopped_rows": stopped,
             "failed_row_reclamation": failed_row_reclamation,
+            "stopped_row_reclamation": stopped_row_reclamation,
             "successful_evaluation_reclamation": successful_evaluation_reclamation,
             "staged_root_reclamation": reclamation,
         }
@@ -939,7 +957,7 @@ def _verify_successful_evaluation_terminal_custody(
         root=bundle.run_set_dir,
         directory=False,
     )
-    if _sha256_file(expected_certificate) != certificate_sha256:
+    if sha256_file(expected_certificate) != certificate_sha256:
         raise LocalDriverError("evaluation reclamation requires a durable passing certificate")
     try:
         certificate = strict_model_validate_json(
@@ -1120,13 +1138,7 @@ def _terminate_process_group(
         # identity check and killpg(). Treat that race as an idempotent stop
         # only when this driver still owns the exact Popen and a fresh process
         # table snapshot proves that the group has no live members.
-        members, member_error = _process_group_member_pids(process_group_id)
-        if (
-            process is not None
-            and process.poll() is not None
-            and member_error is None
-            and not members
-        ):
+        if _owned_process_group_exited(process_group_id, process):
             return
         raise LocalDriverError(
             f"could not terminate verified process group {process_group_id}"
@@ -1161,6 +1173,16 @@ def _terminate_process_group(
         )
 
 
+def _owned_process_group_exited(
+    process_group_id: int,
+    process: subprocess.Popen[bytes] | None,
+) -> bool:
+    if process is None or process.poll() is None:
+        return False
+    members, error = _process_group_member_pids(process_group_id)
+    return error is None and not members
+
+
 def _process_group_alive(pgid: int) -> bool:
     try:
         os.killpg(pgid, 0)
@@ -1170,6 +1192,47 @@ def _process_group_alive(pgid: int) -> bool:
         pass
     members, error = _process_group_member_pids(pgid)
     return True if error is not None else bool(members)
+
+
+def _failed_row_collection_finished(state: RunSetState, row_id: str) -> bool:
+    """Distinguish collected executor failure evidence from collection failure."""
+    collect = state.stage("COLLECT")
+    if collect.status not in {"completed", "failed"}:
+        return False
+    recorded = collect.outputs.get("rows", {}).get(row_id)
+    if recorded is None or recorded != state.rows[row_id].collected_outputs:
+        return False
+    return not any(
+        item.get("row_id") == row_id
+        and item.get("kind") != "absent_collection_outputs"
+        for item in collect.outputs.get("secondary_evidence", [])
+    )
+
+
+def _stopped_row_custody_complete(
+    bundle: RunBundle, row: RunRowSpec, state: RunSetState
+) -> bool:
+    """Authorize stopped source reclamation from authenticated collected custody."""
+    collect = state.stage("COLLECT")
+    if collect.status != "completed" or not uses_registered_native_execution(row):
+        return False
+    outputs = state.rows[row.row_id].collected_outputs
+    if collect.outputs.get("rows", {}).get(row.row_id) != outputs:
+        raise LocalDriverError(f"stopped row collected outputs drifted: {row.row_id!r}")
+    if executor_family_adapter(row.execution_family).missing_collection_outputs(bundle, row, outputs):
+        raise LocalDriverError(f"stopped row collection is incomplete: {row.row_id!r}")
+    for name, path in outputs.items():
+        expected = bundle.run_set_dir / "collected" / row.row_id / name
+        if Path(path) != expected:
+            raise LocalDriverError(f"stopped row collected path is not run-owned: {row.row_id!r}")
+        _require_run_owned_path(
+            expected, root=bundle.run_set_dir, directory=expected.is_dir()
+        )
+    authenticated = authenticate_published_checkpoint_custody(Path(outputs["checkpoints"]))
+    evidence = collect.outputs.get("checkpoint_custody", {}).get(row.row_id, {})
+    if evidence.get("manifest_sha256") != authenticated.manifest_sha256:
+        raise LocalDriverError(f"stopped row checkpoint custody drifted: {row.row_id!r}")
+    return True
 
 
 def _reclaim_failed_row_tree(
@@ -1349,14 +1412,6 @@ def _git_patch_sha256(cwd: Path) -> str:
     return h.hexdigest()
 
 
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _seed_native_resume_checkpoint_root(
     source: Path, row_dir: Path, resolved: ResolvedAssemblyInput
 ) -> None:
@@ -1457,7 +1512,10 @@ def _authorize_local_signal(
     row: RunRowSpec,
     state: RunSetState,
     pid: int,
-) -> ProcessIdentity:
+    *,
+    process: subprocess.Popen[bytes] | None,
+) -> ProcessIdentity | None:
+    """Authorize a live group, or reconcile an exited, exactly owned group."""
     expected = state.rows.get(row.row_id)
     if expected is None or expected.process_identity is None:
         raise LocalDriverError(
@@ -1465,6 +1523,18 @@ def _authorize_local_signal(
         )
     observed, detail = _verified_local_process_identity(paths, bundle, row, pid)
     if observed is None or observed != expected.process_identity:
+        recorded, _ = _read_local_process_identity(paths["process_identity"])
+        if (
+            recorded is not None
+            and recorded == expected.process_identity
+            and recorded.run_set_id == bundle.run_set_id
+            and recorded.row_id == row.row_id
+            and recorded.pid == pid
+            and process is not None
+            and process.pid == pid
+            and _owned_process_group_exited(recorded.process_group_id, process)
+        ):
+            return None
         raise LocalDriverError(f"refusing to signal live local row {row.row_id!r}: {detail}")
     return observed
 

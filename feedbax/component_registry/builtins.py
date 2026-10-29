@@ -65,7 +65,7 @@ from feedbax.runtime.components import (
     Subtract,
     Sum,
 )
-from feedbax.runtime.filters import FirstOrderFilter
+from feedbax.runtime.filters import FirstOrderFilter, require_real_floating_filter_prototype
 from feedbax.intervene.intervene import (
     AddNoise,
     AddNoiseParams,
@@ -101,6 +101,7 @@ from .declarations import (
     declare_component,
 )
 from .templates import register_builtin_graph_templates
+from .prototypes import array_prototype, prototype_params, migrate_stateful_v1
 
 
 class _Registry(Protocol):
@@ -210,7 +211,7 @@ def _extract_channel_params(component: Any, model: Any) -> Any:
     values = {
         "delay": int(component.delay),
         **_channel_noise_values(component),
-        "input_shape": _prototype_shape(component.input_proto),
+        **prototype_params(component.input_proto),
     }
     return type(model).model_validate({name: values[name] for name in type(model).model_fields})
 
@@ -1078,10 +1079,20 @@ def stateful_passthrough_output_prototype(
 
     proto = inputs.get("input")
     if proto is None:
-        proto = _array_proto_from_shape(params.get("input_shape"))
+        proto = array_prototype(params)
     if proto is None:
         raise _missing_input("input", component="stateful passthrough")
     return {"output": proto}
+
+
+def first_order_filter_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the filter signal prototype after checking its numerical domain."""
+    outputs = stateful_passthrough_output_prototype(params, inputs)
+    require_real_floating_filter_prototype(outputs["output"])
+    return outputs
 
 
 def linear_output_prototype(
@@ -1158,6 +1169,15 @@ def demux_output_prototype(
         raise ValueError(f"Demux input final dimension {width} does not match sum(sizes) {total}")
     prefix = shape[:-1]
     return {f"out_{index}": jnp.zeros((*prefix, size)) for index, size in enumerate(sizes)}
+
+
+def affine_composer_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    for port in ("base", "state"):
+        _required_input(inputs, port, component="AffineValueComposer")
+    return affine_value_composer_output_prototype(params, inputs)
 
 
 def switch_output_prototype(
@@ -1369,6 +1389,7 @@ def register_builtin_components(registry: _Registry) -> None:
             input_ports=["input"],
             output_ports=["output"],
             icon="SlidersHorizontal",
+            output_prototype_fn=input_passthrough_output_prototype,
             port_types=PortTypeSpec(
                 inputs={"input": PortType(dtype="any")},
                 outputs={"output": PortType(dtype="any")},
@@ -1713,12 +1734,14 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 context_adapters={"input_shape": ("input_proto", "array_prototype")}
             ),
+            param_schema_version="2",
             category="Signal Processing",
             description="Discrete delay buffer.",
             parameter_fields=[
                 ParameterField(name="delay", type="int", default=1, min=0, required=True),
                 ParameterField(name="init_value", type="float", default=0.0, required=False),
                 ParameterField(name="input_shape", type="array", default=None, required=False),
+                ParameterField(name="input_dtype", type="str", default=None, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1730,6 +1753,19 @@ def register_builtin_components(registry: _Registry) -> None:
             output_prototype_fn=stateful_passthrough_output_prototype,
         )
     )
+    registry.register_migration(
+        ComponentMigration(
+            source_type="DelayLine",
+            target_type="DelayLine",
+            owner="feedbax",
+            source_param_schema_version="1",
+            target_param_schema_version="2",
+            migration_id="feedbax.component.DelayLine.params.v1-to-v2",
+            migrate_params=migrate_stateful_v1,
+            description="Preserve stateful declarations with optional inferred input dtype.",
+        )
+    )
+
     registry.register(
         declare_component(
             name="MLP",
@@ -2325,6 +2361,7 @@ def register_builtin_components(registry: _Registry) -> None:
             builder=_builders._build_channel,
             extractor=_extract_channel_params,
             override_reason="noise composition and prototype shape require authored recovery",
+            param_schema_version="2",
             category="Channels",
             description="Delay and noise for a signal.",
             parameter_fields=[
@@ -2360,6 +2397,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(name="noise_role", type="str", default=None, required=False),
                 ParameterField(name="noise_timing", type="str", default=None, required=False),
                 ParameterField(name="input_shape", type="array", default=None, required=False),
+                ParameterField(name="input_dtype", type="str", default=None, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2371,6 +2409,19 @@ def register_builtin_components(registry: _Registry) -> None:
             output_prototype_fn=stateful_passthrough_output_prototype,
         )
     )
+    registry.register_migration(
+        ComponentMigration(
+            source_type="Channel",
+            target_type="Channel",
+            owner="feedbax",
+            source_param_schema_version="1",
+            target_param_schema_version="2",
+            migration_id="feedbax.component.Channel.params.v1-to-v2",
+            migrate_params=migrate_stateful_v1,
+            description="Preserve stateful declarations with optional inferred input dtype.",
+        )
+    )
+
     registry.register(
         declare_component(
             name="FeedbackChannels",
@@ -2435,6 +2486,7 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 context_adapters={"input_shape": ("input_proto", "array_prototype")}
             ),
+            param_schema_version="2",
             category="Channels",
             description="First-order low-pass filter.",
             parameter_fields=[
@@ -2445,6 +2497,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(name="dt", type="float", default=0.001, min=0.0, required=True),
                 ParameterField(name="init_value", type="float", default=0.0, required=False),
                 ParameterField(name="input_shape", type="array", default=None, required=False),
+                ParameterField(name="input_dtype", type="str", default=None, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -2453,9 +2506,22 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=stateful_passthrough_output_prototype,
+            output_prototype_fn=first_order_filter_output_prototype,
         )
     )
+    registry.register_migration(
+        ComponentMigration(
+            source_type="FirstOrderFilter",
+            target_type="FirstOrderFilter",
+            owner="feedbax",
+            source_param_schema_version="1",
+            target_param_schema_version="2",
+            migration_id="feedbax.component.FirstOrderFilter.params.v1-to-v2",
+            migrate_params=migrate_stateful_v1,
+            description="Preserve stateful declarations with optional inferred input dtype.",
+        )
+    )
+
     registry.register(
         declare_component(
             name="CurlField",
@@ -2464,9 +2530,9 @@ def register_builtin_components(registry: _Registry) -> None:
                 groups={"params": (CurlFieldParams, ("scale", "amplitude", "active"))}
             ),
             attribute_paths={
-                "scale": "_initial_state.scale",
-                "amplitude": "_initial_state.amplitude",
-                "active": "_initial_state.active",
+                "scale": "params_index.init.scale",
+                "amplitude": "params_index.init.amplitude",
+                "active": "params_index.init.active",
             },
             category="Interventions",
             description="Velocity-dependent curl field.",
@@ -2504,10 +2570,10 @@ def register_builtin_components(registry: _Registry) -> None:
                 array_conversions={"field": None},
             ),
             attribute_paths={
-                "scale": "_initial_state.scale",
-                "amplitude": "_initial_state.amplitude",
-                "field": "_initial_state.field",
-                "active": "_initial_state.active",
+                "scale": "params_index.init.scale",
+                "amplitude": "params_index.init.amplitude",
+                "field": "params_index.init.field",
+                "active": "params_index.init.active",
             },
             category="Interventions",
             description="Fixed force field.",
@@ -2625,9 +2691,9 @@ def register_builtin_components(registry: _Registry) -> None:
                 array_conversions={"delta_A": (2, 4)},
             ),
             attribute_paths={
-                "scale": "_initial_state.scale",
-                "delta_A": "_initial_state.delta_A",
-                "active": "_initial_state.active",
+                "scale": "params_index.init.scale",
+                "delta_A": "params_index.init.delta_A",
+                "active": "params_index.init.active",
             },
             category="Interventions",
             description="State-feedback dynamics-matrix perturbation in the force channel.",
@@ -2723,7 +2789,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 },
                 outputs={"value": PortType(dtype="vector")},
             ),
-            output_prototype_fn=affine_value_composer_output_prototype,
+            output_prototype_fn=affine_composer_output_prototype,
             param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
             supported_param_schema_versions=[AFFINE_VALUE_COMPOSER_SCHEMA_VERSION],
         )
@@ -2735,7 +2801,7 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 groups={"params": (AddNoiseParams, ("scale", "active"))}
             ),
-            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
+            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
             category="Interventions",
             description="Add noise to a signal.",
             parameter_fields=[
@@ -2759,7 +2825,7 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 groups={"params": (NetworkIntervenorParams, ("scale", "active"))}
             ),
-            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
+            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
             category="Interventions",
             description="Clamp network unit activity.",
             parameter_fields=[
@@ -2781,7 +2847,7 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="ReluMuscle",
             runtime_type=ReluMuscle,
-            attribute_paths={"initial_activation": "_initial_state"},
+            attribute_paths={"initial_activation": "state_index.init"},
             category="Muscles",
             description="Simple muscle: force = activation * F_max.",
             parameter_fields=[
@@ -2845,7 +2911,7 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="RigidTendonHillMuscleThelen",
             runtime_type=RigidTendonHillMuscleThelen,
-            attribute_paths={"initial_activation": "_initial_state"},
+            attribute_paths={"initial_activation": "state_index.init"},
             category="Muscles",
             description="Hill-type muscle with rigid tendon assumption. Vectorized for multiple muscles.",
             parameter_fields=[
@@ -3081,7 +3147,7 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 groups={"params": (NetworkIntervenorParams, ("scale", "active"))}
             ),
-            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
+            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
             category="Interventions",
             description="Add constant input to network units.",
             parameter_fields=[
@@ -3105,7 +3171,7 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 groups={"params": (ConstantInputParams, ("scale", "active"))}
             ),
-            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
+            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
             category="Interventions",
             description="Add a constant input to a signal.",
             parameter_fields=[

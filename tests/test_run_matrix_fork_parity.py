@@ -25,9 +25,9 @@ from feedbax.contracts.run_matrix import (
     TrainingRunMatrixSpec,
 )
 from feedbax.contracts.spec_storage import training_spec_sha256
+from tests.support.training_fixtures import synthetic_training_program_registry
 from feedbax.contracts.training import (
     TrainingProgramRegistry,
-    default_training_program_registry,
     evolve_training_program,
 )
 from feedbax.contracts.worker import ProgressCoordinate
@@ -128,7 +128,7 @@ def test_fork_parity_reads_actual_mapped_batch_and_optimizer_state() -> None:
         _recorded_optimizer_step(
             spec,
             optimizer_diverged,
-            registry=default_training_program_registry(),
+            registry=synthetic_training_program_registry(),
         )
 
 

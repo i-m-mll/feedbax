@@ -46,7 +46,6 @@ class PID(Component):
     integral_limit: float
     n_dims: int = field(static=True)
     state_index: StateIndex
-    _initial_state: tuple[Array, Array] = field(static=True)
 
     def __init__(
         self,
@@ -65,8 +64,8 @@ class PID(Component):
         self.n_dims = n_dims
         integral = jnp.zeros(n_dims)
         prev_error = jnp.zeros(n_dims)
-        self._initial_state = (integral, prev_error)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = (integral, prev_error)
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,
@@ -122,7 +121,6 @@ class PIDDiscrete(Component):
     output_limit: float
     n_dims: int = field(static=True)
     state_index: StateIndex
-    _initial_state: tuple[Array, Array, Array] = field(static=True)
 
     def __init__(
         self,
@@ -142,8 +140,8 @@ class PIDDiscrete(Component):
         prev_output = jnp.zeros(n_dims)
         prev_error = jnp.zeros(n_dims)
         prev_prev_error = jnp.zeros(n_dims)
-        self._initial_state = (prev_output, prev_error, prev_prev_error)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = (prev_output, prev_error, prev_prev_error)
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,

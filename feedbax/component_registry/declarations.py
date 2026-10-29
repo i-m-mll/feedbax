@@ -363,6 +363,11 @@ class ComponentParamContract:
         validated = self.require(authored)
         values = validated.model_dump(mode="python")
         values.update(context)
+        return self.build_resolved(values)
+
+    def build_resolved(self, params: Mapping[str, Any]) -> "Component":
+        """Construct canonical compiler parameters without reapplying their schema."""
+        values = dict(params)
         if self.builder is not None:
             return self.builder(values)
         if self.runtime_type is None:
@@ -375,11 +380,15 @@ class ComponentParamContract:
             for name, value in values.items()
             if name not in self.constructor.omit and name not in self.constructor.context_adapters
         }
+        if "input_shape" in self.constructor.context_adapters:
+            constructor_values.pop("input_dtype", None)
         for source, (target, adapter) in self.constructor.context_adapters.items():
             if adapter == "array_prototype":
-                from feedbax.compiler.prototypes import array_proto_from_shape
+                from feedbax.component_registry.prototypes import array_prototype
 
-                constructor_values[target] = array_proto_from_shape(values.get(source))
+                constructor_values[target] = array_prototype(
+                    {"input_shape": values.get(source), "input_dtype": values.get("input_dtype")}
+                )
         if self.constructor.array_conversions:
             import jax.numpy as jnp
 
@@ -411,17 +420,17 @@ class ComponentParamContract:
         raw = {}
         for name, model_field in self.model.model_fields.items():
             path = self.attribute_paths.get(name, name)
-            if name in self.constructor.context_adapters:
+            if name == "input_dtype" and "input_shape" in self.constructor.context_adapters:
+                from feedbax.component_registry.prototypes import prototype_params
+
+                target, _ = self.constructor.context_adapters["input_shape"]
+                value = prototype_params(_read_attribute_path(component, target))[name]
+            elif name in self.constructor.context_adapters:
                 target, adapter = self.constructor.context_adapters[name]
                 if adapter == "array_prototype":
-                    from feedbax.compiler.prototypes import shape_from_proto
+                    from feedbax.component_registry.prototypes import prototype_params
 
-                    value = shape_from_proto(_read_attribute_path(component, target))
-                    if value is None:
-                        raise ValueError(
-                            f"{self.component_type} parameter {name!r} is not recoverable "
-                            f"from runtime prototype {target!r}"
-                        )
+                    value = prototype_params(_read_attribute_path(component, target))["input_shape"]
             else:
                 value = (
                     model_field.default

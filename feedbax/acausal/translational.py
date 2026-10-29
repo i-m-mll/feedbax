@@ -22,22 +22,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from feedbax.acausal.base import (
-    AcausalElement,
-    AcausalEquation,
-    AcausalPort,
-    Domain,
-)
+from feedbax.acausal._scalar_mechanics import TRANSLATIONAL
+from feedbax.acausal.base import AcausalElement
 
-
-def _fqn(element: str, port: str, slot: str) -> str:
-    """Fully-qualified variable name."""
-    return f"{element}.{port}.{slot}"
-
-
-# ---------------------------------------------------------------------------
-# Mass
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Mass(AcausalElement):
@@ -56,38 +43,8 @@ class Mass(AcausalElement):
 
     def __init__(self, name: str, mass: float = 1.0):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.TRANSLATIONAL,
-            across_vars=("pos", "vel"),
-            through_var="force",
-        )
-        self.params[f"{name}.mass"] = mass
+        TRANSLATIONAL.inertia(self, mass)
 
-        pos = _fqn(name, "flange", "pos")
-        vel = _fqn(name, "flange", "vel")
-
-        # d(pos)/dt = vel
-        self.equations.append(AcausalEquation(
-            lhs_var=pos,
-            rhs_fn=lambda vals, _v=vel: vals[_v],
-            depends_on=(vel,),
-        ))
-        # d(vel)/dt = net_force / mass  (net_force injected by assembly)
-        # We leave this as a placeholder; the assembly algorithm builds the
-        # actual RHS that sums all through-var contributions at this node.
-        # We encode the *mass equation* so assembly knows this is an inertia.
-        self.equations.append(AcausalEquation(
-            lhs_var=vel,
-            rhs_fn=None,  # filled by assembly
-            depends_on=(),
-        ))
-        self.element_type = "mass"
-
-
-# ---------------------------------------------------------------------------
-# LinearSpring
-# ---------------------------------------------------------------------------
 
 @dataclass
 class LinearSpring(AcausalElement):
@@ -105,42 +62,8 @@ class LinearSpring(AcausalElement):
 
     def __init__(self, name: str, stiffness: float = 1.0):
         super().__init__(name=name)
-        for port_name in ("flange_a", "flange_b"):
-            self.ports[port_name] = AcausalPort(
-                name=port_name,
-                domain=Domain.TRANSLATIONAL,
-                across_vars=("pos", "vel"),
-                through_var="force",
-            )
-        self.params[f"{name}.stiffness"] = stiffness
+        TRANSLATIONAL.coupling(self, "stiffness", stiffness, TRANSLATIONAL.coordinate)
 
-        pos_a = _fqn(name, "flange_a", "pos")
-        pos_b = _fqn(name, "flange_b", "pos")
-        force_a = _fqn(name, "flange_a", "force")
-        force_b = _fqn(name, "flange_b", "force")
-        k_key = f"{name}.stiffness"
-
-        # force_b = k * (pos_a - pos_b)  -- spring pulls B toward A
-        self.equations.append(AcausalEquation(
-            lhs_var=force_b,
-            rhs_fn=lambda vals, _pa=pos_a, _pb=pos_b, _k=k_key: (
-                vals[_k] * (vals[_pa] - vals[_pb])
-            ),
-            depends_on=(pos_a, pos_b),
-            is_through_def=True,
-        ))
-        # force_a = -force_b  -- spring pulls A toward B
-        self.equations.append(AcausalEquation(
-            lhs_var=force_a,
-            rhs_fn=lambda vals, _fb=force_b: -vals[_fb],
-            depends_on=(force_b,),
-            is_through_def=True,
-        ))
-
-
-# ---------------------------------------------------------------------------
-# LinearDamper
-# ---------------------------------------------------------------------------
 
 @dataclass
 class LinearDamper(AcausalElement):
@@ -152,42 +75,8 @@ class LinearDamper(AcausalElement):
 
     def __init__(self, name: str, damping: float = 1.0):
         super().__init__(name=name)
-        for port_name in ("flange_a", "flange_b"):
-            self.ports[port_name] = AcausalPort(
-                name=port_name,
-                domain=Domain.TRANSLATIONAL,
-                across_vars=("pos", "vel"),
-                through_var="force",
-            )
-        self.params[f"{name}.damping"] = damping
+        TRANSLATIONAL.coupling(self, "damping", damping, TRANSLATIONAL.velocity)
 
-        vel_a = _fqn(name, "flange_a", "vel")
-        vel_b = _fqn(name, "flange_b", "vel")
-        force_a = _fqn(name, "flange_a", "force")
-        force_b = _fqn(name, "flange_b", "force")
-        b_key = f"{name}.damping"
-
-        # force_b = b * (vel_a - vel_b)  -- damps B toward A's velocity
-        self.equations.append(AcausalEquation(
-            lhs_var=force_b,
-            rhs_fn=lambda vals, _va=vel_a, _vb=vel_b, _b=b_key: (
-                vals[_b] * (vals[_va] - vals[_vb])
-            ),
-            depends_on=(vel_a, vel_b),
-            is_through_def=True,
-        ))
-        # force_a = -force_b
-        self.equations.append(AcausalEquation(
-            lhs_var=force_a,
-            rhs_fn=lambda vals, _fb=force_b: -vals[_fb],
-            depends_on=(force_b,),
-            is_through_def=True,
-        ))
-
-
-# ---------------------------------------------------------------------------
-# ForceSource
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ForceSource(AcausalElement):
@@ -200,18 +89,8 @@ class ForceSource(AcausalElement):
 
     def __init__(self, name: str):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.TRANSLATIONAL,
-            across_vars=("pos", "vel"),
-            through_var="force",
-        )
-        self.element_type = "force_source"
+        TRANSLATIONAL.one_port(self, "force_source")
 
-
-# ---------------------------------------------------------------------------
-# Ground
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Ground(AcausalElement):
@@ -224,18 +103,8 @@ class Ground(AcausalElement):
 
     def __init__(self, name: str):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.TRANSLATIONAL,
-            across_vars=("pos", "vel"),
-            through_var="force",
-        )
-        self.element_type = "ground"
+        TRANSLATIONAL.one_port(self, "ground")
 
-
-# ---------------------------------------------------------------------------
-# PrescribedMotion
-# ---------------------------------------------------------------------------
 
 @dataclass
 class PrescribedMotion(AcausalElement):
@@ -249,18 +118,8 @@ class PrescribedMotion(AcausalElement):
 
     def __init__(self, name: str):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.TRANSLATIONAL,
-            across_vars=("pos", "vel"),
-            through_var="force",
-        )
-        self.element_type = "prescribed_motion"
+        TRANSLATIONAL.one_port(self, "prescribed_motion")
 
-
-# ---------------------------------------------------------------------------
-# Sensors (read-only, zero through-variable)
-# ---------------------------------------------------------------------------
 
 @dataclass
 class PositionSensor(AcausalElement):
@@ -272,14 +131,7 @@ class PositionSensor(AcausalElement):
 
     def __init__(self, name: str):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.TRANSLATIONAL,
-            across_vars=("pos", "vel"),
-            through_var="force",
-        )
-        self.element_type = "sensor"
-        self.sensor_output = ("flange", "pos")
+        TRANSLATIONAL.sensor(self, TRANSLATIONAL.coordinate)
 
 
 @dataclass
@@ -288,14 +140,7 @@ class VelocitySensor(AcausalElement):
 
     def __init__(self, name: str):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.TRANSLATIONAL,
-            across_vars=("pos", "vel"),
-            through_var="force",
-        )
-        self.element_type = "sensor"
-        self.sensor_output = ("flange", "vel")
+        TRANSLATIONAL.sensor(self, TRANSLATIONAL.velocity)
 
 
 @dataclass
@@ -304,11 +149,4 @@ class ForceSensor(AcausalElement):
 
     def __init__(self, name: str):
         super().__init__(name=name)
-        self.ports["flange"] = AcausalPort(
-            name="flange",
-            domain=Domain.TRANSLATIONAL,
-            across_vars=("pos", "vel"),
-            through_var="force",
-        )
-        self.element_type = "sensor"
-        self.sensor_output = ("flange", "force")
+        TRANSLATIONAL.sensor(self, TRANSLATIONAL.effort)

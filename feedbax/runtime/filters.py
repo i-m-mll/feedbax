@@ -4,8 +4,6 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from functools import cached_property
-import dataclasses
 from typing import Optional, Type
 
 import diffrax as dfx
@@ -17,14 +15,26 @@ import jax.tree as jt
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 
+from feedbax._ode import ode_init, ode_step
 from feedbax.runtime.graph import Component
 from feedbax.runtime.state import StateBounds
+
+
+def require_real_floating_filter_prototype(prototype: PyTree[Array]) -> None:
+    """Require the real floating state domain of FirstOrderFilter."""
+    for index, leaf in enumerate(jt.leaves(prototype)):
+        dtype = getattr(leaf, "dtype", None)
+        if dtype is None or not jnp.issubdtype(dtype, jnp.floating):
+            raise ValueError(
+                "FirstOrderFilter requires real floating state leaves; "
+                f"prototype leaf {index} has dtype {dtype!s}"
+            )
 
 
 class FilterState(eqx.Module):
     """Holds the current filtered signal and solver state."""
 
-    output: jax.Array
+    output: PyTree[Array]
     solver: PyTree
 
 
@@ -41,7 +51,6 @@ class FirstOrderFilter(Component):
     input_proto: PyTree[Array] = field(default_factory=lambda: jnp.zeros(1))
     init_value: float = 0.0
     state_index: StateIndex
-    _initial_state: FilterState = field(static=True)
 
     def __init__(
         self,
@@ -61,28 +70,34 @@ class FirstOrderFilter(Component):
         self.input_proto = input_proto
         self.init_value = init_value
 
-        self._initial_state = self._initial_state_value(input_proto)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = self._initial_state_value(input_proto)
+        self.state_index = StateIndex(initial_state)
 
     def _initial_state_value(self, input_proto: PyTree[Array]) -> FilterState:
+        require_real_floating_filter_prototype(input_proto)
         output_init = jt.map(lambda x: jnp.full_like(x, self.init_value), input_proto)
-        solver_init = self.solver.init(self._term, 0, self.dt, output_init, None)
+        solver_init = ode_init(
+            self.solver, self._term, self.dt, output_init, jt.map(jnp.zeros_like, input_proto)
+        )
         return FilterState(output=output_init, solver=solver_init)
 
     def vector_field(
         self,
         t: Scalar,
-        state: FilterState,
+        state: PyTree[Array],
         input: PyTree[jax.Array],
-    ) -> FilterState:
-        tau = jnp.where(input >= state.output, self.tau_rise, self.tau_decay)
-        return eqx.tree_at(
-            lambda s: s.output,
-            state,
-            (input - state.output) / tau,
-        )
+    ) -> PyTree[Array]:
+        def derivative(value, output):
+            tau = jnp.where(
+                value >= output,
+                jnp.asarray(self.tau_rise, dtype=output.dtype),
+                jnp.asarray(self.tau_decay, dtype=output.dtype),
+            )
+            return (value - output) / tau
 
-    @cached_property
+        return jt.map(derivative, input, state)
+
+    @property
     def _term(self) -> dfx.AbstractTerm:
         return dfx.ODETerm(self.vector_field)
 
@@ -96,32 +111,21 @@ class FirstOrderFilter(Component):
         filter_state: FilterState = state.get(self.state_index)
         input_value = inputs["input"]
 
-        output_state, _, _, solver_state, _ = self.solver.step(
-            self._term,
-            0,
-            self.dt,
-            filter_state,
-            input_value,
+        output, solver_state = ode_step(
+            self.solver, self._term, self.dt, filter_state.output, input_value,
             filter_state.solver,
-            made_jump=False,
         )
-
-        output_state = eqx.tree_at(
-            lambda s: s.solver,
-            output_state,
-            solver_state,
-        )
+        output_state = FilterState(output=output, solver=solver_state)
         state = state.set(self.state_index, output_state)
         return {"output": output_state.output}, state
 
     def change_input(self, input_proto: PyTree[Array]) -> "FirstOrderFilter":
         new_initial_state = self._initial_state_value(input_proto)
         new_state_index = StateIndex(new_initial_state)
-        return dataclasses.replace(
+        return eqx.tree_at(
+            lambda model: (model.input_proto, model.state_index),
             self,
-            input_proto=input_proto,
-            state_index=new_state_index,
-            _initial_state=new_initial_state,
+            (input_proto, new_state_index),
         )
 
     @property

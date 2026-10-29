@@ -122,6 +122,8 @@ def scan_rollout(
         streaming_order = getattr(streaming_loss_fn, "streaming_order", 0)
         init_state_view = state_view_fn(init_state)
         state_window = init_streaming_state_window(init_state_view, streaming_order)
+        loss_shape = eqx.filter_eval_shape(streaming_loss_fn, state_window, jnp.asarray(0))
+        init_loss = jnp.zeros((), dtype=loss_shape.dtype)
 
         def step_streaming(carry, args):
             state, step_carry, state_window, loss_accum = carry
@@ -142,7 +144,7 @@ def scan_rollout(
 
         (final_state, _, _, total_loss), outputs = lax.scan(
             step_streaming,
-            (init_state, init_step_carry, state_window, jnp.float32(0.0)),
+            (init_state, init_step_carry, state_window, init_loss),
             ((step_inputs, keys), jnp.arange(n_steps)),
         )
         return outputs, final_state, total_loss

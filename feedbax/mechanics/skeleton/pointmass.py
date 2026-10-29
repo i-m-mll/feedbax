@@ -4,7 +4,6 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
-from functools import cached_property
 from typing import Optional
 
 import equinox as eqx
@@ -37,7 +36,7 @@ class PointMass(AbstractSkeleton[CartesianState]):
     mass: float
     damping: float = 0
 
-    @cached_property
+    @property
     def A(self) -> Array:
         A_undamped = jnp.sum(jnp.stack(
             [
@@ -53,18 +52,18 @@ class PointMass(AbstractSkeleton[CartesianState]):
 
         return A_undamped + A_damping
 
-    @cached_property
+    @property
     def B(self) -> Array:
         return jnp.concatenate(
             [jnp.zeros((N_DIM, N_DIM)), jnp.eye(N_DIM) / self.mass],
             axis=0,
         )
 
-    @cached_property
+    @property
     def C(self) -> Array:
         return jnp.array(1)  # TODO
 
-    @cached_property
+    @property
     def _lti_system(self) -> LTISystem:
         return LTISystem(self.A, self.B, self.C)
 

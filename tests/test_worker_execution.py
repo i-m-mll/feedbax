@@ -9,6 +9,7 @@ import threading
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.tree as jt
 import pytest
 
 import feedbax.web.worker.execution as worker_execution
@@ -802,6 +803,68 @@ def test_post_serialization_cleanup_failure_reports_residual_path(
     assert checkpoint_path.read_bytes() == b"serialized"
 
 
+@pytest.mark.parametrize(
+    "fixture, expected_losses, expected_output",
+    [
+        ("linear", [0.0904710814, 0.0101577155, 0.0054140552], [0.1759796143] * 4),
+        ("constrained", [0.9710375071, 0.7839561701, 0.6168751121], [-0.6854143143] * 4),
+        (
+            "recurrent",
+            [0.8857897520, 0.3174341917, 0.1139833331],
+            [-0.2304591388, -0.2057695985, -0.1899056733, -0.1794523597],
+        ),
+    ],
+)
+def test_studio_update_preserves_seeded_training(fixture, expected_losses, expected_output):
+    """Preserve seeded updates with reset templates excluded from optimizer ownership."""
+    from feedbax.training.studio_executor import StudioUpdateKernel
+
+    graph_spec = _linear_graph_spec()
+    binding = _task_binding_spec()
+    if fixture == "constrained":
+        graph_spec["parameter_constraints"] = [
+            {"node": "readout", "role": "weight", "mask": [[0]], "value": 0.0}
+        ]
+    elif fixture == "recurrent":
+        graph_spec = network_template_graph(
+            {"input_size": 2, "hidden_size": 3, "out_size": 1}
+        ).model_dump(mode="json", exclude_none=True)
+        binding = _network_task_binding_spec()
+    compiled = compile_training_run(
+        component_registry=ComponentRegistry(load_user_components=False),
+        graph_spec=graph_spec,
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=binding,
+        cfg=_cfg(),
+    )
+    initial_graph = compiled.graph
+    optimizer = _build_optimizer(0.1, 1.0)
+    kernel = StudioUpdateKernel(
+        compiled=compiled,
+        optimizer=optimizer,
+        rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),
+        evaluate_loss_fn=worker_execution._evaluate_loss,
+    )
+    slots = {
+        "model": compiled.graph,
+        "optimizer": optimizer.init(eqx.partition(compiled.graph, compiled.trainable_filter)[0]),
+        "prng": jax.random.PRNGKey(0),
+        "batch_counter": jnp.array(0, dtype=jnp.int32),
+    }
+    for expected_loss in expected_losses:
+        slots = kernel(slots)
+        assert isinstance(slots["train_loss"], jax.Array)
+        assert isinstance(slots["grad_norm"], jax.Array)
+        assert float(slots["train_loss"]) == pytest.approx(expected_loss, rel=2e-5, abs=2e-6)
+    output = rollout_graph(slots["model"], compiled, key=slots["prng"])["outputs"]["output"]
+    assert output[:, 0].tolist() == pytest.approx(expected_output, rel=2e-5, abs=2e-6)
+    assert int(slots["batch_counter"]) == 3
+    assert compiled.graph is initial_graph
+    with pytest.raises((TypeError, ValueError)):
+        kernel({**slots, "batch_counter": jnp.zeros((2,), dtype=jnp.int32)})
+
+
 def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     compiled = compile_training_run(
@@ -814,7 +877,7 @@ def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, m
     )
     events: list[dict] = []
 
-    run_training_graph(
+    result = run_training_graph(
         compiled,
         job_id="test-job",
         total_batches=5,
@@ -835,6 +898,20 @@ def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, m
     assert log_steps == [1, 2, 3, 4, 5]
     assert trajectory_steps == [3, 5]
     assert all("batch" not in event for event in events)
+
+    assert compiled.graph is result.graph
+    final_snapshot = next(
+        event["trajectory"]
+        for event in events
+        if event["type"] == "training_trajectory" and event["program_step"] == 5
+    )
+    assert final_snapshot == worker_execution._trajectory_snapshot(
+        result.graph, compiled, key=jax.random.PRNGKey(5)
+    )
+    restored = eqx.tree_deserialise_leaves(result.checkpoint_path, result.graph)
+    for expected, actual in zip(jt.leaves(result.graph), jt.leaves(restored), strict=True):
+        if eqx.is_array(expected):
+            assert jnp.array_equal(expected, actual)
 
 
 def test_run_training_graph_emits_selector_keyed_live_trajectory_tracks(

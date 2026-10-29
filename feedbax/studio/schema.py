@@ -31,9 +31,9 @@ from feedbax.compiler.normalization import (
 from feedbax.compiler.prototypes import (
     DerivedDimensionConflict,
     DerivedDimensionError,
-    normalize_derived_dimensions,
     prototypes_from_task_bindings,
 )
+from feedbax.compiler.resolution import GraphParameterResolution, resolve_graph_parameters
 from feedbax.runtime.task_bindings import COMPONENT_PARAMETER_ROLE, task_data_temporality
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
@@ -307,20 +307,23 @@ def enumerate_studio_schema_registry(
         return registry
 
     task_binding_spec = scenario.task_binding_spec
-    authoring_graph = normalize_graph_for_studio_authoring(
-        graph,
-        component_registry=component_registry,
-    )
+    authoring_graph = normalize_graph_for_studio_authoring(graph)
     task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
         task_binding_spec,
         authoring_graph,
     )
-    schema_graph = _normalize_derived_dimensions_for_schema(
+    resolution = resolve_graph_parameters(
         authoring_graph,
-        task_binding_spec,
+        prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
+        component_registry,
+        allow_incomplete=True,
     )
+    schema_graph = resolution.graph
     registry.ports = _enumerate_graph_ports(
-        schema_graph, task_binding_spec, component_registry=component_registry
+        schema_graph,
+        task_binding_spec,
+        component_registry=component_registry,
+        resolution=resolution,
     )
     registry.selector_targets.extend(_port_selector_targets(registry.ports))
     registry.selector_targets.extend(
@@ -333,6 +336,7 @@ def enumerate_studio_schema_registry(
             "/graph",
             task_binding_spec,
             component_registry=component_registry,
+            _resolution=resolution,
         )
     )
 
@@ -385,10 +389,20 @@ def validate_graph_connection_schema(
     task_binding_spec: Optional[StudioTaskBindingSpec] = None,
     *,
     component_registry: Any,
+    _resolution: GraphParameterResolution | None = None,
 ) -> list[SchemaValidationIssue]:
     """Validate graph wires against provider-owned port schema records."""
 
-    ports = _enumerate_graph_ports(graph, component_registry=component_registry)
+    resolution = _resolution or resolve_graph_parameters(
+        graph,
+        prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
+        component_registry,
+        allow_incomplete=True,
+    )
+    graph = resolution.graph
+    ports = _enumerate_graph_ports(
+        graph, component_registry=component_registry, resolution=resolution
+    )
     by_node_port_direction = {
         (port.node_id, port.port, port.direction): port
         for port in ports
@@ -519,7 +533,7 @@ def validate_graph_connection_schema(
         )
 
     issues.extend(_mux_connected_input_issues(graph, task_binding_spec, base_path))
-    issues.extend(_derived_dimension_issues(graph, task_binding_spec, base_path))
+    issues.extend(_parameter_resolution_issues(resolution, base_path))
     issues.extend(_instant_cycle_issues(graph, base_path))
     return issues
 
@@ -555,67 +569,36 @@ def _missing_subgraph_issues(
     return issues
 
 
-def _normalize_derived_dimensions_for_schema(
-    graph: GraphSpec,
-    task_binding_spec: Optional[StudioTaskBindingSpec],
-) -> GraphSpec:
-    if not graph.derived_dimensions and not graph.subgraphs:
-        return graph
-    try:
-        return normalize_derived_dimensions(
-            graph,
-            prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
-        )
-    except DerivedDimensionError:
-        return graph
-
-
-def _derived_dimension_issues(
-    graph: GraphSpec,
-    task_binding_spec: Optional[StudioTaskBindingSpec],
+def _parameter_resolution_issues(
+    resolution: GraphParameterResolution,
     base_path: str,
 ) -> list[SchemaValidationIssue]:
-    if not graph.derived_dimensions and not graph.subgraphs:
-        return []
-    try:
-        normalize_derived_dimensions(
-            graph,
-            prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
-        )
-    except DerivedDimensionConflict as exc:
-        return [
-            SchemaValidationIssue(
-                type="derived_dimension_conflict",
-                message=str(exc),
-                location={
-                    "path": f"{base_path}/derived_dimensions/{_derived_dimension_index(graph, exc)}",
-                    "node": exc.rule.node,
-                    "param": exc.rule.param,
-                    "declared": str(exc.declared),
-                    "derived": str(exc.derived),
-                },
+    issues = []
+    for error in resolution.errors:
+        cause = error.cause
+        location = {"path": base_path + error.authored_path.removeprefix("/graph")}
+        kind = "component_parameters_unresolved"
+        if isinstance(cause, DerivedDimensionError):
+            kind = (
+                "derived_dimension_conflict"
+                if isinstance(cause, DerivedDimensionConflict)
+                else "derived_dimension_unresolved"
             )
-        ]
-    except DerivedDimensionError as exc:
-        return [
-            SchemaValidationIssue(
-                type="derived_dimension_unresolved",
-                message=str(exc),
-                location={
-                    "path": f"{base_path}/derived_dimensions/{_derived_dimension_index(graph, exc)}",
-                    "node": exc.rule.node,
-                    "param": exc.rule.param,
-                },
+            graph_path = error.authored_path.rsplit("/", 2)[0]
+            graph = resolution.graph
+            for name in graph_path.split("/")[3::2]:
+                graph = graph.subgraphs[name.replace("~1", "/").replace("~0", "~")]
+            index = next(
+                (i for i, rule in enumerate(graph.derived_dimensions) if rule == cause.rule), 0
             )
-        ]
-    return []
-
-
-def _derived_dimension_index(graph: GraphSpec, exc: DerivedDimensionError) -> int:
-    for index, rule in enumerate(graph.derived_dimensions):
-        if rule == exc.rule:
-            return index
-    return 0
+            location["path"] = (
+                base_path + graph_path.removeprefix("/graph") + f"/derived_dimensions/{index}"
+            )
+            location.update({"node": cause.rule.node, "param": cause.rule.param})
+            if isinstance(cause, DerivedDimensionConflict):
+                location.update({"declared": str(cause.declared), "derived": str(cause.derived)})
+        issues.append(SchemaValidationIssue(type=kind, message=str(error), location=location))
+    return issues
 
 
 def _mux_connected_input_issues(
@@ -830,7 +813,7 @@ def _dynamic_port_arity_issues(
         if meta is None or meta.dynamic_port_policy is None:
             continue
         try:
-            expected = component_registry.dynamic_port_layout(node.type, node.params)
+            expected = derive_dynamic_port_layout(meta.dynamic_port_policy, node.params)
         except DynamicPortPolicyError as exc:
             issues.append(
                 SchemaValidationIssue(
@@ -912,6 +895,7 @@ def _enumerate_graph_ports(
     task_binding_spec: Optional[StudioTaskBindingSpec] = None,
     *,
     component_registry: Any,
+    resolution: GraphParameterResolution | None = None,
 ) -> list[PortSchema]:
     registry = component_registry
     ports: list[PortSchema] = []
@@ -948,6 +932,19 @@ def _enumerate_graph_ports(
                     component_registry=component_registry,
                 )
             )
+    if resolution is not None:
+        for port in ports:
+            key = (port.node_id, port.port)
+            prototype = (
+                resolution.node_inputs if port.direction == "input" else resolution.node_outputs
+            ).get(key)
+            shape = getattr(prototype, "shape", None)
+            if shape is not None:
+                port.value_schema.shape = list(shape)
+                port.value_schema.rank = len(shape)
+                port.value_schema.origin = "inferred_static"
+                port.value_schema.metadata["dimension_source"] = "compiler_prototype"
+                port.origin = "inferred_static"
     for port_name in graph.input_ports:
         ports.append(
             _graph_port_schema(

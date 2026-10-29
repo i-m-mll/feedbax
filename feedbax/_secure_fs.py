@@ -34,6 +34,48 @@ def rename_no_replace(
     context: str,
 ) -> None:
     """Atomically rename one descriptor-relative entry without replacement."""
+    _rename_atomic(
+        source_name,
+        destination_name,
+        source_dir_fd=source_dir_fd,
+        destination_dir_fd=destination_dir_fd,
+        error_factory=error_factory,
+        context=context,
+        exchange=False,
+    )
+
+
+def rename_exchange(
+    source_name: str,
+    destination_name: str,
+    *,
+    source_dir_fd: int,
+    destination_dir_fd: int,
+    error_factory: ErrorFactory,
+    context: str,
+) -> None:
+    """Atomically exchange two existing entries, including nonempty directories."""
+    _rename_atomic(
+        source_name,
+        destination_name,
+        source_dir_fd=source_dir_fd,
+        destination_dir_fd=destination_dir_fd,
+        error_factory=error_factory,
+        context=context,
+        exchange=True,
+    )
+
+
+def _rename_atomic(
+    source_name: str,
+    destination_name: str,
+    *,
+    source_dir_fd: int,
+    destination_dir_fd: int,
+    error_factory: ErrorFactory,
+    context: str,
+    exchange: bool,
+) -> None:
     libc = ctypes.CDLL(None, use_errno=True)
     source_bytes = os.fsencode(source_name)
     destination_bytes = os.fsencode(destination_name)
@@ -43,7 +85,7 @@ def rename_no_replace(
             source_bytes,
             destination_dir_fd,
             destination_bytes,
-            0x00000004,
+            0x00000002 if exchange else 0x00000004,
         )
     elif hasattr(libc, "renameat2"):
         result = libc.renameat2(
@@ -51,10 +93,10 @@ def rename_no_replace(
             source_bytes,
             destination_dir_fd,
             destination_bytes,
-            1,
+            2 if exchange else 1,
         )
     else:
-        raise error_factory(f"{context} requires atomic no-replace rename support")
+        raise error_factory(f"{context} requires atomic rename support")
     if result == 0:
         return
     error = ctypes.get_errno()

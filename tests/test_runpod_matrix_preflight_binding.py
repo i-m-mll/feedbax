@@ -16,7 +16,7 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     TrainingRowLoweringResult,
 )
-from feedbax.contracts.training import default_training_program_registry
+from tests.support.training_fixtures import synthetic_training_program_registry
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -175,7 +175,7 @@ def _matrix_case(
         allow_inline_base=True,
         row_lowerer=lower,
         row_validator=lambda _payload, _row_id: None,
-        method_registry=default_training_program_registry(),
+        method_registry=synthetic_training_program_registry(),
     )
     context = AssemblyContext(custody_root=root / "runs" / "custody", repo_root=root)
     bundle = assemble_run_bundle(
@@ -437,6 +437,7 @@ def test_authority_only_cli_authenticates_content_pinned_custom_lowered_bundle(
 
     checks = {check.name: check for check in run_authority_preflight_checks(bundle)}
     assert set(checks) == {
+        "collection-destinations",
         "schema-current",
         "feedbax-revision-pin",
         "row-identity",

@@ -241,7 +241,6 @@ class PenzaiStateManager(Module):
     """
 
     state_index: StateIndex
-    _initial_state: PyTree = field(static=True)
 
     @classmethod
     def from_model(cls, pz_model: PyTree) -> "PenzaiStateManager":
@@ -274,7 +273,6 @@ class PenzaiStateManager(Module):
 
         return cls(
             state_index=StateIndex(initial_state),
-            _initial_state=initial_state,
         )
 
     @classmethod
@@ -283,7 +281,6 @@ class PenzaiStateManager(Module):
         initial_state: dict[tuple[Any, ...], Any] = {}
         return cls(
             state_index=StateIndex(initial_state),
-            _initial_state=initial_state,
         )
 
     def bind_state(self, pz_model: PyTree, state: State) -> PyTree:
@@ -550,14 +547,7 @@ class PenzaiSubgraph(Component):
         Returns:
             State with Penzai StateVariable initial values.
         """
-        # State constructor requires a model argument in newer equinox versions
-        state = State(self)
-        if self.state_manager._initial_state:
-            state = state.set(
-                self.state_manager.state_index,
-                self.state_manager._initial_state,
-            )
-        return state
+        return State(self)
 
     def treescope_html(self) -> str:
         """Render the Penzai model to HTML using treescope.

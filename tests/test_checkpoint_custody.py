@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from types import FunctionType
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -17,6 +18,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 from equinox.nn import StateIndex
 
@@ -819,6 +821,53 @@ def test_semantic_state_root_ignores_pickle_memo_identity_but_preserves_semantic
     assert root(shared_value) == root(unshared_value)
     assert root({"left": shared, "right": shared + " changed"}) != root(shared_value)
     assert root({"left": "a", "right": "b"}) != root({"left": "b", "right": "a"})
+
+
+def _semantic_model_root(value: object) -> str:
+    return custody_module.semantic_state_root_sha256(
+        slot="model",
+        role="model",
+        value=value,
+        structural_abi_fingerprint=custody_module.structural_abi_fingerprint(value),
+        materialized_axes=None,
+        population=None,
+    )
+
+
+def test_semantic_state_root_retains_prior_supported_value_projection() -> None:
+    value = {
+        "array": jnp.asarray([0.5, 1.0], dtype=jnp.float32),
+        "count": 3,
+        "label": "retained",
+        "flag": True,
+        "none": None,
+        "tuple": (2.5, b"x"),
+    }
+    assert _semantic_model_root(value) == (
+        "8ed77d8c455e9f631b8a94c18c904127567569f71c04fe9c3b210fd0f4a77797"
+    )
+
+
+def test_global_function_leaf_identity_survives_pickle_and_discriminates_functions() -> None:
+    restored = pickle.loads(pickle.dumps(identity_activation))
+    baseline = custody_module.structural_abi_fingerprint(identity_activation)
+    assert custody_module.structural_abi_fingerprint(restored) == baseline
+    assert _semantic_model_root(restored) == _semantic_model_root(identity_activation)
+    assert _semantic_model_root(_different_stable_activation) != _semantic_model_root(restored)
+    assert custody_module.structural_abi_fingerprint(_different_stable_activation) != baseline
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        _closure_activation(),
+        lambda value: value,
+        FunctionType(identity_activation.__code__, identity_activation.__globals__),
+    ],
+)
+def test_ambiguous_function_leaf_remains_unsupported(value) -> None:
+    with pytest.raises(CheckpointSemanticStateUnsupported, match="unsupported or ambiguous"):
+        _semantic_model_root(value)
 
 
 def test_semantic_state_root_projects_nested_typed_dataclass_state() -> None:
@@ -2997,6 +3046,113 @@ def test_environment_provenance_drift_warns_but_load_and_fork_succeed(
     assert forked.source_provenance_notices[0].code == "environment_provenance_mismatch"
 
 
+@pytest.mark.parametrize("equinox_version", ["0.13.1", "0.13.8"])
+def test_released_equinox_producer_line_admitted(tmp_path: Path, equinox_version: str) -> None:
+    run_spec, program, result = _write_minimax_checkpoint(tmp_path)
+    payload = json.loads(result.manifest_path.read_text())
+    for slot in payload["slots"]:
+        slot["structural_abi_fingerprint"]["environment_provenance"]["equinox_version"] = (
+            equinox_version
+        )
+    _rewrite_manifest_and_latest(result, payload)
+    loaded = load_latest_checkpoint(
+        tmp_path,
+        expected_run_spec=run_spec,
+        expected_phase_program=program,
+        expected_slots=_minimax_slots(),
+    )
+    np.testing.assert_array_equal(loaded.slots["controller"], _minimax_slots()["controller"])
+
+
+@pytest.mark.parametrize(
+    ("serializer", "equinox_version"),
+    [(version, "0.13.1") for version in ("v1", "v2", "unknown", "missing")]
+    + [
+        ("v3", version)
+        for version in (
+            "0.11.12",
+            "0.13.0",
+            None,
+            "invalid",
+            "0.14.1",
+            "1.13.1",
+            "0.13.2rc1",
+            "0.13.2.dev0",
+            "0.13.1+local",
+            "0.13.1.post1",
+            "0.13.1.1",
+            "1!0.13.1",
+        )
+    ],
+)
+@pytest.mark.parametrize("reader", ["resume", "fork", "reference", "history_parent"])
+def test_unsupported_checkpoint_codec_refuses_before_unpickle(
+    tmp_path: Path,
+    serializer: str,
+    equinox_version: str | None,
+    reader: str,
+) -> None:
+    source_root = tmp_path / "source"
+    run_spec, program, result = _write_minimax_checkpoint(source_root)
+    marker = tmp_path / "unpickled"
+    payload = _replace_resolver_slot_blob(result, "controller", _TouchMarkerOnUnpickle(marker))
+    for slot in payload["slots"]:
+        fingerprint = slot["structural_abi_fingerprint"]
+        fingerprint["environment_provenance"]["equinox_version"] = equinox_version
+        if serializer == "missing":
+            fingerprint["environment_provenance"] = None
+        else:
+            fingerprint["environment_provenance"]["serializer"] = (
+                f"feedbax.training.checkpoint_custody.pickle.{serializer}"
+            )
+    _rewrite_manifest_and_latest(result, payload)
+    latest = json.loads(result.latest_pointer_path.read_text())
+    latest["transaction_root_sha256"] = payload["content_integrity_digest"][
+        "transaction_root_sha256"
+    ]
+    _write_json(result.latest_pointer_path, latest)
+
+    # Inspection authenticates bytes and metadata without interpreting old object layouts.
+    authenticated = authenticate_published_checkpoint_custody(source_root)
+    assert authenticated.manifest.transaction_id == result.manifest.transaction_id
+    error = (
+        CheckpointReferenceResolutionError
+        if reader == "reference"
+        else CheckpointCompatibilityError
+    )
+    with pytest.raises(error, match="unsupported.*producer version"):
+        if reader == "resume":
+            load_latest_checkpoint(
+                source_root,
+                expected_run_spec=run_spec,
+                expected_phase_program=program,
+                expected_slots=_minimax_slots(),
+            )
+        elif reader == "fork":
+            fork_checkpoint_transaction(
+                source_root,
+                tmp_path / "fork",
+                target_run_spec=run_spec,
+                target_phase_program=program,
+                expected_slots=_minimax_slots(),
+            )
+        elif reader == "reference":
+            resolve_checkpoint_custody_ref(_resolver_parent_ref(result), allowed_root=source_root)
+        else:
+            child = _write_resolver_checkpoint(tmp_path / "child")
+            child_payload = json.loads(child.manifest_path.read_text())
+            child_payload["segment_lineage"]["parent_transaction_id"] = (
+                result.manifest.transaction_id
+            )
+            child_payload["segment_lineage"]["start_batch"] = 1
+            _rewrite_manifest_and_latest(child, child_payload)
+            concatenate_checkpoint_histories(
+                child.root,
+                parent_roots={result.manifest.transaction_id: source_root},
+            )
+    assert not marker.exists()
+
+
 def test_defaulted_legacy_projection_migrates_and_resumes(
     tmp_path: Path,
 ) -> None:
@@ -4332,26 +4488,36 @@ def test_legacy_absent_binding_projection_refuses_unbound_optimizer_and_reports_
     assert "graph_sha256" in message
 
 
-def test_interrupted_toy_resume_matches_uninterrupted(tmp_path: Path) -> None:
+def test_interrupted_adam_resume_matches_uninterrupted_next_step_and_output(tmp_path: Path) -> None:
     run_spec = _run_spec()
     program = run_spec.worker_execution.method_contract.phase_program
+    optimizer = optax.adam(0.05)
+    inputs = jnp.array([0.5, -1.5])
+
+    def predict(model):
+        return jnp.dot(model, inputs)
 
     def step(state: dict[str, object]) -> dict[str, object]:
+        gradient = jax.grad(lambda model: (predict(model) - 0.75) ** 2)(state["model"])
+        updates, optimizer_state = optimizer.update(
+            gradient, state["optimizer"], state["model"]
+        )
         return {
-            "model": state["model"] + state["optimizer"]["count"],
-            "optimizer": {"count": state["optimizer"]["count"] + 1},
+            "model": optax.apply_updates(state["model"], updates),
+            "optimizer": optimizer_state,
             "prng": state["prng"] + 17,
             "batch_counter": state["batch_counter"] + 1,
         }
 
+    model = jnp.array([0.0, 0.25])
     continuous = {
-        "model": jnp.array([0.0]),
-        "optimizer": {"count": jnp.array(1.0)},
+        "model": model,
+        "optimizer": optimizer.init(model),
         "prng": jnp.array([0, 1], dtype=jnp.uint32),
         "batch_counter": jnp.array(0, dtype=jnp.int32),
     }
     interrupted = dict(continuous)
-    for _ in range(4):
+    for _ in range(3):
         continuous = step(continuous)
     for _ in range(2):
         interrupted = step(interrupted)
@@ -4362,7 +4528,7 @@ def test_interrupted_toy_resume_matches_uninterrupted(tmp_path: Path) -> None:
         program_step=2,
         completed_barrier="after_train_batch",
     )
-    write_checkpoint_transaction(
+    written = write_checkpoint_transaction(
         tmp_path,
         run_spec=run_spec,
         phase_program=program,
@@ -4376,13 +4542,14 @@ def test_interrupted_toy_resume_matches_uninterrupted(tmp_path: Path) -> None:
         expected_phase_program=program,
         expected_slots=interrupted,
     )
-    resumed = loaded.slots
-    for _ in range(2):
-        resumed = step(resumed)
-
-    assert resumed["model"].tolist() == continuous["model"].tolist()
-    assert resumed["optimizer"]["count"].tolist() == continuous["optimizer"]["count"].tolist()
-    assert resumed["prng"].tolist() == continuous["prng"].tolist()
+    assert {slot.codec_schema_version for slot in written.checkpoint_set.slots} == {
+        "feedbax.training.checkpoint_custody.pickle.v3"
+    }
+    resumed = step(loaded.slots)
+    for actual, expected in zip(jax.tree.leaves(resumed), jax.tree.leaves(continuous), strict=True):
+        np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(predict(resumed["model"]), predict(continuous["model"]))
+    assert not np.array_equal(resumed["model"], interrupted["model"])
 
 
 def test_distinct_barrier_mapping_requires_explicit_coordinate_provenance() -> None:
