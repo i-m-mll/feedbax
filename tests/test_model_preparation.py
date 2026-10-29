@@ -79,7 +79,13 @@ def test_preparing_nested_shared_children_assigns_independent_reset_slots():
 
 
 @pytest.mark.parametrize(
-    "solver_type, first_dtype", [(dfx.Euler, jnp.float32), (dfx.Heun, jnp.float64)]
+    "solver_type, first_dtype",
+    [
+        (dfx.Euler, jnp.float32),
+        (dfx.Heun, jnp.float64),
+        (dfx.Heun, jnp.float32),
+        (dfx.Tsit5, jnp.float32),
+    ],
 )
 def test_filter_change_input_preserves_solver_configuration_and_mixed_float_reset(
     solver_type, first_dtype
@@ -298,7 +304,7 @@ def test_prepared_studio_gru_checkpoint_continues_next_adam_step(tmp_path):
         slots=slots,
     )
     assert {slot.codec_schema_version for slot in written.checkpoint_set.slots} == {
-        "feedbax.training.checkpoint_custody.pickle.v2"
+        "feedbax.training.checkpoint_custody.pickle.v3"
     }
     loaded = load_latest_checkpoint(
         tmp_path,

@@ -30,6 +30,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
+from feedbax._ode import ode_step
 from feedbax.mechanics.dae import DAEComponent, DAEParams
 from feedbax.mechanics.units import (
     DEFAULT_MUSCLE_VMAX,
@@ -758,14 +759,8 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
 
         input_tuple = (excitation, mt_length, mt_velocity)
         dae_state = state.get(self.state_index)
-        muscle_state, _, _, new_solver_state, _ = self.solver.step(
-            self._term,
-            0.0,
-            self.dt,
-            dae_state.system,
-            input_tuple,
-            dae_state.solver,
-            made_jump=False,
+        muscle_state, new_solver_state = ode_step(
+            self.solver, self._term, self.dt, dae_state.system, input_tuple, dae_state.solver,
         )
 
         clamped_activation = jnp.clip(muscle_state.activation, 0.0, 1.0)

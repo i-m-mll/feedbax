@@ -24,6 +24,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 
+from feedbax._ode import ode_init, ode_step
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.runtime.state import CartesianState
 
@@ -165,8 +166,8 @@ class DiffraxBackend(Module):
         """
         plant_state = plant.init(key=key)
         init_input = jnp.zeros((plant.input_size,))
-        solver_state = self.solver.init(
-            self._term(plant), 0, self.sub_dt, plant_state, init_input
+        solver_state = ode_init(
+            self.solver, self._term(plant), self.sub_dt, plant_state, init_input
         )
         effector = plant.skeleton.effector(plant_state.skeleton)
         return PhysicsState(
@@ -206,14 +207,9 @@ class DiffraxBackend(Module):
             Updated PhysicsState.
         """
         plant_state = plant.kinematics_update(action, state.plant)
-        plant_state, _, _, solver_state, _ = self.solver.step(
-            self._term(plant),
-            0,
-            self.sub_dt,
-            plant_state,
-            action,
-            state.aux,
-            made_jump=False,
+        plant_state, solver_state = ode_step(
+            self.solver, self._term(plant), self.sub_dt, plant_state, action, state.aux,
+            storage_like=state.plant,
         )
         effector = plant.skeleton.effector(plant_state.skeleton)
         return PhysicsState(
