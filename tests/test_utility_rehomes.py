@@ -75,5 +75,5 @@ def test_feedback_impulse_activation_window():
         feedback_dim=1,
     )
 
-    assert perturbation._initial_state.scale == 0.25
-    assert perturbation._initial_state.active.tolist() == [False, True, True, False]
+    assert perturbation.params_index.init.scale == 0.25
+    assert perturbation.params_index.init.active.tolist() == [False, True, True, False]

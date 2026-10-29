@@ -5,7 +5,6 @@
 """
 
 from functools import cached_property
-import dataclasses
 from typing import Optional, Type
 
 import diffrax as dfx
@@ -52,7 +51,6 @@ class FirstOrderFilter(Component):
     input_proto: PyTree[Array] = field(default_factory=lambda: jnp.zeros(1))
     init_value: float = 0.0
     state_index: StateIndex
-    _initial_state: FilterState = field(static=True)
 
     def __init__(
         self,
@@ -72,8 +70,8 @@ class FirstOrderFilter(Component):
         self.input_proto = input_proto
         self.init_value = init_value
 
-        self._initial_state = self._initial_state_value(input_proto)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = self._initial_state_value(input_proto)
+        self.state_index = StateIndex(initial_state)
 
     def _initial_state_value(self, input_proto: PyTree[Array]) -> FilterState:
         require_real_floating_filter_prototype(input_proto)
@@ -144,11 +142,10 @@ class FirstOrderFilter(Component):
     def change_input(self, input_proto: PyTree[Array]) -> "FirstOrderFilter":
         new_initial_state = self._initial_state_value(input_proto)
         new_state_index = StateIndex(new_initial_state)
-        return dataclasses.replace(
+        return eqx.tree_at(
+            lambda model: (model.input_proto, model.state_index),
             self,
-            input_proto=input_proto,
-            state_index=new_state_index,
-            _initial_state=new_initial_state,
+            (input_proto, new_state_index),
         )
 
     @property

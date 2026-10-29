@@ -26,6 +26,10 @@ def identity_func(x):
     return x
 
 
+def _point_mass_feedback(state):
+    return state.plant.skeleton.pos, state.plant.skeleton.vel
+
+
 def point_mass_nn(
     task: AbstractTask,
     n_extra_inputs: int = 0,
@@ -81,10 +85,7 @@ def point_mass_nn(
     mechanics = Mechanics(DirectForceInput(system), dt)
 
     feedback_spec = dict(
-        where=lambda state: (
-            state.plant.skeleton.pos,
-            state.plant.skeleton.vel,
-        ),
+        where=_point_mass_feedback,
         delay=feedback_delay_steps,
         noise_func=Normal(std=feedback_noise_std),
     )
@@ -123,7 +124,7 @@ def point_mass_nn(
         key=key2,
     )
 
-    return body
+    return body.prepare()
 
 
 def cde_controller_nn(
@@ -175,10 +176,7 @@ def cde_controller_nn(
     mechanics = Mechanics(DirectForceInput(system), dt)
 
     feedback_spec = dict(
-        where=lambda state: (
-            state.plant.skeleton.pos,
-            state.plant.skeleton.vel,
-        ),
+        where=_point_mass_feedback,
         delay=feedback_delay_steps,
         noise_func=Normal(std=feedback_noise_std),
     )
@@ -210,4 +208,4 @@ def cde_controller_nn(
         key=key2,
     )
 
-    return body
+    return body.prepare()

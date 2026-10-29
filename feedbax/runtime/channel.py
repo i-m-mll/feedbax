@@ -70,7 +70,6 @@ class Channel(Component):
     noise_role: Optional[str] = field(default=None, static=True)
     noise_timing: Optional[str] = field(default=None, static=True)
     state_index: StateIndex
-    _initial_state: ChannelState = field(static=True)
 
     def __init__(
         self,
@@ -96,8 +95,8 @@ class Channel(Component):
         self.noise_role = noise_role
         self.noise_timing = noise_timing
 
-        self._initial_state = self._initial_state_value(input_proto)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = self._initial_state_value(input_proto)
+        self.state_index = StateIndex(initial_state)
 
     def _initial_state_value(self, input_proto: PyTree[Array]) -> ChannelState:
         input_init = jt.map(lambda x: jnp.full_like(x, self.init_value), input_proto)
@@ -140,8 +139,6 @@ class Channel(Component):
 
     def change_input(self, input_proto: PyTree[Array]) -> "Channel":
         """Return a similar Channel with a changed input structure."""
-        # Reconstruct via __init__ which computes state_index and
-        # _initial_state from the other args.
         return Channel(
             delay=self.delay,
             noise_func=self.noise_func,

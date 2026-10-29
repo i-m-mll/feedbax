@@ -35,7 +35,6 @@ class IntegratorDiscrete(Component):
     dt: float
     n_dims: int = field(static=True)
     state_index: StateIndex
-    _initial_state: Array = field(static=True)
 
     def __init__(
         self,
@@ -45,8 +44,8 @@ class IntegratorDiscrete(Component):
     ):
         self.dt = float(dt)
         self.n_dims = n_dims
-        self._initial_state = jnp.zeros(n_dims) + initial_value
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = jnp.zeros(n_dims) + initial_value
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,
@@ -76,7 +75,6 @@ class UnitDelay(Component):
 
     n_dims: int = field(static=True)
     state_index: StateIndex
-    _initial_state: Array = field(static=True)
 
     def __init__(
         self,
@@ -84,8 +82,8 @@ class UnitDelay(Component):
         initial_value: float = 0.0,
     ):
         self.n_dims = n_dims
-        self._initial_state = jnp.zeros(n_dims) + initial_value
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = jnp.zeros(n_dims) + initial_value
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,
@@ -114,7 +112,6 @@ class ZeroOrderHold(Component):
     hold_steps: int = field(static=True)
     n_dims: int = field(static=True)
     state_index: StateIndex
-    _initial_state: tuple[Array, Array] = field(static=True)
 
     def __init__(
         self,
@@ -126,8 +123,8 @@ class ZeroOrderHold(Component):
         self.n_dims = n_dims
         held_value = jnp.zeros(n_dims) + initial_value
         step_counter = jnp.zeros((), dtype=jnp.int32)
-        self._initial_state = (held_value, step_counter)
-        self.state_index = StateIndex(self._initial_state)
+        initial_state = (held_value, step_counter)
+        self.state_index = StateIndex(initial_state)
 
     def __call__(
         self,

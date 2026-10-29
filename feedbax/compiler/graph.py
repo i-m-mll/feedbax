@@ -564,7 +564,7 @@ def compile_graph(
     )
 
     def build_schedule() -> tuple[Graph, tuple[str, ...]]:
-        executable = _instantiate_graph(graph, component_registry)
+        executable = _instantiate_graph(graph, component_registry).prepare()
         return executable, tuple(executable._execution_order)
 
     executable, node_order = _compile_phase(

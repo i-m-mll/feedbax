@@ -213,29 +213,6 @@ class SimpleFeedback(Graph):
         # (e.g. state.plant.skeleton.pos).
         wires.append(Wire("mechanics", "state", "feedback", "mechanics", temporality="recurrent"))
 
-        def _state_view(node_states):
-            force_filter_state = node_states.get(
-                "force_filter", FilterState(output=None, solver=None)
-            )
-            return SimpleFeedbackState(
-                mechanics=node_states["mechanics"],
-                net=node_states["net"],
-                feedback=node_states["feedback"],
-                efferent=node_states["efferent"],
-                force_filter=force_filter_state,
-            )
-
-        def _consistency_update(state):
-            mechanics_state: MechanicsState = state.get(mechanics.state_index)
-            new_skeleton = mechanics.plant.skeleton.inverse_kinematics(mechanics_state.effector)
-            mechanics_state = eqx.tree_at(
-                lambda s: s.plant.skeleton,
-                mechanics_state,
-                new_skeleton,
-            )
-            state = state.set(mechanics.state_index, mechanics_state)
-            return feedback.fill_queues(state, mechanics_state)
-
         super().__init__(
             nodes=nodes,
             wires=tuple(wires),
@@ -243,11 +220,32 @@ class SimpleFeedback(Graph):
             output_ports=("effector",),
             input_bindings={"input": ("net", "input")},
             output_bindings={"effector": ("mechanics", "effector")},
-            state_view_fn=_state_view,
-            state_consistency_fn=_consistency_update,
         )
 
         self._feedback_specs = feedback_specs
+
+    def state_view(self, state: eqx.nn.State) -> SimpleFeedbackState:
+        if self.state_view_fn is not None:
+            return super().state_view(state)
+        node_states = {name: node.state_view(state) for name, node in self.nodes.items()}
+        return SimpleFeedbackState(
+            mechanics=node_states["mechanics"],
+            net=node_states["net"],
+            feedback=node_states["feedback"],
+            efferent=node_states["efferent"],
+            force_filter=node_states.get("force_filter", FilterState(output=None, solver=None)),
+        )
+
+    def state_consistency_update(self, state: eqx.nn.State) -> eqx.nn.State:
+        mechanics = self.mechanics
+        mechanics_state = state.get(mechanics.state_index)
+        new_skeleton = mechanics.plant.skeleton.inverse_kinematics(mechanics_state.effector)
+        mechanics_state = eqx.tree_at(
+            lambda value: value.plant.skeleton, mechanics_state, new_skeleton
+        )
+        state = state.set(mechanics.state_index, mechanics_state)
+        state = self.feedback_channels.fill_queues(state, mechanics_state)
+        return super().state_consistency_update(state)
 
     @property
     def feedback_channels(self) -> FeedbackChannels:

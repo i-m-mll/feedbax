@@ -2530,9 +2530,9 @@ def register_builtin_components(registry: _Registry) -> None:
                 groups={"params": (CurlFieldParams, ("scale", "amplitude", "active"))}
             ),
             attribute_paths={
-                "scale": "_initial_state.scale",
-                "amplitude": "_initial_state.amplitude",
-                "active": "_initial_state.active",
+                "scale": "params_index.init.scale",
+                "amplitude": "params_index.init.amplitude",
+                "active": "params_index.init.active",
             },
             category="Interventions",
             description="Velocity-dependent curl field.",
@@ -2570,10 +2570,10 @@ def register_builtin_components(registry: _Registry) -> None:
                 array_conversions={"field": None},
             ),
             attribute_paths={
-                "scale": "_initial_state.scale",
-                "amplitude": "_initial_state.amplitude",
-                "field": "_initial_state.field",
-                "active": "_initial_state.active",
+                "scale": "params_index.init.scale",
+                "amplitude": "params_index.init.amplitude",
+                "field": "params_index.init.field",
+                "active": "params_index.init.active",
             },
             category="Interventions",
             description="Fixed force field.",
@@ -2691,9 +2691,9 @@ def register_builtin_components(registry: _Registry) -> None:
                 array_conversions={"delta_A": (2, 4)},
             ),
             attribute_paths={
-                "scale": "_initial_state.scale",
-                "delta_A": "_initial_state.delta_A",
-                "active": "_initial_state.active",
+                "scale": "params_index.init.scale",
+                "delta_A": "params_index.init.delta_A",
+                "active": "params_index.init.active",
             },
             category="Interventions",
             description="State-feedback dynamics-matrix perturbation in the force channel.",
@@ -2801,7 +2801,7 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 groups={"params": (AddNoiseParams, ("scale", "active"))}
             ),
-            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
+            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
             category="Interventions",
             description="Add noise to a signal.",
             parameter_fields=[
@@ -2825,7 +2825,7 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 groups={"params": (NetworkIntervenorParams, ("scale", "active"))}
             ),
-            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
+            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
             category="Interventions",
             description="Clamp network unit activity.",
             parameter_fields=[
@@ -2847,7 +2847,7 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="ReluMuscle",
             runtime_type=ReluMuscle,
-            attribute_paths={"initial_activation": "_initial_state"},
+            attribute_paths={"initial_activation": "state_index.init"},
             category="Muscles",
             description="Simple muscle: force = activation * F_max.",
             parameter_fields=[
@@ -2911,7 +2911,7 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="RigidTendonHillMuscleThelen",
             runtime_type=RigidTendonHillMuscleThelen,
-            attribute_paths={"initial_activation": "_initial_state"},
+            attribute_paths={"initial_activation": "state_index.init"},
             category="Muscles",
             description="Hill-type muscle with rigid tendon assumption. Vectorized for multiple muscles.",
             parameter_fields=[
@@ -3147,7 +3147,7 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 groups={"params": (NetworkIntervenorParams, ("scale", "active"))}
             ),
-            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
+            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
             category="Interventions",
             description="Add constant input to network units.",
             parameter_fields=[
@@ -3171,7 +3171,7 @@ def register_builtin_components(registry: _Registry) -> None:
             constructor=ComponentConstructorPlan(
                 groups={"params": (ConstantInputParams, ("scale", "active"))}
             ),
-            attribute_paths={"scale": "_initial_state.scale", "active": "_initial_state.active"},
+            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
             category="Interventions",
             description="Add a constant input to a signal.",
             parameter_fields=[
