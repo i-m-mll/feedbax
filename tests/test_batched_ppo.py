@@ -113,8 +113,8 @@ class TestBuildBatch:
 
 
 class TestBatchedCollect:
-    def test_shapes(self, batched_plant, env_config, key):
-        """Batched rollout collection produces correct shapes."""
+    def test_shapes_and_finiteness(self, batched_plant, env_config, key):
+        """Batched rollout collection produces finite arrays with correct shapes."""
         obs_dim = env_config.n_joints * 2 + env_config.n_muscles + 2 + 2 + 2 + 1
         action_dim = env_config.n_muscles
         n_steps = 16  # short rollout
@@ -148,35 +148,8 @@ class TestBatchedCollect:
         assert rollout.rewards.shape == (B, n_steps, N)
         assert last_values.shape == (B, N)
 
-    def test_finite(self, batched_plant, env_config, key):
-        """Collected rollout data should be finite."""
-        obs_dim = env_config.n_joints * 2 + env_config.n_muscles + 2 + 2 + 2 + 1
-        action_dim = env_config.n_muscles
-
-        key, pk, ek = jax.random.split(key, 3)
-        policies = [ActorCritic(obs_dim, action_dim, 32, 1, key=k) for k in jax.random.split(pk, B)]
-        batched_policy = _stack_pytrees(*policies)
-
-        env_keys = jax.random.split(ek, B)
-        batched_states = eqx.filter_vmap(
-            lambda plant, k: _init_envs(plant, env_config, k, N),
-        )(batched_plant, env_keys)
-
-        keys = jax.random.split(key, B)
-        _, rollout, _, _ = eqx.filter_vmap(
-            lambda pl, pol, st, k: _collect_rollout(
-                pl,
-                env_config,
-                pol,
-                st,
-                k,
-                16,
-                N,
-            ),
-        )(batched_plant, batched_policy, batched_states, keys)
-
-        assert jnp.all(jnp.isfinite(rollout.obs))
-        assert jnp.all(jnp.isfinite(rollout.rewards))
+        for name in ("obs", "rewards"):
+            assert jnp.all(jnp.isfinite(getattr(rollout, name))), f"Non-finite rollout {name}"
 
 
 class TestBatchedUpdate:
@@ -218,8 +191,8 @@ class TestBatchedUpdate:
 
 
 class TestBatchedRollout:
-    def test_shapes(self, batched_plant, env_config, key):
-        """collect_rollouts_batched produces (B, R, T, ...) arrays."""
+    def test_shapes_and_finiteness(self, batched_plant, env_config, key):
+        """Reach and hold rollouts contain finite (B, R, T, ...) arrays."""
         obs_dim = env_config.n_joints * 2 + env_config.n_muscles + 2 + 2 + 2 + 1
         action_dim = env_config.n_muscles
         R = 2
@@ -247,32 +220,13 @@ class TestBatchedRollout:
         assert result["task_target"].shape == (B, R, T, 2)
         assert result["timestamps"].shape == (B, R, T)
 
-    def test_finite(self, batched_plant, env_config, key):
-        """Collected rollouts should contain finite values."""
-        obs_dim = env_config.n_joints * 2 + env_config.n_muscles + 2 + 2 + 2 + 1
-        action_dim = env_config.n_muscles
-
-        key, pk = jax.random.split(key)
-        policies = [ActorCritic(obs_dim, action_dim, 32, 1, key=k) for k in jax.random.split(pk, B)]
-        batched_policy = _stack_pytrees(*policies)
-
-        task_types = jnp.array([TASK_REACH])
-        result = collect_rollouts_batched(
-            batched_plant,
-            env_config,
-            batched_policy,
-            key,
-            task_types,
-        )
-
-        for name in ("joint_angles", "joint_velocities", "muscle_activations", "effector_pos"):
-            assert jnp.all(jnp.isfinite(result[name])), f"Non-finite in {name}"
+        for name, values in result.items():
+            assert jnp.all(jnp.isfinite(values)), f"Non-finite in {name}"
 
 
-@pytest.mark.slow
 class TestBatchedTrainShort:
-    def test_returns_improve(self, batched_plant, env_config, key):
-        """With enough training, mean returns should increase."""
+    def test_returns_remain_finite(self, batched_plant, env_config, key):
+        """Multiple PPO updates complete without non-finite per-body returns."""
         config = PPOConfig(
             total_timesteps=N * 16 * 5,  # 5 updates
             n_steps_per_update=16,
@@ -290,7 +244,8 @@ class TestBatchedTrainShort:
         )
 
         returns = metrics["per_body_mean_return"]
-        assert len(returns) >= 2, "Expected at least 2 PPO updates"
-        # Check that returns are finite (training didn't diverge)
-        for r in returns:
-            assert jnp.all(jnp.isfinite(r)), "Non-finite per-body returns"
+        assert metrics["updates"] == 5, "Expected all configured PPO updates to complete"
+        assert len(returns) == 5, "Missing per-body returns"
+        for index, values in enumerate(returns):
+            assert values.shape == (B,), f"Returns at update {index} have shape {values.shape}"
+            assert jnp.all(jnp.isfinite(values)), f"Non-finite per-body returns at update {index}"
