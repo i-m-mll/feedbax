@@ -2644,7 +2644,7 @@ class RunPodOrchestrationDriver:
                 self.transport.rsync(remote_source, rsync_target, delete=delete).check(
                     f"collect {row.row_id}:{source}"
                 )
-                publish_collection_output(bundle, staged, target)
+                publish_collection_output(bundle, staged, target, consume_source=True)
             collected[Path(source).name] = str(target)
         if (
             is_native_training_command(row.launch.command)
@@ -2657,7 +2657,7 @@ class RunPodOrchestrationDriver:
                 self.transport.rsync(
                     f"{remote_run_dir}/events/{event_name}", str(staged), delete=False
                 ).check(f"collect {row.row_id}:events")
-                publish_collection_output(bundle, staged, event_target)
+                publish_collection_output(bundle, staged, event_target, consume_source=True)
             collected[event_name] = str(event_target)
         payload_sha256 = row.launch.metadata.get("payload_sha256")
         if payload_sha256:
@@ -3304,7 +3304,7 @@ class RunPodOrchestrationDriver:
                 f"{self._remote_run_dir(bundle)}/logs/", str(staged) + "/", delete=False,
                 timeout_seconds=self.config.failure_log_pull_timeout_seconds,
             ).check("collect failure logs")
-            publish_collection_output(bundle, staged, destination)
+            publish_collection_output(bundle, staged, destination, consume_source=True)
         return {"failure_logs": str(destination)}
 
 

@@ -6009,3 +6009,25 @@ def test_collection_accepts_declared_root_alias_and_rechecks_replacement(tmp_pat
     with pytest.raises(CollectionDestinationError, match="unsafe|symlink|directory"):
         driver.collect(bundle, bundle.rows[0], state)
     assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_collection_consumes_same_filesystem_staging_without_copy(
+    tmp_path: Path, directory: bool,
+) -> None:
+    from feedbax.orchestration.collection_destination import publish_collection_output
+
+    bundle = _bundle(tmp_path)
+    staged = tmp_path / "staged-output"
+    if directory:
+        staged.mkdir()
+        (staged / "checkpoint").write_bytes(b"checkpoint")
+    else:
+        staged.write_bytes(b"checkpoint")
+    identity = staged.stat().st_ino
+    destination = bundle.run_set_dir / "collected" / "row-a" / staged.name
+    publish_collection_output(bundle, staged, destination, consume_source=True)
+    assert not staged.exists()
+    assert destination.stat().st_ino == identity
+    payload = destination / "checkpoint" if directory else destination
+    assert payload.read_bytes() == b"checkpoint"

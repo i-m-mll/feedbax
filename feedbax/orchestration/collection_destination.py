@@ -8,9 +8,13 @@ import stat
 from pathlib import Path
 
 from feedbax._secure_fs import (
+    SecurePathRigor,
     close_directory_chain,
     open_directory_chain,
     open_existing_directory,
+    open_existing_path,
+    rename_no_replace,
+    validate_opened_path,
     recheck_directory_chain,
 )
 from feedbax.orchestration.bundle import RunBundle
@@ -67,7 +71,13 @@ def _check_members(directory_fd: int) -> None:
             )
 
 
-def publish_collection_output(bundle: RunBundle, source: Path, destination: Path) -> None:
+def publish_collection_output(
+    bundle: RunBundle,
+    source: Path,
+    destination: Path,
+    *,
+    consume_source: bool = False,
+) -> None:
     """Copy into pinned run-owned directories, never through a destination alias."""
     relative = destination.relative_to(bundle.run_set_dir)
     if (
@@ -112,12 +122,17 @@ def publish_collection_output(bundle: RunBundle, source: Path, destination: Path
             error_factory=CollectionDestinationError,
             context="collection source",
         )
-        try:
-            copy_collection_member(
-                source_records[-1][1], (source.name,), destination_fd, destination.name
-            )
-        except CollectionRecoveryError as exc:
-            raise CollectionDestinationError(str(exc)) from exc
+        source_parent_fd = source_records[-1][1]
+        source_stat = os.stat(source.name, dir_fd=source_parent_fd, follow_symlinks=False)
+        if consume_source and source_stat.st_dev == os.fstat(destination_fd).st_dev:
+            _move_staged_output(source_parent_fd, source.name, destination_fd, destination.name)
+        else:
+            try:
+                copy_collection_member(
+                    source_parent_fd, (source.name,), destination_fd, destination.name
+                )
+            except CollectionRecoveryError as exc:
+                raise CollectionDestinationError(str(exc)) from exc
         recheck_directory_chain(
             destination_records,
             error_factory=CollectionDestinationError,
@@ -126,3 +141,40 @@ def publish_collection_output(bundle: RunBundle, source: Path, destination: Path
     finally:
         close_directory_chain(source_records)
         close_directory_chain(destination_records)
+
+
+def _move_staged_output(source_fd: int, source: str, destination_fd: int, destination: str) -> None:
+    value = os.stat(source, dir_fd=source_fd, follow_symlinks=False)
+    rigor = (
+        SecurePathRigor.DIRECTORY_IDENTITY
+        if stat.S_ISDIR(value.st_mode)
+        else SecurePathRigor.SINGLE_LINK_FILE_IDENTITY
+    )
+    descriptor, _ = open_existing_path(
+        source,
+        dir_fd=source_fd,
+        rigor=rigor,
+        error_factory=CollectionDestinationError,
+        context="staged collection output",
+    )
+    try:
+        if rigor is SecurePathRigor.DIRECTORY_IDENTITY:
+            _check_members(descriptor)
+        rename_no_replace(
+            source,
+            destination,
+            source_dir_fd=source_fd,
+            destination_dir_fd=destination_fd,
+            error_factory=CollectionDestinationError,
+            context="collection publication",
+        )
+        validate_opened_path(
+            destination,
+            descriptor,
+            dir_fd=destination_fd,
+            rigor=rigor,
+            error_factory=CollectionDestinationError,
+            context="published collection output",
+        )
+    finally:
+        os.close(descriptor)
