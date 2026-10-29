@@ -30,6 +30,10 @@ from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_COLLECTION_OUTPUTS,
     EvaluationMatrixOrderedUnionEvidence,
 )
+from feedbax.orchestration.collection_destination import (
+    check_collection_destinations,
+    publish_collection_output,
+)
 from feedbax.orchestration.bundle import (
     ResolvedAssemblyInput,
     RunBundle,
@@ -693,7 +697,7 @@ class LocalOrchestrationDriver:
     ) -> Mapping[str, str]:
         paths = _row_paths(bundle, row.row_id)
         dest_dir = bundle.run_set_dir / "collected" / row.row_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        check_collection_destinations(bundle)
         collected: dict[str, str] = {}
         sources = row.launch.collect or [str(paths["event_log"])]
         failed_row = state.rows[row.row_id].status in {"failed", "stopped"}
@@ -717,12 +721,7 @@ class LocalOrchestrationDriver:
             if failed_row and source_path.is_dir():
                 continue
             dest = dest_dir / source_path.name
-            if source_path.is_dir():
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(source_path, dest)
-            else:
-                shutil.copy2(source_path, dest)
+            publish_collection_output(bundle, source_path, dest)
             collected[source_path.name] = str(dest)
         payload_sha256 = row.launch.metadata.get("payload_sha256")
         if payload_sha256 and collected:

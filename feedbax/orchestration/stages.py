@@ -51,6 +51,10 @@ from feedbax.orchestration.assembly import (
     assert_authored_feedbax_revision,
     persist_assembly_request,
 )
+from feedbax.orchestration.collection_destination import (
+    CollectionDestinationError,
+    check_collection_destinations,
+)
 from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION,
     RunBundle,
@@ -3429,6 +3433,12 @@ def _run_static_preflight_checks(
     enabled_conformance_checks: Sequence[str],
 ) -> list[PreflightCheckEntry]:
     checks: list[PreflightCheckEntry] = []
+    try:
+        check_collection_destinations(bundle)
+    except (CollectionDestinationError, OSError) as exc:
+        checks.append(_check("collection-destinations", False, detail=str(exc)))
+    else:
+        checks.append(_check("collection-destinations", True))
     schema_current = bundle.schema_version == RUN_BUNDLE_SCHEMA_VERSION
     checks.append(
         _check(
