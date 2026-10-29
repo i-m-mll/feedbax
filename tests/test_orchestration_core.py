@@ -3585,6 +3585,12 @@ def test_failed_local_collection_does_not_copy_raw_directories_and_teardown_recl
     assert set(collected) == {"failure.json"}
     assert Path(collected["failure.json"]).is_file()
     assert not (bundle.run_set_dir / "collected" / "failed" / "evaluation").exists()
+    state = state.with_row(
+        "failed", state.rows["failed"].model_copy(update={"collected_outputs": collected})
+    ).with_stage(
+        "COLLECT",
+        StageState(status="failed", outputs={"rows": {"failed": collected}}),
+    )
     teardown = driver.teardown(bundle, state)
     reclamation = teardown["failed_row_reclamation"]
     assert len(reclamation) == 1
@@ -3601,7 +3607,10 @@ def test_failed_local_collection_does_not_copy_raw_directories_and_teardown_recl
     ]
 
 
-def test_failed_local_teardown_retains_row_tree_before_collection(tmp_path: Path) -> None:
+@pytest.mark.parametrize("collection_status", ["pending", "failed"])
+def test_failed_local_teardown_retains_row_tree_before_collection(
+    tmp_path: Path, collection_status: str
+) -> None:
     bundle = _bundle(tmp_path, run_set_id="precollection-failure")
     row_root = bundle.run_set_dir / "rows" / "row-a"
     row_root.mkdir(parents=True)
@@ -3609,7 +3618,7 @@ def test_failed_local_teardown_retains_row_tree_before_collection(tmp_path: Path
     state = RunSetState(
         run_set_id=bundle.run_set_id,
         rows={"row-a": RowState(status="failed", error="fixture failure")},
-        stages={"COLLECT": StageState(status="pending")},
+        stages={"COLLECT": StageState(status=collection_status)},
     )
 
     result = LocalOrchestrationDriver(
