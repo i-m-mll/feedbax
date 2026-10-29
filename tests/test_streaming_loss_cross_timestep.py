@@ -11,7 +11,11 @@ from equinox.nn import State, StateIndex
 from feedbax.runtime.streaming import init_streaming_state_window, update_streaming_state_window
 from feedbax.runtime._rollout import scan_rollout
 from feedbax.objectives.loss import (
-    CompositeLoss, NthDifferenceLoss, StateDerivativeLoss, TargetSpec, TargetStateLoss,
+    CompositeLoss,
+    NthDifferenceLoss,
+    StateDerivativeLoss,
+    TargetSpec,
+    TargetStateLoss,
 )
 from feedbax.objectives.streaming import make_streaming_loss_fn
 
@@ -111,7 +115,10 @@ class _TrialSpecs(eqx.Module):
 @pytest.mark.parametrize("state_dtype", [jnp.float32, jnp.float64])
 @pytest.mark.parametrize("checkpoint", [False, True])
 def test_scan_streaming_loss_dtype_and_gradient_parity(
-    order, loss_dtype, state_dtype, checkpoint,
+    order,
+    loss_dtype,
+    state_dtype,
+    checkpoint,
 ):
     """Real scans preserve loss precision independently of the state precision."""
     with jax.experimental.enable_x64():
@@ -127,7 +134,9 @@ def test_scan_streaming_loss_dtype_and_gradient_parity(
 
         if order == 0:
             loss = TargetStateLoss(
-                label="target", where=lambda s: s.x, norm=norm,
+                label="target",
+                where=lambda s: s.x,
+                norm=norm,
                 spec=TargetSpec(value=jnp.asarray(0.2, dtype=state_dtype)),
             )
         else:
@@ -136,19 +145,23 @@ def test_scan_streaming_loss_dtype_and_gradient_parity(
         def run(scale, streaming):
             def step_fn(step_input, state, step_carry, key, t):
                 x = jnp.tanh(
-                    state.get(index) + scale * step_input
+                    state.get(index)
+                    + scale * step_input
                     + 0.01 * jr.normal(key, (2,), dtype=state_dtype)
                     + 0.02 * (t.astype(state_dtype) + step_carry)
                 )
                 return x, state.set(index, x), step_carry + state_dtype(1)
 
-            streaming_fn = (
-                make_streaming_loss_fn(loss, specs, None, n_steps) if streaming else None
-            )
+            streaming_fn = make_streaming_loss_fn(loss, specs, None, n_steps) if streaming else None
             outputs, state, aux = scan_rollout(
-                step_fn, init_state, inputs, keys, n_steps,
+                step_fn,
+                init_state,
+                inputs,
+                keys,
+                n_steps,
                 state_view_fn=lambda s: _FakeState(s.get(index), s.get(index)),
-                init_step_carry=state_dtype(0), checkpoint=checkpoint,
+                init_step_carry=state_dtype(0),
+                checkpoint=checkpoint,
                 streaming_loss_fn=streaming_fn,
             )
             if streaming:

@@ -3714,11 +3714,7 @@ def _terminal_completed_batches(
         )
         mapped = bool(authority_bindings and authority_bindings[0].mode == "mapped")
         observed = jax.device_get(value)
-        values = (
-            observed
-            if mapped and isinstance(value, (jax.Array, np.ndarray))
-            else (observed,)
-        )
+        values = observed if mapped and isinstance(value, (jax.Array, np.ndarray)) else (observed,)
         batches = [PhaseProgramExecutor._batch_progress_value(item, path) for item in values]
     except WorkerContractValidationError as exc:
         raise TrainingRunExecutorError(

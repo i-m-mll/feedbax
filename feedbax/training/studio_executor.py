@@ -92,37 +92,53 @@ class StudioUpdateKernel:
                 graph = eqx.combine(candidate, frozen)
                 return evaluate_loss_fn(compiled, rollout_fn(graph, compiled, step_key))
 
-            (loss, terms), grads = eqx.filter_value_and_grad(
-                loss_from_trainable, has_aux=True
-            )(trainable)
+            (loss, terms), grads = eqx.filter_value_and_grad(loss_from_trainable, has_aux=True)(
+                trainable
+            )
             updates, optimizer_state = optimizer.update(grads, optimizer_state, trainable)
             graph = apply_parameter_constraints(
                 eqx.combine(eqx.apply_updates(trainable, updates), frozen)
             )
             trainable, _ = eqx.partition(graph, trainable_filter)
             return (
-                trainable, optimizer_state, key, batch_counter + 1,
+                trainable,
+                optimizer_state,
+                key,
+                batch_counter + 1,
                 {"train_loss": loss, "loss_terms": terms, "grad_norm": optax.global_norm(grads)},
             )
 
         # Equinox's filtered lowering separates static graph structure from array operands.
         compile_t0 = time.perf_counter()
-        self._update = eqx.filter_jit(numerical_update).lower(
-            trainable, optimizer.init(trainable), jr.PRNGKey(0),
-            jnp.array(0, dtype=jnp.int32), self._frozen_arrays,
-        ).compile()
+        self._update = (
+            eqx.filter_jit(numerical_update)
+            .lower(
+                trainable,
+                optimizer.init(trainable),
+                jr.PRNGKey(0),
+                jnp.array(0, dtype=jnp.int32),
+                self._frozen_arrays,
+            )
+            .compile()
+        )
         self.compile_time_ms = (time.perf_counter() - compile_t0) * 1000.0
 
     def __call__(self, slots: Mapping[str, Any]) -> Mapping[str, Any]:
         trainable, _ = eqx.partition(slots["model"], self._filter)
         trainable, optimizer_state, key, count, metrics = self._update(
-            trainable, slots["optimizer"], slots["prng"], slots["batch_counter"],
+            trainable,
+            slots["optimizer"],
+            slots["prng"],
+            slots["batch_counter"],
             self._frozen_arrays,
         )
         graph = eqx.combine(trainable, self._frozen_arrays, self._frozen_structure)
         return {
-            "model": graph, "optimizer": optimizer_state, "prng": key,
-            "batch_counter": count, **metrics,
+            "model": graph,
+            "optimizer": optimizer_state,
+            "prng": key,
+            "batch_counter": count,
+            **metrics,
         }
 
 
@@ -139,7 +155,9 @@ def studio_training_registry(
     """Build an executor registry whose kernel performs one Studio graph update."""
     method_contract = executor_method_contract(total_batches=total_batches)
     kernel = StudioUpdateKernel(
-        compiled=compiled, optimizer=optimizer, rollout_fn=rollout_fn,
+        compiled=compiled,
+        optimizer=optimizer,
+        rollout_fn=rollout_fn,
         evaluate_loss_fn=evaluate_loss_fn,
     )
     compiled.metadata["numerical_compile_time_ms"] = kernel.compile_time_ms

@@ -1094,20 +1094,22 @@ def test_mapped_batch_authority_preserves_host_integer_semantics(authority) -> N
     )
 
     assert completed == expected
-    assert training_executor._terminal_completed_batches(
-        program=executor.program,
-        final_slots=slots,
-        fallback=0,
-        require_authority=True,
-        slot_axis_bindings=executor.slot_axis_bindings,
-    ) == expected
-
-
+    assert (
+        training_executor._terminal_completed_batches(
+            program=executor.program,
+            final_slots=slots,
+            fallback=0,
+            require_authority=True,
+            slot_axis_bindings=executor.slot_axis_bindings,
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize("counter", [2**100, True, -1, 1.5, "missing", "diverged"])
 def test_strict_step_observation_combines_health_and_uncoerced_authority(
-    monkeypatch: pytest.MonkeyPatch, counter,
+    monkeypatch: pytest.MonkeyPatch,
+    counter,
 ) -> None:
     executor, _ = _mapped_phase_executor(_mapped_scalar_kernel)
     slots = _mapped_slots()
@@ -1118,7 +1120,8 @@ def test_strict_step_observation_combines_health_and_uncoerced_authority(
             jnp.arange(5, dtype=jnp.int32) if counter == "diverged" else counter
         )
     coordinate = ProgressCoordinate(
-        run_id="strict-observation", phase="train_batch",
+        run_id="strict-observation",
+        phase="train_batch",
         metrics={"loss": (jnp.array([0.0, jnp.nan]), "label"), "infinite": jnp.inf},
     )
     transfers = []
@@ -1139,7 +1142,6 @@ def test_strict_step_observation_combines_health_and_uncoerced_authority(
             observation.completed_batches()
 
 
-
 def test_mapped_observation_resolves_nested_authority_without_slicing_slot_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1158,13 +1160,17 @@ def test_mapped_observation_resolves_nested_authority_without_slicing_slot_tree(
     monkeypatch.setattr(training_executor, "_instance_runtime_slots", unexpected_slice)
     coordinate = ProgressCoordinate(run_id="nested-counter", phase="train_batch")
     assert executor._step_observation(slots, coordinate).completed_batches() == 7
-    assert training_executor._terminal_completed_batches(
-        program=executor.program,
-        final_slots=slots,
-        fallback=0,
-        require_authority=True,
-        slot_axis_bindings=executor.slot_axis_bindings,
-    ) == 7
+    assert (
+        training_executor._terminal_completed_batches(
+            program=executor.program,
+            final_slots=slots,
+            fallback=0,
+            require_authority=True,
+            slot_axis_bindings=executor.slot_axis_bindings,
+        )
+        == 7
+    )
+
 
 def test_strict_guard_precedes_corrupt_authority_and_stops_before_next_update() -> None:
     spec = _mapped_run_spec()
@@ -1188,12 +1194,16 @@ def test_strict_guard_precedes_corrupt_authority_and_stops_before_next_update() 
     executor, _ = _mapped_phase_executor(kernel, spec)
     with pytest.raises(FloatingPointError, match="strict NaN decision"):
         executor.run(
-            _mapped_slots(), run_id="strict-order", step_guard=guard,
-            method_observation_callback=observed.append, checkpoint_interval=1,
+            _mapped_slots(),
+            run_id="strict-order",
+            step_guard=guard,
+            method_observation_callback=observed.append,
+            checkpoint_interval=1,
         )
     assert updates == [0]
     assert observed == []
     assert executor.checkpoint_store.visits() == ()
+
 
 def test_nan_detector_keeps_inf_only_metrics_healthy_with_one_transfer(
     monkeypatch: pytest.MonkeyPatch,

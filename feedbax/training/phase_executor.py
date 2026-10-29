@@ -42,10 +42,7 @@ def _numeric_nan_flags(metrics: tuple[tuple[Any, ...], ...]) -> jax.Array:
     if not metrics:
         return jnp.zeros((0,), dtype=jnp.bool_)
     return jnp.stack(
-        [
-            jnp.any(jnp.stack([jnp.any(jnp.isnan(leaf)) for leaf in leaves]))
-            for leaves in metrics
-        ]
+        [jnp.any(jnp.stack([jnp.any(jnp.isnan(leaf)) for leaf in leaves])) for leaves in metrics]
     )
 
 

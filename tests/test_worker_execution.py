@@ -808,8 +808,11 @@ def test_post_serialization_cleanup_failure_reports_residual_path(
     [
         ("linear", [0.0904710814, 0.0101577155, 0.0054140552], [0.1759796143] * 4),
         ("constrained", [0.9710375071, 0.7839561701, 0.6168751121], [-0.6854143143] * 4),
-        ("recurrent", [0.8857897520, 0.2848538458, 0.0856052786],
-         [-0.1402324885, -0.1338457614, -0.1295092553, -0.1263912469]),
+        (
+            "recurrent",
+            [0.8857897520, 0.2848538458, 0.0856052786],
+            [-0.1402324885, -0.1338457614, -0.1295092553, -0.1263912469],
+        ),
     ],
 )
 def test_studio_update_preserves_seeded_training(fixture, expected_losses, expected_output):
@@ -829,21 +832,25 @@ def test_studio_update_preserves_seeded_training(fixture, expected_losses, expec
         binding = _network_task_binding_spec()
     compiled = compile_training_run(
         component_registry=ComponentRegistry(load_user_components=False),
-        graph_spec=graph_spec, training_spec=_training_spec(),
+        graph_spec=graph_spec,
+        training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
-        task_binding_spec=binding, cfg=_cfg(),
+        task_binding_spec=binding,
+        cfg=_cfg(),
     )
     initial_graph = compiled.graph
     optimizer = _build_optimizer(0.1, 1.0)
     kernel = StudioUpdateKernel(
-        compiled=compiled, optimizer=optimizer,
+        compiled=compiled,
+        optimizer=optimizer,
         rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),
         evaluate_loss_fn=worker_execution._evaluate_loss,
     )
     slots = {
         "model": compiled.graph,
         "optimizer": optimizer.init(eqx.partition(compiled.graph, compiled.trainable_filter)[0]),
-        "prng": jax.random.PRNGKey(0), "batch_counter": jnp.array(0, dtype=jnp.int32),
+        "prng": jax.random.PRNGKey(0),
+        "batch_counter": jnp.array(0, dtype=jnp.int32),
     }
     for expected_loss in expected_losses:
         slots = kernel(slots)
@@ -894,7 +901,8 @@ def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, m
 
     assert compiled.graph is result.graph
     final_snapshot = next(
-        event["trajectory"] for event in events
+        event["trajectory"]
+        for event in events
         if event["type"] == "training_trajectory" and event["program_step"] == 5
     )
     assert final_snapshot == worker_execution._trajectory_snapshot(
