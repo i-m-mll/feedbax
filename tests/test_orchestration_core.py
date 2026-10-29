@@ -5956,3 +5956,56 @@ StageEngine(bundle=bundle, driver=Driver()).run()
     persisted = RunSetStateStore(bundle.run_set_dir / "state.json").load()
     assert persisted.stage(STAGE_TEARDOWN).status == "completed"
     assert persisted.stage(STAGE_TEARDOWN).outputs["pod_absence"]["verified"] is True
+
+
+@pytest.mark.parametrize("component", ["collected", "collected/row-a", "events", "failure-logs"])
+@pytest.mark.parametrize("kind", ["symlink", "file"])
+def test_collection_destination_preflight_rejects_before_driver_action(
+    tmp_path: Path,
+    component: str,
+    kind: str,
+) -> None:
+    bundle = _bundle(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = bundle.run_set_dir / component
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "symlink":
+        target.symlink_to(outside, target_is_directory=True)
+    else:
+        target.write_text("unsafe")
+    driver = FakeDriver()
+    with pytest.raises(PreflightFailed, match="collection-destinations"):
+        StageEngine(bundle=bundle, driver=driver).run()
+    assert driver.calls == []
+    assert list(outside.iterdir()) == []
+
+
+def test_collection_accepts_declared_root_alias_and_rechecks_replacement(tmp_path: Path) -> None:
+    from feedbax.orchestration.collection_destination import CollectionDestinationError
+
+    physical = tmp_path / "physical"
+    physical.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(physical, target_is_directory=True)
+    bundle = _bundle(alias, rows=[_compiled_row("row-a", collect=["result.json"])])
+    assert bundle.run_set_dir.parent == physical
+    checks = stages.run_authority_preflight_checks(bundle)
+    assert (
+        next(check for check in checks if check.name == "collection-destinations").status == "pass"
+    )
+    row_root = bundle.run_set_dir / "rows" / "row-a"
+    row_root.mkdir(parents=True, exist_ok=True)
+    (row_root / "result.json").write_text("result")
+    state = RunSetState(run_set_id=bundle.run_set_id, rows={"row-a": RowState(status="completed")})
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=())
+    outputs = driver.collect(bundle, bundle.rows[0], state)
+    assert Path(outputs["result.json"]).read_text() == "result"
+    collected = bundle.run_set_dir / "collected"
+    collected.rename(bundle.run_set_dir / "preserved-collected")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    collected.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(CollectionDestinationError, match="unsafe|symlink|directory"):
+        driver.collect(bundle, bundle.rows[0], state)
+    assert list(outside.iterdir()) == []

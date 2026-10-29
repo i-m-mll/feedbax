@@ -1759,3 +1759,23 @@ def test_worker_module_help_smoke() -> None:
 
     assert proc.returncode == 0, proc.stderr
     assert "Feedbax headless training worker" in proc.stdout
+
+
+def test_worker_http_collection_rechecks_destination_without_outside_writes(tmp_path: Path) -> None:
+    from feedbax.orchestration.collection_destination import CollectionDestinationError
+
+    bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-collect")
+    bundle.rows = [row]
+    source = bundle.run_set_dir / "events" / "job-collect.events.jsonl"
+    source.write_text("event evidence")
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765")
+    outputs = driver.collect(bundle, row, state)
+    assert Path(outputs[source.name]).read_text() == "event evidence"
+    collected = bundle.run_set_dir / "collected"
+    collected.rename(bundle.run_set_dir / "preserved-collected")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    collected.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(CollectionDestinationError):
+        driver.collect(bundle, row, state)
+    assert list(outside.iterdir()) == []

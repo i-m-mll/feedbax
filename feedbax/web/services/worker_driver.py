@@ -11,6 +11,10 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from feedbax.orchestration.collection_destination import (
+    check_collection_destinations,
+    publish_collection_output,
+)
 from feedbax.orchestration.bundle import RunBundle, RunRowSpec
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.studio_training import StudioTrainingAssemblySpec
@@ -217,11 +221,11 @@ class WorkerHttpDriver:
         row_id = require_worker_job_id(row.row_id)
         paths = _row_paths(bundle, row_id)
         dest_dir = bundle.run_set_dir / "collected" / row_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        check_collection_destinations(bundle)
         if not paths["event_log"].exists():
             return {}
         dest = dest_dir / paths["event_log"].name
-        dest.write_text(paths["event_log"].read_text(encoding="utf-8"), encoding="utf-8")
+        publish_collection_output(bundle, paths["event_log"], dest)
         return {paths["event_log"].name: str(dest)}
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:

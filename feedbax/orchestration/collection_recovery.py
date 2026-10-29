@@ -150,7 +150,7 @@ def recover_collected_outputs(
         file_evidence: list[dict[str, object]] = []
         for logical_name in logical_names:
             source_parts, nested = _select_source_member(source_fd, logical_name)
-            records = _copy_member_no_follow(
+            records = copy_collection_member(
                 source_fd,
                 source_parts,
                 destination_row_fd,
@@ -322,12 +322,13 @@ def _select_source_member(root_fd: int, logical_name: str) -> tuple[tuple[str, .
         os.close(directory_fd)
 
 
-def _copy_member_no_follow(
+def copy_collection_member(
     source_root_fd: int,
     source_parts: tuple[str, ...],
     destination_root_fd: int,
     destination_name: str,
 ) -> tuple[_CopiedFile, ...]:
+    """Copy one file or tree between pinned directories without following links."""
     source_parent_fd = os.dup(source_root_fd)
     try:
         for part in source_parts[:-1]:
