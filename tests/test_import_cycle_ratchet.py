@@ -133,6 +133,61 @@ def test_ratchet_does_not_fire_when_a_cycle_edge_is_removed(tmp_path: Path) -> N
     assert graph.cycle_edges == ()
 
 
+@pytest.mark.parametrize(
+    "helper_import",
+    ["import feedbax._leaf", "from feedbax import _leaf", "from .._leaf import value"],
+)
+def test_root_leaf_dependencies_do_not_inherit_cli_cycles(
+    tmp_path: Path, helper_import: str,
+) -> None:
+    root = tmp_path / "repo"
+    _write_package(root, "consumer", {"api": helper_import + "\n"})
+    package = root / "feedbax"
+    (package / "__init__.py").write_text("")
+    (package / "__main__.py").write_text("from feedbax.consumer import api\n")
+    (package / "_leaf.py").write_text("value = 1\n")
+
+    graph, _ = ratchet.analyze(root)
+    assert graph.cycle_edges == ()
+    assert set(graph.package_edges) == {
+        ("feedbax.__main__", "consumer"), ("consumer", "feedbax._leaf"),
+    }
+
+    (package / "_leaf.py").write_text("from . import bridge\n")
+    (package / "bridge.py").write_text(
+        "from .consumer import api\n\ndef deferred():\n    from . import _leaf\n"
+    )
+    graph, _ = ratchet.analyze(root)
+    added = ratchet.new_cycle_edges(graph, set())
+    assert set(added) == {
+        ("consumer", "feedbax._leaf"),
+        ("feedbax._leaf", "feedbax.bridge"),
+        ("feedbax.bridge", "consumer"),
+    }
+    message = ratchet.format_violations(graph, added)
+    assert "feedbax._leaf:1 imports feedbax.bridge [feedbax._leaf -> feedbax.bridge]" in message
+    assert "feedbax.bridge:1 imports feedbax.consumer.api [feedbax.bridge -> consumer]" in message
+    figures = ratchet.reconcile(root)
+    assert figures["audit_largest_cycle_packages_module_scope_no_root"] == []
+    assert figures["audit_mutual_pairs_all_scope_no_root"] == 0
+    assert figures["ratchet_module_scope_import_statements"] == 4
+    assert figures["audit_all_scope_import_statements"] == 5
+
+
+def test_root_facade_cycle_remains_visible(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    _write_package(root, "consumer", {"api": "import feedbax\n"})
+    (root / "feedbax" / "__init__.py").write_text("from .consumer import api\n")
+
+    graph, _ = ratchet.analyze(root)
+    added = ratchet.new_cycle_edges(graph, set())
+
+    assert set(added) == {("feedbax", "consumer"), ("consumer", "feedbax")}
+    message = ratchet.format_violations(graph, added)
+    assert "feedbax:1 imports feedbax.consumer.api [feedbax -> consumer]" in message
+    assert "feedbax.consumer.api:1 imports feedbax [consumer -> feedbax]" in message
+
+
 def test_function_local_and_type_checking_imports_are_not_cycle_edges(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     (root / "feedbax").mkdir(parents=True)

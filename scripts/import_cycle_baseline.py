@@ -35,35 +35,32 @@ Classification rules (all static, via :mod:`ast`; nothing is imported):
   ``__import__`` calls are not resolved; this is a documented blind spot of a
   static analysis, not a supported way to evade the ratchet.
 
-Package attribution: ``feedbax.<pkg>...`` belongs to package ``<pkg>`` when
-``feedbax/<pkg>/`` is a package directory. Top-level modules such as
-``feedbax/cli.py`` and ``feedbax/__init__.py`` belong to the synthetic root
-package ``feedbax``. The root is a graph node like any other: ``feedbax`` is
-mutually dependent with ``orchestration``, ``plugins``, and ``training``, and
-dropping it would hide those cycles.
+Graph attribution: ``feedbax.<pkg>...`` belongs to node ``<pkg>`` when
+``feedbax/<pkg>/`` is a package directory. Each module directly under
+``feedbax/`` has its own full module-name node, such as ``feedbax.__main__``.
+The actual root facade, ``feedbax/__init__.py``, and imports of that facade
+belong to node ``feedbax``. Keeping these nodes distinct avoids attributing
+the CLI's outgoing dependencies to unrelated root helpers, while retaining
+cycles through helpers, other root modules, or the root facade.
 
 Reconciliation with the 2026-08-04 leanness audit (point-in-time; the figures
 move as layering lanes land, ``--reconcile`` recomputes them)
 ------------------------------------------------------------------------------
 The audit reported "1,839 classified edges, 20 packages in one SCC, 27 mutually
 dependent pairs". Those three figures come from three *different*
-configurations, each of which this analyzer reproduces exactly:
+configurations. ``--reconcile`` recomputes them on the current source:
 
 * **1,839 edges** = distinct ``feedbax`` -> ``feedbax`` import *statements* at
-  *all* scopes (``--reconcile`` -> ``audit_all_scope_import_statements``, an
-  exact match). The ratchet counts 1,622 edges from 1,608 statements: it
-  excludes function-local and ``TYPE_CHECKING`` imports, which cannot close an
-  import cycle, and resolves ``from p import a, b`` to whichever of ``p.a`` and
-  ``p.b`` are real submodules, so one statement can yield several edges.
-* **20 packages** = the SCC over *module-scope* edges with the synthetic root
-  package excluded. Reproduced exactly, membership included. The ratchet's own
-  figure is 24 because it keeps the root node, which pulls ``feedbax``, ``bin``,
-  ``governance``, and ``integrations`` into the same component.
+  *all* scopes (``audit_all_scope_import_statements``). The ratchet excludes
+  function-local and ``TYPE_CHECKING`` imports and resolves ``from p import
+  a, b`` to whichever of ``p.a`` and ``p.b`` are real submodules, so one
+  statement can yield several edges.
+* **20 packages** = the SCC over *module-scope* edges with the whole root
+  family excluded: the facade and every individual root module. The ratchet
+  itself keeps these nodes to detect real cycles through them.
 * **27 pairs** = mutually dependent pairs over *all-scope* edges with the root
-  excluded. The ratchet's own figure is 20 (module scope, root included): seven
-  audit pairs are mutual only through deferred function-local imports.
-
-No figure is unexplained, and no configuration is silently matched.
+  family excluded. Module-scope figures exclude deferred function-local
+  imports; all-scope figures include them.
 """
 
 from __future__ import annotations
@@ -80,7 +77,7 @@ BASELINE_SCHEMA = "feedbax.import_cycle_baseline.v1"
 """Stable schema identity of the checked-in baseline document."""
 
 ROOT_PACKAGE = "feedbax"
-"""Synthetic package name for modules directly under ``feedbax/``."""
+"""Package identity and graph-node name of the actual root facade."""
 
 DEFAULT_BASELINE_PATH = Path("tests/fixtures/import_cycle/package_cycle_baseline.json")
 
@@ -248,11 +245,11 @@ def known_modules(paths: Iterable[Path], *, repo_root: Path) -> set[str]:
 
 
 def package_of(module: str, *, package_dirs: frozenset[str]) -> str:
-    """Attribute a ``feedbax`` module to its top-level subpackage."""
+    """Attribute a module to its subpackage, individual root module, or facade."""
     parts = module.split(".")
     if len(parts) < 2:
         return ROOT_PACKAGE
-    return parts[1] if parts[1] in package_dirs else ROOT_PACKAGE
+    return parts[1] if parts[1] in package_dirs else module
 
 
 def _resolve_target(
@@ -462,7 +459,10 @@ def _drop_root(edges: Iterable[ImportEdge]) -> list[ImportEdge]:
     return [
         edge
         for edge in edges
-        if edge.source_package != ROOT_PACKAGE and edge.target_package != ROOT_PACKAGE
+        if not any(
+            node == ROOT_PACKAGE or node.startswith(f"{ROOT_PACKAGE}.")
+            for node in (edge.source_package, edge.target_package)
+        )
     ]
 
 
@@ -497,7 +497,8 @@ def baseline_document(graph: PackageGraph, summary: Mapping[str, object]) -> dic
     return {
         "schema": BASELINE_SCHEMA,
         "description": (
-            "Upper bound on package-level import-cycle edges. This set may shrink, "
+            "Upper bound on import-cycle edges between top-level subpackages, root modules, "
+            "and the root facade. This set may shrink, "
             f"never grow. Regenerate deliberately with: {REGENERATE_COMMAND}"
         ),
         "summary": dict(summary),
@@ -539,10 +540,10 @@ def removed_cycle_edges(
 
 def format_violations(graph: PackageGraph, added: Sequence[tuple[str, str]]) -> str:
     lines = [
-        f"{len(added)} new package-level import cycle edge(s) are not in the baseline.",
+        f"{len(added)} new import-cycle graph edge(s) are not in the baseline.",
         "",
         "The import-cycle ratchet allows the baseline to shrink, never grow. Either",
-        "route the new dependency so it does not close a package cycle, or, if this",
+        "route the new dependency so it does not close a graph cycle, or, if this",
         "lane deliberately reshapes the cycle set, regenerate the baseline in the same",
         f"commit with:\n    {REGENERATE_COMMAND}",
         "",
@@ -560,7 +561,7 @@ def format_violations(graph: PackageGraph, added: Sequence[tuple[str, str]]) -> 
 
 
 def format_report(graph: PackageGraph, summary: Mapping[str, object]) -> str:
-    lines = ["Feedbax package-level import analysis", ""]
+    lines = ["Feedbax import analysis (subpackages, root modules, and root facade)", ""]
     for key, value in summary.items():
         if key == "largest_cycle_packages":
             continue
@@ -568,10 +569,10 @@ def format_report(graph: PackageGraph, summary: Mapping[str, object]) -> str:
     largest = summary.get("largest_cycle_packages")
     if isinstance(largest, list) and largest:
         lines.append("")
-        lines.append("  largest cycle packages:")
+        lines.append("  largest cycle nodes:")
         lines.append(f"    {', '.join(str(name) for name in largest)}")
     lines.append("")
-    lines.append("  mutually dependent package pairs:")
+    lines.append("  mutually dependent node pairs:")
     for source, target in graph.mutual_pairs:
         lines.append(f"    {source} <-> {target}")
     return "\n".join(lines)

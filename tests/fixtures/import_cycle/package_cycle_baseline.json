@@ -1,18 +1,17 @@
 {
   "schema": "feedbax.import_cycle_baseline.v1",
-  "description": "Upper bound on package-level import-cycle edges. This set may shrink, never grow. Regenerate deliberately with: uv run --no-sync python scripts/import_cycle_baseline.py --write",
+  "description": "Upper bound on import-cycle edges between top-level subpackages, root modules, and the root facade. This set may shrink, never grow. Regenerate deliberately with: uv run --no-sync python scripts/import_cycle_baseline.py --write",
   "summary": {
-    "classified_import_edges": 1709,
-    "cross_package_import_edges": 941,
-    "packages": 30,
-    "package_edges": 142,
-    "packages_in_largest_cycle": 26,
-    "mutually_dependent_package_pairs": 12,
-    "cycle_package_edges": 118,
+    "classified_import_edges": 1842,
+    "cross_package_import_edges": 1040,
+    "packages": 37,
+    "package_edges": 160,
+    "packages_in_largest_cycle": 21,
+    "mutually_dependent_package_pairs": 9,
+    "cycle_package_edges": 77,
     "largest_cycle_packages": [
       "acausal",
       "analysis",
-      "bin",
       "compiler",
       "component_registry",
       "components",
@@ -20,9 +19,6 @@
       "contracts",
       "control",
       "execution",
-      "feedbax",
-      "governance",
-      "integrations",
       "intervene",
       "mechanics",
       "models",
@@ -32,7 +28,6 @@
       "plot",
       "plugins",
       "runtime",
-      "studio",
       "tasks",
       "training",
       "workflow"
@@ -44,20 +39,12 @@
       "mechanics"
     ],
     [
-      "acausal",
-      "runtime"
-    ],
-    [
       "analysis",
       "config"
     ],
     [
       "analysis",
       "contracts"
-    ],
-    [
-      "analysis",
-      "feedbax"
     ],
     [
       "analysis",
@@ -90,42 +77,6 @@
     [
       "analysis",
       "workflow"
-    ],
-    [
-      "bin",
-      "analysis"
-    ],
-    [
-      "bin",
-      "config"
-    ],
-    [
-      "bin",
-      "contracts"
-    ],
-    [
-      "bin",
-      "integrations"
-    ],
-    [
-      "bin",
-      "orchestration"
-    ],
-    [
-      "bin",
-      "persistence"
-    ],
-    [
-      "bin",
-      "plot"
-    ],
-    [
-      "bin",
-      "plugins"
-    ],
-    [
-      "bin",
-      "training"
     ],
     [
       "compiler",
@@ -236,70 +187,6 @@
       "workflow"
     ],
     [
-      "feedbax",
-      "bin"
-    ],
-    [
-      "feedbax",
-      "contracts"
-    ],
-    [
-      "feedbax",
-      "governance"
-    ],
-    [
-      "feedbax",
-      "orchestration"
-    ],
-    [
-      "feedbax",
-      "plugins"
-    ],
-    [
-      "feedbax",
-      "training"
-    ],
-    [
-      "governance",
-      "contracts"
-    ],
-    [
-      "integrations",
-      "analysis"
-    ],
-    [
-      "integrations",
-      "component_registry"
-    ],
-    [
-      "integrations",
-      "contracts"
-    ],
-    [
-      "integrations",
-      "execution"
-    ],
-    [
-      "integrations",
-      "objectives"
-    ],
-    [
-      "integrations",
-      "orchestration"
-    ],
-    [
-      "integrations",
-      "runtime"
-    ],
-    [
-      "integrations",
-      "studio"
-    ],
-    [
-      "integrations",
-      "tasks"
-    ],
-    [
       "intervene",
       "mechanics"
     ],
@@ -342,10 +229,6 @@
     [
       "orchestration",
       "execution"
-    ],
-    [
-      "orchestration",
-      "feedbax"
     ],
     [
       "orchestration",
@@ -358,10 +241,6 @@
     [
       "persistence",
       "contracts"
-    ],
-    [
-      "persistence",
-      "feedbax"
     ],
     [
       "plot",
@@ -397,10 +276,6 @@
     ],
     [
       "plugins",
-      "feedbax"
-    ],
-    [
-      "plugins",
       "orchestration"
     ],
     [
@@ -414,46 +289,6 @@
     [
       "runtime",
       "contracts"
-    ],
-    [
-      "studio",
-      "analysis"
-    ],
-    [
-      "studio",
-      "compiler"
-    ],
-    [
-      "studio",
-      "component_registry"
-    ],
-    [
-      "studio",
-      "contracts"
-    ],
-    [
-      "studio",
-      "execution"
-    ],
-    [
-      "studio",
-      "orchestration"
-    ],
-    [
-      "studio",
-      "persistence"
-    ],
-    [
-      "studio",
-      "runtime"
-    ],
-    [
-      "studio",
-      "training"
-    ],
-    [
-      "studio",
-      "workflow"
     ],
     [
       "tasks",
@@ -474,10 +309,6 @@
     [
       "training",
       "contracts"
-    ],
-    [
-      "training",
-      "feedbax"
     ],
     [
       "training",
