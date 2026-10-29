@@ -218,3 +218,27 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
             {},
             components,
         )
+
+
+def test_direct_filter_preserves_structured_signal_dtypes() -> None:
+    from feedbax.runtime.filters import FirstOrderFilter
+    from feedbax.runtime.graph import init_state_from_component
+
+    prototype = {
+        "position": jnp.zeros(2, dtype=jnp.float16),
+        "velocity": (jnp.zeros(1, dtype=jnp.float32),),
+    }
+    component = FirstOrderFilter(input_proto=prototype)
+    state = init_state_from_component(component)
+    values = jax.tree.map(lambda value: jnp.ones((3, *value.shape), dtype=value.dtype), prototype)
+
+    def step(carry, value):
+        outputs, carry = component({"input": value}, carry, key=jax.random.PRNGKey(0))
+        return carry, outputs["output"]
+
+    _, outputs = jax.lax.scan(step, state, values)
+    assert jax.tree.structure(outputs) == jax.tree.structure(prototype)
+    assert outputs["position"].dtype == jnp.float16
+    assert outputs["velocity"][0].dtype == jnp.float32
+    assert jnp.allclose(outputs["position"][:, 0], jnp.array([0.02, 0.0396, 0.058808]), atol=1e-4)
+    assert jnp.allclose(outputs["velocity"][0][:, 0], jnp.array([0.02, 0.0396, 0.058808]))
