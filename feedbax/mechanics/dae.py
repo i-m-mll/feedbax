@@ -27,6 +27,7 @@ import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
+from feedbax._ode import ode_init, ode_step
 from feedbax.runtime.graph import Component
 
 
@@ -124,8 +125,8 @@ class DAEComponent(Component, Generic[StateT]):
         # Also canonicalize input dtypes
         init_input = jt.map(make_strong_dtype, init_input)
 
-        solver_state = self.solver.init(
-            self._term, 0.0, self.dt, system_state, init_input
+        solver_state = ode_init(
+            self.solver, self._term, self.dt, system_state, init_input
         )
 
         initial_state = DAEState(system=system_state, solver=solver_state)
@@ -218,14 +219,8 @@ class DAEComponent(Component, Generic[StateT]):
         input_value = inputs.get("input", self._get_zero_input())
 
         # Perform implicit integration step
-        new_system_state, _, _, new_solver_state, _ = self.solver.step(
-            self._term,
-            0.0,
-            self.dt,
-            dae_state.system,
-            input_value,
-            dae_state.solver,
-            made_jump=False,
+        new_system_state, new_solver_state = ode_step(
+            self.solver, self._term, self.dt, dae_state.system, input_value, dae_state.solver,
         )
 
         # Update state

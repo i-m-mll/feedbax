@@ -16,6 +16,7 @@ import jax.tree as jt
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 
+from feedbax._ode import ode_init, ode_step
 from feedbax.runtime.graph import Component
 from feedbax.runtime.state import StateBounds
 
@@ -76,15 +77,17 @@ class FirstOrderFilter(Component):
     def _initial_state_value(self, input_proto: PyTree[Array]) -> FilterState:
         require_real_floating_filter_prototype(input_proto)
         output_init = jt.map(lambda x: jnp.full_like(x, self.init_value), input_proto)
-        solver_init = self.solver.init(self._term, 0, self.dt, output_init, None)
+        solver_init = ode_init(
+            self.solver, self._term, self.dt, output_init, jt.map(jnp.zeros_like, input_proto)
+        )
         return FilterState(output=output_init, solver=solver_init)
 
     def vector_field(
         self,
         t: Scalar,
-        state: FilterState,
+        state: PyTree[Array],
         input: PyTree[jax.Array],
-    ) -> FilterState:
+    ) -> PyTree[Array]:
         def derivative(value, output):
             tau = jnp.where(
                 value >= output,
@@ -93,11 +96,7 @@ class FirstOrderFilter(Component):
             )
             return (value - output) / tau
 
-        return eqx.tree_at(
-            lambda s: s.output,
-            state,
-            jt.map(derivative, input, state.output),
-        )
+        return jt.map(derivative, input, state)
 
     @cached_property
     def _term(self) -> dfx.AbstractTerm:
@@ -113,29 +112,11 @@ class FirstOrderFilter(Component):
         filter_state: FilterState = state.get(self.state_index)
         input_value = inputs["input"]
 
-        output_state, _, _, solver_state, _ = self.solver.step(
-            self._term,
-            0,
-            self.dt,
-            filter_state,
-            input_value,
+        output, solver_state = ode_step(
+            self.solver, self._term, self.dt, filter_state.output, input_value,
             filter_state.solver,
-            made_jump=False,
         )
-
-        output_state = eqx.tree_at(
-            lambda s: (s.output, s.solver),
-            output_state,
-            (
-                jt.map(
-                    lambda value, previous: value.astype(previous.dtype),
-                    output_state.output,
-                    filter_state.output,
-                ),
-                solver_state,
-            ),
-            is_leaf=lambda value: value is None,
-        )
+        output_state = FilterState(output=output, solver=solver_state)
         state = state.set(self.state_index, output_state)
         return {"output": output_state.output}, state
 
