@@ -649,8 +649,9 @@ class LocalOrchestrationDriver:
             and _process_group_alive(expected.process_identity.process_group_id)
         )
         if pid and (_pid_alive(pid) or group_alive):
-            identity = _authorize_local_signal(paths, bundle, row, state, pid)
-            _terminate_process_group(identity.process_group_id, process=process)
+            identity = _authorize_local_signal(paths, bundle, row, state, pid, process=process)
+            if identity is not None:
+                _terminate_process_group(identity.process_group_id, process=process)
         paths["failed"].write_text("stopped\n", encoding="utf-8")
         return {"row_id": row.row_id, "pid": pid, "status": "stopped"}
 
@@ -671,7 +672,9 @@ class LocalOrchestrationDriver:
             and _process_group_alive(expected.process_identity.process_group_id)
         )
         if pid and (_pid_alive(pid) or group_alive):
-            identity = _authorize_local_signal(paths, bundle, row, state, pid)
+            identity = _authorize_local_signal(paths, bundle, row, state, pid, process=process)
+            if identity is None:
+                return {"row_id": row.row_id, "pid": pid, "status": "stop_requested"}
             try:
                 os.killpg(identity.process_group_id, signal.SIGINT)
             except ProcessLookupError:
@@ -1120,13 +1123,7 @@ def _terminate_process_group(
         # identity check and killpg(). Treat that race as an idempotent stop
         # only when this driver still owns the exact Popen and a fresh process
         # table snapshot proves that the group has no live members.
-        members, member_error = _process_group_member_pids(process_group_id)
-        if (
-            process is not None
-            and process.poll() is not None
-            and member_error is None
-            and not members
-        ):
+        if _owned_process_group_exited(process_group_id, process):
             return
         raise LocalDriverError(
             f"could not terminate verified process group {process_group_id}"
@@ -1159,6 +1156,16 @@ def _terminate_process_group(
         raise LocalDriverError(
             f"local row process group {process_group_id} remained live after SIGKILL"
         )
+
+
+def _owned_process_group_exited(
+    process_group_id: int,
+    process: subprocess.Popen[bytes] | None,
+) -> bool:
+    if process is None or process.poll() is None:
+        return False
+    members, error = _process_group_member_pids(process_group_id)
+    return error is None and not members
 
 
 def _process_group_alive(pgid: int) -> bool:
@@ -1457,7 +1464,10 @@ def _authorize_local_signal(
     row: RunRowSpec,
     state: RunSetState,
     pid: int,
-) -> ProcessIdentity:
+    *,
+    process: subprocess.Popen[bytes] | None,
+) -> ProcessIdentity | None:
+    """Authorize a live group, or reconcile an exited, exactly owned group."""
     expected = state.rows.get(row.row_id)
     if expected is None or expected.process_identity is None:
         raise LocalDriverError(
@@ -1465,6 +1475,18 @@ def _authorize_local_signal(
         )
     observed, detail = _verified_local_process_identity(paths, bundle, row, pid)
     if observed is None or observed != expected.process_identity:
+        recorded, _ = _read_local_process_identity(paths["process_identity"])
+        if (
+            recorded is not None
+            and recorded == expected.process_identity
+            and recorded.run_set_id == bundle.run_set_id
+            and recorded.row_id == row.row_id
+            and recorded.pid == pid
+            and process is not None
+            and process.pid == pid
+            and _owned_process_group_exited(recorded.process_group_id, process)
+        ):
+            return None
         raise LocalDriverError(f"refusing to signal live local row {row.row_id!r}: {detail}")
     return observed
 
