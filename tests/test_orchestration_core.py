@@ -1792,8 +1792,8 @@ def test_primary_enospc_persists_emergency_and_blocks_delete_until_custody(
         restarted._run_teardown(durable, abort=True)
 
     assert restarted_driver.delete_calls == 0
-    collected = durable.with_stage(STAGE_COLLECT, StageState(status="completed"))
     restarted_store.preflight_and_reserve()
+    collected = restarted._run_stage(STAGE_COLLECT, durable)
     torn_down = restarted._run_teardown(collected, abort=True)
 
     assert restarted_driver.delete_calls == 1
