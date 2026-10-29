@@ -16,6 +16,7 @@ import pytest
         ("interrupt", "0", "default", 2),
         ("success", "2", "default", 0),
         ("success", "0", "exact", 0),
+        ("success", "2", "exact", 0),
         ("success", "0", "disabled", 0),
     ],
 )
@@ -39,6 +40,16 @@ def pytest_sessionstart(session):
     worker = os.environ.get("PYTEST_XDIST_WORKER", "controller")
     cache = jax.config.jax_compilation_cache_dir
     Path(os.environ["CACHE_RECORDS"], worker + ".json").write_text(json.dumps(cache))
+
+def pytest_sessionfinish(session):
+    if hasattr(session.config, "workerinput"):
+        return
+    records = Path(os.environ["CACHE_RECORDS"])
+    live = {
+        path.stem: Path(json.loads(path.read_text())).is_dir()
+        for path in records.glob("*.json") if json.loads(path.read_text()) is not None
+    }
+    (records / "live_at_controller_finish").write_text(json.dumps(live))
 """
     (corpus / "conftest.py").write_text(conftest)
     if outcome == "collection":
@@ -123,13 +134,21 @@ def test_cache():
         if override == "disabled":
             assert set(observed.values()) == {None}
         else:
-            assert len(set(observed.values())) == 1, observed
             cache = Path(observed["controller"])
             caches.append(cache)
+            live = json.loads((records / "live_at_controller_finish").read_text())
+            assert live == {name: True for name in observed}
             if override == "exact":
+                assert len(set(observed.values())) == 1, observed
                 assert cache == cache_parent / "explicit"
                 assert sum(path.stat().st_size for path in cache.rglob("*") if path.is_file()) > 0
             else:
+                paths = {name: Path(value) for name, value in observed.items()}
+                assert len(set(paths.values())) == len(paths)
+                invocation = cache.parent.parent
+                assert {path.parent.parent for path in paths.values()} == {invocation}
+                assert all(path.parent.name == name for name, path in paths.items())
+                assert not invocation.exists()
                 assert not cache.exists()
                 assert list(cache_parent.iterdir()) == [sentinel]
                 retained = sum(

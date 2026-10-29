@@ -49,27 +49,45 @@ def analysis_registry() -> AnalysisRecipeRegistry:
     return AnalysisRecipeRegistry()
 
 
+_INVOCATION_CACHE_ROOT = pytest.StashKey[Path]()
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_configure_node(node) -> None:
+    """Give workers the controller-owned root without ownership of its cleanup."""
+    if root := node.config.stash.get(_INVOCATION_CACHE_ROOT, None):
+        node.workerinput["feedbax_jax_cache_root"] = str(root)
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
     """Own default cache bytes until the controller finishes, including collection errors."""
     if os.environ.get("FEEDBAX_DISABLE_JAX_COMPILATION_CACHE") == "1":
         return
 
+    worker_input = getattr(config, "workerinput", {})
+    worker_root = worker_input.get("feedbax_jax_cache_root")
     explicit = os.environ.get("FEEDBAX_JAX_COMPILATION_CACHE_DIR")
-    if explicit is not None:
+    if worker_root is None and explicit is not None:
         cache_dir = Path(explicit).expanduser()
     else:
         scope = ExitStack()
         config.add_cleanup(scope.close)
-        root_env = {}
-        if parent := os.environ.get("FEEDBAX_JAX_TEST_CACHE_ROOT"):
-            parent_path = Path(parent).expanduser()
-            parent_path.mkdir(parents=True, exist_ok=True)
-            root_env["TMPDIR"] = str(parent_path)
-        root = scope.enter_context(owned_suite_temporary_root(root_env or None))
-        cache_dir = root / "jax_compilation"
+        if worker_root is not None:
+            root = Path(worker_root)
+            process_name = worker_input["workerid"]
+        else:
+            root_env = {}
+            if parent := os.environ.get("FEEDBAX_JAX_TEST_CACHE_ROOT"):
+                parent_path = Path(parent).expanduser()
+                parent_path.mkdir(parents=True, exist_ok=True)
+                root_env["TMPDIR"] = str(parent_path)
+            root = scope.enter_context(owned_suite_temporary_root(root_env or None))
+            config.stash[_INVOCATION_CACHE_ROOT] = root
+            process_name = "controller"
+        cache_dir = root / process_name / "jax_compilation"
         patch = scope.enter_context(pytest.MonkeyPatch.context())
-        # Workers and child processes share this invocation; only its controller owns cleanup.
+        # Child processes inherit their launching worker's cache, not the controller's.
         patch.setenv("FEEDBAX_JAX_COMPILATION_CACHE_DIR", str(cache_dir))
     cache_dir.mkdir(parents=True, exist_ok=True)
 
