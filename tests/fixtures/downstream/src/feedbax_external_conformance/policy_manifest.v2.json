@@ -65,6 +65,7 @@
               "ExecutionPreparationRequest",
               "ExecutionPreparationResult",
               "ExecutionPreparationPlan",
+              "NumericalUpdateKernel",
               "compile_training_method_authoring",
               "AnalysisRecipe",
               "AnalysisRecipeRegistry",
@@ -125,7 +126,8 @@
               "TrainingProgramRowLoweringFacet",
               "ExecutionPreparationRequest",
               "ExecutionPreparationResult",
-              "ExecutionPreparationPlan"
+              "ExecutionPreparationPlan",
+              "NumericalUpdateKernel"
             ],
             "public_consumers": [
               "feedbax.training.authoring:compile_training_method_authoring"
@@ -281,6 +283,7 @@
               "ExecutionPreparationRequest",
               "ExecutionPreparationResult",
               "ExecutionPreparationPlan",
+              "NumericalUpdateKernel",
               "compile_training_method_authoring",
               "AnalysisRecipe",
               "AnalysisRecipeRegistry",

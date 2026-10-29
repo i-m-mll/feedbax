@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from operator import index
+import time
 from typing import Any, Protocol
 
 import equinox as eqx
@@ -35,6 +36,88 @@ StepGuard = Callable[
     [Mapping[str, Any], ProgressCoordinate, Mapping[str, Any], "_StepObservation"],
     "StepGuardResult | None",
 ]
+
+
+@dataclass(frozen=True)
+class NumericalUpdateKernel:
+    """Declare a pure numerical update and its runtime operand projection.
+
+    Host coordinates are excluded. Selected keys and static values are fixed at
+    preparation; changing numerical context (including counters) must use arrays.
+    Ordinary calls evaluate the scientific function directly, without compilation.
+    """
+
+    update: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]]
+    context_names: tuple[str, ...] = ()
+    optional_context_names: tuple[str, ...] = ()
+    excluded_slots: tuple[str, ...] = ()
+
+    def project(
+        self,
+        slots: Mapping[str, Any],
+        context: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        numeric_slots = {k: v for k, v in slots.items() if k not in self.excluded_slots}
+        numeric_context = {k: context[k] for k in self.context_names}
+        numeric_context.update({k: context[k] for k in self.optional_context_names if k in context})
+        return numeric_slots, numeric_context
+
+    def __call__(
+        self,
+        slots: Mapping[str, Any],
+        coordinate: ProgressCoordinate,
+        context: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del coordinate
+        numeric_slots, numeric_context = self.project(slots, context)
+        return _reconstruct_updates(self.update(numeric_slots, numeric_context), numeric_slots)
+
+
+def _reconstruct_updates(
+    updates: Mapping[str, Any],
+    slots: Mapping[str, Any],
+) -> dict[str, Any]:
+    result = dict(updates)
+    for name, value in result.items():
+        if name in slots and jt.structure(value) == jt.structure(slots[name]):
+            output_static = eqx.filter(value, lambda x: not eqx.is_array(x))
+            input_static = eqx.filter(slots[name], lambda x: not eqx.is_array(x))
+            if eqx.tree_equal(output_static, input_static) is True:
+                result[name] = eqx.combine(eqx.filter(value, eqx.is_array), input_static)
+    return result
+
+
+@dataclass(frozen=True)
+class _PreparedNumericalUpdate:
+    declaration: NumericalUpdateKernel
+    executable: Any
+    static_inputs: Any
+    input_structure: Any
+    slot_names: tuple[str, ...]
+    context_names: tuple[str, ...]
+
+    def __call__(
+        self,
+        slots: Mapping[str, Any],
+        coordinate: ProgressCoordinate,
+        context: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        del coordinate
+        projected_slots, projected_context = self.declaration.project(slots, context)
+        if set(projected_context) != set(self.context_names):
+            raise ValueError("selected numerical context keys changed after preparation")
+        missing = set(self.slot_names) - set(projected_slots)
+        if missing:
+            raise ValueError(f"selected numerical slots disappeared: {sorted(missing)!r}")
+        selected = {k: projected_slots[k] for k in self.slot_names}
+        inputs = (selected, projected_context)
+        if jt.structure(inputs) != self.input_structure:
+            raise ValueError("numerical input PyTree structure changed after preparation")
+        static = eqx.filter(inputs, lambda x: not eqx.is_array(x))
+        if eqx.tree_equal(static, self.static_inputs) is not True:
+            raise ValueError("numerical static inputs changed after preparation")
+        updates = self.executable(*inputs)
+        return _reconstruct_updates(updates, selected)
 
 
 @jax.jit
@@ -258,6 +341,8 @@ class PhaseProgramExecutor:
     ) -> None:
         self.program = program
         self.kernels = dict(kernels)
+        self._prepared_numerical: dict[str, _PreparedNumericalUpdate] = {}
+        self.preparation_telemetry: dict[str, Any] = {}
         self.guard_predicates = dict(guard_predicates or {})
         self.checkpoint_store = checkpoint_store or InMemoryCheckpointStore()
         self._metric_slots = tuple(slot.name for slot in state_slots if slot.role == "metric")
@@ -306,34 +391,95 @@ class PhaseProgramExecutor:
         run_id: str,
         context: Mapping[str, Any] | None = None,
     ) -> None:
-        """Shape-check every mapped kernel through its exact execution wrapper."""
-        if self._active_axis is None:
-            return
+        """Prepare numerical executables and shape-check remaining mapped kernels."""
+        self._prepared_numerical = {}
+        preparation_seconds = 0.0
         coordinate = ProgressCoordinate(run_id=run_id, phase=self.program.initial_phase)
-        mapped = {name: slots[name] for name in self._mapped_slots if name in slots}
-        shared = {name: slots[name] for name in self._shared_slots if name in slots}
-        for phase in self.program.phases:
-            for step_name in phase.update_steps:
-                step = self._steps[step_name]
-                if self._active_axis not in step.axes:
-                    continue
-                kernel = self.kernels[step.kernel.kernel_ref]
-                try:
-                    updates = eqx.filter_eval_shape(
-                        self._mapped_kernel(kernel),
-                        mapped,
-                        shared,
-                        coordinate.model_copy(update={"phase": phase.name}),
-                        dict(context or {}),
+        prepared = []
+        for step in self.program.update_steps:
+            phases = [phase for phase in self.program.phases if step.name in phase.update_steps]
+            if not phases:
+                continue
+            kernel = self.kernels[step.kernel.kernel_ref]
+            mapped_step = self._active_axis is not None and self._active_axis in step.axes
+            try:
+                if isinstance(kernel, NumericalUpdateKernel):
+                    started = time.perf_counter()
+                    inputs = kernel.project(slots, dict(context or {}))
+                    numeric_slots, _ = inputs
+
+                    def numerical_call(selected_slots, selected_context):
+                        if mapped_step:
+                            mapped = {
+                                k: v for k, v in selected_slots.items() if k in self._mapped_slots
+                            }
+                            shared = {
+                                k: v
+                                for k, v in selected_slots.items()
+                                if k not in self._mapped_slots
+                            }
+
+                            def scalar_call(mapped, shared, ctx):
+                                return kernel.update({**shared, **mapped}, ctx)
+
+                            updates = eqx.filter_vmap(
+                                scalar_call,
+                                in_axes=(eqx.if_array(0), None, None),
+                                out_axes=eqx.if_array(0),
+                            )(mapped, shared, selected_context)
+                        else:
+                            updates = kernel.update(selected_slots, selected_context)
+                        output_template = jt.map(
+                            lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype)
+                            if eqx.is_array(x)
+                            else x,
+                            updates,
+                        )
+                        self._validate_destination_updates(
+                            step.name,
+                            step.writes,
+                            output_template,
+                            slots,
+                            fixed_static=True,
+                        )
+                        return updates
+
+                    if mapped_step and set(step.writes) & self._shared_slots:
+                        raise ValueError("mapped numerical step writes shared slots")
+                    executable = eqx.filter_jit(numerical_call).lower(*inputs).compile()
+                    self._prepared_numerical[step.name] = _PreparedNumericalUpdate(
+                        kernel,
+                        executable,
+                        _copy_executor_value(eqx.filter(inputs, lambda x: not eqx.is_array(x))),
+                        jt.structure(inputs),
+                        tuple(numeric_slots),
+                        tuple(inputs[1]),
                     )
-                    self._validate_mapped_updates(
-                        step.name, step.writes, updates, {**shared, **mapped}
-                    )
-                except Exception as exc:
-                    raise WorkerContractValidationError(
-                        f"/phase_program/phases/{phase.name}/update_steps/{step.name}",
-                        f"mapped filtered-vmap preflight failed: {exc}",
-                    ) from exc
+                    preparation_seconds += time.perf_counter() - started
+                    prepared.append({"step": step.name, "kernel_ref": step.kernel.kernel_ref})
+                elif mapped_step:
+                    mapped = {k: slots[k] for k in self._mapped_slots if k in slots}
+                    shared = {k: slots[k] for k in self._shared_slots if k in slots}
+                    for phase in phases:
+                        updates = eqx.filter_eval_shape(
+                            self._mapped_kernel(kernel),
+                            mapped,
+                            shared,
+                            coordinate.model_copy(update={"phase": phase.name}),
+                            dict(context or {}),
+                        )
+                        self._validate_destination_updates(step.name, step.writes, updates, slots)
+
+            except Exception as exc:
+                raise WorkerContractValidationError(
+                    f"/phase_program/update_steps/{step.name}",
+                    f"kernel preparation failed: {exc}",
+                ) from exc
+        self.preparation_telemetry = {
+            "kernel_preparation_seconds": preparation_seconds if prepared else None,
+            "kernel_preparation_steps": prepared,
+            "kernel_preparation_scope": "declared numerical updates: tracing, lowering, compilation/cache load",
+        }
 
     def merge_resume_slots(
         self,
@@ -445,6 +591,11 @@ class PhaseProgramExecutor:
             start_phase = self.program.initial_phase
             coordinate = ProgressCoordinate(run_id=run_id, phase=start_phase)
 
+        if (
+            any(isinstance(k, NumericalUpdateKernel) for k in self.kernels.values())
+            and not self._prepared_numerical
+        ):
+            self.preflight(current_slots, run_id=run_id, context=checkpoint_context)
         initial_batch = self._completed_training_batches(current_slots, coordinate)
         previous_completed_batch = initial_batch
         last_progress_batch = initial_batch
@@ -473,7 +624,23 @@ class PhaseProgramExecutor:
                             f"/phase_program/update_steps/{step_name}/kernel_ref",
                             f"missing callable for kernel_ref {step.kernel.kernel_ref!r}",
                         )
-                    if self._active_axis is not None and self._active_axis in step.axes:
+                    if isinstance(kernel, NumericalUpdateKernel):
+                        try:
+                            updates = self._prepared_numerical[step.name](
+                                current_slots,
+                                coordinate,
+                                checkpoint_context,
+                            )
+                        except Exception as exc:
+                            raise WorkerContractValidationError(
+                                f"/phase_program/update_steps/{step.name}",
+                                f"prepared numerical execution failed: {exc}",
+                            ) from exc
+                        if self._active_axis is not None and self._active_axis in step.axes:
+                            self._validate_destination_updates(
+                                step.name, step.writes, updates, current_slots
+                            )
+                    elif self._active_axis is not None and self._active_axis in step.axes:
                         updates = mapped_kernels[step.kernel.kernel_ref](
                             {
                                 name: current_slots[name]
@@ -488,7 +655,7 @@ class PhaseProgramExecutor:
                             coordinate,
                             checkpoint_context,
                         )
-                        self._validate_mapped_updates(
+                        self._validate_destination_updates(
                             step.name, step.writes, updates, current_slots
                         )
                     else:
@@ -677,12 +844,14 @@ class PhaseProgramExecutor:
             start_completed_batches=initial_batch,
         )
 
-    def _validate_mapped_updates(
+    def _validate_destination_updates(
         self,
         step_name: str,
         declared_writes: Sequence[str],
         updates: Mapping[str, Any],
         input_slots: Mapping[str, Any],
+        *,
+        fixed_static: bool = False,
     ) -> None:
         unknown = sorted(set(updates) - set(declared_writes))
         if unknown:
@@ -695,14 +864,14 @@ class PhaseProgramExecutor:
             if slot not in input_slots:
                 raise WorkerContractValidationError(
                     f"/phase_program/update_steps/{step_name}/writes/{slot}",
-                    "mapped write destination is absent from executor state",
+                    "write destination is absent from executor state",
                 )
             output_leaves, output_def = jt.flatten(value)
             input_leaves, input_def = jt.flatten(input_slots[slot])
             if output_def != input_def:
                 raise WorkerContractValidationError(
                     f"/phase_program/update_steps/{step_name}/writes/{slot}",
-                    "mapped write must retain destination PyTree definition",
+                    "write must retain destination PyTree definition",
                 )
             for leaf_index, (source, target) in enumerate(
                 zip(input_leaves, output_leaves, strict=True)
@@ -712,14 +881,19 @@ class PhaseProgramExecutor:
                 if source_array != target_array:
                     raise WorkerContractValidationError(
                         f"/phase_program/update_steps/{step_name}/writes/{slot}/{leaf_index}",
-                        "mapped write changes array/static leaf category",
+                        "write changes array/static leaf category",
                     )
                 if source_array and (source.shape != target.shape or source.dtype != target.dtype):
                     raise WorkerContractValidationError(
                         f"/phase_program/update_steps/{step_name}/writes/{slot}/{leaf_index}",
-                        "mapped write changes destination shape or dtype; "
+                        "write changes destination shape or dtype; "
                         f"expected={source.shape!r}/{source.dtype}, "
                         f"observed={target.shape!r}/{target.dtype}",
+                    )
+                if fixed_static and not source_array and eqx.tree_equal(source, target) is not True:
+                    raise WorkerContractValidationError(
+                        f"/phase_program/update_steps/{step_name}/writes/{slot}/{leaf_index}",
+                        "numerical write changes destination static value",
                     )
 
     def _result(
