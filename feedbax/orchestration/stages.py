@@ -2639,7 +2639,41 @@ class StageEngine:
         facts = self._driver_facts()
         if facts.custody is not CustodySemantics.EPHEMERAL_REMOTE_RESOURCE:
             return True
-        return state.stage(STAGE_COLLECT).status == "completed"
+        dispatched = self._dispatched_row_ids(state)
+        if not dispatched:
+            return True
+        collect = state.stage(STAGE_COLLECT)
+        if collect.status not in {"completed", "failed"}:
+            return False
+        if collect.status == "failed" and not collect.outputs.get("executor_failures"):
+            return False
+        if collect.outputs.get("secondary_evidence"):
+            return False
+        collected, checkpoint_custody = self._group_collection_maps(state)
+        for row in self.bundle.rows:
+            if row.row_id not in dispatched:
+                continue
+            outputs = collected.get(row.row_id)
+            if outputs is None or outputs != state.rows[row.row_id].collected_outputs:
+                return False
+            if executor_family_adapter(row.execution_family).missing_collection_outputs(
+                self.bundle, row, outputs
+            ):
+                return False
+            if uses_registered_native_execution(row) and not checkpoint_custody.get(row.row_id):
+                return False
+        return True
+
+    def _dispatched_row_ids(self, state: RunSetState) -> set[str]:
+        """Rows with attempted or observed dispatch, including uncertain acknowledgements."""
+        return {
+            row_id
+            for row_id, row in state.rows.items()
+            if row.started_at is not None
+            or row.pid is not None
+            or row.process_identity is not None
+            or row.status in {"launched", "ready", "running", "completed"}
+        }
 
     def _resource_requires_recovery_record(self, state: RunSetState) -> bool:
         if self._provision_completed(state):
@@ -2759,18 +2793,11 @@ class StageEngine:
     def _run_teardown(self, state: RunSetState, *, abort: bool) -> RunSetState:
         self._prepare_emergency_for_teardown(state)
         stage = state.stage(STAGE_TEARDOWN)
-        execution_started = state.stage(STAGE_LAUNCH).started_at is not None or any(
-            row.started_at is not None
-            or row.pid is not None
-            or row.status in {"launched", "ready", "running", "completed"}
-            for row in state.rows.values()
-        )
         if (
             self._destructive_ephemeral_teardown()
-            and execution_started
             and not self._custody_complete(state)
         ):
-            error = "destructive teardown blocked: executed outputs require completed collection"
+            error = "destructive teardown blocked: executed outputs lack complete collection custody"
             blocked = stage.model_copy(
                 update={
                     "status": "failed",
@@ -3010,6 +3037,11 @@ class StageEngine:
             assert_feedbax_revision_exact(self.bundle.feedbax_revision)
         except FeedbaxRevisionError as exc:
             raise OrchestrationStageError(str(exc)) from exc
+        row_state = state.rows[row.row_id].model_copy(
+            update={"started_at": state.rows[row.row_id].started_at or utc_now()}
+        )
+        state = state.with_row(row.row_id, row_state)
+        self.store.save(state)
         outputs = self.driver.launch_row(self.bundle, row, state)
         output_status = outputs.get("status")
         status = "failed" if output_status == "failed" else "launched"
@@ -3024,7 +3056,7 @@ class StageEngine:
                 "status": status,
                 "pid": outputs.get("pid"),
                 "process_identity": process_identity,
-                "started_at": utc_now(),
+                "started_at": row_state.started_at,
                 "completed_at": utc_now() if status == "failed" else None,
                 "error": outputs.get("detail") if status == "failed" else None,
                 "event_discrepancies": [
