@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from feedbax._ode import ode_step
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.training.rl.rewards import compute_reward
 from feedbax.training.rl.tasks import (
@@ -200,9 +201,10 @@ def _physics_substep(
     # Diffrax Euler integration
     term = dfx.ODETerm(plant.vector_field)
     solver = dfx.Euler()
+    storage_state = plant_state
     plant_state = plant.kinematics_update(ctrl, plant_state)
-    plant_state, _, _, _, _ = solver.step(
-        term, 0, config.dt, plant_state, ctrl, None, made_jump=False,
+    plant_state, _ = ode_step(
+        solver, term, config.dt, plant_state, ctrl, None, storage_like=storage_state,
     )
 
     return plant_state, activations

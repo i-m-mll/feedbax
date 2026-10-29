@@ -25,6 +25,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax._ode import ode_init, ode_step, restore_storage_dtypes
 from feedbax.mechanics.dynamics import LinearSystem
 from feedbax.runtime.graph import Component
 from feedbax.mechanics.backend import PhysicsBackend, PhysicsState
@@ -155,8 +156,8 @@ class Mechanics(Component):
             # Legacy path: initialize via Diffrax
             plant_state = self.plant.init(key=key)
             init_input = jnp.zeros((self.plant.input_size,))
-            solver_state = self.solver.init(
-                self._term, 0, self.dt, plant_state, init_input
+            solver_state = ode_init(
+                self.solver, self._term, self.dt, plant_state, init_input
             )
             effector = self.plant.skeleton.effector(plant_state.skeleton)
             initial_state = MechanicsState(
@@ -228,14 +229,9 @@ class Mechanics(Component):
         # Kinematics update (non-ODE ops).
         plant_state = self.plant.kinematics_update(force, plant_state, key=key)
 
-        plant_state, _, _, solver_state, _ = self.solver.step(
-            self._term,
-            0,
-            self.dt,
-            plant_state,
-            force,
-            mechanics_state.solver,
-            made_jump=False,
+        plant_state, solver_state = ode_step(
+            self.solver, self._term, self.dt, plant_state, force, mechanics_state.solver,
+            storage_like=mechanics_state.plant,
         )
 
         effector = self.plant.skeleton.effector(plant_state.skeleton)
@@ -284,7 +280,7 @@ class Mechanics(Component):
 
         # Build PhysicsState from MechanicsState
         physics_state = PhysicsState(
-            plant=plant_state,
+            plant=restore_storage_dtypes(plant_state, mechanics_state.plant),
             effector=mechanics_state.effector,
             aux=mechanics_state.solver,
         )
