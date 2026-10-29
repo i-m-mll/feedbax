@@ -981,7 +981,10 @@ def _instantiate_node(
         raise ValueError(
             f"Unsupported acausal component type {node_type!r} at {node_path!r}"
         )
-    return builder(node_id, **params)
+    element = builder(node_id, **params)
+    if element.signal_inputs:
+        flattened.input_bindings[node_id] = node_id
+    return element
 
 
 def _validate_acausal_component_meta(

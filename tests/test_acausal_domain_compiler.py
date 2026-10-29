@@ -349,3 +349,56 @@ def test_invalid_persisted_gear_has_actionable_authoring_diagnostic():
         d.code == "acausal.gear_constraint" and "finite and nonzero" in d.message
         for d in report.diagnostics
     )
+
+
+@pytest.mark.parametrize("with_adapter", [False, True])
+def test_persisted_direct_element_signal_input_binds_with_adapters(with_adapter):
+    from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
+    from feedbax.contracts.migrations import migrate_acausal_graph_spec
+
+    nodes = {
+        "mass": ComponentSpec(type="Mass", params={"mass": 2.0}),
+        "wall": ComponentSpec(type="Ground"),
+        "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 1.0}),
+        "muscle": ComponentSpec(type="RigidTendonHillMuscle", params={"max_isometric_force": 10.0}),
+        "velocity": ComponentSpec(
+            type="SensorOutput", params={"port_name": "v", "quantity": "velocity"}
+        ),
+    }
+    connections = [
+        {"a": a, "b": b}
+        for a, b in [
+            (("wall", "flange"), ("spring", "flange_a")),
+            (("spring", "flange_b"), ("mass", "flange")),
+            (("muscle", "flange"), ("mass", "flange")),
+            (("velocity", "flange"), ("mass", "flange")),
+        ]
+    ]
+    if with_adapter:
+        # Authored adapters precede direct signal inputs, even against lexical order.
+        nodes["adapter"] = ComponentSpec(
+            type="ActuationInput", params={"port_name": "z_drive", "source_kind": "force"}
+        )
+        connections.append({"a": ("adapter", "flange"), "b": ("mass", "flange")})
+    spec = AcausalGraphSpec(
+        physical_domain="translational",
+        nodes=nodes,
+        connections=connections,
+        solver={"solver_type": "euler", "dt": 0.01},
+    )
+    import json
+
+    payload = json.loads(spec.model_dump_json())
+    loaded = AcausalGraphSpec.model_validate(migrate_acausal_graph_spec(payload).payload)
+    report = compile_acausal_authoring_report(
+        loaded, node_path=["plant"], component_registry=_registry()
+    )
+    assert report.status == "ok", report.diagnostics
+    system = compile_acausal_graph(loaded, "plant", _registry())
+    assert system.input_ports == (("z_drive", "muscle") if with_adapter else ("muscle",))
+    state = system.init_state(key=jax.random.PRNGKey(0))
+    inputs = {"muscle": jnp.array([1.0])}
+    if with_adapter:
+        inputs["z_drive"] = jnp.array([4.0])
+    outputs, _ = system(inputs, state, key=jax.random.PRNGKey(1))
+    assert outputs["v"] == pytest.approx(0.07 if with_adapter else 0.05)
