@@ -1,11 +1,10 @@
 {
   "schema_id": "feedbax.spec.authoring_budget",
-  "schema_version": "feedbax.spec.authoring_budget.v1",
+  "schema_version": "feedbax.spec.authoring_budget.v2",
   "budget_id": "quillon.envelope_budgets.v1",
   "rationale": "A training envelope states a native composition delta and is the largest authored document by construction; a report states ordered bindings and prose, so its scalars are allowed to be longer while its structure stays flatter. The other three sit between, and every cap is the smallest number the corpus actually needs.",
   "layers": {
     "training": {
-      "max_lines": 128,
       "max_bytes": 8192,
       "max_scalar_bytes": 512,
       "max_ast_nodes": 160,
@@ -18,7 +17,6 @@
       }
     },
     "evaluation": {
-      "max_lines": 80,
       "max_bytes": 4096,
       "max_scalar_bytes": 512,
       "max_ast_nodes": 120,
@@ -28,7 +26,6 @@
       "max_assertions": 4
     },
     "analysis": {
-      "max_lines": 80,
       "max_bytes": 4096,
       "max_scalar_bytes": 512,
       "max_ast_nodes": 120,
@@ -38,7 +35,6 @@
       "max_assertions": 4
     },
     "figure": {
-      "max_lines": 80,
       "max_bytes": 4096,
       "max_scalar_bytes": 512,
       "max_ast_nodes": 120,
@@ -48,7 +44,6 @@
       "max_assertions": 4
     },
     "comparison": {
-      "max_lines": 80,
       "max_bytes": 4096,
       "max_scalar_bytes": 512,
       "max_ast_nodes": 120,
@@ -58,7 +53,6 @@
       "max_assertions": 4
     },
     "report": {
-      "max_lines": 96,
       "max_bytes": 8192,
       "max_scalar_bytes": 4096,
       "max_ast_nodes": 120,

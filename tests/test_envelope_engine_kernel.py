@@ -413,7 +413,7 @@ def test_a_layer_that_authors_no_rows_is_bound_by_no_row_cap(repo: Path) -> None
 
 def test_budget_document_refuses_a_section_with_a_mistyped_cap() -> None:
     document = _budget_document()
-    document["layers"]["training"]["max_lnies"] = document["layers"]["training"].pop("max_lines")
+    document["layers"]["training"]["max_byets"] = document["layers"]["training"].pop("max_bytes")
 
     with pytest.raises(ExperimentEnvelopeRejection) as excinfo:
         AuthoringBudgets.from_document(

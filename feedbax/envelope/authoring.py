@@ -1,11 +1,9 @@
 """Reading an authored document: noncanonical bytes and over-budget content.
 
-Formatting, duplicate keys, and oversized input are rejected *before* JSON
-parsing, so an ambiguous or oversized document can never reach a schema layer and
-be silently normalized there. Which layer's caps apply is a property of the
-document, so the pre-parse byte guard uses the *widest* cap any layer states, and
-the document's own layer cap is applied the moment its layer is known — still
-before any project model sees it.
+Duplicate keys and invalid source formatting are refused before any project model
+sees the document. Byte budgets measure canonical_json_v1 after strict parsing;
+source whitespace and key order do not consume authored intent. Syntax nodes and
+depth bound structure without a redundant line cap.
 
 The layer is identified by the project, not guessed at by the engine: the caller
 passes the label site its declaration reads, and a document whose layer cannot be
@@ -22,7 +20,7 @@ from typing import Any, NoReturn
 
 from feedbax.contracts.strict_json import DuplicateJsonKeyError, strict_json_loads
 
-from feedbax.contracts.authored_canonical import emit_text
+from feedbax.contracts.authored_canonical import canonical_bytes
 from feedbax.contracts.authoring_budget import AuthoringBudgets, LayerBudget
 from feedbax.contracts.experiment_envelope import (
     ExperimentEnvelopeRejection,
@@ -95,19 +93,13 @@ def _walk_budget(value: Any, budget: LayerBudget, field: str, depth: int) -> int
     return 1
 
 
-def guard_authored_bytes(raw: bytes, budget: LayerBudget, *, field: str) -> str:
-    """Refuse noncanonical or oversized authored bytes before they are parsed."""
+def guard_authored_bytes(raw: bytes, *, field: str) -> str:
+    """Refuse invalid authored byte formatting before parsing."""
     if raw.startswith(b"\xef\xbb\xbf"):
         _reject(
             ExperimentEnvelopeRejectionCategory.NONCANONICAL_FORMAT,
             field,
             "byte-order mark is not admitted",
-        )
-    if len(raw) > budget.max_bytes:
-        _reject(
-            ExperimentEnvelopeRejectionCategory.BUDGET_EXCEEDED,
-            field,
-            f"{len(raw)} bytes exceeds {budget.cap('max_bytes')}",
         )
     try:
         text = raw.decode("utf-8")
@@ -139,13 +131,14 @@ def guard_authored_bytes(raw: bytes, budget: LayerBudget, *, field: str) -> str:
     return text
 
 
-def enforce_budget(document: Any, budget: LayerBudget, raw_length: int, *, field: str) -> None:
+def enforce_budget(document: Any, budget: LayerBudget, *, field: str) -> None:
     """Apply one layer's caps to a parsed authored document."""
-    if raw_length > budget.max_bytes:
+    canonical_length = len(canonical_bytes(document))
+    if canonical_length > budget.max_bytes:
         _reject(
             ExperimentEnvelopeRejectionCategory.BUDGET_EXCEEDED,
             field,
-            f"{raw_length} bytes exceeds {budget.cap('max_bytes')}",
+            f"{canonical_length} canonical_json_v1 bytes exceeds {budget.cap('max_bytes')}",
         )
     nodes = _walk_budget(document, budget, field, 1)
     if nodes > budget.max_ast_nodes:
@@ -153,14 +146,6 @@ def enforce_budget(document: Any, budget: LayerBudget, raw_length: int, *, field
             ExperimentEnvelopeRejectionCategory.BUDGET_EXCEEDED,
             field,
             f"{nodes} syntax nodes exceeds {budget.cap('max_ast_nodes')}",
-            correct_home=_PROSE_HOME,
-        )
-    lines = len(emit_text(document).splitlines())
-    if lines > budget.max_lines:
-        _reject(
-            ExperimentEnvelopeRejectionCategory.BUDGET_EXCEEDED,
-            field,
-            f"{lines} canonically formatted lines exceeds {budget.cap('max_lines')}",
             correct_home=_PROSE_HOME,
         )
 
@@ -221,7 +206,7 @@ def read_authored_document(
             ambiguous, or it exceeds a cap its layer states.
     """
     widest = budgets.widest
-    text = guard_authored_bytes(raw, widest, field=field)
+    text = guard_authored_bytes(raw, field=field)
     try:
         document = strict_json_loads(text, ref=field, parse_constant=_reject_constant)
     except DuplicateJsonKeyError as exc:
@@ -246,7 +231,7 @@ def read_authored_document(
         )
     layer = layer_of(document) if layer_of is not None else None
     budget = widest if layer is None else budgets.for_layer(layer)
-    enforce_budget(document, budget, len(raw), field=field)
+    enforce_budget(document, budget, field=field)
     return document
 
 
