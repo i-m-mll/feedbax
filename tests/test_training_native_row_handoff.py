@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -75,6 +76,7 @@ from feedbax.orchestration.conformance import (
     check_manifest_valid,
     check_seeds,
 )
+from feedbax.orchestration.drivers import native_execution, runpod
 from feedbax.orchestration.drivers.local import LocalDriverError, LocalOrchestrationDriver
 from feedbax.orchestration.drivers.native_execution import (
     NativeExecutionContextError,
@@ -1695,6 +1697,7 @@ def test_checkpoint_seed_rejects_attempt_path_swap(
 def test_checkpoint_seed_rejects_governed_leaf_replacement_after_digest_read(
     tmp_path: Path,
     protocol: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle = _assemble_lowered_bundle(
         tmp_path / f"{protocol}-leaf-swap-bundle",
@@ -1709,7 +1712,6 @@ def test_checkpoint_seed_rejects_governed_leaf_replacement_after_digest_read(
     resolved = _write_authenticated_checkpoint_tree(
         source,
         bundle.resolved_inputs[0],
-        additional_slots={"zz_ballast": b"z" * (64 * 1024 * 1024)},
     )
     attempt = tmp_path / f"{protocol}-leaf-swap-attempt"
     target = tmp_path / f"{protocol}-leaf-swap-target"
@@ -1718,30 +1720,68 @@ def test_checkpoint_seed_rejects_governed_leaf_replacement_after_digest_read(
     attacker_leaf = tmp_path / f"{protocol}-attacker-model.bin"
     attacker_leaf.write_bytes(b"attacker-slot!!")
     replaced = threading.Event()
+    staging_errors: list[Exception] = []
 
-    def replace_after_read() -> None:
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not governed_leaf.is_file():
-            time.sleep(0.001)
-        if not governed_leaf.is_file():
-            return
-        initial_atime = governed_leaf.stat().st_atime_ns
-        while time.monotonic() < deadline:
-            if governed_leaf.stat().st_atime_ns != initial_atime:
-                os.replace(attacker_leaf, governed_leaf)
-                replaced.set()
-                return
-            time.sleep(0.001)
+    with socket.socket() as rendezvous:
+        rendezvous.bind(("127.0.0.1", 0))
+        rendezvous.listen(1)
+        rendezvous.settimeout(10)
+        address = rendezvous.getsockname()
+        leaf_parts = governed_leaf.relative_to(attempt).parts
+        # Wrap the shared script only in this test, after bytes and identity are captured.
+        boundary_hook = f"""
+import socket
+original_read_regular = read_regular
 
-    thread = threading.Thread(target=replace_after_read)
-    thread.start()
-    try:
-        with pytest.raises((NativeExecutionContextError, subprocess.CalledProcessError)):
+def read_regular(parent_descriptor, parts):
+    result = original_read_regular(parent_descriptor, parts)
+    if parts == {leaf_parts!r}:
+        with socket.create_connection({address!r}, timeout=10) as rendezvous:
+            rendezvous.sendall(b"R")
+            if rendezvous.recv(1) != b"1":
+                raise RuntimeError("checkpoint replacement attack was not staged")
+    return result
+
+"""
+        boundary = "source_descriptor = os.open(source, flags)"
+        script = native_execution.SECURE_CHECKPOINT_SEED_SCRIPT
+        assert script.count(boundary) == 1
+        script = script.replace(boundary, boundary_hook + boundary)
+        monkeypatch.setattr(native_execution, "SECURE_CHECKPOINT_SEED_SCRIPT", script)
+        monkeypatch.setattr(runpod, "SECURE_CHECKPOINT_SEED_SCRIPT", script)
+
+        def replace_after_read() -> None:
+            try:
+                with rendezvous.accept()[0] as connection:
+                    connection.settimeout(10)
+                    assert connection.recv(1) == b"R"
+                    os.replace(attacker_leaf, governed_leaf)
+                    assert governed_leaf.read_bytes() == b"attacker-slot!!"
+                    replaced.set()
+                    connection.sendall(b"1")
+            except Exception as exc:
+                staging_errors.append(exc)
+
+        thread = threading.Thread(target=replace_after_read)
+        thread.start()
+        rejection = None
+        try:
             _invoke_checkpoint_seed_protocol(protocol, source, attempt, target, resolved)
-    finally:
-        thread.join()
+        except (NativeExecutionContextError, subprocess.CalledProcessError) as exc:
+            rejection = exc
+        finally:
+            thread.join(timeout=15)
 
-    assert replaced.is_set()
+    assert not thread.is_alive(), "checkpoint replacement attacker did not finish"
+    assert not staging_errors, f"checkpoint replacement staging failed: {staging_errors!r}"
+    assert replaced.is_set(), "checkpoint replacement attack never reached the read boundary"
+    assert rejection is not None, "staged checkpoint replacement was not rejected"
+    detail = (
+        rejection.stderr if isinstance(rejection, subprocess.CalledProcessError) else str(rejection)
+    )
+    assert "checkpoint governed pathname changed" in detail, (
+        f"staged checkpoint replacement failed for an unrelated reason: {detail}"
+    )
     assert not target.exists()
 
 
