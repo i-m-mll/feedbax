@@ -228,6 +228,11 @@ class FakeRunPodTransport:
         self.rsync_calls.append((source, target, delete, tuple(excludes)))
         self.rsync_timeouts.append(timeout_seconds)
         self.operations.append(f"rsync:{source}->{target}")
+        destination = Path(target)
+        if destination.parent.name.startswith(
+            ("feedbax-collect-", "feedbax-events-")
+        ) and not target.endswith("/"):
+            destination.write_text("payload\n")
         return self.rsync_result
 
 
@@ -775,8 +780,7 @@ def test_engine_persists_one_intent_before_each_single_create(tmp_path: Path) ->
         "acquired",
     ]
     assert [intent.datacenter_candidate for intent in persisted.acquisition_intents] == [
-        "CA-MTL-1",
-        "EU-CZ-1",
+        "CA-MTL-1", "EU-CZ-1"
     ]
     assert len(set(transport.create_names)) == 2
 
@@ -5344,10 +5348,13 @@ def test_collect_rsyncs_requested_outputs_and_verifies_payload(tmp_path: Path) -
     collected = driver.collect(bundle, row, _state(bundle))
 
     assert collected == {"warm.events.jsonl": str(payload)}
+    assert Path(transport.rsync_calls[0][1]).name == payload.name
+    assert transport.rsync_calls[0][1] != str(payload)
+    assert payload.read_text() == "payload\n"
     assert transport.rsync_calls == [
         (
             "/workspace/feedbax_runs/2026-01-02-deadbeef/events/warm.events.jsonl",
-            str(payload),
+            transport.rsync_calls[0][1],
             False,
             (),
         )
@@ -5431,9 +5438,9 @@ def test_collect_native_outputs_uses_row_dir_and_canonical_events(tmp_path: Path
         f"{remote}/rows/warm/manifests/",
         f"{remote}/events/warm.events.jsonl",
     ]
-    assert transport.rsync_calls[2][1].endswith("/collected/warm/checkpoints/")
+    assert transport.rsync_calls[2][1].endswith("/checkpoints/")
     assert transport.rsync_calls[2][2] is True
-    assert transport.rsync_calls[3][1].endswith("/collected/warm/manifests/")
+    assert transport.rsync_calls[3][1].endswith("/manifests/")
     assert transport.rsync_calls[3][2] is True
     assert collected["warm.events.jsonl"] == str(bundle.run_set_dir / "events/warm.events.jsonl")
 
@@ -5553,10 +5560,12 @@ def test_local_and_runpod_collect_directory_contents_at_declared_target(
                 '{"source":"terminal"}\n'
             )
         assert not (collected_root / directory_name).exists()
+    assert Path(transport.rsync_calls[0][1]).name == directory_name
+    assert transport.rsync_calls[0][1] != str(Path(runpod_collected[directory_name])) + "/"
     assert transport.rsync_calls == [
         (
             str(source) + "/",
-            str(Path(runpod_collected[directory_name])) + "/",
+            transport.rsync_calls[0][1],
             True,
             (),
         )
@@ -5828,7 +5837,7 @@ def test_collect_recovery_rejects_source_root_replacement_race(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle, row, preserved = _recovery_fixture(tmp_path)
-    original_copy = collection_recovery._copy_member_no_follow
+    original_copy = collection_recovery.copy_collection_member
     raced = False
 
     def replace_root(*args: Any, **kwargs: Any) -> Any:
@@ -5839,7 +5848,7 @@ def test_collect_recovery_rejects_source_root_replacement_race(
             preserved.mkdir()
         return original_copy(*args, **kwargs)
 
-    monkeypatch.setattr(collection_recovery, "_copy_member_no_follow", replace_root)
+    monkeypatch.setattr(collection_recovery, "copy_collection_member", replace_root)
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(),
         transport=FakeRunPodTransport(),
@@ -5871,7 +5880,7 @@ def test_collect_recovery_rejects_destination_replacement_race(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle, row, preserved = _recovery_fixture(tmp_path)
-    original_copy = collection_recovery._copy_member_no_follow
+    original_copy = collection_recovery.copy_collection_member
     raced = False
 
     def replace_destination(*args: Any, **kwargs: Any) -> Any:
@@ -5886,7 +5895,7 @@ def test_collect_recovery_rejects_destination_replacement_race(
 
     monkeypatch.setattr(
         collection_recovery,
-        "_copy_member_no_follow",
+        "copy_collection_member",
         replace_destination,
     )
     driver = RunPodOrchestrationDriver(
@@ -6410,8 +6419,56 @@ def test_abort_teardown_pulls_failure_logs_before_pod_removal(tmp_path: Path) ->
     assert pull_index < remove_index
     assert transport.rsync_calls[-1] == (
         "/workspace/feedbax_runs/2026-01-02-deadbeef/logs/",
-        str(bundle.run_set_dir / "failure-logs") + "/",
+        transport.rsync_calls[-1][1],
         False,
         (),
     )
     assert transport.rsync_timeouts[-1] == 17
+
+
+@pytest.mark.parametrize("destination_kind", ["collected", "events", "failure-logs"])
+def test_collect_rechecks_destination_after_download_without_outside_writes(
+    tmp_path: Path, destination_kind: str,
+) -> None:
+    from feedbax.orchestration.collection_destination import CollectionDestinationError
+    from feedbax.orchestration.stages import run_authority_preflight_checks
+
+    bundle = _bundle(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    assert (
+        next(
+            check
+            for check in run_authority_preflight_checks(bundle)
+            if check.name == "collection-destinations"
+        ).status
+        == "pass"
+    )
+
+    class ReplacingTransport(FakeRunPodTransport):
+        def rsync(self, source: str, target: str, **kwargs: Any) -> CommandResult:
+            result = super().rsync(source, target, **kwargs)
+            staging_prefix = {
+                "collected": "feedbax-collect-",
+                "events": "feedbax-events-",
+                "failure-logs": "feedbax-failure-logs-",
+            }[destination_kind]
+            if Path(target.rstrip("/")).parent.name.startswith(staging_prefix):
+                (bundle.run_set_dir / destination_kind).symlink_to(outside, target_is_directory=True)
+            return result
+
+    bundle.run_set_dir.mkdir(parents=True, exist_ok=True)
+    transport = ReplacingTransport()
+    transport.queue_ssh(CommandResult(0, "file"))
+    driver = RunPodOrchestrationDriver(config=RunPodDriverConfig(), transport=transport)
+    row = bundle.rows[0].model_copy(update={
+        "launch": bundle.rows[0].launch.model_copy(update={
+            "command": ["python", "-m", "feedbax", "execute-training-run-spec", "spec.json"],
+        }),
+    })
+    with pytest.raises(CollectionDestinationError, match="unsafe|symlink|directory"):
+        if destination_kind == "failure-logs":
+            driver.collect_failure_logs(bundle, _state(bundle))
+        else:
+            driver.collect(bundle, row, _state(bundle))
+    assert list(outside.iterdir()) == []

@@ -31,6 +31,10 @@ from feedbax.contracts.evaluation_lifecycle import (
     EVALUATION_COLLECTION_OUTPUTS,
     EvaluationMatrixOrderedUnionEvidence,
 )
+from feedbax.orchestration.collection_destination import (
+    check_collection_destinations,
+    publish_collection_output,
+)
 from feedbax.orchestration.bundle import (
     ResolvedAssemblyInput,
     RunBundle,
@@ -64,6 +68,7 @@ from feedbax.orchestration.drivers.capabilities import (
 from feedbax.orchestration.drivers.native_execution import (
     native_resume_checkpoint_source,
     seed_authenticated_checkpoint,
+    uses_registered_native_execution,
 )
 from feedbax.orchestration.executor_family import executor_family_adapter
 from feedbax.orchestration.input_materialization import (
@@ -80,6 +85,7 @@ from feedbax.orchestration.staged_root_custody import StagedRootSnapshotBinding
 from feedbax.orchestration.state import PreflightCheckEntry, ProcessIdentity, RunSetState
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.training import publish_directory_no_replace
+from feedbax.training.checkpoint_custody import authenticate_published_checkpoint_custody
 
 
 class LocalDriverError(RuntimeError):
@@ -694,10 +700,10 @@ class LocalOrchestrationDriver:
     ) -> Mapping[str, str]:
         paths = _row_paths(bundle, row.row_id)
         dest_dir = bundle.run_set_dir / "collected" / row.row_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        check_collection_destinations(bundle, rows=(row,))
         collected: dict[str, str] = {}
         sources = row.launch.collect or [str(paths["event_log"])]
-        failed_row = state.rows[row.row_id].status in {"failed", "stopped"}
+        failed_row = state.rows[row.row_id].status == "failed"
         for source in sources:
             source_path = Path(source)
             if not source_path.is_absolute():
@@ -714,16 +720,12 @@ class LocalOrchestrationDriver:
             # A failed executor may leave a large, actively-written raw/cache tree.
             # Small declared files remain useful failure evidence, but recursive
             # directory collection is terminal-output publication and is therefore
-            # forbidden until the executor has completed successfully.
+            # forbidden for failed execution. A checkpoint-stopped executor has
+            # published terminal custody that collection must authenticate.
             if failed_row and source_path.is_dir():
                 continue
             dest = dest_dir / source_path.name
-            if source_path.is_dir():
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(source_path, dest)
-            else:
-                shutil.copy2(source_path, dest)
+            publish_collection_output(bundle, source_path, dest)
             collected[source_path.name] = str(dest)
         payload_sha256 = row.launch.metadata.get("payload_sha256")
         if payload_sha256 and collected:
@@ -756,8 +758,14 @@ class LocalOrchestrationDriver:
         failed_row_reclamation = [
             _reclaim_failed_row_tree(bundle, row)
             for row in bundle.rows
-            if state.rows[row.row_id].status in {"failed", "stopped"}
-            and state.stage("COLLECT").status in {"completed", "failed"}
+            if state.rows[row.row_id].status == "failed"
+            and _failed_row_collection_finished(state, row.row_id)
+        ]
+        stopped_row_reclamation = [
+            _reclaim_failed_row_tree(bundle, row)
+            for row in bundle.rows
+            if state.rows[row.row_id].status == "stopped"
+            and _stopped_row_custody_complete(bundle, row, state)
         ]
         successful_evaluation_reclamation = _reclaim_successful_evaluation_stores(
             bundle,
@@ -772,6 +780,7 @@ class LocalOrchestrationDriver:
             "driver": "local",
             "stopped_rows": stopped,
             "failed_row_reclamation": failed_row_reclamation,
+            "stopped_row_reclamation": stopped_row_reclamation,
             "successful_evaluation_reclamation": successful_evaluation_reclamation,
             "staged_root_reclamation": reclamation,
         }
@@ -1178,6 +1187,47 @@ def _process_group_alive(pgid: int) -> bool:
         pass
     members, error = _process_group_member_pids(pgid)
     return True if error is not None else bool(members)
+
+
+def _failed_row_collection_finished(state: RunSetState, row_id: str) -> bool:
+    """Distinguish collected executor failure evidence from collection failure."""
+    collect = state.stage("COLLECT")
+    if collect.status not in {"completed", "failed"}:
+        return False
+    recorded = collect.outputs.get("rows", {}).get(row_id)
+    if recorded is None or recorded != state.rows[row_id].collected_outputs:
+        return False
+    return not any(
+        item.get("row_id") == row_id
+        and item.get("kind") != "absent_collection_outputs"
+        for item in collect.outputs.get("secondary_evidence", [])
+    )
+
+
+def _stopped_row_custody_complete(
+    bundle: RunBundle, row: RunRowSpec, state: RunSetState
+) -> bool:
+    """Authorize stopped source reclamation from authenticated collected custody."""
+    collect = state.stage("COLLECT")
+    if collect.status != "completed" or not uses_registered_native_execution(row):
+        return False
+    outputs = state.rows[row.row_id].collected_outputs
+    if collect.outputs.get("rows", {}).get(row.row_id) != outputs:
+        raise LocalDriverError(f"stopped row collected outputs drifted: {row.row_id!r}")
+    if executor_family_adapter(row.execution_family).missing_collection_outputs(bundle, row, outputs):
+        raise LocalDriverError(f"stopped row collection is incomplete: {row.row_id!r}")
+    for name, path in outputs.items():
+        expected = bundle.run_set_dir / "collected" / row.row_id / name
+        if Path(path) != expected:
+            raise LocalDriverError(f"stopped row collected path is not run-owned: {row.row_id!r}")
+        _require_run_owned_path(
+            expected, root=bundle.run_set_dir, directory=expected.is_dir()
+        )
+    authenticated = authenticate_published_checkpoint_custody(Path(outputs["checkpoints"]))
+    evidence = collect.outputs.get("checkpoint_custody", {}).get(row.row_id, {})
+    if evidence.get("manifest_sha256") != authenticated.manifest_sha256:
+        raise LocalDriverError(f"stopped row checkpoint custody drifted: {row.row_id!r}")
+    return True
 
 
 def _reclaim_failed_row_tree(

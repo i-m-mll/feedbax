@@ -51,6 +51,10 @@ from feedbax.orchestration.assembly import (
     assert_authored_feedbax_revision,
     persist_assembly_request,
 )
+from feedbax.orchestration.collection_destination import (
+    CollectionDestinationError,
+    check_collection_destinations,
+)
 from feedbax.orchestration.bundle import (
     RUN_BUNDLE_SCHEMA_VERSION,
     RunBundle,
@@ -503,6 +507,11 @@ class StageEngine:
             with self.store.lock(break_stale=break_stale_lock):
                 state = self.store.initialize(initial)
                 state = self._hydrate_completed_assembly(state)
+                if self.bundle is not None and state.stage(STAGE_PREFLIGHT).status == "completed":
+                    try:
+                        check_collection_destinations(self.bundle)
+                    except (CollectionDestinationError, OSError) as exc:
+                        raise PreflightFailed(f"collection-destinations: {exc}") from exc
                 self._restore_driver_from_provision_record(state)
                 with signal_supervisor.defer_signals():
                     state = self._reconcile_acquisition_intents(state)
@@ -2635,7 +2644,41 @@ class StageEngine:
         facts = self._driver_facts()
         if facts.custody is not CustodySemantics.EPHEMERAL_REMOTE_RESOURCE:
             return True
-        return state.stage(STAGE_COLLECT).status == "completed"
+        dispatched = self._dispatched_row_ids(state)
+        if not dispatched:
+            return True
+        collect = state.stage(STAGE_COLLECT)
+        if collect.status not in {"completed", "failed"}:
+            return False
+        if collect.status == "failed" and not collect.outputs.get("executor_failures"):
+            return False
+        if collect.outputs.get("secondary_evidence"):
+            return False
+        collected, checkpoint_custody = self._group_collection_maps(state)
+        for row in self.bundle.rows:
+            if row.row_id not in dispatched:
+                continue
+            outputs = collected.get(row.row_id)
+            if outputs is None or outputs != state.rows[row.row_id].collected_outputs:
+                return False
+            if executor_family_adapter(row.execution_family).missing_collection_outputs(
+                self.bundle, row, outputs
+            ):
+                return False
+            if uses_registered_native_execution(row) and not checkpoint_custody.get(row.row_id):
+                return False
+        return True
+
+    def _dispatched_row_ids(self, state: RunSetState) -> set[str]:
+        """Rows with attempted or observed dispatch, including uncertain acknowledgements."""
+        return {
+            row_id
+            for row_id, row in state.rows.items()
+            if row.started_at is not None
+            or row.pid is not None
+            or row.process_identity is not None
+            or row.status in {"launched", "ready", "running", "completed"}
+        }
 
     def _resource_requires_recovery_record(self, state: RunSetState) -> bool:
         if self._provision_completed(state):
@@ -2755,6 +2798,22 @@ class StageEngine:
     def _run_teardown(self, state: RunSetState, *, abort: bool) -> RunSetState:
         self._prepare_emergency_for_teardown(state)
         stage = state.stage(STAGE_TEARDOWN)
+        if (
+            self._destructive_ephemeral_teardown()
+            and not self._custody_complete(state)
+        ):
+            error = "destructive teardown blocked: executed outputs lack complete collection custody"
+            blocked = stage.model_copy(
+                update={
+                    "status": "failed",
+                    "attempts": stage.attempts + 1,
+                    "started_at": stage.started_at or utc_now(),
+                    "error": error,
+                    "outputs": {"teardown": "blocked", "abort_path": abort},
+                }
+            )
+            self.store.save(state.with_stage(STAGE_TEARDOWN, blocked))
+            raise CustodyPreservationRequired(error)
         if stage.status == "completed":
             return state
         failure_log_collection: dict[str, Any] | None = None
@@ -2983,6 +3042,11 @@ class StageEngine:
             assert_feedbax_revision_exact(self.bundle.feedbax_revision)
         except FeedbaxRevisionError as exc:
             raise OrchestrationStageError(str(exc)) from exc
+        row_state = state.rows[row.row_id].model_copy(
+            update={"started_at": state.rows[row.row_id].started_at or utc_now()}
+        )
+        state = state.with_row(row.row_id, row_state)
+        self.store.save(state)
         outputs = self.driver.launch_row(self.bundle, row, state)
         output_status = outputs.get("status")
         status = "failed" if output_status == "failed" else "launched"
@@ -2997,7 +3061,7 @@ class StageEngine:
                 "status": status,
                 "pid": outputs.get("pid"),
                 "process_identity": process_identity,
-                "started_at": utc_now(),
+                "started_at": row_state.started_at,
                 "completed_at": utc_now() if status == "failed" else None,
                 "error": outputs.get("detail") if status == "failed" else None,
                 "event_discrepancies": [
@@ -3139,6 +3203,22 @@ class StageEngine:
             return stopped.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
 
         assert decision.action == "stop"
+        request_stop = None
+        if any(
+            row.status in ("launched", "ready", "running") for row in state.rows.values()
+        ):
+            request_stop = self._driver_hook(
+                DriverHook.CHECKPOINT_STOP,
+                "request_stop_at_checkpoint",
+            )
+            if request_stop is None:
+                self.store.save(
+                    state.model_copy(update={"budget_counters": counters, "updated_at": utc_now()})
+                )
+                raise OrchestrationStageError(
+                    f"driver {self.driver.realized_capabilities.driver_name!r} does not support "
+                    "checkpoint-safe stop; explicitly request terminate for immediate termination"
+                )
         for row in self.bundle.rows:
             row_state = state.rows[row.row_id]
             if row_state.status in ("completed", "failed", "stopped"):
@@ -3155,24 +3235,8 @@ class StageEngine:
                     ),
                 )
                 continue
-            request_stop = self._driver_hook(
-                DriverHook.CHECKPOINT_STOP,
-                "request_stop_at_checkpoint",
-            )
-            if request_stop is not None:
-                request_stop(self.bundle, row, state)
-            else:
-                self.driver.stop_row(self.bundle, row, state)
-                state = state.with_row(
-                    row.row_id,
-                    row_state.model_copy(
-                        update={
-                            "status": "stopped",
-                            "completed_at": utc_now(),
-                            "error": "operator-stop-after-checkpoint",
-                        }
-                    ),
-                )
+            assert request_stop is not None
+            request_stop(self.bundle, row, state)
         return state.model_copy(
             update={
                 "abort_reason": "operator-stop-after-checkpoint",
@@ -3429,6 +3493,12 @@ def _run_static_preflight_checks(
     enabled_conformance_checks: Sequence[str],
 ) -> list[PreflightCheckEntry]:
     checks: list[PreflightCheckEntry] = []
+    try:
+        check_collection_destinations(bundle)
+    except (CollectionDestinationError, OSError) as exc:
+        checks.append(_check("collection-destinations", False, detail=str(exc)))
+    else:
+        checks.append(_check("collection-destinations", True))
     schema_current = bundle.schema_version == RUN_BUNDLE_SCHEMA_VERSION
     checks.append(
         _check(
