@@ -108,6 +108,7 @@ from feedbax.contracts.base import (
     canonical_json_bytes,
     feedbax_version,
     sha256_bytes,
+    sha256_file,
 )
 from feedbax.contracts.publication import (
     BlobRef,
@@ -1391,7 +1392,7 @@ def fingerprint_checkpoint_custody_inputs(
             continue
         paths.append(relative)
         if digest_blobs or _is_custody_metadata_file(PurePosixPath(relative)):
-            digests.append((relative, _sha256_file(path)))
+            digests.append((relative, sha256_file(path)))
     return CheckpointCustodyFingerprint(
         root_present=True,
         digested_blobs=digest_blobs,
@@ -3346,7 +3347,7 @@ def write_checkpoint_transaction(
         )
         manifest_path = tmp_dir / MANIFEST_NAME
         _write_json_atomic(manifest_path, manifest.model_dump(mode="json", exclude_none=True))
-        manifest_sha256 = _sha256_file(manifest_path)
+        manifest_sha256 = sha256_file(manifest_path)
         checkpoint_set = _published_checkpoint_set(
             run_spec=run_spec,
             manifest=manifest,
@@ -3617,7 +3618,7 @@ def _manifest_from_latest_pointer(
         raise CheckpointIntegrityError(
             f"latest pointer references missing manifest: {latest.manifest_relative_path}"
         )
-    if _sha256_file(manifest_path) != latest.manifest_sha256:
+    if sha256_file(manifest_path) != latest.manifest_sha256:
         raise CheckpointIntegrityError("latest pointer manifest hash does not match bytes")
     manifest = _load_transaction_manifest(manifest_path)
     if manifest.transaction_id != latest.transaction_id:
@@ -5532,7 +5533,7 @@ def _fork_checkpoint_transaction_from_path(
         )
         manifest_path = tmp_dir / MANIFEST_NAME
         _write_json_atomic(manifest_path, manifest.model_dump(mode="json", exclude_none=True))
-        manifest_sha256 = _sha256_file(manifest_path)
+        manifest_sha256 = sha256_file(manifest_path)
         checkpoint_set = _published_checkpoint_set(
             run_spec=target_run_spec,
             manifest=manifest,
@@ -5774,7 +5775,7 @@ def _load_checkpoint_transaction_by_id(
             run_id=manifest.run_id,
             transaction_id=transaction_id,
             manifest_relative_path=str(manifest_path.relative_to(root_path)),
-            manifest_sha256=_sha256_file(manifest_path),
+            manifest_sha256=sha256_file(manifest_path),
             transaction_root_sha256=manifest.content_integrity_digest.transaction_root_sha256,
             completed_coordinate=manifest.completed_coordinate,
             completed_training_batches=manifest.completed_training_batches,
@@ -7816,11 +7817,3 @@ def _durable_json_bytes(payload: Mapping[str, Any]) -> bytes:
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_bytes_atomic(path, _durable_json_bytes(payload))
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
