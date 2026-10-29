@@ -20,8 +20,8 @@ and a block of prose are not over-budget at the same number. Enforcement reads
 the section belonging to the layer the document authors, and the *widest* cap
 any section states is what a document is judged under before its layer is known.
 
-Every cap a section states is enforced by Feedbax. Eight are required of every
-layer. A ninth, ``max_rows``, is optional and layer-specific — only the training
+Every cap a section states is enforced by Feedbax. Seven are required of every
+layer. An eighth, ``max_rows``, is optional and layer-specific — only the training
 layer authors rows — so it lives in that section's ``project_caps`` block. A
 ``project_caps`` key naming anything else is refused: there is no project-owned
 compiler left to hand an unenforced bound to, and a declared cap nothing enforces
@@ -44,16 +44,20 @@ from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
 
 AUTHORING_BUDGET_SCHEMA_ID = "feedbax.spec.authoring_budget"
 AUTHORING_BUDGET_SCHEMA_VERSION_V1 = f"{AUTHORING_BUDGET_SCHEMA_ID}.v1"
-AUTHORING_BUDGET_SCHEMA_VERSION = AUTHORING_BUDGET_SCHEMA_VERSION_V1
+AUTHORING_BUDGET_SCHEMA_VERSION_V2 = f"{AUTHORING_BUDGET_SCHEMA_ID}.v2"
+AUTHORING_BUDGET_SCHEMA_VERSION = AUTHORING_BUDGET_SCHEMA_VERSION_V2
 
-#: The only budget-policy versions read. Enumerated, never inferred.
-AUTHORING_BUDGET_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
-    AUTHORING_BUDGET_SCHEMA_VERSION_V1,
+AUTHORING_BUDGET_V1_REJECTION_REASON = (
+    "authoring budget v1 measures source bytes and lines and is no longer read; "
+    "remove max_lines from every layer, review max_bytes under canonical_json_v1 "
+    f"(sorted compact UTF-8 JSON), and declare {AUTHORING_BUDGET_SCHEMA_VERSION!r}"
 )
 
-#: Versions this loader accepts, mapped to the version they migrate to. Empty at
-#: v1: there is no older Feedbax-owned budget document. A future version adds its
-#: edge here and to ``default_spec_registry`` in one change.
+#: The only budget-policy versions read. Enumerated, never inferred.
+AUTHORING_BUDGET_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (AUTHORING_BUDGET_SCHEMA_VERSION_V2,)
+
+#: No automatic migration: v1 binds source bytes and lines. Authors must remove
+#: max_lines and review max_bytes under canonical_json_v1 before declaring v2.
 AUTHORING_BUDGET_MIGRATION_TABLE: dict[str, str] = {}
 
 #: The label a document is judged under before its layer is known: the widest cap
@@ -73,8 +77,7 @@ class LayerBudget:
 
     Attributes:
         layer: The declared layer label these caps belong to.
-        max_lines: Cap on canonically formatted lines of the whole document.
-        max_bytes: Cap on the raw authored byte length.
+        max_bytes: Cap on canonical_json_v1 bytes of the whole document.
         max_scalar_bytes: Cap on the UTF-8 length of any single string scalar.
         max_ast_nodes: Cap on total parsed syntax nodes.
         max_depth: Cap on nesting depth.
@@ -86,7 +89,6 @@ class LayerBudget:
     """
 
     layer: str
-    max_lines: int
     max_bytes: int
     max_scalar_bytes: int
     max_ast_nodes: int
@@ -118,12 +120,10 @@ class LayerBudget:
         return f"the {self.layer} layer's authored budget of {self.project_caps[name]}"
 
 
-#: The eight caps the engine enforces, derived from the dataclass rather than
+#: The seven caps the engine enforces, derived from the dataclass rather than
 #: re-spelled, so a new enforced cap is added in exactly one place.
 ENFORCED_BUDGET_KEYS: tuple[str, ...] = tuple(
-    name
-    for name in LayerBudget.__dataclass_fields__
-    if name not in ("layer", "project_caps")
+    name for name in LayerBudget.__dataclass_fields__ if name not in ("layer", "project_caps")
 )
 
 #: The optional caps a layer section may state in ``project_caps``. They are
@@ -134,9 +134,7 @@ ENFORCED_BUDGET_KEYS: tuple[str, ...] = tuple(
 OPTIONAL_BUDGET_KEYS: tuple[str, ...] = ("max_rows",)
 
 
-def _reject(
-    category: ExperimentEnvelopeRejectionCategory, field: str, message: str
-) -> NoReturn:
+def _reject(category: ExperimentEnvelopeRejectionCategory, field: str, message: str) -> NoReturn:
     raise ExperimentEnvelopeRejection(category, message, field=field)
 
 
@@ -168,7 +166,7 @@ class AuthoringBudgets:
         """Build the policy from a document already known to declare a read version.
 
         The sections are validated exhaustively against the project's declared
-        layer labels: exactly those layers, exactly the eight enforced caps in
+        layer labels: exactly those layers, exactly the seven enforced caps in
         each, every value a positive integer. A typo in a cap name is a refusal
         here rather than a silently absent bound.
         """
@@ -260,8 +258,8 @@ class AuthoringBudgets:
     def widest(self) -> LayerBudget:
         """Return the widest cap any layer states, per dimension.
 
-        This is what the pre-parse guard and a document whose layer cannot yet be
-        determined are judged under. It admits nothing the closed authored schema
+        This is what a document whose layer cannot yet be determined is judged
+        under. It admits nothing the closed authored schema
         would otherwise refuse; it only decides which diagnostic a document gets.
         """
         return LayerBudget(
@@ -308,6 +306,12 @@ def load_authoring_budget_document(raw: bytes, *, field: str) -> dict[str, Any]:
             f"expected schema_id {AUTHORING_BUDGET_SCHEMA_ID!r}, found {found_id!r}",
         )
     version = document.get("schema_version")
+    if version == AUTHORING_BUDGET_SCHEMA_VERSION_V1:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+            f"{field}#schema_version",
+            f"{AUTHORING_BUDGET_V1_REJECTION_REASON}; migration_intentionally_absent=yes",
+        )
     if version not in AUTHORING_BUDGET_SUPPORTED_SCHEMA_VERSIONS:
         _reject(
             ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
@@ -325,6 +329,7 @@ __all__ = [
     "AUTHORING_BUDGET_SCHEMA_ID",
     "AUTHORING_BUDGET_SCHEMA_VERSION",
     "AUTHORING_BUDGET_SCHEMA_VERSION_V1",
+    "AUTHORING_BUDGET_SCHEMA_VERSION_V2",
     "AUTHORING_BUDGET_SUPPORTED_SCHEMA_VERSIONS",
     "ENFORCED_BUDGET_KEYS",
     "OPTIONAL_BUDGET_KEYS",

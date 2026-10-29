@@ -34,6 +34,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from feedbax.contracts.authoring_budget import (
+    AUTHORING_BUDGET_SCHEMA_ID,
+    AUTHORING_BUDGET_SCHEMA_VERSION,
+)
 from feedbax.contracts.project_experiment import (
     PROJECT_DECLARATION_FILENAME,
     PROJECT_EXPERIMENT_DECLARATION_SCHEMA_ID,
@@ -60,16 +64,12 @@ DEFAULT_OUTPUT_DIRECTORY = "generated"
 DEFAULT_BUDGET_REF = f"{DEFAULT_ENVELOPE_DIRECTORY}/authoring_budget.json"
 DEFAULT_POLICY_REF = "ci/feedbax-science-surface.toml"
 
-AUTHORING_BUDGET_SCHEMA_ID = "feedbax.spec.authoring_budget"
-AUTHORING_BUDGET_SCHEMA_VERSION = f"{AUTHORING_BUDGET_SCHEMA_ID}.v1"
-
 #: The owner-ratified framework-wide default caps, one section per dialect layer.
-#: A training envelope states a native composition delta and is the largest
-#: authored document by construction; a report states ordered bindings and prose,
-#: so its scalars may be longer while its structure stays flatter.
+#: Evaluation allows one ordinary two-arm comparison with exact receipt bindings
+#: in a single delta (8192 canonical bytes / 512 nodes). Other structural bounds
+#: remain unchanged. Reports permit longer prose scalars with flatter structure.
 DEFAULT_AUTHORING_BUDGET_LAYERS: dict[str, dict[str, int]] = {
     "training": {
-        "max_lines": 128,
         "max_bytes": 8192,
         "max_scalar_bytes": 512,
         "max_ast_nodes": 160,
@@ -79,17 +79,15 @@ DEFAULT_AUTHORING_BUDGET_LAYERS: dict[str, dict[str, int]] = {
         "max_assertions": 4,
     },
     "evaluation": {
-        "max_lines": 80,
-        "max_bytes": 4096,
+        "max_bytes": 8192,
         "max_scalar_bytes": 512,
-        "max_ast_nodes": 120,
+        "max_ast_nodes": 512,
         "max_depth": 12,
         "max_items": 32,
         "max_object_keys": 32,
         "max_assertions": 4,
     },
     "analysis": {
-        "max_lines": 80,
         "max_bytes": 4096,
         "max_scalar_bytes": 512,
         "max_ast_nodes": 120,
@@ -99,7 +97,6 @@ DEFAULT_AUTHORING_BUDGET_LAYERS: dict[str, dict[str, int]] = {
         "max_assertions": 4,
     },
     "figure": {
-        "max_lines": 80,
         "max_bytes": 4096,
         "max_scalar_bytes": 512,
         "max_ast_nodes": 120,
@@ -109,7 +106,6 @@ DEFAULT_AUTHORING_BUDGET_LAYERS: dict[str, dict[str, int]] = {
         "max_assertions": 4,
     },
     "comparison": {
-        "max_lines": 80,
         "max_bytes": 4096,
         "max_scalar_bytes": 512,
         "max_ast_nodes": 120,
@@ -119,7 +115,6 @@ DEFAULT_AUTHORING_BUDGET_LAYERS: dict[str, dict[str, int]] = {
         "max_assertions": 4,
     },
     "report": {
-        "max_lines": 96,
         "max_bytes": 8192,
         "max_scalar_bytes": 4096,
         "max_ast_nodes": 120,
@@ -222,9 +217,9 @@ def default_budget_document(project: str) -> dict[str, Any]:
     return {
         "schema_id": AUTHORING_BUDGET_SCHEMA_ID,
         "schema_version": AUTHORING_BUDGET_SCHEMA_VERSION,
-        "budget_id": f"{project}.envelope_budgets.v1",
+        "budget_id": f"{project}.envelope_budgets.v2",
         "rationale": DEFAULT_BUDGET_RATIONALE,
-        "layers": DEFAULT_AUTHORING_BUDGET_LAYERS,
+        "layers": {layer: dict(caps) for layer, caps in DEFAULT_AUTHORING_BUDGET_LAYERS.items()},
     }
 
 
