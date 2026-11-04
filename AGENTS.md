@@ -8,7 +8,7 @@
   the integration target. Start implementation work in feature worktrees from
   the repo root rather than committing directly here.
 - Feature worktrees: `worktrees/feature__<name>/` — created with
-  `wt feature/<name>` from the repo root.
+  `wt new feature/<name>` from the repo root.
 - Release/default `main`, when needed, lives in a named worktree such as
   `worktrees/main`.
 
