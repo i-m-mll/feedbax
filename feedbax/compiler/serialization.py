@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from hashlib import sha256
+import json
 from typing import Any, Literal, Mapping, Sequence, cast
 
 from jaxtyping import PRNGKeyArray
@@ -7,7 +10,7 @@ from jaxtyping import PRNGKeyArray
 from feedbax.models.feedback import feedback_state_view
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.trial_history import trial_history_plan
-from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
+from feedbax.runtime.graph import AuthoredArrayEncoding, Component, ComponentBinding, Graph, Wire
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
     derive_dynamic_port_layout,
@@ -111,6 +114,52 @@ def _materialize_graph_component_params(
     return spec.model_copy(update={"nodes": nodes}), declarations_by_node
 
 
+def _array_encoding_slot(
+    params: dict[str, Any], path: tuple[str, ...]
+) -> tuple[Any, str | int] | None:
+    container: Any = params
+    for part in path[:-1]:
+        if isinstance(container, dict) and part in container:
+            container = container[part]
+        elif isinstance(container, list) and part.isdecimal() and int(part) < len(container):
+            container = container[int(part)]
+        else:
+            return None
+    part = path[-1]
+    if isinstance(container, dict) and part in container:
+        return container, part
+    if isinstance(container, list) and part.isdecimal() and int(part) < len(container):
+        return container, int(part)
+    return None
+
+
+def _serialized_value_digest(value: Any) -> bytes:
+    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).digest()
+
+
+def _capture_authored_arrays(
+    params: dict[str, Any], declarations: Mapping[tuple[str, ...], ArrayValueSpec]
+) -> tuple[AuthoredArrayEncoding, ...]:
+    encodings = []
+    for path, declaration in sorted(declarations.items()):
+        if (slot := _array_encoding_slot(params, path)) is not None:
+            container, key = slot
+            encodings.append(
+                AuthoredArrayEncoding(path, declaration, _serialized_value_digest(container[key]))
+            )
+    return tuple(encodings)
+
+
+def _restore_authored_arrays(
+    params: dict[str, Any], encodings: tuple[AuthoredArrayEncoding, ...]
+) -> None:
+    for encoding in encodings:
+        if (slot := _array_encoding_slot(params, encoding.path)) is not None:
+            container, key = slot
+            if _serialized_value_digest(container[key]) == encoding.baseline_sha256:
+                container[key] = encoding.declaration.model_dump(mode="json")
+
+
 def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpec:
     """Serialize a runtime graph through its component declarations."""
 
@@ -167,8 +216,10 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
                 f"declared inputs={tuple(layout.input_ports)!r}, "
                 f"outputs={tuple(layout.output_ports)!r}"
             )
-        if binding is not None and binding.trainable_override is not None:
-            params = {**params, "trainable": binding.trainable_override}
+        if binding is not None:
+            _restore_authored_arrays(params, binding.authored_arrays)
+            if binding.trainable_override is not None:
+                params = {**params, "trainable": binding.trainable_override}
         nodes[name] = ComponentSpec(
             type=type_id,
             params=params,
@@ -284,7 +335,9 @@ def _instantiate_graph(
             )
             if required_domain != CAUSAL_DOMAIN_ID:
                 if node_keys:
-                    raise ValueError(f"Cannot supply initialization keys to acausal node {node_name!r}")
+                    raise ValueError(
+                        f"Cannot supply initialization keys to acausal node {node_name!r}"
+                    )
                 domain = builtin_domain_registry().get(required_domain)
                 if domain is None:
                     raise ValueError(
@@ -346,9 +399,6 @@ def _instantiate_graph(
                     for parameter, port in meta.compiler.build_output_prototypes.items()
                 },
             }
-        delta_A_declaration = authored_array_values.get(node_name, {}).get(("delta_A",))
-        if node_type == "StructuralLinearStateSpace" and delta_A_declaration is not None:
-            params = {**params, "_authored_delta_A_value_spec": delta_A_declaration}
         if node_keys:
             if (
                 node_keys.keys() != {()}
@@ -380,6 +430,13 @@ def _instantiate_graph(
                     f"outputs={tuple(component.output_ports)!r}; "
                     f"spec inputs={declared_input_ports!r}, outputs={declared_output_ports!r}"
                 )
+        if declarations := authored_array_values.get(node_name):
+            binding = component_bindings[node_name]
+            assert meta is not None
+            component_bindings[node_name] = replace(
+                binding,
+                authored_arrays=_capture_authored_arrays(meta.params.dump(component), declarations),
+            )
         nodes[node_name] = component
 
     if keys_by_node:
