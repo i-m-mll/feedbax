@@ -609,6 +609,14 @@ class AddNoise(Component):
         return {self.label: self.params_index}
 
 
+def _intervention_result_dtype(signal, result):
+    """Match the unchanged branch dtype for real floating signals."""
+    dtype = getattr(signal, "dtype", None)
+    if dtype is not None and dtype != result.dtype and jnp.issubdtype(dtype, jnp.floating):
+        return result.astype(dtype)
+    return result
+
+
 class NetworkClamp(Component):
     """Clamps units to specified values (NaN means unchanged)."""
 
@@ -636,7 +644,7 @@ class NetworkClamp(Component):
             if params.unit_spec is None:
                 return signal
             return jt.map(
-                lambda x, y: jnp.where(jnp.isnan(y), x, y),
+                lambda x, y: _intervention_result_dtype(x, jnp.where(jnp.isnan(y), x, y)),
                 signal,
                 params.unit_spec,
             )
@@ -675,7 +683,7 @@ class NetworkConstantInput(Component):
             if params.unit_spec is None:
                 return signal
             return jt.map(
-                lambda x, y: x + params.scale * jnp.nan_to_num(y),
+                lambda x, y: _intervention_result_dtype(x, x + params.scale * jnp.nan_to_num(y)),
                 signal,
                 params.unit_spec,
             )
@@ -713,7 +721,11 @@ class ConstantInput(Component):
         def apply():
             if params.arrays is None:
                 return signal
-            return jt.map(lambda x, y: x + params.scale * y, signal, params.arrays)
+            return jt.map(
+                lambda x, y: _intervention_result_dtype(x, x + params.scale * y),
+                signal,
+                params.arrays,
+            )
 
         output = jax.lax.cond(params.active, apply, lambda: signal)
         return {"output": output}, state

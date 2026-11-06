@@ -858,6 +858,48 @@ def test_component_registry_snapshot_wraps_existing_registry(application_registr
     assert gain.migrations == []
 
 
+def test_studio_and_provider_expose_intervention_payloads(provider_client) -> None:
+    provider = provider_client.get("/api/provider/registries/components")
+    assert provider.status_code == 200
+    entries = {item["component_type_id"]: item for item in provider.json()["entries"]}
+    for name, payload, fields in (
+        ("NetworkClamp", "unit_spec", {"active", "unit_spec"}),
+        ("NetworkConstantInput", "unit_spec", {"active", "scale", "unit_spec"}),
+        ("ConstantInput", "arrays", {"active", "scale", "arrays"}),
+    ):
+        studio = provider_client.get(f"/api/components/{name}")
+        assert studio.status_code == 200
+        studio_fields = {item["name"]: item for item in studio.json()["data"]["param_schema"]}
+        provider_fields = {item["name"]: item for item in entries[name]["parameter_schema"]}
+        assert set(studio_fields) == set(provider_fields) == fields | {"payload_dtype"}
+        assert studio_fields[payload]["type"] == provider_fields[payload]["type"] == "array"
+        assert studio_fields[payload]["default"] is provider_fields[payload].get("default") is None
+        assert (
+            studio_fields["payload_dtype"]["default"]
+            == provider_fields["payload_dtype"]["default"]
+            == "float32"
+        )
+
+
+def test_provider_rejects_an_intervention_vector_outside_its_declared_dtype(provider_client) -> None:
+    graph = _minimal_graph_spec()
+    graph["input_ports"] = ["input"]
+    graph["input_bindings"] = {"input": ("gain", "input")}
+    clamp = graph["nodes"]["gain"]
+    clamp["type"] = "NetworkClamp"
+    clamp["params"] = {"active": True, "unit_spec": [8.0, None]}
+    response = provider_client.post("/api/provider/validate/graph", json={"spec": graph})
+    assert response.status_code == 200
+    assert response.json()["valid"]
+
+    clamp["params"]["unit_spec"] = [1e100, None]
+    response = provider_client.post("/api/provider/validate/graph", json={"spec": graph})
+    assert response.status_code == 200
+    result = response.json()
+    assert not result["valid"]
+    assert any("float32" in error["message"] for error in result["errors"])
+
+
 def test_analysis_registry_snapshot_lists_only_registered_recipes() -> None:
     snapshot = analysis_registry_snapshot({"tests.registered.analysis": object()})
 

@@ -1394,6 +1394,8 @@ function descriptorForParamSchema(schema: ParamSchema): ValueSpecFieldDescriptor
     ownerKind: 'component_param',
     semanticKind: staticShape ? 'static_shape' : 'static_leaf',
     valueSchema: {
+      type: schema.type,
+      nullable: schema.default === null && !schema.required,
       dtype:
         schema.type === 'int'
           ? 'int32'

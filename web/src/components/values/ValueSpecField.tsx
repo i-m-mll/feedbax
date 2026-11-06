@@ -123,8 +123,38 @@ function displayTextForValue(value: unknown): string {
   return valueSpecChipLabel(value);
 }
 
-function parseInlineText(rawValue: string, currentValue: unknown): unknown {
+function isNullableArray(descriptor: ValueSpecFieldDescriptor): boolean {
+  return descriptor.valueSchema?.type === 'array' && descriptor.valueSchema.nullable === true;
+}
+
+function parseNullableArray(rawValue: string): unknown[] | null | undefined {
+  if (rawValue.trim() === '') return null;
+  try {
+    let finite = true;
+    const value: unknown = JSON.parse(rawValue, (_key, item: unknown) => {
+      if (typeof item === 'number' && !Number.isFinite(item)) finite = false;
+      return item;
+    });
+    if (!finite) return undefined;
+    if (value === null) return null;
+    if (Array.isArray(value)) return value;
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function parseInlineText(
+  rawValue: string,
+  currentValue: unknown,
+  descriptor: ValueSpecFieldDescriptor
+): unknown {
   const trimmed = rawValue.trim();
+  const parseLiteral = (literal: unknown) => {
+    if (!isNullableArray(descriptor)) return parseStructuredInput(trimmed, literal);
+    const parsed = parseNullableArray(trimmed);
+    return parsed === undefined ? literal : parsed;
+  };
   if (isStudioValueSpec(currentValue)) {
     const distribution = currentValue.distribution as Record<string, unknown> | null | undefined;
     const parameters = distribution?.parameters as Record<string, unknown> | undefined;
@@ -146,11 +176,14 @@ function parseInlineText(rawValue: string, currentValue: unknown): unknown {
       return currentValue;
     }
     if (currentValue.mode === 'constant') {
-      return setValueSpecConstantValue(currentValue, parseStructuredInput(trimmed, currentValue.value));
+      const literal = parseLiteral(currentValue.value);
+      return literal === currentValue.value
+        ? currentValue
+        : setValueSpecConstantValue(currentValue, literal);
     }
     return currentValue;
   }
-  return parseStructuredInput(trimmed, currentValue);
+  return parseLiteral(currentValue);
 }
 
 function parseScalarInput(rawValue: string, currentValue: unknown): unknown {
@@ -205,7 +238,7 @@ function createValueSpec(
 ): StudioValueSpec {
   const schema = descriptor.valueSchema ?? {};
   const literal = isStudioValueSpec(value) ? value.value : value;
-  return setValueSpecMode(
+  const spec = setValueSpecMode(
     {
       schema_version: VALUE_SPEC_SCHEMA_VERSION,
       value_form: 'literal',
@@ -226,6 +259,9 @@ function createValueSpec(
     },
     mode
   );
+  return mode === 'constant' && literal === null && isNullableArray(descriptor)
+    ? { ...spec, value: null }
+    : spec;
 }
 
 function commitValueSpec(
@@ -247,6 +283,27 @@ function commitValueSpec(
     return next.value;
   }
   return next;
+}
+
+function StructuredTextInput({
+  label,
+  text,
+  onChange,
+}: {
+  label: string;
+  text: string;
+  onChange: (text: string) => void;
+}) {
+  return (
+    <label className="grid grid-cols-[5.5rem_minmax(0,1fr)] items-start gap-2 text-xs">
+      <span className={`${VALUE_INPUT_LABEL_CLASS} pt-1.5`}>{humanizeLabel(label)}</span>
+      <textarea
+        value={text}
+        onChange={(event) => onChange(event.target.value)}
+        className="min-h-16 min-w-0 rounded border border-slate-200 bg-white px-2 py-1.5 font-mono text-[11px] text-slate-700"
+      />
+    </label>
+  );
 }
 
 function StructuredValueInput({
@@ -308,14 +365,11 @@ function StructuredValueInput({
   }
   if (Array.isArray(value) || isRecord(value)) {
     return (
-      <label className="grid grid-cols-[5.5rem_minmax(0,1fr)] items-start gap-2 text-xs">
-        <span className={`${VALUE_INPUT_LABEL_CLASS} pt-1.5`}>{humanizeLabel(label)}</span>
-        <textarea
-          value={formatValue(value)}
-          onChange={(event) => onChange(parseStructuredInput(event.target.value, value))}
-          className="min-h-16 min-w-0 rounded border border-slate-200 bg-white px-2 py-1.5 font-mono text-[11px] text-slate-700"
-        />
-      </label>
+      <StructuredTextInput
+        label={label}
+        text={formatValue(value)}
+        onChange={(text) => onChange(parseStructuredInput(text, value))}
+      />
     );
   }
   if (typeof value === 'boolean') {
@@ -684,6 +738,7 @@ function ValueSpecModal({
     ? normalizeStudioValueSpec(initialValue).mode
     : descriptor.allowedModes[0] ?? 'constant';
   const [activeMode, setActiveMode] = useState<StudioValueSpecMode>(initialMode);
+  const [arrayText, setArrayText] = useState<string | null>(null);
   const [draftsByMode, setDraftsByMode] = useState<Record<string, StudioValueSpec>>(() => {
     const seed = isStudioValueSpec(initialValue)
       ? normalizeStudioValueSpec(initialValue)
@@ -708,6 +763,10 @@ function ValueSpecModal({
     (draft.distribution?.parameters as Record<string, unknown> | undefined) ?? {};
   const schedule = draft.schedule ?? {};
   const validationErrors = valueSpecValidationErrors(draft, scopes);
+  const editArray = draft.mode === 'constant' && isNullableArray(descriptor);
+  if (editArray && arrayText !== null && parseNullableArray(arrayText) === undefined) {
+    validationErrors.push('Enter a JSON array or leave the field blank');
+  }
   const variationScope = normalizeStudioValueSpec(draft).variation.scope;
   const enumerableCount = valueSpecEnumerableCount(draft);
   const updateDraft = (next: StudioValueSpec) => {
@@ -726,6 +785,7 @@ function ValueSpecModal({
       : createValueSpec(descriptor, initialValue, initialMode);
     setActiveMode(seed.mode);
     setDraftsByMode({ [seed.mode]: seed });
+    setArrayText(null);
   };
   if (typeof document === 'undefined') return null;
   return createPortal(
@@ -773,7 +833,20 @@ function ValueSpecModal({
         </div>
         <div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,1fr)_11rem]">
           <div className="min-w-0 space-y-3">
-            {draft.mode === 'constant' && (
+            {editArray && (
+              <StructuredTextInput
+                label="Literal"
+                text={arrayText ?? formatValue(draft.value)}
+                onChange={(text) => {
+                  const nextValue = parseNullableArray(text);
+                  setArrayText(text);
+                  if (nextValue !== undefined) {
+                    updateDraft(setValueSpecConstantValue(draft, nextValue));
+                  }
+                }}
+              />
+            )}
+            {draft.mode === 'constant' && !editArray && (
               <StructuredValueInput
                 value={draft.value}
                 onChange={(nextValue) => updateDraft(setValueSpecConstantValue(draft, nextValue))}
@@ -990,7 +1063,7 @@ export function ValueSpecField({
     };
   }, [open]);
   const commitLocalText = () => {
-    const nextValue = parseInlineText(localText, value);
+    const nextValue = parseInlineText(localText, value, descriptor);
     if (nextValue !== value) onChange(nextValue);
     setLocalText(displayTextForValue(nextValue));
   };
