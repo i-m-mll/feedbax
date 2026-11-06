@@ -18,6 +18,7 @@ import jax.random as jr
 import jax.tree as jt
 import optax
 
+from feedbax.runtime._graph_key_schedule import KEY_SCHEDULE_ID, derive_key, sample_steps
 from feedbax.runtime.graph import Graph, GraphTraceRequest, init_state_from_component
 from feedbax.runtime.task_bindings import (
     TaskInputPlan,
@@ -265,6 +266,7 @@ def compile_training_run(
         n_steps=n_steps,
         metadata={
             "execution": "generic_graph",
+            "key_schedule_id": KEY_SCHEDULE_ID,
             "task_spec": task_model.model_dump(mode="json", exclude_none=True),
             "task_input_count": len(task_inputs),
             "trace_request_count": len(trace_requests),
@@ -506,6 +508,7 @@ def _training_run_spec_for_compiled(
         metadata={
             "job_id": job_id,
             "execution": "studio_contract_executor",
+            "key_schedule_id": KEY_SCHEDULE_ID,
         },
     )
 
@@ -568,7 +571,8 @@ def rollout_graph(
     key: jax.Array,
 ) -> dict[str, Any]:
     """Roll out one trial through the executable graph boundary."""
-    task_key, graph_key = jr.split(key)
+    task_key = derive_key(key, "studio-trial", "task-data")
+    graph_key = derive_key(key, "studio-trial", "graph")
     task_data = _materialize_task_data(
         compiled.task_binding_spec,
         compiled.task_spec,
@@ -608,10 +612,8 @@ def _materialize_task_data(
     key: jax.Array,
 ) -> dict[str, jax.Array]:
     data: dict[str, jax.Array] = {}
-    keys = iter(jr.split(key, len(task_binding_spec.exposed_data) + 1))
-    timeline_key = next(keys)
-    bounds = _timeline_epoch_bounds(task_spec.timeline, n_steps, timeline_key)
-    for item, item_key in zip(task_binding_spec.exposed_data, keys, strict=True):
+    bounds = _timeline_epoch_bounds(task_spec.timeline, n_steps, key)
+    for item in task_binding_spec.exposed_data:
         value = _materialize_one_task_data(
             item,
             task_spec.model_dump(mode="python", exclude_none=True),
@@ -623,7 +625,7 @@ def _materialize_task_data(
                 item,
                 task_spec,
                 bounds,
-                key=item_key,
+                key=key,
             )
         data[item.id] = value
         data[item.path] = value
@@ -667,7 +669,21 @@ def _validate_authored_execution_inputs(
             )
 
     bound_data_ids = {binding.source_data_id for binding in task_binding_spec.bindings}
+    lookup_owners = {item.id: item.id for item in task_binding_spec.exposed_data}
     for index, item in enumerate(task_binding_spec.exposed_data):
+        owner = lookup_owners.setdefault(item.path, item.id)
+        if owner != item.id:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="worker.ambiguous_task_data_path",
+                    message=(
+                        f"Task data {item.id!r} uses path {item.path!r}, which already "
+                        f"identifies task data {owner!r}"
+                    ),
+                    location={"path": f"/task_binding_spec/exposed_data/{index}/path"},
+                )
+            )
         if item.id not in bound_data_ids:
             continue
         if item.value_spec is None:
@@ -705,7 +721,7 @@ def _validate_authored_execution_inputs(
                 )
 
     if diagnostics:
-        raise GraphCompilationError("Training run is missing authored execution inputs", diagnostics)
+        raise GraphCompilationError("Training run has invalid authored execution inputs", diagnostics)
 
 
 def _validate_epoch_value_targets(
@@ -732,7 +748,6 @@ def _timeline_epoch_bounds(
         return None
     lengths: list[jax.Array] = []
     maximum_prefix_total = 0
-    length_keys = iter(jr.split(key, max(1, len(timeline.epochs))))
     for position, epoch in enumerate(sorted(timeline.epochs, key=lambda item: item.index)):
         is_final = position == len(timeline.epochs) - 1
         spec = epoch.length
@@ -775,7 +790,7 @@ def _timeline_epoch_bounds(
                     f"Timeline epoch {epoch.id!r} uniform length bounds must be "
                     "non-negative integers with min <= max"
                 )
-            length_key = next(length_keys)
+            length_key = derive_key(key, "epoch-length", epoch.id)
             maximum_prefix_total += low if low == high else high
             lengths.append(
                 jnp.asarray(low, dtype=jnp.int32)
@@ -833,15 +848,19 @@ def _apply_epoch_values(
     if not entries:
         return base
     epoch_indexes = {epoch.id: epoch.index for epoch in timeline.epochs}
-    keys = jr.split(key, len(entries))
     value = base
     task_payload = task_spec.model_dump(mode="python", exclude_none=True)
-    for entry, entry_key in zip(entries, keys, strict=True):
-        override = _materialize_epoch_value(entry, item, task_payload, value.shape, entry_key)
+    steps = jnp.arange(value.shape[0])
+    for entry in entries:
+        entry_key = derive_key(key, "epoch-value", item.id, entry.epoch_id)
         epoch_index = epoch_indexes[entry.epoch_id]
-        mask = (jnp.arange(value.shape[0]) >= bounds[epoch_index]) & (
-            jnp.arange(value.shape[0]) < bounds[epoch_index + 1]
-        )
+        epoch_start, epoch_end = bounds[epoch_index], bounds[epoch_index + 1]
+        override = _materialize_epoch_value(entry, item, task_payload, value.shape, entry_key)
+        if entry.value_spec.mode == "distribution":
+            # Distribution samples are indexed within the epoch. An earlier
+            # epoch can move the interval without changing its samples.
+            override = override[jnp.clip(steps - epoch_start, 0, value.shape[0] - 1)]
+        mask = (steps >= epoch_start) & (steps < epoch_end)
         mask = mask.reshape((value.shape[0], *(1 for _ in value.shape[1:])))
         value = jnp.where(mask, override, value)
     return value
@@ -874,13 +893,23 @@ def _materialize_epoch_value(
             high = float(parameters.get("max"))
             if high < low:
                 raise ValueError("Timeline uniform distribution requires min <= max")
-            return jr.uniform(key, shape, minval=low, maxval=high, dtype=jnp.float32)
+            return sample_steps(
+                lambda step_key: jr.uniform(
+                    step_key, shape[1:], minval=low, maxval=high, dtype=jnp.float32
+                ),
+                key,
+                shape[0],
+            )
         if family == "normal":
             mean = float(parameters.get("mean"))
             std = float(parameters.get("std"))
             if std < 0:
                 raise ValueError("Timeline normal distribution requires std >= 0")
-            return mean + std * jr.normal(key, shape, dtype=jnp.float32)
+            return mean + std * sample_steps(
+                lambda step_key: jr.normal(step_key, shape[1:], dtype=jnp.float32),
+                key,
+                shape[0],
+            )
         raise ValueError(
             f"Timeline target {entry.target_id!r} uses unsupported distribution family={family!r}"
         )

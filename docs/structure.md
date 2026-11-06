@@ -21,6 +21,8 @@ Note that Feedbax models are immutable. We cannot modify a model in-place: we ha
 
 Most Feedbax models are graphs of components. Each component performs a single step; iteration is handled externally or by cycles in the graph. When a graph contains a feedback cycle, it internally iterates using `lax.scan`, producing a history of component states.
 
+The graph random schedule uses scoped node IDs for construction, recurrent reset, and transitions. Keep a node's ID to preserve its stream across display changes or edits to unrelated nodes. To reproduce a scan with manual steps, pass the same trial key on each call and supply the timestep as `t`. Compiler evidence records the schedule version. Exact replay of older runs uses their recorded producer revision and environment.
+
 ## Tasks and losses
 
 In Feedbax, models are trained to perform tasks. Typically, this means running the model through trials of the task, then scoring its performance, then getting an updated model that should perform slightly better on the next set of trials.

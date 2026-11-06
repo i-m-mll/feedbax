@@ -567,6 +567,7 @@ class NodeUIState(BaseModel):
     """UI state for a node."""
 
     position: CanvasPositionSpec
+    label: Optional[str] = None
     collapsed: bool = False
     selected: bool = False
     reversed: bool = False

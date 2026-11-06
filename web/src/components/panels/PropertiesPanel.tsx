@@ -67,6 +67,7 @@ export function PropertiesPanel() {
   const graph = useGraphStore((state) => state.graph);
   const graphStack = useGraphStore((state) => state.graphStack);
   const updateNodeParams = useGraphStore((state) => state.updateNodeParams);
+  const setNodeLabel = useGraphStore((state) => state.setNodeLabel);
   const renameNode = useGraphStore((state) => state.renameNode);
   const renameSubgraphBoundaryPort = useGraphStore(
     (state) => state.renameSubgraphBoundaryPort
@@ -193,12 +194,17 @@ export function PropertiesPanel() {
     : undefined;
   const selectedPort = parseGraphPortEntityId(topPane.selected_entity_id);
 
-  const [nameValue, setNameValue] = useState('');
+  const displayLabel = selectedNode?.data.label;
+  const selectedNodeLabel = typeof displayLabel === 'string' ? displayLabel : undefined;
+  const [labelValue, setLabelValue] = useState('');
+  const [nodeIdValue, setNodeIdValue] = useState('');
 
   useEffect(() => {
-    if (selectedNode) {
-      setNameValue(selectedNode.id);
-    }
+    setLabelValue(selectedNodeLabel ?? '');
+  }, [selectedNode?.id, selectedNodeLabel]);
+
+  useEffect(() => {
+    setNodeIdValue(selectedNode?.id ?? '');
   }, [selectedNode?.id]);
 
   const addObjectiveFromSelector = (selector: StudioSelectorRef) => {
@@ -455,11 +461,18 @@ export function PropertiesPanel() {
   // Check for analysis-specific metadata on the node spec
   const analysisMeta = nodeSpec?.params?._analysis_meta as unknown as AnalysisNodeMeta | undefined;
 
-  const commitRename = () => {
-    const nextNodeId = nameValue.trim();
+  const commitLabel = () => {
+    setNodeLabel(selectedNode.id, labelValue);
+    setLabelValue(labelValue.trim() || selectedNode.id);
+  };
+
+  const commitNodeId = () => {
+    const nextNodeId = nodeIdValue.trim();
     if (nextNodeId && nextNodeId !== selectedNode.id && !graph.nodes[nextNodeId]) {
       retargetTaskBindingsForNodeRename(selectedNode.id, nextNodeId, currentGraphPath);
       renameNode(selectedNode.id, nextNodeId);
+    } else {
+      setNodeIdValue(selectedNode.id);
     }
   };
 
@@ -488,21 +501,38 @@ export function PropertiesPanel() {
     <div className="p-6 space-y-6">
       <div>
         <input
-          aria-label="Node name"
-          value={nameValue}
-          onChange={(event) => setNameValue(event.target.value)}
-          onBlur={commitRename}
+          aria-label="Node label"
+          value={labelValue}
+          onChange={(event) => setLabelValue(event.target.value)}
+          onBlur={commitLabel}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
-              commitRename();
+              commitLabel();
             }
             if (event.key === 'Escape') {
-              setNameValue(selectedNode.id);
+              setLabelValue(selectedNodeLabel ?? selectedNode.id);
             }
           }}
           className="-mx-1 w-full rounded-md border border-transparent bg-transparent px-1 py-1 text-sm font-semibold text-slate-800 outline-none hover:border-slate-200 focus:border-brand-300 focus:bg-white"
         />
-        <div className="mt-1 text-sm text-slate-500">{nodeSpec.type}</div>
+        <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
+          <span className="shrink-0">{nodeSpec.type}</span>
+          <label className="flex min-w-0 items-center gap-1">
+            <span>ID</span>
+            <input
+              aria-label="Node ID"
+              title="Changing the node ID also changes its random stream"
+              value={nodeIdValue}
+              onChange={(event) => setNodeIdValue(event.target.value)}
+              onBlur={commitNodeId}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') commitNodeId();
+                if (event.key === 'Escape') setNodeIdValue(selectedNode.id);
+              }}
+              className="min-w-0 rounded border border-transparent bg-transparent px-1 font-mono hover:border-slate-200 focus:border-brand-300"
+            />
+          </label>
+        </div>
       </div>
 
       {component?.is_composite && component.template_kind !== 'display' ? (

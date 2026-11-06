@@ -298,6 +298,7 @@ export interface EdgeUIState {
 
 export interface NodeUIState {
   position: CanvasPositionSpec;
+  label?: string | null;
   collapsed?: boolean;
   selected?: boolean;
   reversed?: boolean;
@@ -2590,6 +2591,7 @@ export const NodeUIStateSchema: z.ZodType<NodeUIState> = z.lazy(() =>
   z
     .object({
       "position": CanvasPositionSpecSchema,
+      "label": z.string().nullable().optional(),
       "collapsed": z.boolean().optional(),
       "selected": z.boolean().optional(),
       "reversed": z.boolean().optional(),

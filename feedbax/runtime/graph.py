@@ -23,7 +23,13 @@ from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.runtime._graph import detect_cycles_and_sort
-from feedbax.runtime._graph_key_schedule import keyed_nodes, reset_key
+from feedbax.runtime._graph_key_schedule import (
+    derive_key,
+    keyed_nodes,
+    reset_key,
+    step_key,
+    step_keys,
+)
 from feedbax.runtime._rollout import scan_rollout, select_step_inputs
 from feedbax.runtime.selectors import Selection, select
 
@@ -661,8 +667,8 @@ class Graph(Component):
         enabled state history. History includes the initial state view.
         Streaming loss and filtered state history require a rollout. Cycle
         overrides require a recurrent graph. For a single step, ``t`` supplies
-        the hook's timestep and defaults to zero. Rollouts start at zero, and
-        an acyclic rollout rejects a supplied ``t``.
+        the timestep for random streams and hooks and defaults to zero.
+        Rollouts start at zero, and an acyclic rollout rejects a supplied ``t``.
         """
         recurrent = self._needs_iteration
         if cycle_init and not recurrent:
@@ -713,7 +719,7 @@ class Graph(Component):
         outputs, state, _, _ = self._transition(
             inputs,
             state,
-            key=key,
+            key=step_key(key, t),
             t=t,
             rollout_step_hook=rollout_step_hook,
         )
@@ -750,7 +756,9 @@ class Graph(Component):
             cycle_port_values: Cycle-wire port values from the previous step,
                 keyed by ``(target_node, target_port)`` tuples. ``None`` on
                 the first step uses defaults derived from ``state``.
-            key: PRNGKey for any noise in the step.
+            key: Trial PRNG key. Reuse it across calls and pass the timestep
+                as ``t`` to match a scanned rollout.
+            t: Scalar integer timestep in the unsigned 32-bit range.
 
         Returns:
             ``(outputs, new_state, cycle_port_values)`` where:
@@ -814,6 +822,7 @@ class Graph(Component):
         rollout_step_hook: Optional[RolloutStepHook],
         trace: tuple[GraphTraceRequest, ...] = (),
     ) -> tuple[dict[str, PyTree], State, dict[tuple[str, str], PyTree], dict[str, PyTree]]:
+        transition_key = step_key(key, t)
         if not self._needs_iteration:
             cycle_port_values = None
         elif cycle_port_values is None:
@@ -822,7 +831,7 @@ class Graph(Component):
             inputs,
             state,
             cycle_port_values,
-            key=key,
+            key=transition_key,
             t=t,
             rollout_step_hook=rollout_step_hook,
             trace=trace,
@@ -917,7 +926,7 @@ class Graph(Component):
                     graph=self,
                     component=node,
                     t=t,
-                    key=node_key,
+                    key=derive_key(node_key, "hook"),
                     state=state,
                     step_inputs=step_inputs,
                     port_values=port_values,
@@ -936,10 +945,16 @@ class Graph(Component):
                     if (node_name, port_name) in port_values
                 }
             if isinstance(node, Graph):
-                node_outputs, state, node_cycle_values = node.step(
+                child_carry = nested_cycle_values.get(node_name)
+                if child_carry is None and node._needs_iteration:
+                    raise ValueError(
+                        f"Missing recurrent carry for subgraph {node_name!r}. "
+                        "Pass the previous step's full carry, or None to seed a trial."
+                    )
+                node_outputs, state, node_cycle_values, _ = node._transition(
                     node_inputs,
                     state,
-                    nested_cycle_values.get(node_name),
+                    child_carry,
                     key=node_key,
                     t=t,
                     rollout_step_hook=rollout_step_hook,
@@ -1260,12 +1275,12 @@ class Graph(Component):
                 reset_outputs[source] = outputs[source]
             return reset_outputs[source]
 
-        node_keys = dict(keyed_nodes(self._execution_order, key)) if nested_nodes else {}
-        for node_name, node in nested_nodes.items():
+        for node_name, node_key in keyed_nodes(tuple(nested_nodes), key):
+            node = nested_nodes[node_name]
             init_values[_nested_cycle_key(node_name)] = node._get_initial_cycle_values(
                 state,
                 input_value=lambda port, name=node_name: nested_input_value((name, port)),
-                key=reset_key(node_keys[node_name]),
+                key=reset_key(node_key),
             )
 
         missing = [
@@ -1412,9 +1427,8 @@ class Graph(Component):
         eval_state = jt.map(lambda value: value, state)
         outputs: dict[tuple[str, str], PyTree] = {}
         outgoing_wires = self._outgoing_wires
-        for node_name, node_key in keyed_nodes(self._execution_order, key):
-            if node_name not in upstream_nodes:
-                continue
+        producer_order = (name for name in self._execution_order if name in upstream_nodes)
+        for node_name, node_key in keyed_nodes(producer_order, derive_key(key, "initializer")):
             node = self.nodes[node_name]
             missing_inputs = [
                 port_name
@@ -1428,10 +1442,12 @@ class Graph(Component):
                 port_name: port_values[(node_name, port_name)] for port_name in node.input_ports
             }
             if isinstance(node, Graph):
-                node_outputs, eval_state = node._call_single_step(
+                node_outputs, eval_state, _, _ = node._transition(
                     node_inputs,
                     eval_state,
                     key=node_key,
+                    t=0,
+                    rollout_step_hook=None,
                 )
             else:
                 node_outputs, eval_state = node(node_inputs, eval_state, key=node_key)
@@ -1498,7 +1514,7 @@ class Graph(Component):
             first_leaf = jt.leaves(first_input)[0]
             n_steps = int(first_leaf.shape[0])
 
-        keys = jax.random.split(key, n_steps)
+        keys = step_keys(key, n_steps)
 
         init_cycle_values = (
             self._seed_cycle_carry(inputs, state, key, cycle_init)

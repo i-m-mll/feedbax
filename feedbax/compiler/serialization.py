@@ -5,6 +5,7 @@ from typing import Any, Literal, Mapping, Sequence, cast
 from jaxtyping import PRNGKeyArray
 
 from feedbax.models.feedback import feedback_state_view
+from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.trial_history import trial_history_plan
 from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
 from feedbax.contracts.component import (
@@ -213,6 +214,7 @@ def _instantiate_graph(
     component_registry: Any,
     resolution: GraphParameterResolution,
     *,
+    construction_key: PRNGKeyArray,
     initialization_keys: Mapping[tuple[str, ...], PRNGKeyArray] | None = None,
 ) -> Graph:
     """Instantiate a resolved graph for the graph compiler."""
@@ -316,6 +318,7 @@ def _instantiate_graph(
                 causal_subgraph,
                 metadata_registry,
                 resolution.subgraphs[node_name],
+                construction_key=derive_key(construction_key, "construction", node_name),
                 initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
             )
             continue
@@ -330,6 +333,7 @@ def _instantiate_graph(
                 causal_subgraph,
                 metadata_registry,
                 resolution.subgraphs[node_name],
+                construction_key=derive_key(construction_key, "construction", node_name),
                 initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
             )
             continue
@@ -355,6 +359,8 @@ def _instantiate_graph(
                     f"Initialization keys at {node_name!r} must address a leaf accepting a key"
                 )
             params = {**params, "key": node_keys[()]}
+        elif meta is not None and "key" in meta.params.build_context_fields:
+            params = {**params, "key": derive_key(construction_key, "construction", node_name)}
         component = build_component(
             node_name,
             node_type,

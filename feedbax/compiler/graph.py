@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable, Literal, Mapping, TypeVar
 
+import jax.random as jr
 from jaxtyping import PRNGKeyArray
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -46,7 +47,7 @@ from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 
 
 GRAPH_COMPILER_ID = "feedbax.graph.compiler"
-GRAPH_COMPILER_VERSION = "4"
+GRAPH_COMPILER_VERSION = "5"
 
 
 class CompilerPhase(StrEnum):
@@ -137,7 +138,7 @@ class GraphSourceMap(BaseModel):
 
 
 class GraphKeySchedule(BaseModel):
-    """Identity of the step and recurrent reset key schedule, with root node order."""
+    """Random schedule identity and root execution order as compilation evidence."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -151,7 +152,8 @@ class GraphKeySchedule(BaseModel):
             raise ValueError(
                 f"Unsupported graph key schedule: source_schedule={value!r}; "
                 f"current_schedule={KEY_SCHEDULE_ID!r}; "
-                "recompile the authored GraphDocument to obtain current compiler evidence"
+                "recompile the authored GraphDocument to obtain current compiler evidence; "
+                "exact historical replay requires the original producer revision and environment"
             )
         return value
 
@@ -264,7 +266,8 @@ def _require_compiler_version(value: str) -> str:
         raise ValueError(
             f"Unsupported graph compiler version: source_version={value!r}; "
             f"current_version={GRAPH_COMPILER_VERSION!r}; "
-            "recompile the authored GraphDocument to obtain current compiler evidence"
+            "recompile the authored GraphDocument to obtain current compiler evidence; "
+            "exact historical replay requires the original producer revision and environment"
         )
     return value
 
@@ -274,7 +277,8 @@ def _require_version(family: str, value: str, current: str) -> str:
         raise ValueError(
             f"Unsupported {family} schema version: source_version={value!r}; "
             f"current_version={current!r}; migration_intentionally_absent=yes; "
-            "recompile the authored GraphDocument"
+            "recompile the authored GraphDocument for current evidence; "
+            "exact historical replay requires the original producer revision and environment"
         )
     return value
 
@@ -509,9 +513,11 @@ def compile_graph(
 ) -> ExecutableGraph:
     """Compile one exact graph document through resolution and realization.
 
-    Optional initialization keys seed leaf parameter construction. Use a node
-    name for a top-level leaf, or a tuple of node names for a nested leaf.
-    These keys do not change the resolved topology.
+    Stochastic builders receive a key derived from seed zero and their
+    scoped occurrence ID. An explicit
+    ``initialization_keys`` entry overrides derivation for one leaf. Use a node
+    ID for a top-level leaf or a tuple of IDs for a nested leaf. These keys
+    do not change the resolved topology.
     """
     document_sha256 = canonical_sha256(document.model_dump(mode="json", exclude_none=True))
     graph_anchor = SemanticAnchor(
@@ -615,7 +621,11 @@ def compile_graph(
                 raise ValueError(f"Invalid or duplicate initialization key path {path!r}")
             leaf_keys[path] = key
         instantiated = _instantiate_graph(
-            graph, component_registry, resolution, initialization_keys=leaf_keys
+            graph,
+            component_registry,
+            resolution,
+            construction_key=jr.PRNGKey(0),
+            initialization_keys=leaf_keys,
         )
         executable = apply_parameter_constraints(instantiated).prepare()
         return executable, tuple(executable._execution_order)

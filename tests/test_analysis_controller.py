@@ -486,7 +486,7 @@ def test_graph_controller_seeds_noise_reset_from_first_transition_key():
         )
         h0 = controller.initial_state()
         _, carry = controller.unpack_state(h0)
-        key_t = custom_policy(key, 0) if custom else jax.random.fold_in(key, 0)
+        key_t = custom_policy(key, 0) if custom else key
         native_outputs, _, _ = graph.step({"input": value}, graph.init_state(key=key), key=key_t)
         result = controller.step_with_trace(h0, value, 0)
         assert jnp.array_equal(carry["sum", "b"], native_outputs["output"])

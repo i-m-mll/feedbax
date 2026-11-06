@@ -9,10 +9,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Optional
 
-import jax.random as jr
 from jaxtyping import PRNGKeyArray, PyTree
 
 from equinox.nn import State
+from feedbax.runtime._graph_key_schedule import step_keys
 from feedbax.runtime._rollout import scan_rollout, select_step_inputs
 from feedbax.runtime.graph import Component, Graph, RolloutStepHook
 
@@ -52,7 +52,7 @@ def iterate_component(
         )
         return outputs, final_state, aux
 
-    keys = jr.split(key, n_steps)
+    keys = step_keys(key, n_steps)
     step_inputs = select_step_inputs(inputs, n_steps)
 
     def step_fn(step_input, state, step_carry, step_key, t):
