@@ -146,7 +146,7 @@ def _plan(*, paid: bool, retry_classification: str = "same-plan"):
     return invocation, backend.realize("training", (invocation, request))
 
 
-def _gcp_plan():
+def _gcp_plan(*, project: str = "inert-project", zone: str = "northamerica-northeast1-a"):
     invocation = _sisu_invocation()
     backend = OrchestrationBackend(
         backend_id="gcp",
@@ -169,8 +169,8 @@ def _gcp_plan():
         billable_confirmation_class="authenticated-effect-reservation",
         external_effect_key="gcp-controller-test",
         configuration={
-            "project": "inert-project",
-            "zone": "northamerica-northeast1-a",
+            "project": project,
+            "zone": zone,
             "machine_type": "n1-standard-4",
             "preemptible": True,
             "worker_port": 8765,
@@ -312,6 +312,21 @@ def test_rejected_transition_is_never_appended(tmp_path) -> None:
     assert controller.project(intent.intent_id).reservations[reservation.reservation_id].status == (
         "authenticated"
     )
+
+
+def test_warm_controller_sees_other_writer_without_changing_latest_admission(tmp_path) -> None:
+    path = tmp_path / "events.jsonl"
+    reader = DurableController(ControllerEventStore(path), producer_id="reader")
+    writer = DurableController(ControllerEventStore(path), producer_id="writer")
+    earlier, _ = _admit(writer, paid=False)
+    latest, _ = _admit(writer, paid=True)
+    assert reader.project(earlier.intent_id).status == "planned"
+    assert reader.latest_intent_id() == latest.intent_id
+
+    writer.request_cancellation(earlier.intent_id, reason="cancel older intent")
+
+    assert reader.project(earlier.intent_id).status == "cancelled"
+    assert reader.latest_intent_id() == latest.intent_id
 
 
 def test_authenticated_ambiguous_dispatch_recovers_once_after_restart(tmp_path) -> None:

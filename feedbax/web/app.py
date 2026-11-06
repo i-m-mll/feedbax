@@ -25,7 +25,7 @@ from feedbax.web.api import (
     training,
     trajectories,
 )
-from feedbax.web.orchestration.controller import get_studio_controller
+from feedbax.web.orchestration.controller import StudioController
 from feedbax.web.services.analysis_service import AnalysisJobService
 from feedbax.web.services.training_service import training_service
 from feedbax.web.ws import training as ws_training
@@ -35,23 +35,26 @@ STUDIO_DEV_ORIGINS = ["http://localhost:3008"]
 logger = logging.getLogger(__name__)
 
 
-def create_app(*, bootstrap_modules: tuple[str, ...] = ()) -> FastAPI:
+def create_app(
+    *,
+    bootstrap_modules: tuple[str, ...] = (),
+    studio_controller: StudioController | None = None,
+) -> FastAPI:
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
         app.state.bootstrap_modules = bootstrap_modules
         app.state.bootstrap_state = await compose_application(modules=bootstrap_modules)
-        try:
-            await get_studio_controller(training_service).reconcile_on_startup()
-        except Exception:
-            logger.exception("Failed to reconcile durable controller state during startup")
         try:
             training_service.rebuild_cache_from_state_docs()
         except Exception:
             logger.exception("Failed to rebuild the Studio run-state projection")
         analysis_jobs = AnalysisJobService()
         app.state.analysis_jobs = analysis_jobs
+        controller = studio_controller or StudioController(training_service=training_service)
+        app.state.studio_controller = controller
         try:
-            yield
+            async with controller.startup_recovery():
+                yield
         finally:
             try:
                 await analysis_jobs.aclose()

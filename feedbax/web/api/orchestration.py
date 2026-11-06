@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from feedbax.execution.records import invocation_from_document
 from feedbax.orchestration.controller import ControllerProtocolError, OperatorGateError
 from feedbax.orchestration.realization import backend_plan_from_document
-from feedbax.web.orchestration.controller import get_studio_controller
+from feedbax.web.orchestration.controller import (
+    StudioController,
+    StudioRecoveryUnavailable,
+    get_studio_controller,
+)
 from feedbax.web.orchestration.startup_script import (
     DEFAULT_FEEDBAX_REF,
     DEFAULT_FEEDBAX_REPOSITORY,
@@ -21,6 +25,14 @@ from feedbax.web.services.training_service import training_service
 
 router = APIRouter()
 _BILLABLE_CONFIRMATION_TOKEN = "launch-billable-gcp-worker"
+
+
+async def _studio_controller(request: Request) -> StudioController:
+    controller = getattr(request.app.state, "studio_controller", None)
+    return controller if controller is not None else get_studio_controller(training_service)
+
+
+_Controller = Annotated[StudioController, Depends(_studio_controller)]
 
 
 class LaunchCostEstimate(BaseModel):
@@ -154,12 +166,15 @@ async def authenticate_launch(
     reservation_id: str,
     payload: AuthenticateLaunchRequest,
     background_tasks: BackgroundTasks,
+    controller: _Controller,
 ) -> AuthenticateLaunchResponse:
     """Authenticate one named reservation, then schedule its single dispatch."""
-    controller = get_studio_controller(training_service)
-    projection = controller.status(intent_id)
     try:
+        controller.require_recovered(intent_id)
+        projection = controller.status(intent_id)
         reserved = projection.reservations[reservation_id]
+    except StudioRecoveryUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Effect reservation not found") from exc
     if payload.confirmation_token != _BILLABLE_CONFIRMATION_TOKEN:
@@ -168,7 +183,7 @@ async def authenticate_launch(
     if expected_cost is None or payload.max_cost_usd < expected_cost.maximum:
         raise HTTPException(status_code=412, detail="Cost cap is below the exact reserved cost")
     try:
-        controller.controller.authenticate_reservation(
+        controller.authenticate_reservation(
             intent_id,
             reservation_id,
             operator_identity=payload.operator_identity,
@@ -199,17 +214,20 @@ async def admit_retry(
     intent_id: str,
     reservation_id: str,
     payload: RetryLaunchRequest,
+    controller: _Controller,
 ) -> RetryLaunchResponse:
     """Admit one same-effect retry under the exact Invocation execution policy."""
 
     try:
         invocation = invocation_from_document(payload.invocation)
-        reservation = get_studio_controller(training_service).admit_retry(
+        reservation = controller.admit_retry(
             intent_id,
             invocation,
             reservation_id,
             ttl_seconds=payload.reservation_ttl_seconds,
         )
+    except StudioRecoveryUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (ValueError, ControllerProtocolError, OperatorGateError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     assert reservation.expires_at is not None
@@ -224,10 +242,10 @@ async def admit_retry(
 
 @router.get("/status", response_model=StatusResponse)
 async def get_orchestration_status(
+    controller: _Controller,
     intent_id: str | None = Query(default=None),
     refresh: bool = Query(default=True),
 ) -> StatusResponse:
-    controller = get_studio_controller(training_service)
     intent_id = intent_id or controller.latest_intent_id()
     if intent_id is None:
         return StatusResponse(status="idle")
@@ -235,6 +253,8 @@ async def get_orchestration_status(
         projection = (
             await controller.refresh(intent_id) if refresh else controller.status(intent_id)
         )
+    except StudioRecoveryUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ControllerProtocolError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     reservation = next(reversed(projection.reservations.values()), None)
@@ -285,21 +305,24 @@ async def get_orchestration_status(
 
 
 @router.get("/intents/{intent_id}/artifacts")
-async def inspect_artifacts(intent_id: str) -> dict[str, Any]:
+async def inspect_artifacts(intent_id: str, controller: _Controller) -> dict[str, Any]:
     return {
         "intent_id": intent_id,
-        "artifact_refs": list(get_studio_controller(training_service).inspect_artifacts(intent_id)),
+        "artifact_refs": list(controller.inspect_artifacts(intent_id)),
     }
 
 
 @router.delete("/instance", response_model=TerminateResponse)
-async def terminate_instance(intent_id: str | None = Query(default=None)) -> TerminateResponse:
-    controller = get_studio_controller(training_service)
+async def terminate_instance(
+    controller: _Controller, intent_id: str | None = Query(default=None)
+) -> TerminateResponse:
     intent_id = intent_id or controller.latest_intent_id()
     if intent_id is None:
         return TerminateResponse(ok=True)
     try:
         await controller.terminate(intent_id)
+    except StudioRecoveryUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (ControllerProtocolError, RuntimeError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return TerminateResponse(ok=True)
