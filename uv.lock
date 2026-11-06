@@ -702,10 +702,10 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'all'", specifier = ">=3.10.1" },
     { name = "matplotlib", marker = "extra == 'persistence'", specifier = ">=3.10.1" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.10.1" },
-    { name = "mujoco", marker = "extra == 'all'", specifier = ">=3.0.0" },
-    { name = "mujoco", marker = "extra == 'mjx'", specifier = ">=3.0.0" },
-    { name = "mujoco-mjx", marker = "extra == 'all'", specifier = ">=0.1.0" },
-    { name = "mujoco-mjx", marker = "extra == 'mjx'", specifier = ">=0.1.0" },
+    { name = "mujoco", marker = "extra == 'all'", specifier = ">=3.2.5" },
+    { name = "mujoco", marker = "extra == 'mjx'", specifier = ">=3.2.5" },
+    { name = "mujoco-mjx", marker = "extra == 'all'", specifier = ">=3.2.5" },
+    { name = "mujoco-mjx", marker = "extra == 'mjx'", specifier = ">=3.2.5" },
     { name = "notebook", marker = "extra == 'all'", specifier = ">=7.4.1" },
     { name = "notebook", marker = "extra == 'notebook'", specifier = ">=7.4.1" },
     { name = "numpy", specifier = ">=2.2.3" },
@@ -746,8 +746,8 @@ provides-extras = ["analysis", "config", "persistence", "training", "viz", "web"
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mujoco", specifier = ">=3.0.0" },
-    { name = "mujoco-mjx", specifier = ">=0.1.0" },
+    { name = "mujoco", specifier = ">=3.2.5" },
+    { name = "mujoco-mjx", specifier = ">=3.2.5" },
     { name = "pyright", specifier = ">=1.1.407" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
