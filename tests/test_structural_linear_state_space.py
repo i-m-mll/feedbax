@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -128,20 +129,63 @@ def test_structural_transition_is_state_dependent_not_additive_force() -> None:
     assert structural_b[0] - (transition[0] @ state_b) != structural_a[0]
 
 
-def test_sparse_entries_construct_the_same_jittable_dense_transition() -> None:
+def test_sparse_transition_uses_nominal_precision_under_jit() -> None:
+    # The product has a bit beyond float32 precision as well as A itself.
+    nominal = 1.0 + 2**-30
+    delta = 0.25 + 2**-25
+    scale = -(1.0 + 2**-23)
+    effective = nominal - 0.25 - 2**-24 - 2**-48
+
+    @jax.jit
+    def matrix(transition, perturbation):
+        return perturbation.effective_transition(transition)
+
+    def step(transition, state, perturbation):
+        return structural_linear_transition(transition, state, perturbation)[0]
+
+    value_and_grad = jax.jit(jax.value_and_grad(step, argnums=(1, 2), allow_int=True))
+    with jax.experimental.enable_x64():
+        transition = jnp.asarray([[nominal]], dtype=jnp.float64)
+        state = jnp.asarray([2.0], dtype=jnp.float64)
+        for active in (False, True):
+            perturbation = StructuralLinearDynamicsPerturbation.from_entries(
+                (1, 1), [(0, 0, delta)], scale=scale, active=active
+            )
+            expected = effective if active else nominal
+            applied = matrix(transition, perturbation)
+            result, (state_grad, params_grad) = value_and_grad(
+                transition, state, perturbation
+            )
+
+            assert applied.dtype == result.dtype == state_grad.dtype == jnp.float64
+            assert applied.item() == state_grad.item() == expected
+            assert result.item() == 2.0 * expected
+            assert params_grad.delta_A.dtype == params_grad.scale.dtype == jnp.float32
+            assert params_grad.delta_A.item() == (2.0 * scale if active else 0.0)
+            assert params_grad.scale.item() == (2.0 * delta if active else 0.0)
+            if not active:
+                negative_zero = jnp.asarray([[-0.0]], dtype=jnp.float64)
+                assert jnp.signbit(matrix(negative_zero, perturbation)).item()
+
+        disabled_nonfinite = StructuralLinearDynamicsPerturbation(
+            jnp.full((1, 1), jnp.nan, dtype=jnp.float32), scale=jnp.nan, active=False
+        )
+        result, (state_grad, params_grad) = value_and_grad(
+            transition, state, disabled_nonfinite
+        )
+        assert result.item() == 2.0 * nominal
+        assert state_grad.item() == nominal
+        assert params_grad.delta_A.item() == params_grad.scale.item() == 0.0
+
+
+@pytest.mark.parametrize("dtype", [jnp.int32, jnp.bool_, jnp.complex64])
+def test_structural_transition_requires_floating_point_nominal_matrix(dtype) -> None:
     perturbation = StructuralLinearDynamicsPerturbation.from_entries(
-        (4, 4),
-        [(3, 2, -0.25)],
-        scale=2.0,
+        (1, 1), [(0, 0, 0.25)]
     )
-    transition = jnp.eye(4)
-    state = jnp.asarray([0.0, 0.0, 1.0, 0.0])
 
-    result = jax.jit(structural_linear_transition)(transition, state, perturbation)
-
-    assert perturbation.delta_A.shape == (4, 4)
-    assert perturbation.delta_A[3, 2] == pytest.approx(-0.25)
-    assert jnp.allclose(result, jnp.asarray([0.0, 0.0, 1.0, -0.5]))
+    with pytest.raises(TypeError, match="floating-point dtype"):
+        perturbation.effective_transition(jnp.ones((1, 1), dtype=dtype))
 
 
 def test_structural_registry_advertises_sparse_delta_a_authoring() -> None:
@@ -165,33 +209,45 @@ def test_structural_registry_advertises_sparse_delta_a_authoring() -> None:
 @pytest.mark.parametrize(
     ("active", "scale", "expected"),
     [
-        (False, 1.0, [0.5, 2.0]),
-        (True, 1.0, [1.5, 2.0]),
-        (True, -1.0, [-0.5, 2.0]),
+        (False, 1.0, 1.5),
+        (True, 1.0, 2.5),
+        (True, -1.0, 0.5),
     ],
 )
 def test_signed_and_nominal_structural_variants(
     active: bool,
     scale: float,
-    expected: list[float],
+    expected: float,
 ) -> None:
-    component = StructuralLinearStateSpace(
-        A=jnp.asarray([[1.0, 0.25], [0.0, 1.0]]),
-        B=jnp.asarray([[0.0], [1.0]]),
-        delta_A=jnp.asarray([[0.0, 0.5], [0.0, 0.0]]),
-        initial_state=jnp.asarray([0.0, 2.0]),
-        pos_slice=(0, 1),
-        vel_slice=(1, 2),
-        active=active,
-        scale=scale,
-    )
-    outputs, _ = component(
-        {"force": jnp.zeros((1,)), "epsilon": jnp.zeros((0,))},
-        init_state_from_component(component),
-        key=jr.PRNGKey(0),
-    )
+    with jax.experimental.enable_x64():
+        tail = 2**-30
+        component = StructuralLinearStateSpace(
+            A=jnp.asarray([[1.0 + tail, 0.25], [0.0, 1.0]]),
+            B=jnp.asarray([[0.0], [1.0]]),
+            delta_A=jnp.zeros((2, 2)),
+            initial_state=jnp.asarray([1.0, 2.0]),
+            pos_slice=(0, 1),
+            vel_slice=(1, 2),
+        )
+        trial = TaskTrialSpec(
+            inits=WhereDict(),
+            targets=WhereDict(),
+            inputs={"force": jnp.zeros((1, 1)), "epsilon": jnp.zeros((1, 0))},
+            intervene={
+                component.label: StructuralLinearDynamicsPerturbation.from_entries(
+                    (2, 2), [(0, 1, 0.5)], scale=scale, active=active
+                )
+            },
+        )
+        prepared = prepare_trial(component, trial)
+        outputs, _ = eqx.filter_jit(component)(
+            {port: value[0] for port, value in prepared.inputs.items()},
+            prepared.init_state,
+            key=jr.PRNGKey(0),
+        )
 
-    assert jnp.allclose(outputs["state"], jnp.asarray(expected))
+        assert outputs["state"].dtype == jnp.float64
+        assert outputs["state"].tolist() == [expected + tail, 2.0]
 
 
 def test_task_trial_selects_one_constant_structural_variant() -> None:
