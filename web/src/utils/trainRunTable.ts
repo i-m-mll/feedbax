@@ -9,7 +9,8 @@ export interface TrainingRunSortState {
 
 export interface ProgressLike {
   job_id?: string | null;
-  batch: number;
+  batch?: number | null;
+  program_step?: number | null;
   total_batches: number;
 }
 
@@ -63,7 +64,12 @@ export function progressBindingsForRuns(
   const byGroupId = new Map<string, string>();
   const jobId = progress?.job_id ?? activeJobId ?? null;
   if (!progress || !jobId) return { byRunId, byGroupId };
-  const label = `${progress.batch}/${progress.total_batches}`;
+  const label = progress.batch != null
+    ? `${progress.batch}/${progress.total_batches}`
+    : progress.program_step != null
+      ? `Program step ${progress.program_step}`
+      : null;
+  if (label === null) return { byRunId, byGroupId };
   const matches = rows.filter((row) => row.id === jobId || row.jobId === jobId);
   if (matches.length === 1) {
     byRunId.set(matches[0].id, label);

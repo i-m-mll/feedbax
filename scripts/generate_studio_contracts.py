@@ -169,17 +169,12 @@ from feedbax.contracts.studio_api import (
     GraphValidationResponse,
     SuccessPayload,
     SuccessResponse,
-    TrainingCompleteEvent,
-    TrainingErrorEvent,
-    TrainingLogEvent,
-    TrainingProgressEvent,
-    TrainingResyncEvent,
     TrainingStartPayload,
     TrainingStartResponse,
     TrainingStatusPayload,
     TrainingStatusResponse,
-    TrainingTrajectoryEvent,
     TrainingTrajectoryPayload,
+    TrainingWebSocketEvent,
     WorkerConnectEnvelope,
     WorkerConnectResponse,
     WorkerStatusEnvelope,
@@ -280,6 +275,9 @@ from feedbax.web.models.trajectory import (
 
 OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
 NONE_TYPE = type(None)
+
+EVENT_MODELS = get_args(TrainingWebSocketEvent)
+
 
 MODEL_TYPES: list[type[BaseModel]] = [
     SparseCooEntrySpec,
@@ -465,13 +463,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     GenerateAnalysisResponse,
     AnalysisJobStatusPayload,
     AnalysisJobStatusResponse,
-    TrainingProgressEvent,
-    TrainingLogEvent,
     TrainingTrajectoryPayload,
-    TrainingTrajectoryEvent,
-    TrainingCompleteEvent,
-    TrainingErrorEvent,
-    TrainingResyncEvent,
+    *EVENT_MODELS,
     ProbeResponse,
     ValidationErrorResponse,
     ValidateLossResponse,
@@ -506,15 +499,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     InlineTreescopeRequest,
     TreescopeResponse,
     InspectionStatusResponse,
-]
-
-EVENT_MODEL_NAMES = [
-    "TrainingProgressEvent",
-    "TrainingLogEvent",
-    "TrainingTrajectoryEvent",
-    "TrainingCompleteEvent",
-    "TrainingErrorEvent",
-    "TrainingResyncEvent",
 ]
 
 REFINEMENT_HELPERS = """function hasDuplicate(values: readonly unknown[]): boolean {
@@ -997,11 +981,12 @@ def model_dependencies(model: type[BaseModel]) -> tuple[type[BaseModel], ...]:
 def generate() -> str:
     interfaces = "\n\n".join(emit_interface(model) for model in MODEL_TYPES)
     schemas = "\n\n".join(emit_schema(model) for model in MODEL_TYPES)
-    event_type = " | ".join(EVENT_MODEL_NAMES)
+    event_model_names = [model.__name__ for model in EVENT_MODELS]
+    event_type = " | ".join(event_model_names)
     event_schema = (
         f"export type TrainingWebSocketEvent = {event_type};\n\n"
         "export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = "
-        f"z.union([{', '.join(name + 'Schema' for name in EVENT_MODEL_NAMES)}]) "
+        f"z.union([{', '.join(name + 'Schema' for name in event_model_names)}]) "
         "as unknown as z.ZodType<TrainingWebSocketEvent>;"
     )
     contract_entries = "\n".join(f"  {name}: {name}Schema," for name in CONTRACT_MODEL_NAMES)

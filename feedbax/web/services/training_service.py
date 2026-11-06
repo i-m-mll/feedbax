@@ -56,6 +56,7 @@ from feedbax.orchestration.events import (
 )
 from feedbax.orchestration.stages import (
     STAGE_ASSEMBLE,
+    STAGE_LAUNCH,
     StageEngine,
 )
 from feedbax.orchestration.state import RunSetState
@@ -185,7 +186,6 @@ class TrainingService:
         self._remote: bool = False
         self._lock = asyncio.Lock()
         self._job_refs_by_job: dict[str, _JobRef] = {}
-        self._stage_threads_by_run_set: dict[str, threading.Thread] = {}
 
         # Honour the FEEDBAX_WORKER_URL env var: skip subprocess and connect
         # directly to an external worker.
@@ -328,7 +328,7 @@ class TrainingService:
         """Start a training job on the worker.
 
         Args:
-            total_batches: Number of training steps.
+            total_batches: Number of training batches.
             training_config: Optional dict forwarded to the worker as the
                 ``training_config`` key in the ``/start`` request body.
                 Required by the worker for real JAX training.
@@ -338,7 +338,7 @@ class TrainingService:
                 forwarded to the worker.
 
         Returns:
-            The job ID assigned by the worker.
+            The job ID after the worker has accepted its launch.
         """
         endpoint = await self._ensure_worker()
         body = {
@@ -376,14 +376,7 @@ class TrainingService:
             raise RuntimeError("Studio ASSEMBLE completed without producing a RunBundle")
         job_id = bundle.rows[0].row_id
         self._remember_job_ref(bundle)
-        thread = threading.Thread(
-            target=self._run_stage_engine,
-            args=(engine,),
-            name=f"feedbax-training-stage-engine-{bundle.run_set_id}",
-            daemon=True,
-        )
-        self._stage_threads_by_run_set[bundle.run_set_id] = thread
-        thread.start()
+        await asyncio.to_thread(self._launch_training, engine, bundle.run_set_id)
         return job_id
 
     async def stop_training(self, job_id: str) -> None:
@@ -728,6 +721,15 @@ class TrainingService:
             repo_root=Path(__file__).resolve().parents[3],
         )
         return request, context, registry
+
+    def _launch_training(self, engine: StageEngine, run_set_id: str) -> None:
+        engine.run(stop_after_stage=STAGE_LAUNCH)
+        threading.Thread(
+            target=self._run_stage_engine,
+            args=(engine,),
+            name=f"feedbax-training-stage-engine-{run_set_id}",
+            daemon=True,
+        ).start()
 
     def _run_stage_engine(
         self,

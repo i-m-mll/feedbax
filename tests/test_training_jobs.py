@@ -1326,6 +1326,7 @@ def test_training_service_starts_state_backed_worker_run(
             driver_registry=driver_registry,
             plugin_provenance=(),
         )
+        assert [start["job_id"] for start in starts] == [job_id]
         deadline = time.monotonic() + 2.0
         status = None
         while time.monotonic() < deadline:
@@ -1479,16 +1480,19 @@ def test_worker_emit_buffers_run_event_envelopes() -> None:
         stop_event=threading.Event(),
     )
 
+    job.batch = 1
     worker_app._emit(
         job,
         {
             "type": "training_progress",
             "job_id": job.job_id,
-            "batch": 1,
+            "batch": 0,
+            "program_step": 8,
             "total_batches": 3,
             "loss": 0.5,
         },
     )
+    assert job.batch == 0
     worker_app._emit(
         job,
         {
@@ -1506,7 +1510,8 @@ def test_worker_emit_buffers_run_event_envelopes() -> None:
     assert first["row_id"] == "job-events"
     assert first["type"] == "progress"
     assert first["payload"]["legacy_type"] == "training_progress"
-    assert first["payload"]["batch"] == 1
+    assert first["payload"]["batch"] == 0
+    assert first["payload"]["program_step"] == 8
     assert second["type"] == "complete"
     assert (first["seq"], second["seq"]) == (0, 1)
 
