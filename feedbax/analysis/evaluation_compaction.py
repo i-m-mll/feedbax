@@ -120,6 +120,7 @@ class EvaluationBatchConsumer:
     compact: Callable[[EvaluationBatchConsumerInput], EvaluationBatchFragment]
     merge: Callable[[EvaluationBatchMergeInput], EvaluationBatchMergeState]
     finalize: Callable[[EvaluationBatchFinalizeInput], EvaluationBatchFragment]
+    accepts_fresh_states: bool = False
 
 
 class EvaluationBatchConsumerRegistry:
@@ -137,7 +138,13 @@ class EvaluationBatchConsumerRegistry:
         compact: Callable[[EvaluationBatchConsumerInput], EvaluationBatchFragment],
         merge: Callable[[EvaluationBatchMergeInput], EvaluationBatchMergeState],
         finalize: Callable[[EvaluationBatchFinalizeInput], EvaluationBatchFragment],
+        accepts_fresh_states: bool = False,
     ) -> None:
+        """Register a consumer and optionally accept producer-owned states.
+
+        Opt in only when compaction treats states as read-only and emits the same
+        fragment from fresh states as from independently cache-decoded rows.
+        """
         if self._sealed:
             raise RuntimeError("evaluation batch consumer registry is sealed")
         key = (consumer_id, consumer_version)
@@ -145,7 +152,9 @@ class EvaluationBatchConsumerRegistry:
             raise ValueError("evaluation batch consumer identity and version must be non-empty")
         if key in self._consumers:
             raise ValueError(f"evaluation batch consumer {key!r} is already registered")
-        self._consumers[key] = EvaluationBatchConsumer(compact, merge, finalize)
+        self._consumers[key] = EvaluationBatchConsumer(
+            compact, merge, finalize, accepts_fresh_states=accepts_fresh_states
+        )
 
     def keys(self) -> tuple[str, ...]:
         return tuple(f"{key}@{version}" for key, version in sorted(self._consumers))

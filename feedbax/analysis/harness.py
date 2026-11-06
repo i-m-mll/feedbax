@@ -446,6 +446,7 @@ def _execute_evaluation_batch_partition(
     from feedbax.analysis.evaluation import (
         EvaluationBatchExecution,
         _execute_evaluation_run_plan,
+        evaluation_states_cache_matches,
         load_evaluation_states_cache,
     )
     from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleRowOutcome
@@ -531,6 +532,13 @@ def _execute_evaluation_batch_partition(
         }
     plan = prepare_plan()
     authoring_inputs.revalidate()
+    retain_states = bool(declarations) and all(
+        registries.evaluation_batch_consumers.get(
+            declaration.consumer_id, declaration.consumer_version
+        ).accepts_fresh_states
+        for declaration in declarations
+    )
+    published_states: dict[tuple[str, str], Any] | None = {} if retain_states else None
     result = _execute_evaluation_run_plan(
         plan,
         registry=registries.evaluation_recipes,
@@ -538,6 +546,7 @@ def _execute_evaluation_batch_partition(
         repo_root=task["repo_root"],
         execution_context=execution_context,
         batch=EvaluationBatchExecution(batch_units=((batch.batch_id, batch.ordered_row_ids),)),
+        published_states=published_states,
     )
     outcomes_by_id = {row.row_id: row for row in result.rows}
     outcomes = []
@@ -575,8 +584,17 @@ def _execute_evaluation_batch_partition(
             )
         )
         if declarations:
-            cache_path = Path(row.result.metadata["cache"]["states_path"])
-            row_states = load_evaluation_states_cache(cache_path, manifest=row.result)
+            cache = row.result.metadata["cache"]
+            cache_path = Path(cache["states_path"])
+            if published_states is None:
+                row_states = load_evaluation_states_cache(cache_path, manifest=row.result)
+            else:
+                receipt = row.result.id, cache.get("states_cache_sha256")
+                row_states = published_states.pop(receipt, None)
+                if row_states is not None and not evaluation_states_cache_matches(
+                    cache_path, row.result
+                ):
+                    row_states = None
             if row_states is None:
                 raise ValueError(f"Evaluation row {row.row_id!r} has no matching state cache")
             states.append(row_states)
