@@ -2343,6 +2343,7 @@ def register_builtin_components(registry: _Registry) -> None:
             param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
         )
     )
+    selector_defaults = StateFeedbackSelector().to_params()
     registry.register(
         declare_component(
             name="StateFeedbackSelector",
@@ -2357,19 +2358,13 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(
                     name="state_slices",
                     type="object",
-                    default={
-                        "position": {"start": 0, "stop": 2},
-                        "velocity": {"start": 2, "stop": 4},
-                    },
+                    default=selector_defaults["state_slices"],
                     required=False,
                 ),
                 ParameterField(
                     name="channels",
                     type="array",
-                    default=[
-                        {"slice": "position", "transform": "identity"},
-                        {"slice": "velocity", "transform": "identity"},
-                    ],
+                    default=selector_defaults["channels"],
                     required=False,
                 ),
                 ParameterField(name="expected_state_dim", type="int", default=None, required=False),
