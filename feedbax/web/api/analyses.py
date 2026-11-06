@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from feedbax.plugins.registry import ExperimentRegistry
 
+from feedbax.analysis.analysis import AbstractAnalysis, implements_analysis_method
 from feedbax.analysis.bundles import AnalysisBundleSpec, dry_run_staged_analysis_bundle
 from feedbax.contracts.studio_api import (
     AnalysisBundleDryRunPayload,
@@ -43,25 +44,13 @@ def _get_input_ports(analysis_instance) -> list[str]:
         return []
 
 
-def _get_output_ports(analysis_instance) -> list[str]:
-    """Infer output port names from the analysis class.
-
-    Convention: if the class overrides ``make_figs``, it produces a figure.
-    Otherwise it produces generic data from ``compute``.
-    """
-    cls = type(analysis_instance)
-    # Walk the MRO to check if make_figs is overridden at this class level
-    has_make_figs = "make_figs" in cls.__dict__
-    has_compute = "compute" in cls.__dict__
-
-    if has_make_figs and has_compute:
+def _get_output_ports(analysis_instance: AbstractAnalysis) -> list[str]:
+    """Advertise effective outputs, with generic data for analyses without figures."""
+    if not implements_analysis_method(analysis_instance, "make_figs"):
+        return ["data"]
+    if implements_analysis_method(analysis_instance, "compute"):
         return ["data", "figure"]
-    elif has_make_figs:
-        return ["figure"]
-    elif has_compute:
-        return ["data"]
-    else:
-        return ["data"]
+    return ["figure"]
 
 
 def _get_default_params(analysis_instance) -> dict[str, Any]:
