@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import TypeAdapter
 
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.orchestration.input_materialization import (
     materialize_content_tree_views,
     publish_content_file,
@@ -60,19 +61,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     object_root = args.cache_root / "objects" / "sha256"
-    if args.operation == "inspect":
-        print(json.dumps(_inspect(object_root, _OBJECT_REFS.validate_json(args.object_refs))))
-    elif args.operation == "publish":
-        for ref in _OBJECT_REFS.validate_json(args.object_refs):
-            source = args.upload_root / ref.sha256
-            publish_content_file(
-                source, _object_path(object_root, ref), ref, verify_source_on_reuse=True
-            )
-            source.unlink()
-    else:
+    if args.operation == "project":
+        tree_refs = _TREE_REFS.validate_python(strict_json_loads(args.tree_refs, ref="tree_refs"))
         trees = [
             (ref, read_content_tree_descriptor(_object_path(object_root, ref.descriptor), ref))
-            for ref in _TREE_REFS.validate_json(args.tree_refs)
+            for ref in tree_refs
         ]
         materialize_content_tree_views(
             trees,
@@ -80,6 +73,18 @@ def main(argv: Sequence[str] | None = None) -> None:
             source_for=lambda ref: _object_path(object_root, ref),
             tree_root_mode=0o755,
         )
+        return
+
+    object_refs = _OBJECT_REFS.validate_python(strict_json_loads(args.object_refs, ref="object_refs"))
+    if args.operation == "inspect":
+        print(json.dumps(_inspect(object_root, object_refs)))
+        return
+    for ref in object_refs:
+        source = args.upload_root / ref.sha256
+        publish_content_file(
+            source, _object_path(object_root, ref), ref, verify_source_on_reuse=True
+        )
+        source.unlink()
 
 
 if __name__ == "__main__":
