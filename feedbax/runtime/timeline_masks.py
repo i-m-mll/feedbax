@@ -16,7 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
+import equinox as eqx
+import jax
 import jax.numpy as jnp
+import numpy as np
 
 __all__ = [
     "TaskTimelineMask",
@@ -99,8 +102,7 @@ def build_task_timeline_mask(
             segment_name=segment_name,
         )
 
-    time = jnp.arange(n_steps)
-    mask = jnp.zeros((n_steps,), dtype=bool)
+    mask = np.zeros(n_steps, dtype=bool)
     for index in selected_indexes:
         if index < 0 or index + 1 >= len(bounds):
             raise TaskTimelineMaskError(
@@ -110,9 +112,9 @@ def build_task_timeline_mask(
             )
         start = int(bounds[index])
         end = int(bounds[index + 1])
-        mask = jnp.logical_or(mask, jnp.logical_and(time >= start, time < end))
+        mask[start:end] = True
 
-    if not bool(jnp.any(mask)):
+    if not mask.any():
         raise TaskTimelineMaskError(
             f"Timeline segment {segment_name!r} selected no timesteps",
             path=f"{path}/segment_name",
@@ -121,7 +123,7 @@ def build_task_timeline_mask(
 
     return TaskTimelineMask(
         segment_name=segment_name,
-        mask=mask,
+        mask=jnp.asarray(mask),
         epoch_ids=tuple(str(epochs[index].get("id", f"epoch:{index}")) for index in selected_indexes),
         n_steps=n_steps,
         metadata={
@@ -133,10 +135,13 @@ def build_task_timeline_mask(
 
 
 def align_time_mask(mask: Any, values: Any, *, path: str) -> Any:
-    """Align a timeline mask to a retained trace/loss density time axis."""
+    """Right-align a timeline mask to the retained time axis and reject empty support."""
 
-    mask_arr = jnp.asarray(mask, dtype=bool)
+    traced = isinstance(mask, jax.core.Tracer)
+    mask_arr = (jnp if traced else np).asarray(mask, dtype=bool)
     values_arr = jnp.asarray(values)
+    if mask_arr.ndim != 1:
+        raise TaskTimelineMaskError("Timeline mask must be one-dimensional", path=path)
     if values_arr.ndim == 0:
         raise TaskTimelineMaskError(
             "Segment time aggregation requires a time dimension",
@@ -158,12 +163,14 @@ def align_time_mask(mask: Any, values: Any, *, path: str) -> Any:
         # timesteps. Align to the right edge, matching the existing epoch-mask
         # loss convention.
         mask_arr = mask_arr[-time_len:]
-    if not bool(jnp.any(mask_arr)):
-        raise TaskTimelineMaskError(
-            "Segment time aggregation selected no timesteps after alignment",
-            path=path,
+    empty_message = "Segment time aggregation selected no timesteps after alignment"
+    if traced:
+        return eqx.error_if(
+            mask_arr, ~mask_arr.any(), f"{path}: {empty_message}", on_error="raise"
         )
-    return mask_arr
+    if not mask_arr.any():
+        raise TaskTimelineMaskError(empty_message, path=path)
+    return jnp.asarray(mask_arr)
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:

@@ -304,16 +304,33 @@ def evaluate_loss_term(term: LossTermPlan, trace: Mapping[str, Any]) -> Any:
         )
 
     diff = jnp.asarray(source) - jnp.asarray(target)
-    if term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}:
+    path = f"/loss/{term.key}/time_agg"
+    matrix_quadratic = term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}
+    mask = None
+    if term.time_agg.mode == "segment":
+        if term.time_mask is None:
+            raise RetentionPlanError(
+                "Segment time aggregation requires task timeline masks",
+                path=path,
+            )
+        try:
+            mask = align_time_mask(term.time_mask, diff, path=path)
+        except TaskTimelineMaskError as exc:
+            raise RetentionPlanError(str(exc), path=exc.path) from exc
+        # Mask before nonlinear operations so inactive NaNs cannot enter their
+        # derivatives. The unsquared norm also needs a nonzero inactive input.
+        inactive = 1 if not matrix_quadratic and term.norm == "l2" else 0
+        diff = jnp.where(_broadcast_time_mask(mask, diff), diff, inactive)
+
+    if matrix_quadratic:
         per_step = _matrix_quadratic_values(diff, term.matrix, term.matrix_kind)
     else:
         per_step = _norm_values(diff, term.norm)
-    return _aggregate_time(
-        per_step,
-        term.time_agg,
-        f"/loss/{term.key}/time_agg",
-        time_mask=term.time_mask,
-    )
+    if mask is not None:
+        if per_step.ndim == 0:
+            raise RetentionPlanError("Segment time aggregation requires a time dimension", path=path)
+        return jnp.mean(per_step, where=_broadcast_time_mask(mask, per_step))
+    return _aggregate_time(per_step, term.time_agg, path)
 
 
 def retention_plan_to_json(plan: RetentionPlan) -> dict[str, Any]:
@@ -1007,13 +1024,11 @@ def _matrix_quadratic_values(
     )
 
 
-def _aggregate_time(
-    values: Any,
-    time_agg: TimeAggregationSpec,
-    path: str,
-    *,
-    time_mask: Optional[Any] = None,
-) -> Any:
+def _broadcast_time_mask(mask: Any, values: Any) -> Any:
+    return mask.reshape((mask.shape[0],) + (1,) * (values.ndim - 1))
+
+
+def _aggregate_time(values: Any, time_agg: TimeAggregationSpec, path: str) -> Any:
     arr = jnp.asarray(values)
     mode = time_agg.mode
     if mode in {"all", "mean"}:
@@ -1044,15 +1059,4 @@ def _aggregate_time(
         if not time_agg.time_idxs:
             raise RetentionPlanError("Custom time aggregation requires time_idxs", path=path)
         return jnp.mean(arr[jnp.asarray(time_agg.time_idxs)])
-    if mode == "segment":
-        if time_mask is None:
-            raise RetentionPlanError(
-                "Segment time aggregation requires task timeline masks",
-                path=path,
-            )
-        try:
-            mask = align_time_mask(time_mask, arr, path=path)
-        except TaskTimelineMaskError as exc:
-            raise RetentionPlanError(str(exc), path=exc.path) from exc
-        return jnp.mean(arr[mask])
     raise RetentionPlanError(f"Unsupported time aggregation {mode!r}", path=path)
