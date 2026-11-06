@@ -51,6 +51,11 @@ def selection(base: str, env: dict[str, str]) -> dict:
             or not isinstance(gate.get("reason"), str)
         ):
             raise RuntimeError(f"affected-test selection returned an invalid {name} gate")
+    capabilities = report.get("capabilities")
+    if not isinstance(capabilities, list) or any(
+        capability not in {"optional_mjx", "optional_ppo"} for capability in capabilities
+    ):
+        raise RuntimeError("affected-test selection returned invalid capability gates")
     if any(
         not isinstance(report.get(name), bool)
         for name in ("browser", "build", "contracts", "clean_wheel")
@@ -100,7 +105,11 @@ def reference(env: dict[str, str], profile_json: Path | None, python_junit: Path
 
 
 def affected(
-    base: str, env: dict[str, str], profile_json: Path | None, python_junit: Path | None
+    base: str,
+    env: dict[str, str],
+    profile_json: Path | None,
+    python_junit: Path | None,
+    include_capabilities: bool,
 ) -> None:
     report = selection(base, env)
     print(json.dumps(report, indent=2, sort_keys=True), flush=True)
@@ -108,6 +117,8 @@ def affected(
     studio_gate = report["studio"]
     if python_gate["scope"] != "none":
         python = ["scripts/full_suite.sh", "--no-memo"]
+        if include_capabilities and report["capabilities"]:
+            python.append("--include-optional")
         if python_gate["scope"] == "selected":
             python.extend(["--affected-tests", *python_gate["tests"]])
         if profile_json is not None:
@@ -139,6 +150,11 @@ def affected(
         run(["bun", "run", "build"], cwd=ROOT / "web", env=env)
     if report["clean_wheel"]:
         print("Pending committed-candidate obligation: clean-wheel conformance", flush=True)
+    if report["capabilities"] and not include_capabilities:
+        print(
+            "Pending optional capability checks: " + ", ".join(report["capabilities"]),
+            flush=True,
+        )
 
 
 def main() -> int:
@@ -149,9 +165,18 @@ def main() -> int:
     parser.add_argument("--profile-json", type=Path, help="Write the Python timing profile.")
     parser.add_argument("--python-junit", type=Path, help="Write the executed Python test cases.")
     parser.add_argument(
+        "--include-capabilities",
+        action="store_true",
+        help="Execute selected optional Python capability checks when available.",
+    )
+    parser.add_argument(
         "--plan", action="store_true", help="Print selection without running gates."
     )
     args = parser.parse_args()
+    if args.reference and args.include_capabilities:
+        parser.error(
+            "--include-capabilities applies to --base; use full_suite.sh --include-optional for the complete optional suite"
+        )
     env = os.environ.copy()
     env.setdefault("FEEDBAX_FULL_SUITE_XDIST_WORKERS", "10")
     env.setdefault("FEEDBAX_TEST_NATIVE_THREADS", "1")
@@ -174,7 +199,13 @@ def main() -> int:
             if args.reference:
                 reference(env, args.profile_json, args.python_junit)
             else:
-                affected(args.base, env, args.profile_json, args.python_junit)
+                affected(
+                    args.base,
+                    env,
+                    args.profile_json,
+                    args.python_junit,
+                    args.include_capabilities,
+                )
         except (RuntimeError, subprocess.TimeoutExpired) as exc:
             print(f"affected gate failed: {exc}", file=sys.stderr)
             return 1

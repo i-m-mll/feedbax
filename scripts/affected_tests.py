@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from dataclasses import dataclass
 import hashlib
 import json
@@ -66,6 +67,7 @@ class GatePlan(TypedDict):
     build: bool
     contracts: bool
     clean_wheel: bool
+    capabilities: list[str]
 
 
 def _git(root: Path, *args: str) -> bytes:
@@ -233,6 +235,24 @@ def _studio_related(root: Path, paths: set[str]) -> list[str]:
     return sorted(set(files))
 
 
+def _capabilities(root: Path, tests: list[str]) -> list[str]:
+    markers = {"optional_mjx", "optional_ppo"}
+    required: set[str] = set()
+    for path in tests:
+        syntax = ast.parse((root / path).read_text(encoding="utf-8"), filename=path)
+        for node in ast.walk(syntax):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr in markers
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "mark"
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "pytest"
+            ):
+                required.add(node.attr)
+    return sorted(required)
+
+
 def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan:
     python, studio = set(), set()
     python_reason = ""
@@ -302,6 +322,13 @@ def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan
         "build": build,
         "contracts": contracts,
         "clean_wheel": clean_wheel,
+        "capabilities": (
+            ["optional_mjx", "optional_ppo"]
+            if python_reason
+            else _capabilities(root, python_tests)
+            if python_tests
+            else []
+        ),
     }
 
 

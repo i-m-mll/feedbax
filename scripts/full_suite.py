@@ -688,8 +688,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.affected_base and args.affected_tests:
         raise ValueError("use either --affected-base or --affected-tests")
-    if (args.affected_base or args.affected_tests) and args.suite_profile != "core":
-        raise ValueError("affected selection uses the core capability profile")
     selection = (
         affected_test_selection(repo_root, args.affected_base) if args.affected_base else None
     )
