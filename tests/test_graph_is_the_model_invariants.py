@@ -387,7 +387,8 @@ def test_built_component_params_match_spec_exactly() -> None:
     assert linear.use_bias is False
     assert linear.layer.bias is None
     assert linear.activation_name == "tanh"
-    assert linear.activation is jax.nn.tanh
+    values = jnp.array([-2.0, 1.0])
+    assert jnp.array_equal(linear.activation(values), jax.nn.tanh(values))
 
 
 def test_linear_zero_initialization_is_compiled_executed_and_serialized() -> None:
@@ -638,12 +639,15 @@ def test_leaky_rnn_cell_vocabulary_builds_a_leaky_cell() -> None:
     first = spec_to_graph(spec, _registry())
     second = spec_to_graph(graph_to_spec(first), _registry())
 
+    values = jnp.array([-2.0, 0.0, 3.0])
     for graph in (first, second):
         cell = graph.nodes["cell"].cell
         assert float(cell.dt) == pytest.approx(0.05)
         assert float(cell.tau) == pytest.approx(0.5)
         assert cell.use_bias is False
-        assert cell.nonlinearity is jax.nn.relu
+        activated, slope = jax.jvp(cell.nonlinearity, (values,), (jnp.ones_like(values),))
+        assert jnp.array_equal(activated, jnp.array([0.0, 0.0, 3.0]))
+        assert jnp.array_equal(slope, jnp.array([0.0, 0.0, 1.0]))
         assert cell.use_noise is True
         assert float(cell.noise_strength) == pytest.approx(0.03)
         assert float(cell.alpha) == pytest.approx(0.1)

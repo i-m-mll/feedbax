@@ -22,6 +22,7 @@ from equinox.nn import State, StateIndex
 from jax.flatten_util import ravel_pytree
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
+from feedbax.runtime.components import NAMED_ACTIVATIONS, tanh
 from feedbax.runtime.graph import Component
 from feedbax.runtime.parameter_constraints import (
     recurrent_parameter_role,
@@ -1140,7 +1141,7 @@ class LeakyRNNCell(Module):
         noise_strength: float = 0.01,
         dt: float = 1.0,
         tau: float = 1.0,
-        nonlinearity: Callable = jnp.tanh,
+        nonlinearity: Callable = tanh,
         dtype: object = jnp.float32,
         *,  # this forces the user to pass the following as keyword arguments
         key: PRNGKeyArray,
@@ -1267,15 +1268,11 @@ class VanillaRNN(Component):
     ):
         dtype = dtype or jnp.float32
         if nonlinearity is None:
-            nonlinearities = {
-                "tanh": jnp.tanh,
-                "relu": jax.nn.relu,
-                "identity": identity_func,
-            }
-            try:
-                nonlinearity = nonlinearities[activation_name]
-            except KeyError as exc:
-                raise ValueError(f"Unknown VanillaRNN activation {activation_name!r}") from exc
+            if activation_name not in ("tanh", "relu", "identity"):
+                raise ValueError(f"Unknown VanillaRNN activation {activation_name!r}")
+            nonlinearity = (
+                identity_func if activation_name == "identity" else NAMED_ACTIVATIONS[activation_name]
+            )
         if key is None:
             key = jr.PRNGKey(0)
         self.input_size = int(input_size)

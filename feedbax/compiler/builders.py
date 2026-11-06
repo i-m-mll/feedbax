@@ -12,6 +12,7 @@ import jax.tree as jt
 from feedbax.models.feedback import FeedbackChannels
 from feedbax.compiler.solver_config import DEFAULT_PLANAR_SOLVER, resolve_acausal_solver
 from feedbax.runtime.channel import Channel, ChannelSpec
+from feedbax.runtime.components import NAMED_ACTIVATIONS
 from feedbax.runtime.graph import Component
 from feedbax.intervene.intervene import (
     ThresholdLatchedForce,
@@ -65,29 +66,24 @@ _HIDDEN_TYPES: dict[str, Callable[..., eqx.Module]] = {
     "RNNCell": LeakyRNNCell,
     "LeakyRNNCell": LeakyRNNCell,
 }
-_NONLINEARITIES: dict[str, Callable[[jax.Array], jax.Array]] = {
-    "tanh": jnp.tanh,
-    "relu": jax.nn.relu,
-    "sigmoid": jax.nn.sigmoid,
-    "softmax": jax.nn.softmax,
-    "identity": identity_func,
-}
 
 
 def resolve_nonlinearity(name: str | None) -> Callable[[jax.Array], jax.Array]:
-    if not name:
-        return _NONLINEARITIES["identity"]
-    if name not in _NONLINEARITIES:
-        raise ValueError(f"Unknown nonlinearity: {name!r}. Valid options: {list(_NONLINEARITIES)}")
-    return _NONLINEARITIES[name]
+    if not name or name == "identity":
+        return identity_func
+    if name not in NAMED_ACTIVATIONS:
+        raise ValueError(
+            f"Unknown nonlinearity: {name!r}. Valid options: {list(NAMED_ACTIVATIONS)}"
+        )
+    return NAMED_ACTIVATIONS[name]
 
 
 def nonlinearity_name(fn: Callable[[jax.Array], jax.Array]) -> str:
-    for name, func in _NONLINEARITIES.items():
+    for name, func in NAMED_ACTIVATIONS.items():
         if fn is func:
             return name
     name = getattr(fn, "__name__", "")
-    return name if name in _NONLINEARITIES else "identity"
+    return name if name in NAMED_ACTIVATIONS else "identity"
 
 
 def _hidden_type_vocabulary() -> str:
