@@ -1487,6 +1487,8 @@ def test_native_mapped_resume_retains_prepared_runtime_slots_and_checkpoint_auth
         ]
     )
     phase = contract.phase_program.phases[0]
+    phase.max_steps = 2
+    spec.checkpoint_progress.checkpoint_interval = 1
     phase.reads.extend(["adaptive_state", "runtime_trace"])
     phase.writes.extend(["adaptive_state", "runtime_trace"])
     step = contract.phase_program.update_steps[0]
@@ -4809,11 +4811,11 @@ def test_execute_training_run_spec_propagates_progress_callback_errors(
     assert not list((tmp_path / "manifests" / "training_runs").glob("*.json"))
 
 
-def test_execute_training_run_spec_resumes_through_checkpoint_custody(
+def test_terminal_checkpoint_resume_does_not_repeat_an_update(
     tmp_path: Path,
 ) -> None:
     checkpoint_root = tmp_path / "checkpoint-custody"
-    execute_training_run_spec(
+    source = execute_training_run_spec(
         _run_spec(),
         registry=synthetic_training_program_registry(),
         run_id="interrupted",
@@ -4833,10 +4835,11 @@ def test_execute_training_run_spec_resumes_through_checkpoint_custody(
         resume=True,
     )
 
-    assert resumed.final_slots["model"].tolist() == [3.0]
-    assert resumed.final_slots["optimizer"]["count"].tolist() == [3.0]
-    assert resumed.final_coordinate.program_step == 2
-    assert resumed.checkpoint_writes[0].manifest.parent_lineage
+    assert resumed.status == "completed"
+    assert resumed.final_coordinate.program_step == source.final_coordinate.program_step == 1
+    assert resumed.start_completed_batches == resumed.end_completed_batches == 1
+    assert eqx.tree_equal(resumed.final_slots["model"], source.final_slots["model"])
+    assert not resumed.checkpoint_writes
 
 
 def _checkpoint_initialization_plan(source, *, mode: str, target_slots):
@@ -5161,6 +5164,7 @@ def test_execute_training_run_spec_initialization_plan_rejects_wrong_source(
 def test_same_row_resume_realizes_segment_lineage_and_cadence(
     tmp_path: Path,
 ) -> None:
+    registry, _ = _chunked_registry(stop_after_program_step=2)
     checkpoint_root = tmp_path / "checkpoint-custody"
     source_context = _execution_context(collection_root=tmp_path / "source-row")
     source_context = source_context.model_copy(
@@ -5177,7 +5181,7 @@ def test_same_row_resume_realizes_segment_lineage_and_cadence(
     )
     source = execute_training_run_spec(
         _run_spec(),
-        registry=synthetic_training_program_registry(),
+        registry=registry,
         initial_slots=_initial_slots(arrays=True),
         manifest_root=tmp_path / "source-manifests",
         checkpoint_root=checkpoint_root,
@@ -5192,7 +5196,7 @@ def test_same_row_resume_realizes_segment_lineage_and_cadence(
     )
     resumed = execute_training_run_spec(
         _run_spec(),
-        registry=synthetic_training_program_registry(),
+        registry=registry,
         initial_slots=_initial_slots(arrays=True),
         manifest_root=tmp_path / "resumed-manifests",
         checkpoint_root=checkpoint_root,
@@ -6004,50 +6008,123 @@ def test_repeated_barrier_visits_capture_binary_artifact_sinks(
     assert "history_chunk" not in loaded.slots
 
 
-def test_partial_run_resume_matches_uninterrupted_chunked_execution(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("target", "checkpoint_interval"),
+    [
+        pytest.param("guarded", 1, id="guarded-cadence"),
+        pytest.param("default", 1, id="default-cadence"),
+        pytest.param("guarded", 4, id="guarded-stop-before-next-phase"),
+    ],
+)
+def test_durable_resume_preserves_resolved_phase_branch(
+    tmp_path: Path, target: str, checkpoint_interval: int
 ) -> None:
-    full_registry, _program = _chunked_registry(stop_after_program_step=3)
-    full = execute_training_run_spec(
-        _run_spec(),
-        run_id="chunked-full",
-        initial_slots=_initial_slots(arrays=True),
-        manifest_root=tmp_path / "full-runs",
-        checkpoint_root=tmp_path / "full-checkpoints",
-        registry=full_registry,
-    )
+    contract = standard_supervised_method_contract()
+    program = contract.phase_program
+    entry = program.phases[0]
+    barrier = program.checkpoint_barriers[0]
+    entry.legal_next = ["guarded", "default"]
+    for name, steps in (("guarded", 1), ("default", 2)):
+        branch_barrier = f"after_{name}"
+        program.phases.append(entry.model_copy(update={
+            "name": name,
+            "max_steps": steps,
+            "legal_next": [],
+            "checkpoint_barrier": branch_barrier,
+        }))
+        program.checkpoint_barriers.append(barrier.model_copy(update={
+            "name": branch_barrier,
+            "phase": name,
+        }))
+    program.transitions = [
+        PhaseTransitionSpec(
+            source=entry.name,
+            target="guarded",
+            barrier=barrier.name,
+            guard=MetricGuardSpec(
+                predicate_ref="tests.select_guarded_branch",
+                metric_slots=["train_loss"],
+            ),
+        ),
+        PhaseTransitionSpec(source=entry.name, target="default", barrier=barrier.name),
+    ]
 
-    partial_registry, _program = _chunked_registry(stop_after_program_step=3)
-    checkpoint_root = tmp_path / "partial-checkpoints"
-    execute_training_run_spec(
-        _run_spec(),
-        run_id="chunked-partial",
-        initial_slots=_initial_slots(arrays=True),
-        manifest_root=tmp_path / "partial-runs",
-        checkpoint_root=checkpoint_root,
-        registry=partial_registry,
-        stop_after_barrier="after_train_batch",
-    )
+    def select_guarded_branch(slots, coordinate, context):
+        return (
+            slots["train_loss"] == 1.0
+            and coordinate.program_step == 1
+            and context["select_guarded"]
+        )
 
-    resume_registry, _program = _chunked_registry(stop_after_program_step=3)
-    resumed = execute_training_run_spec(
-        _run_spec(),
-        run_id="chunked-resumed",
-        initial_slots=_initial_slots(arrays=True),
-        manifest_root=tmp_path / "resume-runs",
-        checkpoint_root=checkpoint_root,
-        registry=resume_registry,
+    registry = TrainingProgramRegistry()
+    registry.register_program(evolve_training_program(
+        synthetic_supervised_training_program(),
+        contract_compiler=lambda _payload: contract,
+        guard_predicates_factory=lambda _payload: {
+            "tests.select_guarded_branch": select_guarded_branch,
+        },
+    ))
+    spec = _run_spec()
+    spec.worker_execution = WorkerExecutionSpec(
+        method_contract=contract,
+        effective_phase=validate_worker_contract(contract),
+    )
+    spec.checkpoint_progress.checkpoint_interval = checkpoint_interval
+    spec.checkpoint_progress.progress_interval = 1
+    choose_guarded = target == "guarded"
+
+    def execute(name, *, select_guarded, **kwargs):
+        return execute_training_run_spec(
+            spec,
+            run_id=name,
+            initial_slots=_initial_slots(arrays=True),
+            manifest_root=tmp_path / name / "runs",
+            checkpoint_root=tmp_path / name / "checkpoints",
+            registry=registry,
+            kernel_context={"select_guarded": select_guarded},
+            **kwargs,
+        )
+
+    full = execute("full", select_guarded=choose_guarded)
+    if checkpoint_interval == 1:
+        stopped = execute("stopped", select_guarded=choose_guarded, stop_after_barrier=barrier.name)
+    else:
+        stop_requested = False
+
+        def request_stop(_event):
+            nonlocal stop_requested
+            stop_requested = True
+
+        stopped = execute(
+            "stopped",
+            select_guarded=choose_guarded,
+            progress_callback=request_stop,
+            stop_before_update=lambda: stop_requested,
+        )
+    source_root = tmp_path / "stopped" / "checkpoints"
+    custody = authenticate_published_checkpoint_custody(source_root)
+    assert custody.manifest.completed_coordinate.program_step == 1
+    assert "train_loss" not in {slot.slot for slot in custody.manifest.slots}
+
+    resumed = execute(
+        "resumed",
+        select_guarded=not choose_guarded,
         resume=True,
+        checkpoint_source_root=source_root,
     )
 
-    assert resumed.final_slots["model"].tolist() == full.final_slots["model"].tolist()
-    assert resumed.final_slots["optimizer"]["count"].tolist() == (
-        full.final_slots["optimizer"]["count"].tolist()
-    )
-    assert resumed.final_slots["prng"].tolist() == full.final_slots["prng"].tolist()
+    assert resumed.final_coordinate.phase == full.final_coordinate.phase == target
     assert resumed.final_coordinate.program_step == full.final_coordinate.program_step
-    assert resumed.checkpoint_writes[0].manifest.metadata["barrier_visit_ordinal"] == 1
-    assert resumed.checkpoint_writes[0].manifest.parent_lineage
+    assert resumed.end_completed_batches == full.end_completed_batches
+    assert eqx.tree_equal(resumed.final_slots["model"], full.final_slots["model"])
+    assert eqx.tree_equal(resumed.final_slots["optimizer"], full.final_slots["optimizer"])
+    assert [
+        (event["coordinate"]["phase"], event["coordinate"]["program_step"])
+        for event in stopped.history_events + resumed.history_events
+    ] == [
+        (event["coordinate"]["phase"], event["coordinate"]["program_step"])
+        for event in full.history_events
+    ]
 
 
 def test_execute_training_run_spec_rejects_invalid_spec_before_launch_with_path() -> None:

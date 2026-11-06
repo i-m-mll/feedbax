@@ -78,6 +78,7 @@ from feedbax.contracts.checkpoints import (
     CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION_V1,
     ContentIntegrityDigest,
     LegacySlotContentDigest,
+    PHASE_BOUNDARY_DECISION_METADATA_KEY,
     PopulationIdentityRecord,
     RunContractBinding,
     SerializerVersionRecord,
@@ -5433,6 +5434,23 @@ def _fork_checkpoint_transaction_from_path(
         manifest_metadata["phase"] = barrier.phase
         manifest_metadata["forked_from_transaction_id"] = source.manifest.transaction_id
         manifest_metadata.update(dict(metadata or {}))
+        target_binding = run_contract_binding(target_run_spec, phase_program)
+        source_coordinate = source.manifest.completed_coordinate
+        boundary_coordinate_fields = {
+            "phase", "inner_step", "outer_step", "program_step", "schedule_origin_step"
+        }
+        manifest_metadata.pop(PHASE_BOUNDARY_DECISION_METADATA_KEY, None)
+        if (
+            PHASE_BOUNDARY_DECISION_METADATA_KEY in source.manifest.metadata
+            and resolved_barrier_mapping is None
+            and source.manifest.run_contract_binding.phase_program_sha256
+            == target_binding.phase_program_sha256
+            and source_coordinate.model_dump(include=boundary_coordinate_fields)
+            == coordinate.model_dump(include=boundary_coordinate_fields)
+        ):
+            manifest_metadata[PHASE_BOUNDARY_DECISION_METADATA_KEY] = source.manifest.metadata[
+                PHASE_BOUNDARY_DECISION_METADATA_KEY
+            ]
         if request is not None:
             manifest_metadata["checkpoint_continuation"] = request.model_dump(
                 mode="json",
@@ -5498,7 +5516,7 @@ def _fork_checkpoint_transaction_from_path(
                 history_granularities=_history_granularities(prepared_slots),
             ),
             consistency_predicate=derive_consistency_predicate(phase_program),
-            run_contract_binding=run_contract_binding(target_run_spec, phase_program),
+            run_contract_binding=target_binding,
             slots=slot_records,
             content_integrity_digest=ContentIntegrityDigest(
                 semantic_state_root_algorithm_version=SEMANTIC_STATE_ROOT_ALGORITHM_VERSION,

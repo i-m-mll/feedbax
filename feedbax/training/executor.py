@@ -37,6 +37,7 @@ from feedbax.contracts.checkpoint_initialization import (
     lower_checkpoint_initialization,
 )
 from feedbax.contracts.checkpoints import (
+    PHASE_BOUNDARY_DECISION_METADATA_KEY,
     CheckpointForkPlan,
     CheckpointSegmentLineage,
     CheckpointLineageRef,
@@ -144,6 +145,7 @@ from feedbax.training.phase_executor import (
     _StepObservation,
     _metric_nan_flags,
     _next_checkpoint_visit_ordinal,
+    PhaseBoundaryDecision,
     PhaseCheckpoint,
     PhaseProgramExecutor,
     StepGuardResult,
@@ -584,6 +586,11 @@ class StreamingCheckpointStore:
                 else {}
             ),
         }
+        if saved.boundary_decision is not None:
+            checkpoint_metadata[PHASE_BOUNDARY_DECISION_METADATA_KEY] = {
+                "schema_version": 1,
+                "next_phase": saved.boundary_decision.next_phase,
+            }
         program = self.resolved_method.program
         if program is not None and program.optimizer_step_extractor is not None:
             checkpoint_metadata["optimizer_step"] = _synchronized_optimizer_step(
@@ -1103,6 +1110,7 @@ def execute_training_run_spec(
                 coordinate=source_manifest.completed_coordinate,
                 slots=resolved_initialization.slots,
                 visit_ordinal=_checkpoint_visit_ordinal(source_manifest.metadata),
+                boundary_decision=_checkpoint_boundary_decision(source_manifest.metadata),
             )
             if continuation is not None:
                 segment_batch_count = continuation.additional_batches
@@ -1280,6 +1288,9 @@ def execute_training_run_spec(
             slots,
             run_id=resolved_run_id,
             resume_checkpoint=loaded_resume_checkpoint,
+            extend_terminal_phase=(
+                loaded_resume_checkpoint is not None and segment_batch_count is not None
+            ),
             stop_after_barrier=stop_after_barrier,
             stop_after_next_barrier=lambda _barrier: cancellation is not None,
             context=executor_context,
@@ -3273,6 +3284,23 @@ def _checkpoint_root(
     if configured_root is not None:
         return Path(configured_root)
     return root_path / "checkpoints" / run_id
+
+
+def _checkpoint_boundary_decision(metadata: Mapping[str, Any]) -> PhaseBoundaryDecision | None:
+    if PHASE_BOUNDARY_DECISION_METADATA_KEY not in metadata:
+        return None
+    decision = metadata[PHASE_BOUNDARY_DECISION_METADATA_KEY]
+    if (
+        not isinstance(decision, Mapping)
+        or set(decision) != {"schema_version", "next_phase"}
+        or type(decision["schema_version"]) is not int
+        or decision["schema_version"] != 1
+    ):
+        raise TrainingRunExecutorError("invalid or unsupported checkpoint phase boundary decision")
+    target = decision["next_phase"]
+    if target is not None and (not isinstance(target, str) or not target):
+        raise TrainingRunExecutorError("checkpoint phase boundary decision has an invalid next_phase")
+    return PhaseBoundaryDecision(target)
 
 
 def _checkpoint_visit_ordinal(metadata: Mapping[str, Any]) -> int | None:

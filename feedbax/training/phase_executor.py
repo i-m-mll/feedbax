@@ -190,6 +190,7 @@ def _copy_phase_checkpoint(checkpoint: "PhaseCheckpoint") -> "PhaseCheckpoint":
         coordinate=deepcopy(checkpoint.coordinate),
         slots=_copy_executor_mapping(checkpoint.slots),
         visit_ordinal=checkpoint.visit_ordinal,
+        boundary_decision=checkpoint.boundary_decision,
     )
 
 
@@ -208,6 +209,13 @@ def _progress_observation(
     return coordinate
 
 
+@dataclass(frozen=True)
+class PhaseBoundaryDecision:
+    """The transition selected at a completed phase, with None for termination."""
+
+    next_phase: str | None
+
+
 @dataclass
 class PhaseCheckpoint:
     """In-memory checkpoint captured at a phase barrier."""
@@ -216,6 +224,7 @@ class PhaseCheckpoint:
     coordinate: ProgressCoordinate
     slots: dict[str, Any]
     visit_ordinal: int | None = None
+    boundary_decision: PhaseBoundaryDecision | None = None
 
 
 @dataclass
@@ -541,6 +550,7 @@ class PhaseProgramExecutor:
         run_id: str,
         resume_from_barrier: str | None = None,
         resume_checkpoint: PhaseCheckpoint | None = None,
+        extend_terminal_phase: bool = False,
         stop_after_barrier: str | None = None,
         stop_after_next_barrier: Callable[[str], bool] | None = None,
         context: Mapping[str, Any] | None = None,
@@ -571,6 +581,8 @@ class PhaseProgramExecutor:
 
         A checkpoint restored by external custody can be passed directly as
         ``resume_checkpoint``. ``resume_from_barrier`` selects a stored in-memory visit.
+        Set ``extend_terminal_phase`` only for an authorized additional-batch
+        continuation that can restart a terminal phase.
         """
         self._validate_interval(checkpoint_interval, name="checkpoint_interval")
         self._validate_interval(progress_interval, name="progress_interval")
@@ -600,7 +612,9 @@ class PhaseProgramExecutor:
             resume_checkpoint = self._checkpoint_history.load(resume_from_barrier)
         if resume_checkpoint is not None:
             current_slots = self.merge_resume_slots(slots, resume_checkpoint)
-            start_phase, resume_inner_step = self._resume_position(resume_checkpoint)
+            start_phase, resume_inner_step = self._resume_position(
+                resume_checkpoint, extend_terminal_phase=extend_terminal_phase
+            )
             resuming_within_phase = resume_inner_step > 0
             coordinate = resume_checkpoint.coordinate.model_copy(
                 update={
@@ -614,7 +628,8 @@ class PhaseProgramExecutor:
             coordinate = ProgressCoordinate(run_id=run_id, phase=start_phase)
 
         if (
-            any(isinstance(k, NumericalUpdateKernel) for k in self.kernels.values())
+            start_phase is not None
+            and any(isinstance(k, NumericalUpdateKernel) for k in self.kernels.values())
             and not self._prepared_numerical
         ):
             self.preflight(current_slots, run_id=run_id, context=checkpoint_context)
@@ -627,6 +642,7 @@ class PhaseProgramExecutor:
         last_checkpoint_step = coordinate.program_step
         phase_name: str | None = start_phase
         interrupted = False
+        last_committed_boundary_decision = None
         while phase_name is not None:
             phase = self._phases[phase_name]
             entry_coordinate = coordinate
@@ -641,6 +657,7 @@ class PhaseProgramExecutor:
                     "schedule_origin_step": schedule_origin_step,
                 }
             )
+            boundary_decision = None
             for inner_step in range(resume_inner_step, phase.max_steps):
                 if phase.update_steps and stop_before_update is not None and stop_before_update():
                     if inner_step == resume_inner_step:
@@ -764,37 +781,31 @@ class PhaseProgramExecutor:
                         f"start={initial_batch}, current={completed_batches}, "
                         f"budget={update_budget}",
                     )
-                if update_budget is not None and completed_batch_delta == update_budget:
+                budget_reached = update_budget is not None and completed_batch_delta == update_budget
+                interval_due = checkpoint_interval is not None and self._interval_due(
+                    completed_batches, checkpoint_interval, last_checkpoint_batch
+                )
+                if inner_step == phase.max_steps - 1:
+                    boundary_coordinate = coordinate
+                    if interval_due and phase.checkpoint_barrier is not None:
+                        boundary_coordinate = coordinate.model_copy(
+                            update={"completed_barrier": phase.checkpoint_barrier}
+                        )
+                    boundary_decision = PhaseBoundaryDecision(
+                        self._next_phase(
+                            phase.name, (current_slots, boundary_coordinate, checkpoint_context)
+                        )
+                    )
+                if budget_reached or interval_due:
                     saved_barrier = self._save_phase_barrier(
-                        phase.name,
-                        coordinate,
-                        current_slots,
-                    )
-                    coordinate = coordinate.model_copy(
-                        update={"completed_barrier": saved_barrier}
-                    )
-                    return self._result(
-                        current_slots,
-                        coordinate,
-                        progress,
-                        start_completed_batches=initial_batch,
-                    )
-                if checkpoint_interval is not None and self._interval_due(
-                    completed_batches,
-                    checkpoint_interval,
-                    last_checkpoint_batch,
-                ):
-                    saved_barrier = self._save_phase_barrier(
-                        phase.name,
-                        coordinate,
-                        current_slots,
+                        phase.name, coordinate, current_slots, boundary_decision
                     )
                     last_checkpoint_batch = completed_batches
                     last_checkpoint_step = coordinate.program_step
                     coordinate = coordinate.model_copy(
                         update={"completed_barrier": saved_barrier}
                     )
-                    if self._should_stop_at_barrier(
+                    if budget_reached or self._should_stop_at_barrier(
                         saved_barrier,
                         stop_after_barrier=stop_after_barrier,
                         stop_after_next_barrier=stop_after_next_barrier,
@@ -806,11 +817,7 @@ class PhaseProgramExecutor:
                             start_completed_batches=initial_batch,
                         )
 
-            next_phase = (
-                None
-                if interrupted
-                else self._next_phase(phase.name, current_slots, coordinate, checkpoint_context)
-            )
+            next_phase = boundary_decision.next_phase if boundary_decision is not None else None
             completed_batches = self._completed_training_batches(current_slots, coordinate)
             if (
                 next_phase is None
@@ -832,21 +839,24 @@ class PhaseProgramExecutor:
             if interrupted:
                 if coordinate.program_step != last_checkpoint_step:
                     saved_barrier = self._save_phase_barrier(
-                        coordinate.phase, coordinate, current_slots
+                        coordinate.phase,
+                        coordinate,
+                        current_slots,
+                        last_committed_boundary_decision
+                        if coordinate.program_step == entry_coordinate.program_step
+                        else None,
                     )
             elif checkpoint_interval is None:
                 if phase.checkpoint_barrier is not None:
                     saved_barrier = self._save_barrier(
-                        phase.checkpoint_barrier, coordinate, current_slots
+                        phase.checkpoint_barrier, coordinate, current_slots, boundary_decision
                     )
             elif (
                 next_phase is None
                 and completed_batches != last_checkpoint_batch
             ):
                 saved_barrier = self._save_phase_barrier(
-                    coordinate.phase,
-                    coordinate,
-                    current_slots,
+                    coordinate.phase, coordinate, current_slots, boundary_decision
                 )
             if saved_barrier is not None:
                 last_checkpoint_step = coordinate.program_step
@@ -863,6 +873,7 @@ class PhaseProgramExecutor:
                         start_completed_batches=initial_batch,
                     )
 
+            last_committed_boundary_decision = boundary_decision
             phase_name = next_phase
             resume_inner_step = 0
             resuming_within_phase = False
@@ -1069,6 +1080,7 @@ class PhaseProgramExecutor:
         phase_name: str,
         coordinate: ProgressCoordinate,
         slots: Mapping[str, Any],
+        boundary_decision: PhaseBoundaryDecision | None = None,
     ) -> str:
         barrier_name = self._phases[phase_name].checkpoint_barrier
         if barrier_name is None:
@@ -1076,7 +1088,7 @@ class PhaseProgramExecutor:
                 f"/phase_program/phases/{phase_name}/checkpoint_barrier",
                 "cannot checkpoint a phase without an authored barrier",
             )
-        return self._save_barrier(barrier_name, coordinate, slots)
+        return self._save_barrier(barrier_name, coordinate, slots, boundary_decision)
 
     @staticmethod
     def _should_stop_at_barrier(
@@ -1094,6 +1106,7 @@ class PhaseProgramExecutor:
         barrier_name: str,
         coordinate: ProgressCoordinate,
         slots: Mapping[str, Any],
+        boundary_decision: PhaseBoundaryDecision | None = None,
     ) -> str:
         barrier = self._barriers[barrier_name]
         capture_slots = [slot.slot for slot in barrier.slots]
@@ -1126,6 +1139,7 @@ class PhaseProgramExecutor:
                 barrier=barrier_name,
                 coordinate=coordinate.model_copy(update={"completed_barrier": barrier_name}),
                 slots=captured,
+                boundary_decision=boundary_decision,
             )
         )
         return saved.barrier
@@ -1135,23 +1149,53 @@ class PhaseProgramExecutor:
             slot: _copy_executor_value(slots[slot]) for slot in self._metric_slots if slot in slots
         }
 
-    def _resume_phase_for_barrier(self, barrier_name: str) -> str:
-        barrier = self._barriers.get(barrier_name)
-        if barrier is None:
-            raise WorkerContractValidationError(
-                f"/checkpoint_barriers/{barrier_name}",
-                f"unknown checkpoint barrier {barrier_name!r}",
-            )
-        if barrier.resume_coordinate is not None:
-            return barrier.resume_coordinate.phase
-        return self._next_phase(barrier.phase) or barrier.phase
-
-    def _resume_position(self, checkpoint: PhaseCheckpoint) -> tuple[str, int]:
-        phase = self._phases.get(checkpoint.coordinate.phase)
+    def _resume_position(
+        self, checkpoint: PhaseCheckpoint, *, extend_terminal_phase: bool
+    ) -> tuple[str | None, int]:
+        barrier = self._barriers[checkpoint.barrier]
+        coordinate_phase = self._phases.get(checkpoint.coordinate.phase)
         inner_step = checkpoint.coordinate.inner_step
-        if phase is not None and inner_step is not None and 0 <= inner_step < phase.max_steps - 1:
-            return phase.name, inner_step + 1
-        return self._resume_phase_for_barrier(checkpoint.barrier), 0
+        decision = checkpoint.boundary_decision
+        next_inner_step = (
+            inner_step + 1
+            if coordinate_phase is not None
+            and inner_step is not None
+            and 0 <= inner_step < coordinate_phase.max_steps - 1
+            else 0
+        )
+        if decision is None and next_inner_step:
+            return checkpoint.coordinate.phase, next_inner_step
+        if barrier.resume_coordinate is not None:
+            return barrier.resume_coordinate.phase, 0
+        if decision is None:
+            phase_name = barrier.phase
+            next_phase = self._next_phase(phase_name, None)
+        else:
+            if coordinate_phase is None or coordinate_phase.checkpoint_barrier != barrier.name:
+                raise WorkerContractValidationError(
+                    "/checkpoint/phase_boundary_decision",
+                    "recorded phase boundary does not belong to the checkpoint barrier",
+                )
+            phase_name = coordinate_phase.name
+            next_phase = decision.next_phase
+            if inner_step != coordinate_phase.max_steps - 1 and not (
+                extend_terminal_phase and next_phase is None and next_inner_step
+            ):
+                raise WorkerContractValidationError(
+                    "/checkpoint/phase_boundary_decision",
+                    "recorded decision requires a completed phase boundary",
+                )
+            if next_phase is not None and (
+                next_phase not in coordinate_phase.legal_next
+                or (phase_name, next_phase) not in self._transitions
+            ):
+                raise WorkerContractValidationError(
+                    "/checkpoint/phase_boundary_decision/next_phase",
+                    f"recorded successor {next_phase!r} is not legal for phase {phase_name!r}",
+                )
+        if next_phase is None and extend_terminal_phase:
+            return phase_name, next_inner_step
+        return next_phase, 0
 
     def _schedule_origin_step(self, phase_name: str, coordinate: ProgressCoordinate) -> int | None:
         phase = self._phases[phase_name]
@@ -1166,9 +1210,7 @@ class PhaseProgramExecutor:
     def _next_phase(
         self,
         phase_name: str,
-        slots: Mapping[str, Any] | None = None,
-        coordinate: ProgressCoordinate | None = None,
-        context: Mapping[str, Any] | None = None,
+        guard_inputs: tuple[Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]] | None,
     ) -> str | None:
         phase = self._phases[phase_name]
         if not phase.legal_next:
@@ -1182,15 +1224,21 @@ class PhaseProgramExecutor:
                 )
             if transition.guard is None:
                 return target
-            if slots is None or coordinate is None:
-                continue
+            if guard_inputs is None:
+                raise WorkerContractValidationError(
+                    "/checkpoint/phase_boundary_decision",
+                    f"legacy checkpoint for guarded phase {phase_name!r} lacks a recorded "
+                    "boundary decision; resume from a checkpoint with a recorded decision "
+                    "or an authored resume coordinate",
+                )
+            slots, coordinate, context = guard_inputs
             predicate = self.guard_predicates.get(transition.guard.predicate_ref)
             if predicate is None:
                 raise WorkerContractValidationError(
                     f"/phase_program/transitions/{phase_name}->{target}/guard",
                     f"missing predicate for guard {transition.guard.predicate_ref!r}",
                 )
-            if bool(predicate(slots, coordinate, dict(context or {}))):
+            if bool(predicate(slots, coordinate, dict(context))):
                 return target
         return None
 
