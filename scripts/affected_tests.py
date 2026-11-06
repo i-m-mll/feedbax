@@ -21,6 +21,15 @@ from urllib.request import urlopen
 PPO_SOURCE = "feedbax/training/rl/ppo.py"
 PYTHON_ROOTS = {"feedbax", "scripts", "tests"}
 STUDIO_TEST = re.compile(r"\.test\.[tj]sx?$")
+SHARED_STUDIO_SOURCES = (
+    "web/src/api/",
+    "web/src/data/components.ts",
+    "web/src/features/graph/",
+    "web/src/features/schema/",
+    "web/src/types/graph.ts",
+    "web/src/utils/canonicalJsonV2.ts",
+    "web/src/utils/studioDraftHash.ts",
+)
 PANTS_VERSION = "2.33.0"
 PANTS_LAUNCHER_VERSION = "v0.13.2"
 PANTS_LAUNCHERS = {
@@ -241,6 +250,11 @@ def _selection(
         for change in changes
     ):
         return {"mode": "full", "reason": "shared graph, registry or generated contract changed"}
+    if any(
+        change.path.startswith(SHARED_STUDIO_SOURCES) and not _studio_test(change.path)
+        for change in changes
+    ):
+        return {"mode": "full", "reason": "shared Studio graph, schema or wire contract changed"}
     python, studio = set(), set()
     for path, status in ((change.path, change.status) for change in changes):
         if (
