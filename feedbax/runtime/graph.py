@@ -874,8 +874,9 @@ class Graph(Component):
                     new_cycle_port_values[port_key] = value
 
         outputs = {
-            ext_port: port_values[(node_name, node_port)]
-            for ext_port, (node_name, node_port) in self.output_bindings.items()
+            port: port_values[self.output_bindings[port]]
+            for port in self.output_ports
+            if port in self.output_bindings
         }
         trace_values = {}
         if trace:

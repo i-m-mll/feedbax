@@ -109,7 +109,10 @@ from feedbax.mechanics.muscles.thelen_muscle import (
     require_thelen_input_shape,
     thelen_muscle_shape,
 )
-from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
+from feedbax.compiler.muscle_templates import (
+    arm_6muscle_rigid_tendon_graph,
+    point_mass_8muscle_relu_graph,
+)
 from feedbax.models.networks import VanillaRNN
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import StateFeedbackSelector, state_feedback_output_prototype
@@ -133,6 +136,7 @@ from .declarations import (
     declare_component,
 )
 from .interventions import register_vector_interventions
+from .muscle_graph import register_muscle_graph_leaves
 from .templates import register_builtin_graph_templates
 from .prototypes import array_prototype, prototype_params, migrate_stateful_v1
 
@@ -2939,6 +2943,8 @@ def register_builtin_components(registry: _Registry) -> None:
     register_vector_interventions(registry)
 
     # --- Muscles ---
+    arm_muscle_graph = arm_6muscle_rigid_tendon_graph()
+    register_muscle_graph_leaves(registry, arm_muscle_graph.nodes["geometry"].params["paths"])
     registry.register(
         declare_component(
             name="ReluMuscle",
@@ -2958,14 +2964,14 @@ def register_builtin_components(registry: _Registry) -> None:
                     name="tau_activation",
                     type="float",
                     default=0.015,
-                    min=0.001,
+                    min=0.0,
                     required=False,
                 ),
                 ParameterField(
                     name="tau_deactivation",
                     type="float",
                     default=0.05,
-                    min=0.001,
+                    min=0.0,
                     required=False,
                 ),
                 ParameterField(
@@ -2979,7 +2985,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     name="dt",
                     type="float",
                     default=0.01,
-                    min=0.001,
+                    min=0.0,
                     required=True,
                 ),
                 ParameterField(
@@ -3014,12 +3020,12 @@ def register_builtin_components(registry: _Registry) -> None:
             ),
             parameter_fields=[
                 ParameterField(name="n_muscles", type="int", default=6, min=1, required=True),
-                ParameterField(name="dt", type="float", default=0.01, min=0.001, required=True),
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
                 ParameterField(
-                    name="tau_activation", type="float", default=0.015, min=0.001, required=False
+                    name="tau_activation", type="float", default=0.015, min=0.0, required=False
                 ),
                 ParameterField(
-                    name="tau_deactivation", type="float", default=0.05, min=0.001, required=False
+                    name="tau_deactivation", type="float", default=0.05, min=0.0, required=False
                 ),
                 ParameterField(
                     name="max_isometric_force", type="float", default=500.0, min=0.0, required=False
@@ -3028,11 +3034,11 @@ def register_builtin_components(registry: _Registry) -> None:
                     name="optimal_muscle_length",
                     type="float",
                     default=0.1,
-                    min=0.001,
+                    min=0.0,
                     required=False,
                 ),
                 ParameterField(
-                    name="tendon_slack_length", type="float", default=0.2, min=0.001, required=False
+                    name="tendon_slack_length", type="float", default=0.2, min=0.0, required=False
                 ),
                 ParameterField(
                     name="initial_activation", type="float", default=0.001, min=0.0, required=False
@@ -3057,7 +3063,9 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Arm6MuscleRigidTendon",
-            runtime_type=Arm6MuscleRigidTendon,
+            template_graph=arm_muscle_graph,
+            template_id="feedbax.templates.mechanics.arm_6muscle_rigid_tendon",
+            template_kind="executable",
             category="Mechanics",
             description="6-muscle arm with Thelen rigid tendon.",
             parameter_fields=[
@@ -3117,7 +3125,9 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="PointMass8MuscleRelu",
-            runtime_type=PointMass8MuscleRelu,
+            template_graph=point_mass_8muscle_relu_graph(),
+            template_id="feedbax.templates.mechanics.point_mass_8muscle_relu",
+            template_kind="executable",
             category="Mechanics",
             description="8-muscle point mass with ReLU actuators.",
             parameter_fields=[
