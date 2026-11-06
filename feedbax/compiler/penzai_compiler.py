@@ -7,14 +7,18 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from jaxtyping import PyTree
+
 from feedbax.components.penzai import (
     PENZAI_AVAILABLE,
     TREESCOPE_AVAILABLE,
     build_penzai_subgraph,
-    get_penzai_builder,
+    UnknownPenzaiBuilderError,
     list_penzai_builder_info,
     penzai_state_variable_paths,
     penzai_structure_summary,
+    render_penzai_model_html,
+    resolve_penzai_model,
 )
 from feedbax.contracts.domain import (
     DomainCompileReport,
@@ -41,6 +45,43 @@ def compile_penzai_authoring_report(
 ) -> DomainCompileReport:
     """Return a structural Penzai authoring report without training execution."""
 
+    report, _ = _analyze_penzai_model(
+        builder_name=builder_name,
+        params=params,
+        input_port=input_port,
+        output_port=output_port,
+        node_path=node_path,
+    )
+    return report
+
+
+def inspect_penzai_model(
+    *,
+    builder_name: str,
+    params: Mapping[str, Any] | None = None,
+    input_port: str = "input",
+    output_port: str = "output",
+    node_path: list[str] | None = None,
+) -> tuple[DomainCompileReport, str]:
+    """Inspect and render the same model in one operation."""
+    report, model = _analyze_penzai_model(
+        builder_name=builder_name,
+        params=params,
+        input_port=input_port,
+        output_port=output_port,
+        node_path=node_path,
+    )
+    return report, "" if report.status == "error" else render_penzai_model_html(model)
+
+
+def _analyze_penzai_model(
+    *,
+    builder_name: str,
+    params: Mapping[str, Any] | None,
+    input_port: str,
+    output_port: str,
+    node_path: list[str] | None,
+) -> tuple[DomainCompileReport, PyTree]:
     node_ids = list(node_path or [])
     payload = {
         "builder_name": builder_name,
@@ -65,10 +106,13 @@ def compile_penzai_authoring_report(
                 node_ids=node_ids,
             )
         )
-        return _report(content_hash, diagnostics, summary, derived_interface)
+        return _report(content_hash, diagnostics, summary, derived_interface), None
 
-    builder_info = get_penzai_builder(builder_name)
-    if builder_info is None:
+    try:
+        model = resolve_penzai_model(builder_name, params)
+        state_paths = penzai_state_variable_paths(model)
+        summary = penzai_structure_summary(model)
+    except UnknownPenzaiBuilderError:
         diagnostics.append(
             DomainDiagnostic(
                 severity="error",
@@ -81,14 +125,7 @@ def compile_penzai_authoring_report(
                 details={"builder_name": builder_name},
             )
         )
-        return _report(content_hash, diagnostics, summary, derived_interface)
-
-    builder_fn, default_params = builder_info
-    merged_params = {**default_params, **dict(params or {})}
-    try:
-        model = builder_fn(merged_params)
-        state_paths = penzai_state_variable_paths(model)
-        summary = penzai_structure_summary(model)
+        return _report(content_hash, diagnostics, summary, derived_interface), None
     except Exception as exc:  # noqa: BLE001 - authoring endpoint reports, not raises.
         diagnostics.append(
             DomainDiagnostic(
@@ -99,7 +136,7 @@ def compile_penzai_authoring_report(
                 details={"builder_name": builder_name},
             )
         )
-        return _report(content_hash, diagnostics, summary, derived_interface)
+        return _report(content_hash, diagnostics, summary, derived_interface), None
 
     if state_paths:
         diagnostics.append(
@@ -117,7 +154,7 @@ def compile_penzai_authoring_report(
             )
         )
 
-    return _report(content_hash, diagnostics, summary, derived_interface)
+    return _report(content_hash, diagnostics, summary, derived_interface), model
 
 
 def render_penzai_treescope_html(
@@ -133,7 +170,7 @@ def render_penzai_treescope_html(
         raise ImportError("treescope is required for Penzai inspector rendering.")
     component = build_penzai_subgraph(
         builder_name=builder_name,
-        params=dict(params or {}),
+        params=params,
         input_port=input_port,
         output_port=output_port,
     )

@@ -92,6 +92,14 @@ export function buildDomainContexts(domains: DomainMeta[]): Map<string, DomainCo
   );
 }
 
+export function hasInspectorInterior(component: ComponentDefinition | undefined): boolean {
+  return Boolean(
+    component?.interior_domain &&
+    component.template_kind === 'display' &&
+    !component.template_graph
+  );
+}
+
 export function resolveDomainContext(
   contextId: string,
   contexts: Map<string, DomainContext>,

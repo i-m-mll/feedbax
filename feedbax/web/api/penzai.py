@@ -4,8 +4,8 @@ from fastapi import APIRouter, HTTPException
 
 from feedbax.compiler.penzai_compiler import (
     compile_penzai_authoring_report,
+    inspect_penzai_model,
     penzai_builder_options,
-    render_penzai_treescope_html,
 )
 from feedbax.contracts.domain import DomainCompileReport
 from feedbax.contracts.studio_api import (
@@ -39,21 +39,13 @@ async def compile_node(payload: PenzaiNodeRequest) -> DomainCompileReport:
 
 @router.post("/inspect", response_model=PenzaiInspectorResponse)
 async def inspect_node(payload: PenzaiNodeRequest) -> PenzaiInspectorResponse:
-    report = compile_penzai_authoring_report(
-        builder_name=payload.builder_name,
-        params=payload.params,
-        input_port=payload.input_port,
-        output_port=payload.output_port,
-        node_path=payload.node_path,
-    )
-    if report.status == "error":
-        return PenzaiInspectorResponse(data=PenzaiInspectorPayload(html="", report=report))
     try:
-        html = render_penzai_treescope_html(
+        report, html = inspect_penzai_model(
             builder_name=payload.builder_name,
             params=payload.params,
             input_port=payload.input_port,
             output_port=payload.output_port,
+            node_path=payload.node_path,
         )
     except ImportError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

@@ -10,12 +10,12 @@ Tests the Penzai model wrapper for feedbax Graphs, including:
 import pytest
 import jax
 import jax.numpy as jnp
-from equinox.nn import State
+from equinox.nn import State, StateIndex
 
-from feedbax.runtime.graph import Component, Graph, Wire
-from equinox.nn import StateIndex
-
-from feedbax.runtime.graph import init_state_from_component
+from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.runtime.graph import Graph, init_state_from_component
 from feedbax.components.penzai import (
     PENZAI_AVAILABLE,
     TREESCOPE_AVAILABLE,
@@ -32,6 +32,7 @@ from feedbax.components.penzai import (
 )
 from feedbax.compiler.builders import _build_penzai_adapter
 from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report
+from feedbax.compiler.serialization import graph_to_spec
 
 
 # =============================================================================
@@ -632,6 +633,119 @@ class TestFactoryRegistry:
             assert not isinstance(exc_info.value, NotImplementedError)
         finally:
             pc._PENZAI_MODEL_BUILDERS.pop("test_runtime_stateful", None)
+
+    @pytest.mark.skipif(not PENZAI_AVAILABLE, reason="penzai not installed")
+    def test_graph_executes_the_model_resolved_during_compilation(self):
+        from penzai import pz
+        import feedbax.components.penzai as pc
+
+        constructions = 0
+
+        @pz.pytree_dataclass
+        class Projection(pz.nn.Layer):
+            weight: jax.Array
+
+            def __call__(self, x, /, **side_inputs):
+                return x @ self.weight
+
+        def build_projection(params):
+            nonlocal constructions
+            constructions += 1
+            return Projection(weight=jnp.full((1, constructions), params["scale"]))
+
+        builder_name = "test_varying_projection"
+        register_penzai_builder(builder_name, build_projection, {"scale": 3.0})
+        try:
+            document = GraphDocument(
+                graph=GraphSpec(
+                    nodes={
+                        "projection": ComponentSpec(
+                            type="PenzaiAdapter",
+                            params={"builder_name": builder_name},
+                            input_ports=["input"],
+                            output_ports=["output"],
+                        )
+                    },
+                    input_ports=["input"],
+                    output_ports=["output"],
+                    input_bindings={"input": ("projection", "input")},
+                    output_bindings={"output": ("projection", "output")},
+                )
+            )
+            registry = ComponentRegistry(load_user_components=False)
+            graph = compile_graph(document, registry).graph
+            outputs, _ = graph(
+                {"input": jnp.array([2.0])},
+                init_state_from_component(graph),
+                key=jax.random.PRNGKey(0),
+            )
+            assert jnp.array_equal(outputs["output"], jnp.array([6.0]))
+            serialized = graph_to_spec(graph, registry).nodes["projection"]
+            assert serialized.type == "PenzaiAdapter"
+            assert serialized.params["builder_name"] == builder_name
+            assert constructions == 1
+        finally:
+            pc._PENZAI_MODEL_BUILDERS.pop(builder_name, None)
+
+    @pytest.mark.skipif(
+        not (PENZAI_AVAILABLE and TREESCOPE_AVAILABLE), reason="penzai and treescope required"
+    )
+    @pytest.mark.parametrize("saved", [False, True], ids=["unsaved", "saved"])
+    def test_inspector_renders_the_model_described_by_its_report(
+        self, saved, tmp_path, monkeypatch
+    ):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from penzai import pz
+
+        import feedbax.components.penzai as pc
+        from feedbax.web.api import graphs as graphs_api, penzai as penzai_api
+        from feedbax.web.services.graph_service import GraphService
+
+        @pz.pytree_dataclass
+        class InspectionProjection(pz.nn.Layer):
+            weight: jax.Array
+
+            def __call__(self, x, /, **side_inputs):
+                return x @ self.weight
+
+        models = iter([InspectionProjection(weight=jnp.ones((1, 2)))])
+        builder_name = "test_inspection_projection"
+        register_penzai_builder(builder_name, lambda params: next(models))
+        app = FastAPI()
+        app.include_router(penzai_api.router)
+        if saved:
+            service = GraphService(tmp_path)
+            monkeypatch.setattr(graphs_api, "service", service)
+            record = service.create_graph(
+                GraphSpec(
+                    nodes={
+                        "projection": ComponentSpec(
+                            type="PenzaiAdapter",
+                            params={"builder_name": builder_name},
+                            input_ports=["input"],
+                            output_ports=["output"],
+                        )
+                    }
+                )
+            )
+            app.include_router(graphs_api.router, prefix="/graphs")
+            path = f"/graphs/{record.graph_id}/nodes/penzai/inspect"
+        else:
+            path = "/inspect"
+        try:
+            response = TestClient(app).post(
+                path, json={"builder_name": builder_name, "node_path": ["projection"]}
+            )
+            assert response.status_code == 200
+            inspection = response.json()["data"]
+            assert inspection["report"]["summary"]["parameter_count"] == 2
+            assert inspection["html"]
+            if saved:
+                reports = service.get_graph(record.graph_id).project.compile_reports
+                assert reports["projection"].model_dump(mode="json") == inspection["report"]
+        finally:
+            pc._PENZAI_MODEL_BUILDERS.pop(builder_name, None)
 
 
 # =============================================================================

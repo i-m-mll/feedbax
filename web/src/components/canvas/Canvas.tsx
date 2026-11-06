@@ -1659,9 +1659,7 @@ export function Canvas() {
       <div className="relative h-full w-full overflow-hidden bg-slate-50">
         <PenzaiInspector
           graphId={graphId}
-          nodePath={graphStack
-            .map((layer) => layer.childNodeId)
-            .filter((id): id is string => Boolean(id))}
+          nodePath={currentGraphPath}
           nodeSpec={inspectorNodeSpec}
         />
         <div className="absolute left-4 top-4 z-20 flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1 text-xs text-slate-500 shadow-soft">

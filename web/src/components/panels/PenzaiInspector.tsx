@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
-import { compilePenzaiNode, inspectPenzaiNode } from '@/api/client';
+import { inspectPenzaiNode } from '@/api/client';
 import type {
-  DomainCompileReport,
   DomainDiagnostic,
+  PenzaiInspectorPayload,
   PenzaiNodeRequest,
 } from '@/generated/studioContracts';
 import type { ComponentSpec } from '@/types/graph';
@@ -41,31 +41,25 @@ export function PenzaiInspector({
   nodeSpec: ComponentSpec;
 }) {
   const request = useMemo(() => nodeRequest(nodePath, nodeSpec), [nodePath, nodeSpec]);
-  const [html, setHtml] = useState('');
-  const [report, setReport] = useState<DomainCompileReport | null>(null);
+  const [inspection, setInspection] = useState<PenzaiInspectorPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const { html, report } = inspection ?? {};
 
   useEffect(() => {
     let cancelled = false;
-    setHtml('');
-    setReport(null);
+    setInspection(null);
     setError(null);
     if (!request) {
+      setLoading(false);
       setError('Select a registered builder before opening this inspector.');
       return;
     }
     setLoading(true);
     const load = async () => {
       try {
-        const compileReport = await compilePenzaiNode(graphId, request);
-        if (cancelled) return;
-        setReport(compileReport);
-        if (compileReport.status === 'error') return;
-        const inspected = await inspectPenzaiNode(request);
-        if (cancelled) return;
-        setHtml(inspected.html);
-        setReport(inspected.report);
+        const inspected = await inspectPenzaiNode(graphId, request);
+        if (!cancelled) setInspection(inspected);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
       } finally {

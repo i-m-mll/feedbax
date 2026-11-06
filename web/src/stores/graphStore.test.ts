@@ -413,7 +413,7 @@ describe('graphStore boundary aliases', () => {
         default_params: {},
         domain: CAUSAL_DOMAIN_ID,
         interior_domain: INSPECTOR_DOMAIN_ID,
-        is_composite: true,
+        is_composite: false,
         template_kind: 'display',
       },
     ]);
