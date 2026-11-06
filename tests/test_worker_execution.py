@@ -901,10 +901,12 @@ def test_post_serialization_cleanup_failure_reports_residual_path(
         "_retained_observables_payload",
         lambda _rollout: (_ for _ in ()).throw(RuntimeError("post-serialization failed")),
     )
+
+    def deny_checkpoint_cleanup(_path: Path) -> None:
+        raise PermissionError("cleanup denied")
+
     monkeypatch.setattr(
-        worker_checkpoint.shutil,
-        "rmtree",
-        lambda _path: (_ for _ in ()).throw(PermissionError("cleanup denied")),
+        worker_checkpoint, "shutil", SimpleNamespace(rmtree=deny_checkpoint_cleanup)
     )
 
     with pytest.raises(CheckpointCleanupError, match="cleanup denied") as caught:
