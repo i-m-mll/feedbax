@@ -1956,7 +1956,13 @@ def test_secure_checkpoint_clone_rejects_symlink_entries(
             [
                 "bash",
                 "-lc",
-                build_native_resume_seed_command(str(source), str(attempt), str(target), resolved),
+                build_native_resume_seed_command(
+                    str(source),
+                    str(attempt),
+                    str(target),
+                    resolved,
+                    workdir=str(Path(__file__).resolve().parents[1]),
+                ),
             ],
             capture_output=True,
             text=True,
@@ -1984,11 +1990,19 @@ def test_remote_checkpoint_seed_protocol_clones_and_publishes(tmp_path: Path) ->
         [
             "bash",
             "-lc",
-            build_native_resume_seed_command(str(source), str(attempt), str(target), resolved),
+            build_native_resume_seed_command(
+                str(source),
+                str(attempt),
+                str(target),
+                resolved,
+                workdir=str(Path(__file__).resolve().parents[1]),
+            ),
         ],
         check=True,
         capture_output=True,
         text=True,
+        cwd=tmp_path,
+        env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
     )
 
     assert (target / "latest.json").read_bytes() == (source / "latest.json").read_bytes()
@@ -2009,7 +2023,13 @@ def _invoke_checkpoint_seed_protocol(
         [
             "bash",
             "-lc",
-            build_native_resume_seed_command(str(source), str(attempt), str(target), resolved),
+            build_native_resume_seed_command(
+                str(source),
+                str(attempt),
+                str(target),
+                resolved,
+                workdir=str(Path(__file__).resolve().parents[1]),
+            ),
         ],
         check=True,
         capture_output=True,
