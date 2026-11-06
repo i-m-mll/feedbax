@@ -480,6 +480,7 @@ class ComponentCompilerFacet:
     interior_domain: str | None = None
     is_composite: bool = False
     output_prototype_fn: OutputPrototypeFn | None = None
+    prototype_depends_on_connected_inputs: bool = False
     input_prototype_parameter: InputPrototypeParameter | None = None
     # Bind runtime-only constructor parameters to resolved output ports.
     build_output_prototypes: Mapping[str, str] = field(default_factory=dict)
@@ -669,6 +670,7 @@ def declare_component(
     extractor: ComponentParamExtractor | None = None,
     override_reason: str | None = None,
     output_prototype_fn: OutputPrototypeFn | None = None,
+    prototype_depends_on_connected_inputs: bool = False,
     input_prototype_parameter: InputPrototypeParameter | None = None,
     build_output_prototypes: Mapping[str, str] | None = None,
     provenance: str | None = None,
@@ -758,6 +760,7 @@ def declare_component(
             interior_domain=interior_domain,
             is_composite=is_composite,
             output_prototype_fn=output_prototype_fn,
+            prototype_depends_on_connected_inputs=prototype_depends_on_connected_inputs,
             input_prototype_parameter=input_prototype_parameter,
             build_output_prototypes=prototype_bindings,
         ),

@@ -78,9 +78,12 @@ class AffineFeedbackController(Component):
     ) -> tuple[dict[str, PyTree], State]:
         del key
         step = state.get(self.state_index)
+        command = self._command(inputs, step)
+        return {"command": command}, state.set(self.state_index, step + 1)
 
+    def _command(self, inputs: Mapping[str, PyTree], step: Array | int) -> Array:
         feedback = jnp.asarray(inputs["feedback"])
-        if feedback.shape[-1] != self.input_size:
+        if feedback.ndim == 0 or feedback.shape[-1] != self.input_size:
             raise ValueError(
                 f"AffineFeedbackController expected feedback width {self.input_size}; "
                 f"got shape {feedback.shape}."
@@ -115,7 +118,7 @@ class AffineFeedbackController(Component):
         if feedforward is not None:
             command = command + feedforward
 
-        return {"command": command}, state.set(self.state_index, step + 1)
+        return command
 
     def to_params(self) -> dict[str, Any]:
         """Return GraphSpec parameters that rebuild this controller."""
@@ -150,11 +153,13 @@ def affine_feedback_output_prototype(
 ) -> dict[str, Any]:
     """Return output prototypes for an affine feedback controller spec."""
 
-    del inputs
-    gain = jnp.asarray(params["gain"])
-    if gain.ndim not in (2, 3):
-        raise ValueError("AffineFeedbackController gain must be a matrix or matrix schedule.")
-    return {"command": jnp.zeros((int(gain.shape[-2]),), dtype=gain.dtype)}
+    if "feedback" not in inputs:
+        from feedbax.component_registry.declarations import MissingPrototypeInput
+
+        raise MissingPrototypeInput("Affine feedback output requires input prototype 'feedback'.")
+    controller = build_affine_feedback_controller(params)
+    command = jax.eval_shape(lambda sample: controller._command(sample, step=0), dict(inputs))
+    return {"command": jnp.zeros(command.shape, dtype=command.dtype)}
 
 
 def _optional_vector_schedule(name: str, value: PyTree | None, output_size: int) -> Array | None:
@@ -177,7 +182,7 @@ def _optional_vector_schedule(name: str, value: PyTree | None, output_size: int)
 def _schedule_value(
     name: str,
     value: Array | None,
-    step: Array,
+    step: Array | int,
     *,
     rank: int,
     policy: str,

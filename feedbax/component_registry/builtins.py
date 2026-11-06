@@ -3504,6 +3504,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={"command": PortType(dtype="vector")},
             ),
             output_prototype_fn=affine_feedback_output_prototype,
+            prototype_depends_on_connected_inputs=True,
         )
     )
     # --- Discrete components ---

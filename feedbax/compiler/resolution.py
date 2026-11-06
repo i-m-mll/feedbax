@@ -158,6 +158,7 @@ class _Completion:
         path: str,
         identities_resolved: bool,
         driven_boundary_ports: frozenset[str] = frozenset(),
+        external_boundary_ports: frozenset[str] | None = None,
     ):
         self.registry = registry
         self.path = path
@@ -167,6 +168,12 @@ class _Completion:
             for port, binding in self.graph.input_bindings.items()
             if port in driven_boundary_ports
         }
+        self.external_inputs = {
+            tuple(binding)
+            for port, binding in self.graph.input_bindings.items()
+            if external_boundary_ports is None or port in external_boundary_ports
+        }
+        self.connected_inputs = self.driven_inputs | self.external_inputs
         self.nodes: dict[str, ComponentSpec] = {}
         self.metadata: dict[str, DeclaredComponent | None] = {}
         self.prototype_parameters: dict[str, InputPrototypeParameter] = {}
@@ -221,6 +228,11 @@ class _Completion:
                         port
                         for port in subgraph.input_bindings
                         if (name, port) in self.driven_inputs
+                    ),
+                    external_boundary_ports=frozenset(
+                        port
+                        for port in subgraph.input_bindings
+                        if (name, port) in self.external_inputs
                     ),
                 )
             elif isinstance(subgraph, AcausalGraphSpec) and name in self.nodes:
@@ -439,6 +451,19 @@ class _Completion:
                 for port in node.input_ports
                 if (name, port) in self.inputs
             }
+            meta = self.metadata[node.type]
+            if meta is not None and meta.compiler.prototype_depends_on_connected_inputs:
+                pending_ports = [
+                    port
+                    for port in node.input_ports
+                    if (name, port) in self.connected_inputs and port not in inputs
+                ]
+                if pending_ports:
+                    self.deferred[name] = MissingPrototypeInput(
+                        f"{node.type} node {name!r} needs prototypes for connected "
+                        f"input ports {pending_ports!r}"
+                    )
+                    return False
             from feedbax.compiler.serialization import _materialize_component_param_value
 
             params = _materialize_component_param_value(node.params, declarations={}, path=())
