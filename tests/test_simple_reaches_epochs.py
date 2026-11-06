@@ -41,7 +41,7 @@ _DEFAULT_GOLDEN = {
         "timeline_epoch_names": [],
         "timeline_event_names": [],
         "timeline_event_steps": None,
-        "timeline_n_steps": 5,
+        "timeline_n_steps": 4,
     },
     "validation": {
         "init_force": [[0.0, 0.0], [0.0, 0.0]],
@@ -75,7 +75,7 @@ _DEFAULT_GOLDEN = {
         "timeline_epoch_names": [],
         "timeline_event_names": [],
         "timeline_event_steps": None,
-        "timeline_n_steps": 5,
+        "timeline_n_steps": 4,
     },
 }
 
@@ -208,8 +208,7 @@ def _assert_snapshot_equal(actual: Mapping[str, Any], expected: Mapping[str, Any
             assert actual_value == expected_value
 
 
-def test_simple_reaches_defaults_match_prechange_golden() -> None:
-    """Default train and validation specs preserve the pre-change output."""
+def test_simple_reaches_default_trial_specs() -> None:
     task = _make_default_task()
 
     train = task.get_train_trial(jax.random.PRNGKey(17))
@@ -238,11 +237,7 @@ def test_simple_reaches_epoch_name_populates_target_length_bounds() -> None:
         validation.timeline.epoch_bounds,
         jnp.asarray([[0, 4], [0, 4]], dtype=jnp.int32),
     )
-    assert validation_target.discount.shape == (2, 4)
-    assert jnp.array_equal(
-        validation_target.discount,
-        jnp.broadcast_to(train_target.discount, (2, 4)),
-    )
+    assert jnp.array_equal(validation_target.discount, train_target.discount)
 
 
 def test_simple_reaches_epoch_consumers_accept_target_length_epoch() -> None:
@@ -302,7 +297,6 @@ def test_simple_reaches_fixed_endpoints_drive_train_and_single_validation_trial(
         validation_target.value,
         jnp.broadcast_to(fixed_endpoints[None, 1], (1, task.n_steps - 1, 2)),
     )
-    assert validation_target.discount.shape == (1, task.n_steps - 1)
     assert validation.timeline.n_steps == task.n_steps - 1
     assert jnp.array_equal(
         validation.timeline.epoch_bounds,

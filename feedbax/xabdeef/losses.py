@@ -11,6 +11,7 @@ from feedbax.objectives.loss import (
     CompositeLoss,
     TargetSpec,
     TargetStateLoss,
+    _target_start_step,
     target_final_state,
     target_zero,
 )
@@ -28,7 +29,7 @@ class EffectorFixationLoss(AbstractLoss):
         if not isinstance(target_spec, TargetSpec) or target_spec.value is None:
             raise ValueError("EffectorFixationLoss requires an effector position TargetSpec")
 
-        effector_pos = states.mechanics.effector.pos[:, 1:]
+        effector_pos = states.mechanics.effector.pos[:, _target_start_step(trial_specs):]
         loss = jnp.sum((effector_pos - target_spec.value) ** 2, axis=-1)
 
         hold = trial_specs.inputs.hold

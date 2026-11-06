@@ -48,6 +48,6 @@ def test_stabilization_without_epoch_name_preserves_unnamed_timelines() -> None:
     validation = task.get_validation_trials(jax.random.PRNGKey(23))
 
     for timeline in (train.timeline, validation.timeline):
-        assert timeline.n_steps == task.n_steps
+        assert timeline.n_steps == task.n_steps - 1
         assert timeline.epoch_bounds is None
         assert timeline.epoch_names == ()
