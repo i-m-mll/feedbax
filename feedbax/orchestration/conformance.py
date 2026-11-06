@@ -77,7 +77,7 @@ class AuthorizedBatchStop(StrictModel):
     independently agree that the row stopped at this boundary.
     """
 
-    stop_after_batches: int = Field(gt=0)
+    stop_after_batches: int = Field(gt=0, strict=True)
     reason: Literal["stop_after_batches"] = "stop_after_batches"
 
 
@@ -320,6 +320,7 @@ class ConformanceRowArtifacts:
     deployment_policy: Mapping[str, Any] | None = None
     realized_deployment_evidence: Mapping[str, Any] | None = None
     evaluation_lifecycle: Mapping[str, Any] | None = None
+    collected_checkpoint_custody: Mapping[str, Any] | None = None
 
 
 class CheckRegistry:
@@ -953,6 +954,43 @@ def assert_certificate_allows_completed_registration(
     return cert
 
 
+@dataclass(frozen=True)
+class _RealizedBatchFrame:
+    """Completed updates in the current invocation and across its lineage."""
+
+    segment: int
+    cumulative: int
+
+    @property
+    def origin(self) -> int:
+        return self.cumulative - self.segment
+
+
+def _realized_batch_frame(
+    diagnostics: Mapping[str, Any] | None, *, unframed_count: Any
+) -> _RealizedBatchFrame | None:
+    segment = _path(diagnostics, "segment_completed_batches")
+    cumulative = _path(diagnostics, "cumulative_completed_batches")
+    completed = _path(diagnostics, "completed_batches")
+    if cumulative is not _MISSING:
+        if segment is _MISSING:
+            raise ValueError("cumulative completed batches require segment_completed_batches")
+        if completed is not _MISSING and (type(completed) is not int or completed != cumulative):
+            raise ValueError("completed_batches disagrees with cumulative_completed_batches")
+    if segment is _MISSING:
+        count = _first_present(completed, unframed_count)
+        if count is _MISSING:
+            return None
+        segment = cumulative = int(count)
+    else:
+        cumulative = _first_present(cumulative, completed, segment)
+    if any(type(count) is not int for count in (segment, cumulative)) or not (
+        0 <= segment <= cumulative
+    ):
+        raise ValueError("invalid batch frame: expected 0 <= segment <= cumulative completed batches")
+    return _RealizedBatchFrame(segment=segment, cumulative=cumulative)
+
+
 def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
     """Verify full completion or an authorized, internally consistent stop."""
     check_id = "completed_batches"
@@ -963,48 +1001,72 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
         _path(row.bundle_row_spec, "training_config", "n_batches"),
         _path(row.bundle_row_spec, "n_batches"),
     )
-    observed = _first_present(
-        _path(row.training_diagnostics, "segment_completed_batches"),
-        _path(row.training_diagnostics, "completed_batches"),
-        _path(row.training_diagnostics, "summary", "completed_batches"),
-        _path(row.training_diagnostics, "summary_metrics", "completed_batches"),
-        _path(row.training_diagnostics, "summary_metrics", "n_batches"),
-        _path(_manifest_payload(row), "summary_metrics", "completed_batches"),
-        _path(_manifest_payload(row), "summary_metrics", "n_batches"),
-    )
     if expected is _MISSING:
         return missing_input_check(check_id, "bundle_row_spec.n_batches")
-    if observed is _MISSING:
-        return missing_input_check(check_id, "training_diagnostics.completed_batches")
-    authored_batches = int(expected)
-    observed_batches = int(observed)
-    if observed_batches == authored_batches:
-        return pass_check(check_id, expected=authored_batches, observed=observed_batches)
-
-    authorized_stop = (
-        row.runtime_inputs.authorized_batch_stop if row.runtime_inputs is not None else None
-    )
-    if authorized_stop is None:
-        return fail_check(check_id, expected=authored_batches, observed=observed_batches)
-
-    stop_batches = int(authorized_stop.stop_after_batches)
     manifest = _manifest_payload(row)
     diagnostics = row.training_diagnostics
     row_state = row.row_state
-    checkpoint_coordinates = _checkpoint_coordinates(row)
-    checkpoint_completed_batches = _checkpoint_completed_batches(row)
-    manifest_id = _path(manifest, "id")
-    diagnostics_manifest_id = _path(diagnostics, "manifest_id")
-    diagnostics_status = _path(diagnostics, "terminal_status")
-    manifest_status = _path(manifest, "status")
     manifest_completed_batches = _first_present(
         _path(manifest, "completed_batches"),
         _path(manifest, "summary_metrics", "completed_batches"),
         _path(manifest, "summary_metrics", "n_batches"),
     )
+    try:
+        frame = _realized_batch_frame(
+            diagnostics,
+            unframed_count=_first_present(
+                _path(diagnostics, "summary", "completed_batches"),
+                _path(diagnostics, "summary_metrics", "completed_batches"),
+                _path(diagnostics, "summary_metrics", "n_batches"),
+                _path(manifest, "summary_metrics", "completed_batches"),
+                _path(manifest, "summary_metrics", "n_batches"),
+            ),
+        )
+    except ValueError as exc:
+        return fail_check(check_id, expected="consistent realized batch frame", detail=str(exc))
+    if frame is None:
+        return missing_input_check(check_id, "training_diagnostics.completed_batches")
+    authored_batches = int(expected)
+    diagnostics_status = _path(diagnostics, "terminal_status")
+    manifest_status = _path(manifest, "status")
+    row_status = row_state.status if row_state is not None else row.row_status
+    terminal_statuses = (
+        _canonical_terminal_status(diagnostics_status),
+        _canonical_terminal_status(manifest_status),
+        _canonical_terminal_status(_row_terminal_status(row_status)),
+    )
+    if frame.segment == authored_batches:
+        if any(status not in {None, "complete"} for status in terminal_statuses):
+            return fail_check(
+                check_id, expected="completed terminal status", observed=terminal_statuses
+            )
+        native_manifest_count = _path(manifest, "completed_batches")
+        if native_manifest_count not in (_MISSING, None) and (
+            type(native_manifest_count) is not int or native_manifest_count != frame.cumulative
+        ):
+            return fail_check(
+                check_id,
+                expected=frame.cumulative,
+                observed=native_manifest_count,
+                detail="training manifest completed batches disagree with the realized batch frame",
+            )
+        return pass_check(check_id, expected=authored_batches, observed=frame.segment)
+
+    authorized_stop = (
+        row.runtime_inputs.authorized_batch_stop if row.runtime_inputs is not None else None
+    )
+    if authorized_stop is None:
+        return fail_check(check_id, expected=authored_batches, observed=frame.segment)
+
+    stop_batches = authorized_stop.stop_after_batches
+    checkpoint_coordinates = _checkpoint_coordinates(row)
+    checkpoint_completed_batches = _checkpoint_completed_batches(row)
+    manifest_id = _path(manifest, "id")
+    diagnostics_manifest_id = _path(diagnostics, "manifest_id")
     evidence = {
         "authorized_stop_after_batches": stop_batches,
-        "diagnostics_completed_batches": observed_batches,
+        "diagnostics_completed_batches": frame.segment,
+        "diagnostics_cumulative_completed_batches": frame.cumulative,
         "diagnostics_terminal_status": (
             None if diagnostics_status is _MISSING else diagnostics_status
         ),
@@ -1028,19 +1090,20 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
         "row_status": "stopped",
         "row_error": "operator-stop-after-checkpoint",
         "final_checkpoint_batches": stop_batches,
+        "final_cumulative_batches": frame.origin + stop_batches,
     }
     failures: list[str] = []
     if stop_batches >= authored_batches:
         failures.append("authorized stop must be earlier than the authored batch budget")
-    if observed_batches != stop_batches:
+    if frame.segment != stop_batches:
         failures.append("diagnostics completed batches do not match the authorized stop")
     if _canonical_terminal_status(diagnostics_status) != "cancelled":
         failures.append("training diagnostics do not report cancelled terminal status")
     if _canonical_terminal_status(manifest_status) != "cancelled":
         failures.append("training manifest does not report cancelled status")
-    if manifest_completed_batches is _MISSING:
+    if manifest_completed_batches in (_MISSING, None):
         failures.append("training manifest completed batch count is missing")
-    elif int(manifest_completed_batches) != stop_batches:
+    elif type(manifest_completed_batches) is not int or manifest_completed_batches != frame.cumulative:
         failures.append("training manifest completed batches do not match the authorized stop")
     if manifest_id is _MISSING or diagnostics_manifest_id is _MISSING:
         failures.append("manifest and training diagnostics require linked manifest ids")
@@ -1053,10 +1116,31 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
             failures.append("orchestration row state is not stopped")
         if row_state.error != "operator-stop-after-checkpoint":
             failures.append("orchestration row stop reason is not checkpoint-stop")
-    if not checkpoint_coordinates or max(checkpoint_coordinates) != stop_batches:
+    if not checkpoint_coordinates or checkpoint_coordinates[-1] != stop_batches:
         failures.append("final checkpoint coordinate does not match the authorized stop")
-    if not checkpoint_completed_batches or max(checkpoint_completed_batches) != stop_batches:
+    if not checkpoint_coordinates or checkpoint_completed_batches != [
+        frame.origin + coordinate for coordinate in checkpoint_coordinates
+    ]:
         failures.append("checkpoint transaction batch count does not match the authorized stop")
+    transactions = _path(diagnostics, "checkpoint_transactions")
+    custody = _path(manifest, "checkpoint_custody")
+    if transactions is not _MISSING:
+        transaction_coordinates = [_path(tx, "completed_batches") for tx in transactions]
+        if transaction_coordinates != checkpoint_coordinates:
+            failures.append("checkpoint coordinates disagree with checkpoint transactions")
+        if custody is not _MISSING and [_path(ref, "id") for ref in custody] != [
+            _path(tx, "transaction_id") for tx in transactions
+        ]:
+            failures.append("checkpoint transactions disagree with training manifest custody")
+    if row.collected_checkpoint_custody is not None:
+        terminal_ref = custody[-1] if isinstance(custody, list) and custody else None
+        collected = row.collected_checkpoint_custody
+        if (
+            collected.get("transaction_id") != _path(terminal_ref, "id")
+            or collected.get("manifest_sha256") != _path(terminal_ref, "metadata", "manifest_sha256")
+            or collected.get("completed_training_batches") != frame.cumulative
+        ):
+            failures.append("authenticated terminal checkpoint disagrees with the authorized stop")
 
     if failures:
         return fail_check(
@@ -1237,64 +1321,38 @@ def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
         _path(row.bundle_row_spec, "training", "checkpoint_interval"),
         _path(row.bundle_row_spec, "checkpoint_progress", "checkpoint_interval"),
     )
-    segment_completed = _path(row.training_diagnostics, "segment_completed_batches")
-    cumulative_completed = _path(row.training_diagnostics, "cumulative_completed_batches")
-    legacy_completed = _path(row.training_diagnostics, "completed_batches")
-    if segment_completed is not _MISSING:
-        completed = segment_completed
-        completed_source = "training_diagnostics.segment_completed_batches"
-    else:
-        completed_candidates = (
-            (legacy_completed, "training_diagnostics.completed_batches"),
-            (
-                _path(row.training_diagnostics, "summary", "completed_batches"),
-                "training_diagnostics.summary.completed_batches",
-            ),
-            (_path(row.bundle_row_spec, "expected_batches"), "bundle_row_spec.expected_batches"),
-            (_path(row.bundle_row_spec, "n_batches"), "bundle_row_spec.n_batches"),
-        )
-        completed = _MISSING
-        completed_source = "completed batch count"
-        for candidate, source in completed_candidates:
-            if candidate is not _MISSING:
-                completed = candidate
-                completed_source = source
-                break
-    coordinates = _checkpoint_coordinates(row)
     if interval is _MISSING:
         return missing_input_check(check_id, "bundle_row_spec.checkpoint_interval")
-    if cumulative_completed is not _MISSING and segment_completed is _MISSING:
-        return missing_input_check(check_id, "training_diagnostics.segment_completed_batches")
-    if completed is _MISSING:
+    try:
+        frame = _realized_batch_frame(
+            row.training_diagnostics,
+            unframed_count=_first_present(
+                _path(row.training_diagnostics, "summary", "completed_batches"),
+                _path(row.bundle_row_spec, "expected_batches"),
+                _path(row.bundle_row_spec, "n_batches"),
+            ),
+        )
+    except ValueError as exc:
+        return fail_check(check_id, expected="consistent realized batch frame", detail=str(exc))
+    if frame is None:
         return missing_input_check(check_id, "completed batch count")
+    coordinates = _checkpoint_coordinates(row)
     if coordinates is None:
         return missing_input_check(check_id, "checkpoint transaction coordinates")
 
     interval_int = int(interval)
-    completed_int = int(completed)
-    origin = 0
-    if segment_completed is not _MISSING:
-        cumulative = _first_present(cumulative_completed, legacy_completed)
-        if cumulative is not _MISSING:
-            origin = int(cumulative) - completed_int
-        if origin < 0 or completed_int < 0:
-            raise ValueError(
-                "invalid checkpoint cadence frame: expected "
-                "0 <= segment_completed_batches <= cumulative completed batches"
-            )
-    expected = _expected_checkpoint_coordinates(interval_int, completed_int, origin=origin)
+    expected = _expected_checkpoint_coordinates(interval_int, frame.segment, origin=frame.origin)
     observed = sorted(int(coordinate) for coordinate in coordinates)
     if observed == expected:
         return pass_check(
             check_id,
             expected={"coordinate_interval": interval_int, "coordinates": expected},
-            observed={"coordinates": observed, "realized_batches": completed_int},
+            observed={"coordinates": observed, "realized_batches": frame.segment},
         )
     return fail_check(
         check_id,
         expected={"coordinate_interval": interval_int, "coordinates": expected},
-        observed={"coordinates": observed, "realized_batches": completed_int},
-        detail=f"cadence length read from {completed_source}",
+        observed={"coordinates": observed, "realized_batches": frame.segment},
     )
 
 
@@ -1910,9 +1968,9 @@ def _checkpoint_completed_batches(row: ConformanceRowArtifacts) -> list[int] | N
             _path(transaction, "cumulative_completed_batches"),
             _path(transaction, "completed_batches"),
         )
-        if value is _MISSING:
+        if type(value) is not int:
             return None
-        completed.append(int(value))
+        completed.append(value)
     return completed
 
 

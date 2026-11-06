@@ -2192,8 +2192,23 @@ class StageEngine:
     ) -> ConformanceRowArtifacts:
         """Assemble all check inputs from one row's collected bundle outputs."""
         observed_at = observed_at or utc_now()
-        outputs = state.rows[row.row_id].collected_outputs
-        discovered = _discover_conformance_artifacts(outputs)
+        row_state = state.rows[row.row_id]
+        outputs = row_state.collected_outputs
+        runtime_inputs = self.row_conformance_inputs.get(row.row_id)
+        custody = state.stage(STAGE_COLLECT).outputs.get("checkpoint_custody", {}).get(row.row_id)
+        if (
+            row_state.status == "stopped"
+            and runtime_inputs is not None
+            and runtime_inputs.authorized_batch_stop is not None
+            and uses_registered_native_execution(row)
+        ):
+            if custody is None:
+                raise OrchestrationStageError(
+                    f"Missing authenticated checkpoint custody for stopped row {row.row_id!r}"
+                )
+            discovered = _load_collected_stop_artifacts(row, outputs, custody)
+        else:
+            discovered = _discover_conformance_artifacts(outputs)
         run_spec = _row_payload(row)
         preflight_payload = None
         if run_spec is not None:
@@ -2227,7 +2242,7 @@ class StageEngine:
                 self.assembly_context.repo_root if self.assembly_context is not None else None
             ),
             event_log=self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl",
-            row_status=state.rows[row.row_id].status,
+            row_status=row_state.status,
             bundle_row_spec=run_spec,
             recorded_environment_fingerprint=state.environment_fingerprint,
             manifest_path=discovered.get("manifest_path"),
@@ -2235,9 +2250,10 @@ class StageEngine:
             training_diagnostics=discovered.get("training_diagnostics"),
             preflight_resume_context=_preflight_resume_context(state, row.row_id),
             checkpoint_custody_root=discovered.get("checkpoint_custody_root"),
+            collected_checkpoint_custody=custody,
             preflight_normalized_payload=preflight_payload,
-            row_state=state.rows.get(row.row_id),
-            runtime_inputs=self.row_conformance_inputs.get(row.row_id),
+            row_state=row_state,
+            runtime_inputs=runtime_inputs,
             deployment_policy=self.bundle.deployment_policy.model_dump(mode="json"),
             realized_deployment_evidence=self._realized_deployment_evidence(
                 row, state, observed_at=observed_at
@@ -3467,6 +3483,13 @@ def load_collected_native_training_result(
     sha256: str,
 ) -> TrainingRunManifest:
     """Resolve the exact terminal manifest authenticated by native collection."""
+    manifest, _ = _read_collected_native_training_result(row, path, sha256=sha256)
+    return manifest
+
+
+def _read_collected_native_training_result(
+    row: RunRowSpec, path: Path, *, sha256: str
+) -> tuple[TrainingRunManifest, bytes]:
     data = _read_collected_regular_file(path, context=f"collected result for row {row.row_id!r}")
     if hashlib.sha256(data).hexdigest() != sha256:
         raise OrchestrationStageError(f"Collected result digest changed for row {row.row_id!r}")
@@ -3485,7 +3508,7 @@ def load_collected_native_training_result(
         raise OrchestrationStageError(
             f"Collected result does not certify the bound execution for row {row.row_id!r}"
         )
-    return manifest
+    return manifest, data
 
 
 def _read_collected_regular_file(path: str | Path, *, context: str) -> bytes:
@@ -4189,6 +4212,31 @@ def _optimizer_payloads(run_spec: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         if isinstance(value, Mapping):
             payloads.append(value)
     return payloads
+
+
+def _load_collected_stop_artifacts(
+    row: RunRowSpec, outputs: Mapping[str, str], custody: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Read the manifest authenticated at COLLECT and its pinned diagnostics."""
+    path = Path(outputs["manifest.json"])
+    manifest, manifest_bytes = _read_collected_native_training_result(
+        row, path, sha256=custody["training_manifest_sha256"]
+    )
+    refs = [ref for ref in manifest.artifacts if ref.role == "training_diagnostics"]
+    if len(refs) != 1 or refs[0].sha256 is None or refs[0].size_bytes is None:
+        raise OrchestrationStageError(f"Missing pinned training diagnostics for row {row.row_id!r}")
+    ref = refs[0]
+    provider = ImmutableArtifactBlobProvider(Path(outputs["manifests"]).absolute())
+    data = provider.get_bytes(f"artifact://sha256/{ref.sha256}", size_bytes=ref.size_bytes)
+    diagnostics = strict_json_loads(data)
+    if not isinstance(diagnostics, Mapping) or not _is_typed_training_diagnostics(diagnostics):
+        raise OrchestrationStageError(f"Invalid native training diagnostics for row {row.row_id!r}")
+    return {
+        "manifest_path": path,
+        "manifest_payload": strict_json_loads(manifest_bytes),
+        "training_diagnostics": diagnostics,
+        "checkpoint_custody_root": Path(outputs["checkpoints"]),
+    }
 
 
 def _discover_conformance_artifacts(outputs: Mapping[str, str]) -> dict[str, Any]:
