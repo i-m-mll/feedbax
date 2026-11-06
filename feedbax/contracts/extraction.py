@@ -20,6 +20,7 @@ from typing import Any
 
 from pydantic import Field, model_validator
 
+from feedbax.contracts._authoring_inputs import AuthoringTextReader, read_authoring_text
 from feedbax.contracts.expressions import (
     Coalesce,
     Compare,
@@ -248,13 +249,15 @@ def verify_extraction_product(
 def load_expression_context(
     sources: list[SourceBinding],
     repo_root: Path | str,
+    *,
+    read_text: AuthoringTextReader = read_authoring_text,
 ) -> ExpressionContext:
     """Load source bindings into an expression context from repo-relative JSON files."""
     repo_root = Path(repo_root)
     items: dict[str, ContextItem] = {}
     for source in sources:
         try:
-            payload = _read_source_payload(repo_root, source.uri)
+            payload = _read_source_payload(repo_root, source.uri, read_text=read_text)
         except FileNotFoundError:
             if not source.optional:
                 raise
@@ -275,18 +278,20 @@ def _load_expression_context(spec: ExtractionProductSpec, repo_root: Path) -> Ex
     return load_expression_context(spec.sources, repo_root)
 
 
-def _read_source_payload(repo_root: Path, uri: str) -> Any:
+def _read_source_payload(repo_root: Path, uri: str, *, read_text: AuthoringTextReader) -> Any:
     path = repo_root / uri
-    if not path.is_file():
-        raise FileNotFoundError(f"Extraction source is missing: {uri}")
-    payload = strict_json_loads(path.read_text(encoding="utf-8"), ref=uri)
+    try:
+        text = read_text(path, require_file=True)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Extraction source is missing: {uri}") from exc
+    payload = strict_json_loads(text, ref=uri)
     # Resolve declared content-pinned sub-document inheritance into the effective
     # document before any dotted-path query evaluation. Imported locally because
     # matrix_core imports this module at top level; a top-level import here would
     # create a cycle. Documents without the reserved key pass through unchanged.
     from feedbax.contracts.matrix_core import materialize_inherited_document
 
-    return materialize_inherited_document(payload, repo_root=repo_root)
+    return materialize_inherited_document(payload, repo_root=repo_root, read_text=read_text)
 
 
 def _add_adoption_records(

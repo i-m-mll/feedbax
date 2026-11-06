@@ -13,6 +13,7 @@ from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import Field, model_validator
 
+from feedbax.contracts._authoring_inputs import AuthoringTextReader, read_authoring_text
 from feedbax.contracts.expressions import ContextItem, ExpressionContext, ValueExpr, evaluate_query
 from feedbax.contracts.extraction import SourceBinding, load_expression_context, set_dotted_path
 from feedbax.contracts.base import (
@@ -250,9 +251,12 @@ def load_content_pinned_json_base(
     base: ContentPinnedJsonBase,
     *,
     repo_root: Path | str | None,
+    read_text: AuthoringTextReader = read_authoring_text,
 ) -> dict[str, Any]:
     """Load and verify one canonical-JSON content-pinned object."""
-    _document, selected = load_content_pinned_json_document(base, repo_root=repo_root)
+    _document, selected = load_content_pinned_json_document(
+        base, repo_root=repo_root, read_text=read_text
+    )
     return selected
 
 
@@ -260,6 +264,7 @@ def load_content_pinned_json_document(
     base: ContentPinnedJsonBase,
     *,
     repo_root: Path | str | None,
+    read_text: AuthoringTextReader = read_authoring_text,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load one verified whole document and its selected object.
 
@@ -269,16 +274,17 @@ def load_content_pinned_json_document(
     if repo_root is None:
         raise ValueError("content-pinned JSON base requires repo_root")
     root = Path(repo_root).resolve()
-    path = (root / base.ref).resolve()
+    target = (root / base.ref).resolve()
     try:
-        path.relative_to(root)
+        target.relative_to(root)
     except ValueError as exc:
         raise ValueError(f"content-pinned JSON base escapes repo_root: {base.ref!r}") from exc
     try:
         # The content pin is computed over the *parsed* document, so a base that
         # stated one member twice could satisfy its pin with the last value while
         # a reader of the bytes sees the first. The strict loader refuses it.
-        payload = strict_json_loads(path.read_text(encoding="utf-8"), ref=base.ref)
+        text = read_text(Path(repo_root) / base.ref, resolved_path=target)
+        payload = strict_json_loads(text, ref=base.ref)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot load content-pinned JSON base {base.ref!r}: {exc}") from exc
     if not isinstance(payload, dict):
@@ -391,6 +397,7 @@ def materialize_inherited_document(
     document: Any,
     *,
     repo_root: Path | str | None,
+    read_text: AuthoringTextReader = read_authoring_text,
 ) -> Any:
     """Resolve declared content-pinned inheritance into the effective document.
 
@@ -407,7 +414,7 @@ def materialize_inherited_document(
     collision where an inherited subtree would land on a locally-present key.
     """
     effective, _custody = materialize_inherited_document_with_custody(
-        document, repo_root=repo_root
+        document, repo_root=repo_root, read_text=read_text
     )
     return effective
 
@@ -416,6 +423,7 @@ def materialize_inherited_document_with_custody(
     document: Any,
     *,
     repo_root: Path | str | None,
+    read_text: AuthoringTextReader = read_authoring_text,
 ) -> tuple[Any, list[tuple[ContentPinnedJsonBase, dict[str, Any], dict[str, Any]]]]:
     """Materialize inheritance and return every verified whole/selected parent."""
     if not isinstance(document, dict) or SOURCE_DOCUMENT_INHERITANCE_KEY not in document:
@@ -427,7 +435,7 @@ def materialize_inherited_document_with_custody(
     custody: list[tuple[ContentPinnedJsonBase, dict[str, Any], dict[str, Any]]] = []
     for entry in declaration.inherit:
         whole_document, sub_document = load_content_pinned_json_document(
-            entry.parent, repo_root=repo_root
+            entry.parent, repo_root=repo_root, read_text=read_text
         )
         _graft_absent_target(effective, entry.target, sub_document)
         custody.append((entry.parent, whole_document, sub_document))
@@ -587,12 +595,15 @@ def materialize_matrix_rows(
     spec: RowMatrixSpec[PayloadT],
     *,
     repo_root: Path | str | None = None,
+    read_text: AuthoringTextReader = read_authoring_text,
 ) -> list[MaterializedMatrixRow[PayloadT]]:
     """Apply each row's deltas, then evaluate its derivations against that row."""
     if spec.sources and repo_root is None:
         raise ValueError("matrix sources require repo_root")
     source_context = (
-        load_expression_context(spec.sources, repo_root) if spec.sources else ExpressionContext()
+        load_expression_context(spec.sources, repo_root, read_text=read_text)
+        if spec.sources
+        else ExpressionContext()
     )
     materialized: list[MaterializedMatrixRow[PayloadT]] = []
     for row in spec.rows:

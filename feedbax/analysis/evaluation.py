@@ -29,6 +29,7 @@ from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from functools import cached_property
 from hashlib import file_digest
 import json
 from math import prod
@@ -40,6 +41,7 @@ from typing import Any, BinaryIO, Sequence
 import jax.tree_util as jtu
 from pydantic import BaseModel, Field, model_validator
 
+from feedbax.contracts._authoring_inputs import AuthoringTextReader, read_authoring_text
 from feedbax.contracts.strict_json import strict_json_loads
 
 from feedbax.contracts.evaluation_states import (
@@ -354,13 +356,25 @@ def compile_evaluation_run_matrix(
     repo_root: Path | str | None = None,
 ) -> RowMatrixSpec[EvaluationRunSpec]:
     """Compile durable evaluation authoring to the explicit shared row contract."""
-    matrix = _coerce_evaluation_run_matrix_spec(spec, repo_root=repo_root)
+    matrix, _ = resolve_evaluation_matrix_authoring(spec, repo_root=repo_root)
+    compiled = _compile_evaluation_run_matrix(matrix, repo_root=repo_root)
+    if registry.authoring_schema(compiled.base.evaluation_type) is not None:
+        _materialize_evaluation_rows(matrix, compiled, registry=registry, repo_root=repo_root)
+    return compiled
+
+
+def _compile_evaluation_run_matrix(
+    matrix: EvaluationRunMatrixSpec,
+    *,
+    repo_root: Path | str | None,
+    read_text: AuthoringTextReader = read_authoring_text,
+) -> RowMatrixSpec[EvaluationRunSpec]:
     if isinstance(matrix.base, EvaluationRunSpec):
         base = matrix.base
         rows = matrix.rows
     else:
         base = EvaluationRunSpec.model_validate(
-            load_content_pinned_json_base(matrix.base, repo_root=repo_root)
+            load_content_pinned_json_base(matrix.base, repo_root=repo_root, read_text=read_text)
         )
         rows = [
             MatrixRow(
@@ -375,27 +389,26 @@ def compile_evaluation_run_matrix(
             )
             for coordinate in expand_matrix_axes(matrix.axes)
         ]
-    compiled = RowMatrixSpec[EvaluationRunSpec](
+    return RowMatrixSpec[EvaluationRunSpec](
         base=base,
         rows=rows,
         sources=matrix.sources,
         derivations=matrix.derivations,
     )
-    _validate_evaluation_authoring(matrix, compiled, registry=registry, repo_root=repo_root)
-    return compiled
 
 
-def _validate_evaluation_authoring(
+def _materialize_evaluation_rows(
     matrix: EvaluationRunMatrixSpec,
     compiled: RowMatrixSpec[EvaluationRunSpec],
     *,
     registry: EvaluationRecipeRegistry,
     repo_root: Path | str | None,
-) -> None:
+    read_text: AuthoringTextReader = read_authoring_text,
+) -> list[MaterializedMatrixRow[EvaluationRunSpec]]:
     evaluation_type = compiled.base.evaluation_type
     schema = registry.authoring_schema(evaluation_type)
     if schema is None:
-        return
+        return materialize_matrix_rows(compiled, repo_root=repo_root, read_text=read_text)
     actual_axes = {
         axis.id: tuple(value.id for value in axis.resolved_values()) for axis in matrix.axes
     }
@@ -407,7 +420,7 @@ def _validate_evaluation_authoring(
             f"evaluation authoring axes for {evaluation_type!r} do not match "
             f"schema {schema.schema_version!r}"
         )
-    rows = materialize_matrix_rows(compiled, repo_root=repo_root)
+    rows = materialize_matrix_rows(compiled, repo_root=repo_root, read_text=read_text)
     expected_count = prod(len(values) for values in profile.values())
     if len(rows) != expected_count:
         raise ValueError(
@@ -423,11 +436,14 @@ def _validate_evaluation_authoring(
                 f"schema {schema.schema_version!r}: {exc}"
             ) from exc
 
+    return rows
+
 
 def resolve_evaluation_matrix_authoring(
     spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
     *,
     repo_root: Path | str | None = None,
+    read_text: AuthoringTextReader = read_authoring_text,
 ) -> tuple[EvaluationRunMatrixSpec, FlattenedEvaluationMatrix | None]:
     """Resolve either evaluation authoring kind to one strict matrix spec.
 
@@ -449,7 +465,9 @@ def resolve_evaluation_matrix_authoring(
             if isinstance(spec, EvaluationRunMatrixDeltaSpec)
             else EvaluationRunMatrixDeltaSpec.model_validate(spec)
         )
-        flattened = flatten_evaluation_run_matrix_delta(delta, repo_root=repo_root)
+        flattened = flatten_evaluation_run_matrix_delta(
+            delta, repo_root=repo_root, read_text=read_text
+        )
         return EvaluationRunMatrixSpec.model_validate(flattened.payload), flattened
     migrated = migrate_authored_document(
         "EvaluationRunMatrixSpec",
@@ -459,14 +477,6 @@ def resolve_evaluation_matrix_authoring(
     return EvaluationRunMatrixSpec.model_validate(migrated.payload), None
 
 
-def _coerce_evaluation_run_matrix_spec(
-    spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
-    *,
-    repo_root: Path | str | None = None,
-) -> EvaluationRunMatrixSpec:
-    return resolve_evaluation_matrix_authoring(spec, repo_root=repo_root)[0]
-
-
 def materialize_evaluation_run_matrix(
     spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
     *,
@@ -474,11 +484,117 @@ def materialize_evaluation_run_matrix(
     repo_root: Path | str | None = None,
 ) -> list[MaterializedMatrixRow[EvaluationRunSpec]]:
     """Resolve an evaluation matrix into executable evaluation requests."""
-    matrix = _coerce_evaluation_run_matrix_spec(spec, repo_root=repo_root)
-    compiled = compile_evaluation_run_matrix(matrix, registry=registry, repo_root=repo_root)
-    rows = materialize_matrix_rows(compiled, repo_root=repo_root)
+    return _resolve_evaluation_matrix(spec, registry=registry, repo_root=repo_root).rows
+
+
+@dataclass(frozen=True)
+class _ResolvedEvaluationMatrix:
+    matrix: EvaluationRunMatrixSpec
+    composition: FlattenedEvaluationMatrix | None
+    compiled: RowMatrixSpec[EvaluationRunSpec]
+    rows: list[MaterializedMatrixRow[EvaluationRunSpec]]
+
+    @cached_property
+    def flattened_spec(self) -> dict[str, Any]:
+        return self.matrix.model_dump(mode="json", exclude_none=True)
+
+    @cached_property
+    def ordered_row_ids(self) -> tuple[str, ...]:
+        return tuple(row.row_id for row in self.rows)
+
+    @cached_property
+    def canonical_payload_sha256(self) -> dict[str, str]:
+        return {
+            row.row_id: sha256_bytes(
+                canonical_json_bytes(row.payload.model_dump(mode="json", exclude_none=True))
+            )
+            for row in self.rows
+        }
+
+
+def _resolve_evaluation_matrix(
+    spec: EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any],
+    *,
+    registry: EvaluationRecipeRegistry,
+    repo_root: Path | str | None,
+    read_text: AuthoringTextReader = read_authoring_text,
+) -> _ResolvedEvaluationMatrix:
+    matrix, composition = resolve_evaluation_matrix_authoring(
+        spec, repo_root=repo_root, read_text=read_text
+    )
+    compiled = _compile_evaluation_run_matrix(matrix, repo_root=repo_root, read_text=read_text)
+    rows = _materialize_evaluation_rows(
+        matrix, compiled, registry=registry, repo_root=repo_root, read_text=read_text
+    )
     _validate_matrix_staged_parent_references(matrix, rows)
-    return rows
+    return _ResolvedEvaluationMatrix(matrix, composition, compiled, rows)
+
+
+@dataclass(frozen=True)
+class _EvaluationRunPlan:
+    """Resolved rows and their replay lineage, separate from live execution custody."""
+
+    rows: dict[str, EvaluationRunSpec]
+    executable_spec: dict[str, Any]
+    metadata: dict[str, Any] = field(default_factory=dict)
+    staged_parents: Mapping[str, StagedEvaluationPrerequisite] | None = None
+
+    def row_payloads(self, row_ids: Sequence[str]) -> list[tuple[str, dict[str, Any]]]:
+        return [(row_id, self.rows[row_id].model_dump(mode="python")) for row_id in row_ids]
+
+
+def _evaluation_matrix_run_plan(resolved: _ResolvedEvaluationMatrix) -> _EvaluationRunPlan:
+    matrix = resolved.matrix
+    composition = resolved.composition
+    flattened_spec = resolved.flattened_spec
+    # Delta-authored runs replay the authored envelope, not its flattened result.
+    executable_spec = flattened_spec if composition is None else composition.authored
+    matrix_metadata: dict[str, Any] = {}
+    if isinstance(matrix.base, ContentPinnedJsonBase):
+        matrix_metadata["axis_expansion"] = {
+            "schema_id": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
+            "schema_version": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
+            "authored_matrix_sha256": sha256_bytes(canonical_json_bytes(flattened_spec)),
+            "pinned_base": matrix.base.model_dump(mode="json", exclude_none=True),
+            "ordered_axes": [
+                {
+                    "axis_id": axis.id,
+                    "value_ids": [value.id for value in axis.resolved_values()],
+                    # Generator-form axes record the declaration that is the
+                    # expansion authority; enumerated axes stay byte-identical.
+                    **(
+                        {"generator": axis.generator.model_dump(mode="json")}
+                        if axis.generator is not None
+                        else {}
+                    ),
+                }
+                for axis in matrix.axes
+            ],
+            "coordinates": [
+                {"row_id": row.row_id, **row.metadata["axis_product"]}
+                for row in resolved.compiled.rows
+            ],
+            "canonical_row_order": list(resolved.ordered_row_ids),
+            "canonical_payload_sha256": resolved.canonical_payload_sha256,
+        }
+    if composition is not None:
+        matrix_metadata["matrix_composition"] = evaluation_matrix_composition_provenance(
+            composition,
+            flattened_matrix=flattened_spec,
+            canonical_row_order=resolved.ordered_row_ids,
+            canonical_payload_sha256=resolved.canonical_payload_sha256,
+        )
+    if matrix.staged_parents:
+        matrix_metadata["staged_parents"] = {
+            name: prerequisite.model_dump(mode="json", exclude_none=True)
+            for name, prerequisite in matrix.staged_parents.items()
+        }
+    return _EvaluationRunPlan(
+        rows={row.row_id: row.payload for row in resolved.rows},
+        executable_spec=executable_spec,
+        metadata=matrix_metadata,
+        staged_parents=matrix.staged_parents,
+    )
 
 
 def execute_evaluation_run_matrix(
@@ -500,18 +616,6 @@ def execute_evaluation_run_matrix(
     matrix_metadata: Mapping[str, Any] | None = None,
 ):
     """Resolve and execute every evaluation condition through the shared harness."""
-    from feedbax.analysis.harness import MatrixMaterializerHarness
-
-    if execution_context is not None and (
-        execution_descriptor is not None
-        or artifact_provider_bindings
-        or checkpoint_custody_bindings
-    ):
-        raise StagedExecutionContextError(
-            "pre-resolved execution_context cannot be combined with raw staged bindings"
-        )
-    matrix_metadata = dict(matrix_metadata or {})
-    staged_parents: dict[str, Any] = {}
     if isinstance(spec, EvaluationRunSpec) or (
         isinstance(spec, Mapping) and "evaluation_type" in spec and "base" not in spec
     ):
@@ -522,84 +626,59 @@ def execute_evaluation_run_matrix(
         run_spec = (
             spec if isinstance(spec, EvaluationRunSpec) else EvaluationRunSpec.model_validate(spec)
         )
-        rows = [("flat", run_spec.model_dump(mode="python"))]
-        executable_spec = run_spec.model_dump(mode="json", exclude_none=True)
-        if execution_context is None:
-            execution_context = resolve_staged_execution_context(
-                execution_descriptor,
-                artifact_provider_bindings=artifact_provider_bindings,
-                checkpoint_custody_bindings=checkpoint_custody_bindings,
-            )
-    else:
-        matrix, composition = resolve_evaluation_matrix_authoring(spec, repo_root=repo_root)
-        flattened_spec = matrix.model_dump(mode="json", exclude_none=True)
-        # Delta-authored runs replay the authored envelope, not its flattened result.
-        executable_spec = flattened_spec if composition is None else composition.authored
-        compiled = compile_evaluation_run_matrix(matrix, registry=registry, repo_root=repo_root)
-        materialized_rows = materialize_matrix_rows(compiled, repo_root=repo_root)
-        _validate_matrix_staged_parent_references(matrix, materialized_rows)
-        rows = [(row.row_id, row.payload.model_dump(mode="python")) for row in materialized_rows]
-        execution_context = _resolve_matrix_staged_parents(
-            matrix,
-            parent_manifest_root=parent_manifest_root,
-            execution_descriptor=execution_descriptor,
-            artifact_provider_bindings=artifact_provider_bindings,
-            checkpoint_custody_bindings=checkpoint_custody_bindings,
-            execution_context=execution_context,
+        plan = _EvaluationRunPlan(
+            rows={"flat": run_spec},
+            executable_spec=run_spec.model_dump(mode="json", exclude_none=True),
         )
-        if isinstance(matrix.base, ContentPinnedJsonBase):
-            matrix_metadata["axis_expansion"] = {
-                "schema_id": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
-                "schema_version": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
-                "authored_matrix_sha256": sha256_bytes(canonical_json_bytes(flattened_spec)),
-                "pinned_base": matrix.base.model_dump(mode="json", exclude_none=True),
-                "ordered_axes": [
-                    {
-                        "axis_id": axis.id,
-                        "value_ids": [value.id for value in axis.resolved_values()],
-                        # Generator-form axes record the declaration that is the
-                        # expansion authority; enumerated axes stay byte-identical.
-                        **(
-                            {"generator": axis.generator.model_dump(mode="json")}
-                            if axis.generator is not None
-                            else {}
-                        ),
-                    }
-                    for axis in matrix.axes
-                ],
-                "coordinates": [
-                    {"row_id": row.row_id, **row.metadata["axis_product"]} for row in compiled.rows
-                ],
-                "canonical_row_order": [row.row_id for row in materialized_rows],
-                "canonical_payload_sha256": {
-                    row.row_id: sha256_bytes(
-                        canonical_json_bytes(row.payload.model_dump(mode="json", exclude_none=True))
-                    )
-                    for row in materialized_rows
-                },
-            }
-        if composition is not None:
-            matrix_metadata["matrix_composition"] = evaluation_matrix_composition_provenance(
-                composition,
-                flattened_matrix=flattened_spec,
-                canonical_row_order=[row.row_id for row in materialized_rows],
-                canonical_payload_sha256={
-                    row.row_id: sha256_bytes(
-                        canonical_json_bytes(row.payload.model_dump(mode="json", exclude_none=True))
-                    )
-                    for row in materialized_rows
-                },
-            )
-        if matrix.staged_parents:
-            matrix_metadata["staged_parents"] = {
-                name: prerequisite.model_dump(mode="json", exclude_none=True)
-                for name, prerequisite in matrix.staged_parents.items()
-            }
-        staged_parents = matrix_metadata.get("staged_parents", {})
+    else:
+        plan = _evaluation_matrix_run_plan(
+            _resolve_evaluation_matrix(spec, registry=registry, repo_root=repo_root)
+        )
+    return _execute_evaluation_run_plan(
+        plan,
+        registry=registry,
+        root=root,
+        repo_root=repo_root,
+        escape_hatch_reason=escape_hatch_reason,
+        parent_manifest_root=parent_manifest_root,
+        execution_descriptor=execution_descriptor,
+        artifact_provider_bindings=artifact_provider_bindings,
+        checkpoint_custody_bindings=checkpoint_custody_bindings,
+        execution_context=execution_context,
+        batch=batch,
+        matrix_metadata=matrix_metadata,
+    )
 
+
+def _execute_evaluation_run_plan(
+    plan: _EvaluationRunPlan,
+    *,
+    registry: EvaluationRecipeRegistry,
+    root: Path | str,
+    repo_root: Path | str | None = None,
+    escape_hatch_reason: str | None = None,
+    parent_manifest_root: Path | str | None = None,
+    execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
+    artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
+    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+    execution_context: StagedExecutionContext | None = None,
+    batch: EvaluationBatchExecution | None = None,
+    matrix_metadata: Mapping[str, Any] | None = None,
+):
+    from feedbax.analysis.harness import MatrixMaterializerHarness
+
+    execution_context = _resolve_matrix_staged_parents(
+        plan.staged_parents,
+        parent_manifest_root=parent_manifest_root,
+        execution_descriptor=execution_descriptor,
+        artifact_provider_bindings=artifact_provider_bindings,
+        checkpoint_custody_bindings=checkpoint_custody_bindings,
+        execution_context=execution_context,
+    )
+    matrix_metadata = {**(matrix_metadata or {}), **plan.metadata}
     execution_context = with_staged_repo_root(execution_context, repo_root)
     regeneration_parameters = {
-        "executable_spec": executable_spec,
+        "executable_spec": plan.executable_spec,
         "manifest_root": str(Path(root).resolve()),
         "repo_root": str(Path(repo_root).resolve()) if repo_root is not None else None,
         "parent_manifest_root": (
@@ -618,7 +697,9 @@ def execute_evaluation_run_matrix(
             {"name": name, "root": str(bound_root)}
             for name, bound_root in execution_context.checkpoint_custody_roots.items()
         ],
-        "staged_parents": staged_parents,
+        "staged_parents": (
+            matrix_metadata.get("staged_parents", {}) if plan.staged_parents is not None else {}
+        ),
     }
     if batch is not None:
         if type(batch) is not EvaluationBatchExecution:
@@ -630,18 +711,17 @@ def execute_evaluation_run_matrix(
         if batch.batch_units is not None:
             from feedbax.analysis.harness import HarnessResult
 
-            available = {row_id: payload for row_id, payload in rows}
             completed = []
             batch_ids = []
             for batch_id, batch_row_ids in batch.batch_units:
                 if not batch_id or batch_id in batch_ids:
                     raise ValueError("batch_units require unique non-empty batch ids")
-                unknown = [row_id for row_id in batch_row_ids if row_id not in available]
+                unknown = [row_id for row_id in batch_row_ids if row_id not in plan.rows]
                 if not batch_row_ids or len(batch_row_ids) != len(set(batch_row_ids)) or unknown:
                     raise ValueError("batch_units require non-empty unique known ordered row ids")
                 batch_ids.append(batch_id)
                 result = _execute_evaluation_batch_rows(
-                    [(row_id, available[row_id]) for row_id in batch_row_ids],
+                    plan.row_payloads(batch_row_ids),
                     registry=registry,
                     root=Path(root) / batch_id,
                     execution_context=execution_context,
@@ -662,15 +742,15 @@ def execute_evaluation_run_matrix(
                 metadata={"ordered_batch_ids": batch_ids},
             )
         if batch.ordered_row_ids is not None:
-            available = {row_id: payload for row_id, payload in rows}
             if len(batch.ordered_row_ids) != len(set(batch.ordered_row_ids)):
                 raise ValueError("batch ordered_row_ids must be unique")
-            unknown = [row_id for row_id in batch.ordered_row_ids if row_id not in available]
+            unknown = [row_id for row_id in batch.ordered_row_ids if row_id not in plan.rows]
             if unknown:
                 raise ValueError(f"batch ordered_row_ids contain unknown matrix rows: {unknown!r}")
-            rows = [(row_id, available[row_id]) for row_id in batch.ordered_row_ids]
         return _execute_evaluation_batch_rows(
-            rows,
+            plan.row_payloads(
+                batch.ordered_row_ids if batch.ordered_row_ids is not None else tuple(plan.rows)
+            ),
             registry=registry,
             root=Path(root),
             execution_context=execution_context,
@@ -708,7 +788,7 @@ def execute_evaluation_run_matrix(
         return manifest, path
 
     return MatrixMaterializerHarness(root=root).materialize(
-        rows,
+        plan.row_payloads(tuple(plan.rows)),
         execute=execute,
         command=["python", "-m", "feedbax", "matrix-harness"],
         title="Evaluation run matrix",
@@ -1105,7 +1185,7 @@ def _validate_matrix_staged_parent_references(
 
 
 def _resolve_matrix_staged_parents(
-    matrix: EvaluationRunMatrixSpec,
+    staged_parents: Mapping[str, StagedEvaluationPrerequisite] | None,
     *,
     parent_manifest_root: Path | str | None,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None,
@@ -1127,8 +1207,10 @@ def _resolve_matrix_staged_parents(
         artifact_provider_bindings=artifact_provider_bindings,
         checkpoint_custody_bindings=checkpoint_custody_bindings,
     )
+    if staged_parents is None:
+        return context
     locations: list[StagedParentExecutionLocation] = []
-    for name, prerequisite in matrix.staged_parents.items():
+    for name, prerequisite in staged_parents.items():
         parent = prerequisite.parent
         if prerequisite.artifact_provider is None:
             bound_manifest_root = context.manifest_roots.get(name)
@@ -1188,7 +1270,7 @@ def _resolve_matrix_staged_parents(
             )
         )
     context = with_staged_parent_execution_locations(context, locations)
-    for prerequisite in matrix.staged_parents.values():
+    for prerequisite in staged_parents.values():
         context.resolve_manifest_input(prerequisite.parent)
     return context
 

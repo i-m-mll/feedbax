@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from pydantic import Field, model_validator
 
 from feedbax.analysis.evaluation import (
     EvaluationRunMatrixSpec,
-    materialize_evaluation_run_matrix,
-    resolve_evaluation_matrix_authoring,
+    _ResolvedEvaluationMatrix,
+    _resolve_evaluation_matrix,
 )
 from feedbax.contracts.evaluation_composition import (
     EvaluationRunMatrixDeltaSpec,
@@ -112,67 +112,27 @@ def compile_evaluation_run_matrix_for_orchestration(
 
     if context.repo_root is None:
         raise ValueError("evaluation matrix assembly requires AssemblyContext.repo_root")
-    matrix, composition = resolve_evaluation_matrix_authoring(
-        authored,
-        repo_root=context.repo_root,
-    )
-    rows = materialize_evaluation_run_matrix(
-        matrix,
-        registry=registry,
-        repo_root=context.repo_root,
-    )
-    _validate_content_binding_applicability(matrix, context.content_bindings)
-    ordered_row_ids = tuple(row.row_id for row in rows)
-    payload_hashes = {
-        row.row_id: sha256_bytes(
-            canonical_json_bytes(row.payload.model_dump(mode="json", exclude_none=True))
-        )
-        for row in rows
-    }
+    resolved = _resolve_evaluation_matrix(authored, registry=registry, repo_root=context.repo_root)
+    _validate_content_binding_applicability(resolved.matrix, context.content_bindings)
     intent_hash = evaluation_matrix_intent_hash(authored)
-    ordered_row_ids_sha256 = sha256_bytes(canonical_json_bytes(ordered_row_ids))
     plan = context.evaluation_batch_plan or EvaluationMatrixBatchPlan(
         matrix_intent_hash=intent_hash,
         batches=(
             EvaluationMatrixBatchUnit(
                 batch_id="whole-matrix",
-                ordered_row_ids=ordered_row_ids,
+                ordered_row_ids=resolved.ordered_row_ids,
             ),
         ),
     )
-    if plan.matrix_intent_hash != intent_hash:
-        raise ValueError("evaluation batch plan matrix_intent_hash does not match authored matrix")
-    planned_order = tuple(row_id for batch in plan.batches for row_id in batch.ordered_row_ids)
-    if planned_order != ordered_row_ids:
-        raise ValueError(
-            "evaluation batch plan ordered union must exactly equal the authored matrix row order"
-        )
-    shared_semantics = {
-        "schema_id": EVALUATION_MATRIX_RESOLVED_SEMANTICS_SCHEMA_ID,
-        "schema_version": EVALUATION_MATRIX_RESOLVED_SEMANTICS_SCHEMA_VERSION,
-        "run_set_id": run_set_id,
-        "authored_schema_id": authored["schema_id"],
-        "authored_schema_version": authored["schema_version"],
-        "flattened_matrix_sha256": sha256_bytes(
-            canonical_json_bytes(matrix.model_dump(mode="json", exclude_none=True))
-        ),
-        "ordered_row_ids": list(ordered_row_ids),
-        "canonical_payload_sha256": payload_hashes,
-        "ordered_row_ids_sha256": ordered_row_ids_sha256,
-        "composition": (
-            composition.model_dump(mode="json", exclude_none=True)
-            if composition is not None
-            else None
-        ),
-        "content_bindings": [
-            {
-                "binding_name": item.binding_name,
-                "root_kind": item.root_kind,
-                "tree_id": item.tree.tree_id,
-            }
-            for item in context.content_bindings
-        ],
-    }
+    _validate_evaluation_batch_plan(plan, intent_hash, resolved.ordered_row_ids)
+    plan_payload = plan.model_dump(mode="json", exclude_none=True)
+    semantics = _evaluation_matrix_resolved_semantics(
+        resolved,
+        authored=authored,
+        run_set_id=run_set_id,
+        content_bindings=context.content_bindings,
+        plan_payload=plan_payload,
+    )
     lifecycle_row_id = f"matrix-{intent_hash[:16]}"
     return CompiledRunSet(
         rows=[
@@ -180,10 +140,7 @@ def compile_evaluation_run_matrix_for_orchestration(
                 row_id=lifecycle_row_id,
                 execution_family="evaluation-matrix",
                 payload=dict(authored),
-                resolved_semantics={
-                    **shared_semantics,
-                    "batch_plan": plan.model_dump(mode="json", exclude_none=True),
-                },
+                resolved_semantics=semantics,
                 immutable_inputs=list(context.resolved_inputs),
                 launch=RowLaunchSpec(
                     command=["python", "-m", "feedbax", "matrix-harness"],
@@ -194,13 +151,61 @@ def compile_evaluation_run_matrix_for_orchestration(
                     },
                     metadata={
                         "matrix_intent_hash": intent_hash,
-                        "matrix_ordered_row_ids_sha256": ordered_row_ids_sha256,
-                        "batch_plan": plan.model_dump(mode="json", exclude_none=True),
+                        "matrix_ordered_row_ids_sha256": semantics["ordered_row_ids_sha256"],
+                        "batch_plan": plan_payload,
                     },
                 ),
             )
         ]
     )
+
+
+def _validate_evaluation_batch_plan(
+    plan: EvaluationMatrixBatchPlan, intent_hash: str, ordered_row_ids: tuple[str, ...]
+) -> None:
+    if plan.matrix_intent_hash != intent_hash:
+        raise ValueError("evaluation batch plan matrix_intent_hash does not match authored matrix")
+    planned_order = tuple(row_id for batch in plan.batches for row_id in batch.ordered_row_ids)
+    if planned_order != ordered_row_ids:
+        raise ValueError(
+            "evaluation batch plan ordered union must exactly equal the authored matrix row order"
+        )
+
+
+def _evaluation_matrix_resolved_semantics(
+    resolved: _ResolvedEvaluationMatrix,
+    *,
+    authored: Mapping[str, Any],
+    run_set_id: str,
+    content_bindings: Sequence[ContentBinding],
+    plan_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build the same resolved authority at assembly and execution."""
+    return {
+        "schema_id": EVALUATION_MATRIX_RESOLVED_SEMANTICS_SCHEMA_ID,
+        "schema_version": EVALUATION_MATRIX_RESOLVED_SEMANTICS_SCHEMA_VERSION,
+        "run_set_id": run_set_id,
+        "authored_schema_id": authored["schema_id"],
+        "authored_schema_version": authored["schema_version"],
+        "flattened_matrix_sha256": sha256_bytes(canonical_json_bytes(resolved.flattened_spec)),
+        "ordered_row_ids": list(resolved.ordered_row_ids),
+        "canonical_payload_sha256": resolved.canonical_payload_sha256,
+        "ordered_row_ids_sha256": sha256_bytes(canonical_json_bytes(resolved.ordered_row_ids)),
+        "composition": (
+            resolved.composition.model_dump(mode="json", exclude_none=True)
+            if resolved.composition is not None
+            else None
+        ),
+        "content_bindings": [
+            {
+                "binding_name": item.binding_name,
+                "root_kind": item.root_kind,
+                "tree_id": item.tree.tree_id,
+            }
+            for item in content_bindings
+        ],
+        "batch_plan": plan_payload,
+    }
 
 
 class EvaluationRunMatrixCompiler:

@@ -25,7 +25,12 @@ from feedbax.analysis.evaluation import (
     load_evaluation_states,
     resolve_staged_evaluation_prerequisite,
 )
-from feedbax.analysis.execution_context import StagedExecutionContextError
+from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedExecutionContextError,
+    StagedParentExecutionLocation,
+    with_staged_parent_execution_locations,
+)
 from feedbax.analysis.harness import resolve_manifest_regeneration
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.analysis.specs import (
@@ -47,6 +52,7 @@ from feedbax.contracts.manifest import (
     OverridePatch,
     StagedEvaluationPrerequisite,
     TrainingRunManifest,
+    canonical_manifest_path,
     load_manifest,
     spec_payload,
     write_manifest,
@@ -308,6 +314,38 @@ def _staged_matrix(tmp_path: Path, states):
         staged_parents={"parent": prerequisite},
     )
     return parent_root, artifact, matrix
+
+
+def test_flat_matrix_escape_hatch_preserves_preflighted_parent(tmp_path, evaluation_registry):
+    parent_root, _, matrix = _staged_matrix(tmp_path, {"value": np.asarray([7])})
+    parent_root = parent_root.resolve()
+    parent = matrix.staged_parents["parent"].parent
+    path = canonical_manifest_path(parent.kind, parent.id, root=parent_root)
+    context = with_staged_parent_execution_locations(
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        [
+            StagedParentExecutionLocation(
+                parent, parent_root, path.relative_to(parent_root).as_posix()
+            )
+        ],
+    )
+
+    def recipe(spec, _root, _states_path, execution_context):
+        resolved = execution_context.resolve_manifest_input(spec.inputs[0])
+        return EvaluationRecipeResult(
+            summary_metrics={"parent_completed": float(resolved.manifest.status == "completed")}
+        )
+
+    evaluation_registry.register(EVALUATION_TYPE, recipe)
+    result = execute_evaluation_run_matrix(
+        EvaluationRunSpec(evaluation_type=EVALUATION_TYPE, inputs=[parent]),
+        registry=evaluation_registry,
+        root=tmp_path / "flat",
+        execution_context=context,
+        escape_hatch_reason="one authenticated parent probe",
+    )
+
+    assert result.rows[0].result.summary_metrics["parent_completed"] == 1.0
 
 
 def test_batched_typed_v3_outputs_round_trip_through_require_durable(
