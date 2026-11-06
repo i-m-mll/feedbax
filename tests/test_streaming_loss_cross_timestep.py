@@ -299,3 +299,32 @@ def test_retained_and_streaming_reject_short_weights():
         loss(_full_state(values), specs, None)
     with pytest.raises(ValueError, match=r"Time weight must be scalar or shape \(3,\)"):
         make_streaming_loss_fn(loss, specs, None, n_steps=4)
+
+
+def test_static_trial_targets_follow_trials_when_batch_size_matches_horizon():
+    def where(state):
+        return state.x
+
+    target = jnp.array([[1.0], [2.0], [3.0]])
+    n_steps = 4
+    loss = TargetStateLoss("tracking", where)
+
+    def specs(value):
+        return _TrialSpecs(targets={loss.key: TargetSpec(value=value)})
+
+    def retained(scale):
+        values = jnp.broadcast_to((scale * target)[:, None, :], (3, n_steps, 1))
+        return loss(_FakeState(values, values), specs(target), None).total
+
+    def streamed(scale):
+        def trial(value):
+            contribution = make_streaming_loss_fn(loss, specs(value), None, n_steps)
+            state = _FakeState(scale * value, scale * value)
+            return jax.vmap(lambda t: contribution(state, t))(jnp.arange(n_steps)).sum()
+
+        return jax.vmap(trial)(target).mean()
+
+    for objective in (retained, streamed):
+        value, gradient = jax.jit(jax.value_and_grad(objective))(1.0)
+        assert value == 0.0
+        assert gradient == 0.0

@@ -760,19 +760,43 @@ class TargetStateLoss(AbstractLoss):
         return _sum_target_density(density, selectors, trial_specs)
 
 
-def _resolve_target_spec(loss: TargetStateLoss, trial_specs: "TaskTrialSpec") -> TargetSpec:
+def _resolve_target_spec(
+    loss: TargetStateLoss, trial_specs: "TaskTrialSpec"
+) -> tuple[TargetSpec, int | None]:
+    """Resolve the target and the declared batch axis of its value."""
     trial_target = trial_specs.targets.get(loss.key)
     if isinstance(trial_target, Mapping):
         trial_target = trial_target[loss.label]
     if trial_target is not None and not isinstance(trial_target, TargetSpec):
         raise ValueError(f"TargetStateLoss '{loss.label}' expected a TargetSpec.")
-    target = eqx.combine(trial_target, loss.spec)
+    if trial_target is None:
+        target = loss.spec
+    elif loss.spec is None:
+        target = trial_target
+    else:
+        target = eqx.combine(trial_target, loss.spec)
     if target is None or target.value is None:
         raise ValueError(
             f"TargetStateLoss '{loss.label}' requires a target value in its "
             "defaults or trial specifications."
         )
-    return target
+    trial_axis = (
+        trial_target.batch_axes.value
+        if trial_target is not None and trial_target.value is not None
+        else None
+    )
+    return target, trial_axis
+
+
+def _align_target_shape(
+    target_shape: tuple[int, ...], state_shape: tuple[int, ...]
+) -> tuple[int, ...]:
+    """Align a single trial's target to (time, *features) without broadcasting it."""
+    if len(target_shape) <= len(state_shape):
+        aligned_shape = (1,) * (len(state_shape) - len(target_shape)) + target_shape
+        if jnp.broadcast_shapes(aligned_shape, state_shape) == state_shape:
+            return aligned_shape
+    raise ValueError(f"Target shape {target_shape} cannot broadcast to {state_shape}.")
 
 
 def _target_weight_selectors(target: TargetSpec, n_steps: int) -> tuple["WeightsSpec", ...]:
@@ -798,8 +822,16 @@ def _retained_target_density(
     loss: TargetStateLoss, states: PyTree, trial_specs: "TaskTrialSpec"
 ) -> tuple[Array, tuple["WeightsSpec", ...]]:
     state = loss.where(states)[:, _TARGET_FIRST_STEP:]
-    target = _resolve_target_spec(loss, trial_specs)
-    density = _target_density(loss, state, target.value)
+    target, trial_axis = _resolve_target_spec(loss, trial_specs)
+    value = jnp.asarray(target.value)
+    if trial_axis is not None and value.ndim:
+        value = jnp.moveaxis(value, trial_axis, 0)
+        value = value.reshape(
+            (value.shape[0], *_align_target_shape(value.shape[1:], state.shape[1:]))
+        )
+    else:
+        value = value.reshape(_align_target_shape(value.shape, state.shape[1:]))
+    density = _target_density(loss, state, value)
     return density, _target_weight_selectors(target, state.shape[1])
 
 

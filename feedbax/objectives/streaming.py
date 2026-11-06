@@ -31,6 +31,7 @@ from feedbax.objectives.loss import (
     NthDifferenceLoss,
     TargetStateLoss,
     _TARGET_FIRST_STEP,
+    _align_target_shape,
     _multiply_time_weights,
     _prepare_time_weight,
     _resolve_target_spec,
@@ -183,7 +184,7 @@ def _make_target_state_closure(
     The closure operates on a *single trial* (no batch dimension) because it
     is constructed inside ``filter_vmap``.
     """
-    target = _resolve_target_spec(loss, trial_specs)
+    target, _ = _resolve_target_spec(loss, trial_specs)
     value = jnp.asarray(target.value)
     # The retained loss drops the first scan output. Its weights and targets
     # are indexed by the remaining outputs, starting at scan step one.
@@ -195,14 +196,8 @@ def _make_target_state_closure(
 
     def _step(state_window, current_state, t):
         state = loss.where(current_state)
-        time_varying = value.ndim == state.ndim + 1
-        if value.ndim > state.ndim and (
-            not time_varying or value.shape[0] not in (1, target_steps)
-        ):
-            raise ValueError(
-                f"TargetStateLoss '{loss.label}' target shape {value.shape} "
-                f"cannot broadcast to selected state shape {(target_steps, *state.shape)}."
-            )
+        trajectory_shape = (target_steps, *state.shape)
+        aligned_target = value.reshape(_align_target_shape(value.shape, trajectory_shape))
 
         def density_at(target_step):
             density = _target_density(loss, state[None, None], target_step)
@@ -213,12 +208,12 @@ def _make_target_state_closure(
             return density[0, 0]
 
         if target_steps == 0:
-            target_step = jnp.zeros(value.shape[1:], dtype=value.dtype) if time_varying else value
+            target_step = jnp.zeros(aligned_target.shape[1:], dtype=value.dtype)
             return jnp.zeros_like(cum_weight * density_at(target_step))
 
         def contribution():
             target_index = t - _TARGET_FIRST_STEP
-            target_step = value[target_index] if time_varying and value.shape[0] != 1 else value
+            target_step = aligned_target[0 if aligned_target.shape[0] == 1 else target_index]
             density = density_at(target_step)
             if weights:
                 density = density * _multiply_time_weights(
