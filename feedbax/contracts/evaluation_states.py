@@ -284,7 +284,11 @@ def load_authenticated_evaluation_states_artifact(
         )
 
     try:
-        return load_evaluation_states_container_bytes(data, structure=structure)
+        return load_evaluation_states_container_bytes(
+            data, structure=structure, expected_schema_version=schema_version
+        )
+    except EvaluationStatesSchemaMismatch:
+        raise
     except UnsupportedSpecVersion as exc:
         raise EvaluationStatesSchemaMismatch(str(exc)) from exc
     except ValidationError as exc:
@@ -403,6 +407,7 @@ def load_evaluation_states_container_bytes(
     data: bytes,
     *,
     structure: jtu.PyTreeDef | None = None,
+    expected_schema_version: str | None = None,
 ) -> Any:
     """Load evaluation states from verified NPZ container bytes."""
     with zipfile.ZipFile(io.BytesIO(data), mode="r") as archive:
@@ -419,6 +424,11 @@ def load_evaluation_states_container_bytes(
         )
         _validate_payload_version(payload_data)
         schema_version = payload_data.get("schema_version")
+        if expected_schema_version is not None and schema_version != expected_schema_version:
+            raise EvaluationStatesSchemaMismatch(
+                f"Evaluation-state container version {schema_version!r} disagrees with "
+                f"the artifact declaration {expected_schema_version!r}."
+            )
         if schema_version == EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V1:
             payload = EvaluationStatesContainerPayloadV1.model_validate(payload_data)
             leaves = _load_v1_leaves(archive, names, payload)

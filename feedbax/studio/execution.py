@@ -52,6 +52,7 @@ from feedbax.contracts.base import (
     default_manifest_root,
     utc_now,
 )
+from feedbax.persistence.terminal_publication import manifest_publication_lock
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     EvaluationRunSpec,
@@ -501,12 +502,16 @@ def stage_studio_evaluation_matrix(
         }
         checkpoint_refs.append(checkpoint_ref)
 
-        manifest, path = _write_pending_evaluation_manifest(
-            item,
-            checkpoint_ref=checkpoint_ref,
-            request=request,
-            root=root_path,
+        receipt_path = canonical_manifest_path(
+            "EvaluationRunManifest", item["evaluation_id"], root=root_path
         )
+        with manifest_publication_lock(receipt_path):
+            manifest, path = _write_pending_evaluation_manifest(
+                item,
+                checkpoint_ref=checkpoint_ref,
+                request=request,
+                root=root_path,
+            )
         manifest_ref = _pending_evaluation_manifest_ref(
             manifest,
             path,
@@ -629,10 +634,13 @@ def run_studio_evaluation_local_execution(
         except EvaluationRecipeExecutionError as exc:
             failed += 1
             errors.append(str(exc.__cause__ or exc))
+            # The diagnostic can be detached when an earlier completion owns this address.
+            receipt = load_manifest(ref.uri)
+            assert isinstance(receipt, EvaluationRunManifest)
             updated_refs.append(
                 _pending_evaluation_manifest_ref(
-                    exc.manifest,
-                    exc.path,
+                    receipt,
+                    Path(ref.uri),
                     stage=eval_stage,
                     job_id=request.job_id or ref.metadata.get("job_id") or "studio-eval",
                 )
@@ -2382,7 +2390,7 @@ def _should_launch_status(status: str | None, reprocess: EvalReprocessMode) -> b
 
 
 def _should_restaging_overwrite(status: str | None, reprocess: EvalReprocessMode) -> bool:
-    return status in {"failed", "cancelled", "completed", "stale"} and _should_launch_status(
+    return status in {"failed", "cancelled", "stale"} and _should_launch_status(
         status,
         reprocess,
     )

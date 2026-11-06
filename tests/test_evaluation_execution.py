@@ -4,10 +4,14 @@ import io
 import json
 import sqlite3
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
+from typing import NamedTuple
 
 import numpy as np
 import pytest
+from jax import tree as jt
 
 from feedbax.analysis.evaluation import (
     EvaluationRecipeDiagnosticError,
@@ -51,6 +55,7 @@ from feedbax.contracts.manifest import (
     load_manifest,
     spec_payload,
 )
+from feedbax.persistence import manifest_index
 from feedbax.persistence.manifest_index import rebuild_manifest_index
 
 
@@ -196,6 +201,115 @@ def test_evaluation_executes_when_cache_has_no_matching_receipt(
     assert resumed.status == "completed"
     assert resumed.summary_metrics["generation"] == 3
     assert load_manifest(resumed_path) == resumed
+
+
+@pytest.mark.parametrize("failure", ["recipe", "index"])
+def test_forced_evaluation_failure_preserves_completed_publication(
+    tmp_path: Path, evaluation_registry, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    spec = EvaluationRunSpec(
+        evaluation_type="testpkg.durable_eval",
+        params={"states_custody": "durable"},
+    )
+    generations = iter([1, 2, 3])
+
+    def recipe(_spec, _root, _states_path, _execution_context):
+        generation = next(generations)
+        if generation == 2 and failure == "recipe":
+            raise RuntimeError("forced recipe failed")
+        return EvaluationRecipeResult(
+            states={"generation": generation},
+            summary_metrics={"generation": generation},
+        )
+
+    evaluation_registry.register(spec.evaluation_type, recipe)
+    first, path = execute_evaluation_run_spec(spec, registry=evaluation_registry, root=tmp_path)
+    first_receipt = path.read_bytes()
+    cache_path = evaluation_states_cache_path(first.id, root=tmp_path)
+    first_cache = cache_path.read_bytes()
+
+    index_manifest = manifest_index.index_manifest
+
+    def fail_projection(conn, candidate, *, path):
+        index_manifest(conn, candidate, path=path)
+        if candidate.summary_metrics.get("generation") == 2:
+            raise sqlite3.OperationalError("forced index failure")
+
+    with monkeypatch.context() as patch:
+        if failure == "index":
+            patch.setattr(manifest_index, "index_manifest", fail_projection)
+        with pytest.raises(EvaluationRecipeExecutionError) as exc_info:
+            execute_evaluation_run_spec(spec, registry=evaluation_registry, root=tmp_path, force=True)
+
+    expected_cause = (
+        "forced recipe failed" if failure == "recipe" else "forced index failure"
+    )
+    assert str(exc_info.value.__cause__) == expected_cause
+    assert path.read_bytes() == first_receipt
+    assert cache_path.read_bytes() == first_cache
+    assert load_evaluation_states(first, root=tmp_path) == {"generation": 1}
+    diagnostic_path = exc_info.value.path
+    assert diagnostic_path != path
+    assert load_manifest(diagnostic_path).status == "failed"
+    with sqlite3.connect(manifest_index.default_index_path(tmp_path)) as index:
+        projected = index.execute(
+            "SELECT sha256 FROM artifacts WHERE manifest_id = ?", (first.id,)
+        ).fetchall()
+    assert projected == [(first.artifacts[0].sha256,)]
+
+    second, second_path = execute_evaluation_run_spec(
+        spec, registry=evaluation_registry, root=tmp_path, force=True
+    )
+    assert second_path == path
+    assert load_manifest(path) == second
+    assert load_evaluation_states(second, root=tmp_path) == {"generation": 3}
+    assert cache_path.read_bytes() != first_cache
+    reused, reused_path = execute_evaluation_run_spec(
+        spec, registry=evaluation_registry, root=tmp_path
+    )
+    assert reused_path == path
+    assert reused.artifacts == second.artifacts
+
+
+class _TypedEvaluationStates(NamedTuple):
+    generation: int
+
+
+def test_concurrent_scalar_evaluations_reuse_one_completed_generation(
+    tmp_path: Path, evaluation_registry
+) -> None:
+    spec = EvaluationRunSpec(
+        evaluation_type="testpkg.durable_eval",
+        params={"states_custody": "durable"},
+    )
+    start = Barrier(2)
+    calls = 0
+
+    def recipe(_spec, _root, _states_path, _execution_context):
+        nonlocal calls
+        calls += 1
+        return EvaluationRecipeResult(states=_TypedEvaluationStates(calls))
+
+    evaluation_registry.register(spec.evaluation_type, recipe)
+
+    def execute():
+        start.wait(timeout=5)
+        return execute_evaluation_run_spec(spec, registry=evaluation_registry, root=tmp_path)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        left, right = [executor.submit(execute) for _ in range(2)]
+        first, path = left.result(timeout=10)
+        second, second_path = right.result(timeout=10)
+
+    assert calls == 1
+    assert second_path == path
+    completed = load_manifest(path)
+    assert first.id == second.id == completed.id
+    assert first.artifacts == second.artifacts == completed.artifacts
+    expected = _TypedEvaluationStates(1)
+    assert load_evaluation_states(
+        completed, root=tmp_path, structure=jt.structure(expected)
+    ) == expected
 
 
 def test_evaluation_recipe_receives_explicit_repo_root_outside_repository_cwd(

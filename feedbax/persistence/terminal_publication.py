@@ -1,4 +1,4 @@
-"""Publication of terminal figure and report receipts."""
+"""Publication of terminal manifests at their canonical receipts."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from feedbax.contracts.manifest import (
+    AnyManifest,
     FigureManifest,
     ReportManifest,
     canonical_manifest_path,
@@ -41,6 +42,30 @@ def manifest_publication_lock(path: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
+def read_publication_manifest(path: Path, *, kind: str, manifest_id: str) -> AnyManifest | None:
+    """Read the current canonical receipt while holding its publication lock."""
+    try:
+        previous = load_manifest(path)
+    except FileNotFoundError:
+        return None
+    if (previous.kind, previous.id) != (kind, manifest_id):
+        raise ValueError(f"Manifest identity does not match its canonical path {path}")
+    return previous
+
+
+def publish_terminal_manifest_locked(
+    manifest: AnyManifest,
+    *,
+    root: Path,
+    previous: AnyManifest | None,
+    index: bool = True,
+) -> Path | None:
+    """Publish under the receipt lock. A completed receipt can only be superseded by success."""
+    if previous is not None and previous.status == "completed" and manifest.status != "completed":
+        return None
+    return write_manifest(manifest, root=root, index=index)
+
+
 def publish_render_manifest(
     manifest: FigureManifest | ReportManifest,
     *,
@@ -50,17 +75,12 @@ def publish_render_manifest(
     """Publish a render outcome. Return None when a failure would replace success."""
     path = canonical_manifest_path(manifest.kind, manifest.id, root=root)
     with manifest_publication_lock(path):
-        if manifest.status == "failed":
-            try:
-                previous = load_manifest(path)
-            except FileNotFoundError:
-                pass
-            else:
-                if (previous.kind, previous.id) != (manifest.kind, manifest.id):
-                    raise ValueError(f"Manifest identity does not match its canonical path {path}")
-                if previous.status == "completed":
-                    return None
-        published_path = write_manifest(manifest, root=root)
-        if capture is not None:
+        previous = (
+            read_publication_manifest(path, kind=manifest.kind, manifest_id=manifest.id)
+            if manifest.status == "failed"
+            else None
+        )
+        published_path = publish_terminal_manifest_locked(manifest, root=root, previous=previous)
+        if capture is not None and published_path is not None:
             capture.raw = published_path.read_bytes()
         return published_path
