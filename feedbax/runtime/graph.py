@@ -584,11 +584,11 @@ class Graph(Component):
         return tuple(execution_order), tuple(cycle_wires)
 
     def state_view(self, state: State) -> PyTree:
-        node_states = {
-            name: node.state_view(state)
-            for name, node in self.nodes.items()
-            if node.state_view(state) is not None
-        }
+        node_states: dict[str, PyTree] = {}
+        for name, node in self.nodes.items():
+            node_state = node.state_view(state)
+            if node_state is not None:
+                node_states[name] = node_state
         if self.state_view_fn is None:
             return GraphState(node_states)
         return self.state_view_fn(node_states)
