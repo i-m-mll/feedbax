@@ -18,7 +18,11 @@ import pytest
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.mechanics.muscles import ReluMuscle, RigidTendonHillMuscleThelen
 from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
-from feedbax.mechanics.geometry import PointMassRadialGeometry
+from feedbax.mechanics.geometry import (
+    PointMassRadialGeometry,
+    TwoLinkArmMuscleGeometry,
+    WrappingGeometry,
+)
 
 pytestmark = pytest.mark.usefixtures("enable_jax_x64")
 
@@ -313,6 +317,54 @@ class TestPointMassRadialGeometry:
 
 
 class TestArm6MuscleRigidTendon:
+    @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+    def test_wrapping_virtual_work(self, key, dtype):
+        geometry = TwoLinkArmMuscleGeometry((
+            WrappingGeometry(
+                wrap_radius=0.02,
+                attachment_distances=jnp.array([0.12, 0.13], dtype=dtype),
+                reference_length=0.2,
+                joint_index=1,
+            ),
+        ))
+        arm = Arm6MuscleRigidTendon(geometry=geometry)
+        state = init_state_from_component(arm)
+        angular_velocities = jnp.array([-0.2, 0.4], dtype=dtype)
+        poses = jnp.array(
+            [[0.1, q] for q in (0.3, -0.3, 0.005, -0.005, 0.0)], dtype=dtype
+        )
+
+        @jax.jit
+        @jax.vmap
+        def sample(angles):
+            outputs, _ = arm(
+                {
+                    "excitation": jnp.ones(1, dtype=dtype),
+                    "angles": angles,
+                    "angular_velocities": angular_velocities,
+                },
+                state,
+                key=key,
+            )
+            velocity = geometry.musculotendon_velocities(angles, angular_velocities)
+            # Centered length differences stay on one side except at the cusp,
+            # where the symmetric convention gives zero.
+            step = 1e-3 * angular_velocities
+            length_rate = (
+                geometry.musculotendon_lengths(angles + step)
+                - geometry.musculotendon_lengths(angles - step)
+            ) / 2e-3
+            return outputs["torques"], outputs["forces"], velocity, length_rate
+
+        torques, forces, velocities, length_rates = sample(poses)
+        assert velocities.dtype == dtype
+        assert jnp.all(forces > 0)
+        assert jnp.allclose(velocities, length_rates, atol=1e-5)
+        assert jnp.allclose(
+            torques @ angular_velocities, -jnp.sum(forces * length_rates, axis=-1),
+            rtol=2e-3, atol=1e-6,
+        )
+
     def test_100_steps_no_nan(self, arm_template, key):
         """100 steps should produce no NaN values."""
         state = init_state_from_component(arm_template)
