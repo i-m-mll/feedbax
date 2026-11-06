@@ -184,18 +184,22 @@ def test_jit_target_loss_isolates_inactive_states_targets_and_weights():
 
 
 def test_jit_second_difference_keeps_predecessors_of_active_step():
-    loss = EpochMaskedLoss(base_loss=OutputJerkLoss(where=lambda x: x), epoch_indices=(1,))
+    loss = EpochMaskedLoss(
+        base_loss=OutputJerkLoss(where=lambda x: x, time_axis=-1), epoch_indices=(1,)
+    )
     specs = _make_trial_specs(n_trials=1, n_steps=5, epoch_bounds=[0, 2, 3, 5])
-    state = jnp.array([[[1.0], [2.0], [4.0], [jnp.inf], [jnp.nan]]])
+    state = jnp.array([[1.0, 2.0, 4.0, jnp.inf, jnp.nan]])
 
     @jax.jit
     @jax.value_and_grad
     def score(state, trial_specs):
-        return loss(state, trial_specs, None).value.sum()
+        shaped = jnp.broadcast_to(state[:, None, None, :], (1, 2, 3, 5))
+        return loss((state, shaped), trial_specs, None).value.sum()
 
     value, grad = score(state, specs)
-    assert float(value) == pytest.approx(1 / 3)
-    assert jnp.allclose(grad[0, :, 0], jnp.array([2 / 3, -4 / 3, 2 / 3, 0.0, 0.0]))
+    # The mask includes only the window ending at index 2, across seven features.
+    assert float(value) == pytest.approx(7 / 3)
+    assert jnp.allclose(grad[0], jnp.array([1.0, -2.0, 1.0, 0.0, 0.0]) * (14 / 3))
 
 
 # ---------------------------------------------------------------------------

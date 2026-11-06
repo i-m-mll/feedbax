@@ -86,6 +86,14 @@ def test_nth_difference_order_three_is_available():
     assert jnp.allclose(value, 36.0)
 
 
+def test_custom_difference_norm_can_retain_feature_axes():
+    t = jnp.arange(5, dtype=jnp.float32)[None, None, :, None]
+    values = t * jnp.array([[[[1.0, 2.0]], [[3.0, 4.0]]]])
+    loss = NthDifferenceLoss(time_axis=2, norm=lambda delta: jnp.sum(delta**2, axis=-1))
+
+    assert jnp.array_equal(loss(values, None, None).value, jnp.array([[5.0, 25.0]]))
+
+
 def test_nth_difference_rejects_non_positive_order():
     with pytest.raises(ValueError, match="order must be >= 1"):
         NthDifferenceLoss(order=0)

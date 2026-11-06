@@ -1086,6 +1086,11 @@ class CrossTimestepLoss(AbstractLoss):
     norm: AbstractVar[Callable]
 
 
+def _squared_difference_norm(delta: Array, *, time_axis: int = 1) -> Array:
+    feature_axes = tuple(axis for axis in range(1, delta.ndim) if axis != time_axis)
+    return jnp.sum(delta**2, axis=feature_axes)
+
+
 class NthDifferenceLoss(CrossTimestepLoss):
     """Penalize the squared N-th finite difference of a state variable.
 
@@ -1095,6 +1100,10 @@ class NthDifferenceLoss(CrossTimestepLoss):
     leaf is differenced and squared-summed over its non-time/non-trial axes,
     then the contributions are summed across leaves.
 
+    Trial is axis 0 unless time is on axis 0, which represents an unbatched
+    trajectory. An explicit ``norm`` receives the differenced array in its
+    original layout and must preserve the position of the time axis.
+
     ``order=1`` reproduces :class:`StateDerivativeLoss`; ``order=2`` reproduces
     :class:`OutputJerkLoss` when applied to effector velocity.
     """
@@ -1103,7 +1112,7 @@ class NthDifferenceLoss(CrossTimestepLoss):
     order: int = eqx.field(default=1, static=True)
     where: Callable = lambda state: state
     time_axis: int = 1
-    norm: Callable = lambda x: jnp.sum(x**2, axis=-1)
+    norm: Callable = _squared_difference_norm
 
     def __check_init__(self):
         if self.order < 1:
@@ -1116,14 +1125,24 @@ class NthDifferenceLoss(CrossTimestepLoss):
                 f"{self.order} timesteps, got {n_steps}."
             )
 
+    def _resolve_time_axis(self, state: Array) -> int:
+        return range(state.ndim)[self.time_axis]
+
     def _difference_density(
         self, state: Array, time_axis: int, *, support: Array | None = None
-    ) -> Array:
+    ) -> tuple[Array, int]:
+        """Return the per-step density and the position of its time axis."""
         self._validate_length(state.shape[time_axis])
         difference = jnp.diff(state, n=self.order, axis=time_axis)
-        return _norm_on_support(
-            self.norm, difference, support, time_axis=time_axis, density_time_axis=time_axis
+        norm = self.norm
+        density_time_axis = time_axis
+        if norm is _squared_difference_norm:
+            norm = ft.partial(_squared_difference_norm, time_axis=time_axis)
+            density_time_axis = min(time_axis, 1)
+        density = _norm_on_support(
+            norm, difference, support, time_axis=time_axis, density_time_axis=density_time_axis
         )
+        return density, density_time_axis
 
     def term(
         self,
@@ -1136,9 +1155,8 @@ class NthDifferenceLoss(CrossTimestepLoss):
         substate = self.where(states)
 
         def _per_leaf(arr: Array) -> Array:
-            time_axis = self.time_axis if self.time_axis >= 0 else arr.ndim + self.time_axis
-            d_norm = self._difference_density(arr, time_axis)
-            return jnp.mean(d_norm, axis=time_axis)
+            density, axis = self._difference_density(arr, self._resolve_time_axis(arr))
+            return jnp.mean(density, axis=axis)
 
         per_leaf = jt.map(_per_leaf, substate)
         leaves = jt.leaves(per_leaf)
@@ -1376,18 +1394,13 @@ class EpochMaskedLoss(AbstractLoss):
         assert states is not None
         assert trial_specs is not None
 
-        substate = base.where(states)
-        time_axis = base.time_axis
-
-        leaves = jt.leaves(substate)
+        leaves = jt.leaves(base.where(states))
         if not leaves:
             raise ValueError(
                 f"EpochMaskedLoss('{self.label}'): wrapped {type(base).__name__} "
                 "selected no array leaves to penalise."
             )
-        if time_axis < 0:
-            time_axis += leaves[0].ndim
-        T_full = leaves[0].shape[time_axis]
+        T_full = leaves[0].shape[base._resolve_time_axis(leaves[0])]
         base._validate_length(T_full)
         T_diff = T_full - base.order
         n_steps = self._mask_n_steps(trial_specs, T_full)
@@ -1397,12 +1410,12 @@ class EpochMaskedLoss(AbstractLoss):
         support = self._align_mask_to_loss_time_axis(epoch_mask, T_diff)
 
         def _per_leaf(arr: Array) -> Array:
-            density = base._difference_density(arr, time_axis, support=support)
-            return jnp.mean(density, axis=time_axis)
+            density, axis = base._difference_density(
+                arr, base._resolve_time_axis(arr), support=support
+            )
+            return jnp.mean(density, axis=axis)
 
-        per_leaf = jt.map(_per_leaf, substate)
-        leaves_out = jt.leaves(per_leaf)
-        return ft.reduce(jnp.add, leaves_out)
+        return ft.reduce(jnp.add, map(_per_leaf, leaves))
 
 
 class EffectorStraightPathLoss(AbstractLoss):
