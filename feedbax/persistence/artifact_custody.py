@@ -724,6 +724,12 @@ class ImmutableArtifactBlobProvider:
 
         return release_lease(self, lease_id)
 
+    def release_owned_lease(self, lease_id: str, *, owner: str) -> ContentLeaseRecord | None:
+        """Release an owner's exact lease if it was acquired."""
+        from feedbax.persistence.content_retention import release_owned_lease
+
+        return release_owned_lease(self, lease_id, owner=owner)
+
     def schedule_lease_release(
         self,
         lease_id: str,

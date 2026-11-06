@@ -629,6 +629,7 @@ class RunPodOrchestrationDriver:
             DriverHook.COLLECTION_RECOVERY_EVIDENCE,
             DriverHook.COLLECT_FAILURE_LOGS,
             DriverHook.TEARDOWN_OWNERSHIP,
+            DriverHook.RELEASE_RUN_CONTENT,
             DriverHook.BATCH_PROBE,
             DriverHook.CHECKPOINT_STOP,
             DriverHook.DRY_RUN_LAUNCH,
@@ -1731,25 +1732,29 @@ class RunPodOrchestrationDriver:
 
     def stage_inputs(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Publish one verified input tree without exposing partial final paths."""
-        if bundle.content_bindings and (
-            self.content_store_root is None or self.content_lease_seconds is None
-        ):
-            raise RunPodDriverError(
-                "content bindings require canonical store and explicit lease seconds"
-            )
         attempt = state.stage("STAGE_INPUTS").attempts
         attempt_root = bundle.run_set_dir / ".stage-attempts" / f"stage-inputs-{attempt}"
         try:
             content_projection = None
             content_provider = None
             if bundle.content_bindings:
-                if self.content_store_root is None:
-                    raise InputMaterializationError(
-                        "content bindings require one explicit canonical store root"
+                if state.stage("TEARDOWN").status == "completed":
+                    raise RunPodDriverError("cannot stage leased content after completed teardown")
+                if self.content_store_root is None or self.content_lease_seconds is None:
+                    raise RunPodDriverError(
+                        "content bindings require canonical store and explicit lease seconds"
                     )
                 content_provider = ImmutableArtifactBlobProvider(self.content_store_root)
                 content_projection = compile_content_input_projection(
                     bundle.content_bindings, content_provider
+                )
+                acquire_content_projection_lease(
+                    content_projection,
+                    content_provider,
+                    lease_id=bundle.run_set_id,
+                    owner=self._content_lease_owner(bundle),
+                    expires_at=datetime.now(timezone.utc)
+                    + timedelta(seconds=self.content_lease_seconds),
                 )
             staged_inputs = materialize_bundle_inputs(
                 bundle,
@@ -1804,7 +1809,7 @@ class RunPodOrchestrationDriver:
             f"mkdir -p {_sq(remote_run_dir + '/.stage-attempts')} && "
             f"mkdir -- {_sq(remote_attempt_root)}"
         )
-        with self._stage_inputs_heartbeat(bundle, remote_attempt_root, content_projection):
+        with self._stage_inputs_heartbeat(bundle, remote_attempt_root, content_provider):
             content_transfer = (
                 self._stage_content_projection(
                     bundle,
@@ -1841,12 +1846,13 @@ class RunPodOrchestrationDriver:
             for name, digest in payload_hashes:
                 check_line = f"{digest}  {remote_attempt_inputs}/{name}"
                 self._ssh(f"printf %s {_sq(check_line)} | sha256sum -c -")
-            self._ssh(
-                build_atomic_directory_publish_command(
-                    remote_attempt_inputs,
-                    f"{remote_run_dir}/inputs",
-                )
+        # Surface heartbeat failures before committing the no-replace publication.
+        self._ssh(
+            build_atomic_directory_publish_command(
+                remote_attempt_inputs,
+                f"{remote_run_dir}/inputs",
             )
+        )
         return {
             "input_count": len(transferred),
             "inputs": transferred,
@@ -1965,41 +1971,16 @@ class RunPodOrchestrationDriver:
         self,
         bundle: RunBundle,
         remote_attempt_root: str,
-        projection: ContentInputProjection | None,
+        content_provider: ImmutableArtifactBlobProvider | None,
     ) -> Iterator[None]:
         """Keep the deadman informed only while this host actively stages inputs."""
-        content_provider = None
-        if projection is not None:
-            if self.content_store_root is None or self.content_lease_seconds is None:
-                raise RunPodDriverError(
-                    "content bindings require canonical store and explicit lease seconds"
-                )
-            content_provider = ImmutableArtifactBlobProvider(self.content_store_root)
-            acquire_content_projection_lease(
-                projection,
-                content_provider,
-                lease_id=bundle.run_set_id,
-                owner=f"runpod:{bundle.run_set_id}",
-                expires_at=datetime.now(timezone.utc)
-                + timedelta(seconds=self.content_lease_seconds),
-            )
         if not bundle.deadman_enabled:
-            try:
-                yield
-            except BaseException:
-                if content_provider is not None:
-                    content_provider.release_lease(bundle.run_set_id)
-                raise
+            yield
             return
 
         heartbeat_path = f"{remote_attempt_root}/.host-active"
         heartbeat_command = f"touch -- {_sq(heartbeat_path)}"
-        try:
-            self._ssh(heartbeat_command)
-        except BaseException:
-            if content_provider is not None:
-                content_provider.release_lease(bundle.run_set_id)
-            raise
+        self._ssh(heartbeat_command)
         stop = threading.Event()
         failures: list[Exception] = []
         interval = max(
@@ -2027,27 +2008,14 @@ class RunPodOrchestrationDriver:
             name=f"feedbax-stage-inputs-{bundle.run_set_id}",
             daemon=True,
         )
-        try:
-            thread.start()
-        except BaseException:
-            if content_provider is not None:
-                content_provider.release_lease(bundle.run_set_id)
-            raise
-        body_error: BaseException | None = None
+        thread.start()
         try:
             yield
-        except BaseException as exc:
-            body_error = exc
-            if content_provider is not None:
-                content_provider.release_lease(bundle.run_set_id)
-            raise
         finally:
             stop.set()
             thread.join()
-            if body_error is None and failures:
-                if content_provider is not None:
-                    content_provider.release_lease(bundle.run_set_id)
-                raise RunPodDriverError("stage-inputs host heartbeat failed") from failures[0]
+        if failures:
+            raise RunPodDriverError("stage-inputs host heartbeat failed") from failures[0]
 
     def launch_row(
         self,
@@ -2607,16 +2575,22 @@ class RunPodOrchestrationDriver:
 
     def teardown(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         result = dict(self._teardown_resources(bundle, state))
-        result["content_lease"] = self._release_content_lease(bundle)
+        result["content_lease"] = self.release_run_content(bundle)
         return result
 
-    def _release_content_lease(self, bundle: RunBundle) -> str:
+    def _content_lease_owner(self, bundle: RunBundle) -> str:
+        return f"runpod:{bundle.run_set_id}"
+
+    def release_run_content(self, bundle: RunBundle) -> str:
+        """Release this run's staged content after resource cleanup or preservation."""
         if not getattr(bundle, "content_bindings", ()):
             return "not-applicable"
         if self.content_store_root is None:
             raise RunPodDriverError("canonical content store is unavailable at teardown")
-        ImmutableArtifactBlobProvider(self.content_store_root).release_lease(bundle.run_set_id)
-        return "released"
+        lease = ImmutableArtifactBlobProvider(self.content_store_root).release_owned_lease(
+            bundle.run_set_id, owner=self._content_lease_owner(bundle)
+        )
+        return "released" if lease is not None else "not-acquired"
 
     def _teardown_resources(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         """Boundedly remove a run-owned pod or record why it remains unresolved."""

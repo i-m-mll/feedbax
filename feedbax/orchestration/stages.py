@@ -284,6 +284,10 @@ class CustodyPreservationRequired(OrchestrationStageError):
     """Destructive teardown is blocked until remote custody is durable."""
 
 
+class _TeardownFailed(OrchestrationStageError):
+    """Teardown already persisted its failure and can be resumed."""
+
+
 class EmergencyStatePersistenceError(OrchestrationStageError):
     """The reserved emergency channel could not record a primary persistence failure."""
 
@@ -546,7 +550,7 @@ class StageEngine:
                         raise
                     if isinstance(
                         exc,
-                        (CustodyPreservationRequired, EmergencyStatePersistenceError),
+                        (CustodyPreservationRequired, EmergencyStatePersistenceError, _TeardownFailed),
                     ):
                         raise
                     if (
@@ -905,6 +909,11 @@ class StageEngine:
                 ):
                     raise
                 continue
+            if stage_id == STAGE_TEARDOWN:
+                teardown = state.stage(stage_id)
+                if teardown.status == "failed":
+                    raise _TeardownFailed(teardown.error or "teardown failed")
+                return state
             completed = state.stage(stage_id).model_copy(
                 update={
                     "status": "completed",
@@ -2834,8 +2843,18 @@ class StageEngine:
                 "skip_reason": "keep_alive",
                 **({"ownership": ownership} if ownership else {}),
             }
-            status = "completed"
-            error = None
+            release_content = self._driver_hook(
+                DriverHook.RELEASE_RUN_CONTENT,
+                "release_run_content",
+            )
+            try:
+                if release_content is not None:
+                    outputs["content_lease"] = release_content(self.bundle)
+                status = "completed"
+                error = None
+            except Exception as exc:
+                status = "failed"
+                error = str(exc)
         else:
             collect_failure_logs = (
                 self._driver_hook(
