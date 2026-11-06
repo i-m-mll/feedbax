@@ -60,7 +60,11 @@ from feedbax.contracts.manifest import (
     load_manifest,
     spec_payload,
 )
-from feedbax.analysis.reports import REPORT_RENDER_ROLE, ReportRecipeResult
+from feedbax.analysis.reports import (
+    REPORT_RENDER_ROLE,
+    ReportRecipeExecutionError,
+    ReportRecipeResult,
+)
 from feedbax.analysis.specs import AnalysisRecipeResult
 from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
@@ -71,6 +75,7 @@ class _Recipes:
     def __init__(self) -> None:
         self.evaluation = 0
         self.report = 0
+        self.fail_report = False
         self.analysis = 0
         self.payload = "baseline"
         self.analysis_value = 3
@@ -103,6 +108,8 @@ def environment(tmp_path: Path, application_registry_bundle, recipes: _Recipes):
 
     def report_recipe(report_spec, root, inputs):
         recipes.report += 1
+        if recipes.fail_report:
+            raise ValueError("report recipe failed")
         artifact = store_bytes_artifact(
             f"# {report_spec.report_type}\n".encode(),
             root=root,
@@ -874,6 +881,23 @@ def _quarantine_files(environment) -> list[Path]:
     return sorted(path for path in directory.rglob("*") if path.is_file())
 
 
+def test_repair_replaces_a_failed_report_receipt(environment, recipes: _Recipes) -> None:
+    node = _report_node(environment)
+    recipes.fail_report = True
+    with pytest.raises(ReportRecipeExecutionError) as exc_info:
+        fulfill_node(node, environment=environment)
+    path = exc_info.value.path
+    assert path is not None
+    failed = path.read_bytes()
+
+    recipes.fail_report = False
+    result = repair_node(node, environment=environment)
+
+    assert result.receipt.path == path
+    assert load_manifest(path).status == "completed"
+    assert failed in [entry.read_bytes() for entry in _quarantine_files(environment)]
+
+
 def test_repair_quarantines_failed_bytes_and_promotes_a_validated_replacement(
     environment, recipes: _Recipes
 ) -> None:
@@ -1101,6 +1125,7 @@ def test_repair_publisher_refuses_manifest_directory_redirected_after_preflight(
     with pytest.raises(ValueError, match="unsafe fulfillment output path"):
         repair_node(node, environment=environment)
 
+    assert list(redirected.iterdir()) == [target]
     assert target.read_bytes() == original
     assert (moved_directory / receipt.path.name).read_bytes() == original
     assert not (Path(environment.root) / FULFILLMENT_REPAIR_DIRECTORY).exists()

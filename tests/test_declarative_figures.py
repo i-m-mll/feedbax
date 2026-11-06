@@ -14,6 +14,7 @@ import plotly.io as pio
 import pytest
 from pydantic import ValidationError
 
+from feedbax.analysis import figures as figures_module
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.figures import (
     FIGURE_RENDER_MEDIA_TYPES,
@@ -588,6 +589,52 @@ def test_execute_figure_spec_labels_render_artifact_with_written_media_type(
     assert renders[0].media_type == expected_media_type
     assert renders[0].media_type in FIGURE_RENDER_MEDIA_TYPES
     assert figure_manifest_plotly_json(figure_manifest) is not None
+
+
+def test_overlapping_figure_executions_ingest_their_own_staged_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    figure_registry: FigureRegistry,
+) -> None:
+    spec = FigureSpec(name="overlapping-figure", assembler="feedbax.grid_figure")
+    staging_dirs: list[Path] = []
+    inner_results = []
+
+    monkeypatch.setattr(
+        figures_module,
+        "_build_figures",
+        lambda *_args: [figures_module.RenderedFigure(name="main", figure=go.Figure())],
+    )
+
+    def save_figure(_figure, _sidecar, output_dir, *, name, render_format):
+        staging_dirs.append(output_dir)
+        invocation = b"outer" if len(staging_dirs) == 1 else b"inner"
+        spec_path = output_dir / f"{name}.spec.json"
+        render_path = output_dir / f"{name}.fig.json"
+        spec_path.write_bytes(invocation + b" spec")
+        render_path.write_bytes(invocation + b" render")
+        if invocation == b"outer":
+            inner, _ = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
+            inner_results.append(inner)
+        return spec_path, render_path
+
+    monkeypatch.setattr(figures_module, "save_figure_with_spec", save_figure)
+
+    outer, _ = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
+    (inner,) = inner_results
+
+    assert outer.id == inner.id
+    for manifest, invocation in ((outer, b"outer"), (inner, b"inner")):
+        staged_refs = {
+            ref.logical_name: ref
+            for ref in manifest.artifacts
+            if ref.role == FIGURE_SPEC_ROLE or ref.metadata.get("format") == "json"
+        }
+        assert {name: Path(ref.uri).read_bytes() for name, ref in staged_refs.items()} == {
+            "overlapping-figure-spec.json": invocation + b" spec",
+            "figure.fig.json": invocation + b" render",
+        }
+    assert all(not directory.exists() for directory in staging_dirs)
 
 
 def test_execute_figure_spec_routes_panel_and_figure_assembler_params(
