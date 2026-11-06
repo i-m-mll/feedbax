@@ -158,6 +158,8 @@ _DEFAULT_STRUCTURAL_DELTA_A = SparseCooArrayValueSpec(
 class _ConstantParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    dtype: str | None = None
+
     value: JsonValue = Field(
         default=0.0,
         json_schema_extra={"feedbax": {"type": "object", "required": True}},
@@ -1012,7 +1014,10 @@ def source_value_output_prototype(
 ) -> dict[str, Any]:
     """Return a source prototype from the configured scalar/array value."""
 
-    return {"output": _proto_from_value(params.get("value", 0.0))}
+    value = params.get("value", 0.0)
+    if params.get("dtype") is not None:
+        value = jnp.asarray(value, dtype=params["dtype"])
+    return {"output": _proto_from_value(value)}
 
 
 def step_source_output_prototype(
@@ -1630,6 +1635,7 @@ def register_builtin_components(registry: _Registry) -> None:
             description="Multiply input by a scalar or broadcastable scale.",
             parameter_fields=[
                 ParameterField(name="scale", type="float", default=1.0, required=True),
+                ParameterField(name="fixed", type="bool", default=False, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1885,7 +1891,7 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="MLP",
             runtime_type=MLP,
-            build_context_fields=("dtype", "key"),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
             attribute_paths={
                 "activation": "activation_name",
@@ -1894,6 +1900,7 @@ def register_builtin_components(registry: _Registry) -> None:
             category="Neural Networks",
             description="Multi-layer perceptron.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="output_size", type="int", default=2, min=1, required=True),
                 ParameterField(name="hidden_sizes", type="array", default=[64], required=False),
@@ -1937,6 +1944,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(name="input_size", type="int", default=1, min=1, required=True),
                 ParameterField(name="output_size", type="int", default=1, min=1, required=True),
                 ParameterField(name="use_bias", type="bool", default=True, required=False),
+                ParameterField(name="bias_init", type="float", default=None, required=False),
                 ParameterField(
                     name="initialization",
                     type="enum",
@@ -1990,6 +1998,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="use_bias", type="bool", default=True, required=False),
+                ParameterField(name="stateful", type="bool", default=True, required=False),
             ],
             input_ports=["input", "hidden"],
             output_ports=["output", "hidden"],

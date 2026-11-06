@@ -185,9 +185,11 @@ class Scale(Component):
     output_ports = ("output",)
 
     scale: PyTree
+    fixed: bool = field(static=True)
 
-    def __init__(self, scale: PyTree = 1.0):
-        self.scale = jnp.asarray(scale)
+    def __init__(self, scale: PyTree = 1.0, fixed: bool = False):
+        self.fixed = fixed
+        self.scale = float(scale) if fixed else jnp.asarray(scale)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         scale = jnp.asarray(self.scale)
@@ -322,8 +324,12 @@ class Constant(Component):
     output_ports = ("output",)
 
     value: PyTree
+    dtype: str | None = field(static=True)
 
-    def __init__(self, value: PyTree = 0.0):
+    def __init__(self, value: PyTree = 0.0, dtype: str | None = None):
+        self.dtype = dtype
+        if dtype is not None:
+            value = jnp.asarray(value, dtype=dtype)
         self.value = jt.map(jnp.asarray, value)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -552,6 +558,7 @@ class Linear(Component):
     use_bias: bool = field(static=True)
     initialization: Literal["random", "zero_bias", "zeros"] = field(static=True)
     dtype: Any = field(static=True)
+    bias_init: float | None = field(static=True)
 
     def __init__(
         self,
@@ -561,6 +568,7 @@ class Linear(Component):
         activation: str | Callable = "identity",
         initialization: Literal["random", "zero_bias", "zeros"] = "random",
         dtype: Any = jnp.float32,
+        bias_init: float | None = None,
         *,
         key: PRNGKeyArray,
     ):
@@ -584,8 +592,12 @@ class Linear(Component):
         )
         if self.initialization == "zeros":
             layer = eqx.tree_at(lambda item: item.weight, layer, jnp.zeros_like(layer.weight))
-        if self.initialization in ("zero_bias", "zeros") and layer.bias is not None:
-            layer = eqx.tree_at(lambda item: item.bias, layer, jnp.zeros_like(layer.bias))
+        self.bias_init = bias_init
+        if bias_init is not None and layer.bias is None:
+            raise ValueError("Linear bias_init requires use_bias=True")
+        if layer.bias is not None and (bias_init is not None or initialization != "random"):
+            bias = jnp.full_like(layer.bias, 0.0 if bias_init is None else bias_init)
+            layer = eqx.tree_at(lambda item: item.bias, layer, bias)
         self.layer = layer
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -623,7 +635,7 @@ class MLP(Component):
         self.input_size = int(input_size)
         self.output_size = int(output_size)
         self.hidden_sizes = tuple(int(x) for x in hidden_sizes)
-        self.dtype = dtype
+        self.dtype = jnp.dtype(dtype).name
         self.activation_name, self.activation = resolve_activation(activation)
         self.final_activation_name, self.final_activation = resolve_activation(final_activation)
         sizes = [self.input_size, *self.hidden_sizes, self.output_size]
@@ -632,6 +644,7 @@ class MLP(Component):
             eqx.nn.Linear(sizes[i], sizes[i + 1], dtype=dtype, key=keys[i])
             for i in range(len(sizes) - 1)
         )
+
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         x = inputs["input"]
         for idx, layer in enumerate(self.linears):
@@ -660,13 +673,14 @@ class GRU(Component):
     input_size: int = field(static=True)
     hidden_size: int = field(static=True)
     dtype: Any = field(static=True)
-    state_index: StateIndex
+    state_index: StateIndex | None
 
     def __init__(
         self,
         input_size: int,
         hidden_size: int,
         dtype: Any = jnp.float32,
+        stateful: bool = True,
         *,
         use_bias: bool = True,
         key: PRNGKeyArray,
@@ -677,15 +691,25 @@ class GRU(Component):
         self.cell = eqx.nn.GRUCell(
             self.input_size, self.hidden_size, use_bias=use_bias, dtype=dtype, key=key
         )
-        hidden = jnp.zeros(self.hidden_size, dtype=dtype)
-        initial_state = GRUState(hidden=hidden, output=hidden)
-        self.state_index = StateIndex(initial_state)
+        if stateful:
+            hidden = jnp.zeros(self.hidden_size, dtype=dtype)
+            self.state_index = StateIndex(GRUState(hidden=hidden, output=hidden))
+        else:
+            self.state_index = None
+
+    @property
+    def stateful(self) -> bool:
+        return self.state_index is not None
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        current_state: GRUState = state.get(self.state_index)
-        hidden = inputs.get("hidden", current_state.hidden)
+        hidden = inputs.get("hidden")
+        if hidden is None:
+            if self.state_index is None:
+                raise ValueError("A stateless GRU requires an explicit hidden input")
+            hidden = state.get(self.state_index).hidden
         new_hidden = self.cell(inputs["input"], hidden)
-        state = state.set(self.state_index, GRUState(hidden=new_hidden, output=new_hidden))
+        if self.state_index is not None:
+            state = state.set(self.state_index, GRUState(hidden=new_hidden, output=new_hidden))
         return {"output": new_hidden, "hidden": new_hidden}, state
 
 
