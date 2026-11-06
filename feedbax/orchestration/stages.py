@@ -489,6 +489,7 @@ class StageEngine:
         break_stale_lock: bool = False,
         stop_after_stage: str | None = None,
         retry_failed_certification: bool = False,
+        certify_and_register: bool = True,
     ) -> RunSetState:
         """Run or resume the bundle through all stages.
 
@@ -499,7 +500,17 @@ class StageEngine:
         intent is the only automatic coverage for SIGKILL before an acquired
         pod's SSH endpoint becomes available; a later local process or operator
         must reconcile it.
+
+        A bound local Studio attempt can collect and tear down without issuing
+        a run-set conformance certificate or registration.
         """
+        if not certify_and_register and (
+            self.bundle is None
+            or self.bundle.staged_training is None
+            or self.bundle.deployment_policy.driver != "local"
+            or self.bundle.execution_family != "native-training"
+        ):
+            raise ValueError("Collection without certification requires a bound staged bundle")
         if self.request is not None:
             # The stale-install gate. ASSEMBLE runs it too, but running it here
             # means a request whose revision authority the imported package
@@ -533,6 +544,8 @@ class StageEngine:
                     state = retry_state
                 try:
                     for stage_id in STAGE_ORDER:
+                        if not certify_and_register and stage_id in (STAGE_CERTIFY, STAGE_REGISTER):
+                            continue
                         if state.stage(stage_id).status == "completed":
                             continue
                         if stage_id == STAGE_TEARDOWN:
@@ -1990,10 +2003,9 @@ class StageEngine:
                 secondary_evidence.append(evidence)
             elif uses_registered_native_execution(row):
                 try:
-                    checkpoint_custody[row.row_id] = _verify_collected_native_checkpoint_custody(
+                    checkpoint_custody[row.row_id] = _publish_verified_native_collection(
                         row, outputs
                     )
-                    _publish_collected_native_manifest_and_artifacts(row, outputs)
                 except Exception as exc:
                     if not preserve_executor_failure:
                         raise
@@ -3003,10 +3015,7 @@ class StageEngine:
                     f"{row.row_id!r}: {missing_outputs!r}"
                 )
             if uses_registered_native_execution(row):
-                checkpoint_custody[row.row_id] = _verify_collected_native_checkpoint_custody(
-                    row, outputs
-                )
-                _publish_collected_native_manifest_and_artifacts(row, outputs)
+                checkpoint_custody[row.row_id] = _publish_verified_native_collection(row, outputs)
             collected[row.row_id] = outputs
             collect_stage = state.stage(STAGE_COLLECT)
             collect_outputs = dict(collect_stage.outputs)
@@ -3286,6 +3295,8 @@ def _missing_declared_collection_outputs(
 def _verify_collected_native_checkpoint_custody(
     row: RunRowSpec,
     collected: Mapping[str, str],
+    *,
+    manifest_bytes: bytes | None = None,
 ) -> Mapping[str, Any]:
     """Authenticate the published native checkpoint transaction before teardown."""
 
@@ -3296,12 +3307,12 @@ def _verify_collected_native_checkpoint_custody(
     transaction_root_sha256 = manifest.content_integrity_digest.transaction_root_sha256
     manifest_relative_path = authenticated.parent_ref.uri
 
-    training_manifest = load_manifest_bytes(
-        _read_collected_regular_file(
+    if manifest_bytes is None:
+        manifest_bytes = _read_collected_regular_file(
             collected["manifest.json"],
             context=f"collected training manifest for row {row.row_id!r}",
         )
-    )
+    training_manifest = load_manifest_bytes(manifest_bytes)
     if not isinstance(training_manifest, TrainingRunManifest):
         raise OrchestrationStageError(
             f"collected native manifest is not a TrainingRunManifest for row {row.row_id!r}"
@@ -3309,6 +3320,10 @@ def _verify_collected_native_checkpoint_custody(
     if not training_manifest.checkpoint_custody:
         raise OrchestrationStageError(
             f"collected training manifest has no terminal checkpoint for row {row.row_id!r}"
+        )
+    if manifest.run_id != training_manifest.job_id:
+        raise OrchestrationStageError(
+            f"collected checkpoint and training run identities disagree for row {row.row_id!r}"
         )
     terminal_ref = training_manifest.checkpoint_custody[-1]
     if not isinstance(terminal_ref, ParentRef):
@@ -3332,20 +3347,43 @@ def _verify_collected_native_checkpoint_custody(
     return {
         "transaction_id": authenticated.manifest.transaction_id,
         "manifest_sha256": authenticated.manifest_sha256,
+        "training_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "completed_training_batches": manifest.completed_training_batches,
         "transaction_root_sha256": transaction_root_sha256,
         "slot_names": sorted(authenticated.slot_names),
     }
 
 
-def _publish_collected_native_manifest_and_artifacts(
+def _publish_verified_native_collection(
     row: RunRowSpec,
     collected: Mapping[str, str],
-) -> None:
-    """Make one collected native row resolvable before recording collection success."""
+) -> Mapping[str, Any]:
+    """Authenticate and publish the same bytes before recording collection success."""
     manifest_bytes = _read_collected_regular_file(
         collected["manifest.json"],
         context=f"collected training manifest for row {row.row_id!r}",
     )
+    evidence = _verify_collected_native_checkpoint_custody(
+        row, collected, manifest_bytes=manifest_bytes
+    )
+    _publish_collected_native_manifest_and_artifacts(
+        row, collected, manifest_bytes=manifest_bytes
+    )
+    return evidence
+
+
+def _publish_collected_native_manifest_and_artifacts(
+    row: RunRowSpec,
+    collected: Mapping[str, str],
+    *,
+    manifest_bytes: bytes | None = None,
+) -> None:
+    """Make the collected native manifest and referenced artifacts resolvable."""
+    if manifest_bytes is None:
+        manifest_bytes = _read_collected_regular_file(
+            collected["manifest.json"],
+            context=f"collected training manifest for row {row.row_id!r}",
+        )
     manifest = load_manifest_bytes(manifest_bytes)
     if not isinstance(manifest, TrainingRunManifest):
         raise OrchestrationStageError(
@@ -3420,6 +3458,34 @@ def _publish_collected_native_manifest_and_artifacts(
                 )
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def load_collected_native_training_result(
+    row: RunRowSpec,
+    path: Path,
+    *,
+    sha256: str,
+) -> TrainingRunManifest:
+    """Resolve the exact terminal manifest authenticated by native collection."""
+    data = _read_collected_regular_file(path, context=f"collected result for row {row.row_id!r}")
+    if hashlib.sha256(data).hexdigest() != sha256:
+        raise OrchestrationStageError(f"Collected result digest changed for row {row.row_id!r}")
+    manifest = load_manifest_bytes(data)
+    provenance = row.execution.row_provenance
+    if (
+        not isinstance(manifest, TrainingRunManifest)
+        or provenance is None
+        or manifest.id != provenance.planned_run_id
+        or manifest.job_id != provenance.planned_run_id
+        or manifest.execution_hash != row.execution.execution_capsule.execution_hash
+        or manifest.terminal_certification is None
+        or not manifest.checkpoint_custody
+        or manifest.checkpoint_custody[-1] not in manifest.terminal_certification.certified_artifacts
+    ):
+        raise OrchestrationStageError(
+            f"Collected result does not certify the bound execution for row {row.row_id!r}"
+        )
+    return manifest
 
 
 def _read_collected_regular_file(path: str | Path, *, context: str) -> bytes:

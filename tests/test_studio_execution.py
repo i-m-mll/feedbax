@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from feedbax import _atomic
 from feedbax.bin.studio_pipeline import main as studio_pipeline_main
 from feedbax.studio.execution import (
     StudioPipelineMaterializationRequest,
@@ -45,6 +47,7 @@ from feedbax.contracts.manifest import (
     TrainingRunAxisCoordinate,
     TrainingRunManifest,
     TrainingRunSetManifest,
+    canonical_manifest_path,
     load_manifest,
     write_manifest,
 )
@@ -410,6 +413,55 @@ def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
     assert manifest.training_spec.inline["n_batches"] == 25
     assert manifest.task_binding_spec.inline["bindings"][0]["target_port"] == "input"
     assert manifest.provenance.issues == ["9aa8ff2"]
+
+
+def test_studio_plan_retry_requires_durable_pending_receipt(
+    studio_client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_dir = canonical_manifest_path("TrainingRunManifest", "test", root=tmp_path).parent
+    sync_directory = _atomic._fsync_directory
+    sync_allowed = False
+
+    def sync_receipt_directory(path: Path) -> None:
+        if path == receipt_dir.resolve():
+            (receipt,) = receipt_dir.glob("*.json")
+            with receipt.with_suffix(".lock").open("r+b") as probe:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if not sync_allowed:
+                raise OSError("receipt directory sync failed")
+        sync_directory(path)
+
+    monkeypatch.setattr(_atomic, "_fsync_directory", sync_receipt_directory)
+    request = {
+        "workspace": _workspace().model_dump(mode="json", exclude_none=True),
+        "graph": _graph().model_dump(mode="json", exclude_none=True),
+        "job_id": "studio-retry-durability",
+    }
+    endpoint = "/api/provider/studio/training/plan"
+
+    with pytest.raises(OSError, match="receipt directory sync failed"):
+        studio_client.post(endpoint, json=request)
+    (receipt_path,) = receipt_dir.glob("*.json")
+    receipt_bytes = receipt_path.read_bytes()
+    receipt = load_manifest(receipt_path)
+    assert receipt.status == "pending"
+    assert "staged_attempt" not in receipt.metadata
+
+    with pytest.raises(OSError, match="receipt directory sync failed"):
+        studio_client.post(endpoint, json=request)
+    assert receipt_path.read_bytes() == receipt_bytes
+
+    sync_allowed = True
+    retry = studio_client.post(endpoint, json=request)
+    assert retry.status_code == 200, retry.text
+    stage = next(s for s in retry.json()["workspace"]["stages"] if s["kind"] == "train")
+    ref = next(ref for ref in stage["manifest_refs"] if ref["role"] == "training_run")
+    assert ref["id"] == receipt.id
+    assert ref["metadata"]["staging_generation"] == receipt.metadata["staging_generation"]
+    assert receipt_path.read_bytes() == receipt_bytes
 
 
 def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_set(

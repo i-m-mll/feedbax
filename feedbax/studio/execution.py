@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from feedbax._atomic import sync_parent_directories
 from feedbax.execution.records import (
     Invocation,
     InvocationExecutionPolicy,
@@ -96,6 +97,8 @@ from feedbax.studio.sweep_matrix import (
     _variation_values,
 )
 from feedbax.training.run_matrix import MaterializedMatrixRow
+from feedbax.studio.native_training import STAGED_NATIVE_ROW_KEY
+from feedbax.contracts.run_matrix import TrainingRowProvenance
 from feedbax.studio.schema import SchemaValidationIssue, validate_task_binding_schema
 from feedbax.studio.draft_hash import StudioDraftHashes, studio_draft_hashes
 from feedbax.contracts.graph import (
@@ -154,6 +157,20 @@ class StudioTrainingExecutionPreparation(StudioExecutionModel):
     scenario_id: str
     invocation: Invocation
     backend_plan: BackendPlan
+
+
+class StudioNativeTrainingDispatchRequest(StudioExecutionModel):
+    """Launch exactly the staging generation the caller selected."""
+
+    manifest_id: str = Field(min_length=1)
+    generation: str = Field(min_length=1)
+
+
+class StudioNativeTrainingDispatchAccepted(StudioExecutionModel):
+    """Identity of the admitted attempt. Its result is collected separately."""
+
+    run_set_id: str
+    row_id: str
 
 
 EvalCheckpointPolicyMode = Literal["last", "best-by-metric", "every-k"]
@@ -1119,13 +1136,15 @@ def _reuse_pending_training_manifest(
         existing.status == "pending"
         and existing.metadata.get("planned") is True
         and not has_attempt_evidence(existing)
-        and path.resolve()
-        != canonical_manifest_path("TrainingRunManifest", manifest_id, root=root).resolve()
     ):
-        canonical = existing.model_copy(
-            update={"metadata": {**existing.metadata, "staging_generation": uuid.uuid4().hex}}
-        )
-        return canonical, write_manifest(canonical, root=root)
+        canonical_path = canonical_manifest_path("TrainingRunManifest", manifest_id, root=root)
+        if path.resolve() != canonical_path.resolve():
+            canonical = existing.model_copy(
+                update={"metadata": {**existing.metadata, "staging_generation": uuid.uuid4().hex}}
+            )
+            return canonical, write_manifest(canonical, root=root)
+        sync_parent_directories(path)
+        return existing, path
     if (
         existing.status != "cancelled"
         or existing.metadata.get("planned") is not True
@@ -1170,6 +1189,7 @@ def _build_pending_training_manifest(
     run_set_id: str | None = None,
     overrides: list[Any] | None = None,
     total_batches: Any | None = None,
+    native_row: TrainingRowProvenance | None = None,
 ) -> tuple[TrainingRunManifest, Path]:
     """Write the single durable pending `TrainingRunManifest` document.
 
@@ -1203,6 +1223,8 @@ def _build_pending_training_manifest(
     metadata["staging_generation"] = uuid.uuid4().hex
     metadata["execution_target"] = execution_target
     metadata["execution_backend"] = request.backend
+    if native_row is not None:
+        metadata[STAGED_NATIVE_ROW_KEY] = native_row.model_dump(mode="json", exclude_none=True)
     metadata["spec_hashes"] = _ui_spec_hashes(
         {
             "graph_spec": graph_spec,
@@ -1404,6 +1426,14 @@ def _stage_pending_training_manifests(
         }
     )
     run_set_path = write_manifest(run_set, root=root_path)
+    staging_draft_spec_hashes = _ui_spec_hashes(
+        {
+            "graph_spec": graph_spec,
+            "training_spec": training_spec,
+            "task_spec": task_spec,
+            "task_binding_spec": task_binding_spec,
+        }
+    )
     run_refs: list[StudioManifestRef] = []
     run_paths: dict[str, str] = {}
     for row in materialized.rows:
@@ -1417,14 +1447,9 @@ def _stage_pending_training_manifests(
             root=root_path,
             execution_target=execution_target,
         )
-        run_refs.append(
-            _pending_training_manifest_ref(
-                manifest,
-                path,
-                stage=stage,
-                job_id=job_id,
-            )
-        )
+        run_ref = _pending_training_manifest_ref(manifest, path, stage=stage, job_id=job_id)
+        run_ref.metadata["staging_draft_spec_hashes"] = staging_draft_spec_hashes
+        run_refs.append(run_ref)
         run_paths[manifest.id] = str(path)
 
     run_set_ref = _studio_manifest_ref(
@@ -1472,10 +1497,32 @@ def _write_pending_training_manifest_for_matrix_row(
     root: Path,
     execution_target: str,
 ) -> tuple[TrainingRunManifest, Path]:
+    native_row = row.provenance if row.spec is not None else None
     with training_receipt_lock(root, row.planned_run_id):
         reused = _reuse_pending_training_manifest(row.planned_run_id, root)
         if reused is not None:
-            return reused
+            existing, path = reused
+            if (
+                native_row is not None
+                and existing.status == "pending"
+                and not has_attempt_evidence(existing)
+                and STAGED_NATIVE_ROW_KEY not in existing.metadata
+                and existing.training_spec is not None
+                and existing.training_spec.kind == "TrainingRunSpec"
+                and existing.training_spec.inline == row.payload
+            ):
+                existing = existing.model_copy(
+                    update={
+                        "metadata": {
+                            **existing.metadata,
+                            STAGED_NATIVE_ROW_KEY: native_row.model_dump(
+                                mode="json", exclude_none=True
+                            ),
+                        },
+                    }
+                )
+                path = write_manifest(existing, root=root)
+            return existing, path
 
         graph_spec, training_spec, task_spec, task_binding_spec, training_kind = (
             _materialized_row_specs(row)
@@ -1514,6 +1561,7 @@ def _write_pending_training_manifest_for_matrix_row(
             run_set_id=run_set_id,
             overrides=row.overrides,
             total_batches=_matrix_row_n_batches(row),
+            native_row=native_row,
         )
 
 
@@ -1604,6 +1652,10 @@ def _pending_training_manifest_ref(
         pending_path,
         job_id,
     )
+    training_spec = pending_manifest.training_spec
+    checkpoint_progress = (
+        training_spec.inline.get("checkpoint_progress") if training_spec is not None else None
+    )
     pending_ref.metadata = {
         **pending_ref.metadata,
         "stage_id": stage.id,
@@ -1611,6 +1663,15 @@ def _pending_training_manifest_ref(
         "planned": True,
         "spec_hashes": _manifest_spec_hashes(pending_manifest),
         **pending_manifest.metadata,
+        "native_launch_supported": (
+            training_spec is not None
+            and training_spec.kind == "TrainingRunSpec"
+            and STAGED_NATIVE_ROW_KEY in pending_manifest.metadata
+            and (
+                not isinstance(checkpoint_progress, Mapping)
+                or checkpoint_progress.get("continuation") is None
+            )
+        ),
         "status": staged_training_display_status(
             pending_manifest.status, pending_manifest.metadata
         ),
@@ -1699,9 +1760,13 @@ def _queue_training_manifest_subset(
                 f"Queue launch training manifest {manifest_id!r} has a different staging "
                 "generation. Refresh the queue before launching."
             )
-        selected_refs.append(
-            _pending_training_manifest_ref(manifest, path, stage=stage, job_id=job_id)
+        selected_ref = _pending_training_manifest_ref(manifest, path, stage=stage, job_id=job_id)
+        staging_draft_spec_hashes = stage_refs[manifest_id].metadata.get(
+            "staging_draft_spec_hashes"
         )
+        if staging_draft_spec_hashes is not None:
+            selected_ref.metadata["staging_draft_spec_hashes"] = staging_draft_spec_hashes
+        selected_refs.append(selected_ref)
 
     now = utc_now().isoformat()
     return (

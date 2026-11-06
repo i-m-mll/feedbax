@@ -5437,10 +5437,7 @@ def test_ordered_launch_group_refills_then_crosses_authenticated_barrier(
         assert outputs == {"payload": str(bundle.run_set_dir / row.row_id / "payload.json")}
         return {"transaction_id": f"checkpoint-{row.row_id}"}
 
-    monkeypatch.setattr(stages, "_verify_collected_native_checkpoint_custody", verify)
-    monkeypatch.setattr(
-        stages, "_publish_collected_native_manifest_and_artifacts", lambda _row, _outputs: None
-    )
+    monkeypatch.setattr(stages, "_publish_verified_native_collection", verify)
     rows = [_compiled_row(row_id) for row_id in ("a", "b", "c", "d")]
     bundle = _bundle(
         tmp_path,
@@ -5501,7 +5498,7 @@ def test_ordered_launch_group_does_not_advance_when_custody_authentication_fails
     def reject_custody(_row: RunRowSpec, _outputs: Mapping[str, str]) -> Mapping[str, Any]:
         raise OrchestrationStageError("terminal checkpoint custody rejected")
 
-    monkeypatch.setattr(stages, "_verify_collected_native_checkpoint_custody", reject_custody)
+    monkeypatch.setattr(stages, "_publish_verified_native_collection", reject_custody)
     bundle = _bundle(
         tmp_path,
         rows=[_compiled_row("first"), _compiled_row("later")],
