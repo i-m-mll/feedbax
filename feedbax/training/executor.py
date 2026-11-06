@@ -1036,7 +1036,7 @@ def execute_training_run_spec(
 
     parent_lineage: list[CheckpointLineageRef] = []
     loaded_resume_checkpoint: PhaseCheckpoint | None = None
-    segment_start_batch = 0
+    checkpoint_lineage_start = 0
     segment_batch_count: int | None = None
     segment_parent_transaction_id: str | None = None
     segment_parent_checkpoint_set: CheckpointSet | None = None
@@ -1087,15 +1087,15 @@ def execute_training_run_spec(
         )
         if resolved_initialization.mode == "continue_from":
             continuation = run_spec.checkpoint_progress.continuation
-            segment_start_batch = _same_row_resume_start_batch(source_manifest)
+            checkpoint_lineage_start = _same_row_resume_start_batch(source_manifest)
             if (
                 continuation is not None
-                and continuation.source_completed_batches != segment_start_batch
+                and continuation.source_completed_batches != checkpoint_lineage_start
             ):
                 raise TrainingRunExecutorError(
                     "checkpoint continue_from source progress disagrees with the authored "
                     "continuation policy: "
-                    f"source={segment_start_batch} "
+                    f"source={checkpoint_lineage_start} "
                     f"authored={continuation.source_completed_batches}"
                 )
             loaded_resume_checkpoint = PhaseCheckpoint(
@@ -1106,7 +1106,7 @@ def execute_training_run_spec(
             )
             if continuation is not None:
                 segment_batch_count = continuation.additional_batches
-            if continuation is not None or segment_start_batch > 0:
+            if continuation is not None or checkpoint_lineage_start > 0:
                 segment_parent_transaction_id = source_manifest.transaction_id
         if segment_parent_transaction_id is not None:
             segment_parent_checkpoint_set = resolved_initialization.checkpoint_set
@@ -1117,7 +1117,7 @@ def execute_training_run_spec(
         run_spec=run_spec,
         phase_program=program,
         parent_lineage=parent_lineage,
-        segment_start_batch=segment_start_batch,
+        segment_start_batch=checkpoint_lineage_start,
         segment_batch_count=segment_batch_count,
         segment_parent_transaction_id=segment_parent_transaction_id,
         segment_parent_checkpoint_set=segment_parent_checkpoint_set,
@@ -1180,17 +1180,6 @@ def execute_training_run_spec(
     except ValueError as exc:
         raise TrainingRunExecutorError(f"kernel preparation preflight failed: {exc}") from exc
     declaration = method_contract.training_diagnostics
-    method_observation_origin_batch = (
-        _terminal_completed_batches(
-            program=program,
-            final_slots=prepared_slots,
-            fallback=segment_start_batch,
-            require_authority=True,
-            slot_axis_bindings=slot_axis_bindings,
-        )
-        if method_contract.training_diagnostics is not None
-        else segment_start_batch
-    )
     total_batches = int(run_spec.training_config.n_batches or 0)
     runtime_telemetry: dict[str, Any] = dict(executor.preparation_telemetry)
     cancellation: CancellationDecision | None = None
@@ -1206,6 +1195,7 @@ def execute_training_run_spec(
             raise _ImmediateCancellation(coordinate, decision)
         cancellation = decision
 
+    segment_start_batch: int | None = None
     scratch_scope = ExitStack()
     try:
         diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1230,7 +1220,17 @@ def execute_training_run_spec(
 
         method_observation_buffer = None
         method_trace = None
-        if declaration is not None:
+
+        def begin_segment(initial_batch: int) -> None:
+            nonlocal segment_start_batch, method_trace, method_observation_buffer
+            if loaded_resume_checkpoint is not None and initial_batch != checkpoint_lineage_start:
+                raise TrainingRunExecutorError(
+                    "restored batch authority disagrees with checkpoint lineage: "
+                    f"restored={initial_batch} source={checkpoint_lineage_start}"
+                )
+            segment_start_batch = initial_batch
+            if declaration is None:
+                return
             method_trace = _MethodTraceRecorder(
                 declaration=declaration,
                 method_ref=method_contract.method_ref,
@@ -1242,14 +1242,14 @@ def execute_training_run_spec(
                     ),
                     None,
                 ),
-                origin_batch=method_observation_origin_batch,
+                origin_batch=initial_batch,
                 records=scratch_scope.enter_context(_TraceRecords(scratch)),
                 retain=retain_history,
             )
             method_observation_buffer = _MethodObservationBuffer(
                 method_trace.append, slot_axis_bindings
             )
-            checkpoint_store.set_before_save(lambda _coordinate: method_observation_buffer.flush())
+            checkpoint_store.set_before_save(flush_method_observations)
 
         live_progress_callback = _live_progress_callback(
             progress_callback,
@@ -1264,9 +1264,16 @@ def execute_training_run_spec(
             slot_axis_bindings=slot_axis_bindings,
         )
 
-        def publish_progress(coordinate: ProgressCoordinate) -> None:
+        def flush_method_observations(_coordinate: ProgressCoordinate) -> None:
             if method_observation_buffer is not None:
                 method_observation_buffer.flush()
+
+        def record_method_observation(coordinate: ProgressCoordinate) -> None:
+            assert method_observation_buffer is not None
+            method_observation_buffer.append(coordinate)
+
+        def publish_progress(coordinate: ProgressCoordinate) -> None:
+            flush_method_observations(coordinate)
             live_progress_callback(coordinate)
 
         execution = executor.run(
@@ -1276,10 +1283,11 @@ def execute_training_run_spec(
             stop_after_barrier=stop_after_barrier,
             stop_after_next_barrier=lambda _barrier: cancellation is not None,
             context=executor_context,
+            start_callback=begin_segment,
             progress_callback=publish_progress,
             retain_progress=False,
             method_observation_callback=(
-                method_observation_buffer.append if method_observation_buffer is not None else None
+                record_method_observation if declaration is not None else None
             ),
             step_guard=_executor_nan_guard(
                 run_spec=run_spec,
@@ -1294,9 +1302,9 @@ def execute_training_run_spec(
                 slot_axis_bindings=slot_axis_bindings,
                 schedule_lineage=CheckpointSegmentLineage(
                     parent_transaction_id=(
-                        segment_parent_transaction_id if segment_start_batch > 0 else None
+                        segment_parent_transaction_id if checkpoint_lineage_start > 0 else None
                     ),
-                    start_batch=segment_start_batch,
+                    start_batch=checkpoint_lineage_start,
                     segment_batch_count=(
                         segment_batch_count if segment_batch_count is not None else total_batches
                     ),
@@ -1361,16 +1369,13 @@ def execute_training_run_spec(
             manifest_id=exact_manifest_id,
             run_id=resolved_run_id,
             status=status,
-            final_coordinate=execution.coordinate,
-            final_slots=execution.slots,
-            program=program,
+            cumulative_completed_batches=execution.end_completed_batches,
             checkpoint_writes=checkpoint_writes,
-            segment_start_batch=segment_start_batch,
+            segment_start_batch=execution.start_completed_batches,
             learning_rates=learning_rates,
             retain_history=retain_history,
             method_trace=method_trace,
             execution_context=producer_context,
-            slot_axis_bindings=slot_axis_bindings,
         )
         staged_diagnostics = _stage_training_diagnostics(
             diagnostics,
@@ -1449,6 +1454,7 @@ def execute_training_run_spec(
                 },
             )
     except _NanGuardFailure as failure:
+        assert segment_start_batch is not None
         try:
             failed_result = _finalize_nan_guard_failure(
                 failure,
@@ -1502,6 +1508,7 @@ def execute_training_run_spec(
             raise FloatingPointError(str(failure)) from failure
         return failed_result
     except _ImmediateCancellation as interrupted:
+        assert segment_start_batch is not None
         checkpoint_writes = checkpoint_store.writes
         barrier_artifacts = checkpoint_store.barrier_artifacts
         final_metrics = _final_metrics({}, interrupted.coordinate, slot_axis_bindings)
@@ -1509,16 +1516,17 @@ def execute_training_run_spec(
             manifest_id=exact_manifest_id,
             run_id=resolved_run_id,
             status="cancelled",
-            final_coordinate=interrupted.coordinate,
-            final_slots={},
-            program=program,
+            cumulative_completed_batches=(
+                interrupted.coordinate.completed_batches
+                if interrupted.coordinate.completed_batches is not None
+                else interrupted.coordinate.program_step
+            ),
             checkpoint_writes=checkpoint_writes,
             segment_start_batch=segment_start_batch,
             learning_rates=learning_rates,
             retain_history=retain_history,
             method_trace=method_trace,
             execution_context=producer_context,
-            slot_axis_bindings=slot_axis_bindings,
         )
         staged_diagnostics = _stage_training_diagnostics(
             diagnostics,
@@ -1679,21 +1687,30 @@ def _finalize_nan_guard_failure(
     barrier_artifacts = checkpoint_store.barrier_artifacts
     final_slots = failure.restored_slots or {}
     final_coordinate = failure.restored_coordinate or failure.coordinate
+    checkpoint_batch = (
+        _checkpoint_completed_batches(checkpoint_writes[-1])
+        if checkpoint_writes
+        else segment_start_batch
+    )
+    completed_batches = _terminal_completed_batches(
+        program=program,
+        final_slots=final_slots,
+        fallback=checkpoint_batch,
+        require_authority=False,
+        slot_axis_bindings=slot_axis_bindings,
+    )
     diagnostics = _build_training_diagnostics(
         manifest_id=manifest_id,
         run_id=run_id,
         status="failed",
         failure_kind="nan_guard",
-        final_coordinate=final_coordinate,
-        final_slots=final_slots,
-        program=program,
+        cumulative_completed_batches=completed_batches,
         checkpoint_writes=checkpoint_writes,
         segment_start_batch=segment_start_batch,
         learning_rates=learning_rates,
         retain_history=retain_history,
         method_trace=None,
         execution_context=producer_context,
-        slot_axis_bindings=slot_axis_bindings,
     )
     staged_diagnostics = _stage_training_diagnostics(
         diagnostics,
@@ -1809,9 +1826,7 @@ def _finalize_nan_guard_failure(
     return TrainingRunExecutionResult(
         run_id=run_id,
         status="failed",
-        start_completed_batches=(
-            diagnostics.completed_batches - diagnostics.segment_completed_batches
-        ),
+        start_completed_batches=segment_start_batch,
         end_completed_batches=diagnostics.completed_batches,
         manifest=manifest,
         manifest_path=manifest_path,
@@ -3501,28 +3516,28 @@ def _final_metrics(
     return normalized
 
 
+def _checkpoint_completed_batches(write: CheckpointWriteResult) -> int:
+    batch = write.manifest.completed_training_batches
+    return batch if batch is not None else write.manifest.completed_coordinate.program_step
+
+
 def _build_training_diagnostics(
     *,
     manifest_id: str,
     run_id: str,
     status: Literal["completed", "cancelled", "failed"],
     failure_kind: Literal["nan_guard"] | None = None,
-    final_coordinate: ProgressCoordinate,
-    final_slots: Mapping[str, Any],
-    program: Any,
+    cumulative_completed_batches: int,
     checkpoint_writes: Sequence[CheckpointWriteResult],
     segment_start_batch: int,
     learning_rates: _LearningRateTrace,
     retain_history: bool,
     method_trace: _MethodTraceRecorder | None,
     execution_context: NativeExecutionProducerContext | None,
-    slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]] | None = None,
 ) -> TrainingDiagnostics:
     transactions: list[CheckpointTransactionDiagnostic] = []
     for write in checkpoint_writes:
-        cumulative_completed = write.manifest.completed_training_batches
-        if cumulative_completed is None:
-            cumulative_completed = write.manifest.completed_coordinate.program_step
+        cumulative_completed = _checkpoint_completed_batches(write)
         transactions.append(
             CheckpointTransactionDiagnostic(
                 transaction_id=write.manifest.transaction_id,
@@ -3531,25 +3546,6 @@ def _build_training_diagnostics(
                 coordinate=write.manifest.completed_coordinate,
             )
         )
-    checkpoint_completed_batches = (
-        transactions[-1].cumulative_completed_batches if transactions else None
-    )
-    terminal_fallback = (
-        checkpoint_completed_batches
-        if checkpoint_completed_batches is not None
-        else segment_start_batch
-        if status == "failed"
-        else final_coordinate.completed_batches
-        if final_coordinate.completed_batches is not None
-        else final_coordinate.program_step
-    )
-    cumulative_completed_batches = _terminal_completed_batches(
-        program=program,
-        final_slots=final_slots,
-        fallback=terminal_fallback,
-        require_authority=status == "completed",
-        slot_axis_bindings=slot_axis_bindings,
-    )
     segment_completed_batches = max(
         0,
         cumulative_completed_batches - segment_start_batch,
@@ -3664,11 +3660,11 @@ class _MethodTraceRecorder:
             raise TrainingRunExecutorError(self._validation_error)
         if self._replica_count is None:
             raise TrainingRunExecutorError("method trace lacks sized replica-axis authority")
-        if self._last_batch != self._origin_batch and self._last_batch > completed_batches:
+        if self._last_batch > completed_batches:
             raise TrainingRunExecutorError(
                 f"method trace completed batch {self._last_batch} is outside the active segment"
             )
-        if self._last_batch != max(self._origin_batch, completed_batches):
+        if self._last_batch != completed_batches:
             raise TrainingRunExecutorError(
                 f"method trace has incomplete batch coverage: "
                 f"observed through {self._last_batch}, expected through {completed_batches}"

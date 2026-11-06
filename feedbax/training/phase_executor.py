@@ -544,6 +544,7 @@ class PhaseProgramExecutor:
         stop_after_barrier: str | None = None,
         stop_after_next_barrier: Callable[[str], bool] | None = None,
         context: Mapping[str, Any] | None = None,
+        start_callback: Callable[[int], None] | None = None,
         progress_callback: ProgressCallback | None = None,
         retain_progress: bool = True,
         method_observation_callback: MethodObservationCallback | None = None,
@@ -565,6 +566,8 @@ class PhaseProgramExecutor:
         through that phase's authored barrier, even without a checkpoint interval.
         Set `retain_progress=False` to omit the observations from the result
         while still delivering them to `progress_callback`.
+
+        ``start_callback`` receives the entry batch after restoration and before updates.
 
         A checkpoint restored by external custody can be passed directly as
         ``resume_checkpoint``. ``resume_from_barrier`` selects a stored in-memory visit.
@@ -616,6 +619,8 @@ class PhaseProgramExecutor:
         ):
             self.preflight(current_slots, run_id=run_id, context=checkpoint_context)
         initial_batch = self._completed_training_batches(current_slots, coordinate)
+        if start_callback is not None:
+            start_callback(initial_batch)
         previous_completed_batch = initial_batch
         last_progress_batch = initial_batch
         last_checkpoint_batch = initial_batch

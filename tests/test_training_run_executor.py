@@ -1799,7 +1799,7 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
     ("initial_batch", "expected_batches", "expected_steps"),
     [
         pytest.param(0, [3, 4], [3, 4], id="fresh"),
-        pytest.param(10, [12, 14], [2, 4], id="continuation"),
+        pytest.param(10, [12, 14], [2, 4], id="fresh-offset"),
     ],
 )
 def test_method_diagnostics_progress_observes_completed_batch_without_custody_leak(
@@ -1834,6 +1834,7 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
     assert [
         event["coordinate"]["program_step"] for event in result.history_events
     ] == expected_steps
+    assert result.diagnostics.segment_completed_batches == 4
     trace = result.diagnostics.method_trace
     assert trace is not None
     assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
@@ -2044,7 +2045,7 @@ def test_buffered_method_observations_resume_from_partial_checkpoint(
     checkpoint_root = tmp_path / "checkpoint"
     partial = execute_training_run_spec(
         spec,
-        preparation=_valid_materialized_preparation(spec),
+        preparation=_valid_materialized_preparation(spec, initial_batch=10),
         registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
         manifest_root=tmp_path / "partial-manifest",
         checkpoint_root=checkpoint_root,
@@ -2053,7 +2054,7 @@ def test_buffered_method_observations_resume_from_partial_checkpoint(
     )
     resumed = execute_training_run_spec(
         spec,
-        preparation=_valid_materialized_preparation(spec),
+        preparation=_valid_materialized_preparation(spec, initial_batch=10),
         registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
         manifest_root=tmp_path / "resumed-manifest",
         checkpoint_root=checkpoint_root,
@@ -2065,12 +2066,17 @@ def test_buffered_method_observations_resume_from_partial_checkpoint(
     resumed_trace = resumed.diagnostics.method_trace
     assert partial_trace is not None
     assert resumed_trace is not None
-    assert {row.completed_batch for row in partial_trace.records} == {1, 2, 3}
-    assert {row.completed_batch for row in resumed_trace.records} == {4, 5, 6, 7}
-    assert len(resumed_trace.records) == 4 * 5
+    assert [(row.completed_batch, row.replica_index) for row in partial_trace.records] == [
+        (batch, replica) for batch in (11, 12) for replica in range(5)
+    ]
+    assert [(row.completed_batch, row.replica_index) for row in resumed_trace.records] == [
+        (batch, replica) for batch in range(13, 18) for replica in range(5)
+    ]
+    assert (resumed.start_completed_batches, resumed.end_completed_batches) == (12, 17)
+    assert resumed.diagnostics.segment_completed_batches == 5
     assert [write.manifest.completed_training_batches for write in resumed.checkpoint_writes] == [
-        6,
-        7,
+        15,
+        17,
     ]
 
 
@@ -2095,7 +2101,7 @@ def test_durable_history_preserves_progress_bytes_and_typed_trace(tmp_path: Path
         return updated
 
     def run(root: Path, *, retain_history: bool):
-        template = _valid_materialized_preparation(spec)
+        template = _valid_materialized_preparation(spec, initial_batch=10)
         preparation = _build_materialized_execution_preparation(
             request=ExecutionPreparationRequest(run_spec=spec),
             provider_identity=template.identity.provider_identity,
@@ -2126,7 +2132,7 @@ def test_durable_history_preserves_progress_bytes_and_typed_trace(tmp_path: Path
     durable = run(tmp_path / "durable", retain_history=False)
 
     assert durable.history_events == ()
-    assert [event["coordinate"]["completed_batches"] for event in callback_events] == [3, 4]
+    assert [event["coordinate"]["completed_batches"] for event in callback_events] == [12, 14]
     history_ref = next(
         ref for ref in durable.manifest.artifacts if ref.role == "training_history"
     )
@@ -2149,12 +2155,11 @@ def test_durable_history_preserves_progress_bytes_and_typed_trace(tmp_path: Path
     assert trace.trace_schema_id == "feedbax.tests.method_trace"
     assert trace.measurement_basis == "kernel_input"
     assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
-        (batch, index) for batch in range(1, 5) for index in range(5)
+        (batch, index) for batch in range(11, 15) for index in range(5)
     ]
     assert trace.records[0].value == {"accepted": False, "nested": {"score": 0.0}}
     assert durable.diagnostics is None
     loaded_diagnostics = type(diagnostics).model_validate_json(durable.diagnostics_path.read_bytes())
-    assert loaded_diagnostics.checkpoint_coordinates == [3, 4]
     assert loaded_diagnostics.model_dump(exclude={"checkpoint_transactions"}) == (
         diagnostics.model_dump(exclude={"checkpoint_transactions"})
     )
@@ -2173,24 +2178,56 @@ def test_durable_history_preserves_progress_bytes_and_typed_trace(tmp_path: Path
     )
     assert load_method_training_trace(durable.manifest, provider) == trace
 
+    assert (durable.start_completed_batches, durable.end_completed_batches) == (10, 14)
+    assert loaded_diagnostics.segment_completed_batches == 4
+    assert loaded_diagnostics.checkpoint_coordinates == [2, 4]
 
-def test_declared_method_trace_uses_cancelled_batch_authority(tmp_path: Path) -> None:
+
+@pytest.mark.parametrize(
+    ("stop_before_update", "expected_end", "expected_batches", "checkpoint_batches"),
+    [
+        pytest.param(True, 10, (), [], id="empty-segment"),
+        pytest.param(False, 14, (11, 12, 13, 14), [12], id="after-checkpoint"),
+    ],
+)
+def test_declared_method_trace_uses_cancelled_batch_authority(
+    tmp_path: Path,
+    stop_before_update: bool,
+    expected_end: int,
+    expected_batches: tuple[int, ...],
+    checkpoint_batches: list[int],
+) -> None:
     spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 5
+    spec.training_config.n_batches = 5
+    spec.checkpoint_progress.checkpoint_interval = 3
+
+    def cancel_after_checkpoint(coordinate):
+        if coordinate.completed_batches == 14:
+            return CancellationDecision("terminate", "test", 123.0)
+        return None
+
     result = execute_training_run_spec(
         spec,
         preparation=_valid_materialized_preparation(spec, initial_batch=10),
         registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
-        manifest_root=tmp_path,
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoint",
         run_id="cancelled-mapped-trace",
-        cancellation_probe=lambda _coordinate: CancellationDecision("terminate", "test", 123.0),
+        cancellation_probe=cancel_after_checkpoint,
+        stop_before_update=lambda: stop_before_update,
     )
 
     trace = result.diagnostics.method_trace
     assert trace is not None
     assert result.status == result.manifest.status == "cancelled"
-    assert result.diagnostics.cumulative_completed_batches == 11
+    assert (result.start_completed_batches, result.end_completed_batches) == (10, expected_end)
+    assert result.diagnostics.segment_completed_batches == len(expected_batches)
+    assert [write.manifest.completed_training_batches for write in result.checkpoint_writes] == (
+        checkpoint_batches
+    )
     assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
-        (11, index) for index in range(5)
+        (batch, index) for batch in expected_batches for index in range(5)
     ]
 
 
