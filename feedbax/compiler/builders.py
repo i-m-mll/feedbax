@@ -4,13 +4,13 @@ from functools import partial
 from typing import Any, Callable, Mapping
 
 import equinox as eqx
-import diffrax as dfx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
 
 from feedbax.models.feedback import FeedbackChannels
+from feedbax.compiler.solver_config import DEFAULT_PLANAR_SOLVER, resolve_acausal_solver
 from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.graph import Component
 from feedbax.intervene.intervene import (
@@ -210,6 +210,9 @@ def _default_analytical_body_preset(params: Mapping[str, Any]) -> BodyPreset:
 
 def _build_analytical_musculoskeletal_plant(params: Mapping[str, Any]) -> Mechanics:
     dt = float(params.get("dt", 0.01))
+    solver = resolve_acausal_solver(
+        params.get("solver_type", DEFAULT_PLANAR_SOLVER), dt, physical_domain="planar_multibody"
+    )
     n_steps = int(params.get("n_steps", 1))
     if n_steps < 1:
         raise ValueError("AnalyticalMusculoskeletalPlant n_steps must be >= 1")
@@ -223,7 +226,7 @@ def _build_analytical_musculoskeletal_plant(params: Mapping[str, Any]) -> Mechan
         clip_states=bool(params.get("clip_states", True)),
         key=jr.PRNGKey(0),
     )
-    backend = DiffraxBackend(control_dt=dt, sub_dt=dt / n_steps, solver=dfx.Euler())
+    backend = DiffraxBackend(control_dt=dt, sub_dt=dt / n_steps, solver=solver)
     return _ExcitationMechanics(
         plant=plant,
         dt=dt,

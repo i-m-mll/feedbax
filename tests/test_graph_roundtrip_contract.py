@@ -284,7 +284,8 @@ def test_two_link_arm_nondefault_lengths_round_trip() -> None:
     assert jnp.allclose(arm.l, jnp.asarray([0.41, 0.29]))
 
 
-def test_analytical_plant_authored_contract_round_trips() -> None:
+@pytest.mark.parametrize("solver_params", [{}, {"solver_type": "tsit5"}], ids=["default", "tsit5"])
+def test_analytical_plant_authored_contract_round_trips(solver_params: dict[str, str]) -> None:
     registry = ComponentRegistry(load_user_components=False)
     params = {
         "dt": 0.02,
@@ -292,6 +293,7 @@ def test_analytical_plant_authored_contract_round_trips() -> None:
         "tau_act": 0.015,
         "tau_deact": 0.055,
         "clip_states": False,
+        **solver_params,
     }
     spec = GraphSpec(
         nodes={

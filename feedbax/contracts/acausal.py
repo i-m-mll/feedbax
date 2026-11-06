@@ -52,7 +52,14 @@ class RootFinderSpec(BaseModel):
 
 
 class SolverConfigSpec(BaseModel):
-    """Acausal solver configuration persisted as contract data."""
+    """Solver settings for the executable acausal interior.
+
+    Nested scalar interiors flatten into their enclosing system and inherit
+    the outer graph's solver. Scalar implicit solvers use Newton at tolerances
+    of 1e-6 and Diffrax's iteration budget when ``root_finder`` is omitted.
+    Supplying a root-finder block configures both tolerances and the budget,
+    including the block's defaults for any omitted fields.
+    """
 
     model_config = ConfigDict(extra="forbid")
 

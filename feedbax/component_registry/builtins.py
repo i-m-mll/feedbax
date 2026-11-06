@@ -9,7 +9,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler
+from pydantic import model_serializer
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
@@ -20,6 +21,12 @@ from feedbax.contracts.array_values import (
     SparseCooArrayValueSpec,
 )
 from feedbax.compiler.penzai_compiler import penzai_builder_options
+from feedbax.compiler.solver_config import (
+    DEFAULT_PLANAR_SOLVER,
+    MIN_PLANAR_DT,
+    PlanarSolverType,
+    planar_solver_name,
+)
 from feedbax.contracts.migrations import ComponentMigration
 from feedbax.contracts.representation import RepresentationSpec
 from feedbax.control import (
@@ -150,6 +157,26 @@ class _ConstantParams(BaseModel):
     )
 
 
+class _AnalyticalPlantParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dt: float = Field(
+        default=0.01, ge=MIN_PLANAR_DT, json_schema_extra={"feedbax": {"required": True}}
+    )
+    n_steps: int = Field(default=1, ge=1)
+    solver_type: PlanarSolverType = DEFAULT_PLANAR_SOLVER
+    tau_act: float = Field(default=0.01, ge=0.001)
+    tau_deact: float = Field(default=0.04, ge=0.001)
+    clip_states: bool = True
+
+    @model_serializer(mode="wrap", when_used="json")
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        params = handler(self)
+        if self.solver_type == DEFAULT_PLANAR_SOLVER:
+            params.pop("solver_type", None)
+        return params
+
+
 def _extract_penzai_adapter_params(component: Any, model: Any) -> Any:
     if component.builder_name is None:
         raise ValueError("PenzaiAdapter serialization requires a registered builder name")
@@ -181,6 +208,7 @@ def _extract_analytical_plant_params(component: Any, model: Any) -> Any:
         {
             "dt": float(component.dt),
             "n_steps": int(backend.n_substeps),
+            "solver_type": planar_solver_name(backend.solver),
             **component.plant.to_params(),
         }
     )
@@ -3133,6 +3161,7 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="AnalyticalMusculoskeletalPlant",
+            param_model=_AnalyticalPlantParams,
             builder=_builders._build_analytical_musculoskeletal_plant,
             extractor=_extract_analytical_plant_params,
             override_reason=(
@@ -3146,42 +3175,6 @@ def register_builtin_components(registry: _Registry) -> None:
                 "differentiable; no MuJoCo dependency. ODE state: 2 joint "
                 "angles + 2 angular velocities + 6 muscle activations."
             ),
-            parameter_fields=[
-                ParameterField(
-                    name="dt",
-                    type="float",
-                    default=0.01,
-                    min=0.0001,
-                    required=True,
-                ),
-                ParameterField(
-                    name="n_steps",
-                    type="int",
-                    default=1,
-                    min=1,
-                    required=False,
-                ),
-                ParameterField(
-                    name="tau_act",
-                    type="float",
-                    default=0.01,
-                    min=0.001,
-                    required=False,
-                ),
-                ParameterField(
-                    name="tau_deact",
-                    type="float",
-                    default=0.04,
-                    min=0.001,
-                    required=False,
-                ),
-                ParameterField(
-                    name="clip_states",
-                    type="bool",
-                    default=True,
-                    required=False,
-                ),
-            ],
             input_ports=["excitation"],
             output_ports=["effector", "state"],
             icon="Activity",
