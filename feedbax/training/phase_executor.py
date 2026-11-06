@@ -22,6 +22,7 @@ from feedbax.contracts.worker import (
     PhaseProgramSpec,
     ProgressCoordinate,
     StateSlotSpec,
+    UpdateStepSpec,
 )
 from feedbax.training.worker_validation import (
     WorkerContractValidationError,
@@ -89,13 +90,54 @@ def _reconstruct_updates(
 
 
 @dataclass(frozen=True)
+class _NumericalWrite:
+    """Rebuild a write from compiled arrays and its static leaf sources."""
+
+    tree: Any
+    array_indices: tuple[int, ...]
+    static_leaves: tuple[tuple[int, Any], ...]
+    input_offset: int | None
+
+    def restore(
+        self,
+        arrays: tuple[jax.Array, ...],
+        input_leaves: list[Any],
+        *,
+        mapped: bool,
+    ) -> Any:
+        leaves = [None] * self.tree.num_leaves
+        offset = self.input_offset
+        for i, value in self.static_leaves:
+            leaves[i] = value if offset is None else deepcopy(input_leaves[offset + i])
+        for i, array in zip(self.array_indices, arrays, strict=True):
+            if mapped and offset is not None:
+                source = input_leaves[offset + i]
+                # AOT canonicalizes NumPy dtypes, but a mapped write must keep
+                # the live destination's dtype and array category.
+                if not isinstance(source, jax.Array) and (
+                    not isinstance(source, np.ndarray) or source.dtype != array.dtype
+                ):
+                    raise ValueError("mapped write changes destination array category or dtype")
+            leaves[i] = array
+        return self.tree.unflatten(leaves)
+
+
+@dataclass(frozen=True)
 class _PreparedNumericalUpdate:
+    """A fixed input and write ABI around an array-only JAX executable."""
+
     declaration: NumericalUpdateKernel
     executable: Any
-    static_inputs: Any
-    input_structure: Any
+    static_inputs: tuple[Any, ...]
+    static_indices: tuple[int, ...]
+    array_indices: tuple[int, ...]
+    input_tree: Any
     slot_names: tuple[str, ...]
-    context_names: tuple[str, ...]
+    context_names: frozenset[str]
+    writes: tuple[tuple[str, _NumericalWrite], ...]
+    unprojected_writes: tuple[str, ...]
+    mapped: bool
+    custom_projection: bool
 
     def __call__(
         self,
@@ -104,21 +146,31 @@ class _PreparedNumericalUpdate:
         context: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         del coordinate
-        projected_slots, projected_context = self.declaration.project(slots, context)
-        if set(projected_context) != set(self.context_names):
+        projected_slots, selected_context = self.declaration.project(slots, context)
+        if selected_context.keys() != self.context_names:
             raise ValueError("selected numerical context keys changed after preparation")
-        missing = set(self.slot_names) - set(projected_slots)
-        if missing:
-            raise ValueError(f"selected numerical slots disappeared: {sorted(missing)!r}")
-        selected = {k: projected_slots[k] for k in self.slot_names}
-        inputs = (selected, projected_context)
-        if jt.structure(inputs) != self.input_structure:
+        try:
+            selected = {k: projected_slots[k] for k in self.slot_names}
+        except KeyError as exc:
+            missing = sorted(set(self.slot_names) - projected_slots.keys())
+            raise ValueError(f"selected numerical slots disappeared: {missing!r}") from exc
+        leaves, tree = jt.flatten((selected, selected_context))
+        if tree != self.input_tree:
             raise ValueError("numerical input PyTree structure changed after preparation")
-        static = eqx.filter(inputs, lambda x: not eqx.is_array(x))
-        if eqx.tree_equal(static, self.static_inputs) is not True:
+        static = tuple(leaves[i] for i in self.static_indices)
+        if static and eqx.tree_equal(static, self.static_inputs) is not True:
             raise ValueError("numerical static inputs changed after preparation")
-        updates = self.executable(*inputs)
-        return _reconstruct_updates(updates, selected)
+        arrays = tuple(leaves[i] for i in self.array_indices)
+        if not all(map(eqx.is_array, arrays)):
+            raise ValueError("numerical input array/static leaf category changed after preparation")
+        outputs = self.executable(arrays)
+        updates = {
+            name: write.restore(outputs[name], leaves, mapped=self.mapped)
+            for name, write in self.writes
+        }
+        if self.custom_projection:
+            return _reconstruct_updates(updates, selected)
+        return updates
 
 
 @jax.jit
@@ -418,6 +470,102 @@ class PhaseProgramExecutor:
             out_axes=eqx.if_array(0),
         )
 
+    def _prepare_numerical(
+        self,
+        kernel: NumericalUpdateKernel,
+        step: UpdateStepSpec,
+        slots: Mapping[str, Any],
+        context: Mapping[str, Any],
+        *,
+        mapped_step: bool,
+    ) -> _PreparedNumericalUpdate:
+        inputs = kernel.project(slots, context)
+        numeric_slots, numeric_context = inputs
+        input_leaves, input_tree = jt.flatten(inputs)
+        slot_names = tuple(sorted(numeric_slots))
+        array_indices = tuple(i for i, x in enumerate(input_leaves) if eqx.is_array(x))
+        static_indices = tuple(i for i, x in enumerate(input_leaves) if not eqx.is_array(x))
+        destinations = {}
+        custom_projection = type(kernel).project is not NumericalUpdateKernel.project
+        # Only the declared key projection proves that the operand is the destination.
+        if not custom_projection:
+            offset = 0
+            for name, tree in zip(slot_names, input_tree.children()[0].children(), strict=True):
+                destinations[name] = offset
+                offset += tree.num_leaves
+        writes = {}
+
+        def numerical_call(arrays):
+            leaves = input_leaves.copy()
+            for i, array in zip(array_indices, arrays, strict=True):
+                leaves[i] = array
+            selected_slots, selected_context = input_tree.unflatten(leaves)
+            if mapped_step:
+                mapped = {k: v for k, v in selected_slots.items() if k in self._mapped_slots}
+                shared = {
+                    k: v
+                    for k, v in selected_slots.items()
+                    if k not in self._mapped_slots
+                }
+
+                def scalar_call(mapped, shared, ctx):
+                    return kernel.update({**shared, **mapped}, ctx)
+
+                updates = eqx.filter_vmap(
+                    scalar_call,
+                    in_axes=(eqx.if_array(0), None, None),
+                    out_axes=eqx.if_array(0),
+                )(mapped, shared, selected_context)
+            else:
+                updates = kernel.update(selected_slots, selected_context)
+            output_template = jt.map(
+                lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype)
+                if eqx.is_array(x)
+                else x,
+                updates,
+            )
+            self._validate_destination_updates(
+                step.name,
+                step.writes,
+                output_template,
+                slots,
+                fixed_static=True,
+            )
+            outputs = {}
+            for name, value in updates.items():
+                leaves, tree = jt.flatten(value)
+                array_positions = tuple(i for i, x in enumerate(leaves) if eqx.is_array(x))
+                writes[name] = _NumericalWrite(
+                    tree=tree,
+                    array_indices=array_positions,
+                    static_leaves=tuple(
+                        (i, x) for i, x in enumerate(leaves) if not eqx.is_array(x)
+                    ),
+                    input_offset=destinations.get(name),
+                )
+                outputs[name] = tuple(leaves[i] for i in array_positions)
+            return outputs
+
+        if mapped_step and set(step.writes) & self._shared_slots:
+            raise ValueError("mapped numerical step writes shared slots")
+        executable = jax.jit(numerical_call).lower(
+            tuple(input_leaves[i] for i in array_indices)
+        ).compile()
+        return _PreparedNumericalUpdate(
+            declaration=kernel,
+            executable=executable,
+            static_inputs=tuple(deepcopy(input_leaves[i]) for i in static_indices),
+            static_indices=static_indices,
+            array_indices=array_indices,
+            input_tree=input_tree,
+            slot_names=slot_names,
+            context_names=frozenset(numeric_context),
+            writes=tuple(writes.items()),
+            unprojected_writes=tuple(name for name in writes if name not in destinations),
+            mapped=mapped_step,
+            custom_projection=custom_projection,
+        )
+
     def preflight(
         self,
         slots: Mapping[str, Any],
@@ -439,55 +587,8 @@ class PhaseProgramExecutor:
             try:
                 if isinstance(kernel, NumericalUpdateKernel):
                     started = time.perf_counter()
-                    inputs = kernel.project(slots, dict(context or {}))
-                    numeric_slots, _ = inputs
-
-                    def numerical_call(selected_slots, selected_context):
-                        if mapped_step:
-                            mapped = {
-                                k: v for k, v in selected_slots.items() if k in self._mapped_slots
-                            }
-                            shared = {
-                                k: v
-                                for k, v in selected_slots.items()
-                                if k not in self._mapped_slots
-                            }
-
-                            def scalar_call(mapped, shared, ctx):
-                                return kernel.update({**shared, **mapped}, ctx)
-
-                            updates = eqx.filter_vmap(
-                                scalar_call,
-                                in_axes=(eqx.if_array(0), None, None),
-                                out_axes=eqx.if_array(0),
-                            )(mapped, shared, selected_context)
-                        else:
-                            updates = kernel.update(selected_slots, selected_context)
-                        output_template = jt.map(
-                            lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype)
-                            if eqx.is_array(x)
-                            else x,
-                            updates,
-                        )
-                        self._validate_destination_updates(
-                            step.name,
-                            step.writes,
-                            output_template,
-                            slots,
-                            fixed_static=True,
-                        )
-                        return updates
-
-                    if mapped_step and set(step.writes) & self._shared_slots:
-                        raise ValueError("mapped numerical step writes shared slots")
-                    executable = eqx.filter_jit(numerical_call).lower(*inputs).compile()
-                    self._prepared_numerical[step.name] = _PreparedNumericalUpdate(
-                        kernel,
-                        executable,
-                        _copy_executor_value(eqx.filter(inputs, lambda x: not eqx.is_array(x))),
-                        jt.structure(inputs),
-                        tuple(numeric_slots),
-                        tuple(inputs[1]),
+                    self._prepared_numerical[step.name] = self._prepare_numerical(
+                        kernel, step, slots, dict(context or {}), mapped_step=mapped_step
                     )
                     preparation_seconds += time.perf_counter() - started
                     prepared.append({"step": step.name, "kernel_ref": step.kernel.kernel_ref})
@@ -698,21 +799,22 @@ class PhaseProgramExecutor:
                             f"/phase_program/update_steps/{step_name}/kernel_ref",
                             f"missing callable for kernel_ref {step.kernel.kernel_ref!r}",
                         )
+                    prepared = None
                     if isinstance(kernel, NumericalUpdateKernel):
                         try:
-                            updates = self._prepared_numerical[step.name](
-                                current_slots,
-                                coordinate,
-                                checkpoint_context,
-                            )
+                            prepared = self._prepared_numerical[step.name]
+                            updates = prepared(current_slots, coordinate, checkpoint_context)
                         except Exception as exc:
                             raise WorkerContractValidationError(
                                 f"/phase_program/update_steps/{step.name}",
                                 f"prepared numerical execution failed: {exc}",
                             ) from exc
-                        if self._active_axis is not None and self._active_axis in step.axes:
+                        if prepared.mapped and prepared.unprojected_writes:
                             self._validate_destination_updates(
-                                step.name, step.writes, updates, current_slots
+                                step.name,
+                                step.writes,
+                                {name: updates[name] for name in prepared.unprojected_writes},
+                                current_slots,
                             )
                     elif self._active_axis is not None and self._active_axis in step.axes:
                         updates = mapped_kernels[step.kernel.kernel_ref](
@@ -740,7 +842,17 @@ class PhaseProgramExecutor:
                             f"/phase_program/update_steps/{step_name}/writes",
                             f"kernel returned undeclared writes {unknown!r}",
                         )
-                    current_slots.update(_copy_executor_mapping(updates))
+                    if prepared is None:
+                        updates = _copy_executor_mapping(updates)
+                    elif prepared.unprojected_writes:
+                        updates = {
+                            **updates,
+                            **{
+                                name: _copy_executor_value(updates[name])
+                                for name in prepared.unprojected_writes
+                            },
+                        }
+                    current_slots.update(updates)
                 coordinate = coordinate.model_copy(
                     update={
                         "program_step": coordinate.program_step + 1,
