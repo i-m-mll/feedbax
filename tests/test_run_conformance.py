@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import hashlib
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -588,20 +589,165 @@ def _authorized_stopped_row(**updates: object) -> ConformanceRowArtifacts:
 
 
 def test_completed_batches_accepts_only_a_fully_attested_authorized_stop() -> None:
-    result = check_completed_batches(_authorized_stopped_row())
+    assert check_completed_batches(_authorized_stopped_row()).status == "pass"
 
-    assert result.status == "pass"
-    assert result.expected == {
-        "authored_batches": 100,
-        "authorized_stop_after_batches": 50,
-        "terminal_status": "cancelled",
-        "row_status": "stopped",
-        "row_error": "operator-stop-after-checkpoint",
-        "final_checkpoint_batches": 50,
+
+def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
+    tmp_path: Path,
+) -> None:
+    from feedbax.contracts.manifest import load_manifest
+    from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError
+    from feedbax.orchestration.state import RunSetState, StageState, utc_now
+    from feedbax.orchestration.stages import (
+        OrchestrationStageError,
+        StageEngine,
+        _publish_verified_native_collection,
+    )
+    from feedbax.persistence import ImmutableArtifactBlobProvider
+    from feedbax.training import execute_training_run_spec
+    from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
+    from feedbax.training.diagnostics import load_method_training_trace
+    from tests.test_orchestration_core import FakeDriver, _bundle, _with_local_realized_proof
+    from tests.test_training_run_executor import (
+        _execution_context,
+        _mapped_diagnostics_run_spec,
+        _mapped_scalar_kernel,
+        _mapped_test_registry,
+        _valid_materialized_preparation,
+    )
+
+    spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 5
+    spec.training_config.n_batches = 5
+    spec.checkpoint_progress.checkpoint_interval = 3
+    spec.checkpoint_progress.progress_interval = 1
+    progress = []
+    collection_root = tmp_path / "collected"
+    checkpoint_root = collection_root / "checkpoints"
+    manifest_root = collection_root / "manifests"
+    context = _execution_context(collection_root=collection_root, run_spec=spec)
+    result = execute_training_run_spec(
+        spec,
+        preparation=_valid_materialized_preparation(spec, initial_batch=10),
+        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+        manifest_root=manifest_root,
+        checkpoint_root=checkpoint_root,
+        execution_context=context,
+        progress_callback=progress.append,
+        stop_before_update=lambda: len(progress) == 4,
+    )
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_bytes(
+        training_spec_canonical_bytes(spec.model_dump(mode="json", exclude_none=True))
+    )
+    execution = context.execution.model_copy(
+        update={"payload": context.execution.payload.model_copy(update={"uri": str(payload_path)})}
+    )
+    bundle = _bundle(tmp_path)
+    row_spec = bundle.rows[0]
+    launch = row_spec.launch.model_copy(
+        update={
+            "command": ["python", "-m", "feedbax", "execute-training-run-spec"],
+            "payload_routing": {"kind": "registered-execution-payload"},
+        }
+    )
+    row_spec = row_spec.model_copy(update={"execution": execution, "launch": launch})
+    bundle = bundle.model_copy(update={"rows": [row_spec]})
+    outputs = {
+        "manifest.json": str(result.manifest_path),
+        "training-diagnostics.json": str(result.diagnostics_path),
+        "checkpoints": str(checkpoint_root),
+        "manifests": str(manifest_root),
     }
-    assert result.observed["diagnostics_completed_batches"] == 50
-    assert result.observed["checkpoint_coordinates"] == [50]
-    assert result.observed["checkpoint_completed_batches"] == [50]
+    custody = _publish_verified_native_collection(row_spec, outputs)
+
+    manifest = load_manifest(result.manifest_path)
+    terminal = authenticate_checkpoint_custody_ref(
+        manifest.checkpoint_custody[-1], allowed_root=checkpoint_root
+    )
+    assert manifest.completed_batches == terminal.manifest.completed_training_batches == 14
+    provider = ImmutableArtifactBlobProvider(manifest_root)
+    trace = load_method_training_trace(manifest, provider)
+    assert sorted({record.completed_batch for record in trace.records}) == [11, 12, 13, 14]
+
+    state = RunSetState(
+        run_set_id=bundle.run_set_id,
+        rows={
+            row_spec.row_id: RowState(
+                status="stopped", error="operator-stop-after-checkpoint", collected_outputs=outputs
+            )
+        },
+        stages={
+            "COLLECT": StageState(
+                status="completed", outputs={"checkpoint_custody": {row_spec.row_id: custody}}
+            )
+        },
+    )
+    state = _with_local_realized_proof(state, bundle)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=FakeDriver(),
+        row_conformance_inputs={
+            row_spec.row_id: RowConformanceRuntimeInputs(
+                authorized_batch_stop=AuthorizedBatchStop(stop_after_batches=4)
+            )
+        },
+    )
+    observed_at = utc_now()
+    row = engine._conformance_artifacts(row_spec, state, observed_at=observed_at)
+    registry = CheckRegistry(
+        {"completed_batches": check_completed_batches, "checkpoint_cadence": check_checkpoint_cadence}
+    )
+    write_conformance_certificate(
+        run_set_dir=tmp_path,
+        run_set_id=bundle.run_set_id,
+        rows=[row],
+        registry=registry,
+        generated_at=observed_at,
+    )
+    certificate = json.loads((tmp_path / "conformance.json").read_bytes())
+    assert_certificate_allows_completed_registration(certificate)
+    unauthorized = run_conformance_checks(
+        run_set_id=bundle.run_set_id,
+        rows=[replace(row, runtime_inputs=None)],
+        registry=registry,
+        generated_at=observed_at,
+    )
+    with pytest.raises(ValueError, match="failing certificate"):
+        assert_certificate_allows_completed_registration(unauthorized)
+
+    diagnostics = row.training_diagnostics
+    swapped_counts = {
+        **diagnostics,
+        "checkpoint_transactions": [
+            {**transaction, "cumulative_completed_batches": count}
+            for transaction, count in zip(diagnostics["checkpoint_transactions"], [14, 12])
+        ],
+    }
+    assert check_completed_batches(replace(row, training_diagnostics=swapped_counts)).status == "fail"
+    conflicting_total = {**diagnostics, "cumulative_completed_batches": 17}
+    conflicting_frame = replace(row, training_diagnostics=conflicting_total)
+    assert check_completed_batches(conflicting_frame).status == "fail"
+    assert check_checkpoint_cadence(conflicting_frame).status == "fail"
+    conflicting_receipt = {
+        **row.collected_checkpoint_custody,
+        "completed_training_batches": 13,
+    }
+    assert check_completed_batches(
+        replace(row, collected_checkpoint_custody=conflicting_receipt)
+    ).status == "fail"
+    manifest_bytes = result.manifest_path.read_bytes()
+    result.manifest_path.write_bytes(manifest_bytes + b"\n")
+    with pytest.raises(OrchestrationStageError, match="Collected result digest changed"):
+        engine._conformance_artifacts(row_spec, state, observed_at=observed_at)
+    result.manifest_path.write_bytes(manifest_bytes)
+
+    diagnostics_ref = next(ref for ref in manifest.artifacts if ref.role == "training_diagnostics")
+    digest = diagnostics_ref.sha256
+    blob = manifest_root / "artifacts" / "sha256" / digest[:2] / digest
+    blob.write_bytes(blob.read_bytes().replace(b'"cancelled"', b'"completed"'))
+    with pytest.raises(ArtifactBlobIntegrityError):
+        engine._conformance_artifacts(row_spec, state, observed_at=observed_at)
 
 
 @pytest.mark.parametrize(
@@ -692,6 +838,9 @@ def test_completed_batches_does_not_relax_unplanned_or_full_budget_rows() -> Non
             row_state=RowState(status="completed", completed_at=GENERATED_AT),
         )
     )
+    cancelled_at_full_budget = check_completed_batches(
+        _authorized_stopped_row(bundle_row_spec={"n_batches": 50})
+    )
 
     assert unplanned.status == "fail"
     assert unplanned.expected == 100
@@ -699,6 +848,7 @@ def test_completed_batches_does_not_relax_unplanned_or_full_budget_rows() -> Non
     assert completed.status == "pass"
     assert completed.expected == 100
     assert completed.observed == 100
+    assert cancelled_at_full_budget.status == "fail"
 
 
 def test_checkpoint_cadence_uses_segment_length_for_continuation() -> None:
