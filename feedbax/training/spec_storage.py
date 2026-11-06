@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from feedbax.contracts.base import (
     ArtifactRef,
@@ -12,6 +12,7 @@ from feedbax.contracts.base import (
 )
 from feedbax.contracts.manifest import (
     TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
+    TrainingRunAxisCoordinate,
     TrainingRunManifest,
 )
 from feedbax.contracts.run_matrix import (
@@ -21,10 +22,11 @@ from feedbax.contracts.run_matrix import (
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
     InlineMatrixBaseSpec,
+    TrainingRowProvenance,
     TrainingRunMatrixSpec,
 )
 from feedbax.contracts.migrations import default_spec_registry
-from feedbax.contracts.training import TrainingProgramRegistry
+from feedbax.contracts.training import TRAINING_RUN_SPEC_SCHEMA_ID, TrainingProgramRegistry
 from feedbax.contracts.worker import NATIVE_TRAINING_COLLECTION_OUTPUTS
 from feedbax.contracts.training_matrix_composition import (
     TrainingRunMatrixDeltaSpec,
@@ -36,6 +38,7 @@ from feedbax.contracts.spec_storage import (
     TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
     TrainingRunExecutionCapsule,
     build_resolved_semantics_snapshot,
+    canonical_training_run_spec_sha256,
     store_canonical_json_artifact,
     training_run_execution_hash,
     training_run_authored_envelope_hash,
@@ -50,6 +53,11 @@ from feedbax.training.run_matrix import (
     materialize_adapted_run_matrix,
     materialize_run_matrix,
 )
+
+
+if TYPE_CHECKING:
+    from feedbax.orchestration.assembly import CompiledExecutionRow
+    from feedbax.orchestration.bundle import ImmutableInputIdentity
 
 
 TRAINING_RUN_MATRIX_COMPILER_ID = "feedbax.training.run_matrix"
@@ -83,8 +91,8 @@ def compile_training_run_matrix(
     row_lowerer: TrainingRowLowerer | None = None,
 ) -> Any:
     """Purely lower an authored training matrix into generic compiled rows."""
-    from feedbax.orchestration.assembly import CompiledExecutionRow, CompiledRunSet
-    from feedbax.orchestration.bundle import RowLaunchSpec
+    from feedbax.orchestration.assembly import CompiledRunSet
+
     repo_root = context.repo_root
     if repo_root is None:
         raise ValueError("training matrix assembly requires AssemblyContext.repo_root")
@@ -123,61 +131,81 @@ def compile_training_run_matrix(
                 None,
             ),
         )
-    rows = []
-    for row in materialized.rows:
-        coordinate = _row_coordinate(materialized, row)
-        resolved = {
-            "run_set_id": run_set_id,
-            "row_id": row.row_id,
-            "planned_run_id": row.planned_run_id,
-            "seed": row.seed,
-            "axis_coordinates": (
-                coordinate.model_dump(mode="json", exclude_none=True)
-                if coordinate is not None
-                else None
-            ),
-            "overrides": [
-                item.model_dump(mode="json", exclude_none=True)
-                if hasattr(item, "model_dump")
-                else item
-                for item in row.overrides
-            ],
-            "row_provenance": row.provenance.model_dump(mode="json", exclude_none=True),
-            "payload": row.payload,
-        }
-        command = [
-            "python",
-            "-m",
-            "feedbax",
-            "execute-training-run-spec",
-        ]
-        checkpoint_progress = row.payload.get("checkpoint_progress")
-        if (
-            isinstance(checkpoint_progress, Mapping)
-            and checkpoint_progress.get("continuation") is not None
-        ):
-            command.append("--resume")
-        rows.append(
-            CompiledExecutionRow(
-                row_id=row.row_id,
-                execution_family="native-training",
-                payload=row.payload,
-                resolved_semantics=resolved,
+    return CompiledRunSet(
+        rows=[
+            compile_native_training_row(
+                row.payload,
                 provenance=row.provenance,
-                immutable_inputs=list(context.resolved_inputs),
-                launch=RowLaunchSpec(
-                    command=command,
-                    collect=list(NATIVE_TRAINING_COLLECTION_OUTPUTS),
-                    payload_routing={
-                        "kind": "registered-execution-payload",
-                        "spec": "execution.payload",
-                        "manifest_root": "row-local",
-                        "checkpoint_root": "row-local",
-                    },
-                ),
+                coordinate=_row_coordinate(materialized, row),
+                overrides=row.overrides,
+                run_set_id=run_set_id,
+                immutable_inputs=context.resolved_inputs,
             )
-        )
-    return CompiledRunSet(rows=rows)
+            for row in materialized.rows
+        ]
+    )
+
+
+def compile_native_training_row(
+    payload: dict[str, Any],
+    *,
+    provenance: TrainingRowProvenance,
+    coordinate: TrainingRunAxisCoordinate | None,
+    overrides: list[Any],
+    run_set_id: str,
+    immutable_inputs: tuple[ImmutableInputIdentity, ...] = (),
+    plugin_modules: tuple[str, ...] = (),
+) -> CompiledExecutionRow:
+    """Bind one already-materialized native row to its registered executor."""
+    from feedbax.orchestration.assembly import CompiledExecutionRow
+    from feedbax.orchestration.bundle import RowLaunchSpec
+
+    resolved = {
+        "run_set_id": run_set_id,
+        "row_id": provenance.row_id,
+        "planned_run_id": provenance.planned_run_id,
+        "seed": provenance.seed,
+        "axis_coordinates": (
+            coordinate.model_dump(mode="json", exclude_none=True)
+            if coordinate is not None
+            else None
+        ),
+        "overrides": [
+            item.model_dump(mode="json", exclude_none=True)
+            if hasattr(item, "model_dump")
+            else item
+            for item in overrides
+        ],
+        "row_provenance": provenance.model_dump(mode="json", exclude_none=True),
+        "payload": payload,
+    }
+    command = ["python", "-m", "feedbax", "execute-training-run-spec"]
+    checkpoint_progress = payload.get("checkpoint_progress")
+    if (
+        isinstance(checkpoint_progress, Mapping)
+        and checkpoint_progress.get("continuation") is not None
+    ):
+        command.append("--resume")
+    for module in plugin_modules:
+        command.extend(("--plugin", module))
+    return CompiledExecutionRow(
+        row_id=provenance.row_id,
+        execution_family="native-training",
+        payload=payload,
+        resolved_semantics=resolved,
+        provenance=provenance,
+        immutable_inputs=list(immutable_inputs),
+        launch=RowLaunchSpec(
+            command=command,
+            collect=list(NATIVE_TRAINING_COLLECTION_OUTPUTS),
+            payload_routing={
+                "kind": "registered-execution-payload",
+                "spec": "execution.payload",
+                "manifest_root": "row-local",
+                "checkpoint_root": "row-local",
+            },
+        ),
+    )
 
 
 class TrainingRunMatrixCompiler:
@@ -220,6 +248,8 @@ class TrainingRunIdentityAdapter:
     """Training-family semantic adapter for generic execution envelopes."""
 
     def intent_hash(self, authored: Mapping[str, Any]) -> str:
+        if authored.get("schema_id") == TRAINING_RUN_SPEC_SCHEMA_ID:
+            return canonical_training_run_spec_sha256(authored)
         if is_training_run_matrix_delta_payload(authored):
             return training_matrix_delta_envelope_hash(
                 TrainingRunMatrixDeltaSpec.model_validate(authored)
@@ -234,12 +264,16 @@ class TrainingRunIdentityAdapter:
         context: Any,
     ) -> Mapping[str, Any]:
         versions = {
-            "training_run_matrix": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
             "resolved_semantics": "feedbax.spec.training_run_resolved_semantics.v1",
             "execution_capsule": TRAINING_RUN_EXECUTION_CAPSULE_SCHEMA_VERSION,
             "training_row_provenance": TRAINING_ROW_PROVENANCE_SCHEMA_VERSION,
             "training_row_planning_provenance": (TRAINING_ROW_PLANNING_PROVENANCE_SCHEMA_VERSION),
         }
+        if (
+            context.authored_ref is None
+            or context.authored_ref.schema_id != TRAINING_RUN_SPEC_SCHEMA_ID
+        ):
+            versions["training_run_matrix"] = TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION
         if (
             context.authored_ref is not None
             and context.authored_ref.schema_id == TRAINING_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID

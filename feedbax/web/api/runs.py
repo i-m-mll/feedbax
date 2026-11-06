@@ -44,9 +44,11 @@ from feedbax.contracts.selection import (
 from feedbax.orchestration.staged_training import (
     require_unclaimed_training_receipt,
     staged_training_display_status,
+    staging_generation,
     training_receipt_lock,
     withdraw_staged_training,
 )
+from feedbax.studio.native_training_projection import project_owned_native_training
 from feedbax.persistence.manifest_discovery import (
     find_manifest_at_address,
     find_manifest_by_id,
@@ -96,6 +98,11 @@ class TrainingRunInfo(BaseModel):
     source_issue: Optional[str] = None
     provenance_id: Optional[str] = None
     superseded_by: Optional[str] = None
+    staging_generation: str | None = None
+    result_manifest_id: str | None = None
+    result_manifest_uri: str | None = None
+    execution_error: str | None = None
+    teardown_pending: bool = False
 
 
 class EvalRunInfo(BaseModel):
@@ -322,13 +329,28 @@ def _training_summary_from_row(row: dict[str, Any]) -> TrainingRunInfo:
     studio = _studio_metadata(payload)
     metrics = payload.get("summary_metrics")
     metrics = metrics if isinstance(metrics, dict) else {}
+    status = staged_training_display_status(payload.get("status"), metadata)
+    projection = (
+        project_owned_native_training(
+            str(payload["id"]), metadata, receipt_root=default_manifest_root()
+        )
+        if status == "claimed"
+        else None
+    )
+    result = projection.result if projection is not None else None
+    result_path = projection.result_path if projection is not None else None
+    if result is not None:
+        metrics = {
+            **metrics,
+            **result.summary_metrics,
+            "completed_batches": result.completed_batches,
+        }
     return TrainingRunInfo(
         id=str(payload["id"]),
         name=_training_name(payload),
         created_at=str(payload.get("created_at") or row["created_at"]),
-        status=staged_training_display_status(payload.get("status"), metadata)
-        or row["status"]
-        or "unknown",
+        status=(projection.status if projection is not None else status)
+        or row["status"] or "unknown",
         hyperparams=_training_hyperparams(payload),
         metrics=metrics,
         uri=str(row["path"]),
@@ -337,12 +359,17 @@ def _training_summary_from_row(row: dict[str, Any]) -> TrainingRunInfo:
         if isinstance(studio.get("scenario_id"), str)
         else None,
         planned=bool(metadata.get("planned")) if isinstance(metadata, dict) else False,
-        checkpoint_available=_checkpoint_available(payload),
+        checkpoint_available=result is not None or _checkpoint_available(payload),
         source_issue=_source_issue(payload),
         provenance_id=str(payload["id"]),
         superseded_by=metadata.get("superseded_by")
         if isinstance(metadata, dict) and isinstance(metadata.get("superseded_by"), str)
         else None,
+        staging_generation=staging_generation(metadata),
+        result_manifest_id=result.id if result is not None else None,
+        result_manifest_uri=str(result_path) if result_path is not None else None,
+        execution_error=projection.error if projection is not None else None,
+        teardown_pending=projection.teardown_pending if projection is not None else False,
     )
 
 
@@ -755,6 +782,13 @@ async def list_eval_runs(training_run_id: str) -> list[EvalRunInfo]:
 
     _load_training_manifest(training_run_id)
     return []
+
+
+@router.get("/training/{training_run_id}", response_model=TrainingRunInfo)
+def get_training_run(training_run_id: str) -> TrainingRunInfo:
+    """Resolve one Studio row, including any owned native attempt."""
+    manifest, path = _load_training_manifest(training_run_id)
+    return _training_summary_from_row(manifest_record(manifest, path))
 
 
 @router.get("/training/{training_run_id}/manifest")

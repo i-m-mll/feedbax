@@ -631,6 +631,9 @@ class TrainingService:
                 bundle.run_set_id,
                 [row.row_id for row in bundle.rows],
             )
+            if bundle.staged_training is not None:
+                # These rows are addressed through their staged receipt in the runs API.
+                continue
             for row in bundle.rows:
                 refs[row.row_id] = _JobRef(
                     job_id=row.row_id,
@@ -713,11 +716,18 @@ class TrainingService:
         )
         return request, context, registry
 
-    def _launch_training(self, engine: StageEngine, run_set_id: str) -> None:
+    def dispatch_staged_training(self, engine: StageEngine) -> None:
+        """Start the local staged attempt and supervise its collection in the background."""
+        self._launch_training(engine, engine.run_set_id, staged=True)
+
+    def _launch_training(
+        self, engine: StageEngine, run_set_id: str, *, staged: bool = False
+    ) -> None:
         engine.run(stop_after_stage=STAGE_LAUNCH)
         threading.Thread(
             target=self._run_stage_engine,
             args=(engine,),
+            kwargs={"staged": staged},
             name=f"feedbax-training-stage-engine-{run_set_id}",
             daemon=True,
         ).start()
@@ -725,12 +735,13 @@ class TrainingService:
     def _run_stage_engine(
         self,
         engine: StageEngine,
+        *,
+        staged: bool = False,
     ) -> None:
         try:
-            engine.run(break_stale_lock=True)
+            engine.run(break_stale_lock=not staged, certify_and_register=not staged)
         except Exception:
-            # The durable state document carries the failed stage/row details.
-            return
+            logger.exception("Studio attempt %s failed in StageEngine", engine.run_set_id)
 
     def _remember_job_ref(self, bundle: RunBundle) -> None:
         state_path = bundle.run_set_dir / "state.json"

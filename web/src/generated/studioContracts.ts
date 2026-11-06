@@ -1748,6 +1748,21 @@ export interface TrainingRunInfo {
   source_issue?: string | null;
   provenance_id?: string | null;
   superseded_by?: string | null;
+  staging_generation?: string | null;
+  result_manifest_id?: string | null;
+  result_manifest_uri?: string | null;
+  execution_error?: string | null;
+  teardown_pending?: boolean;
+}
+
+export interface StudioNativeTrainingDispatchRequest {
+  manifest_id: string;
+  generation: string;
+}
+
+export interface StudioNativeTrainingDispatchAccepted {
+  run_set_id: string;
+  row_id: string;
 }
 
 export interface EvalRunInfo {
@@ -4998,9 +5013,32 @@ export const TrainingRunInfoSchema: z.ZodType<TrainingRunInfo> = z.lazy(() =>
       "source_issue": z.string().nullable().optional(),
       "provenance_id": z.string().nullable().optional(),
       "superseded_by": z.string().nullable().optional(),
+      "staging_generation": z.string().nullable().optional(),
+      "result_manifest_id": z.string().nullable().optional(),
+      "result_manifest_uri": z.string().nullable().optional(),
+      "execution_error": z.string().nullable().optional(),
+      "teardown_pending": z.boolean().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingRunInfo>;
+
+export const StudioNativeTrainingDispatchRequestSchema: z.ZodType<StudioNativeTrainingDispatchRequest> = z.lazy(() =>
+  z
+    .object({
+      "manifest_id": z.string().min(1),
+      "generation": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioNativeTrainingDispatchRequest>;
+
+export const StudioNativeTrainingDispatchAcceptedSchema: z.ZodType<StudioNativeTrainingDispatchAccepted> = z.lazy(() =>
+  z
+    .object({
+      "run_set_id": z.string(),
+      "row_id": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioNativeTrainingDispatchAccepted>;
 
 export const EvalRunInfoSchema: z.ZodType<EvalRunInfo> = z.lazy(() =>
   z
@@ -5366,6 +5404,8 @@ export const contractSchemas = {
   GenerateAnalysisResponse: GenerateAnalysisResponseSchema,
   AnalysisJobStatusResponse: AnalysisJobStatusResponseSchema,
   TrainingRunInfo: TrainingRunInfoSchema,
+  StudioNativeTrainingDispatchRequest: StudioNativeTrainingDispatchRequestSchema,
+  StudioNativeTrainingDispatchAccepted: StudioNativeTrainingDispatchAcceptedSchema,
   EvalRunInfo: EvalRunInfoSchema,
   CreateEvalRunRequest: CreateEvalRunRequestSchema,
   TrainingRunCompareResponse: TrainingRunCompareResponseSchema,
@@ -5421,6 +5461,8 @@ export interface ContractTypeMap {
   GenerateAnalysisResponse: GenerateAnalysisResponse;
   AnalysisJobStatusResponse: AnalysisJobStatusResponse;
   TrainingRunInfo: TrainingRunInfo;
+  StudioNativeTrainingDispatchRequest: StudioNativeTrainingDispatchRequest;
+  StudioNativeTrainingDispatchAccepted: StudioNativeTrainingDispatchAccepted;
   EvalRunInfo: EvalRunInfo;
   CreateEvalRunRequest: CreateEvalRunRequest;
   TrainingRunCompareResponse: TrainingRunCompareResponse;

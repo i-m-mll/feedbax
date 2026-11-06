@@ -10,6 +10,7 @@ import {
   type PenzaiInspectorPayload,
   type PenzaiNodeRequest,
   type SelectionSpec,
+  type StudioNativeTrainingDispatchRequest,
   type StudioPersistenceDocument,
   type WorkspaceDocument,
 } from "@/generated/studioContracts";
@@ -348,6 +349,16 @@ export async function prepareStudioTrainingExecution(payload: {
       body: JSON.stringify(payload),
     },
   );
+}
+
+export async function dispatchStudioNativeTraining(payload: StudioNativeTrainingDispatchRequest) {
+  const path = '/api/provider/studio/training/dispatch';
+  try {
+    const wire = await requestJson(path, { method: 'POST', body: JSON.stringify(payload) });
+    return parseContract('StudioNativeTrainingDispatchAccepted', wire);
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Training dispatch response did not match the Studio contract.');
+  }
 }
 
 export async function previewStudioEvaluationMatrix(payload: {

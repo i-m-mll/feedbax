@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
-import jax.numpy as jnp
 import pytest
 from fastapi.testclient import TestClient
 
@@ -59,6 +58,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_contract,
     standard_supervised_method_payload,
 )
+from feedbax.contracts.worker import derive_consistency_predicate
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
     AssemblyContext,
@@ -111,7 +111,7 @@ from feedbax.orchestration.drivers.runpod import (
 )
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
 from feedbax.orchestration import staged_training
-from feedbax.orchestration.state import RowState, RunSetState
+from feedbax.orchestration.state import RowState, RunSetState, RunSetStateStore
 from feedbax.orchestration.stages import (
     OrchestrationStageError,
     StageEngine,
@@ -124,11 +124,21 @@ from feedbax.training.diagnostics import (
     ScheduleContextDiagnostic,
 )
 from feedbax.training.executor import execute_training_run_spec
+from feedbax.training.runpod_smoke_fixture import METHOD_REF as SMOKE_METHOD_REF
+from feedbax.training.runpod_smoke_fixture import method_contract as smoke_method_contract
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins import bootstrap_application, new_registration_context
 from feedbax.plugins.application import ApplicationRegistryBundle
-from tests.support.training_fixtures import CLI_METHOD_REF, PLUGIN_REGISTRATION
-from feedbax.training.checkpoint_custody import produce_checkpoint_custody_archive
+from tests.support.training_fixtures import (
+    CLI_METHOD_REF,
+    PLUGIN_REGISTRATION,
+    initial_training_slots as _initial_slots,
+)
+from tests.test_studio_execution import _graph, _workspace
+from feedbax.training.checkpoint_custody import (
+    authenticate_published_checkpoint_custody,
+    produce_checkpoint_custody_archive,
+)
 from feedbax.training.run_matrix import _validate_training_payload
 from feedbax.training.spec_storage import (
     TRAINING_RUN_MATRIX_COMPILER_ID,
@@ -217,15 +227,6 @@ def _training_spec(
             continuation=continuation,
         ),
     )
-
-
-def _initial_slots() -> dict[str, Any]:
-    return {
-        "model": jnp.array([0.0]),
-        "optimizer": {"count": jnp.array([1.0])},
-        "prng": jnp.array([0, 1], dtype=jnp.uint32),
-        "batch_counter": jnp.array(0, dtype=jnp.int32),
-    }
 
 
 def _assemble_lowered_bundle(
@@ -1193,34 +1194,7 @@ def test_staged_training_withdrawal_races_local_admission(
             progress_interval=2,
         )
     )
-    slots_path = tmp_path / "initial-slots.json"
-    slots_path.write_text(
-        json.dumps(
-            {
-                "model": 0,
-                "optimizer": {"count": 1},
-                "prng": [0, 1],
-                "batch_counter": 0,
-            }
-        ),
-        encoding="utf-8",
-    )
     row = bundle.rows[0]
-    row = row.model_copy(
-        update={
-            "launch": row.launch.model_copy(
-                update={
-                    "command": [
-                        *row.launch.command,
-                        "--initial-slots",
-                        str(slots_path),
-                        "--no-progress",
-                    ]
-                }
-            )
-        }
-    )
-    bundle = bundle.model_copy(update={"rows": [row]})
 
     manifest_root = tmp_path / "staged"
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(manifest_root))
@@ -1329,6 +1303,227 @@ def test_staged_training_withdrawal_races_local_admission(
     assert found_path.read_bytes() == flat_manifest.read_bytes()
 
 
+def _studio_native_matrix(spec: TrainingRunSpec, *row_ids: str) -> dict[str, Any]:
+    return {
+        "schema_id": "feedbax.spec.training_run_matrix",
+        "schema_version": "feedbax.spec.training_run_matrix.v6",
+        "name": "Studio native dispatch",
+        "base": {
+            "kind": "inline",
+            "inline": spec.model_dump(mode="json", exclude_none=True),
+        },
+        "rows": [
+            {"row_id": row_id, "seed": seed, "overrides": []}
+            for seed, row_id in enumerate(row_ids, start=7)
+        ],
+    }
+
+
+def test_studio_dispatch_rejects_ordinary_and_remote_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestration_root = tmp_path / "orchestration"
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "staged"))
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(orchestration_root))
+
+    ordinary = _workspace()
+    remote = _workspace()
+    train_stage = next(stage for stage in remote.stages if stage.kind == "train")
+    train_stage.metadata["backend_realization"] = {"execution_target": "runpod"}
+    train_stage.selection_spec["matrix"] = _studio_native_matrix(_training_spec(2), "remote")
+
+    with TestClient(create_app(bootstrap_modules=("tests.support.training_fixtures",))) as client:
+        for workspace, target, spec_kind, expected_error in (
+            (ordinary, "local", "TrainingSpec", "native TrainingRunSpec"),
+            (remote, "runpod", "TrainingRunSpec", "Only local staged training"),
+        ):
+            staged = client.post(
+                "/api/provider/studio/training/plan",
+                json={
+                    "workspace": workspace.model_dump(mode="json", exclude_none=True),
+                    "graph": _graph().model_dump(mode="json", exclude_none=True),
+                    "job_id": f"studio-unsupported-{target}",
+                },
+            )
+            assert staged.status_code == 200, staged.text
+            stage = next(s for s in staged.json()["workspace"]["stages"] if s["kind"] == "train")
+            (ref,) = [r for r in stage["manifest_refs"] if r["role"] == "training_run"]
+            path = Path(ref["uri"])
+            receipt_bytes = path.read_bytes()
+            receipt = load_manifest(path)
+            assert receipt.training_spec.kind == spec_kind
+            assert receipt.metadata["execution_target"] == target
+            assert receipt.status == "pending"
+            assert "staged_attempt" not in receipt.metadata
+
+            rejected = client.post(
+                "/api/provider/studio/training/dispatch",
+                json={
+                    "manifest_id": ref["id"],
+                    "generation": ref["metadata"]["staging_generation"],
+                },
+            )
+            assert rejected.status_code == 422, rejected.text
+            assert expected_error in rejected.json()["detail"]
+            assert path.read_bytes() == receipt_bytes
+            assert list(orchestration_root.glob("*/state.json")) == []
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "stopped"])
+def test_studio_dispatch_executes_only_the_selected_staged_native_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_status: str,
+) -> None:
+    manifest_root = tmp_path / "staged"
+    orchestration_root = tmp_path / "orchestration"
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(manifest_root))
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(orchestration_root))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")])
+    )
+
+    workspace = _workspace()
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    spec = _training_spec(2, progress_interval=1)
+    plugin_module = "tests.support.training_fixtures"
+    if terminal_status == "stopped":
+        plugin_module = "feedbax.training.runpod_smoke_fixture"
+        spec = _training_spec(2, completed_batches=100, progress_interval=1)
+        package, name, version = SMOKE_METHOD_REF.split("/")
+        spec.method_ref = MethodRefSpec(package=package, name=name, version=version)
+        method_payload = StandardSupervisedMethodPayload.model_validate(spec.method_payload.payload)
+        method_payload.metadata["total_batches"] = 100
+        spec.method_payload.payload = method_payload.model_dump(mode="json")
+        contract = smoke_method_contract(method_payload)
+        spec.worker_execution = WorkerExecutionSpec(
+            method_contract=contract,
+            effective_phase=standard_supervised_effective_phase_spec().model_copy(
+                update={
+                    "method_ref": SMOKE_METHOD_REF,
+                    "phase_program": contract.phase_program,
+                    "consistency_predicate": derive_consistency_predicate(contract.phase_program),
+                }
+            ),
+        )
+    train_stage.selection_spec["matrix"] = _studio_native_matrix(spec, "selected", "sibling")
+    plan_request = {
+        "workspace": workspace.model_dump(mode="json", exclude_none=True),
+        "graph": _graph().model_dump(mode="json", exclude_none=True),
+        "job_id": "studio-native-dispatch",
+    }
+    dispatch_path = "/api/provider/studio/training/dispatch"
+    with TestClient(create_app(bootstrap_modules=(plugin_module,))) as client:
+
+        def stage_native_rows() -> dict[str, dict[str, Any]]:
+            response = client.post("/api/provider/studio/training/plan", json=plan_request)
+            assert response.status_code == 200, response.text
+            stage = next(s for s in response.json()["workspace"]["stages"] if s["kind"] == "train")
+            return {
+                ref["metadata"]["label"]: ref
+                for ref in stage["manifest_refs"]
+                if ref["role"] == "training_run"
+            }
+
+        staged = stage_native_rows()
+        selected, sibling = staged["selected"], staged["sibling"]
+        selected_id = selected["id"]
+        run_path = f"/api/runs/training/{selected_id}"
+        stale_generation = selected["metadata"]["staging_generation"]
+        sibling_path = Path(sibling["uri"])
+        sibling_bytes = sibling_path.read_bytes()
+        assert client.post(f"{run_path}/cancel").status_code == 200
+        restaged = stage_native_rows()["selected"]
+        assert restaged["id"] == selected_id
+        generation = restaged["metadata"]["staging_generation"]
+        assert generation != stale_generation
+
+        stale = client.post(
+            dispatch_path, json={"manifest_id": selected_id, "generation": stale_generation}
+        )
+        assert stale.status_code == 409, stale.text
+        assert load_manifest(selected["uri"]).status == "pending"
+        assert list(orchestration_root.glob("*/state.json")) == []
+
+        dispatch_request = {"manifest_id": selected_id, "generation": generation}
+        accepted = client.post(dispatch_path, json=dispatch_request)
+        assert accepted.status_code == 202, accepted.text
+        attempt = accepted.json()
+        assert attempt["row_id"] == "selected"
+        run_set_dir = orchestration_root / attempt["run_set_id"]
+        duplicate = client.post(dispatch_path, json=dispatch_request)
+        assert duplicate.status_code == 409, duplicate.text
+        assert list(orchestration_root.glob("*/state.json")) == [run_set_dir / "state.json"]
+
+        deadline = time.monotonic() + 30
+        if terminal_status == "stopped":
+            latest = run_set_dir / "rows" / attempt["row_id"] / "checkpoints" / "latest.json"
+            while not latest.is_file():
+                assert time.monotonic() < deadline, client.get(run_path).json()
+                time.sleep(0.01)
+            bundle = RunBundle.model_validate_json((run_set_dir / "bundle.json").read_bytes())
+            state = RunSetStateStore(run_set_dir / "state.json").load()
+            driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
+            driver.request_stop_at_checkpoint(bundle, bundle.row(attempt["row_id"]), state)
+
+        while True:
+            response = client.get(run_path)
+            assert response.status_code == 200, response.text
+            summary = response.json()
+            if summary["status"] not in {"pending", "claimed", "running"}:
+                break
+            assert time.monotonic() < deadline, summary
+            time.sleep(0.05)
+        assert summary["id"] == selected_id
+        assert summary["status"] == terminal_status, summary
+        completed_batches = summary["metrics"]["completed_batches"]
+        if terminal_status == "completed":
+            assert completed_batches == 1
+        else:
+            assert 1 <= completed_batches < spec.training_config.n_batches
+        assert summary["checkpoint_available"] is True
+
+        receipt_path = Path(selected["uri"])
+        receipt_bytes = receipt_path.read_bytes()
+        raw_response = client.get(f"{run_path}/manifest")
+        assert raw_response.status_code == 200, raw_response.text
+        receipt = raw_response.json()
+        assert receipt["id"] == selected_id
+        assert receipt["status"] == "pending"
+        assert receipt["metadata"]["staging_generation"] == generation
+        assert receipt["metadata"]["staged_attempt"]["run_set_id"] == attempt["run_set_id"]
+        sibling_summary = client.get(f"/api/runs/training/{sibling['id']}").json()
+        assert sibling_summary["status"] == "pending"
+        assert sibling_path.read_bytes() == sibling_bytes
+
+        collected = run_set_dir / "collected" / attempt["row_id"]
+        checkpoint = authenticate_published_checkpoint_custody(collected / "checkpoints")
+        assert checkpoint.manifest.completed_training_batches == completed_batches
+        result_path = collected / "manifest.json"
+        result = load_manifest(result_path)
+        assert Path(summary["result_manifest_uri"]) == result_path
+        assert summary["result_manifest_id"] == result.id
+        assert Path(summary["uri"]) == receipt_path
+        assert result.checkpoint_custody[-1] == checkpoint.parent_ref
+
+        state_store = RunSetStateStore(run_set_dir / "state.json")
+        while (teardown := state_store.load().stage("TEARDOWN")).status != "completed":
+            assert teardown.status != "failed", teardown
+            assert time.monotonic() < deadline, teardown
+            time.sleep(0.05)
+
+        if terminal_status == "completed":
+            result_path.write_bytes(result_path.read_bytes() + b"\n")
+            tampered = client.get(run_path)
+            assert tampered.status_code == 200, tampered.text
+            assert tampered.json()["status"] == "failed"
+            assert tampered.json()["checkpoint_available"] is False
+            assert tampered.json()["result_manifest_id"] is None
+            assert receipt_path.read_bytes() == receipt_bytes
+
+
 def test_one_update_native_row_uses_physical_shared_orchestration_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1349,34 +1544,6 @@ def test_one_update_native_row_uses_physical_shared_orchestration_root(
             orchestration_root=alias_root,
         )
     )
-    slots_path = tmp_path / "shared-root-initial-slots.json"
-    slots_path.write_text(
-        json.dumps(
-            {
-                "model": 0,
-                "optimizer": {"count": 1},
-                "prng": [0, 1],
-                "batch_counter": 0,
-            }
-        ),
-        encoding="utf-8",
-    )
-    row = bundle.rows[0]
-    row = row.model_copy(
-        update={
-            "launch": row.launch.model_copy(
-                update={
-                    "command": [
-                        *row.launch.command,
-                        "--initial-slots",
-                        str(slots_path),
-                        "--no-progress",
-                    ]
-                }
-            )
-        }
-    )
-    bundle = bundle.model_copy(update={"rows": [row]})
 
     state = StageEngine(
         bundle=bundle,
@@ -1387,6 +1554,7 @@ def test_one_update_native_row_uses_physical_shared_orchestration_root(
     assert bundle.orchestration_root == str(physical_root)
     assert bundle.run_set_dir.is_relative_to(physical_root)
     assert state.stage("COLLECT").status == "completed"
+    row = bundle.rows[0]
     assert Path(state.rows[row.row_id].collected_outputs["manifest.json"]).is_file()
 
 
@@ -1475,33 +1643,6 @@ def test_local_driver_executes_compiled_native_row_subprocess(
     )
     bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path / "subprocess", gain=2))
     row = bundle.rows[0]
-    slots_path = tmp_path / "initial-slots.json"
-    slots_path.write_text(
-        json.dumps(
-            {
-                "model": 0,
-                "optimizer": {"count": 1},
-                "prng": [0, 1],
-                "batch_counter": 0,
-            }
-        ),
-        encoding="utf-8",
-    )
-    row = row.model_copy(
-        update={
-            "launch": row.launch.model_copy(
-                update={
-                    "command": [
-                        *row.launch.command,
-                        "--initial-slots",
-                        str(slots_path),
-                        "--no-progress",
-                    ]
-                }
-            )
-        }
-    )
-    bundle = bundle.model_copy(update={"rows": [row]})
     state = RunSetState(
         run_set_id=bundle.run_set_id,
         environment_fingerprint="environment:subprocess-route",

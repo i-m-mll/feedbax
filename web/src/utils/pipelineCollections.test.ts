@@ -140,6 +140,36 @@ describe('pipeline collection summaries', () => {
     );
   });
 
+  it('checks native matrix launch against the staging draft instead of the varied row', () => {
+    const stagedDraft = studioDraftHashes({ training_spec: { n_batches: 10 } });
+    const metadata = {
+      status: 'pending',
+      planned: true,
+      native_launch_supported: true,
+      execution_target: 'local',
+      staging_generation: 'generation-a',
+      staging_draft_spec_hashes: stagedDraft,
+      spec_hashes: studioDraftHashes({ training_spec: { n_batches: 2 } }),
+    };
+    const summarize = (patch: Partial<typeof metadata> = {}, currentSpecHashes = stagedDraft) =>
+      trainingRunSummaries({
+        output_collections: [{ item_refs: [{
+          kind: 'TrainingRunManifest',
+          id: 'run:matrix-row',
+          role: 'training_run',
+          metadata: { ...metadata, ...patch },
+        }] }],
+      } as any, { currentSpecHashes })[0];
+
+    expect(summarize().nativeLaunchGeneration).toBe('generation-a');
+    expect(summarize({}, studioDraftHashes({ training_spec: { n_batches: 12 } })))
+      .toMatchObject({ status: 'stale', nativeLaunchGeneration: undefined });
+    expect(summarize({ execution_target: 'runpod' }).nativeLaunchGeneration).toBeUndefined();
+    expect(summarize({ native_launch_supported: false }).nativeLaunchGeneration).toBeUndefined();
+    expect(summarize({ status: 'claimed' }).nativeLaunchGeneration).toBeUndefined();
+    expect(summarize({ staging_generation: '' }).nativeLaunchGeneration).toBeUndefined();
+  });
+
   it('marks legacy hashes rehash-required and agrees after current JSON round trips', () => {
     const authored = { integral: 1, negative_zero: -0, nested: ['café'] };
     const snapshot = studioDraftHashes({ training_spec: authored });

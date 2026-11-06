@@ -233,6 +233,10 @@ from feedbax.web.api.execution import (
     TaskTrialSampleRequest,
     TaskTrialSampleResponse,
 )
+from feedbax.studio.execution import (
+    StudioNativeTrainingDispatchAccepted,
+    StudioNativeTrainingDispatchRequest,
+)
 from feedbax.web.api.runs import (
     CreateEvalRunRequest,
     EvalRunInfo,
@@ -469,6 +473,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ValidationErrorResponse,
     ValidateLossResponse,
     TrainingRunInfo,
+    StudioNativeTrainingDispatchRequest,
+    StudioNativeTrainingDispatchAccepted,
     EvalRunInfo,
     CreateEvalRunRequest,
     TrainingRunCompareRequest,
@@ -602,6 +608,8 @@ CONTRACT_MODEL_NAMES = [
     "GenerateAnalysisResponse",
     "AnalysisJobStatusResponse",
     "TrainingRunInfo",
+    "StudioNativeTrainingDispatchRequest",
+    "StudioNativeTrainingDispatchAccepted",
     "EvalRunInfo",
     "CreateEvalRunRequest",
     "TrainingRunCompareResponse",

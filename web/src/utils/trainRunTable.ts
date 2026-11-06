@@ -1,4 +1,4 @@
-import type { TrainingRun } from '@/types/runs';
+import type { TrainingRun, TrainingRunInfo } from '@/types/runs';
 import type { StudioManifestRef, StudioStageSpec } from '@/types/workspace';
 import { trainingRunMetricValue, type TrainingRunSummary } from '@/utils/pipelineCollections';
 
@@ -117,5 +117,43 @@ export function stageWithTrainingRunLifecyclePatch(
       action === 'remove'
         ? stage.manifest_refs.filter(keep)
         : stage.manifest_refs.map(patch),
+  };
+}
+
+export function stageWithNativeTrainingRunProgress(
+  stage: StudioStageSpec,
+  run: TrainingRunInfo,
+  generation: string
+): StudioStageSpec {
+  const patch = (ref: StudioManifestRef): StudioManifestRef => {
+    if (ref.id !== run.id || ref.metadata.staging_generation !== generation) return ref;
+    const metadata = run.staging_generation !== generation ? {
+      ...ref.metadata,
+      staleness_reason: 'staging receipt changed',
+    } : {
+      ...ref.metadata,
+      status: run.status,
+      checkpoint_available: run.checkpoint_available,
+      metrics: run.metrics,
+      result_manifest_id: run.result_manifest_id ?? null,
+      result_manifest_uri: run.result_manifest_uri ?? null,
+      status_reason: run.execution_error ?? null,
+      teardown_pending: run.teardown_pending === true,
+    };
+    return JSON.stringify(metadata) === JSON.stringify(ref.metadata) ? ref : { ...ref, metadata };
+  };
+  const outputCollections = stage.output_collections.map((collection) => {
+    const refs = collection.item_refs.map(patch);
+    return refs.some((ref, index) => ref !== collection.item_refs[index])
+      ? { ...collection, item_refs: refs }
+      : collection;
+  });
+  if (outputCollections.every((collection, index) => collection === stage.output_collections[index])) {
+    return stage;
+  }
+  return {
+    ...stage,
+    output_collections: outputCollections,
+    manifest_refs: stage.manifest_refs.map(patch),
   };
 }

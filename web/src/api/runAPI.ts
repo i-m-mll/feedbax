@@ -137,6 +137,16 @@ export async function fetchTrainingRuns(): Promise<TrainingRun[]> {
   }
 }
 
+/** Fetch one training run's current projected status and result. */
+export async function fetchTrainingRun(trainingRunId: string): Promise<TrainingRunInfo> {
+  const path = `/api/runs/training/${encodeURIComponent(trainingRunId)}`;
+  try {
+    return parseContract('TrainingRunInfo', await requestJson(path));
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Training run response did not match the Studio contract.');
+  }
+}
+
 /** Fetch evaluation runs for a training run. */
 export async function fetchEvalRuns(trainingRunId: string): Promise<EvalRun[]> {
   const path = `/api/runs/training/${encodeURIComponent(trainingRunId)}/evals`;

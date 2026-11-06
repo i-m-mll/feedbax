@@ -2,6 +2,7 @@
 
 from typing import Any, Callable, Mapping
 
+import jax.numpy as jnp
 from pydantic import BaseModel
 
 from feedbax.contracts.training import (
@@ -20,6 +21,7 @@ from feedbax.plugins import (
     PluginRegistration,
     RegistrationContext,
 )
+from feedbax.training.preparation import ExecutionPreparationResult
 
 
 def synthetic_supervised_update_kernels(
@@ -72,6 +74,15 @@ def synthetic_training_program_registry() -> TrainingProgramRegistry:
 CLI_METHOD_REF = "tests/synthetic_supervised/v1"
 
 
+def initial_training_slots() -> dict[str, Any]:
+    return {
+        "model": jnp.array([0.0]),
+        "optimizer": {"count": jnp.array([1.0])},
+        "prng": jnp.array([0, 1], dtype=jnp.uint32),
+        "batch_counter": jnp.array(0, dtype=jnp.int32),
+    }
+
+
 def _register_cli_fixture(context: RegistrationContext) -> None:
     context.registry(TRAINING_PROGRAMS).register_program(
         evolve_training_program(
@@ -79,6 +90,9 @@ def _register_cli_fixture(context: RegistrationContext) -> None:
             method_ref=CLI_METHOD_REF,
             contract_compiler=lambda _payload: standard_supervised_method_contract().model_copy(
                 update={"method_ref": CLI_METHOD_REF}
+            ),
+            preparation_provider=lambda _request: ExecutionPreparationResult(
+                initial_slots=initial_training_slots()
             ),
             package="tests",
         )

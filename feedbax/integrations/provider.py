@@ -90,6 +90,8 @@ from feedbax.orchestration.controller import (
 from feedbax.orchestration.realization import Attempt, BackendPlan
 from feedbax.studio.protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio.execution import (
+    StudioNativeTrainingDispatchAccepted,
+    StudioNativeTrainingDispatchRequest,
     StudioPipelineMaterializationRequest,
     StudioPipelineMaterializationResult,
     StudioTrainingExecutionPreparation,
@@ -324,6 +326,8 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "OrphanHandlingPolicy": OrphanHandlingPolicy,
         "StudioTrainingExecutionRequest": StudioTrainingExecutionRequest,
         "StudioTrainingExecutionPreparation": StudioTrainingExecutionPreparation,
+        "StudioNativeTrainingDispatchRequest": StudioNativeTrainingDispatchRequest,
+        "StudioNativeTrainingDispatchAccepted": StudioNativeTrainingDispatchAccepted,
         "StudioPipelineMaterializationRequest": StudioPipelineMaterializationRequest,
         "StudioPipelineMaterializationResult": StudioPipelineMaterializationResult,
         "WorkspaceReplayProduct": WorkspaceReplayProduct,
@@ -796,6 +800,18 @@ def provider_manifest() -> ProviderManifest:
             action="validate",
             compatibility_predicates=["selected Studio train stage has graph and training specs"],
             artifact_roles=["invocation", "backend_plan"],
+            selected_node_kinds=["feedbax.studio_stage.train"],
+        ),
+        "dispatch_studio_native_training": CapabilitySpec(
+            input_schema="StudioNativeTrainingDispatchRequest",
+            output_schema="StudioNativeTrainingDispatchAccepted",
+            description="Dispatch one staged local native matrix row by receipt generation.",
+            transports=["http"],
+            action="execute",
+            compatibility_predicates=["unclaimed staged local TrainingRunSpec matrix row"],
+            mutates_state=True,
+            may_launch_compute=True,
+            artifact_roles=["staged_training_receipt", "run_set_state", "training_manifest"],
             selected_node_kinds=["feedbax.studio_stage.train"],
         ),
         "materialize_studio_pipeline": CapabilitySpec(

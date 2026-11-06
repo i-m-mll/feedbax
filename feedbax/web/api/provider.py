@@ -7,6 +7,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from feedbax.contracts.base import default_manifest_root
 from feedbax.integrations.provider import (
     ProviderHealth,
     ProviderManifest,
@@ -31,6 +32,8 @@ from feedbax.studio.execution import (
     StudioEvaluationStagingResult,
     StudioPipelineMaterializationRequest,
     StudioPipelineMaterializationResult,
+    StudioNativeTrainingDispatchAccepted,
+    StudioNativeTrainingDispatchRequest,
     StudioTrainingExecutionPreparation,
     StudioTrainingExecutionRequest,
     materialize_studio_pipeline,
@@ -39,6 +42,13 @@ from feedbax.studio.execution import (
     run_studio_evaluation_local_execution,
     stage_studio_evaluation_matrix,
 )
+from feedbax.orchestration.staged_training import (
+    StagedTrainingConflict,
+    load_staged_training_receipt,
+)
+from feedbax.orchestration.stages import PreflightFailed
+from feedbax.studio.native_training import prepare_native_training_dispatch
+from feedbax.web.services.training_service import training_service
 
 
 router = APIRouter()
@@ -106,6 +116,41 @@ async def prepare_studio_training_plan(
         )
     except StudioExecutionPreparationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/studio/training/dispatch",
+    response_model=StudioNativeTrainingDispatchAccepted,
+    status_code=202,
+)
+def dispatch_studio_native_training(
+    payload: StudioNativeTrainingDispatchRequest,
+    request: Request,
+) -> StudioNativeTrainingDispatchAccepted:
+    root = default_manifest_root().resolve()
+    bootstrap = request.app.state.bootstrap_state
+    try:
+        manifest, _ = load_staged_training_receipt(root, payload.manifest_id)
+        engine = prepare_native_training_dispatch(
+            manifest,
+            root=root,
+            generation=payload.generation,
+            registry_bundle=bootstrap.bundle,
+            plugin_registrations=bootstrap.provenance,
+        )
+        training_service.dispatch_staged_training(engine)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except StagedTrainingConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (ValueError, PreflightFailed) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    assert engine.bundle is not None
+    return StudioNativeTrainingDispatchAccepted(
+        run_set_id=engine.run_set_id,
+        row_id=engine.bundle.rows[0].row_id,
+    )
 
 
 @router.post(
