@@ -3330,16 +3330,11 @@ def _live_progress_callback(
         if run_event_emitter is not None:
             if not ready_emitted:
                 ready_emitted = True
-                ready_coordinate, ready_metrics = normalize_serialized_metrics(
-                    coordinate,
-                    coordinate.metrics,
-                    bindings,
-                )
                 ready_payload: dict[str, Any] = {
                     "run_id": coordinate.run_id,
                     "phase": coordinate.phase,
                     "program_step": coordinate.program_step,
-                    "coordinate": ready_coordinate,
+                    "coordinate": event["coordinate"],
                     "runtime_telemetry": deepcopy(runtime_telemetry or {}),
                 }
                 if any(
@@ -3348,7 +3343,7 @@ def _live_progress_callback(
                     and axis_bindings[0].mode == "mapped"
                     for name, axis_bindings in bindings.items()
                 ):
-                    ready_payload["metrics"] = ready_metrics
+                    ready_payload["metrics"] = event["metrics"]
                 run_event_emitter.emit(
                     "ready",
                     ready_payload,
@@ -3400,7 +3395,7 @@ def _run_progress_event_payload(
         and loss.get("schema_id") == "feedbax.manifest.mapped_metric_value"
     ):
         try:
-            payload["loss"] = float(jax.device_get(loss))
+            payload["loss"] = float(loss)
         except (TypeError, ValueError):
             payload["loss"] = loss
     return payload
@@ -3505,12 +3500,7 @@ def _final_metrics(
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
 ) -> dict[str, Any]:
     metrics = dict(coordinate.metrics)
-    for key, value in slots.items():
-        if key.endswith("loss"):
-            try:
-                metrics[key] = float(value)
-            except (TypeError, ValueError):
-                metrics[key] = value
+    metrics.update((key, value) for key, value in slots.items() if key.endswith("loss"))
     metrics.setdefault("program_step", coordinate.program_step)
     _, normalized = normalize_serialized_metrics(coordinate, metrics, slot_axis_bindings)
     return normalized

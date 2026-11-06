@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import threading
@@ -14,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Self, TextIO
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -153,26 +156,71 @@ def _normalize_structured_mapped_value(
     return normalized
 
 
+def _json_metric_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, (jax.Array, np.ndarray, np.generic)):
+        if value.ndim != 0:
+            raise ValueError("an unmapped array must be scalar")
+        dtype = value.dtype
+        kind = getattr(dtype, "kind", None)
+        if kind == "b":
+            return bool(value.item())
+        if kind in ("i", "u") or (kind == "V" and jnp.issubdtype(dtype, jnp.integer)):
+            return int(value.item())
+        if kind != "f" and not (kind == "V" and jnp.issubdtype(dtype, jnp.floating)):
+            raise ValueError(f"unsupported scalar dtype {dtype}")
+        value = float(value.item())
+
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("numbers must be finite")
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_metric_value(item) for item in value]
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("object keys must be strings")
+        return {key: _json_metric_value(item) for key, item in value.items()}
+    raise ValueError(f"unsupported value type {type(value).__name__}")
+
+
+def _normalize_json_metric(name: str, value: Any) -> Any:
+    try:
+        return _json_metric_value(value)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise RunEventProtocolError(
+            f"metric {name!r} must have a finite JSON representation: {exc}"
+        ) from exc
+
+
 def normalize_serialized_metrics(
     coordinate: ProgressCoordinate,
     named_metrics: Mapping[str, Any],
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Strip mapped metrics from a coordinate and envelope them in their carrier."""
+    """Serialize shared metrics and move mapped metrics to their named carriers."""
     mapped = {
         name: bindings
         for name, bindings in slot_axis_bindings.items()
         if bindings and bindings[0].mode == "mapped" and name in named_metrics
     }
-    if not mapped:
-        return coordinate.model_dump(mode="json", exclude_none=True), dict(named_metrics)
-    coordinate_metrics = {
-        name: value for name, value in coordinate.metrics.items() if name not in mapped
+    normalized = {
+        name: value if name in mapped else _normalize_json_metric(name, value)
+        for name, value in named_metrics.items()
     }
-    coordinate_payload = coordinate.model_copy(update={"metrics": coordinate_metrics}).model_dump(
-        mode="json", exclude_none=True
+    coordinate_payload = coordinate.model_dump(
+        mode="json", exclude={"metrics"}, exclude_none=True
     )
-    normalized = dict(named_metrics)
+    coordinate_payload["metrics"] = {
+        name: (
+            normalized[name]
+            if name in named_metrics and value is named_metrics[name]
+            else _normalize_json_metric(name, value)
+        )
+        for name, value in coordinate.metrics.items()
+        if name not in mapped
+    }
     for name, axes in mapped.items():
         if isinstance(named_metrics[name], Mapping):
             if (
