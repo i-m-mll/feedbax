@@ -78,7 +78,7 @@ def resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
             param_schema_version=node.param_schema_version,
         )
     ):
-        params, lowering_metadata = _split_lowering_metadata(node)
+        params, lowering_metadata = _split_lowering_metadata(node, registry)
         resolution = resolver(
             node.type,
             params,
@@ -115,9 +115,9 @@ def _complete_component_node(
 
     if meta is None:
         return node
+    params, lowering_metadata = _split_lowering_metadata(node, registry)
     if meta.is_composite:
-        return node.model_copy(update={"params": {}})
-    params, lowering_metadata = _split_lowering_metadata(node)
+        return node.model_copy(update={"params": lowering_metadata})
     context = {
         key: value for key, value in params.items() if key in meta.params.build_context_fields
     }

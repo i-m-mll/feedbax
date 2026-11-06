@@ -9,6 +9,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
+import optax
 import pytest
 from pydantic import TypeAdapter
 
@@ -29,7 +30,6 @@ from feedbax.contracts.graph import (
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.web.worker.execution import (
     _build_optimizer,
-    _derive_trainable_nodes,
     compile_training_run,
     rollout_graph,
     run_training_graph,
@@ -425,59 +425,6 @@ def test_compile_training_run_uses_array_leaf_trainability_for_network_template(
         eqx.is_inexact_array(leaf)
         for leaf in jax.tree_util.tree_leaves(trainable)
         if leaf is not None
-    )
-
-
-def test_trainable_nodes_come_from_registry_metadata_and_explicit_overrides() -> None:
-    graph_spec = GraphSpec(
-        nodes={
-            "default_readout": ComponentSpec(
-                type="Linear",
-                params={"input_size": 1, "output_size": 1},
-                input_ports=["input"],
-                output_ports=["output"],
-            ),
-            "disabled_readout": ComponentSpec(
-                type="Linear",
-                params={"input_size": 1, "output_size": 1, "trainable": False},
-                input_ports=["input"],
-                output_ports=["output"],
-            ),
-            "explicit_gain": ComponentSpec(
-                type="Gain",
-                params={"gain": 1.0, "trainable": True},
-                input_ports=["input"],
-                output_ports=["output"],
-            ),
-        }
-    )
-
-    assert _derive_trainable_nodes(graph_spec, ComponentRegistry(load_user_components=False)) == (
-        "default_readout",
-        "explicit_gain",
-    )
-
-
-def test_default_trainable_nodes_include_neural_and_executable_template_components() -> None:
-    graph_spec = GraphSpec(
-        nodes={
-            "linear": ComponentSpec(type="Linear", params={}),
-            "mlp": ComponentSpec(type="MLP", params={}),
-            "gru": ComponentSpec(type="GRU", params={}),
-            "lstm": ComponentSpec(type="LSTM", params={}),
-            "recurrent_controller": ComponentSpec(type="Recurrent Controller", params={}),
-            "simple_feedback_loop": ComponentSpec(type="Simple Feedback Loop", params={}),
-            "gain": ComponentSpec(type="Gain", params={}),
-        }
-    )
-
-    assert _derive_trainable_nodes(graph_spec, ComponentRegistry(load_user_components=False)) == (
-        "linear",
-        "mlp",
-        "gru",
-        "lstm",
-        "recurrent_controller",
-        "simple_feedback_loop",
     )
 
 
@@ -1184,6 +1131,139 @@ def test_run_training_graph_projects_parameter_constraints_after_update(
     )
 
     assert compiled.graph.nodes["readout"].layer.weight[0, 0] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("wrapper_type", "freeze_wrapper", "freeze_child"),
+    [
+        pytest.param("Subgraph", False, False, id="generic-wrapper"),
+        pytest.param("Subgraph", True, False, id="frozen-wrapper"),
+        pytest.param("Recurrent Controller", False, True, id="named-wrapper"),
+    ],
+)
+def test_nested_trainability_matches_flat_training(
+    wrapper_type: str, freeze_wrapper: bool, freeze_child: bool, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
+    # Use SGD to make the one-step updates analytically checkable.
+    monkeypatch.setattr(
+        worker_execution,
+        "_build_optimizer",
+        lambda learning_rate, _grad_clip: optax.sgd(learning_rate),
+    )
+
+    def linear(**params) -> ComponentSpec:
+        return ComponentSpec(
+            type="Linear",
+            params={"input_size": 1, "output_size": 1, "use_bias": False, **params},
+            input_ports=["input"],
+            output_ports=["output"],
+        )
+
+    def wire(source: str, target: str) -> WireSpec:
+        return WireSpec(
+            source_node=source, source_port="output", target_node=target, target_port="input"
+        )
+
+    first = linear(trainable=False) if freeze_child else linear()
+    second = linear(trainable=True) if freeze_wrapper else linear()
+    flat_spec = GraphSpec(
+        nodes={
+            "first": linear(trainable=False) if freeze_wrapper else first,
+            "second": linear(trainable=False) if freeze_wrapper else second,
+            "readout": linear(),
+        },
+        wires=[wire("first", "second"), wire("second", "readout")],
+        output_ports=["output"],
+        output_bindings={"output": ("readout", "output")},
+    )
+    nested_spec = GraphSpec(
+        nodes={
+            "wrapper": ComponentSpec(
+                type=wrapper_type,
+                params={"trainable": False} if freeze_wrapper else {},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "readout": linear(),
+        },
+        wires=[wire("wrapper", "readout")],
+        output_ports=flat_spec.output_ports,
+        output_bindings=flat_spec.output_bindings,
+        subgraphs={
+            "wrapper": GraphSpec(
+                nodes={"first": first, "second": second},
+                wires=[wire("first", "second")],
+                input_ports=["input"],
+                input_bindings={"input": ("first", "input")},
+                output_ports=["output"],
+                output_bindings={"output": ("second", "output")},
+            )
+        },
+    )
+
+    for nested, spec in [(False, flat_spec), (True, nested_spec)]:
+        target = "wrapper" if nested else "first"
+        bindings = _task_binding_spec()
+        bindings["bindings"][0].update(
+            id=f"task:model_input->{target}:input",
+            target_node_id=target,
+        )
+        cfg = _cfg(grad_clip=None, snapshot_interval=1)
+        compiled = compile_training_run(
+            component_registry=ComponentRegistry(load_user_components=False),
+            graph_spec=spec,
+            training_spec=_training_spec(
+                optimizer={"type": "sgd", "params": {"learning_rate": cfg.learning_rate}},
+                n_batches=1,
+            ),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=bindings,
+            cfg=cfg,
+        )
+
+        def weights(graph):
+            interior = graph.nodes["wrapper"] if nested else graph
+            return (
+                interior.nodes["first"].layer.weight,
+                interior.nodes["second"].layer.weight,
+                graph.nodes["readout"].layer.weight,
+            )
+
+        key = jax.random.PRNGKey(0)
+        # Match starting weights across depths and give each leaf a distinct update.
+        compiled.graph = eqx.tree_at(
+            weights, compiled.graph, tuple(jnp.array([[weight]]) for weight in (1.0, 2.0, 0.5))
+        )
+        initial = rollout_graph(compiled.graph, compiled, key=key)["outputs"]["output"]
+        assert jnp.all(initial == 1.0)
+
+        result = run_training_graph(
+            compiled,
+            job_id=f"trainability-{'nested' if nested else 'flat'}",
+            total_batches=1,
+            cfg=cfg,
+            stop_event=threading.Event(),
+            emit=lambda event: None,
+        )
+        expected_weights = (
+            1.0 if freeze_wrapper or freeze_child else 0.8,
+            2.0 if freeze_wrapper else 1.9,
+            0.1,
+        )
+        assert tuple(weight.item() for weight in weights(result.graph)) == pytest.approx(
+            expected_weights
+        )
+        final = rollout_graph(result.graph, compiled, key=key)["outputs"]["output"]
+        assert jnp.allclose(final, expected_weights[0] * expected_weights[1] * expected_weights[2])
+
+        prefix = "wrapper." if nested else ""
+        expected_paths = {"readout"}
+        if not freeze_wrapper:
+            expected_paths.add(f"{prefix}second")
+            if not freeze_child:
+                expected_paths.add(f"{prefix}first")
+        assert set(result.execution_metadata["trainable_nodes"]) == expected_paths
 
 
 def test_compile_training_run_fails_unsupported_display_only_component() -> None:

@@ -211,7 +211,7 @@ def _instantiate_graph(
     nodes: dict[str, Component] = {}
     for node_name, node_spec in spec.nodes.items():
         node_type = node_spec.type
-        node_params, _ = _split_lowering_metadata(node_spec)
+        node_params, _ = _split_lowering_metadata(node_spec, metadata_registry)
         required_domain = required_interior_domain(node_type, metadata_registry)
         if required_domain is None and metadata_registry is not execution_registry:
             required_domain = required_interior_domain(node_type, execution_registry)
@@ -368,11 +368,22 @@ def _instantiate_graph(
 
 def _split_lowering_metadata(
     node_spec: ComponentSpec,
+    component_registry: Any,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Separate graph-level controls from the component's own parameters."""
     params = dict(node_spec.params)
-    if node_spec.type != "Sum" or "channel_adapter" not in params:
-        return params, {}
-    lowering_metadata = {"channel_adapter": params.pop("channel_adapter")}
+    lowering_metadata = {}
+    if node_spec.type == "Sum" and "channel_adapter" in params:
+        lowering_metadata["channel_adapter"] = params.pop("channel_adapter")
+    if isinstance(params.get("trainable"), bool):
+        declaration = component_registry.get(node_spec.type)
+        if declaration is not None:
+            contract = declaration.params
+            declared = "trainable" in contract.model.model_fields or (
+                "trainable" in contract.build_context_fields
+            )
+            if not declared:
+                lowering_metadata["trainable"] = params.pop("trainable")
     return params, lowering_metadata
 
 
