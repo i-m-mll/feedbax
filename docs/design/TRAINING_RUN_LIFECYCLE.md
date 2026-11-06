@@ -234,7 +234,7 @@ Core checks (feedbax-owned):
 | `completed_batches` | Realized batch count equals the declared batch count. |
 | `lr_trace` | Realized learning-rate trace (from training diagnostics) matches the declared schedule at ≥3 points (start / mid / terminal), tolerance 1e-6 relative, schedule constructed through the executor's own builder path with the row's actual resume context. |
 | `seeds` | Realized seeds recorded in the manifest equal the declared seeds. |
-| `checkpoint_cadence` | Custody transactions exist at the declared interval; final transaction coordinate consistent with the realized batch count. |
+| `checkpoint_cadence` | Checkpoints exist at the declared interval and at the end of a nonempty segment. Native immediate termination requires all earlier scheduled checkpoints and permits a checkpoint at the terminal batch only if it was scheduled. |
 | `environment_fingerprint` | Fingerprint recorded at REALIZE_ENV equals the fingerprint recorded in the row's manifest. |
 | `manifest_valid` | Final `TrainingRunManifest` loads, migrates, and matches the PREFLIGHT-normalized payload. |
 | `events_terminal` | Event log ends in exactly one terminal event consistent with the sentinel. |

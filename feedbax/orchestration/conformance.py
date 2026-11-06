@@ -1341,18 +1341,46 @@ def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
         return missing_input_check(check_id, "checkpoint transaction coordinates")
 
     interval_int = int(interval)
-    expected = _expected_checkpoint_coordinates(interval_int, frame.segment, origin=frame.origin)
+    try:
+        immediate = frame.segment > 0 and _is_native_immediate_termination(row, frame)
+    except (OSError, ValueError) as exc:
+        return fail_check(check_id, expected="training manifest loads", detail=str(exc))
+    expected = _expected_checkpoint_coordinates(
+        interval_int, frame.segment, origin=frame.origin, require_terminal=not immediate
+    )
+    expected_evidence = {"coordinate_interval": interval_int, "coordinates": expected}
     observed = sorted(int(coordinate) for coordinate in coordinates)
-    if observed == expected:
-        return pass_check(
-            check_id,
-            expected={"coordinate_interval": interval_int, "coordinates": expected},
-            observed={"coordinates": observed, "realized_batches": frame.segment},
-        )
-    return fail_check(
+    matches = observed == expected
+    if immediate and frame.cumulative % interval_int == 0:
+        # At an aligned boundary, final progress can report termination after the scheduled save.
+        expected_evidence["optional_terminal_coordinate"] = frame.segment
+        matches = matches or observed == [*expected, frame.segment]
+    verdict = pass_check if matches else fail_check
+    return verdict(
         check_id,
-        expected={"coordinate_interval": interval_int, "coordinates": expected},
+        expected=expected_evidence,
         observed={"coordinates": observed, "realized_batches": frame.segment},
+    )
+
+
+def _is_native_immediate_termination(
+    row: ConformanceRowArtifacts, frame: _RealizedBatchFrame
+) -> bool:
+    if row.runtime_inputs is not None and row.runtime_inputs.authorized_batch_stop is not None:
+        return False
+    diagnostics = row.training_diagnostics
+    if _path(diagnostics, "terminal_status") != "cancelled":
+        return False
+    manifest = _manifest_payload(row)
+    metadata = _path(manifest, "provenance", "metadata")
+    manifest_id = _path(manifest, "id")
+    return (
+        _path(metadata, "training_executor") == "native"
+        and _path(metadata, "cancellation", "action") == "terminate"
+        and _path(manifest, "status") == "cancelled"
+        and isinstance(manifest_id, str)
+        and manifest_id == _path(diagnostics, "manifest_id")
+        and _path(manifest, "completed_batches") == frame.cumulative
     )
 
 
@@ -1979,14 +2007,15 @@ def _expected_checkpoint_coordinates(
     completed_batches: int,
     *,
     origin: int,
+    require_terminal: bool,
 ) -> list[int]:
     if interval <= 0:
         raise ValueError("checkpoint interval must be positive")
     if completed_batches == 0:
         return []
     first_relative_boundary = interval - origin % interval
-    coordinates = list(range(first_relative_boundary, completed_batches + 1, interval))
-    if not coordinates or coordinates[-1] != completed_batches:
+    coordinates = list(range(first_relative_boundary, completed_batches, interval))
+    if require_terminal:
         coordinates.append(completed_batches)
     return coordinates
 

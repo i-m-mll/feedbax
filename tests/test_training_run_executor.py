@@ -198,7 +198,7 @@ from feedbax.training.manifest_preflight import (
     build_training_run_manifest_spec_payloads,
     preflight_training_run_manifest_payloads,
 )
-from feedbax.training.interruption import CancellationDecision
+from feedbax.training.interruption import CancellationAction, CancellationDecision
 from feedbax.training.diagnostics import (
     LearningRateDiagnostic,
     NativeExecutionProducerContext,
@@ -4402,6 +4402,73 @@ def test_authored_cadence_uses_completed_batches_not_program_step(
     assert [event["coordinate"]["program_step"] for event in result.history_events] == [2, 4]
     assert result.diagnostics.method_trace is None
     assert int(result.final_slots["batch_counter"]) == 14
+
+
+@pytest.mark.parametrize(
+    ("action", "stop_batch", "total_updates", "progress_interval", "writes", "missing_write"),
+    [
+        pytest.param("terminate", 14, 5, 1, [2], None, id="immediate-off-cadence"),
+        pytest.param("terminate", 15, 6, 1, [2], 2, id="immediate-before-scheduled-write"),
+        pytest.param("terminate", 15, 5, 4, [2, 5], None, id="immediate-after-scheduled-write"),
+        pytest.param("stop", 14, 4, 1, [2, 4], 4, id="graceful-off-cadence"),
+    ],
+)
+def test_native_cancellation_checkpoint_cadence(
+    tmp_path: Path,
+    action: CancellationAction,
+    stop_batch: int,
+    total_updates: int,
+    progress_interval: int,
+    writes: list[int],
+    missing_write: int | None,
+) -> None:
+    registry, _ = _interval_registry(total_updates=total_updates)
+    spec = _run_spec()
+    spec.training_config.n_batches = total_updates
+    spec.checkpoint_progress.checkpoint_interval = 3
+    spec.checkpoint_progress.progress_interval = progress_interval
+    initial_slots = _initial_slots(arrays=True)
+    initial_slots["batch_counter"] = jnp.array(10, dtype=jnp.int32)
+    decision = CancellationDecision(action, "test", 123.0)
+
+    def cancellation_probe(coordinate: ProgressCoordinate) -> CancellationDecision | None:
+        return decision if coordinate.completed_batches == stop_batch else None
+
+    result = execute_training_run_spec(
+        spec,
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=tmp_path / "checkpoints",
+        registry=registry,
+        cancellation_probe=cancellation_probe,
+    )
+    assert result.status == "cancelled"
+    assert result.end_completed_batches == stop_batch
+    diagnostics = json.loads(result.diagnostics_path.read_bytes())
+    assert diagnostics["checkpoint_coordinates"] == writes
+    row = ConformanceRowArtifacts(
+        row_id=result.run_id,
+        bundle_row_spec=spec.model_dump(mode="json"),
+        manifest_path=result.manifest_path,
+        training_diagnostics=diagnostics,
+    )
+    cadence = check_checkpoint_cadence(row)
+    assert cadence.status == "pass", cadence
+
+    if missing_write is not None:
+        incomplete = replace(
+            row,
+            training_diagnostics={
+                **diagnostics,
+                "checkpoint_coordinates": [batch for batch in writes if batch != missing_write],
+                "checkpoint_transactions": [
+                    transaction
+                    for transaction in diagnostics["checkpoint_transactions"]
+                    if transaction["completed_batches"] != missing_write
+                ],
+            },
+        )
+        assert check_checkpoint_cadence(incomplete).status == "fail"
 
 
 def test_interval_resume_preserves_inner_step_and_absolute_batch_cadence(
