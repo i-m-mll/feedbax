@@ -90,6 +90,7 @@ def test_manifest_packet_import_route_indexes_typed_run_rows(
     source = tmp_path / "source"
     packet = tmp_path / "packet"
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(target))
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
     _write_training_run(
         source,
         "feedbax-training-run:packet",

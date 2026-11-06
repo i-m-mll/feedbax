@@ -146,7 +146,7 @@ class _OwnedPodTransport(FakeRunPodTransport):
 def test_transfer_failure_tears_down_owned_pod_without_masking_primary(
     tmp_path: Path,
 ) -> None:
-    bundle = _bundle(tmp_path, baseline=False)
+    bundle = _bundle(tmp_path, baseline=False, seal_repo=True)
     transport = _OwnedPodTransport(bundle.environment.image_id or "")
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
