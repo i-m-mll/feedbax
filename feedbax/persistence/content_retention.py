@@ -208,19 +208,19 @@ def _target_digests(
 ) -> set[str]:
     if target.ref_kind == "object":
         assert target.object is not None
-        provider._verify_object(target.object)
+        provider.verify_object(target.object)
         return {target.object.sha256}
     if target.ref_kind == "tree":
         assert target.tree is not None
         tree = provider.get_tree(target.tree)
         digests = {target.tree.descriptor.sha256}
         for member in tree.files:
-            provider._verify_object(member.object)
+            provider.verify_object(member.object)
             digests.add(member.object.sha256)
         return digests
     assert target.manifest is not None
     resolved = provider._resolve_manifest_ref(target.manifest.kind, target.manifest.id)
-    provider._verify_object(resolved.object)
+    provider.verify_object(resolved.object)
     if resolved != target.manifest:
         raise ContentRetentionError(
             f"manifest retention target identity drifted: {target.manifest.ref}"
