@@ -5,10 +5,11 @@ import jax.numpy as jnp
 import equinox as eqx
 import pytest
 
-from feedbax.runtime.channel import Channel
+from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.components import DelayLine, Linear
 from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Graph, GraphTraceRequest, Wire, init_state_from_component
+from feedbax.runtime.iteration import run_component
 from feedbax.compiler.templates import (
     network_template_graph,
     recurrent_graph_input_initializer,
@@ -18,7 +19,10 @@ from feedbax.compiler.templates import (
 )
 from feedbax.compiler import GraphCompilationError
 from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
+from feedbax.models.feedback import SimpleFeedback
 from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork, VanillaRNN
+from feedbax.objectives import CompositeLoss
+from feedbax.tasks import SimpleReaches, prepare_trial
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.compiler.serialization import graph_to_spec
@@ -960,6 +964,78 @@ def test_simple_feedback_template_infers_feedback_motor_and_force_filter_shapes(
     )
 
     assert outputs["effector"].pos.shape == (4, 2)
+
+
+@pytest.mark.parametrize("start", [[0.0, 0.0], [0.4, -0.3]])
+def test_delayed_feedback_template_starts_and_continues_like_legacy(start) -> None:
+    key = jax.random.key(0)
+    task = SimpleReaches(
+        n_steps=4,
+        loss_func=CompositeLoss(()),
+        workspace=[[-1, -1], [1, 1]],
+        fixed_endpoints=[start, [0.6, 0.2]],
+    )
+    trial = task.get_train_trial(key)
+    registry = ComponentRegistry(load_user_components=False)
+    spec = simple_feedback_template_graph(
+        {"feedback_delay": 2, "network": {"input_size": 10, "hidden_size": 5, "out_size": 2}}
+    )
+    compiled = spec_to_graph(spec, registry)
+    graph = spec_to_graph(graph_to_spec(compiled, registry), registry)
+    net = eqx.tree_at(
+        lambda net: (net.hidden, net.readout),
+        SimpleStagedNetwork(10, 5, out_size=2, key=key),
+        (graph.nodes["cell"].cell, graph.nodes["readout"].layer),
+    )
+    legacy = SimpleFeedback(
+        net,
+        graph.nodes["mechanics"],
+        feedback_spec=ChannelSpec(where=lambda state: state.effector, delay=2, noise_func=None),
+        motor_noise_func=None,
+    ).prepare()
+
+    prepared = prepare_trial(graph, trial)
+    legacy_prepared = prepare_trial(legacy, trial)
+    initial = graph.state_view(prepared.init_state)
+    assert jnp.allclose(initial.mechanics.effector.pos, jnp.asarray(start))
+    assert jnp.allclose(initial.mechanics.plant.skeleton.pos, initial.mechanics.effector.pos)
+    initial_feedback = jnp.asarray([*start, 0.0, 0.0, 0.0, 0.0])
+    assert jnp.allclose(initial.feedback.output, initial_feedback)
+    for sample in initial.feedback.queue:
+        assert jnp.allclose(sample, initial_feedback)
+
+    outputs, _, history = run_component(
+        graph, prepared.inputs, prepared.init_state, key=key, n_steps=prepared.n_steps
+    )
+    expected, _, legacy_history = run_component(
+        legacy,
+        legacy_prepared.inputs,
+        legacy_prepared.init_state,
+        key=key,
+        n_steps=legacy_prepared.n_steps,
+    )
+    assert jnp.allclose(outputs["effector"].pos[0], jnp.asarray(start))
+    assert eqx.tree_equal(outputs, expected, rtol=1e-6, atol=1e-7)
+    legacy_feedback = legacy_history.feedback.output
+    assert jnp.allclose(
+        history.feedback.output,
+        jnp.concatenate((legacy_feedback.pos, legacy_feedback.vel, legacy_feedback.force), axis=-1),
+    )
+
+    if any(start):
+        state = prepare_trial(graph, trial).init_state
+        cycle = None
+        for t in range(2):
+            step_inputs = jax.tree.map(lambda value: value[t], prepared.inputs)
+            _, state, cycle = graph.step(step_inputs, state, cycle, key=key)
+        remaining = jax.tree.map(lambda value: value[2:], prepared.inputs)
+        continued, _, continued_history = graph(
+            remaining, state, key=key, n_steps=1, cycle_init=cycle, return_state_history=True
+        )
+        assert eqx.tree_equal(
+            continued, jax.tree.map(lambda value: value[2:], outputs), rtol=1e-6, atol=1e-7
+        )
+        assert jnp.allclose(continued_history.feedback.output, history.feedback.output[2:])
 
 
 def test_stateful_input_shape_fields_round_trip() -> None:
