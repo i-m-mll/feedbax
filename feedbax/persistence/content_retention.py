@@ -238,6 +238,22 @@ def _validate_targets(
     return digests
 
 
+def require_active_root(
+    provider: ImmutableArtifactBlobProvider,
+    root_id: str,
+) -> ContentRootRecord:
+    """Verify one active canonical root and its retained objects without changing it."""
+    with provider._exclusive_lock():
+        index = _read_index(provider)
+        if index.pending_gc is not None:
+            raise ContentRetentionError("recover the pending GC generation before verifying roots")
+        for root in index.roots:
+            if root.root_id == root_id and not root.released and root.domain == "canonical":
+                _validate_targets(provider, root.targets)
+                return root
+    raise ContentRetentionError(f"active retention root is unavailable: {root_id}")
+
+
 def register_root(
     provider: ImmutableArtifactBlobProvider,
     root: ContentRootRecord,

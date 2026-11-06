@@ -1114,10 +1114,7 @@ def test_matrix_staged_parents_require_and_bind_exact_governed_root_custody(
     ]
 
 
-def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
-    tmp_path: Path,
-    subprocess_dirty_tolerance,
-) -> None:
+def _write_evaluation_plugin(tmp_path: Path) -> None:
     plugin = tmp_path / "evaluation_plugin.py"
     plugin.write_text(
         """
@@ -1141,7 +1138,12 @@ from feedbax.plugins import (
 def _recipe(_spec, _root, _states_path, _context):
     return EvaluationRecipeResult(summary_metrics={"ok": 1.0})
 
-def _batch(items, _context):
+def _batch(items, context):
+    probe = Path(context.repo_root) / "retry-probe"
+    if probe.is_dir():
+        with (probe / "recipe-calls").open("a") as calls:
+            for item in items:
+                calls.write(item.row_id + "\\n")
     return [
         EvaluationRecipeResult(
             states={"gain": item.spec.params["gain"]},
@@ -1157,7 +1159,17 @@ def _compact(value):
     observed_roots = repo_root / "observed-worker-roots"
     observed_roots.mkdir(exist_ok=True)
     (observed_roots / str(os.getpid())).write_text(str(repo_root), encoding="utf-8")
-    assert value.execution_context.artifact_provider("artifacts").root.is_dir()
+    probe = repo_root / "retry-probe"
+    if probe.is_dir():
+        assert [state["gain"] for state in value.states] == [0.0, 1.0]
+        with (probe / "compact-calls").open("a") as calls:
+            calls.write(",".join(value.batch.ordered_row_ids) + "\\n")
+        interrupt = probe / "interrupt"
+        if interrupt.is_file():
+            interrupt.unlink()
+            raise RuntimeError("consumer interrupted after row publication")
+    else:
+        assert value.execution_context.artifact_provider("artifacts").root.is_dir()
     assert len(value.parent_authorities) == len(value.outcomes)
     assert all(
         parent.metadata["ref_schema_version"] == "feedbax.ref.authenticated_manifest.v1"
@@ -1218,6 +1230,132 @@ PLUGIN_REGISTRATION = PluginRegistration(
 """.strip(),
         encoding="utf-8",
     )
+
+
+def test_governed_harness_retries_compaction_after_row_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from feedbax.analysis.harness import main
+    from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError
+    from feedbax.contracts.base import ArtifactRef
+
+    leaf = "trajectory"
+    declaration = EvaluationBatchConsumerDeclaration(
+        leaf_id=leaf,
+        consumer_id="tests.projector",
+        consumer_version="v1",
+        terminal_analysis_type=f"tests.{leaf}.analysis",
+        accepted_evaluation_state_schema_ids=("tests.diagnostic.evaluation.v1",),
+        compact_product_schema_id=f"tests.{leaf}.product",
+        compact_product_schema_version=f"tests.{leaf}.product.v1",
+        compact_product_role=f"{leaf}_result",
+        merge_state_schema_id=f"tests.{leaf}.merge",
+        merge_state_schema_version=f"tests.{leaf}.merge.v1",
+        parameters={"leaf": leaf},
+    )
+    rows = ("gain-00", "gain-01")
+    _, (task,) = _grouped_worker_tasks(tmp_path, (rows,), consumers=(declaration,))
+    _write_evaluation_plugin(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    probe = tmp_path / "retry-probe"
+    probe.mkdir()
+    (probe / "interrupt").touch()
+    lifecycle = tmp_path / "lifecycle.json"
+    compaction = tmp_path / "evaluation-batch-compaction"
+    completion = compaction / "fragment-checkpoints" / "0000.json"
+    argv = [
+        task["payload_path"],
+        "--batch",
+        "--plugin",
+        "evaluation_plugin",
+        "--manifest-root",
+        task["manifest_root"],
+        "--repo-root",
+        task["repo_root"],
+        "--orchestration-bundle",
+        task["bundle_path"],
+        "--orchestration-inputs-root",
+        task["inputs_root"],
+        "--orchestration-row-id",
+        task["orchestration_row_id"],
+        "--lifecycle-result",
+        str(lifecycle),
+    ]
+
+    with pytest.raises(RuntimeError, match="consumer interrupted after row publication"):
+        main(argv)
+
+    assert not completion.exists()
+    assert not lifecycle.exists()
+    store = Path(task["manifest_root"]) / "0000"
+    row_paths = sorted((store / "manifests").glob("*/*.json"))
+    assert len(row_paths) == len(rows)
+    row_digests = {path: sha256_bytes(path.read_bytes()) for path in row_paths}
+    matrix = Path(task["payload_path"])
+    matrix_digest = sha256_bytes(matrix.read_bytes())
+    assert (probe / "recipe-calls").read_text().splitlines() == list(rows)
+    assert (probe / "compact-calls").read_text().splitlines() == [",".join(rows)]
+
+    row_manifest = json.loads(row_paths[0].read_bytes())
+    (resolved_row,) = (
+        item for item in row_manifest["artifacts"] if item["role"] == "resolved_row_spec"
+    )
+    blob = Path(resolved_row["uri"])
+    original_blob = blob.rename(tmp_path / "original-row-spec")
+    blob.write_bytes(b" " * original_blob.stat().st_size)
+    with pytest.raises(ArtifactBlobIntegrityError):
+        main(argv)
+    original_blob.replace(blob)
+
+    cache = Path(row_manifest["metadata"]["cache"]["states_path"])
+    cache_bytes = cache.read_bytes()
+    cache.write_bytes(cache_bytes + b" ")
+    with pytest.raises(ValueError, match=r"state cache|states cache"):
+        main(argv)
+    assert not completion.exists()
+    assert not lifecycle.exists()
+    assert (probe / "recipe-calls").read_text().splitlines() == list(rows)
+    assert (probe / "compact-calls").read_text().splitlines() == [",".join(rows)]
+    cache.write_bytes(cache_bytes)
+
+    start_retry = Barrier(2, timeout=10)
+
+    def retry() -> int:
+        start_retry.wait()
+        return main(argv)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        retries = [pool.submit(retry) for _ in range(2)]
+        assert [result.result(timeout=30) for result in retries] == [0, 0]
+
+    assert (probe / "recipe-calls").read_text().splitlines() == list(rows)
+    assert (probe / "compact-calls").read_text().splitlines() == [",".join(rows)] * 2
+    assert not cache.exists()
+    assert {path: sha256_bytes(path.read_bytes()) for path in row_paths} == row_digests
+    assert sha256_bytes(matrix.read_bytes()) == matrix_digest
+    receipt = json.loads(completion.read_bytes())
+    assert receipt["outcomes"] == json.loads(lifecycle.read_bytes())["outcomes"]
+    assert [outcome["row_id"] for outcome in receipt["outcomes"]] == list(rows)
+    assert {
+        Path(outcome["manifest_path"]): authority["metadata"]["manifest_sha256"]
+        for outcome, authority in zip(
+            receipt["outcomes"], receipt["parent_authorities"], strict=True
+        )
+    } == row_digests
+    (fragment,) = receipt["fragments"]
+    assert json.loads(
+        ImmutableArtifactBlobProvider(compaction).get_bytes(ArtifactRef.model_validate(fragment))
+    ) == {"leaf": leaf, "rows": list(rows)}
+
+
+def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
+    tmp_path: Path,
+    subprocess_dirty_tolerance,
+) -> None:
+    _write_evaluation_plugin(tmp_path)
     dist_info = tmp_path / "evaluation_plugin-0.0.dist-info"
     dist_info.mkdir()
     (dist_info / "METADATA").write_text(
