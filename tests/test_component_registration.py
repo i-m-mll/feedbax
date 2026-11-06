@@ -537,6 +537,7 @@ def test_downstream_migration_pack_can_migrate_owned_component_id() -> None:
                 ComponentMigration(
                     source_type="rlrmp.LegacyGain",
                     target_type="rlrmp.CurrentGain",
+                    target_param_schema_version="1",
                     owner="rlrmp",
                     migration_id="rlrmp.component.LegacyGain-to-CurrentGain.v1",
                 ),

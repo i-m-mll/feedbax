@@ -615,6 +615,25 @@ def test_provider_validation_reports_manifest_migration_custody_states(
     assert downstream.downstream_migration_records == [downstream_record]
 
 
+def test_manifest_validation_rejects_ambiguous_unversioned_component(
+    application_registry_bundle,
+) -> None:
+    payload = _current_graph_payload()
+    payload["nodes"] = {"linear": {"type": "Linear", "params": {"output_size": 2}}}
+    result = validate_graph_spec_manifest(
+        GraphSpecManifest(
+            id="feedbax-graph-spec:unversioned-component",
+            graph_spec=spec_payload("GraphSpec", payload),
+        ),
+        component_registry=application_registry_bundle.components,
+    )
+
+    assert not result.valid
+    assert result.migration_status == "rejected"
+    assert result.errors[0].type == "unsupported_component_migration"
+    assert "Ambiguous unversioned component parameters for 'Linear'" in result.errors[0].message
+
+
 def test_provider_validation_rejects_unsupported_manifest_graph_spec_version(
     application_registry_bundle,
 ) -> None:

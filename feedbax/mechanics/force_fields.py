@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax.contracts.migrations import ComponentMigration
 from feedbax.mechanics.units import require_positive_finite
 from feedbax.runtime.graph import Component
 from feedbax.runtime.signal_transforms import (
@@ -28,6 +29,60 @@ from feedbax.runtime.signal_transforms import (
 THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1 = "feedbax.component.threshold_latched_force.v1"
 THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2 = "feedbax.component.threshold_latched_force.v2"
 THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION = "feedbax.component.threshold_latched_force.v3"
+
+
+def _threshold_v1_evidence(params: Mapping[str, Any]) -> bool:
+    selector = params.get("state_selector")
+    return (
+        isinstance(selector, Mapping)
+        and "path" in selector
+        and "kind" not in selector
+        and "lateral_force" not in params
+    )
+
+
+def _threshold_v2_evidence(params: Mapping[str, Any]) -> bool:
+    selector = params.get("state_selector")
+    return isinstance(selector, Mapping) and "kind" in selector and "label" in params
+
+
+def _migrate_threshold_latched_force_v1(params: dict[str, Any]) -> dict[str, Any]:
+    migrated = dict(params)
+    selector = dict(migrated["state_selector"])
+    selector["kind"] = "fixed"
+    migrated["state_selector"] = selector
+    migrated["lateral_force"] = 0.0
+    return migrated
+
+
+def _migrate_threshold_latched_force_v2(params: dict[str, Any]) -> dict[str, Any]:
+    return {name: value for name, value in params.items() if name != "label"}
+
+
+THRESHOLD_LATCHED_FORCE_MIGRATIONS = (
+    ComponentMigration(
+        source_type="ThresholdLatchedForce",
+        target_type="ThresholdLatchedForce",
+        owner="feedbax",
+        source_param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
+        target_param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2,
+        migration_id="feedbax.component.ThresholdLatchedForce.params.v1-to-v2",
+        migrate_params=_migrate_threshold_latched_force_v1,
+        description="Classify legacy state selectors as fixed-coordinate selectors.",
+        matches_unversioned=_threshold_v1_evidence,
+    ),
+    ComponentMigration(
+        source_type="ThresholdLatchedForce",
+        target_type="ThresholdLatchedForce",
+        owner="feedbax",
+        source_param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2,
+        target_param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
+        migration_id="feedbax.component.ThresholdLatchedForce.drop-label",
+        migrate_params=_migrate_threshold_latched_force_v2,
+        description="Use the graph node identity in place of the legacy parameter label.",
+        matches_unversioned=_threshold_v2_evidence,
+    ),
+)
 
 
 class CurlFieldParams(TransformParams):

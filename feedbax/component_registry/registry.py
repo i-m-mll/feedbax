@@ -34,6 +34,7 @@ from feedbax.contracts.representation import (
     validate_representation_against_component,
 )
 
+from .migration_routes import migration_route, source_endpoint
 from .declarations import (
     ComponentBuilder,
     ComponentParamExtractor,
@@ -427,79 +428,58 @@ class ComponentRegistry:
         *,
         param_schema_version: str | None = None,
         complete_params: bool = True,
+        historical_unversioned: bool = False,
     ) -> ComponentResolution:
-        """Resolve identity and migrations, optionally completing the parameter contract.
-
-        The compiler defers completion until dimensions and state prototypes are solved.
-        Deferred resolution preserves authored omissions instead of injecting defaults.
-        """
-        meta = self._components.get(type_id)
-        if meta is not None and self._accepts_param_schema(meta, param_schema_version):
-            context = {
-                name: value
-                for name, value in params.items()
-                if name in meta.params.build_context_fields
-            }
-            authored = {name: value for name, value in params.items() if name not in context}
-            effective = (
-                meta.params.require(authored).model_dump(mode="python")
-                if complete_params
-                else authored
-            )
-            return ComponentResolution(
-                type_id=type_id,
-                params={**effective, **context},
-                param_schema_version=param_schema_version or meta.param_schema_version,
-                meta=deepcopy(meta),
-            )
-
-        migration = self._component_migrations.get((type_id, param_schema_version))
-        if migration is None:
-            owner = self._owner_for_missing_type(type_id, meta)
+        """Resolve migration edges before optionally completing the current contract."""
+        def current_version(name: str) -> str | None:
+            component = self._components.get(name)
+            return component.param_schema_version if component is not None else None
+        source = source_endpoint(
+            self._component_migrations,
+            current_version,
+            type_id,
+            param_schema_version,
+            params,
+            historical_unversioned=historical_unversioned,
+        )
+        (resolved_type, resolved_version), chain = migration_route(
+            self._component_migrations, current_version, source
+        )
+        meta = self._components.get(resolved_type)
+        if meta is None or resolved_version != meta.param_schema_version:
+            owner = self._owner_for_missing_type(resolved_type, meta)
             if owner is not None and not self._has_owner(owner):
                 raise MissingComponentOwner(
                     "Component type requires an owner migration pack that is not loaded: "
-                    f"type={type_id!r}, owner={owner!r}, "
+                    f"type={resolved_type!r}, owner={owner!r}, "
                     "install or enable the owning Feedbax component package"
                 )
             owner_context = f", owner={owner!r}" if owner is not None else ""
-            current_version = meta.param_schema_version if meta is not None else None
             raise UnsupportedComponentMigration(
-                "No component migration registered: "
+                "No component migration registered to a current declaration: "
                 f"type={type_id!r}{owner_context}, "
                 f"source_param_schema_version={param_schema_version!r}, "
-                f"current_param_schema_version={current_version!r}"
+                f"current_param_schema_version={current_version(type_id)!r}, "
+                f"terminal={(resolved_type, resolved_version)!r}"
             )
-
-        migrated_type, migrated_params, migrated_version = migration.apply(
-            params,
-            source_param_schema_version=param_schema_version,
-        )
-        migrated_meta = self._components.get(migrated_type)
-        if migrated_meta is None:
-            raise MissingComponentOwner(
-                "Component migration target is not registered: "
-                f"migration={migration.migration_id!r}, source_type={type_id!r}, "
-                f"target_type={migrated_type!r}, owner={migration.owner!r}"
+        migrated = dict(params)
+        for edge in chain:
+            _, migrated, _ = edge.apply(
+                migrated, source_param_schema_version=edge.source_param_schema_version
             )
-        if not self._accepts_param_schema(migrated_meta, migrated_version):
-            raise UnsupportedComponentMigration(
-                "Component migration produced unsupported parameter schema version: "
-                f"migration={migration.migration_id!r}, target_type={migrated_type!r}, "
-                f"target_param_schema_version={migrated_version!r}, "
-                f"supported={migrated_meta.supported_param_schema_versions!r}"
-            )
+        context = {
+            name: value for name, value in migrated.items() if name in meta.params.build_context_fields
+        }
+        authored = {name: value for name, value in migrated.items() if name not in context}
         effective = (
-            migrated_meta.params.require(migrated_params).model_dump(mode="python")
-            if complete_params
-            else dict(migrated_params)
+            meta.params.require(authored).model_dump(mode="python") if complete_params else authored
         )
         return ComponentResolution(
-            type_id=migrated_type,
-            params=effective,
-            param_schema_version=migrated_version or migrated_meta.param_schema_version,
-            meta=deepcopy(migrated_meta),
-            migrations=(self._migration_info(migration),),
+            type_id=resolved_type,
+            params={**effective, **context},
+            param_schema_version=meta.param_schema_version,
+            meta=deepcopy(meta),
+            migrations=tuple(self._migration_info(edge) for edge in chain),
         )
 
     def should_resolve_component_spec(
@@ -851,14 +831,6 @@ class ComponentRegistry:
             target_param_schema_version=migration.target_param_schema_version,
             description=migration.description,
         )
-
-    def _accepts_param_schema(
-        self,
-        meta: DeclaredComponent,
-        param_schema_version: str | None,
-    ) -> bool:
-        version = param_schema_version or meta.param_schema_version
-        return version == meta.param_schema_version
 
     def _owner_for_missing_type(self, type_id: str, meta: DeclaredComponent | None) -> str | None:
         if meta is not None:

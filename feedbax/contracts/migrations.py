@@ -697,17 +697,22 @@ class ComponentMigration:
     target_type: str
     migration_id: str
     owner: str
+    target_param_schema_version: str
     source_param_schema_version: str | None = None
-    target_param_schema_version: str | None = None
     migrate_params: ComponentParamMigrationFn | None = None
     description: str = ""
+    matches_unversioned: Callable[[Mapping[str, Any]], bool] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.target_param_schema_version:
+            raise ValueError("Component migration requires an explicit target parameter version")
 
     def apply(
         self,
         params: Mapping[str, Any],
         *,
         source_param_schema_version: str | None = None,
-    ) -> tuple[str, dict[str, Any], str | None]:
+    ) -> tuple[str, dict[str, Any], str]:
         """Apply this component edge to a parameter payload."""
         if source_param_schema_version != self.source_param_schema_version:
             raise UnsupportedComponentMigration(
