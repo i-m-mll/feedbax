@@ -1548,6 +1548,9 @@ class Graph(Component):
         )
 
     def remove_node(self, name: str) -> "Graph":
+        """Remove a local node, its incident wires, bindings, and parameter constraints."""
+        from feedbax.runtime.parameter_constraints import normalize_parameter_constraints
+
         if name not in self.nodes:
             raise ValueError(f"Node '{name}' does not exist")
 
@@ -1563,6 +1566,15 @@ class Graph(Component):
         )
         object.__setattr__(
             graph, "component_bindings", {k: v for k, v in self.component_bindings.items() if k != name}
+        )
+        object.__setattr__(
+            graph,
+            "parameter_constraints",
+            tuple(
+                constraint
+                for constraint in normalize_parameter_constraints(self.parameter_constraints)
+                if constraint.node != name
+            ),
         )
         return graph
 

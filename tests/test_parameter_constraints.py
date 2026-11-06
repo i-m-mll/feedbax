@@ -29,6 +29,8 @@ from feedbax.models.networks import (
     population_structure_from_spec,
 )
 from feedbax.objectives.loss import TermTree
+from feedbax.runtime.components import Linear
+from feedbax.runtime.graph import Graph
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 from feedbax.compiler import builders as graph_builders
 from feedbax.compiler.serialization import graph_to_spec
@@ -69,6 +71,60 @@ def test_graphspec_parameter_constraints_materialize_and_round_trip() -> None:
 
     roundtrip = graph_to_spec(graph)
     assert roundtrip.parameter_constraints == spec.parameter_constraints
+
+
+def test_remove_node_preserves_projection_for_surviving_nodes_across_round_trip() -> None:
+    registry = ComponentRegistry(load_user_components=False)
+    linear = ComponentSpec(
+        type="Linear",
+        params={"input_size": 1, "output_size": 1, "initialization": "zeros"},
+        input_ports=["input"],
+        output_ports=["output"],
+    )
+    child = GraphSpec(
+        nodes={"readout": linear},
+        parameter_constraints=[
+            ParameterConstraintSpec(node="readout", role="weight", mask=False, value=3.0)
+        ],
+    )
+    original = spec_to_graph(
+        GraphSpec(
+            nodes={"readout": linear, "readout_aux": linear, "child": ComponentSpec(type="Subgraph")},
+            subgraphs={"child": child},
+            parameter_constraints=[
+                ParameterConstraintSpec(node="readout", role="weight", mask=False, value=7.0),
+                ParameterConstraintSpec(node="readout_aux", role="weight", mask=False, value=5.0),
+            ],
+        ),
+        registry,
+    )
+    edited = original.remove_node("readout")
+    assert "readout" not in edited.nodes
+    edited = eqx.tree_at(
+        lambda graph: graph.get_node_attrs("readout_aux", "layer.weight")
+        + graph.get_node_attrs("child.readout", "layer.weight"),
+        edited,
+        (jnp.zeros((1, 1)), jnp.zeros((1, 1))),
+    )
+
+    projected = apply_parameter_constraints(edited)
+    serialized = graph_to_spec(edited, registry).model_dump_json()
+    restored = spec_to_graph(GraphSpec.model_validate_json(serialized), registry)
+    for graph in (projected, restored):
+        assert graph.get_node("readout_aux").layer.weight.item() == 5.0
+        assert graph.get_node("child.readout").layer.weight.item() == 3.0
+
+
+def test_same_name_replacement_keeps_its_initialized_weight() -> None:
+    original = Graph(
+        nodes={"readout": Linear(1, 1, key=jax.random.key(0))},
+        parameter_constraints=({"node": "readout", "role": "weight", "mask": False, "value": 7.0},),
+    )
+    fresh = Linear(1, 1, initialization="zeros", key=jax.random.key(1))
+    edited = original.remove_node("readout").add_node("readout", fresh)
+
+    assert apply_parameter_constraints(edited).get_node("readout").layer.weight.item() == 0.0
+    assert apply_parameter_constraints(original).get_node("readout").layer.weight.item() == 7.0
 
 
 @pytest.mark.parametrize("entry_point", ["supervised", "studio"])
