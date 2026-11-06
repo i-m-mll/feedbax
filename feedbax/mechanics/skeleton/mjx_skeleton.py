@@ -105,6 +105,13 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
 
         return mjx.make_data(self.mjx_model).replace(qpos=state.qpos, qvel=state.qvel)
 
+    def _kinematics_data(self, state: MJXSkeletonState):
+        """Compute world positions and the center-of-mass motion bases."""
+        from mujoco import mjx
+
+        data = mjx.kinematics(self.mjx_model, self._reconstruct_data(state))
+        return mjx.com_pos(self.mjx_model, data)
+
     def _dynamics_data(self, state: MJXSkeletonState, ctrl: Array):
         """Prepare controls and the current body COM wrench for dynamics."""
         from mujoco import mjx
@@ -150,25 +157,16 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
 
     @jax.named_scope("fbx.MJXSkeleton.forward_kinematics")
     def forward_kinematics(self, state: MJXSkeletonState) -> CartesianState:
-        """Compute Cartesian states of all bodies via forward kinematics.
-
-        Args:
-            state: Current skeleton state.
-
-        Returns:
-            CartesianState with positions and velocities of all bodies (2D).
-        """
+        """Return world-space XY positions and velocities at every body origin."""
         from mujoco import mjx
 
-        data = self._reconstruct_data(state)
-        data = mjx.forward(self.mjx_model, data)
+        data = mjx.com_vel(self.mjx_model, self._kinematics_data(state))
+        # MJX expresses cvel in world axes at the root subtree's center of mass.
+        offset = data.xpos - data.subtree_com[self.mjx_model.body_rootid]
+        vel = data.cvel[:, 3:] + jnp.cross(data.cvel[:, :3], offset)
 
-        # Extract 2D positions and velocities for all bodies
-        pos = data.xpos[:, :2]  # (nbody, 2)
-        vel = data.cvel[:, 3:5]  # (nbody, 2) — linear velocity components
-        force = jnp.zeros_like(pos)
-
-        return CartesianState(pos=pos, vel=vel, force=force)
+        pos = data.xpos[:, :2]
+        return CartesianState(pos=pos, vel=vel[:, :2], force=jnp.zeros_like(pos))
 
     @jax.named_scope("fbx.MJXSkeleton.effector")
     def effector(self, state: MJXSkeletonState) -> CartesianState:
@@ -185,8 +183,7 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         """
         from mujoco import mjx
 
-        data = mjx.kinematics(self.mjx_model, self._reconstruct_data(state))
-        data = mjx.com_pos(self.mjx_model, data)
+        data = self._kinematics_data(state)
         pos = data.site_xpos[self.effector_site_id]
         jac_pos, _ = mjx.jac(self.mjx_model, data, pos, self.effector_body_id)
         vel = data.qvel @ jac_pos

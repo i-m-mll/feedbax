@@ -17,7 +17,7 @@ from feedbax.mechanics.model_builder import (
     get_site_id,
     to_mjx,
 )
-from feedbax.mechanics.skeleton.mjx_skeleton import MJXSkeleton
+from feedbax.mechanics.skeleton.mjx_skeleton import MJXSkeleton, MJXSkeletonState
 from feedbax.mechanics.mjx_plant import MJXPlant
 from feedbax.mechanics.plant import PlantState
 from feedbax.runtime.state import CartesianState
@@ -124,13 +124,41 @@ class TestMJXSkeletonEffector:
         assert jnp.linalg.norm(eff.pos) < 2.0
 
 
-class TestMJXSkeletonForwardKinematics:
-    def test_returns_cartesian(self, skeleton, key):
-        state = skeleton.init(key=key)
-        fk = skeleton.forward_kinematics(state)
-        assert isinstance(fk, CartesianState)
-        assert fk.pos.shape[1] == 2  # 2D positions
-        assert fk.vel.shape[1] == 2
+def test_body_origin_velocities_match_body_origin_motion():
+    import mujoco
+
+    model = mujoco.MjModel.from_xml_string("""
+        <mujoco>
+            <worldbody>
+                <body name="link">
+                    <joint axis="1 2 3"/>
+                    <inertial pos="0.2 0.1 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                    <body pos="0.8 -0.3 0.4">
+                        <inertial pos="0.1 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                    </body>
+                    <site name="tip" pos="0.7 0.2 0"/>
+                </body>
+                <body pos="-2 1 0">
+                    <joint type="slide" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    """)
+    skeleton = MJXSkeleton(to_mjx(model), get_site_id(model, "tip"), get_body_id(model, "link"))
+    states = MJXSkeletonState(
+        qpos=jnp.array([[0.6, 0.2], [-0.4, -0.1]]),
+        qvel=jnp.array([[1.7, -0.3], [-0.9, 0.4]]),
+        effector_force=jnp.zeros((2, 2)),
+    )
+    project = jax.jit(jax.vmap(skeleton.forward_kinematics))
+    epsilon = 1e-3
+    before = project(eqx.tree_at(lambda s: s.qpos, states, states.qpos - epsilon * states.qvel))
+    after = project(eqx.tree_at(lambda s: s.qpos, states, states.qpos + epsilon * states.qvel))
+
+    projected = project(states)
+    assert projected.pos.shape == (2, model.nbody, 2)
+    np.testing.assert_allclose(projected.vel, (after.pos - before.pos) / (2 * epsilon), atol=1e-4)
 
 
 @pytest.fixture
