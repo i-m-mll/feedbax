@@ -498,6 +498,9 @@ def test_retained_shadow_custody_is_reusable_and_never_authoritative(
     with pytest.raises(ValueError, match="must not live inside the authoritative root"):
         with shadow_custody(environment, shadow_root=environment.root / "inner"):
             pass
+    with pytest.raises(ValueError, match="must not contain the authoritative root"):
+        with shadow_custody(environment, shadow_root=environment.root.parent):
+            pass
 
 
 def test_a_shadow_root_symlinked_into_authoritative_custody_is_refused(
@@ -523,6 +526,47 @@ def test_a_shadow_root_symlinked_into_authoritative_custody_is_refused(
     assert sorted(entry.name for entry in inside.iterdir()) == [], (
         "a refused shadow never seeded anything inside authoritative custody"
     )
+
+
+@pytest.mark.parametrize("operation", ["rebuild", "repair"])
+@pytest.mark.parametrize("redirect", ["directory_symlink", "leaf_symlink", "leaf_hardlink"])
+def test_retained_shadow_refuses_aliased_outputs_before_execution(
+    environment, recipes: _Recipes, tmp_path: Path, operation: str, redirect: str
+) -> None:
+    node = _evaluation_node()
+    receipt = fulfill_node(node, environment=environment).receipt
+    if operation == "repair":
+        _prepare_status_corruption(environment, node, receipt.path)
+    original_root = Path(environment.root)
+
+    def authoritative_bytes() -> dict[Path, bytes]:
+        return {path: path.read_bytes() for path in original_root.rglob("*") if path.is_file()}
+
+    original = authoritative_bytes()
+    executions = recipes.evaluation
+
+    shadow_root = tmp_path / "retained-shadow"
+    shadow_receipt = shadow_root / receipt.path.relative_to(environment.root)
+    if redirect == "directory_symlink":
+        shadow_root.mkdir()
+        (shadow_root / "manifests").symlink_to(
+            Path(environment.root) / "manifests", target_is_directory=True
+        )
+    else:
+        shadow_receipt.parent.mkdir(parents=True)
+        if redirect == "leaf_symlink":
+            shadow_receipt.symlink_to(receipt.path)
+        else:
+            shadow_receipt.hardlink_to(receipt.path)
+
+    run = rebuild_node if operation == "rebuild" else repair_node
+    with shadow_custody(environment, shadow_root=shadow_root, retain=True) as shadow:
+        with pytest.raises(ValueError, match="unsafe fulfillment output path") as refusal:
+            run(node, environment=environment, shadow=shadow)
+
+    assert str(shadow_root) in str(refusal.value)
+    assert recipes.evaluation == executions
+    assert authoritative_bytes() == original
 
 
 def test_a_shadow_root_beside_a_symlinked_authoritative_root_still_opens(
@@ -727,21 +771,20 @@ def test_repair_record_is_durable_and_addressed_by_the_failed_bytes(
 ) -> None:
     node = _evaluation_node()
     receipt = fulfill_node(node, environment=environment).receipt
-    failed_manifest_sha256 = next(
-        entry.observed_sha256
-        for entry in repair_node(
-            _prepare_status_corruption(environment, node, receipt.path),
-            environment=environment,
-        ).record.quarantined
-        if entry.origin == "manifest"
-    )
+    _prepare_status_corruption(environment, node, receipt.path)
+    original = b"  " + receipt.path.read_bytes() + b"\n\n"
+    receipt.path.write_bytes(original)
+    repaired = repair_node(node, environment=environment)
+    quarantined = next(entry for entry in repaired.record.quarantined if entry.origin == "manifest")
+    assert (Path(environment.root) / quarantined.quarantine_relative_path).read_bytes() == original
+    assert repaired.record.replacement_manifest_sha256 == repaired.receipt.manifest_sha256
 
     directory = (
         Path(environment.root)
         / FULFILLMENT_REPAIR_DIRECTORY
     )
     records = sorted(directory.rglob("*.json"))
-    assert [path.name for path in records] == [f"{failed_manifest_sha256}.json"]
+    assert [path.name for path in records] == [f"{quarantined.observed_sha256}.json"]
     loaded = migrate_repair_record(json.loads(records[0].read_text(encoding="utf-8")))
     assert loaded.manifest_id == receipt.manifest_id
     assert "status_not_completed" in loaded.triggering_admission.codes
@@ -839,6 +882,39 @@ def test_crash_before_publication_never_leaves_a_half_promoted_candidate(
     )
     assert not (Path(environment.root) / FULFILLMENT_REPAIR_DIRECTORY).exists()
     assert _quarantine_files(environment)
+
+
+def test_repair_publisher_refuses_manifest_directory_redirected_after_preflight(
+    environment, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from feedbax.analysis import fulfillment_custody
+
+    node = _evaluation_node()
+    receipt = fulfill_node(node, environment=environment).receipt
+    _prepare_status_corruption(environment, node, receipt.path)
+    original = receipt.path.read_bytes()
+    redirected = tmp_path / "redirected"
+    redirected.mkdir()
+    target = redirected / receipt.path.name
+    target.write_bytes(original)
+    receipt_directory = receipt.path.parent
+    moved_directory = receipt_directory.with_name("moved")
+    real_admit = fulfillment_custody.admit_node
+
+    def admit_then_redirect(request, *, environment, **kwargs):
+        outcome = real_admit(request, environment=environment, **kwargs)
+        if kwargs.get("manifest") is not None and outcome.admitted:
+            receipt_directory.rename(moved_directory)
+            receipt_directory.symlink_to(redirected, target_is_directory=True)
+        return outcome
+
+    monkeypatch.setattr(fulfillment_custody, "admit_node", admit_then_redirect)
+    with pytest.raises(ValueError, match="unsafe fulfillment output path"):
+        repair_node(node, environment=environment)
+
+    assert target.read_bytes() == original
+    assert (moved_directory / receipt.path.name).read_bytes() == original
+    assert not (Path(environment.root) / FULFILLMENT_REPAIR_DIRECTORY).exists()
 
 
 def test_repair_record_schema_identity_migrates_or_rejects(environment) -> None:
