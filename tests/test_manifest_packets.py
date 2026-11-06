@@ -31,7 +31,11 @@ from feedbax.contracts.manifest_packet import (
 )
 from feedbax.contracts.artifact_custody import LegacyContentFormatError
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
-from feedbax.persistence.manifest_index import iter_manifest_files
+from feedbax.persistence.manifest_index import (
+    default_index_path,
+    find_manifest_paths_by_id,
+    iter_manifest_files,
+)
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 
@@ -288,6 +292,66 @@ def test_manifest_packet_import_is_idempotent_and_rejects_divergent_id(
         import_manifest_packet(packet, root=target)
 
 
+@pytest.mark.parametrize("unrelated_count", [1, 20])
+def test_manifest_packet_import_reads_only_selected_destination_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unrelated_count: int
+) -> None:
+    source, target, packet = (tmp_path / name for name in ("source", "target", "packet"))
+    manifest = TrainingRunManifest(id="feedbax-training-run:selected", status="completed")
+    source_path = write_manifest(manifest, root=source)
+    export_manifest_packet([manifest.id], root=source, dest=packet)
+    selected_path = target / source_path.relative_to(source)
+    selected_path.parent.mkdir(parents=True)
+    shutil.copyfile(source_path, selected_path)
+    unrelated = [
+        TrainingRunManifest(id=f"feedbax-training-run:unrelated-{i}", status="completed")
+        for i in range(unrelated_count)
+    ]
+    unrelated_paths = [write_manifest(item, root=target) for item in unrelated]
+    original = Path.read_bytes
+    destination_reads: list[Path] = []
+
+    def track_destination_reads(path: Path) -> bytes:
+        if path.is_relative_to(target.resolve() / "manifests"):
+            destination_reads.append(path)
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", track_destination_reads)
+    result = import_manifest_packet(packet, root=target)
+
+    assert result.skipped_manifest_ids == [manifest.id]
+    assert destination_reads == [selected_path.resolve()]
+    assert find_manifest_paths_by_id(manifest.id, root=target) == [selected_path.resolve()]
+    for item, path in zip(unrelated, unrelated_paths, strict=True):
+        assert find_manifest_paths_by_id(item.id, root=target) == [path]
+
+
+@pytest.mark.parametrize("indexed", [False, True], ids=["canonical", "indexed-legacy"])
+def test_manifest_packet_import_compares_exact_bytes_at_destination(
+    tmp_path: Path, indexed: bool
+) -> None:
+    source, target, packet = (tmp_path / name for name in ("source", "target", "packet"))
+    manifest = TrainingRunManifest(id="feedbax-training-run:selected", status="completed")
+    source_path = write_manifest(manifest, root=source)
+    packet_target = source_path.with_name("packet-receipt.json")
+    source_path.rename(packet_target)
+    export_manifest_packet([manifest.id], root=source, dest=packet)
+    target_path = write_manifest(manifest, root=target, index=indexed)
+    if indexed:
+        legacy_path = target_path.with_name("legacy-receipt.json")
+        target_path.rename(legacy_path)
+        with sqlite3.connect(default_index_path(target)) as conn:
+            conn.execute(
+                "UPDATE manifests SET path = ? WHERE id = ?", (str(legacy_path), manifest.id)
+            )
+        target_path = legacy_path
+    target_path.write_bytes(packet_target.read_bytes() + b"\n")
+
+    with pytest.raises(ManifestPacketValidationError, match="Divergent manifest id"):
+        import_manifest_packet(packet, root=target)
+    assert iter_manifest_files(target) == [target_path]
+
+
 def test_manifest_packet_import_publishes_references_only_after_complete_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -321,6 +385,42 @@ def test_manifest_packet_import_publishes_references_only_after_complete_project
     for path in iter_manifest_files(target):
         manifest = load_manifest(path)
         assert provider.resolve_manifest(manifest.kind, manifest.id)[1] == path.read_bytes()
+
+
+def test_manifest_packet_index_error_rolls_back_batch_before_publishing_bindings(
+    tmp_path: Path,
+) -> None:
+    source, target, packet = (tmp_path / name for name in ("source", "target", "packet"))
+    ids = _write_run_tree(source)
+    export_manifest_packet([ids["training"]], root=source, dest=packet)
+    unrelated = TrainingRunManifest(id="feedbax-training-run:unrelated", status="completed")
+    unrelated_path = write_manifest(unrelated, root=target)
+    with sqlite3.connect(default_index_path(target)) as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER interrupt_packet_index
+            BEFORE INSERT ON manifests
+            WHEN (SELECT count(*) FROM manifests) >= 2
+            BEGIN SELECT RAISE(ABORT, 'simulated index failure'); END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="simulated index failure"):
+        import_manifest_packet(packet, root=target)
+
+    with sqlite3.connect(default_index_path(target)) as conn:
+        assert conn.execute("SELECT id FROM manifests").fetchall() == [(unrelated.id,)]
+        conn.execute("DROP TRIGGER interrupt_packet_index")
+    provider = ImmutableArtifactBlobProvider(target)
+    receipts = [load_manifest(path) for path in iter_manifest_files(target) if path != unrelated_path]
+    assert {manifest.id for manifest in receipts} == set(ids.values())
+    for manifest in receipts:
+        with pytest.raises(FileNotFoundError):
+            provider.resolve_manifest(manifest.kind, manifest.id)
+
+    result = import_manifest_packet(packet, root=target)
+    assert set(result.skipped_manifest_ids) == set(ids.values())
+    assert all(find_manifest_paths_by_id(manifest_id, root=target) for manifest_id in ids.values())
 
 
 def test_manifest_packet_import_fails_closed_for_tampered_manifest_and_artifact(
@@ -404,6 +504,21 @@ def test_manifest_packet_import_rejects_absolute_manifest_paths(
         import_manifest_packet(packet, root=target)
 
     assert not (target / "manifests").exists()
+
+
+def test_manifest_packet_import_rejects_index_as_manifest_target(tmp_path: Path) -> None:
+    source, target, packet = (tmp_path / name for name in ("source", "target", "packet"))
+    manifest = TrainingRunManifest(id="feedbax-training-run:selected", status="completed")
+    write_manifest(manifest, root=source)
+    export_manifest_packet([manifest.id], root=source, dest=packet)
+    index = _packet_index(packet)
+    index["manifests"][0]["target_path"] = default_index_path(target).relative_to(target).as_posix()
+    _write_packet_index(packet, index)
+
+    with pytest.raises(ManifestPacketValidationError, match="target must be a JSON file"):
+        import_manifest_packet(packet, root=target)
+
+    assert not default_index_path(target).exists()
 
 
 def test_manifest_packet_import_rejects_artifact_path_traversal_without_writes(
