@@ -2316,6 +2316,29 @@ def test_fresh_studio_scenario_can_opt_into_current_versionless_specs() -> None:
     assert "schema_version" not in objective_spec
 
 
+def test_studio_scenario_preserves_authored_objective_terms_during_admission() -> None:
+    terms = [
+        {
+            "id": "objective:tracking",
+            "type_id": "TargetState",
+            "label": "Target tracking",
+            "source_selector": {"namespace": "graph_port", "compact": "port:model.output"},
+        }
+    ]
+    result = migrate_studio_scenario_spec(
+        {
+            "id": "scenario:train",
+            "label": "Train",
+            "schema_version": default_spec_registry.resolve("StudioScenarioSpec").current_version,
+            "objective_spec": {"schema_version": "feedbax.studio.objective.v1", "terms": terms},
+        }
+    )
+    objective = result.payload["objective_spec"]
+    assert objective["terms"] == terms
+    assert objective["schema_version"] == "feedbax.spec.studio.objective.v1"
+    assert migrate_studio_scenario_spec(result.payload).payload["objective_spec"] == objective
+
+
 def test_studio_workspace_stamps_versionless_nested_scenario_specs() -> None:
     payload = {
         "id": "workspace:durable",
