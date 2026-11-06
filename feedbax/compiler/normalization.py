@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from feedbax.compiler.feedback_migration import lower_legacy_feedback
 from feedbax.contracts.acausal_interface import normalize_acausal_interfaces_for_graph
 from feedbax.contracts.component import DynamicPortPolicyError
 from feedbax.contracts.graph import (
@@ -31,7 +32,7 @@ def normalize_graph_for_studio_authoring(
 ) -> GraphSpec:
     """Normalize runtime/persisted component names to Studio authoring names."""
 
-    graph = normalize_acausal_interfaces_for_graph(graph)
+    graph = lower_legacy_feedback(normalize_acausal_interfaces_for_graph(graph), recurse=False)
     nodes: dict[str, ComponentSpec] = {}
     for node_id, node_spec in graph.nodes.items():
         next_type = _authoring_component_type(node_spec.type)

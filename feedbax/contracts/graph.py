@@ -137,7 +137,7 @@ class WireSpec(BaseModel):
     """Specification for a wire connecting two ports.
 
     A recurrent `state_output` initializer can opt into
-    `seed_channel_history` when it feeds a Channel directly or through Ravel.
+    `seed_channel_history` when it feeds a Channel directly or through Ravel or SelectState.
     Fresh trial preparation then repeats the initial sample through the delay.
     """
 

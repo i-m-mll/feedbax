@@ -560,7 +560,8 @@ def test_simplefeedback_component_accessors_are_graph_nodes():
 
     assert model.net is model.nodes["net"]
     assert model.mechanics is model.nodes["mechanics"]
-    assert model.feedback_channels is model.nodes["feedback"]
+    assert isinstance(model.nodes["feedback"], Channel)
+    assert "feedback_select" in model.nodes
     assert model.efferent_channel is model.nodes["efferent"]
     assert model.force_lp is None
 

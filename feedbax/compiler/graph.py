@@ -27,6 +27,7 @@ from feedbax.contracts.scientific_compiler_schema import (
     RESOLVED_GRAPH_SCHEMA_ID,
     RESOLVED_GRAPH_SCHEMA_VERSION,
 )
+from feedbax.compiler.feedback_migration import lower_legacy_feedback
 from feedbax.compiler.resolution import (
     GraphParameterResolution,
     ParameterResolutionError,
@@ -546,8 +547,18 @@ def compile_graph(
         action="correct the authored graph payload or migrate it through a registered schema",
         operation=parse_graph,
     )
+    resolved_inputs = dict(input_prototypes or {})
+    feedback_graph = _compile_phase(
+        phase=CompilerPhase.STRUCTURAL_PARSING,
+        code="compiler.structural_parsing.invalid_legacy_feedback",
+        anchor=graph_anchor,
+        document_sha256=document_sha256,
+        expected="legacy feedback nodes declare recoverable mechanics selector paths",
+        action="replace the legacy wrapper with SelectState and Channel nodes",
+        operation=lambda: lower_legacy_feedback(authored_graph, resolved_inputs),
+    )
     typed_graph = _map_component_nodes(
-        authored_graph,
+        feedback_graph,
         lambda node_id, node: resolve_component_node(node, component_registry),
         document_sha256=document_sha256,
     )
@@ -579,7 +590,7 @@ def compile_graph(
     def solve_constraints() -> GraphParameterResolution:
         return resolve_graph_parameters(
             graph,
-            input_prototypes or {},
+            resolved_inputs,
             component_registry,
             identities_resolved=True,
         )

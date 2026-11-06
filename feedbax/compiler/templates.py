@@ -22,6 +22,12 @@ from feedbax.models.networks import (
     normalize_recurrent_cell_type,
     population_structure_from_spec,
 )
+from feedbax.runtime.feedback import (
+    FEEDBACK_INPUT,
+    FEEDBACK_OUTPUT,
+    feedback_node_names,
+    feedback_wires,
+)
 
 
 TemplateKind = Literal["executable", "display"]
@@ -372,87 +378,61 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
 
 
 def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
-    """Build the canonical SimpleFeedback graph template.
-
-    The template is executable when the referenced leaf node builders support
-    the chosen mechanics and feedback-channel parameters. Legacy Python
-    constructors may still be used as compatibility factories, but this graph
-    shape is the durable portable representation.
-    """
-
+    """Build the portable SimpleFeedback preset with ordinary graph nodes."""
     params = dict(params or {})
-    network_params = dict(params.get("network", {}))
-    network_params.setdefault("input_size", 8)
-    mechanics_type = str(params.get("mechanics_type", "PointMass"))
+    network_params = {"input_size": 8, **dict(params.get("network", {}))}
+    net = network_template_graph(network_params)
     mechanics_params = dict(params.get("mechanics", {"dt": 0.01}))
-    motor_delay = int(params.get("motor_delay", 0))
-    feedback_delay = int(params.get("feedback_delay", 0))
-    feedback_noise_std = float(params.get("feedback_noise_std", 0.0) or 0.0)
-    motor_noise_std = float(params.get("motor_noise_std", 0.0) or 0.0)
     tau_rise = float(params.get("tau_rise", 0.0) or 0.0)
     tau_decay = float(params.get("tau_decay", 0.0) or 0.0)
+    force_filter = tau_rise != 0.0 or tau_decay != 0.0
+    ((selector, channel),) = feedback_node_names(1)
 
-    network_template = network_template_graph(network_params)
-    nodes: dict[str, ComponentSpec] = {
-        **network_template.nodes,
-        "feedback": ComponentSpec(
+    def channel_spec(prefix: str, role: str, timing: str) -> ComponentSpec:
+        noise_std = float(params.get(f"{prefix}_noise_std", 0.0) or 0.0)
+        return ComponentSpec(
             type="Channel",
             params={
-                "delay": feedback_delay,
-                "noise_std": feedback_noise_std,
-                "add_noise": feedback_noise_std != 0.0,
+                "delay": int(params.get(f"{prefix}_delay", 0)),
+                "noise_model": "additive_gaussian" if noise_std else "none",
+                "noise_std": noise_std,
+                "add_noise": bool(noise_std),
+                "noise_role": role,
+                "noise_timing": timing,
             },
             input_ports=["input"],
             output_ports=["output"],
+        )
+
+    nodes = {
+        selector: ComponentSpec(
+            type="SelectState",
+            params={"paths": list(params.get("feedback_paths", ["effector"]))},
+            input_ports=["state"],
+            output_ports=["output"],
         ),
-        "feedback_ravel": ComponentSpec(
-            type="Ravel",
+        channel: channel_spec("feedback", "sensory_feedback", "pre_controller"),
+        "feedback_values": ComponentSpec(
+            type="AssembleFeedback",
+            params={"n_inputs": 1, "layout": None},
+            input_ports=["in_0"],
+            output_ports=["output"],
+        ),
+        "net": ComponentSpec(
+            type="Subgraph",
             params={},
-            input_ports=["input"],
-            output_ports=["output"],
+            input_ports=net.input_ports,
+            output_ports=net.output_ports,
         ),
-        "efferent": ComponentSpec(
-            type="Channel",
-            params={
-                "delay": motor_delay,
-                "noise_std": motor_noise_std,
-                "add_noise": motor_noise_std != 0.0,
-            },
-            input_ports=["input"],
-            output_ports=["output"],
-        ),
+        "efferent": channel_spec("motor", "motor_command", "post_controller"),
         "mechanics": ComponentSpec(
-            type=mechanics_type,
+            type=str(params.get("mechanics_type", "PointMass")),
             params=mechanics_params,
             input_ports=["force"],
             output_ports=["effector", "state"],
         ),
     }
-    wires = [
-        *network_template.wires,
-        WireSpec(
-            source_node="feedback",
-            source_port="output",
-            target_node=network_template.input_bindings["feedback"][0],
-            target_port=network_template.input_bindings["feedback"][1],
-        ),
-        WireSpec(
-            source_node=network_template.output_bindings["output"][0],
-            source_port=network_template.output_bindings["output"][1],
-            target_node="efferent",
-            target_port="input",
-        ),
-    ]
-    if tau_rise == 0.0 and tau_decay == 0.0:
-        wires.append(
-            WireSpec(
-                source_node="efferent",
-                source_port="output",
-                target_node="mechanics",
-                target_port="force",
-            )
-        )
-    else:
+    if force_filter:
         nodes["force_filter"] = ComponentSpec(
             type="FirstOrderFilter",
             params={
@@ -464,55 +444,25 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
             input_ports=["input"],
             output_ports=["output"],
         )
-        wires.append(
-            WireSpec(
-                source_node="efferent",
-                source_port="output",
-                target_node="force_filter",
-                target_port="input",
-            )
-        )
-        wires.append(
-            WireSpec(
-                source_node="force_filter",
-                source_port="output",
-                target_node="mechanics",
-                target_port="force",
-            )
-        )
-    wires.append(
-        WireSpec(
-            source_node="mechanics",
-            source_port="effector",
-            target_node="feedback_ravel",
-            target_port="input",
-            temporality="recurrent",
-            recurrent_initializer={
-                "kind": "state_output",
-                "scope": "trial",
-                "source": "state_initializer",
-                "state_slot": "effector",
-                "seed_channel_history": True,
-            },
-        )
-    )
-    wires.append(
-        WireSpec(
-            source_node="feedback_ravel",
-            source_port="output",
-            target_node="feedback",
-            target_port="input",
-        )
-    )
 
     return GraphSpec(
         nodes=nodes,
-        wires=wires,
+        wires=[
+            WireSpec(
+                source_node=wire.source_node,
+                source_port=wire.source_port,
+                target_node=wire.target_node,
+                target_port=wire.target_port,
+                temporality=wire.temporality,
+                recurrent_initializer=wire.recurrent_initializer,
+            )
+            for wire in feedback_wires(1, force_filter=force_filter)
+        ],
         input_ports=["input"],
         output_ports=["effector"],
-        input_bindings={"input": network_template.input_bindings["input"]},
-        output_bindings={"effector": ("mechanics", "effector")},
-        parameter_constraints=network_template.parameter_constraints,
+        input_bindings={"input": FEEDBACK_INPUT},
+        output_bindings={"effector": FEEDBACK_OUTPUT},
+        subgraphs={"net": net},
     )
 
 

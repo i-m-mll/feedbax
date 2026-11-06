@@ -17,7 +17,7 @@ import feedbax._vendor.jax_cookbook.tree as jtree
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
-from feedbax.runtime.noise import Normal
+from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,19 @@ class ChannelSpec(Module, Generic[StateT]):
     noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]] = None
 
 
+def _noise_model(noise_func: Callable | None) -> str:
+    if noise_func is None:
+        return "none"
+    if isinstance(noise_func, Normal):
+        return "additive_gaussian"
+    if isinstance(noise_func, Multiplicative):
+        return "signal_dependent_gaussian"
+    if isinstance(noise_func, CompositeNoise):
+        if len(noise_func.terms) == 2 and isinstance(noise_func.terms[0], Multiplicative) and isinstance(noise_func.terms[1], Normal):
+            return "signal_dependent_plus_additive"
+    return "custom"
+
+
 class Channel(Component):
     """A noisy delay line."""
 
@@ -80,7 +93,7 @@ class Channel(Component):
         add_noise: bool = True,
         input_proto: Optional[PyTree[Array]] = None,
         init_value: float = 0.0,
-        noise_model: str = "additive_gaussian",
+        noise_model: str | None = None,
         noise_role: Optional[str] = None,
         noise_timing: Optional[str] = None,
     ):
@@ -93,7 +106,7 @@ class Channel(Component):
             input_proto = jnp.zeros(1)
         self.input_proto = input_proto
         self.init_value = init_value
-        self.noise_model = noise_model
+        self.noise_model = noise_model if noise_model is not None else _noise_model(noise_func)
         self.noise_role = noise_role
         self.noise_timing = noise_timing
 

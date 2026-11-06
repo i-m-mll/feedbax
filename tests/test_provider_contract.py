@@ -1678,7 +1678,7 @@ def test_runtime_wrapper_normalization_does_not_mark_feedback_cut_recurrent() ->
                 "output_ports": ["effector"],
             },
             "feedback": {
-                "type": "FeedbackChannels",
+                "type": "Channel",
                 "params": {},
                 "input_ports": ["input"],
                 "output_ports": ["output"],
