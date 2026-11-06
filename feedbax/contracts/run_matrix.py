@@ -15,7 +15,7 @@ from feedbax.contracts.extraction import SourceBinding
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.matrix_core import (
     RowDerivation,
-    _apply_patch,
+    apply_override_patch_in_place,
     apply_override_patches as apply_override_patches,
 )
 from feedbax.contracts.manifest import (
@@ -972,7 +972,7 @@ def _apply_composition_deltas(
                     f"paths {unacknowledged!r} without explicit acknowledgement"
                 )
             try:
-                _apply_patch(result, patch, error_context="override")
+                apply_override_patch_in_place(result, patch)
             except ValueError as error:
                 raise ValueError(f"/deltas/{delta.layer_id}: {error}") from error
             written.add(patch.path)

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 import copy
 from dataclasses import dataclass
+from itertools import product
 import json
 import math
 from pathlib import Path
@@ -22,13 +23,18 @@ from feedbax.contracts.expressions import ExpressionContext
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.experiment_compile_lock import load_compile_lock
 from feedbax.contracts.extraction import load_expression_context
-from feedbax.contracts.matrix_core import apply_row_derivations, ordered_index_product
+from feedbax.contracts.matrix_core import (
+    apply_override_patch_in_place,
+    apply_row_derivations,
+    validate_index_product_axes,
+)
 from feedbax.contracts.base import (
     Provenance,
     canonical_json_bytes,
     sha256_bytes,
 )
 from feedbax.contracts.manifest import (
+    OverridePatch,
     SpecPayload,
     TrainingRunAxisCoordinate,
     TrainingRunSetAxes,
@@ -1218,16 +1224,14 @@ def expand_sweep_coordinates(
     combination: TrainingSweepCombinationSpec,
 ) -> list[dict[str, int]]:
     """Expand typed sweep axes into coordinate value indices."""
-    _validate_group_axes(axes, combination)
-    return _expand_coordinates(axes, combination)
+    return list(_plan_authored_sweep(axes, combination).coordinates())
 
 
 def expected_ordered_matrix_row_ids(matrix: TrainingRunMatrixSpec) -> tuple[str, ...]:
     """Return the complete authored or expanded row identity in canonical order."""
     if matrix.rows:
         return tuple(row.row_id for row in matrix.rows)
-    coordinates = expand_sweep_coordinates(matrix.axes, matrix.combination)
-    return tuple(f"row-{index:04d}" for index in range(len(coordinates)))
+    return tuple(_plan_authored_sweep(matrix.axes, matrix.combination).row_ids())
 
 
 def variation_values(variation: TrainingSweepAxisVariation) -> list[Any]:
@@ -1605,18 +1609,25 @@ def _materialize_sweep_rows(
         axis.model_copy(update={"values": variation_values(axis.variation)}) for axis in matrix.axes
     ]
     axis_by_id = {axis.id: axis for axis in axes_with_values}
-    indexed_coordinates = expand_sweep_coordinates(axes_with_values, matrix.combination)
-    expected_row_ids = expected_ordered_matrix_row_ids(matrix)
+    axis_ids = [axis.id for axis in axes_with_values]
+    _validate_group_axes(axis_ids, matrix.combination)
+    plan = _plan_sweep_coordinates(
+        axis_ids,
+        {axis.id: len(axis.values) for axis in axes_with_values},
+        matrix.combination,
+    )
     run_set_axes = TrainingRunSetAxes(
         axes=axes_with_values,
         combination=matrix.combination,
         metadata={
             "axis_count": len(axes_with_values),
-            "run_count": len(indexed_coordinates),
+            "run_count": plan.row_count,
         },
     )
     rows: list[MaterializedMatrixRow] = []
-    for index, value_indices in enumerate(indexed_coordinates):
+    for index, (row_id, value_indices) in enumerate(
+        zip(plan.row_ids(), plan.coordinates(), strict=True)
+    ):
         values = {
             axis_id: axis_by_id[axis_id].values[value_index]
             for axis_id, value_index in value_indices.items()
@@ -1630,12 +1641,11 @@ def _materialize_sweep_rows(
                 seed = value
                 studio_training_spec = authored_payload.get("training_spec")
                 if isinstance(studio_training_spec, dict):
-                    studio_training_spec["seed"] = value
+                    studio_training_spec["seed"] = copy.deepcopy(value)
             else:
-                patch = _patch_object({"path": axis.path, "value": value, "op": "replace"})
+                patch = OverridePatch(path=axis.path, value=value, op="replace")
                 patches.append(patch)
-                authored_payload = apply_override_patches(authored_payload, [patch])
-        row_id = expected_row_ids[index]
+                apply_override_patch_in_place(authored_payload, patch)
         _apply_row_derivations(
             matrix.derivations,
             authored_payload,
@@ -1765,16 +1775,15 @@ def _lower_authored_row(
     str,
 ]:
     """Lower and validate one row while isolating callback-owned mutations."""
-    authored_copy = copy.deepcopy(authored_payload)
-    authored_payload_hash = training_spec_sha256(authored_copy)
+    authored_payload_hash = training_spec_sha256(authored_payload)
     lowerer_identities: list[RowLowererIdentity] = []
     if row_lowerer is None:
-        execution_payload = copy.deepcopy(authored_copy)
+        execution_payload = copy.deepcopy(authored_payload)
     else:
         authored_row = AuthoredTrainingRow(
             row_id=row_id,
             row_index=row_index,
-            payload=authored_copy,
+            payload=copy.deepcopy(authored_payload),
             payload_hash=authored_payload_hash,
             seed=seed,
             axis_coordinates=copy.deepcopy(axis_coordinates),
@@ -1782,12 +1791,9 @@ def _lower_authored_row(
         )
         if row_lowering_context is None:
             row_lowering_context = TrainingRowLoweringContext()
-        raw_result = row_lowerer(
-            authored_row.model_copy(deep=True),
-            row_lowering_context,
-        )
+        raw_result = row_lowerer(authored_row, row_lowering_context)
         if raw_result is None:
-            execution_payload = copy.deepcopy(authored_copy)
+            execution_payload = copy.deepcopy(authored_payload)
         else:
             result = (
                 raw_result
@@ -1916,13 +1922,13 @@ def _matrix_sha256(spec: TrainingRunMatrixSpec) -> str:
 
 
 def _validate_group_axes(
-    axes: list[TrainingSweepAxis],
+    axis_ids: Sequence[str],
     combination: TrainingSweepCombinationSpec,
 ) -> None:
-    axis_ids = {axis.id for axis in axes}
+    declared = set(axis_ids)
     used: set[str] = set()
     for group in combination.groups:
-        unknown = [axis_id for axis_id in group.axes if axis_id not in axis_ids]
+        unknown = [axis_id for axis_id in group.axes if axis_id not in declared]
         if unknown:
             raise RunMatrixError(f"sweep group {group.id!r} references unknown axes {unknown!r}")
         overlap = used.intersection(group.axes)
@@ -1930,53 +1936,86 @@ def _validate_group_axes(
             raise RunMatrixError(f"sweep axes {sorted(overlap)!r} appear in more than one group")
         used.update(group.axes)
     if combination.groups:
-        missing = sorted(axis_ids - used)
+        missing = sorted(declared - used)
         if missing:
             raise RunMatrixError(
                 f"sweep matrix groups must cover every declared axis; missing axes {missing!r}"
             )
 
 
-def _expand_coordinates(
+@dataclass(frozen=True)
+class _SweepCoordinatePlan:
+    """Validated coordinates in authored order, factored by independent indices."""
+
+    dimensions: tuple[tuple[tuple[str, ...], range], ...] = ()
+    manual_coordinates: tuple[dict[str, int], ...] = ()
+
+    @property
+    def row_count(self) -> int:
+        if self.manual_coordinates:
+            return len(self.manual_coordinates)
+        return math.prod(len(indices) for _, indices in self.dimensions)
+
+    def row_ids(self) -> Iterator[str]:
+        return (f"row-{index:04d}" for index in range(self.row_count))
+
+    def coordinates(self) -> Iterator[dict[str, int]]:
+        if self.manual_coordinates:
+            yield from (coordinate.copy() for coordinate in self.manual_coordinates)
+            return
+        for indices in product(*(indices for _, indices in self.dimensions)):
+            yield {
+                axis_id: index
+                for (axis_ids, _), index in zip(self.dimensions, indices, strict=True)
+                for axis_id in axis_ids
+            }
+
+
+def _plan_authored_sweep(
     axes: list[TrainingSweepAxis],
     combination: TrainingSweepCombinationSpec,
-) -> list[dict[str, int]]:
+) -> _SweepCoordinatePlan:
+    axis_ids = [axis.id for axis in axes]
+    _validate_group_axes(axis_ids, combination)
     axis_lengths = {axis.id: len(variation_values(axis.variation)) for axis in axes}
+    return _plan_sweep_coordinates(axis_ids, axis_lengths, combination)
+
+
+def _plan_sweep_coordinates(
+    axis_ids: list[str],
+    axis_lengths: Mapping[str, int],
+    combination: TrainingSweepCombinationSpec,
+) -> _SweepCoordinatePlan:
     if combination.mode == "manual":
         if not combination.manual_coordinates:
             raise RunMatrixError("manual sweep matrix requires manual_coordinates")
-        return [
-            _validate_manual_coordinate(raw, axis_lengths, index)
-            for index, raw in enumerate(combination.manual_coordinates)
-        ]
+        return _SweepCoordinatePlan(
+            manual_coordinates=tuple(
+                _validate_manual_coordinate(raw, axis_lengths, index)
+                for index, raw in enumerate(combination.manual_coordinates)
+            )
+        )
     groups = combination.groups or [
         TrainingSweepAxisGroup(
             id="all",
-            axes=[axis.id for axis in axes],
+            axes=axis_ids,
             mode="zip" if combination.mode == "zip" else "cross",
         )
     ]
-    out: list[dict[str, int]] = []
-    for parts in _product(*[_expand_group(group, axis_lengths) for group in groups]):
-        coordinate: dict[str, int] = {}
-        for part in parts:
-            coordinate.update(part)
-        out.append(coordinate)
-    return out
-
-
-def _expand_group(
-    group: TrainingSweepAxisGroup,
-    axis_lengths: Mapping[str, int],
-) -> list[dict[str, int]]:
-    if group.mode == "zip":
-        lengths = {axis_lengths[axis_id] for axis_id in group.axes}
-        if len(lengths) != 1:
-            raise RunMatrixError(
-                f"zip sweep group {group.id!r} has mismatched lengths {sorted(lengths)!r}"
-            )
-        return [{axis_id: index for axis_id in group.axes} for index in range(next(iter(lengths)))]
-    return ordered_index_product([(axis_id, axis_lengths[axis_id]) for axis_id in group.axes])
+    dimensions = []
+    for group in groups:
+        if group.mode == "zip":
+            lengths = {axis_lengths[axis_id] for axis_id in group.axes}
+            if len(lengths) != 1:
+                raise RunMatrixError(
+                    f"zip sweep group {group.id!r} has mismatched lengths {sorted(lengths)!r}"
+                )
+            dimensions.append((tuple(group.axes), range(next(iter(lengths)))))
+        else:
+            ordered_lengths = [(axis_id, axis_lengths[axis_id]) for axis_id in group.axes]
+            validate_index_product_axes(ordered_lengths)
+            dimensions.extend(((axis_id,), range(length)) for axis_id, length in ordered_lengths)
+    return _SweepCoordinatePlan(dimensions=tuple(dimensions))
 
 
 def _validate_manual_coordinate(
@@ -1997,12 +2036,6 @@ def _validate_manual_coordinate(
             )
         coordinate[axis_id] = value
     return coordinate
-
-
-def _product(*iterables: Any) -> Any:
-    from itertools import product
-
-    return product(*iterables)
 
 
 def _coordinate_label(
@@ -2029,12 +2062,6 @@ def _get_dotted(document: Any, path: str | None) -> Any:
                 continue
         raise RunMatrixError(f"payload_path segment is missing: {path!r}")
     return current
-
-
-def _patch_object(patch: Mapping[str, Any]) -> Any:
-    from feedbax.contracts.manifest import OverridePatch
-
-    return OverridePatch.model_validate(patch)
 
 
 def _render_value(value: Any) -> str:

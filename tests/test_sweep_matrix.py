@@ -62,7 +62,14 @@ def test_sweep_matrix_cross_expands_cartesian_coordinates(application_registry_b
     assert expanded.runs[0].training_spec["seed"] == 1
     assert expanded.runs[-1].training_spec["loss"]["weight"] == 1e-5
     assert expanded.runs[-1].training_spec["seed"] == 3
-    assert expanded.axes.runs[-1].values == {"loss_weight": 1e-5, "seed": 3}
+    assert [row.values for row in expanded.axes.runs] == [
+        {"loss_weight": 0, "seed": 1},
+        {"loss_weight": 0, "seed": 2},
+        {"loss_weight": 0, "seed": 3},
+        {"loss_weight": 1e-5, "seed": 1},
+        {"loss_weight": 1e-5, "seed": 2},
+        {"loss_weight": 1e-5, "seed": 3},
+    ]
 
 
 def test_studio_sweep_adapter_returns_shared_materialized_run_set(

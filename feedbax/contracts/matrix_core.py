@@ -479,16 +479,7 @@ def ordered_index_product(
     axis_lengths: Sequence[tuple[str, int]],
 ) -> list[dict[str, int]]:
     """Return a stable Cartesian product in authored axis order."""
-    if not axis_lengths:
-        raise ValueError("ordered index product requires at least one axis")
-    axis_ids = [axis_id for axis_id, _ in axis_lengths]
-    if len(axis_ids) != len(set(axis_ids)):
-        raise ValueError("ordered index product axis ids must be unique")
-    for axis_id, length in axis_lengths:
-        _validate_path_safe_id(axis_id, "axis id")
-        if not isinstance(length, int) or isinstance(length, bool) or length <= 0:
-            raise ValueError(f"ordered index product axis {axis_id!r} must be non-empty")
-
+    validate_index_product_axes(axis_lengths)
     coordinates: list[dict[str, int]] = [{}]
     for axis_id, length in axis_lengths:
         coordinates = [
@@ -498,6 +489,18 @@ def ordered_index_product(
         ]
     return coordinates
 
+
+def validate_index_product_axes(axis_lengths: Sequence[tuple[str, int]]) -> None:
+    """Validate the ordered axes of a Cartesian product before enumeration."""
+    if not axis_lengths:
+        raise ValueError("ordered index product requires at least one axis")
+    axis_ids = [axis_id for axis_id, _ in axis_lengths]
+    if len(axis_ids) != len(set(axis_ids)):
+        raise ValueError("ordered index product axis ids must be unique")
+    for axis_id, length in axis_lengths:
+        _validate_path_safe_id(axis_id, "axis id")
+        if not isinstance(length, int) or isinstance(length, bool) or length <= 0:
+            raise ValueError(f"ordered index product axis {axis_id!r} must be non-empty")
 
 def expand_axis_value_generator(
     generator: MatrixAxisValueGenerator,
@@ -657,16 +660,17 @@ def apply_override_patches(
             if isinstance(raw_patch, OverridePatch)
             else OverridePatch.model_validate(raw_patch)
         )
-        _apply_patch(result, patch, error_context=error_context)
+        apply_override_patch_in_place(result, patch, error_context=error_context)
     return result
 
 
-def _apply_patch(
+def apply_override_patch_in_place(
     root: dict[str, Any],
     patch: OverridePatch,
     *,
-    error_context: Literal["override", "delta"],
+    error_context: Literal["override", "delta"] = "override",
 ) -> None:
+    """Apply one validated patch to an owned payload, copying any inserted value."""
     parts = patch.path.split(".")
     parent = _resolve_patch_parent(root, parts, path=patch.path, error_context=error_context)
     leaf = parts[-1]

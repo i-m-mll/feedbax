@@ -51,7 +51,6 @@ from feedbax.contracts.manifest import (
     OverridePatch,
     SpecPayload,
     StagedEvaluationPrerequisite,
-    TrainingSweepAxisGroup,
     TrainingRunManifest,
     load_manifest,
     migrate_spec_payload,
@@ -67,7 +66,6 @@ from feedbax.contracts.matrix_core import (
     RowDerivation,
     derive_row_path,
     expand_matrix_axes,
-    ordered_index_product,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.staged_execution import (
@@ -804,38 +802,6 @@ def test_axis_matrix_applies_rfc_6902_list_append(tmp_path: Path, evaluation_reg
     assert rows[1].payload.training_run_ids == ["train-a", "train-b"]
     assert rows[2].payload.training_run_ids == ["train-a"]
     assert rows[3].payload.training_run_ids == ["train-a"]
-
-
-def test_training_cross_group_delegates_to_matrix_core_and_matches_axis_order(
-    monkeypatch,
-) -> None:
-    import feedbax.training.run_matrix as training_matrix
-
-    calls: list[list[tuple[str, int]]] = []
-
-    def traced(lengths):
-        calls.append(list(lengths))
-        return ordered_index_product(lengths)
-
-    monkeypatch.setattr(training_matrix, "ordered_index_product", traced)
-    training = training_matrix._expand_group(
-        TrainingSweepAxisGroup(id="all", axes=["gain", "mode"], mode="cross"),
-        {"gain": 2, "mode": 2},
-    )
-    evaluation = [
-        coordinate.value_indices
-        for coordinate in expand_matrix_axes(
-            [
-                MatrixAxis(
-                    id="gain", values=[MatrixAxisValue(id="low"), MatrixAxisValue(id="high")]
-                ),
-                MatrixAxis(id="mode", values=[MatrixAxisValue(id="a"), MatrixAxisValue(id="b")]),
-            ]
-        )
-    ]
-
-    assert calls == [[("gain", 2), ("mode", 2)]]
-    assert training == evaluation
 
 
 def test_direct_single_run_keeps_empty_staged_context(tmp_path: Path, evaluation_registry) -> None:
