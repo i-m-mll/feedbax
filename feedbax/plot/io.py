@@ -16,7 +16,7 @@ from types import ModuleType
 from typing import Any, Literal, Optional
 
 from feedbax.contracts.base import sha256_file
-from feedbax.plot.lifecycle import close_figure
+from feedbax.plot.lifecycle import close_figure, is_matplotlib_figure
 
 logger = logging.getLogger(__name__)
 
@@ -405,7 +405,7 @@ def _figure_render_filename(
     return f"{name}.{ext}"
 
 
-def _safe_html_id(value: str) -> str:
+def safe_html_id(value: str) -> str:
     """Return *value* reduced to characters an HTML element id may carry."""
     normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value)).strip("-")
     return normalized or "figure"
@@ -442,16 +442,9 @@ def _write_figure(
     except ImportError:
         _plotly_figure = None
 
-    try:
-        import matplotlib.figure as mpl_fig  # type: ignore[import]
-
-        _mpl_figure = mpl_fig.Figure
-    except ImportError:
-        _mpl_figure = None
-
     if _plotly_figure is not None and isinstance(fig, _plotly_figure):
         return _write_plotly(fig, dst_dir, name, render_format)
-    elif _mpl_figure is not None and isinstance(fig, _mpl_figure):
+    elif is_matplotlib_figure(fig):
         return _write_matplotlib(fig, dst_dir, name, render_format)
     else:
         raise TypeError(
@@ -474,7 +467,7 @@ def _write_plotly(fig: Any, dst_dir: Path, name: str, render_format: str) -> Pat
     if render_format == "json":
         fig.write_json(str(path))
     elif render_format == "html":
-        fig.write_html(str(path), div_id=_safe_html_id(name))
+        fig.write_html(str(path), div_id=safe_html_id(name))
     else:
         fig.write_image(str(path))
     logger.info("Wrote Plotly figure to %s", path)
