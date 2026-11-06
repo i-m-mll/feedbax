@@ -32,6 +32,7 @@ from feedbax.contracts.manifest_packet import (
 from feedbax.contracts.artifact_custody import LegacyContentFormatError
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.persistence.manifest_index import (
+    index_manifest_file,
     default_index_path,
     find_manifest_paths_by_id,
     iter_manifest_files,
@@ -325,9 +326,9 @@ def test_manifest_packet_import_reads_only_selected_destination_receipts(
     assert find_manifest_paths_by_id(unrelated[0].id, root=target) == [unrelated_paths[0]]
 
 
-@pytest.mark.parametrize("indexed", [False, True], ids=["canonical", "indexed-legacy"])
+@pytest.mark.parametrize("location", ["canonical", "indexed-legacy", "unindexed-legacy"])
 def test_manifest_packet_import_compares_exact_bytes_at_destination(
-    tmp_path: Path, indexed: bool
+    tmp_path: Path, location: str
 ) -> None:
     source, target, packet = (tmp_path / name for name in ("source", "target", "packet"))
     manifest = TrainingRunManifest(id="feedbax-training-run:selected", status="completed")
@@ -335,20 +336,20 @@ def test_manifest_packet_import_compares_exact_bytes_at_destination(
     packet_target = source_path.with_name("packet-receipt.json")
     source_path.rename(packet_target)
     export_manifest_packet([manifest.id], root=source, dest=packet)
-    target_path = write_manifest(manifest, root=target, index=indexed)
-    if indexed:
+    target_path = write_manifest(manifest, root=target, index=False)
+    if location != "canonical":
         legacy_path = target_path.with_name("legacy-receipt.json")
         target_path.rename(legacy_path)
-        with sqlite3.connect(default_index_path(target)) as conn:
-            conn.execute(
-                "UPDATE manifests SET path = ? WHERE id = ?", (str(legacy_path), manifest.id)
-            )
         target_path = legacy_path
+    if location == "indexed-legacy":
+        index_manifest_file(target_path, root=target)
     target_path.write_bytes(packet_target.read_bytes() + b"\n")
 
     with pytest.raises(ManifestPacketValidationError, match="Divergent manifest id"):
         import_manifest_packet(packet, root=target)
     assert iter_manifest_files(target) == [target_path]
+    with pytest.raises(FileNotFoundError):
+        ImmutableArtifactBlobProvider(target).resolve_manifest(manifest.kind, manifest.id)
 
 
 def test_manifest_packet_import_publishes_references_only_after_complete_projection(

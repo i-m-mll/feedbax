@@ -44,6 +44,7 @@ from feedbax.contracts.selection import (
 from feedbax.persistence.manifest_discovery import (
     find_manifest_at_address,
     find_manifest_by_id,
+    find_manifests_in_scan,
     iter_manifests_by_kind,
     manifest_record,
     manifest_records_by_kind,
@@ -554,11 +555,20 @@ def _import_runs_dir(source_root: Path, target_root: Path) -> ManifestImportResp
     imported_ids: list[str] = []
     skipped_ids: list[str] = []
     matches: dict[str, tuple[AnyManifest, Path]] = {}
-    manifest_paths = iter_manifest_files(source_root)
-    for manifest_path in manifest_paths:
-        manifest = load_manifest(manifest_path)
-        existing = matches.get(manifest.id) or find_manifest_at_address(
-            manifest.id, root=target_root
+    source_receipts = [
+        (load_manifest(path), path) for path in iter_manifest_files(source_root)
+    ]
+    addressed = {
+        manifest_id: find_manifest_at_address(manifest_id, root=target_root)
+        for manifest_id in dict.fromkeys(manifest.id for manifest, _path in source_receipts)
+    }
+    legacy_matches = find_manifests_in_scan(
+        {manifest_id for manifest_id, match in addressed.items() if match is None},
+        root=target_root,
+    )
+    for manifest, manifest_path in source_receipts:
+        existing = (
+            matches.get(manifest.id) or addressed[manifest.id] or legacy_matches.get(manifest.id)
         )
         if existing is not None:
             matches[manifest.id] = existing
@@ -590,7 +600,7 @@ def _import_runs_dir(source_root: Path, target_root: Path) -> ManifestImportResp
         source_path=str(source_root),
         imported_manifest_ids=imported_ids,
         skipped_manifest_ids=skipped_ids,
-        manifest_count=len(manifest_paths),
+        manifest_count=len(source_receipts),
         index_path=str(index_path),
         training_runs=training_runs,
         eval_runs=eval_runs,

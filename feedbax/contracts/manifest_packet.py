@@ -32,6 +32,7 @@ from feedbax.contracts.artifact_custody import (
     LegacyContentFormatError,
 )
 from feedbax.contracts.manifest import (
+    AnyManifest,
     BaseManifest,
     MANIFEST_MODELS,
     canonical_manifest_candidate_paths,
@@ -46,6 +47,7 @@ from feedbax.contracts.migrations import (
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.manifest_discovery import find_manifests_in_scan
 from feedbax.persistence.manifest_index import (
     connect_index,
     default_index_path,
@@ -430,6 +432,24 @@ def import_manifest_packet(
                 )
                 receipts.append((manifest, destination, data, exists))
 
+            def load_destination(path: Path) -> AnyManifest:
+                checked_path, _ = _packet_destination_file(root_path, path.relative_to(root_path))
+                return load_manifest(checked_path)
+
+            legacy_matches = find_manifests_in_scan(
+                {manifest.id for manifest, _, _, exists in receipts if not exists},
+                root=root_path,
+                load=load_destination,
+            )
+            for receipt_index, (entry, manifest, target_relative_path, data) in enumerate(manifests):
+                legacy = legacy_matches.get(entry.id)
+                if legacy is None:
+                    continue
+                destination, exists = _packet_manifest_destination(
+                    root_path, entry, target_relative_path, [], scanned_path=legacy[1]
+                )
+                receipts[receipt_index] = (manifest, destination, data, exists)
+
             for digest in sorted(packet_objects):
                 provider.store_object(packet_objects[digest])
             proposed = provider._prepare_manifest_bindings(bindings)
@@ -470,6 +490,8 @@ def _packet_manifest_destination(
     entry: ManifestPacketManifestEntry,
     target_relative_path: Path,
     indexed_paths: list[Path],
+    *,
+    scanned_path: Path | None = None,
 ) -> tuple[Path, bool]:
     root_absolute = root.absolute()
     root_resolved = root.resolve()
@@ -477,6 +499,8 @@ def _packet_manifest_destination(
         canonical_manifest_candidate_paths(entry.id, root=Path(".")), False
     )
     candidates[target_relative_path] = False
+    if scanned_path is not None:
+        candidates[scanned_path.relative_to(root)] = False
     for path in indexed_paths:
         absolute = path.absolute()
         for prefix in (root_absolute, root_resolved):
@@ -491,19 +515,7 @@ def _packet_manifest_destination(
     target = root_resolved / target_relative_path
     for relative, index_only in candidates.items():
         try:
-            path = _contained_path(
-                root_resolved,
-                relative,
-                container_name="target root",
-                entry_type="manifest target",
-                entry_id=entry.id,
-                raw_path=relative.as_posix(),
-            )
-            current = path.lstat()
-            if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
-                raise ManifestPacketValidationError(
-                    f"Manifest packet target must be one regular non-link file: {path}"
-                )
+            path, current = _packet_destination_file(root_resolved, relative, entry_id=entry.id)
         except FileNotFoundError:
             continue
         except ManifestPacketValidationError:
@@ -541,6 +553,25 @@ def _packet_manifest_destination(
         existing, existing_stat = path, current
 
     return (target, False) if existing is None else (existing, True)
+
+
+def _packet_destination_file(
+    root: Path, relative: Path, *, entry_id: str | None = None
+) -> tuple[Path, os.stat_result]:
+    path = _contained_path(
+        root,
+        relative,
+        container_name="target root",
+        entry_type="manifest target",
+        entry_id=entry_id or relative.as_posix(),
+        raw_path=relative.as_posix(),
+    )
+    current = path.lstat()
+    if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+        raise ManifestPacketValidationError(
+            f"Manifest packet target must be one regular non-link file: {path}"
+        )
+    return path, current
 
 
 def migrate_manifest_packet_v1(

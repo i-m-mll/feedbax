@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os.path
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -76,10 +76,28 @@ def find_manifest_at_address(
 ) -> tuple[AnyManifest, Path] | None:
     """Probe canonical paths and any indexed legacy locator without scanning the root."""
     root_path = Path(root) if root is not None else default_manifest_root()
+    return _find_manifest_at_address(manifest_id, root_path, expected_kind=expected_kind)
+
+
+def _find_manifest_at_address(
+    manifest_id: str,
+    root_path: Path,
+    *,
+    expected_kind: str | None = None,
+    scanned: Mapping[Path, AnyManifest] | None = None,
+    unscanned_directories: frozenset[Path] = frozenset(),
+) -> tuple[AnyManifest, Path] | None:
+    canonical_paths = canonical_manifest_candidate_paths(manifest_id, root=root_path)
+    if scanned is not None:
+        canonical_paths = [
+            path for path in canonical_paths
+            if path in scanned or path.parent in unscanned_directories
+        ]
     canonical = _manifest_matches(
         manifest_id,
-        canonical_manifest_candidate_paths(manifest_id, root=root_path),
+        canonical_paths,
         expected_kind=expected_kind,
+        scanned=scanned,
     )
     if canonical:
         return _single_manifest_match(manifest_id, root_path, canonical)
@@ -90,7 +108,9 @@ def find_manifest_at_address(
         for path in find_manifest_paths_by_id(manifest_id, root=root_path)
         if path.suffix == ".json" and Path(os.path.abspath(path)).is_relative_to(manifest_dir)
     ]
-    indexed = _manifest_matches(manifest_id, indexed_paths, expected_kind=expected_kind)
+    indexed = _manifest_matches(
+        manifest_id, indexed_paths, expected_kind=expected_kind, scanned=scanned
+    )
     return _single_manifest_match(manifest_id, root_path, indexed) if indexed else None
 
 
@@ -124,6 +144,7 @@ def _manifest_matches(
     candidate_paths: Sequence[Path],
     *,
     expected_kind: str | None = None,
+    scanned: Mapping[Path, AnyManifest] | None = None,
 ) -> list[tuple[AnyManifest, Path]]:
     """Load candidate paths that actually hold *manifest_id*, skipping absent bytes.
 
@@ -146,10 +167,12 @@ def _manifest_matches(
             ) from exc
         if resolved in seen:
             continue
-        if not manifest_path.is_file():
-            continue
+        manifest = scanned.get(manifest_path) if scanned is not None else None
+        if manifest is None:
+            if not manifest_path.is_file():
+                continue
+            manifest = load_manifest(manifest_path)
         seen.add(resolved)
-        manifest = load_manifest(manifest_path)
         if manifest.id != manifest_id:
             continue
         _check_manifest_location(manifest, manifest_path)
@@ -180,11 +203,62 @@ def iter_manifests_by_kind(
     *,
     root: Path | str | None = None,
 ) -> Iterator[tuple[AnyManifest, Path]]:
-    """Read receipts of one kind, including those absent from the index."""
-    for path in iter_manifest_files(root):
-        manifest = load_manifest(path)
+    """Resolve each discovered ID before filtering by kind."""
+    root_path = Path(root) if root is not None else default_manifest_root()
+    scanned, paths_by_id = _scan_manifest_files(root_path)
+    unscanned_directories = frozenset(
+        path
+        for directory in MANIFEST_KIND_DIRECTORIES.values()
+        if (path := root_path / "manifests" / directory).is_symlink()
+    )
+
+    relevant_ids = dict.fromkeys(
+        manifest.id for manifest in scanned.values() if manifest.kind == manifest_kind
+    )
+    for manifest_id in relevant_ids:
+        match = _find_manifest_at_address(
+            manifest_id, root_path, scanned=scanned, unscanned_directories=unscanned_directories
+        )
+        if match is None:
+            matches = _manifest_matches(manifest_id, paths_by_id[manifest_id], scanned=scanned)
+            match = _single_manifest_match(manifest_id, root_path, matches)
+        manifest, path = match
         if manifest.kind == manifest_kind:
             yield manifest, path
+
+
+def find_manifests_in_scan(
+    manifest_ids: set[str],
+    *,
+    root: Path,
+    load: Callable[[Path], AnyManifest] = load_manifest,
+) -> dict[str, tuple[AnyManifest, Path]]:
+    """Find unresolved IDs in one full scan after address probes have missed."""
+    if not manifest_ids:
+        return {}
+    scanned, paths_by_id = _scan_manifest_files(root, manifest_ids=manifest_ids, load=load)
+    return {
+        manifest_id: _single_manifest_match(
+            manifest_id, root, _manifest_matches(manifest_id, paths, scanned=scanned)
+        )
+        for manifest_id, paths in paths_by_id.items()
+    }
+
+
+def _scan_manifest_files(
+    root: Path,
+    *,
+    manifest_ids: set[str] | None = None,
+    load: Callable[[Path], AnyManifest] = load_manifest,
+) -> tuple[dict[Path, AnyManifest], dict[str, list[Path]]]:
+    scanned: dict[Path, AnyManifest] = {}
+    paths_by_id: dict[str, list[Path]] = {}
+    for path in iter_manifest_files(root):
+        manifest = load(path)
+        if manifest_ids is None or manifest.id in manifest_ids:
+            scanned[path] = manifest
+            paths_by_id.setdefault(manifest.id, []).append(path)
+    return scanned, paths_by_id
 
 
 def manifest_record(manifest: AnyManifest, path: Path) -> dict[str, Any]:

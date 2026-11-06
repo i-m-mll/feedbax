@@ -176,7 +176,7 @@ def test_selection_uses_manifest_files(tmp_path: Path, monkeypatch, index_state:
     } == expected
 
 
-def test_runs_dir_import_reads_only_selected_target_receipts(tmp_path: Path, monkeypatch) -> None:
+def test_repeated_runs_dir_import_reads_only_selected_target_receipts(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "source"
     target = tmp_path / "target"
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(target))
@@ -184,7 +184,6 @@ def test_runs_dir_import_reads_only_selected_target_receipts(tmp_path: Path, mon
         _write_training_run(target, f"run:unrelated-{index}", learning_rate=0.01, loss=0.4)
     _write_training_run(target, "run:existing", learning_rate=0.01, loss=0.2, index=False)
     _write_training_run(source, "run:existing", learning_rate=0.01, loss=0.9)
-    _write_training_run(source, "run:new", learning_rate=0.01, loss=0.3)
 
     target_receipts_read = set()
     read_bytes = Path.read_bytes
@@ -200,15 +199,39 @@ def test_runs_dir_import_reads_only_selected_target_receipts(tmp_path: Path, mon
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["imported_manifest_ids"] == ["run:new"]
+    assert payload["imported_manifest_ids"] == []
     assert payload["skipped_manifest_ids"] == ["run:existing"]
     assert {
         run["id"]: run["metrics"]["final_validation_loss"] for run in payload["training_runs"]
     } == {
-        "run:new": 0.3,
         "run:existing": 0.2,
     }
-    assert target_receipts_read <= {"run_existing", "run_new"}
+    assert target_receipts_read == {"run_existing"}
     assert find_manifest_paths_by_id("run:existing", root=target) == [
         canonical_manifest_path("TrainingRunManifest", "run:existing", root=target)
     ]
+
+
+def test_runs_dir_import_retains_unindexed_legacy_receipt(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(target))
+    _write_training_run(target, "run:existing", learning_rate=0.01, loss=0.2, index=False)
+    canonical = canonical_manifest_path("TrainingRunManifest", "run:existing", root=target)
+    legacy = canonical.with_name("legacy-receipt.json")
+    canonical.rename(legacy)
+    _write_training_run(source, "run:existing", learning_rate=0.01, loss=0.9)
+    _write_training_run(source, "run:new", learning_rate=0.01, loss=0.3)
+
+    with TestClient(create_app()) as client:
+        response = client.post("/api/runs/import/runs-dir", json={"path": str(source)})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["imported_manifest_ids"] == ["run:new"]
+    assert payload["skipped_manifest_ids"] == ["run:existing"]
+    assert {
+        run["id"]: run["metrics"]["final_validation_loss"] for run in payload["training_runs"]
+    } == {"run:new": 0.3, "run:existing": 0.2}
+    assert not canonical.exists()
+    assert find_manifest_paths_by_id("run:existing", root=target) == [legacy]
