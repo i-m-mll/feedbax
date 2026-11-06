@@ -2099,6 +2099,13 @@ def test_buffered_method_observations_resume_from_partial_checkpoint(
 
 def test_durable_history_preserves_progress_bytes_and_typed_trace(tmp_path: Path) -> None:
     spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.state_slots.append(
+        StateSlotSpec(
+            name="healthy",
+            role="metric",
+            axis_bindings=[SlotAxisBindingSpec(axis="ensemble", mode="shared")],
+        )
+    )
     spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 4
     spec.training_config.n_batches = 4
     spec.checkpoint_progress.progress_interval = 3
@@ -2124,6 +2131,7 @@ def test_durable_history_preserves_progress_bytes_and_typed_trace(tmp_path: Path
             provider_identity=template.identity.provider_identity,
             initial_slots={
                 **template.initial_slots,
+                "healthy": jnp.asarray(True),
                 "train_loss": {
                     "accepted": jnp.zeros(5, dtype=jnp.bool_),
                     "nested": {"score": jnp.zeros(5, dtype=jnp.float32)},
@@ -2154,6 +2162,7 @@ def test_durable_history_preserves_progress_bytes_and_typed_trace(tmp_path: Path
         ref for ref in durable.manifest.artifacts if ref.role == "training_history"
     )
     history_bytes = Path(history_ref.uri).read_bytes()
+    assert all(event["metrics"]["healthy"] is True for event in json.loads(history_bytes))
     assert history_bytes == json.dumps(callback_events, indent=2, sort_keys=True).encode() + b"\n"
     assert history_ref.sha256 == sha256_bytes(history_bytes)
     assert history_ref.size_bytes == len(history_bytes)
@@ -4622,6 +4631,66 @@ def test_execute_training_run_spec_emits_run_events_without_changing_manifest(
     assert all("transaction_id" in event.payload for event in checkpoint_events)
     assert result.manifest_path.exists()
     assert result.manifest.checkpoint_custody
+
+
+def test_native_numerical_scalar_metrics_round_trip_through_json(tmp_path: Path) -> None:
+    def update(slots, _context):
+        loss = jnp.square(slots["model"] - 1.5)
+        return {
+            "model": slots["model"],
+            "optimizer": slots["optimizer"],
+            "prng": slots["prng"],
+            "train_loss": loss,
+            "healthy": jnp.isfinite(loss),
+            "batch_counter": slots["batch_counter"] + 1,
+        }
+
+    kernel = NumericalUpdateKernel(update, excluded_slots=("objective",))
+    spec = _run_spec()
+    worker = spec.worker_execution
+    contract = worker.method_contract
+    contract.state_slots.append(StateSlotSpec(name="healthy", role="metric"))
+    contract.phase_program.phases[0].writes.append("healthy")
+    contract.phase_program.update_steps[0].writes.append("healthy")
+    worker.effective_phase = validate_worker_contract(
+        contract, update_kernels={"feedbax.training.standard_supervised.gradient_update": kernel}
+    )
+
+    events_path = tmp_path / "events.jsonl"
+    with closing(
+        RunEventEmitter(
+            run_set_id="scalar-metrics", row_id="row", path=events_path, heartbeat_seconds=None
+        )
+    ) as emitter:
+        result = execute_training_run_spec(
+            spec,
+            registry=_mapped_test_registry(spec, kernel),
+            initial_slots={
+                **_initial_slots(arrays=True),
+                "model": jnp.asarray(1.0),
+                "train_loss": jnp.asarray(0.0),
+                "healthy": jnp.asarray(False),
+            },
+            manifest_root=tmp_path / "runs",
+            checkpoint_root=tmp_path / "checkpoints",
+            run_event_emitter=emitter,
+        )
+
+    events = {event.type: event.payload for event in RunEventReader(events_path).read_all()}
+    for event_type in ("ready", "progress", "checkpoint_written", "complete"):
+        metrics = events[event_type]["coordinate"]["metrics"]
+        assert metrics["train_loss"] == 0.25
+        assert metrics["healthy"] is True
+    assert events["progress"]["loss"] == 0.25
+    checkpoint = json.loads(result.checkpoint_writes[0].manifest_path.read_bytes())
+    for metrics in (
+        events["progress"]["metrics"],
+        events["complete"]["metrics"],
+        load_manifest(result.manifest_path).summary_metrics,
+        checkpoint["completed_coordinate"]["metrics"],
+    ):
+        assert metrics["train_loss"] == 0.25
+        assert metrics["healthy"] is True
 
 
 def test_execute_training_run_spec_stops_at_checkpoint_with_cancelled_provenance(
