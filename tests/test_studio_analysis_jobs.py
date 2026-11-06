@@ -10,6 +10,7 @@ import httpx
 from fastapi.testclient import TestClient
 import pytest
 
+from feedbax.analysis.analysis import IdentityNode, SinglePort
 from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
     execute_evaluation_run_spec,
@@ -17,6 +18,7 @@ from feedbax.analysis.evaluation import (
 from feedbax.analysis.context import AnalysisRunContext
 import feedbax.analysis.specs as analysis_specs
 from feedbax.analysis.specs import (
+    AnalysisRecipeExecutionError,
     AnalysisRecipeResult,
     execute_analysis_run_spec,
 )
@@ -42,6 +44,7 @@ from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 TOY_JOB_EVAL_TYPE = "feedbax.test.studio_job_eval"
 TOY_JOB_ANALYSIS_TYPE = "feedbax.test.studio_job_analysis"
 MISMATCHED_JOB_ANALYSIS_TYPE = "feedbax.test.studio_job_mismatched_analysis"
+UNWIRED_JOB_OUTPUT = "unwired_output"
 
 
 def _register_job_eval_recipe(registries) -> None:
@@ -68,7 +71,10 @@ def _register_job_analysis_recipe(registries, *, revision: str | None = None) ->
     ) -> AnalysisRecipeResult:
         value = sum(int(resolved.states["value"]) for resolved in inputs)
         return AnalysisRecipeResult(
-            analyses={TOY_JOB_ANALYSIS_TYPE: ToyAnalysis(variant="studio", cache_result=True)},
+            analyses={
+                TOY_JOB_ANALYSIS_TYPE: ToyAnalysis(variant="studio", cache_result=True),
+                UNWIRED_JOB_OUTPUT: IdentityNode(inputs=SinglePort(input="missing_dependency")),
+            },
             data=build_toy_analysis_data(value=value),
             common_inputs={"studio": spec.params["studio"]},
         )
@@ -374,6 +380,32 @@ def test_studio_analysis_job_routes_eval_run_through_executable_spec(
         assert rerun_manifest.id != manifest.id
     else:
         assert rerun_manifest.id == manifest.id
+
+
+@pytest.mark.parametrize("outputs", [[UNWIRED_JOB_OUTPUT], None])
+def test_unwired_studio_recipe_output_fails_when_requested(
+    tmp_path: Path, studio_registries, outputs: list[str] | None
+) -> None:
+    _register_job_eval_recipe(studio_registries)
+    _register_job_analysis_recipe(studio_registries)
+    evaluation, _ = _execute_eval(tmp_path, studio_registries)
+    spec = AnalysisRunSpec(
+        analysis_type=TOY_JOB_ANALYSIS_TYPE,
+        inputs=[ParentRef(kind="EvaluationRunManifest", id=evaluation.id, role="evaluation_run")],
+        params={"studio": {}, **({"requested_outputs": outputs} if outputs is not None else {})},
+    )
+
+    with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
+        execute_analysis_run_spec(
+            spec,
+            registry=studio_registries.analysis_recipes,
+            evaluation_registry=studio_registries.evaluation_recipes,
+            experiment_registry=studio_registries.experiment_packages,
+            root=tmp_path,
+        )
+    cause = excinfo.value.__cause__
+    assert isinstance(cause, ValueError)
+    assert "String dependency 'missing_dependency'" in str(cause)
 
 
 def test_run_analysis_sync_preserves_canonical_uri_and_legacy_path_shape(

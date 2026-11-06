@@ -11,10 +11,11 @@ from feedbax.analysis.context import (
     AnalysisRunContext,
     parent_ref_from_evaluation_manifest,
 )
-from feedbax.analysis.analysis import IdentityNode, SinglePort
+from feedbax.analysis.analysis import AbstractAnalysis, AnalysisRef, IdentityNode, SinglePort
 from feedbax.analysis.execution import (
     run_analyses_with_context,
 )
+from feedbax.analysis.inputs import ExpandTo, LiteralInput, Transformed
 from feedbax.analysis.materialization import (
     AnalysisArtifactGroup,
     ContextMaterializationPending,
@@ -237,6 +238,61 @@ def test_requested_outputs_partial_intersection_runs_matching_outputs(
     manifest = load_manifest(context.manifest_path)
     assert manifest.status == "completed"
     assert manifest.summary_metrics["analysis_count"] == 1
+
+
+def test_selected_outputs_share_a_named_ancestor_below_inline_nodes(tmp_path: Path) -> None:
+    calls = []
+
+    class Source(AbstractAnalysis):
+        def compute(self, data):
+            calls.append(data.states["value"])
+            return calls[-1]
+
+    deepest = IdentityNode(inputs=SinglePort(input=AnalysisRef("source")))
+    inner = IdentityNode(inputs=SinglePort(input=deepest))
+    outer = IdentityNode(inputs=SinglePort(input=inner))
+    analyses = {
+        "deep": IdentityNode(inputs=SinglePort(input=outer)),
+        "structured": IdentityNode(
+            inputs=SinglePort(
+                input={
+                    "direct": "source",
+                    "expanded": ExpandTo("shape", Transformed("source", lambda value: value + 1)),
+                    "literal": LiteralInput(None),
+                }
+            ),
+            _extra_inputs={"shape": LiteralInput({"left": 0, "right": 0})},
+        ),
+        "source": Source(),
+    }
+    context = AnalysisRunContext(spec=AnalysisRunSpec(analysis_type="toy_analysis"), root=tmp_path)
+
+    _analyses, results, _figures = run_analyses_with_context(
+        analyses,
+        build_toy_analysis_data(value=42),
+        context,
+        requested_outputs={"structured", "deep"},
+    )
+
+    assert list(results) == ["deep", "structured"]
+    assert results == {
+        "deep": 42,
+        "structured": {"direct": 42, "expanded": {"left": 43, "right": 43}, "literal": None},
+    }
+    assert calls == [42]
+
+
+def test_selected_output_rejects_a_reachable_named_cycle(tmp_path: Path) -> None:
+    analyses = {
+        "first": IdentityNode(inputs=SinglePort(input="second")),
+        "second": IdentityNode(inputs=SinglePort(input="first")),
+    }
+    context = AnalysisRunContext(spec=AnalysisRunSpec(analysis_type="toy_analysis"), root=tmp_path)
+
+    with pytest.raises(ValueError, match="Circular dependency detected"):
+        run_analyses_with_context(
+            analyses, build_toy_analysis_data(), context, requested_outputs={"first"}
+        )
 
 
 def test_analysis_context_records_grouped_artifacts_cache_and_downstream_consumption(
