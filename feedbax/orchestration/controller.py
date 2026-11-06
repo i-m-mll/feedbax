@@ -13,7 +13,9 @@ import json
 import os
 import threading
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol, get_args
@@ -380,6 +382,50 @@ class EffectAdapter(Protocol):
     async def observe_inventory(self, scope: Mapping[str, Any]) -> ProviderInventoryObservation: ...
 
 
+@dataclass
+class _ControllerIndex:
+    events: list[ControllerEvent] = field(default_factory=list)
+    identities: dict[str, ControllerEvent] = field(default_factory=dict)
+    streams: dict[str, list[ControllerEvent]] = field(default_factory=dict)
+    projections: dict[str, ControllerProjection] = field(default_factory=dict)
+    latest_intent_id: str | None = None
+    needs_line_separator: bool = False
+
+    def add(self, event: ControllerEvent) -> None:
+        stream = self.streams.setdefault(event.intent_id, [])
+        if event.sequence != len(stream):
+            raise ControllerProtocolError(
+                f"controller stream {event.intent_id!r} expected sequence {len(stream)}, "
+                f"got {event.sequence}"
+            )
+        previous = self.identities.get(event.event_id)
+        if previous is not None and previous != event:
+            raise ControllerConflictError(
+                f"controller event id {event.event_id!r} has conflicting records"
+            )
+        self.identities[event.event_id] = event
+        stream.append(event)
+        self.events.append(event)
+        if event.event_type == "intent_admitted":
+            self.latest_intent_id = event.intent_id
+
+    def project(self, intent_id: str) -> ControllerProjection:
+        stream = self.streams.get(intent_id)
+        if stream is None:
+            return ControllerProjection()
+        projection = self.projections.get(intent_id)
+        if projection is None:
+            projection = ControllerProjection()
+        for offset in range(projection.last_sequence + 1, len(stream)):
+            projection = _apply_event(projection, stream[offset])
+        self.projections[intent_id] = projection
+        return projection
+
+
+def _file_revision(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
 class ControllerEventStore:
     """Fsync'd JSONL authority with process and filesystem locking."""
 
@@ -387,12 +433,45 @@ class ControllerEventStore:
         self.path = Path(path)
         self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         self._process_lock = threading.RLock()
+        self._revision: tuple[int, int, int, int, int] | None = None
+        self._index: _ControllerIndex | None = None
 
     def read_all(self) -> list[ControllerEvent]:
+        with self._locked_index(fcntl.LOCK_SH) as index:
+            return [event.model_copy(deep=True) for event in index.events]
+
+    def read_stream(self, intent_id: str) -> list[ControllerEvent]:
+        with self._locked_index(fcntl.LOCK_SH) as index:
+            return [event.model_copy(deep=True) for event in index.streams.get(intent_id, ())]
+
+    def project(self, intent_id: str) -> ControllerProjection:
+        with self._locked_index(fcntl.LOCK_SH) as index:
+            return index.project(intent_id).model_copy(deep=True)
+
+    def project_all(self) -> dict[str, ControllerProjection]:
+        with self._locked_index(fcntl.LOCK_SH) as index:
+            return {
+                intent_id: index.project(intent_id).model_copy(deep=True)
+                for intent_id in index.streams
+            }
+
+    def latest_intent_id(self) -> str | None:
+        with self._locked_index(fcntl.LOCK_SH) as index:
+            return index.latest_intent_id
+
+    @contextmanager
+    def _locked_index(self, lock: int) -> Iterator[_ControllerIndex]:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         with self._process_lock, self.lock_path.open("a+") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
-            return self._read_unlocked()
+            fcntl.flock(lock_file.fileno(), lock)
+            try:
+                revision = _file_revision(self.path.stat())
+            except FileNotFoundError:
+                revision = None
+            if self._index is None or self._revision != revision:
+                self._index = self._read_unlocked()
+                self._revision = revision
+            yield self._index
 
     def append(
         self,
@@ -409,16 +488,10 @@ class ControllerEventStore:
         payload: Mapping[str, Any] | None = None,
         idempotency_key: str | None = None,
         validator: Callable[[Sequence[ControllerEvent], ControllerEvent], None] | None = None,
+        validate_transition: bool = False,
     ) -> ControllerEvent:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._process_lock, self.lock_path.open("a+") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            events = self._read_unlocked()
-            sequence = 1 + max(
-                (event.sequence for event in events if event.intent_id == intent_id),
-                default=-1,
-            )
+        with self._locked_index(fcntl.LOCK_EX) as index:
+            sequence = len(index.streams.get(intent_id, ()))
             content = {
                 "intent_id": intent_id,
                 "event_type": event_type,
@@ -431,7 +504,7 @@ class ControllerEventStore:
                 "payload": dict(payload or {}),
             }
             event_id = idempotency_key or hashlib.sha256(canonical_json_bytes(content)).hexdigest()
-            duplicate = next((event for event in events if event.event_id == event_id), None)
+            duplicate = index.identities.get(event_id)
             if duplicate is not None:
                 comparable = {
                     "intent_id": duplicate.intent_id,
@@ -448,7 +521,7 @@ class ControllerEventStore:
                     raise ControllerConflictError(
                         f"controller event id {event_id!r} was reused with different content"
                     )
-                return duplicate
+                return duplicate.model_copy(deep=True)
             event = ControllerEvent(
                 event_id=event_id,
                 sequence=sequence,
@@ -456,28 +529,40 @@ class ControllerEventStore:
                 **content,
             )
             if validator is not None:
-                validator(events, event)
+                validator([item.model_copy(deep=True) for item in index.events], event)
             line = json.dumps(event.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+            # Index the same normalized payload that a fresh process reads from disk.
+            persisted = controller_event_from_document(strict_json_loads(line))
+            projection = (
+                _apply_event(index.project(intent_id), persisted) if validate_transition else None
+            )
             with self.path.open("a", encoding="utf-8") as stream:
+                if index.needs_line_separator:
+                    stream.write("\n")
                 stream.write(line + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
+                revision = _file_revision(os.fstat(stream.fileno()))
             directory = os.open(self.path.parent, os.O_RDONLY)
             try:
                 os.fsync(directory)
             finally:
                 os.close(directory)
+            index.add(persisted)
+            index.needs_line_separator = False
+            if projection is not None:
+                index.projections[intent_id] = projection
+            self._revision = revision
             return event
 
-    def _read_unlocked(self) -> list[ControllerEvent]:
+    def _read_unlocked(self) -> _ControllerIndex:
+        index = _ControllerIndex()
         try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            contents = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return []
-        events: list[ControllerEvent] = []
-        sequences: dict[str, int] = {}
-        identities: dict[str, ControllerEvent] = {}
-        for line_number, line in enumerate(lines, start=1):
+            return index
+        index.needs_line_separator = bool(contents) and not contents.endswith("\n")
+        for line_number, line in enumerate(contents.splitlines(), start=1):
             if not line.strip():
                 continue
             try:
@@ -486,21 +571,8 @@ class ControllerEventStore:
                 raise ControllerProtocolError(
                     f"invalid controller event at {self.path}:{line_number}"
                 ) from exc
-            expected = sequences.get(event.intent_id, -1) + 1
-            if event.sequence != expected:
-                raise ControllerProtocolError(
-                    f"controller stream {event.intent_id!r} expected sequence {expected}, "
-                    f"got {event.sequence}"
-                )
-            previous = identities.get(event.event_id)
-            if previous is not None and previous != event:
-                raise ControllerConflictError(
-                    f"controller event id {event.event_id!r} has conflicting records"
-                )
-            identities[event.event_id] = event
-            sequences[event.intent_id] = event.sequence
-            events.append(event)
-        return events
+            index.add(event)
+        return index
 
 
 def run_intent_from_document(document: Any) -> RunIntent:
@@ -1024,7 +1096,13 @@ class DurableController:
         self.id_factory = id_factory
 
     def project(self, intent_id: str) -> ControllerProjection:
-        return project_controller_events(self.store.read_all(), intent_id=intent_id)
+        return self.store.project(intent_id)
+
+    def project_all(self) -> dict[str, ControllerProjection]:
+        return self.store.project_all()
+
+    def latest_intent_id(self) -> str | None:
+        return self.store.latest_intent_id()
 
     def admit_intent(self, intent: RunIntent) -> ControllerProjection:
         self._record(
@@ -1147,10 +1225,9 @@ class DurableController:
         projection = self._expire_due(intent_id)
         if projection.intent is None or projection.intent.invocation_id != invocation.invocation_id:
             raise ControllerProtocolError("retry Invocation differs from the admitted invocation")
-        for event in self.store.read_all():
+        for event in self.store.read_stream(intent_id):
             if (
-                event.intent_id == intent_id
-                and event.event_type == "retry_admitted"
+                event.event_type == "retry_admitted"
                 and event.payload.get("previous_reservation_id") == previous_reservation_id
             ):
                 return effect_reservation_from_document(event.payload["reservation"])
@@ -1308,11 +1385,15 @@ class DurableController:
         self,
         intent_id: str,
         adapters: Mapping[str, EffectAdapter],
+        *,
+        reservation_ids: Sequence[str] | None = None,
     ) -> ControllerProjection:
         """Recover from records first, then query only unresolved reserved effects."""
 
         projection = self._expire_due(intent_id)
-        for reservation_id, reserved in tuple(projection.reservations.items()):
+        selected = projection.reservations if reservation_ids is None else reservation_ids
+        for reservation_id in selected:
+            reserved = _reservation(projection, reservation_id)
             if reserved.status not in {"dispatched", "observed", "reconciled"}:
                 continue
             terminal_attempt = next(
@@ -1392,65 +1473,48 @@ class DurableController:
         reservation_ids: Sequence[str],
         policy: OrphanHandlingPolicy,
     ) -> ControllerProjection:
-        """Persist complete provider truth, reconcile absence, and classify orphans."""
+        self._validate_inventory_reservations(intent_id, backend_id, reservation_ids)
+        observation = await adapter.observe_inventory(scope)
+        self.record_provider_scope(
+            observation,
+            backend_id=backend_id,
+            scope=scope,
+            reservations_by_intent={intent_id: reservation_ids},
+            policy=policy,
+        )
+        return self.project(intent_id)
 
+    def _validate_inventory_reservations(
+        self, intent_id: str, backend_id: str, reservation_ids: Sequence[str]
+    ) -> None:
         projection = self.project(intent_id)
         if projection.intent is None:
             raise ControllerProtocolError("provider inventory requires an admitted intent")
         reservations = tuple(_reservation(projection, item) for item in reservation_ids)
         if any(item.reservation.backend_id != backend_id for item in reservations):
             raise ControllerProtocolError("inventory reservation backend differs from request")
-        observation = await adapter.observe_inventory(scope)
+
+    def record_provider_scope(
+        self,
+        observation: ProviderInventoryObservation,
+        *,
+        backend_id: str,
+        scope: Mapping[str, Any],
+        reservations_by_intent: Mapping[str, Sequence[str]],
+        policy: OrphanHandlingPolicy,
+        scope_members: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
+        """Apply one complete inventory to each selected intent's stream."""
+        for intent_id, reservation_ids in reservations_by_intent.items():
+            self._validate_inventory_reservations(intent_id, backend_id, reservation_ids)
         if observation.backend_id != backend_id:
             raise ControllerProtocolError("provider inventory backend differs from request")
         if canonical_json_bytes(observation.scope) != canonical_json_bytes(dict(scope)):
             raise ControllerProtocolError("provider inventory scope differs from request")
-        self._record(
-            "provider_inventory_observed",
-            intent_id,
-            payload={
-                "inventory": observation.model_dump(mode="json"),
-                "reservation_ids": list(reservation_ids),
-            },
-            idempotency_key=f"intent:{intent_id}:inventory:{observation.inventory_id}:observed",
-        )
+        live_effect_keys = self._live_effect_keys(backend_id, scope_members)
         observed_keys = {item.external_effect_key for item in observation.resources}
-        projection = self.project(intent_id)
-        for reserved in reservations:
-            attempt = next(
-                (
-                    item
-                    for item in projection.attempts.values()
-                    if item.reservation_id == reserved.reservation.reservation_id
-                ),
-                None,
-            )
-            if (
-                attempt is not None
-                and attempt.status not in {"succeeded", "failed", "cancelled"}
-                and reserved.reservation.external_effect_key not in observed_keys
-            ):
-                self._record(
-                    "external_effect_absence_reconciled",
-                    intent_id,
-                    reservation_id=reserved.reservation.reservation_id,
-                    attempt_id=attempt.attempt_id,
-                    payload={
-                        "inventory_id": observation.inventory_id,
-                        "external_effect_key": reserved.reservation.external_effect_key,
-                    },
-                    idempotency_key=(
-                        f"reservation:{reserved.reservation.reservation_id}:"
-                        f"absent:{observation.inventory_id}"
-                    ),
-                )
-                projection = self.project(intent_id)
-
-        live_effect_keys = self._live_effect_keys(backend_id)
-        for resource in observation.resources:
-            if resource.external_effect_key in live_effect_keys:
-                continue
-            orphan_id = hashlib.sha256(
+        orphans = {
+            hashlib.sha256(
                 canonical_json_bytes(
                     {
                         "backend_id": backend_id,
@@ -1459,21 +1523,78 @@ class DurableController:
                         "external_effect_key": resource.external_effect_key,
                     }
                 )
-            ).hexdigest()
-            projection = self.project(intent_id)
-            if orphan_id not in projection.orphans:
+            ).hexdigest(): resource
+            for resource in observation.resources
+            if resource.external_effect_key not in live_effect_keys
+        }
+        inventory_document = observation.model_dump(mode="json")
+        for intent_id, reservation_ids in reservations_by_intent.items():
+            self._record_provider_inventory(
+                intent_id,
+                observation.inventory_id,
+                inventory_document,
+                reservation_ids,
+                observed_keys,
+                orphans,
+                policy,
+            )
+
+    def _record_provider_inventory(
+        self,
+        intent_id: str,
+        inventory_id: str,
+        inventory_document: dict[str, Any],
+        reservation_ids: Sequence[str],
+        observed_keys: set[str],
+        orphans: Mapping[str, ProviderResourceObservation],
+        policy: OrphanHandlingPolicy,
+    ) -> None:
+        self._record(
+            "provider_inventory_observed",
+            intent_id,
+            payload={
+                "inventory": inventory_document,
+                "reservation_ids": list(reservation_ids),
+            },
+            idempotency_key=f"intent:{intent_id}:inventory:{inventory_id}:observed",
+        )
+        projection = self.project(intent_id)
+        attempts = {attempt.reservation_id: attempt for attempt in projection.attempts.values()}
+        for reservation_id in reservation_ids:
+            reserved = _reservation(projection, reservation_id)
+            attempt = attempts.get(reservation_id)
+            if (
+                reserved.status in {"dispatched", "observed", "reconciled"}
+                and attempt is not None
+                and attempt.status not in {"succeeded", "failed", "cancelled"}
+                and reserved.reservation.external_effect_key not in observed_keys
+            ):
+                self._record(
+                    "external_effect_absence_reconciled",
+                    intent_id,
+                    reservation_id=reservation_id,
+                    attempt_id=attempt.attempt_id,
+                    payload={
+                        "inventory_id": inventory_id,
+                        "external_effect_key": reserved.reservation.external_effect_key,
+                    },
+                    idempotency_key=f"reservation:{reservation_id}:absent:{inventory_id}",
+                )
+
+        for orphan_id, resource in orphans.items():
+            orphan = projection.orphans.get(orphan_id)
+            if orphan is None:
                 self._record(
                     "provider_orphan_detected",
                     intent_id,
                     payload={
                         "orphan_id": orphan_id,
-                        "inventory_id": observation.inventory_id,
+                        "inventory_id": inventory_id,
                         "resource": resource.model_dump(mode="json"),
                     },
                     idempotency_key=f"intent:{intent_id}:orphan:{orphan_id}:detected",
                 )
-                projection = self.project(intent_id)
-            if projection.orphans[orphan_id].handling_policy is None:
+            if orphan is None or orphan.handling_policy is None:
                 self._record(
                     "provider_orphan_handling_recorded",
                     intent_id,
@@ -1485,7 +1606,6 @@ class DurableController:
                         f"intent:{intent_id}:orphan:{orphan_id}:handling:{policy.policy_id}"
                     ),
                 )
-        return self.project(intent_id)
 
     def cancel_reservation(self, intent_id: str, reservation_id: str, *, reason: str) -> None:
         reserved = _reservation(self.project(intent_id), reservation_id)
@@ -1628,27 +1748,29 @@ class DurableController:
                 reservation_id=reservation_id,
             )
 
-    def _live_effect_keys(self, backend_id: str) -> frozenset[str]:
-        events = self.store.read_all()
-        intent_ids = tuple(dict.fromkeys(event.intent_id for event in events))
+    def _live_effect_keys(
+        self,
+        backend_id: str,
+        scope_members: Mapping[str, Sequence[str]] | None,
+    ) -> frozenset[str]:
+        projections = (
+            self.project_all().items()
+            if scope_members is None
+            else ((intent_id, self.project(intent_id)) for intent_id in scope_members)
+        )
         keys: set[str] = set()
-        for intent_id in intent_ids:
-            projection = project_controller_events(events, intent_id=intent_id)
-            for reservation_id, reserved in projection.reservations.items():
+        for intent_id, projection in projections:
+            selected = (
+                projection.reservations if scope_members is None else scope_members[intent_id]
+            )
+            attempts = {attempt.reservation_id: attempt for attempt in projection.attempts.values()}
+            for reservation_id in selected:
+                reserved = _reservation(projection, reservation_id)
                 if reserved.reservation.backend_id != backend_id:
                     continue
-                attempt = next(
-                    (
-                        item
-                        for item in projection.attempts.values()
-                        if item.reservation_id == reservation_id
-                    ),
-                    None,
-                )
-                if (
-                    reserved.status in {"dispatched", "observed", "reconciled"}
-                    and attempt is not None
-                    and attempt.status not in {"succeeded", "failed", "cancelled"}
+                attempt = attempts.get(reservation_id)
+                if reserved.status in {"dispatched", "observed", "reconciled"} and (
+                    attempt is None or attempt.status not in {"succeeded", "failed", "cancelled"}
                 ):
                     keys.add(reserved.reservation.external_effect_key)
         return frozenset(keys)
@@ -1678,9 +1800,7 @@ class DurableController:
             attempt_id=attempt_id,
             payload=payload,
             idempotency_key=idempotency_key,
-            validator=lambda events, candidate: project_controller_events(
-                (*events, candidate), intent_id=intent_id
-            ),
+            validate_transition=True,
         )
         return event
 
