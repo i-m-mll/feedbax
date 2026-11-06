@@ -22,13 +22,13 @@ import {
   muxInputIndex,
   normalizeDynamicPorts,
 } from '@/features/graph/dynamicPorts';
+import { causalInputDrivers, inputDriverConflict } from '@/features/graph/inputDrivers';
 import { taskBindingId } from '@/features/scenario/taskBindings';
 
 const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set(['model_input', 'graph_input']);
 const PROTOCOL_TASK_DATA_KINDS = new Set([
   'target',
   'initial_state',
-  'intervention',
   'eval_control',
   'trial_control',
   'validation',
@@ -37,7 +37,6 @@ const PROTOCOL_TASK_DATA_KINDS = new Set([
 const PROTOCOL_TASK_DATA_PATH_PREFIXES = [
   'targets',
   'inits',
-  'intervene',
   'validation_trials',
   'eval',
   'trial_controls',
@@ -421,8 +420,6 @@ function componentPortDimension(
       dimension = nPairs === null ? null : nPairs * 2;
     }
     if (port === 'force_2d') dimension = 2;
-  } else if (componentType === 'FeedbackChannels' && direction === 'output' && port === 'output') {
-    dimension = feedbackChannelsWidth(nodeParams);
   }
   if (dimensionParam) dimension = positiveIntParam(nodeParams, dimensionParam);
   if (dimension === null) return null;
@@ -433,17 +430,6 @@ function componentPortDimension(
       dimension_param: dimensionParam,
     },
   };
-}
-
-function feedbackChannelsWidth(params: Record<string, unknown>): number | null {
-  const channels = params.channels;
-  if (!Array.isArray(channels)) return null;
-  const width = channels.reduce((sum, channel) => {
-    if (channel === 'position' || channel === 'velocity') return sum + 2;
-    if (channel === 'force') return sum + 2;
-    return sum;
-  }, 0);
-  return width > 0 ? width : null;
 }
 
 function positiveIntParam(params: Record<string, unknown>, key: string): number | null {
@@ -818,23 +804,28 @@ function validateGraphConnections(
   portIndex: PortSchemaIndex
 ): SchemaValidationIssue[] {
   const issues: SchemaValidationIssue[] = [];
-  const occupied = new Map<string, string>();
-  for (const [graphPort, binding] of Object.entries(graph.input_bindings)) {
-    occupied.set(`${binding[0]}.${binding[1]}`, `input_bindings.${graphPort}`);
-  }
-  graph.wires.forEach((wire, index) => {
-    const path = `wires.${index}`;
-    const targetKey = `${wire.target_node}.${wire.target_port}`;
-    const previous = occupied.get(targetKey);
+  const occupied = new Map<string, Map<string, { owner: string; path: string }>>();
+  for (const driver of causalInputDrivers(graph)) {
+    const { node, port, owner, path } = driver;
+    let nodeInputs = occupied.get(node);
+    if (!nodeInputs) {
+      nodeInputs = new Map();
+      occupied.set(node, nodeInputs);
+    }
+    const previous = nodeInputs.get(port);
     if (previous) {
       issues.push({
         type: 'graph_input_occupied',
-        message: `Input ${targetKey} is already occupied`,
+        message: inputDriverConflict(node, port, previous.owner, owner),
         severity: 'error',
-        location: { path, occupied_by: previous },
+        location: { node, port, path, occupied_by: previous.path },
       });
+    } else {
+      nodeInputs.set(port, driver);
     }
-    occupied.set(targetKey, path);
+  }
+  graph.wires.forEach((wire, index) => {
+    const path = `wires.${index}`;
     issues.push(
       ...validateConnectionAgainstSchemaWithIndex(
         portIndex,

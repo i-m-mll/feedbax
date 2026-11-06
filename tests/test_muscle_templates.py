@@ -13,12 +13,21 @@ Tests cover:
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
+from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.compiler.serialization import graph_to_spec
+from feedbax.component_registry import ComponentRegistry
+from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.mechanics.muscles import ReluMuscle, RigidTendonHillMuscleThelen
 from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
-from feedbax.mechanics.geometry import PointMassRadialGeometry
+from feedbax.mechanics.geometry import (
+    PointMassRadialGeometry,
+    TwoLinkArmMuscleGeometry,
+    WrappingGeometry,
+)
 
 pytestmark = pytest.mark.usefixtures("enable_jax_x64")
 
@@ -152,6 +161,88 @@ class TestReluMuscle:
 # ============================================================================
 # RigidTendonHillMuscleThelen Tests
 # ============================================================================
+
+
+def test_thelen_graph_rollout_and_roundtrip_match_independent_muscles(key):
+    inputs = {
+        "excitation": jnp.array([[0.8, 0.1], [0.2, 0.9], [0.5, 0.3]]),
+        "musculotendon_length": jnp.array([[0.22, 0.18], [0.19, 0.23], [0.21, 0.20]]),
+        "musculotendon_velocity": jnp.array([[-0.15, 0.1], [0.12, -0.08], [0.0, 0.18]]),
+    }
+    n_steps = inputs["excitation"].shape[0]
+    output_ports = ["force", "activation", "fiber_length", "fiber_velocity"]
+    params = {"initial_activation": 0.35, "tendon_slack_length": 0.1, "dt": 0.01}
+    spec = GraphSpec(
+        nodes={
+            "muscle": ComponentSpec(
+                type="RigidTendonHillMuscleThelen",
+                params={**params, "n_muscles": 2},
+                input_ports=list(inputs),
+                output_ports=output_ports,
+            ),
+            "delay": ComponentSpec(
+                type="Channel",
+                params={"delay": 1, "add_noise": False},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="muscle",
+                source_port="force",
+                target_node="delay",
+                target_port="input",
+            )
+        ],
+        input_ports=list(inputs),
+        input_bindings={port: ("muscle", port) for port in inputs},
+        output_ports=[*output_ports, "delayed_force"],
+        output_bindings={
+            **{port: ("muscle", port) for port in output_ports},
+            "delayed_force": ("delay", "output"),
+        },
+    )
+    registry = ComponentRegistry(load_user_components=False)
+    input_prototypes = {
+        ("muscle", port): jnp.zeros_like(values[0]) for port, values in inputs.items()
+    }
+    graph = compile_graph(GraphDocument(graph=spec), registry, input_prototypes).graph
+
+    expected = {port: [] for port in output_ports}
+    for lane in range(2):
+        muscle = RigidTendonHillMuscleThelen(**params)
+        state = muscle.init_state(key=key)
+        steps = []
+        for t in range(n_steps):
+            step_inputs = {port: values[t, lane] for port, values in inputs.items()}
+            outputs, state = muscle(step_inputs, state, key=key)
+            steps.append(outputs)
+        for port in output_ports:
+            expected[port].append(jnp.stack([outputs[port] for outputs in steps]))
+
+    expected_outputs = {port: jnp.stack(lanes, axis=1) for port, lanes in expected.items()}
+    force = expected_outputs["force"]
+    expected_outputs["delayed_force"] = jnp.concatenate((jnp.zeros_like(force[:1]), force[:-1]))
+
+    def assert_rollout_matches(model):
+        outputs, _ = model(inputs, model.init_state(key=key), key=key, n_steps=n_steps)
+        for port, expected_values in expected_outputs.items():
+            np.testing.assert_allclose(
+                outputs[port],
+                expected_values,
+                rtol=1e-6,
+                equal_nan=False,
+                err_msg=port,
+            )
+
+    assert_rollout_matches(graph)
+    exported = GraphSpec.model_validate_json(graph_to_spec(graph, registry).model_dump_json())
+    exported_params = exported.nodes["muscle"].params
+    assert exported_params["n_muscles"] == 2
+    assert exported_params["initial_activation"] == pytest.approx(params["initial_activation"])
+    reloaded = compile_graph(GraphDocument(graph=exported), registry, input_prototypes).graph
+    assert_rollout_matches(reloaded)
 
 
 class TestThelenMuscle:
@@ -313,6 +404,54 @@ class TestPointMassRadialGeometry:
 
 
 class TestArm6MuscleRigidTendon:
+    @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+    def test_wrapping_virtual_work(self, key, dtype):
+        geometry = TwoLinkArmMuscleGeometry((
+            WrappingGeometry(
+                wrap_radius=0.02,
+                attachment_distances=jnp.array([0.12, 0.13], dtype=dtype),
+                reference_length=0.2,
+                joint_index=1,
+            ),
+        ))
+        arm = Arm6MuscleRigidTendon(geometry=geometry)
+        state = init_state_from_component(arm)
+        angular_velocities = jnp.array([-0.2, 0.4], dtype=dtype)
+        poses = jnp.array(
+            [[0.1, q] for q in (0.3, -0.3, 0.005, -0.005, 0.0)], dtype=dtype
+        )
+
+        @jax.jit
+        @jax.vmap
+        def sample(angles):
+            outputs, _ = arm(
+                {
+                    "excitation": jnp.ones(1, dtype=dtype),
+                    "angles": angles,
+                    "angular_velocities": angular_velocities,
+                },
+                state,
+                key=key,
+            )
+            velocity = geometry.musculotendon_velocities(angles, angular_velocities)
+            # Centered length differences stay on one side except at the cusp,
+            # where the symmetric convention gives zero.
+            step = 1e-3 * angular_velocities
+            length_rate = (
+                geometry.musculotendon_lengths(angles + step)
+                - geometry.musculotendon_lengths(angles - step)
+            ) / 2e-3
+            return outputs["torques"], outputs["forces"], velocity, length_rate
+
+        torques, forces, velocities, length_rates = sample(poses)
+        assert velocities.dtype == dtype
+        assert jnp.all(forces > 0)
+        assert jnp.allclose(velocities, length_rates, atol=1e-5)
+        assert jnp.allclose(
+            torques @ angular_velocities, -jnp.sum(forces * length_rates, axis=-1),
+            rtol=2e-3, atol=1e-6,
+        )
+
     def test_100_steps_no_nan(self, arm_template, key):
         """100 steps should produce no NaN values."""
         state = init_state_from_component(arm_template)

@@ -373,7 +373,7 @@ def test_golden_governed_path_restores_one_authenticated_continuation_batch(
             "ref": authored_path.name,
             "content_hash": training_spec_sha256(authored),
         },
-        "rows": [{"row_id": "golden-row", "seed": 7, "overrides": []}],
+        "rows": [{"row_id": "golden-row", "overrides": []}],
     }
     matrix_path = tmp_path / "locked-matrix-v3.json"
     matrix_bytes = json.dumps(matrix, sort_keys=True).encode()

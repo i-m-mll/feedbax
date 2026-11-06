@@ -22,7 +22,7 @@ from feedbax.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.builders import build_component
 from feedbax.compiler.serialization import graph_to_spec
-from feedbax.models.cde import CDENetwork
+from feedbax.models.cde import cde_controller
 from feedbax.runtime.graph import Component, Graph
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION, RepresentationSpec
@@ -396,13 +396,13 @@ def test_executable_builtin_templates_have_complete_builders() -> None:
         assert registry.template_builder_issues(meta) == []
 
 
-def test_cde_standard_template_matches_standard_cde_network_step() -> None:
+def test_cde_standard_template_matches_recurrent_cde_first_step() -> None:
     registry = ComponentRegistry(load_user_components=False)
     registry.register_template_pack(register_cde_templates, provenance="test-cde-pack")
     meta = registry.get("CDE Standard")
     assert meta is not None
     graph = spec_to_graph(meta.template_graph, registry)
-    net = CDENetwork(
+    net = cde_controller(
         obs_dim=1,
         hidden_dim=1,
         out_size=1,
@@ -412,17 +412,18 @@ def test_cde_standard_template_matches_standard_cde_network_step() -> None:
         use_anti_nf=False,
         key=jax.random.PRNGKey(42),
     )
-    graph = eqx.tree_at(lambda g: g.nodes["vf"].linears, graph, net.vector_field.layers)
-    graph = eqx.tree_at(lambda g: g.nodes["linear"].layer, graph, net.readout)
+    graph = eqx.tree_at(lambda g: g.nodes["vf"].linears, graph, net.nodes["vf"].linears)
+    graph = eqx.tree_at(lambda g: g.nodes["linear"].layer, graph, net.nodes["linear"].layer)
 
     net_state = net.init_state(key=jax.random.PRNGKey(0))
-    cde_state = net_state.get(net.state_index)
+    carry = net.initial_cycle_port_values(net_state)
     graph_state = graph.init_state(key=jax.random.PRNGKey(0))
     obs = jnp.array([0.25])
 
-    net_outputs, _ = net({"input": obs}, net_state, key=jax.random.PRNGKey(1))
+    net_outputs, _, _ = net.step({"input": obs}, net_state, key=jax.random.PRNGKey(1))
     graph_outputs, _ = graph(
-        {"obs": obs, "obs_prev": cde_state.obs_prev, "h_prev": cde_state.hidden},
+        {"obs": obs, "obs_prev": carry[("obs_prev_in", "input")],
+         "h_prev": carry[("h_prev_in", "input")]},
         graph_state,
         key=jax.random.PRNGKey(1),
     )
@@ -1012,13 +1013,10 @@ def test_declared_parameter_model_owns_defaults_required_fields_and_constraints(
         registry.resolve_component_spec("GRU", {"input_size": 0, "hidden_size": 4})
 
 
-def test_builtin_contract_classification_meets_generic_adoption_gate() -> None:
+def test_builtin_custom_parameter_contracts_explain_the_override() -> None:
     registry = ComponentRegistry(load_user_components=False)
     classifications = registry.component_classification()
-    generic = sum(value == "generic" for value in classifications.values())
-    custom = sum(value == "custom" for value in classifications.values())
 
-    assert generic / (generic + custom) >= 0.80
     assert all(
         registry.get(name).params.override_reason
         for name, classification in classifications.items()

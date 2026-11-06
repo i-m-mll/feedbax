@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, NoReturn, Optional, Sequence
@@ -55,6 +56,7 @@ from feedbax.orchestration.events import (
 )
 from feedbax.orchestration.stages import (
     STAGE_ASSEMBLE,
+    STAGE_LAUNCH,
     StageEngine,
 )
 from feedbax.orchestration.state import RunSetState
@@ -184,7 +186,6 @@ class TrainingService:
         self._remote: bool = False
         self._lock = asyncio.Lock()
         self._job_refs_by_job: dict[str, _JobRef] = {}
-        self._stage_threads_by_run_set: dict[str, threading.Thread] = {}
 
         # Honour the FEEDBAX_WORKER_URL env var: skip subprocess and connect
         # directly to an external worker.
@@ -327,7 +328,7 @@ class TrainingService:
         """Start a training job on the worker.
 
         Args:
-            total_batches: Number of training steps.
+            total_batches: Number of training batches.
             training_config: Optional dict forwarded to the worker as the
                 ``training_config`` key in the ``/start`` request body.
                 Required by the worker for real JAX training.
@@ -337,7 +338,7 @@ class TrainingService:
                 forwarded to the worker.
 
         Returns:
-            The job ID assigned by the worker.
+            The job ID after the worker has accepted its launch.
         """
         endpoint = await self._ensure_worker()
         body = {
@@ -375,21 +376,11 @@ class TrainingService:
             raise RuntimeError("Studio ASSEMBLE completed without producing a RunBundle")
         job_id = bundle.rows[0].row_id
         self._remember_job_ref(bundle)
-        thread = threading.Thread(
-            target=self._run_stage_engine,
-            args=(engine,),
-            name=f"feedbax-training-stage-engine-{bundle.run_set_id}",
-            daemon=True,
-        )
-        self._stage_threads_by_run_set[bundle.run_set_id] = thread
-        thread.start()
+        await asyncio.to_thread(self._launch_training, engine, bundle.run_set_id)
         return job_id
 
     async def stop_training(self, job_id: str) -> None:
-        """Ask the worker to stop a job.
-
-        Also kills the subprocess if the HTTP request fails (local mode only).
-        """
+        """Request a cooperative stop. The worker publishes the actual outcome."""
         ref = self._job_ref_for(job_id)
         if self._endpoint is None:
             if ref is None:
@@ -403,14 +394,6 @@ class TrainingService:
         except WorkerResponseError as exc:
             if exc.status_code == 404:
                 raise ValueError(f"Unknown job {job_id!r}") from exc
-            raise
-        except Exception:
-            # If the HTTP call failed, forcibly kill the subprocess.
-            if self._process is not None:
-                try:
-                    self._process.kill()
-                except OSError:
-                    pass
             raise
 
     async def worker_connected(self) -> bool:
@@ -487,31 +470,36 @@ class TrainingService:
         normalized["emitted_at_ms"] = int(time.time() * 1000)
         if worker_seq is not None:
             normalized["worker_seq"] = int(worker_seq)
+        if normalized.get("type") in {"training_complete", "training_stopped"}:
+            normalized.pop("status", None)
         if normalized.get("type") == "training_error":
             fallback_batch = (self._status_from_state(job_id) or {}).get("batch", 0)
             normalized.setdefault("batch", fallback_batch)
             normalized.setdefault("diagnostics", [])
         return normalized
 
-    async def stream_progress(self, job_id: str) -> AsyncIterator[TrainingEvent]:
+    async def stream_progress(
+        self, job_id: str, *, from_seq: int | None = None
+    ) -> AsyncIterator[TrainingEvent]:
         """Relay the worker SSE stream as :class:`TrainingEvent` objects.
 
         Args:
             job_id: The job ID returned by :meth:`start_training`.
+            from_seq: Inclusive worker event sequence to replay from.
 
         Yields:
             :class:`TrainingEvent` instances wrapping raw event dicts.
         """
         if self._endpoint is None:
-            async for event in self._stream_from_event_log(job_id):
-                yield event
+            async with aclosing(self._stream_from_event_log(job_id, from_seq=from_seq)) as events:
+                async for event in events:
+                    yield event
             return
-        async for event in worker_client.stream_events(
-            self._endpoint,
-            job_id,
-        ):
-            event = self._normalize_training_event(job_id, event)
-            yield TrainingEvent(raw=event)
+        async with aclosing(
+            worker_client.stream_events(self._endpoint, job_id, from_seq=from_seq)
+        ) as events:
+            async for event in events:
+                yield TrainingEvent(raw=self._normalize_training_event(job_id, event))
 
     async def latest_checkpoint(self, job_id: str) -> Optional[dict]:
         """Return checkpoint metadata for the given job by querying the worker.
@@ -643,6 +631,9 @@ class TrainingService:
                 bundle.run_set_id,
                 [row.row_id for row in bundle.rows],
             )
+            if bundle.staged_training is not None:
+                # These rows are addressed through their staged receipt in the runs API.
+                continue
             for row in bundle.rows:
                 refs[row.row_id] = _JobRef(
                     job_id=row.row_id,
@@ -725,15 +716,32 @@ class TrainingService:
         )
         return request, context, registry
 
+    def dispatch_staged_training(self, engine: StageEngine) -> None:
+        """Start the local staged attempt and supervise its collection in the background."""
+        self._launch_training(engine, engine.run_set_id, staged=True)
+
+    def _launch_training(
+        self, engine: StageEngine, run_set_id: str, *, staged: bool = False
+    ) -> None:
+        engine.run(stop_after_stage=STAGE_LAUNCH)
+        threading.Thread(
+            target=self._run_stage_engine,
+            args=(engine,),
+            kwargs={"staged": staged},
+            name=f"feedbax-training-stage-engine-{run_set_id}",
+            daemon=True,
+        ).start()
+
     def _run_stage_engine(
         self,
         engine: StageEngine,
+        *,
+        staged: bool = False,
     ) -> None:
         try:
-            engine.run(break_stale_lock=True)
+            engine.run(break_stale_lock=not staged, certify_and_register=not staged)
         except Exception:
-            # The durable state document carries the failed stage/row details.
-            return
+            logger.exception("Studio attempt %s failed in StageEngine", engine.run_set_id)
 
     def _remember_job_ref(self, bundle: RunBundle) -> None:
         state_path = bundle.run_set_dir / "state.json"
@@ -840,13 +848,16 @@ class TrainingService:
         latest = events[-1] if events else None
         payload = dict(latest.payload) if latest is not None else {}
         status = row.status
-        if status == "failed":
+        if latest is not None and latest.type == "complete":
+            status = "stopped" if payload.get("status") == "cancelled" else "completed"
+        elif status == "failed":
             status = "error"
         elif status in ("launched", "ready"):
             status = "running"
         return {
             "status": status,
             "batch": int(payload.get("batch", 0) or 0),
+            "program_step": payload.get("program_step"),
             "total_batches": int(payload.get("total_batches", total_batches) or 0),
             "last_loss": float(payload.get("loss", 0.0) or 0.0),
             "job_id": job_id,
@@ -866,22 +877,26 @@ class TrainingService:
             return 0
         return int(status.get("event_seq_high_water_mark", -1)) + 1
 
-    async def _stream_from_event_log(self, job_id: str) -> AsyncIterator[TrainingEvent]:
+    async def _stream_from_event_log(
+        self, job_id: str, *, from_seq: int | None = None
+    ) -> AsyncIterator[TrainingEvent]:
         ref = self._job_ref_for(job_id)
         if ref is None:
             return
         bundle = self._load_bundle(ref)
-        for event in self._read_job_events(bundle, job_id):
+        for event in self._read_job_events(bundle, job_id, from_seq=from_seq):
             yield TrainingEvent(
                 raw=self._normalize_training_event(job_id, event.model_dump(mode="json"))
             )
             if event.type in RUN_EVENT_TERMINAL_TYPES:
                 return
 
-    def _read_job_events(self, bundle: RunBundle, job_id: str) -> list[RunEvent]:
+    def _read_job_events(
+        self, bundle: RunBundle, job_id: str, *, from_seq: int | None = None
+    ) -> list[RunEvent]:
         path = bundle.run_set_dir / "events" / f"{job_id}.events.jsonl"
         try:
-            return RunEventReader(path).read_all()
+            return RunEventReader(path).read_all(from_seq=from_seq)
         except Exception:
             return []
 

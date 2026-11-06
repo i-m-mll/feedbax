@@ -49,15 +49,8 @@ from feedbax.runtime.selectors import Selection, select, tree_at
 from feedbax.runtime.state import CartesianState, State, StateBounds, StateT, clip_state
 from feedbax.runtime.state_indices import align_state_indices_like
 from feedbax.runtime.task_bindings import (
-    COMPONENT_PARAMETER_ROLE,
-    TaskBindingExposure,
     TaskInputPlan,
-    TaskParameterStateInitPlan,
-    apply_task_parameter_state_inits,
-    binding_spec_from_legacy_extra_inputs,
-    expose_task_bindings,
     expose_task_inputs,
-    task_data_temporality,
 )
 
 __all__ = [
@@ -69,7 +62,6 @@ __all__ = [
     "ChannelSpec",
     "ChannelState",
     "Component",
-    "COMPONENT_PARAMETER_ROLE",
     "Constant",
     "DeadZone",
     "DelayLine",
@@ -99,22 +91,16 @@ __all__ = [
     "StateT",
     "Sum",
     "Switch",
-    "TaskBindingExposure",
     "TaskInputPlan",
-    "TaskParameterStateInitPlan",
     "Wire",
-    "apply_task_parameter_state_inits",
     "align_state_indices_like",
     "affine_value_composer_output_prototype",
-    "binding_spec_from_legacy_extra_inputs",
     "clip_state",
-    "expose_task_bindings",
     "expose_task_inputs",
     "identity_activation",
     "init_state_from_component",
     "resolve_activation",
     "select",
-    "task_data_temporality",
     "toggle_channel_noise",
     "tree_at",
     "wrap_stateless_callable",

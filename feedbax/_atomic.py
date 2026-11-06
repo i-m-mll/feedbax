@@ -1,4 +1,4 @@
-"""Exact-byte, atomic replacement for mutable local documents."""
+"""Exact-byte, atomic publication of local documents."""
 
 from __future__ import annotations
 
@@ -7,12 +7,13 @@ from pathlib import Path
 import uuid
 
 
-def write_bytes_atomic(path: Path, data: bytes, *, mode: int = 0o600) -> None:
-    """Replace a document after flushing its unique same-directory staging file.
+def write_bytes_atomic(path: Path, data: bytes, *, mode: int = 0o600, replace: bool = True) -> None:
+    """Publish a document after flushing its unique same-directory staging file.
 
     ``mode`` is filtered by the process umask, just as for ordinary file creation;
     replacement adopts the new file's permissions. Serialization belongs to the
-    caller. Concurrent publishers are last-replacement-wins.
+    caller. Concurrent replacements are last-replacement-wins. With
+    ``replace=False``, publication fails if the destination already exists.
 
     Success confirms file and directory sync, including every namespace ancestor.
     Unsupported directory sync raises rather than claiming durability. Errors
@@ -31,12 +32,21 @@ def write_bytes_atomic(path: Path, data: bytes, *, mode: int = 0o600) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(staging, path)
-        parent = path.parent.resolve(strict=True)
-        for directory in (parent, *parent.parents):
-            _fsync_directory(directory)
+        if replace:
+            os.replace(staging, path)
+        else:
+            os.link(staging, path)
+            staging.unlink()
+        sync_parent_directories(path)
     finally:
         staging.unlink(missing_ok=True)
+
+
+def sync_parent_directories(path: Path) -> None:
+    """Sync a file's parent directory and all its resolved ancestors."""
+    parent = path.parent.resolve(strict=True)
+    for directory in (parent, *parent.parents):
+        _fsync_directory(directory)
 
 
 def _fsync_directory(path: Path) -> None:

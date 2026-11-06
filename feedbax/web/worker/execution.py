@@ -18,8 +18,12 @@ import jax.random as jr
 import jax.tree as jt
 import optax
 
+from feedbax.runtime._graph_key_schedule import KEY_SCHEDULE_ID, derive_key, sample_steps
 from feedbax.runtime.graph import Graph, GraphTraceRequest, init_state_from_component
-from feedbax.runtime.task_bindings import TaskInputPlan, expose_task_inputs
+from feedbax.runtime.task_bindings import (
+    TaskInputPlan,
+    expose_task_inputs,
+)
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.runtime.retained_observables import (
     LossTermPlan,
@@ -53,7 +57,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
-from feedbax.compiler.serialization import prototypes_from_task_bindings
+from feedbax.compiler.serialization import _component_owns_trainability, prototypes_from_task_bindings
 from feedbax.objectives import ObjectiveExecutionRequirements
 from feedbax.objectives.service import LossService, LoweredObjective
 from feedbax.training.executor import execute_training_run_spec
@@ -107,6 +111,8 @@ class TrainingGraphResult:
     final_loss: float
     final_loss_terms: dict[str, float]
     final_batch: int
+    final_program_step: int
+    stopped: bool
     manifest_path: str | None
     manifest_payload: dict[str, Any] | None
     execution_metadata: dict[str, Any]
@@ -241,8 +247,9 @@ def compile_training_run(
     if not loss_terms:
         raise _missing_loss_terms_error()
     trace_requests = _compile_trace_requests(graph_model, retention_plan)
-    trainable_nodes = _derive_trainable_nodes(graph_model, component_registry)
-    trainable_filter = _trainable_filter(graph, trainable_nodes)
+    trainable_nodes, trainable_filter = _compile_trainability(
+        graph_model, graph, component_registry
+    )
 
     compiled = CompiledTrainingRun(
         graph=graph,
@@ -259,6 +266,7 @@ def compile_training_run(
         n_steps=n_steps,
         metadata={
             "execution": "generic_graph",
+            "key_schedule_id": KEY_SCHEDULE_ID,
             "task_spec": task_model.model_dump(mode="json", exclude_none=True),
             "task_input_count": len(task_inputs),
             "trace_request_count": len(trace_requests),
@@ -308,7 +316,6 @@ def run_training_graph(
     raw_grad_clip = getattr(cfg, "grad_clip", 1.0)
     grad_clip = None if raw_grad_clip is None else float(raw_grad_clip)
     optimizer = _build_optimizer(learning_rate, grad_clip)
-    snapshot_interval = max(1, int(getattr(cfg, "snapshot_interval", 100)))
     trainable, _static = eqx.partition(compiled.graph, compiled.trainable_filter)
     opt_state = optimizer.init(trainable)
     started_at = time.perf_counter()
@@ -319,6 +326,7 @@ def run_training_graph(
         cfg=cfg,
         grad_clip=grad_clip,
     )
+    snapshot_interval = run_spec.training_config.snapshot_interval
     current_graph = compiled.graph
 
     def observe_model(graph: Graph) -> None:
@@ -329,7 +337,6 @@ def run_training_graph(
         compiled=compiled,
         optimizer=optimizer,
         total_batches=total_batches,
-        stop_event=stop_event,
         rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),
         evaluate_loss_fn=_evaluate_loss,
         observe_model=observe_model,
@@ -342,15 +349,18 @@ def run_training_graph(
             total_batches=total_batches,
             elapsed_seconds=time.perf_counter() - started_at,
         )
+        batch = progress_event["batch"]
+        program_step = progress_event["program_step"]
         emit(progress_event)
         emit(
             {
                 "type": "training_log",
                 "job_id": job_id,
-                "program_step": progress_event["program_step"],
+                "batch": batch,
+                "program_step": program_step,
                 "level": "info",
                 "message": (
-                    f"Program step {progress_event['program_step']} | "
+                    f"Program step {program_step} | "
                     f"loss={progress_event['loss']:.4f} | "
                     f"grad_norm={progress_event['grad_norm']:.3f} | "
                     f"{progress_event['step_time_ms']:.0f}ms"
@@ -358,18 +368,17 @@ def run_training_graph(
                 "execution": "contract_executor",
             }
         )
-        if progress_event["program_step"] % snapshot_interval == 0 or (
-            progress_event["program_step"] >= total_batches
-        ):
+        if batch % snapshot_interval == 0 or batch >= total_batches:
             emit(
                 {
                     "type": "training_trajectory",
                     "job_id": job_id,
-                    "program_step": progress_event["program_step"],
+                    "batch": batch,
+                    "program_step": program_step,
                     "trajectory": _trajectory_snapshot(
                         current_graph,
                         compiled,
-                        key=jr.PRNGKey(progress_event["program_step"]),
+                        key=jr.PRNGKey(program_step),
                     ),
                     "execution": "contract_executor",
                 }
@@ -393,6 +402,8 @@ def run_training_graph(
         task_binding_spec=compiled.task_binding_spec.model_dump(mode="json", exclude_none=True),
         manifest_conflict_policy="reuse-identical",
         progress_callback=_emit_executor_progress,
+        retain_history=False,
+        stop_before_update=stop_event.is_set,
     )
 
     graph = result.final_slots["model"]
@@ -413,7 +424,9 @@ def run_training_graph(
             checkpoint_path=checkpoint_path,
             final_loss=final_loss,
             final_loss_terms=final_terms,
-            final_batch=result.final_coordinate.program_step,
+            final_batch=result.end_completed_batches,
+            final_program_step=result.final_coordinate.program_step,
+            stopped=result.status == "cancelled",
             manifest_path=str(result.manifest_path),
             manifest_payload=result.manifest.model_dump(mode="json", exclude_none=True),
             execution_metadata=dict(compiled.metadata),
@@ -457,6 +470,7 @@ def _training_run_spec_for_compiled(
     grad_clip: float | None,
 ) -> TrainingRunSpec:
     method_contract = executor_method_contract(total_batches=total_batches)
+    snapshot_interval = max(1, int(getattr(cfg, "snapshot_interval", 100)))
     effective_phase = standard_supervised_effective_phase_spec().model_copy(
         update={
             "phase_program": method_contract.phase_program,
@@ -477,7 +491,7 @@ def _training_run_spec_for_compiled(
             learning_rate=float(getattr(cfg, "learning_rate", 1e-3)),
             grad_clip=grad_clip,
             n_reach_steps=compiled.n_steps,
-            snapshot_interval=max(1, int(getattr(cfg, "snapshot_interval", 100))),
+            snapshot_interval=snapshot_interval,
         ),
         objective={"loss": compiled.training_spec.loss.model_dump(mode="json", exclude_none=True)},
         method_ref=standard_supervised_method_ref(),
@@ -488,12 +502,13 @@ def _training_run_spec_for_compiled(
         ),
         artifacts={},
         checkpoint_progress={
-            "checkpoint_interval": 1,
+            "checkpoint_interval": snapshot_interval,
             "progress_interval": 1,
         },
         metadata={
             "job_id": job_id,
             "execution": "studio_contract_executor",
+            "key_schedule_id": KEY_SCHEDULE_ID,
         },
     )
 
@@ -505,11 +520,9 @@ def _studio_progress_event(
     total_batches: int,
     elapsed_seconds: float,
 ) -> dict[str, Any]:
-    coordinate = event.get("coordinate", {})
-    coordinate = coordinate if isinstance(coordinate, Mapping) else {}
+    coordinate = event["coordinate"]
     metrics = event.get("metrics", {})
     metrics = metrics if isinstance(metrics, Mapping) else {}
-    program_step = int(coordinate.get("program_step") or 0)
     loss = _float_metric(metrics.get("train_loss", 0.0))
     loss_terms = _float_mapping(metrics.get("loss_terms", {}))
     scalar_metrics = {
@@ -519,7 +532,8 @@ def _studio_progress_event(
     return {
         "type": "training_progress",
         "job_id": job_id,
-        "program_step": program_step,
+        "batch": coordinate["completed_batches"],
+        "program_step": coordinate["program_step"],
         "total_batches": total_batches,
         "loss": loss,
         "loss_terms": loss_terms,
@@ -557,39 +571,34 @@ def rollout_graph(
     key: jax.Array,
 ) -> dict[str, Any]:
     """Roll out one trial through the executable graph boundary."""
-    state = init_state_from_component(graph)
-    cycle_values = graph.initial_cycle_port_values(state)
-    task_key, graph_key = jr.split(key)
+    task_key = derive_key(key, "studio-trial", "task-data")
+    graph_key = derive_key(key, "studio-trial", "graph")
     task_data = _materialize_task_data(
         compiled.task_binding_spec,
         compiled.task_spec,
         compiled.n_steps,
         key=task_key,
     )
-    keys = jr.split(graph_key, compiled.n_steps)
-    input_sequences = {plan.graph_input: task_data[plan.data_id] for plan in compiled.task_inputs}
-
-    def _step_inputs_at(i):
-        return {name: value[i] for name, value in input_sequences.items()}
-
-    step_inputs_seq = jax.vmap(_step_inputs_at)(jnp.arange(compiled.n_steps))
-
-    def _step(carry, args):
-        state, cycle_values = carry
-        step_inputs, step_key = args
-        outputs, state, cycle_values, trace = graph.step_with_trace(
-            step_inputs,
-            state,
-            cycle_values,
-            key=step_key,
-            trace=compiled.trace_requests,
+    initializer_inputs = graph.trial_initializer_input_names
+    inputs = {
+        plan.graph_input: (
+            task_data[plan.data_id][0]
+            if plan.graph_input in initializer_inputs
+            else task_data[plan.data_id]
         )
-        return (state, cycle_values), {"outputs": outputs, "trace": trace}
-
-    (final_state, _), seq = jax.lax.scan(_step, (state, cycle_values), (step_inputs_seq, keys))
+        for plan in compiled.task_inputs
+    }
+    state = init_state_from_component(graph)
+    outputs, final_state, trace = graph.rollout_with_trace(
+        inputs,
+        state,
+        key=graph_key,
+        n_steps=compiled.n_steps,
+        trace=compiled.trace_requests,
+    )
     return {
-        "outputs": seq["outputs"],
-        "trace": seq["trace"],
+        "outputs": outputs,
+        "trace": trace,
         "task_data": task_data,
         "final_state": final_state,
     }
@@ -603,10 +612,8 @@ def _materialize_task_data(
     key: jax.Array,
 ) -> dict[str, jax.Array]:
     data: dict[str, jax.Array] = {}
-    keys = iter(jr.split(key, len(task_binding_spec.exposed_data) + 1))
-    timeline_key = next(keys)
-    bounds = _timeline_epoch_bounds(task_spec.timeline, n_steps, timeline_key)
-    for item, item_key in zip(task_binding_spec.exposed_data, keys, strict=True):
+    bounds = _timeline_epoch_bounds(task_spec.timeline, n_steps, key)
+    for item in task_binding_spec.exposed_data:
         value = _materialize_one_task_data(
             item,
             task_spec.model_dump(mode="python", exclude_none=True),
@@ -618,7 +625,7 @@ def _materialize_task_data(
                 item,
                 task_spec,
                 bounds,
-                key=item_key,
+                key=key,
             )
         data[item.id] = value
         data[item.path] = value
@@ -662,7 +669,21 @@ def _validate_authored_execution_inputs(
             )
 
     bound_data_ids = {binding.source_data_id for binding in task_binding_spec.bindings}
+    lookup_owners = {item.id: item.id for item in task_binding_spec.exposed_data}
     for index, item in enumerate(task_binding_spec.exposed_data):
+        owner = lookup_owners.setdefault(item.path, item.id)
+        if owner != item.id:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="worker.ambiguous_task_data_path",
+                    message=(
+                        f"Task data {item.id!r} uses path {item.path!r}, which already "
+                        f"identifies task data {owner!r}"
+                    ),
+                    location={"path": f"/task_binding_spec/exposed_data/{index}/path"},
+                )
+            )
         if item.id not in bound_data_ids:
             continue
         if item.value_spec is None:
@@ -700,7 +721,7 @@ def _validate_authored_execution_inputs(
                 )
 
     if diagnostics:
-        raise GraphCompilationError("Training run is missing authored execution inputs", diagnostics)
+        raise GraphCompilationError("Training run has invalid authored execution inputs", diagnostics)
 
 
 def _validate_epoch_value_targets(
@@ -727,7 +748,6 @@ def _timeline_epoch_bounds(
         return None
     lengths: list[jax.Array] = []
     maximum_prefix_total = 0
-    length_keys = iter(jr.split(key, max(1, len(timeline.epochs))))
     for position, epoch in enumerate(sorted(timeline.epochs, key=lambda item: item.index)):
         is_final = position == len(timeline.epochs) - 1
         spec = epoch.length
@@ -770,7 +790,7 @@ def _timeline_epoch_bounds(
                     f"Timeline epoch {epoch.id!r} uniform length bounds must be "
                     "non-negative integers with min <= max"
                 )
-            length_key = next(length_keys)
+            length_key = derive_key(key, "epoch-length", epoch.id)
             maximum_prefix_total += low if low == high else high
             lengths.append(
                 jnp.asarray(low, dtype=jnp.int32)
@@ -828,15 +848,19 @@ def _apply_epoch_values(
     if not entries:
         return base
     epoch_indexes = {epoch.id: epoch.index for epoch in timeline.epochs}
-    keys = jr.split(key, len(entries))
     value = base
     task_payload = task_spec.model_dump(mode="python", exclude_none=True)
-    for entry, entry_key in zip(entries, keys, strict=True):
-        override = _materialize_epoch_value(entry, item, task_payload, value.shape, entry_key)
+    steps = jnp.arange(value.shape[0])
+    for entry in entries:
+        entry_key = derive_key(key, "epoch-value", item.id, entry.epoch_id)
         epoch_index = epoch_indexes[entry.epoch_id]
-        mask = (jnp.arange(value.shape[0]) >= bounds[epoch_index]) & (
-            jnp.arange(value.shape[0]) < bounds[epoch_index + 1]
-        )
+        epoch_start, epoch_end = bounds[epoch_index], bounds[epoch_index + 1]
+        override = _materialize_epoch_value(entry, item, task_payload, value.shape, entry_key)
+        if entry.value_spec.mode == "distribution":
+            # Distribution samples are indexed within the epoch. An earlier
+            # epoch can move the interval without changing its samples.
+            override = override[jnp.clip(steps - epoch_start, 0, value.shape[0] - 1)]
+        mask = (steps >= epoch_start) & (steps < epoch_end)
         mask = mask.reshape((value.shape[0], *(1 for _ in value.shape[1:])))
         value = jnp.where(mask, override, value)
     return value
@@ -869,13 +893,23 @@ def _materialize_epoch_value(
             high = float(parameters.get("max"))
             if high < low:
                 raise ValueError("Timeline uniform distribution requires min <= max")
-            return jr.uniform(key, shape, minval=low, maxval=high, dtype=jnp.float32)
+            return sample_steps(
+                lambda step_key: jr.uniform(
+                    step_key, shape[1:], minval=low, maxval=high, dtype=jnp.float32
+                ),
+                key,
+                shape[0],
+            )
         if family == "normal":
             mean = float(parameters.get("mean"))
             std = float(parameters.get("std"))
             if std < 0:
                 raise ValueError("Timeline normal distribution requires std >= 0")
-            return mean + std * jr.normal(key, shape, dtype=jnp.float32)
+            return mean + std * sample_steps(
+                lambda step_key: jr.normal(step_key, shape[1:], dtype=jnp.float32),
+                key,
+                shape[0],
+            )
         raise ValueError(
             f"Timeline target {entry.target_id!r} uses unsupported distribution family={family!r}"
         )
@@ -1063,37 +1097,59 @@ def _state_path_from_selector(selector: str) -> str:
     return path
 
 
-def _derive_trainable_nodes(graph_spec: GraphSpec, registry: Any) -> tuple[str, ...]:
-    trainable: list[str] = []
-    for node_id, node in graph_spec.nodes.items():
-        raw = node.params.get("trainable")
-        if raw is False:
-            continue
-        meta = registry.get(node.type)
-        trainable_by_default = bool(
-            getattr(meta, "trainable_by_default", False) if meta is not None else False
-        )
-        if raw is True or trainable_by_default:
-            trainable.append(node_id)
-    return tuple(trainable)
+def _compile_trainability(
+    graph_spec: GraphSpec, graph: Graph, registry: Any
+) -> tuple[tuple[str, ...], Any]:
+    """Select inexact leaves of authored components outside frozen subtrees.
 
+    Causal interiors have their own parameter owners. Opaque runtimes are
+    selected as a single component, and compiler-generated nodes stay frozen.
+    """
+    trainable_paths: list[str] = []
 
-def _trainable_filter(graph: Graph, trainable_nodes: tuple[str, ...]):
-    filter_spec = jt.map(lambda _: False, graph)
-    for node_name in trainable_nodes:
-        if node_name not in graph.nodes:
-            continue
-        node_filter = jt.map(
-            eqx.is_inexact_array,
-            graph.nodes[node_name],
-            is_leaf=lambda value: isinstance(value, StateIndex),
+    def graph_filter(spec: GraphSpec, runtime: Graph, path: tuple[str, ...]) -> Any:
+        node_filters = dict.fromkeys(runtime.nodes, False)
+        subgraphs = spec.subgraphs or {}
+        for node_id, node in spec.nodes.items():
+            binding = runtime.component_bindings.get(node_id)
+            override = binding.trainable_override if binding is not None else None
+            declaration = registry.get(node.type)
+            if (
+                override is None
+                and isinstance(node.params.get("trainable"), bool)
+                and declaration is not None
+                and _component_owns_trainability(declaration)
+            ):
+                override = node.params["trainable"]
+            if override is False:
+                continue
+            component = runtime.nodes[node_id]
+            node_path = (*path, node_id)
+            interior = subgraphs.get(node_id)
+            if isinstance(interior, GraphSpec):
+                if not isinstance(component, Graph):
+                    raise TypeError(f"Expected a runtime graph at {'.'.join(node_path)!r}")
+                node_filters[node_id] = graph_filter(interior, component, node_path)
+                continue
+            if override is not True and not getattr(declaration, "trainable_by_default", False):
+                continue
+            leaves, structure = jt.flatten(
+                component, is_leaf=lambda value: isinstance(value, StateIndex)
+            )
+            mask = [eqx.is_inexact_array(leaf) for leaf in leaves]
+            if any(mask):
+                node_filters[node_id] = structure.unflatten(mask)
+                trainable_paths.append(".".join(node_path))
+
+        # Equinox accepts mask prefixes, so unselected node subtrees can share one False.
+        return jt.map(
+            lambda value: node_filters if value is runtime.nodes else False,
+            runtime,
+            is_leaf=lambda value: value is runtime.nodes,
         )
-        filter_spec = eqx.tree_at(
-            lambda g, name=node_name: g.nodes[name],
-            filter_spec,
-            node_filter,
-        )
-    return filter_spec
+
+    filter_spec = graph_filter(graph_spec, graph, ())
+    return tuple(trainable_paths), filter_spec
 
 
 def _dry_run(compiled: CompiledTrainingRun) -> None:

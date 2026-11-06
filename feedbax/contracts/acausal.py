@@ -11,7 +11,7 @@ from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_VERSION,
     _parse_array_value_payload,
 )
-from feedbax.contracts.canonical_json import canonical_json_v1_bytes
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 
 if TYPE_CHECKING:
     from feedbax.contracts.graph import ComponentSpec, GraphMetadata
@@ -52,7 +52,14 @@ class RootFinderSpec(BaseModel):
 
 
 class SolverConfigSpec(BaseModel):
-    """Acausal solver configuration persisted as contract data."""
+    """Solver settings for the executable acausal interior.
+
+    Nested scalar interiors flatten into their enclosing system and inherit
+    the outer graph's solver. Scalar implicit solvers use Newton at tolerances
+    of 1e-6 and Diffrax's iteration budget when ``root_finder`` is omitted.
+    Supplying a root-finder block configures both tolerances and the budget,
+    including the block's defaults for any omitted fields.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -127,31 +134,63 @@ def _contains_array_value(value: Any) -> bool:
     return False
 
 
-def canonical_acausal_graph_payload(graph: AcausalGraphSpec) -> dict[str, Any]:
-    """Return a stable JSON payload for acausal interior hashing."""
-
-    payload = graph.model_dump(mode="json", exclude_none=True)
-    payload["connections"] = sorted(
-        payload.get("connections", []),
-        key=lambda item: (tuple(item["a"]), tuple(item["b"])),
-    )
-    subgraphs = payload.get("subgraphs")
-    if isinstance(subgraphs, dict):
-        payload["subgraphs"] = {
-            key: canonical_acausal_graph_payload(graph.subgraphs[key])  # type: ignore[index]
-            for key in sorted(subgraphs)
-            if graph.subgraphs is not None
-        }
-    return payload
+def _browser_json_value(value: Any) -> Any:
+    """Admit decimal integer spellings of a browser's finite numbers."""
+    if isinstance(value, dict):
+        return {key: _browser_json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_browser_json_value(item) for item in value]
+    if type(value) is int and 2**53 <= abs(value) < 10**21:
+        number = float(value)
+        if canonical_json_v2_bytes(number) == str(value).encode():
+            return number
+    return value
 
 
-def canonical_acausal_graph_json(graph: AcausalGraphSpec) -> str:
-    """Return canonical JSON for an acausal graph interior."""
+def _canonicalize_report_payload(payload: dict[str, Any], authored: dict[str, Any]) -> None:
+    # Endpoint tuples use the same UTF-16 order as the browser and canonical JSON v2.
+    def endpoint_key(endpoint: list[str]) -> tuple[bytes, ...]:
+        return tuple(part.encode("utf-16-be", errors="surrogatepass") for part in endpoint)
 
-    return canonical_json_v1_bytes(canonical_acausal_graph_payload(graph)).decode("utf-8")
+    if "connections" in payload:
+        pairs = [
+            sorted((connection["a"], connection["b"]), key=endpoint_key)
+            for connection in payload["connections"]
+        ]
+        pairs.sort(key=lambda pair: (endpoint_key(pair[0]), endpoint_key(pair[1])))
+        payload["connections"] = [{"a": left, "b": right} for left, right in pairs]
+
+    for node_id, node in authored.get("nodes", {}).items():
+        # Parameters are authored JSON. Component validation can materialize typed
+        # parameter declarations before compilation.
+        if params := node.get("params"):
+            payload["nodes"][node_id]["params"] = params
+
+    for node_id, child in (authored.get("subgraphs") or {}).items():
+        _canonicalize_report_payload(payload["subgraphs"][node_id], child)
 
 
-def acausal_interior_content_hash(graph: AcausalGraphSpec) -> str:
-    """Return the sha256 hash used for acausal authoring compile caches."""
+def canonical_acausal_graph_payload(
+    graph: AcausalGraphSpec, *, authored: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Project an admitted graph onto the Studio authoring report subject."""
+    payload = graph.model_dump(mode="json", exclude_defaults=True)
+    _canonicalize_report_payload(payload, payload if authored is None else authored)
+    return _browser_json_value(payload)
 
-    return hashlib.sha256(canonical_acausal_graph_json(graph).encode("utf-8")).hexdigest()
+
+def canonical_acausal_graph_json(
+    graph: AcausalGraphSpec, *, authored: dict[str, Any] | None = None
+) -> str:
+    """Return canonical JSON for an acausal authoring report subject."""
+    payload = canonical_acausal_graph_payload(graph, authored=authored)
+    return canonical_json_v2_bytes(payload).decode("utf-8")
+
+
+def acausal_interior_content_hash(
+    graph: AcausalGraphSpec, *, authored: dict[str, Any] | None = None
+) -> str:
+    """Identify a Studio report subject independently of scientific execution evidence."""
+    return hashlib.sha256(
+        canonical_acausal_graph_json(graph, authored=authored).encode()
+    ).hexdigest()

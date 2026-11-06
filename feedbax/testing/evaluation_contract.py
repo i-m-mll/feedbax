@@ -15,7 +15,6 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from feedbax.analysis.evaluation import (
-    EvaluationRecipe,
     EvaluationRecipeExecutionError,
     EvaluationRecipeRegistry,
     coerce_evaluation_run_spec,
@@ -103,7 +102,6 @@ def check_evaluation_recipe(
         with TemporaryDirectory(prefix="feedbax-eval-contract-") as tmp:
             return _check_evaluation_recipe_in_root(
                 evaluation_type,
-                recipe,
                 spec,
                 root=Path(tmp),
                 params_schema_family=params_schema_family,
@@ -112,7 +110,6 @@ def check_evaluation_recipe(
             )
     return _check_evaluation_recipe_in_root(
         evaluation_type,
-        recipe,
         spec,
         root=Path(root),
         params_schema_family=params_schema_family,
@@ -144,7 +141,6 @@ def _params_schema_waived_or_registered(
 
 def _check_evaluation_recipe_in_root(
     evaluation_type: str,
-    recipe: EvaluationRecipe,
     spec: EvaluationRunSpec,
     *,
     root: Path,
@@ -174,18 +170,22 @@ def _check_evaluation_recipe_in_root(
         "evaluation states cache was not written"
     )
 
+    def unexpected_recipe(_spec, _root, _states_path, _execution_context):
+        raise AssertionError("second execution invoked the recipe")
+
+    warm_registry = EvaluationRecipeRegistry()
+    warm_registry.register(evaluation_type, unexpected_recipe)
+    receipt_bytes = path.read_bytes()
     cached_manifest, cached_path = execute_evaluation_run_spec(
         spec,
         root=root,
         use_cache=True,
         force=False,
-        registry=evaluation_registry,
+        registry=warm_registry,
     )
     assert cached_path == path, "cache round-trip rewrote a different manifest path"
-    assert cached_manifest.id == manifest.id, "cache round-trip changed manifest id"
-    assert cached_manifest.metadata["cache"]["states_cache_hit"] is True, (
-        "second execution did not load states from the executor cache"
-    )
+    assert cached_manifest == manifest, "cache round-trip changed the returned manifest"
+    assert cached_path.read_bytes() == receipt_bytes, "cache round-trip changed the receipt bytes"
 
     failure_manifest_id = _check_failure_manifest(
         evaluation_type,

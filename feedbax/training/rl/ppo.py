@@ -31,15 +31,17 @@ from feedbax.training.rl.env import (
 from feedbax.training.rl.obs_norm import (
     ObsNormState,
     init_obs_norm,
+    maybe_update_obs_norm,
+    merge_obs_norm,
     normalize_obs,
-    update_obs_norm,
 )
 from feedbax.training.rl.policy import (
     ActorCritic,
     LatticeNoiseState,
+    _beta_sample_from_logits,
+    _clip_action,
     init_lattice_noise,
     maybe_resample_noise,
-    sample_action_with_noise,
 )
 from feedbax.training.rl.tasks import (
     CurriculumState,
@@ -77,7 +79,8 @@ class PPOConfig(eqx.Module):
         gae_lambda: GAE lambda for advantage estimation.
         clip_eps: PPO clipping epsilon.
         n_epochs: Number of optimization epochs per update.
-        n_minibatches: Number of minibatches per epoch.
+        n_minibatches: Positive number of equal minibatches per epoch. Must
+            divide the number of rollout samples per body.
         n_steps_per_update: Rollout length per update.
         total_timesteps: Total environment steps to train.
         ent_coef: Entropy bonus coefficient.
@@ -106,20 +109,23 @@ class Rollout(NamedTuple):
     """Collected rollout data with shape ``(n_steps, n_envs, ...)``.
 
     Attributes:
-        obs: Observations.
-        actions: Actions taken.
-        log_probs: Log probabilities of actions.
+        obs: Observations in the coordinates used by the collection policy.
+        action_logits: Raw Beta draws in logit coordinates, before execution clipping.
+        log_probs: Log densities of the draws in action coordinates.
         values: Value estimates.
         rewards: Rewards received.
         dones: Episode termination flags.
+        latent_noise: Fixed collection noise, shared by environments at each
+            timestep, or None when LATTICE is disabled.
     """
 
     obs: Float[Array, "T N obs_dim"]
-    actions: Float[Array, "T N action_dim"]
+    action_logits: Float[Array, "T N action_dim"]
     log_probs: Float[Array, "T N"]
     values: Float[Array, "T N"]
     rewards: Float[Array, "T N"]
     dones: Bool[Array, "T N"]
+    latent_noise: Float[Array, "T latent_dim"] | None = None
 
 
 class _EpisodeCarry(NamedTuple):
@@ -197,32 +203,36 @@ def compute_gae_scan(
 def _ppo_loss(
     policy: ActorCritic,
     obs: Float[Array, "B obs_dim"],
-    actions: Float[Array, "B action_dim"],
+    action_logits: Float[Array, "B action_dim"],
     old_logp: Float[Array, " B"],
     advantages: Float[Array, " B"],
     returns: Float[Array, " B"],
     clip_eps: float,
     vf_coef: float,
     ent_coef: float,
+    latent_noise: Float[Array, "B latent_dim"] | None = None,
 ) -> tuple[Float[Array, ""], tuple[Float[Array, ""], Float[Array, ""], Float[Array, ""]]]:
     """PPO clipped loss function.
 
     Args:
         policy: Actor-critic policy.
         obs: Minibatch observations.
-        actions: Minibatch actions.
+        action_logits: Minibatch Beta draws in logit coordinates.
         old_logp: Old log probabilities.
         advantages: Advantages.
         returns: Target returns.
         clip_eps: Clipping epsilon.
         vf_coef: Value loss coefficient.
         ent_coef: Entropy bonus coefficient.
+        latent_noise: The fixed noise sampled during collection for each row.
+            Its dynamics are policy-independent, so only the conditional Beta
+            density enters the likelihood ratio.
 
     Returns:
         Tuple of (total_loss, (policy_loss, value_loss, entropy)).
     """
-    dist, value = policy.dist_and_value(obs)
-    logp = jnp.sum(dist.log_prob(actions), axis=-1)
+    dist, value = policy.dist_and_value(obs, latent_noise)
+    logp = dist.joint_log_prob_from_logits(action_logits)
     ratio = jnp.exp(logp - old_logp)
     unclipped = ratio * advantages
     clipped = jnp.clip(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * advantages
@@ -248,21 +258,24 @@ def collect_rollouts_batched(
     Args:
         batched_plant: MJXPlant with leading ``(B,)`` on array leaves.
         env_config: Shared environment configuration.
-        batched_policy: ActorCritic with leading ``(B,)`` on array leaves.
+        batched_policy: ActorCritic with leading ``(B,)`` on array leaves,
+            including any frozen per-body observation statistics.
         key: PRNG key.
         task_types: Task type per rollout, shape ``(R,)``.
 
     Returns:
         Dict with arrays of shape ``(B, R, T, ...)``.
-        Keys: ``timestamps``, ``task_target``, ``joint_angles``,
+        Keys: ``timestamps`` (control sample times in seconds, starting at zero),
+        ``task_target``, ``joint_angles``,
         ``joint_velocities``, ``muscle_activations``, ``effector_pos``.
     """
     n_bodies = jt.leaves(batched_plant)[0].shape[0]
     n_rollouts = task_types.shape[0]
     n_steps = env_config.n_steps
+    control_dt = env_config.control_dt
 
     all_keys = jax.random.split(key, n_bodies * n_rollouts)
-    all_keys = all_keys.reshape(n_bodies, n_rollouts, 2)
+    all_keys = all_keys.reshape(n_bodies, n_rollouts, *all_keys.shape[1:])
 
     def single_rollout(plant, policy, key, task_type):
         key, task_key, reset_key = jax.random.split(key, 3)
@@ -273,8 +286,8 @@ def collect_rollouts_batched(
         task = sample_task_params_jax(
             task_key,
             task_type,
-            env_config.n_steps,
-            env_config.dt,
+            n_steps,
+            control_dt,
             segment_lengths=seg_lens,
             use_fk=use_fk,
             max_target_distance=0.0,
@@ -314,7 +327,7 @@ def collect_rollouts_batched(
         eff_pos = jnp.concatenate([eff0.pos[None], eff_rest])
 
         target_pos, _ = reconstruct_trajectory(task)
-        timestamps = jnp.arange(n_steps) * env_config.dt
+        timestamps = jnp.arange(n_steps) * control_dt
         return {
             "timestamps": timestamps,
             "task_target": target_pos,
@@ -355,8 +368,11 @@ class TrainingEnhancements:
         lattice_resample_interval: Steps between LATTICE noise resamples.
         curriculum: Enable progressive target distance curriculum.
         curriculum_arm_reach: Total arm reach for curriculum distance scaling.
-        reward_annealing: Enable linear distance_weight annealing to zero.
-        annealing_start_fraction: Fraction of training at which annealing begins.
+        reward_annealing: Linearly anneal the additive distance penalty to zero.
+        annealing_start_fraction: Keep full weight through this fraction of
+            training, measured by the one-based update number divided by the
+            total updates. Must be in [0, 1] when enabled. At 1 the weight stays
+            constant. Otherwise the final update uses zero, even in a one-update run.
     """
 
     obs_norm: bool = False
@@ -383,8 +399,9 @@ def _collect_rollout_extended(
     lattice_resample_interval: int,
     curriculum_arm_reach: float,
     use_obs_norm: Bool[Array, ""],
-    use_lattice: Bool[Array, ""],
+    use_lattice: bool,
     use_curriculum: Bool[Array, ""],
+    distance_weight: Float[Array, ""],
 ) -> tuple[
     RLEnvState,
     Rollout,
@@ -392,6 +409,7 @@ def _collect_rollout_extended(
     LatticeNoiseState,
     _EpisodeCarry,
     _EpisodeTotals,
+    ObsNormState,
 ]:
     """Collect a batched rollout with optional enhancements.
 
@@ -407,7 +425,7 @@ def _collect_rollout_extended(
         key: PRNG key.
         n_steps: Number of steps to collect.
         n_envs: Number of parallel environments.
-        obs_norm_state: Running obs statistics for normalization.
+        obs_norm_state: Running statistics held fixed for policy inputs and bootstrap.
         lattice_state: LATTICE noise state.
         curriculum_state: Curriculum state for distance scaling.
         lattice_resample_interval: Steps between noise resamples.
@@ -415,16 +433,24 @@ def _collect_rollout_extended(
         use_obs_norm: Whether to normalize observations.
         use_lattice: Whether to apply LATTICE noise.
         use_curriculum: Whether to clamp reach target distance.
+        distance_weight: Shared distance penalty weight for this rollout.
 
     Returns:
         Tuple of (final_states, rollout, last_values,
-        updated_lattice_state, unfinished_episodes, episode_totals).
+        updated_lattice_state, unfinished_episodes, episode_totals, updated_obs_norm).
+        The updated statistics include raw pre-action observations from this window.
     """
     v_get_obs = jax.vmap(rl_env_get_obs, in_axes=(None, None, 0))
-    v_step = jax.vmap(rl_env_step_with_outcome, in_axes=(None, None, 0, 0))
+    v_step = jax.vmap(
+        lambda state, action: rl_env_step_with_outcome(
+            plant, cfg, state, action, distance_weight=distance_weight,
+        ),
+    )
     use_obs_norm = jnp.asarray(use_obs_norm)
-    use_lattice = jnp.asarray(use_lattice)
     use_curriculum = jnp.asarray(use_curriculum)
+
+    def policy_obs(raw_obs):
+        return jnp.where(use_obs_norm, normalize_obs(obs_norm_state, raw_obs), raw_obs)
 
     max_target_distance = curriculum_state.max_target_fraction * curriculum_arm_reach
     v_auto_reset = jax.vmap(
@@ -435,34 +461,27 @@ def _collect_rollout_extended(
     )
 
     def scan_step(carry, _):
-        states, key, lat_state, episodes = carry
+        states, key, lat_state, episodes, window_obs_norm = carry
 
-        def split_with_lattice(key):
+        if use_lattice:
             key, act_key, reset_key, noise_key = jax.random.split(key, 4)
-            return key, act_key, reset_key, noise_key
-
-        def split_without_lattice(key):
+        else:
             key, act_key, reset_key = jax.random.split(key, 3)
-            return key, act_key, reset_key, key
 
-        key, act_key, reset_key, noise_key = jax.lax.cond(
-            use_lattice,
-            split_with_lattice,
-            split_without_lattice,
-            key,
-        )
-
-        obs = v_get_obs(plant, cfg, states)
-        obs_normed = normalize_obs(obs_norm_state, obs)
-        obs = jnp.where(use_obs_norm, obs_normed, obs)
+        raw_obs = v_get_obs(plant, cfg, states)
+        window_obs_norm = maybe_update_obs_norm(window_obs_norm, raw_obs, use_obs_norm)
+        obs = policy_obs(raw_obs)
 
         act_keys = jax.random.split(act_key, n_envs)
-        actions, log_probs, values = jax.vmap(
-            sample_action_with_noise,
-            in_axes=(None, 0, 0, None, None),
-        )(policy, obs, act_keys, lat_state.noise, use_lattice)
+        latent_noise = lat_state.noise if use_lattice else None
+        action_logits, log_probs, values = jax.vmap(
+            lambda observation, act_key: policy._draw_action_logits(
+                observation, act_key, latent_noise,
+            ),
+        )(obs, act_keys)
 
-        states, _, rewards, outcome = v_step(plant, cfg, states, actions)
+        env_actions = _clip_action(_beta_sample_from_logits(action_logits))
+        states, _, rewards, outcome = v_step(states, env_actions)
         completed = outcome.completed
         returns = episodes.returns + rewards
         eligible = completed & outcome.success_eligible
@@ -475,12 +494,10 @@ def _collect_rollout_extended(
         reset_keys = jax.random.split(reset_key, n_envs)
         states = v_auto_reset(states, completed, reset_keys)
 
-        def _resample(state):
-            return maybe_resample_noise(state, noise_key, lattice_resample_interval)
+        if use_lattice:
+            lat_state = maybe_resample_noise(lat_state, noise_key, lattice_resample_interval)
 
-        lat_state = jax.lax.cond(use_lattice, _resample, lambda s: s, lat_state)
-
-        rollout_step = Rollout(obs, actions, log_probs, values, rewards, completed)
+        rollout_step = Rollout(obs, action_logits, log_probs, values, rewards, completed, latent_noise)
         episode_totals = _EpisodeTotals(
             return_sum=jnp.sum(jnp.where(completed, returns, 0.0)),
             completed=jnp.sum(completed),
@@ -489,23 +506,26 @@ def _collect_rollout_extended(
             stage_eligible=jnp.sum(eligible & current_stage),
             stage_successes=jnp.sum(outcome.success & current_stage),
         )
-        return (states, key, lat_state, episodes), (rollout_step, episode_totals)
+        return (states, key, lat_state, episodes, window_obs_norm), (rollout_step, episode_totals)
 
-    (states, key, lattice_state, episodes), (rollout, episode_totals) = jax.lax.scan(
-        scan_step, (states, key, lattice_state, episodes), None, length=n_steps,
+    # Pool the window before adding to a potentially large float32 running count.
+    empty_obs_norm = jt.map(jnp.zeros_like, obs_norm_state)
+    initial = (states, key, lattice_state, episodes, empty_obs_norm)
+    final, (rollout, episode_totals) = jax.lax.scan(scan_step, initial, None, length=n_steps)
+    states, key, lattice_state, episodes, window_obs_norm = final
+    updated_obs_norm = jax.lax.cond(
+        use_obs_norm & (n_steps * n_envs > 0),
+        lambda: merge_obs_norm(obs_norm_state, window_obs_norm),
+        lambda: obs_norm_state,
     )
     episode_totals = jt.map(jnp.sum, episode_totals)
 
-    # Bootstrap last values
-    final_obs = v_get_obs(plant, cfg, states)
-    final_obs_normed = normalize_obs(obs_norm_state, final_obs)
-    final_obs = jnp.where(use_obs_norm, final_obs_normed, final_obs)
     _, _, last_values = jax.vmap(policy.sample_action)(
-        final_obs,
+        policy_obs(v_get_obs(plant, cfg, states)),
         jax.random.split(key, n_envs),
     )
 
-    return states, rollout, last_values, lattice_state, episodes, episode_totals
+    return states, rollout, last_values, lattice_state, episodes, episode_totals, updated_obs_norm
 
 
 @eqx.filter_jit
@@ -524,8 +544,9 @@ def _batched_collect_rollouts_extended(
     lattice_resample_interval: int,
     curriculum_arm_reach: float,
     use_obs_norm: Bool[Array, ""],
-    use_lattice: Bool[Array, ""],
+    use_lattice: bool,
     use_curriculum: Bool[Array, ""],
+    distance_weight: Float[Array, ""],
 ) -> tuple[
     RLEnvState,
     Rollout,
@@ -533,8 +554,9 @@ def _batched_collect_rollouts_extended(
     LatticeNoiseState,
     _EpisodeCarry,
     _EpisodeTotals,
+    ObsNormState,
 ]:
-    """Vectorized rollout collection with dynamically gated enhancements."""
+    """Vectorized rollout collection across bodies."""
     n_bodies = jt.leaves(batched_plant)[0].shape[0]
     keys = jax.random.split(key, n_bodies)
     # Bug: a39e7d0 — capture broadcast args via closure to avoid PjitFunction leaf
@@ -557,8 +579,18 @@ def _batched_collect_rollouts_extended(
             use_obs_norm,
             use_lattice,
             use_curriculum,
+            distance_weight,
         ),
     )(batched_plant, policy, states, episodes, keys, obs_norm_state, lattice_state, curriculum_state)
+
+
+def _ppo_minibatch_size(batch_size: int, n_minibatches: int) -> int:
+    if not 1 <= n_minibatches <= batch_size or batch_size % n_minibatches:
+        raise ValueError(
+            f"n_minibatches ({n_minibatches}) must be positive and evenly divide "
+            f"the rollout size per body ({batch_size})."
+        )
+    return batch_size // n_minibatches
 
 
 def _update_one(
@@ -574,9 +606,13 @@ def _update_one(
     vf_coef: float,
     ent_coef: float,
     n_minibatches: int,
-    n_train_iters: int,
+    n_epochs: int,
 ) -> tuple[ActorCritic, optax.OptState]:
     """Single-body PPO update step."""
+    n_steps, n_envs = rollout.obs.shape[:2]
+    batch_size = n_steps * n_envs
+    minibatch_size = _ppo_minibatch_size(batch_size, n_minibatches)
+
     advantages, returns = compute_gae_scan(
         rollout.rewards,
         rollout.values,
@@ -586,50 +622,56 @@ def _update_one(
         gae_lambda,
     )
     flat_obs = rollout.obs.reshape(-1, rollout.obs.shape[-1])
-    flat_actions = rollout.actions.reshape(-1, rollout.actions.shape[-1])
+    flat_action_logits = rollout.action_logits.reshape(-1, rollout.action_logits.shape[-1])
     flat_logp = rollout.log_probs.reshape(-1)
     flat_adv = advantages.reshape(-1)
     flat_ret = returns.reshape(-1)
     flat_adv = (flat_adv - jnp.mean(flat_adv)) / (jnp.std(flat_adv) + 1e-8)
 
-    batch_size = flat_obs.shape[0]
-    minibatch_size = batch_size // n_minibatches
-
     dynamic_policy, static_policy = eqx.partition(policy, eqx.is_array)
 
-    def train_step(i, carry):
-        dynamic_policy, opt_state, key = carry
+    def train_minibatch(carry, mb_idx):
+        dynamic_policy, opt_state = carry
         policy = eqx.combine(dynamic_policy, static_policy)
-        perm_key = jax.random.fold_in(key, i // n_minibatches)
-        perm = jax.random.permutation(perm_key, batch_size)
-        start = (i % n_minibatches) * minibatch_size
-        mb_idx = jax.lax.dynamic_slice(perm, (start,), (minibatch_size,))
 
+        # Flat samples are time-major, with one noise vector shared per timestep.
+        latent_noise = (
+            None if rollout.latent_noise is None else rollout.latent_noise[mb_idx // n_envs]
+        )
         (_, _), grads = eqx.filter_value_and_grad(
             _ppo_loss,
             has_aux=True,
         )(
             policy,
             flat_obs[mb_idx],
-            flat_actions[mb_idx],
+            flat_action_logits[mb_idx],
             flat_logp[mb_idx],
             flat_adv[mb_idx],
             flat_ret[mb_idx],
             clip_eps,
             vf_coef,
             ent_coef,
+            latent_noise,
         )
 
         updates, opt_state = optimizer.update(grads, opt_state, policy)
         policy = eqx.apply_updates(policy, updates)
         dynamic_policy, _ = eqx.partition(policy, eqx.is_array)
-        return dynamic_policy, opt_state, key
+        return (dynamic_policy, opt_state), None
 
-    dynamic_policy, opt_state, _ = jax.lax.fori_loop(
+    def train_epoch(epoch, carry):
+        perm_key = jax.random.fold_in(key, epoch)
+        minibatches = jax.random.permutation(perm_key, batch_size).reshape(
+            n_minibatches, minibatch_size,
+        )
+        carry, _ = jax.lax.scan(train_minibatch, carry, minibatches)
+        return carry
+
+    dynamic_policy, opt_state = jax.lax.fori_loop(
         0,
-        n_train_iters,
-        train_step,
-        (dynamic_policy, opt_state, key),
+        n_epochs,
+        train_epoch,
+        (dynamic_policy, opt_state),
     )
     policy = eqx.combine(dynamic_policy, static_policy)
     return policy, opt_state
@@ -649,7 +691,7 @@ def _batched_update(
     vf_coef: float,
     ent_coef: float,
     n_minibatches: int,
-    n_train_iters: int,
+    n_epochs: int,
 ) -> tuple[ActorCritic, optax.OptState]:
     """Vectorized PPO update over bodies."""
     n_bodies = rollout.obs.shape[0]
@@ -670,17 +712,9 @@ def _batched_update(
             vf_coef,
             ent_coef,
             n_minibatches,
-            n_train_iters,
+            n_epochs,
         ),
     )(policy, opt_state, rollout, last_values, keys)
-
-
-@eqx.filter_jit
-def _update_obs_norm_batched(
-    obs_norm_st: ObsNormState,
-    obs_batch: Float[Array, "B S obs_dim"],
-) -> ObsNormState:
-    return eqx.filter_vmap(update_obs_norm)(obs_norm_st, obs_batch)
 
 
 @eqx.filter_jit
@@ -702,7 +736,7 @@ def _run_ppo_updates(
     n_steps: int,
     n_envs: int,
     n_minibatches: int,
-    n_train_iters: int,
+    n_epochs: int,
     gamma: float,
     gae_lambda: float,
     clip_eps: float,
@@ -710,9 +744,9 @@ def _run_ppo_updates(
     ent_coef: float,
     lattice_resample_interval: int,
     curriculum_arm_reach: float,
-    annealing_start_fraction: float,
+    reward_ramp_updates: Float[Array, ""],
     use_obs_norm: Bool[Array, ""],
-    use_lattice: Bool[Array, ""],
+    use_lattice: bool,
     use_curriculum: Bool[Array, ""],
 ) -> tuple[_PPOTrainCarry, _PPOTrainHistory]:
     """Run the PPO outer update loop as one compiled JAX scan.
@@ -721,11 +755,17 @@ def _run_ppo_updates(
     updates, and enhancement-state transitions all stay inside the compiled
     loop.
     """
+    anneal_reward = reward_ramp_updates > 0
+    ramp_length = jnp.where(anneal_reward, reward_ramp_updates, 1.0)
 
     def scan_step(carry: _PPOTrainCarry, update_index: Int[Array, ""]):
+        remaining_updates = total_updates - 1 - update_index
+        distance_weight = jnp.where(
+            anneal_reward, jnp.minimum(remaining_updates / ramp_length, 1.0), 1.0,
+        )
         key, collect_key, update_key = jax.random.split(carry.key, 3)
         policy = eqx.combine(carry.dynamic_policy, static_policy)
-        states, rollout, last_values, returned_lattice, episodes, totals = (
+        states, rollout, last_values, lattice, episodes, totals, obs_norm = (
             _batched_collect_rollouts_extended(
                 batched_plant,
                 env_config,
@@ -743,13 +783,8 @@ def _run_ppo_updates(
                 use_obs_norm,
                 use_lattice,
                 use_curriculum,
+                distance_weight,
             )
-        )
-
-        lattice = jt.map(
-            lambda old, new: jnp.where(use_lattice, new, old),
-            carry.lattice,
-            returned_lattice,
         )
 
         policy, opt_state = _batched_update(
@@ -765,17 +800,7 @@ def _run_ppo_updates(
             vf_coef,
             ent_coef,
             n_minibatches,
-            n_train_iters,
-        )
-
-        n_bodies = rollout.obs.shape[0]
-        obs_dim = rollout.obs.shape[-1]
-        all_obs = rollout.obs.reshape(n_bodies, -1, obs_dim)
-        updated_obs_norm = _update_obs_norm_batched(carry.obs_norm, all_obs)
-        obs_norm = jt.map(
-            lambda old, new: jnp.where(use_obs_norm, new, old),
-            carry.obs_norm,
-            updated_obs_norm,
+            n_epochs,
         )
 
         updated_curriculum = _update_curriculum_batched(
@@ -787,16 +812,6 @@ def _run_ppo_updates(
             lambda old, new: jnp.where(has_curriculum_evidence, new, old),
             carry.curriculum,
             updated_curriculum,
-        )
-
-        progress = (update_index + 1) / jnp.maximum(jnp.asarray(total_updates), 1)
-        raw_distance_weight = 1.0 - (
-            (progress - annealing_start_fraction) / (1.0 - annealing_start_fraction)
-        )
-        distance_weight = jnp.where(
-            progress > annealing_start_fraction,
-            jnp.maximum(raw_distance_weight, 0.0),
-            1.0,
         )
 
         next_carry = _PPOTrainCarry(
@@ -834,7 +849,7 @@ def train_ppo_batched(
 
     The batch axis represents independent bodies/policies. Optional
     observation normalization, LATTICE exploration noise, curriculum learning,
-    and reward-annealing metrics are dynamically gated inside the same
+    and distance penalty annealing run inside the same
     JIT-compiled rollout/update path.
 
     Args:
@@ -847,7 +862,8 @@ def train_ppo_batched(
             ``TrainingEnhancements()`` with all enhancements disabled.
 
     Returns:
-        Tuple of (batched ActorCritic with ``(B,)`` leading dim,
+        Tuple of (batched ActorCritic with ``(B,)`` leading dim and frozen
+        per-body normalization when enabled, accepting raw observations,
         metrics dict with per-body episode statistics for each update and
         enhancement-specific data). Mean return includes all completed episodes.
         Success rate includes only completed episodes with a success criterion.
@@ -855,10 +871,6 @@ def train_ppo_batched(
     """
     if enhancements is None:
         enhancements = TrainingEnhancements()
-
-    n_bodies = jt.leaves(batched_plant)[0].shape[0]
-    obs_dim = env_config.n_joints * 2 + env_config.n_muscles + 2 + 2 + 2 + 1
-    action_dim = env_config.n_muscles
 
     # Extract config as concrete Python values for JIT tracing
     n_steps = int(ppo_config.n_steps_per_update)
@@ -871,9 +883,18 @@ def train_ppo_batched(
     vf_coef = float(ppo_config.vf_coef)
     ent_coef = float(ppo_config.ent_coef)
     timesteps_per_update = n_steps * n_envs
-    n_train_iters = n_epochs * n_minibatches
+    _ppo_minibatch_size(timesteps_per_update, n_minibatches)
 
+    n_bodies = jt.leaves(batched_plant)[0].shape[0]
+    obs_dim = env_config.n_joints * 2 + env_config.n_muscles + 2 + 2 + 2 + 1
+    action_dim = env_config.n_muscles
     total_updates = (total_timesteps + timesteps_per_update - 1) // timesteps_per_update
+    reward_ramp_updates = 0.0
+    if enhancements.reward_annealing:
+        start = enhancements.annealing_start_fraction
+        if not 0.0 <= start <= 1.0:
+            raise ValueError("annealing_start_fraction must be in [0, 1]")
+        reward_ramp_updates = total_updates * (1.0 - start)
 
     # B independent policies
     key, init_key, env_key = jax.random.split(key, 3)
@@ -902,15 +923,15 @@ def train_ppo_batched(
     # Bug: 2055433 -- per-body enhancement state initialization.
     batched_obs_norm = _stack_pytrees(*[init_obs_norm(obs_dim) for _ in range(n_bodies)])
 
-    hidden_dim = int(ppo_config.hidden_dim)
+    latent_dim = policies[0].actor.layers[-1].in_features
     if enhancements.lattice_noise:
         key, lattice_key = jax.random.split(key)
         lattice_keys = jax.random.split(lattice_key, n_bodies)
         batched_lattice = eqx.filter_vmap(
-            lambda k: init_lattice_noise(hidden_dim, k),
+            lambda k: init_lattice_noise(latent_dim, k),
         )(lattice_keys)
     else:
-        zero_noise = jnp.zeros((hidden_dim,))
+        zero_noise = jnp.zeros((latent_dim,))
         zero_state = LatticeNoiseState(
             noise=zero_noise,
             steps_since_resample=jnp.array(0, dtype=jnp.int32),
@@ -920,7 +941,7 @@ def train_ppo_batched(
     batched_curriculum = _stack_pytrees(*[init_curriculum() for _ in range(n_bodies)])
 
     use_obs_norm = jnp.asarray(enhancements.obs_norm, dtype=bool)
-    use_lattice = jnp.asarray(enhancements.lattice_noise, dtype=bool)
+    use_lattice = enhancements.lattice_noise
     use_curriculum = jnp.asarray(enhancements.curriculum, dtype=bool)
 
     def init_body(plant, key, max_target_fraction):
@@ -961,7 +982,7 @@ def train_ppo_batched(
         n_steps,
         n_envs,
         n_minibatches,
-        n_train_iters,
+        n_epochs,
         gamma,
         gae_lambda,
         clip_eps,
@@ -969,13 +990,12 @@ def train_ppo_batched(
         ent_coef,
         enhancements.lattice_resample_interval,
         enhancements.curriculum_arm_reach,
-        enhancements.annealing_start_fraction,
+        jnp.asarray(reward_ramp_updates),
         use_obs_norm,
         use_lattice,
         use_curriculum,
     )
     batched_policy = eqx.combine(carry.dynamic_policy, static_policy)
-    batched_obs_norm = carry.obs_norm
 
     metrics: dict[str, object] = {
         "updates": total_updates,
@@ -988,13 +1008,12 @@ def train_ppo_batched(
     if enhancements.curriculum:
         metrics["curriculum_stages"] = list(history.curriculum_stage)
     if enhancements.reward_annealing:
-        # Bug: 2055433 -- Linear distance_weight annealing from 1.0 to 0.0.
-        # The distance_weight conceptually scales the -distance term in
-        # compute_reward. Since modifying the reward function mid-training
-        # would cause JIT re-tracing, we record the annealing schedule here
-        # for the caller to apply externally if needed.
         metrics["distance_weight_schedule"] = list(history.distance_weight)
     if enhancements.obs_norm:
-        metrics["obs_norm_mean"] = batched_obs_norm.mean
+        batched_policy = eqx.tree_at(
+            lambda policy: policy.obs_norm, batched_policy, carry.obs_norm,
+            is_leaf=lambda leaf: leaf is None,
+        )
+        metrics["obs_norm_mean"] = carry.obs_norm.mean
 
     return batched_policy, metrics

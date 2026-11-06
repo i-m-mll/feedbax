@@ -25,7 +25,12 @@ from feedbax.analysis.evaluation import (
     load_evaluation_states,
     resolve_staged_evaluation_prerequisite,
 )
-from feedbax.analysis.execution_context import StagedExecutionContextError
+from feedbax.analysis.execution_context import (
+    EMPTY_STAGED_EXECUTION_CONTEXT,
+    StagedExecutionContextError,
+    StagedParentExecutionLocation,
+    with_staged_parent_execution_locations,
+)
 from feedbax.analysis.harness import resolve_manifest_regeneration
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.analysis.specs import (
@@ -37,6 +42,7 @@ from feedbax.contracts.evaluation_states import (
     store_evaluation_states_artifact,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.content_retention import collect_release_leases
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
@@ -47,6 +53,7 @@ from feedbax.contracts.manifest import (
     OverridePatch,
     StagedEvaluationPrerequisite,
     TrainingRunManifest,
+    canonical_manifest_path,
     load_manifest,
     spec_payload,
     write_manifest,
@@ -211,7 +218,7 @@ def test_batch_recipe_reuses_typed_source_from_authenticated_parent(
     training_path = write_manifest(training, root=parent_root, index=False)
     training_ref = authenticated_manifest_ref(training, training_path, "training_run")
     prerequisite = StagedEvaluationPrerequisite(parent=training_ref)
-    conditions = ("clean", "bank", "sisu", "bank-plus-sisu")
+    conditions = ("clean", "bank", "offset", "bank-plus-offset")
     matrix = EvaluationRunMatrixSpec(
         base=EvaluationRunSpec(
             evaluation_type=EVALUATION_TYPE,
@@ -240,7 +247,7 @@ def test_batch_recipe_reuses_typed_source_from_authenticated_parent(
         for item in items:
             source_object_ids.append(id(source))
             states = {"trial_ids": source.trial_ids}
-            if item.spec.params["condition"] in {"bank", "bank-plus-sisu"}:
+            if item.spec.params["condition"] in {"bank", "bank-plus-offset"}:
                 states["ordinary_bank_draw"] = source.draw
             results.append(
                 EvaluationRecipeResult(
@@ -272,7 +279,7 @@ def test_batch_recipe_reuses_typed_source_from_authenticated_parent(
         assert row.result.provenance.parents == [training_ref]
         states = load_evaluation_states(row.result, root=root)
         assert states["trial_ids"] == tuple(source_payload["trial_ids"])
-        if row.row_id in {"bank", "bank-plus-sisu"}:
+        if row.row_id in {"bank", "bank-plus-offset"}:
             assert states["ordinary_bank_draw"] == tuple(source_payload["draw"])
         else:
             assert "ordinary_bank_draw" not in states
@@ -310,6 +317,38 @@ def _staged_matrix(tmp_path: Path, states):
     return parent_root, artifact, matrix
 
 
+def test_flat_matrix_escape_hatch_preserves_preflighted_parent(tmp_path, evaluation_registry):
+    parent_root, _, matrix = _staged_matrix(tmp_path, {"value": np.asarray([7])})
+    parent_root = parent_root.resolve()
+    parent = matrix.staged_parents["parent"].parent
+    path = canonical_manifest_path(parent.kind, parent.id, root=parent_root)
+    context = with_staged_parent_execution_locations(
+        EMPTY_STAGED_EXECUTION_CONTEXT,
+        [
+            StagedParentExecutionLocation(
+                parent, parent_root, path.relative_to(parent_root).as_posix()
+            )
+        ],
+    )
+
+    def recipe(spec, _root, _states_path, execution_context):
+        resolved = execution_context.resolve_manifest_input(spec.inputs[0])
+        return EvaluationRecipeResult(
+            summary_metrics={"parent_completed": float(resolved.manifest.status == "completed")}
+        )
+
+    evaluation_registry.register(EVALUATION_TYPE, recipe)
+    result = execute_evaluation_run_matrix(
+        EvaluationRunSpec(evaluation_type=EVALUATION_TYPE, inputs=[parent]),
+        registry=evaluation_registry,
+        root=tmp_path / "flat",
+        execution_context=context,
+        escape_hatch_reason="one authenticated parent probe",
+    )
+
+    assert result.rows[0].result.summary_metrics["parent_completed"] == 1.0
+
+
 def test_batched_typed_v3_outputs_round_trip_through_require_durable(
     tmp_path: Path, application_registry_bundle
 ) -> None:
@@ -345,6 +384,12 @@ def test_consumed_durable_batch_states_become_bounded_gc_candidates(
 
     assert len(record_ids) == 1
     assert record_ids[0].startswith("evaluation-intermediates-release:")
+    assert finalize_evaluation_batch_retention(
+        [row.result for row in batch.rows],
+        root=root,
+        retain_intermediates=False,
+        grace_expires_at=now + timedelta(minutes=10),
+    ) == record_ids
     provider = ImmutableArtifactBlobProvider(root)
     before = provider.collect_garbage(now=now)
     assert before.stage == "reported"
@@ -360,6 +405,14 @@ def test_consumed_durable_batch_states_become_bounded_gc_candidates(
     assert {
         decision.sha256 for decision in after.decisions if decision.decision == "candidate"
     } == state_digests
+    assert collect_release_leases(provider, record_ids, now=now + timedelta(minutes=6)) is not None
+    assert finalize_evaluation_batch_retention(
+        [row.result for row in batch.rows],
+        root=root,
+        retain_intermediates=False,
+        grace_expires_at=now + timedelta(minutes=10),
+    ) == record_ids
+    assert collect_release_leases(provider, record_ids, now=now + timedelta(minutes=10)) is None
 
 
 def test_batched_typed_v3_outputs_accept_normalized_staged_v2_parent(

@@ -32,6 +32,7 @@ from feedbax.analysis.manifest_inputs import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
     authenticated_manifest_ref,
     is_authenticated_manifest_ref,
+    resolve_manifest_input,
 )
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_METADATA_KEY,
@@ -352,9 +353,10 @@ def test_default_cache_miss_loads_typed_v3_with_recipe_structure(
         )
 
     application_registry_bundle.evaluation_recipes.register(EVALUATION_TYPE, evaluation_recipe)
-    manifest, _ = _evaluation(
+    manifest, receipt = _evaluation(
         tmp_path, durable=True, application_registry_bundle=application_registry_bundle
     )
+    receipt_bytes = receipt.read_bytes()
     cache_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
     cache_path.unlink()
     registry = AnalysisRecipeRegistry()
@@ -381,9 +383,8 @@ def test_default_cache_miss_loads_typed_v3_with_recipe_structure(
     assert resolved.evaluation_state_source.container_schema_version == (
         EVALUATION_STATES_CONTAINER_SCHEMA_VERSION_V3
     )
-    assert cache_path.exists()
+    assert receipt.read_bytes() == receipt_bytes
 
-    cache_path.unlink()
     for structure_provider in (
         None,
         lambda _: jt.structure({"value": np.asarray(0)}),
@@ -583,6 +584,85 @@ def test_require_durable_classifies_embedded_container_schema_mismatch(
     assert excinfo.value.diagnostic.code == "schema_mismatch"
     assert mutated_artifact.artifact_id != manifest.artifacts[0].artifact_id
     assert mutated_artifact.size_bytes is not None
+
+
+def test_analysis_resolves_authenticated_receipt_states_after_interrupted_recompute(
+    tmp_path: Path, application_registry_bundle
+) -> None:
+    generations = iter([1, 2])
+
+    def recipe(_spec, _root, _states_path, _execution_context):
+        return EvaluationRecipeResult(
+            states={"value": np.asarray(next(generations), dtype=np.int32)}
+        )
+
+    evaluation_registry = application_registry_bundle.evaluation_recipes
+    evaluation_registry.register(EVALUATION_TYPE, recipe)
+    first, path = _evaluation(
+        tmp_path, durable=True, application_registry_bundle=application_registry_bundle
+    )
+    first_receipt = path.read_bytes()
+    authority = authenticated_manifest_ref(first, path, "evaluation_run")
+    second, _ = _evaluation(
+        tmp_path, durable=True, application_registry_bundle=application_registry_bundle
+    )
+    assert first.id == second.id
+    assert first.artifacts[0].sha256 != second.artifacts[0].sha256
+    path.write_bytes(first_receipt)
+
+    resolved = resolve_analysis_inputs(
+        _analysis_spec(first.id, policy="recompute", ref=authority),
+        root=tmp_path,
+        evaluation_registry=evaluation_registry,
+        registry=application_registry_bundle.analysis_recipes,
+    )[0]
+
+    assert int(resolved.states["value"]) == 1
+    assert resolved.evaluation_state_source.source_kind == "durable"
+    assert resolved.evaluation_state_source.evaluation_manifest_authority == authority
+    assert resolved.evaluation_state_source.artifact_id == first.artifacts[0].artifact_id
+    assert path.read_bytes() == first_receipt
+
+
+def test_analysis_recomputes_from_archived_receipt_when_canonical_cache_is_newer(
+    tmp_path: Path, application_registry_bundle
+) -> None:
+    generations = iter([1, 2, 3])
+
+    def recipe(_spec, _root, _states_path, _execution_context):
+        return EvaluationRecipeResult(
+            states={"value": next(generations)},
+        )
+
+    evaluation_registry = application_registry_bundle.evaluation_recipes
+    evaluation_registry.register(EVALUATION_TYPE, recipe)
+    first, path = _evaluation(tmp_path, application_registry_bundle=application_registry_bundle)
+    archived_path = tmp_path / "archived-evaluation.json"
+    first_receipt = path.read_bytes()
+    archived_path.write_bytes(first_receipt)
+    authority = authenticated_manifest_ref(first, archived_path, "evaluation_run")
+    archived = resolve_manifest_input(authority, tmp_path, archived_path.name)
+    second, _ = _evaluation(tmp_path, application_registry_bundle=application_registry_bundle)
+    second_authority = authenticated_manifest_ref(second, path, "evaluation_run")
+    assert first.id == second.id
+
+    resolved = resolve_analysis_inputs(
+        _analysis_spec(first.id, policy="recompute", ref=authority),
+        root=tmp_path,
+        authenticated_inputs={0: archived},
+        evaluation_registry=evaluation_registry,
+        registry=application_registry_bundle.analysis_recipes,
+    )[0]
+
+    assert resolved.states == {"value": 3}
+    source = resolved.evaluation_state_source
+    assert source.source_kind == "analysis_time_recompute"
+    assert source.evaluation_manifest_authority == authority
+    assert source.resulting_evaluation_manifest_authority not in (authority, second_authority)
+    assert source.resulting_evaluation_manifest_authority == authenticated_manifest_ref(
+        load_manifest(path), path, "evaluation_run"
+    )
+    assert archived_path.read_bytes() == first_receipt
 
 
 def test_all_recompute_supplier_paths_are_truthfully_stamped(

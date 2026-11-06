@@ -82,7 +82,9 @@ class EmittedProduct:
     envelope_ref: str
     envelope_hash: str
     schema_id: str
+    schema_version: str
     content_hash: str
+    execution_identity: str
     lock_path: Path
     document_path: Path
 
@@ -143,7 +145,9 @@ class QuillonOutputs:
             envelope_ref=envelope_ref,
             envelope_hash=str(lock["envelope"]["envelope_hash"]),
             schema_id=family,
+            schema_version=str(document["schema_version"]),
             content_hash=canonical_sha256(document),
+            execution_identity=lock["execution_identity"]["sha256"],
             lock_path=lock_path,
             document_path=document_path,
         )
@@ -350,8 +354,9 @@ def planned(
         envelope_hash=product.envelope_hash,
         product_name=product.name,
         product_schema_id=product.schema_id,
-        product_schema_version=f"{product.schema_id}.v1",
+        product_schema_version=product.schema_version,
         compiled_content_hash=product.content_hash,
+        producer_execution_identity=product.execution_identity,
         role_path=role_path,
         consumer=consumer,
     )

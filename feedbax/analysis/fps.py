@@ -1,16 +1,18 @@
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Hashable, Mapping
 from functools import partial
+from struct import pack
 from types import MappingProxyType
-from typing import Any, Optional, TypeVar
+from typing import Any, ClassVar, Optional, TypeVar
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
 import plotly.graph_objects as go
 from equinox import field
 from feedbax._vendor.jax_cookbook import LDict
-from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
+from jaxtyping import Array, PRNGKeyArray, PyTree, PyTreeDef, Scalar
 from optax import GradientTransformation
 
 from feedbax.analysis.types import AnalysisInputData
@@ -26,6 +28,7 @@ from feedbax.analysis.fp_finder import (
 from feedbax.analysis.pca import PCAResults, StatesPCA
 from feedbax.plot.experiments import plot_fp_pcs
 from feedbax.config.tree import ldict_level_to_bottom
+from feedbax.contracts.computation_revision import ANALYSIS_ENGINE_REVISION
 
 T = TypeVar("T")
 
@@ -35,6 +38,47 @@ __all__ = [
     "PlotInPCSpace",
     "PlotInPCSpacePorts",
 ]
+
+
+class _StaticLeaf:
+    """Key Python leaves without conflating distinct types or opaque objects."""
+
+    def __init__(self, value: Any):
+        self.value = value
+        value_type = type(value)
+        if value_type in (bool, int, str, bytes):
+            self._key = (value_type, value)
+        elif value_type in (float, complex):
+            self._key = (value_type, pack("!dd", value.real, value.imag))
+        elif callable(value) or isinstance(value, Hashable):
+            self._key = id(value)
+        else:
+            # Opaque, unhashable arguments may be mutable. Trace them per binding.
+            self._key = object()
+
+    def __hash__(self) -> int:
+        return hash(self._key)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _StaticLeaf) and self._key == other._key
+
+
+class _BoundCall(eqx.Module):
+    """Expose array leaves to JAX and restore the original PyTree on call."""
+
+    leaves: tuple[Any, ...]
+    treedef: PyTreeDef = eqx.field(static=True)
+
+    def __init__(self, func: Callable, *args: Any, static_func: bool = False):
+        leaves, self.treedef = jt.flatten(
+            (func, args), is_leaf=(lambda leaf: leaf is func) if static_func else None
+        )
+        self.leaves = tuple(leaf if eqx.is_array(leaf) else _StaticLeaf(leaf) for leaf in leaves)
+
+    def __call__(self, *runtime_args, **kwargs):
+        leaves = (leaf.value if isinstance(leaf, _StaticLeaf) else leaf for leaf in self.leaves)
+        func, args = jt.unflatten(self.treedef, leaves)
+        return func(*args, *runtime_args, **kwargs)
 
 
 class FixedPointsPorts(AbstractAnalysisPorts):
@@ -60,10 +104,13 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
             The functions should have signature (`func(*args, state)`) where `state` is the
             optimized tensor that is initialized with `candidates`.
         candidates: Candidate states to initialize the fixed point search.
-        fn_args Optional positional arguments to pass to the functions as `*args`.
+        fn_args: Optional positional arguments to pass to the functions as `*args`.
+            Array leaves are runtime values. Treat callables and other static
+            Python configuration as immutable for compiled solves.
     """
 
     Ports = FixedPointsPorts
+    computation_revision: ClassVar[str] = ANALYSIS_ENGINE_REVISION
     inputs: FixedPointsPorts = eqx.field(
         default_factory=FixedPointsPorts, converter=FixedPointsPorts.converter
     )
@@ -80,15 +127,21 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
     key: PRNGKeyArray = field(default_factory=lambda: jr.PRNGKey(0))
 
     @property
-    def fpfinder(self):
-        """Low-level fixed-point finder used by this analysis."""
+    def fpfinder(self) -> FixedPointFinder:
+        """Construct a low-level finder with this analysis's optimizer."""
         return FixedPointFinder(self.fp_optimizer())
 
     @property
     def fpf_fn(self):
         """Partial function for finding and filtering fixed points."""
+        factory = self.fp_optimizer
+        # Concrete factory parameters can participate in Python control flow.
+        factory_is_concrete = not any(
+            isinstance(leaf, jax.core.Tracer) for leaf in jt.leaves(factory)
+        )
         return partial(
-            self.fpfinder.find_and_filter,
+            FixedPointFinder._find_and_filter_with_factory,
+            _BoundCall(factory, static_func=factory_is_concrete),
             loss_tol=jnp.array(self.fp_tol),
             outlier_tol=self.outlier_tol,
             unique_tol=self.unique_tol,
@@ -104,12 +157,9 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
         fn_args: Optional[tuple[PyTree[Any, "T"], ...]] = None,
         **kwargs,
     ):
-        if fn_args is None:
-            fn_args = tuple()
-
         def get_fps(func, cands, *args):
             return self.fpf_fn(
-                lambda h: func(*args, h),
+                _BoundCall(func, *args),
                 cands[:: self.stride_candidates],
             )
 
@@ -117,7 +167,7 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
             get_fps,
             fns,
             candidates,
-            *fn_args,
+            *(fn_args or ()),
             is_leaf=callable,
         )
 
@@ -141,11 +191,9 @@ class PlotInPCSpace(AbstractAnalysis[PlotInPCSpacePorts]):
     inputs: PlotInPCSpacePorts = eqx.field(
         default_factory=PlotInPCSpacePorts, converter=PlotInPCSpacePorts.converter
     )
+    spread_label: str = eqx.field(kw_only=True)
     variant: Optional[str] = "full"
     fig_params: Mapping = MappingProxyType(dict())
-
-    # n_pcs: Literal[2, 3] = 3
-    spread_label: str = "sisu"
 
     def make_figs(
         self,

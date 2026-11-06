@@ -3,7 +3,6 @@ from __future__ import annotations
 import diffrax as dfx
 import jax
 import jax.numpy as jnp
-import optimistix as optx
 import pytest
 
 from feedbax.acausal import (
@@ -15,11 +14,17 @@ from feedbax.acausal import (
     LinearSpring,
     Mass,
     PositionSensor,
+    PrescribedMotion,
 )
 from feedbax.component_registry import ComponentRegistry
-from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.acausal import AcausalGraphSpec, SolverConfigSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.compiler.acausal_compiler import compile_acausal_graph
+from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
+from feedbax.compiler.acausal_compiler import (
+    compile_acausal_authoring_report,
+    compile_acausal_graph,
+)
+from feedbax.runtime.graph import Graph, RolloutStepContext, RolloutStepHookResult
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 
@@ -30,7 +35,94 @@ def _registry() -> ComponentRegistry:
     return ComponentRegistry(load_user_components=False)
 
 
-def _msd_interior(*, solver_type: str = "euler") -> AcausalGraphSpec:
+@pytest.mark.parametrize("grounded", [True, False], ids=["ground", "second-motion-source"])
+def test_conflicting_coordinate_owners_refuse_report_and_execution(grounded: bool) -> None:
+    motion = ComponentSpec(type="ActuationInput", params={"source_kind": "prescribed_motion"})
+    other = (
+        ComponentSpec(type="Ground")
+        if grounded
+        else ComponentSpec(
+            type="ActuationInput",
+            params={"source_kind": "prescribed_motion", "port_name": "other"},
+        )
+    )
+    connections = [
+        (("motion", "flange"), ("sense", "flange")),
+        (("other", "flange"), ("sense", "flange")),
+    ]
+    spec = AcausalGraphSpec(
+        physical_domain="translational",
+        nodes={
+            "motion": motion,
+            "other": other,
+            "sense": ComponentSpec(type="SensorOutput", params={"quantity": "position"}),
+        },
+        connections=[{"a": a, "b": b} for a, b in connections],
+        solver={"solver_type": "euler", "dt": 0.01},
+    )
+    registry = _registry()
+    report = compile_acausal_authoring_report(
+        spec, node_path=["plant"], component_registry=registry
+    )
+    assert report.status == "error"
+    code = "acausal.grounded_prescribed_coordinate" if grounded else "acausal.parallel_across_sources"
+    diagnostic = next(d for d in report.diagnostics if d.code == code)
+    assert diagnostic.severity == "error"
+    assert set(diagnostic.node_ids) == {"motion", "other"}
+
+    message = "grounded by" if grounded else "multiple prescribed motion sources"
+    with pytest.raises(ValueError, match=message):
+        compile_acausal_graph(spec, "plant", registry)
+    with pytest.raises(ValueError, match=message):
+        AcausalSystem(
+            elements={
+                "motion": PrescribedMotion("motion"),
+                "other": Ground("other") if grounded else PrescribedMotion("other"),
+                "sense": PositionSensor("sense"),
+            },
+            connections=[AcausalConnection(a, b) for a, b in connections],
+        )
+
+
+def test_spring_coupled_prescribed_coordinates_keep_independent_inputs() -> None:
+    nodes = {
+        "mass": ComponentSpec(type="Mass", params={"mass": 2.0}),
+        "velocity": ComponentSpec(type="SensorOutput", params={"quantity": "velocity"}),
+    }
+    connections = [{"a": ("velocity", "flange"), "b": ("mass", "flange")}]
+    for side, stiffness in (("left", 2.0), ("right", 3.0)):
+        spring = f"{side}_spring"
+        nodes[side] = ComponentSpec(
+            type="ActuationInput",
+            params={"source_kind": "prescribed_motion", "port_name": side},
+        )
+        nodes[spring] = ComponentSpec(type="LinearSpring", params={"stiffness": stiffness})
+        connections.extend([
+            {"a": (side, "flange"), "b": (spring, "flange_a")},
+            {"a": (spring, "flange_b"), "b": ("mass", "flange")},
+        ])
+    spec = AcausalGraphSpec(
+        physical_domain="translational",
+        nodes=nodes,
+        connections=connections,
+        solver={"solver_type": "euler", "dt": 0.1},
+    )
+    registry = _registry()
+    report = compile_acausal_authoring_report(
+        spec, node_path=["plant"], component_registry=registry
+    )
+    assert report.status == "ok", report.diagnostics
+    system = compile_acausal_graph(spec, "plant", registry)
+    outputs, _ = system(
+        {"left": jnp.array([1.0, 0.0]), "right": jnp.array([-2.0, 0.0])},
+        system.init_state(key=jax.random.PRNGKey(0)),
+        key=jax.random.PRNGKey(1),
+    )
+    # From rest, Euler advances velocity by dt * (2 * 1 + 3 * -2) / 2.
+    assert outputs["y"] == pytest.approx(-0.2)
+
+
+def _msd_interior() -> AcausalGraphSpec:
     return AcausalGraphSpec(
         physical_domain="translational",
         nodes={
@@ -55,7 +147,7 @@ def _msd_interior(*, solver_type: str = "euler") -> AcausalGraphSpec:
             {"a": ("act", "flange"), "b": ("mass", "flange")},
             {"a": ("sense", "flange"), "b": ("mass", "flange")},
         ],
-        solver={"solver_type": solver_type, "dt": 0.001},
+        solver={"solver_type": "euler", "dt": 0.001},
     )
 
 
@@ -74,6 +166,328 @@ def _acausal_graph_spec(interior: AcausalGraphSpec) -> GraphSpec:
         output_bindings={"pos": ("plant", "pos")},
         subgraphs={"plant": interior},
     )
+
+
+def test_driven_massless_spring_endpoint_is_rejected_before_stepping() -> None:
+    connections = [
+        (("wall", "flange"), ("support", "flange_a")),
+        (("mass", "flange"), ("support", "flange_b")),
+        (("mass", "flange"), ("spring", "flange_a")),
+        (("spring", "flange_b"), ("drive", "flange")),
+        (("spring", "flange_b"), ("sense", "flange")),
+    ]
+    spec = AcausalGraphSpec(
+        physical_domain="translational",
+        nodes={
+            "wall": ComponentSpec(type="Ground"),
+            "mass": ComponentSpec(type="Mass"),
+            "support": ComponentSpec(type="LinearSpring"),
+            "spring": ComponentSpec(type="LinearSpring"),
+            "drive": ComponentSpec(
+                type="ActuationInput", params={"port_name": "u", "source_kind": "force"}
+            ),
+            "sense": ComponentSpec(
+                type="SensorOutput", params={"port_name": "pos", "quantity": "position"}
+            ),
+        },
+        connections=[{"a": a, "b": b} for a, b in connections],
+        solver={"solver_type": "euler", "dt": 0.01},
+    )
+    registry = _registry()
+    with pytest.raises(GraphCompilationError, match="require inertia"):
+        spec_to_graph(
+            _acausal_graph_spec(spec), registry,
+            input_prototypes={("__graph__", "u"): jnp.zeros(1)},
+        )
+    with pytest.raises(ValueError, match="require inertia"):
+        AcausalSystem(
+            elements={
+                "wall": Ground("wall"),
+                "mass": Mass("mass"),
+                "support": LinearSpring("support"),
+                "spring": LinearSpring("spring"),
+                "drive": ForceSource("drive"),
+                "sense": PositionSensor("sense"),
+            },
+            connections=[AcausalConnection(a, b) for a, b in connections],
+        )
+    report = compile_acausal_authoring_report(
+        spec, node_path=["plant"], component_registry=registry
+    )
+    assert report.status == "error"
+    diagnostic = next(d for d in report.diagnostics if d.code == "acausal.unbalanced")
+    assert len(diagnostic.variables) == 2
+    assert all(
+        name.rsplit(".", 1)[0] in {"drive.flange", "sense.flange", "spring.flange_b"}
+        for name in diagnostic.variables
+    )
+
+
+def _prescribed_motion_graph(*, bind_input: bool = True) -> GraphSpec:
+    return GraphSpec(
+        nodes={
+            "plant": ComponentSpec(
+                type="AcausalSystem",
+                input_ports=["motion"],
+                output_ports=["velocity"],
+            ),
+        },
+        input_ports=["command"] if bind_input else [],
+        input_bindings={"command": ("plant", "motion")} if bind_input else {},
+        output_ports=["velocity"],
+        output_bindings={"velocity": ("plant", "velocity")},
+        subgraphs={
+            "plant": AcausalGraphSpec(
+                physical_domain="translational",
+                nodes={
+                    "wall": ComponentSpec(type="Ground"),
+                    "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
+                    "drive": ComponentSpec(
+                        type="ActuationInput",
+                        params={"port_name": "motion", "source_kind": "prescribed_motion"},
+                    ),
+                    "sense": ComponentSpec(
+                        type="SensorOutput",
+                        params={"port_name": "velocity", "quantity": "velocity"},
+                    ),
+                },
+                connections=[
+                    {"a": ("drive", "flange"), "b": ("sense", "flange")},
+                    {"a": ("drive", "flange"), "b": ("spring", "flange_a")},
+                    {"a": ("spring", "flange_b"), "b": ("wall", "flange")},
+                ],
+                solver={"solver_type": "euler", "dt": 0.001},
+            ),
+        },
+    )
+
+
+def test_compiled_prescribed_motion_uses_velocity_from_each_pair() -> None:
+    spec = _prescribed_motion_graph()
+    graph = compile_graph(
+        GraphDocument(graph=spec),
+        _registry(),
+        input_prototypes={("__graph__", "command"): jnp.zeros(2)},
+    ).graph
+    key = jax.random.PRNGKey(0)
+
+    outputs, _, _ = graph.rollout_with_trace(
+        {"command": jnp.array([[2.0, 0.0], [2.0, -1.0], [2.0, 0.0]])},
+        graph.init_state(key=key),
+        key=key,
+        n_steps=3,
+        trace=(),
+    )
+
+    assert jnp.array_equal(outputs["velocity"], jnp.array([0.0, -1.0, 0.0]))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [2.0, [[[2.0, 0.0]]] * 3, None],
+    ids=["scalar", "extra-axis", "missing"],
+)
+def test_compiled_prescribed_motion_rejects_invalid_rollout_input(
+    command: float | list[list[list[float]]] | None,
+) -> None:
+    graph = compile_graph(GraphDocument(graph=_prescribed_motion_graph()), _registry()).graph
+    key = jax.random.PRNGKey(0)
+    inputs = {} if command is None else {"command": jnp.asarray(command)}
+    state = graph.init_state(key=key)
+
+    with pytest.raises(ValueError, match="motion"):
+        graph.rollout_with_trace(inputs, state, key=key, n_steps=3, trace=())
+
+
+def test_named_effort_source_requires_its_own_input() -> None:
+    plant = compile_acausal_graph(_msd_interior(), "plant", _registry())
+    key = jax.random.PRNGKey(0)
+    state = plant.init_state(key=key)
+
+    with pytest.raises(ValueError, match="Missing required acausal source input 'u'"):
+        plant({"input": jnp.asarray(2.0)}, state, key=key)
+
+
+def test_compile_graph_rejects_scalar_prescribed_motion_prototype() -> None:
+    spec = _prescribed_motion_graph()
+
+    with pytest.raises(GraphCompilationError, match="motion"):
+        compile_graph(
+            GraphDocument(graph=spec),
+            _registry(),
+            input_prototypes={("__graph__", "command"): jnp.asarray(2.0)},
+        )
+
+
+def test_rollout_hook_can_supply_unbound_prescribed_motion() -> None:
+    def supply_motion(context: RolloutStepContext) -> RolloutStepHookResult:
+        return RolloutStepHookResult(
+            port_values={**context.port_values, ("plant", "motion"): jnp.array([2.0, 1.0])},
+        )
+
+    spec = _prescribed_motion_graph(bind_input=False)
+    graph = compile_graph(GraphDocument(graph=spec), _registry()).graph
+    key = jax.random.PRNGKey(0)
+
+    outputs, _, _ = graph.rollout_with_trace(
+        {},
+        graph.init_state(key=key),
+        key=key,
+        n_steps=3,
+        trace=(),
+        rollout_step_hook=supply_motion,
+    )
+
+    assert jnp.array_equal(outputs["velocity"], jnp.ones(3))
+
+
+def _planar_arm_spec(
+    registry: ComponentRegistry,
+    *,
+    solver: SolverConfigSpec | None = None,
+    bind_input: bool = False,
+) -> GraphSpec:
+    template = registry.get("TwoLinkArm6Muscle")
+    assert template is not None
+    interior = template.template_graph
+    assert isinstance(interior, AcausalGraphSpec)
+    if solver is not None:
+        interior = interior.model_copy(update={"solver": solver})
+    return GraphSpec(
+        nodes={
+            "arm": ComponentSpec(
+                type="AcausalSystem",
+                input_ports=["excitation"],
+                output_ports=["state"],
+            ),
+        },
+        input_ports=["excitation"] if bind_input else [],
+        input_bindings={"excitation": ("arm", "excitation")} if bind_input else {},
+        output_ports=["state"],
+        output_bindings={"state": ("arm", "state")},
+        subgraphs={"arm": interior},
+    )
+
+
+@pytest.fixture
+def planar_arm_graph() -> Graph:
+    registry = _registry()
+    return spec_to_graph(_planar_arm_spec(registry), registry)
+
+
+def test_planar_tsit5_step_matches_direct_diffrax_after_document_roundtrip() -> None:
+    registry = _registry()
+    dt = 0.01
+    solver = SolverConfigSpec(solver_type="tsit5", dt=dt)
+    spec = _planar_arm_spec(registry, solver=solver, bind_input=True)
+    document = GraphDocument.model_validate_json(GraphDocument(graph=spec).model_dump_json())
+    executable = compile_graph(document, registry)
+    resolved_interior = executable.resolved.graph.subgraphs["arm"]
+    assert resolved_interior.solver == solver
+    assert compile_acausal_authoring_report(
+        resolved_interior, node_path=["arm"], component_registry=registry
+    ).status == "ok"
+
+    graph = executable.graph
+    arm = graph.nodes["arm"]
+    key = jax.random.PRNGKey(0)
+    state = graph.init_state(key=key)
+    initial = state.get(arm.state_index).plant
+    excitation = jnp.array([0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
+    outputs, _, _ = graph.step({"excitation": excitation}, state, key=key)
+    actual = outputs["state"].plant.muscles.activations
+
+    term = dfx.ODETerm(arm.plant.vector_field)
+    tsit5 = dfx.Tsit5()
+    solver_state = tsit5.init(term, 0.0, dt, initial, excitation)
+    expected, _, _, _, result = tsit5.step(
+        term, 0.0, dt, initial, excitation, solver_state, made_jump=True
+    )
+    assert result == dfx.RESULTS.successful
+    assert jnp.allclose(actual, expected.muscles.activations)
+
+
+@pytest.mark.parametrize(
+    ("domain", "solver", "message"),
+    [
+        (
+            "scalar",
+            {"solver_type": "euler", "root_finder": {}},
+            r"euler.*root_finder|root_finder.*euler",
+        ),
+        (
+            "planar",
+            {"solver_type": "implicit_euler"},
+            r"[Pp]lanar.*implicit_euler",
+        ),
+    ],
+)
+def test_unsupported_solver_is_rejected_by_report_and_public_compile(
+    domain: str, solver: dict, message: str
+) -> None:
+    registry = _registry()
+    config = SolverConfigSpec.model_validate({"dt": 0.01, **solver})
+    if domain == "planar":
+        spec = _planar_arm_spec(registry, solver=config)
+        node = "arm"
+    else:
+        interior = _msd_interior().model_copy(update={"solver": config})
+        spec = _acausal_graph_spec(interior)
+        node = "plant"
+
+    report = compile_acausal_authoring_report(
+        spec.subgraphs[node], node_path=[node], component_registry=registry
+    )
+    assert report.status == "error"
+    assert any(diagnostic.code == "acausal.invalid_solver" for diagnostic in report.diagnostics)
+    with pytest.raises(GraphCompilationError, match=message):
+        compile_graph(GraphDocument(graph=spec), registry)
+
+
+@pytest.mark.parametrize("shape", [(), (1, 6)], ids=["scalar", "extra-axis"])
+def test_planar_arm_rejects_invalid_late_excitation(
+    planar_arm_graph: Graph, shape: tuple[int, ...]
+) -> None:
+    def supply_excitation(context: RolloutStepContext) -> RolloutStepHookResult:
+        return RolloutStepHookResult(
+            port_values={**context.port_values, ("arm", "excitation"): jnp.full(shape, 0.5)},
+        )
+
+    key = jax.random.PRNGKey(0)
+    state = planar_arm_graph.init_state(key=key)
+    with pytest.raises(ValueError, match=r"(?=.*excitation)(?=.*shape)(?=.*\(6,\))"):
+        planar_arm_graph.step({}, state, key=key, rollout_step_hook=supply_excitation)
+
+
+def test_planar_arm_accepts_late_excitation(planar_arm_graph: Graph) -> None:
+    def supply_excitation(context: RolloutStepContext) -> RolloutStepHookResult:
+        return RolloutStepHookResult(
+            port_values={
+                **context.port_values,
+                ("arm", "excitation"): jnp.array([0.5, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            },
+        )
+
+    key = jax.random.PRNGKey(0)
+    state = planar_arm_graph.init_state(key=key)
+    driven, _, _ = planar_arm_graph.step({}, state, key=key, rollout_step_hook=supply_excitation)
+
+    activations = driven["state"].plant.muscles.activations
+    assert activations[0] > 0
+    assert jnp.array_equal(activations[1:], jnp.zeros(5))
+
+
+def test_authoring_report_exposes_prescribed_motion_pair() -> None:
+    spec = _prescribed_motion_graph()
+    report = compile_acausal_authoring_report(
+        spec.subgraphs["plant"],
+        node_path=["plant"],
+        component_registry=_registry(),
+    )
+
+    assert report.status == "ok"
+    assert report.derived_interface is not None
+    assert report.derived_interface["inputs"]["motion"]["shape"] == [2]
 
 
 def _rollout_component(component: AcausalSystem, *, port: str, steps: int = 8) -> jax.Array:
@@ -196,28 +610,45 @@ def test_missing_acausal_interior_raises_domain_named_error() -> None:
 
 
 @pytest.mark.parametrize(
-    ("solver_name", "solver_cls", "implicit"),
+    ("solver_name", "expected_position"),
     [
-        ("euler", dfx.Euler, False),
-        ("implicit_euler", dfx.ImplicitEuler, True),
-        ("kvaerno5", dfx.Kvaerno5, True),
-        ("tsit5", dfx.Tsit5, False),
+        # Backward Euler from rest: x = dt*v and v = dt*(1 - 10*x - 0.5*v).
+        ("implicit_euler", 0.01 / 1.15),
+        # Exact underdamped step response at t=0.1 for m=1, k=10, c=0.5, force=1.
+        ("kvaerno5", 0.00487699),
     ],
 )
-def test_acausal_solver_mapping(solver_name: str, solver_cls: type, implicit: bool) -> None:
-    system = compile_acausal_graph(_msd_interior(solver_type=solver_name), "plant", _registry())
+def test_scalar_implicit_rollout_respects_authored_root_budget(
+    solver_name: str, expected_position: float
+) -> None:
+    key = jax.random.PRNGKey(0)
+    registry = _registry()
+    dt = 0.1
 
-    assert isinstance(system.solver, solver_cls)
-    if implicit:
-        assert isinstance(system.root_finder, optx.Newton)
-    else:
-        assert system.root_finder is None
+    def rollout(max_steps: int) -> jax.Array:
+        solver = SolverConfigSpec.model_validate(
+            {
+                "solver_type": solver_name,
+                "dt": dt,
+                "root_finder": {"rtol": 0, "max_steps": max_steps},
+            }
+        )
+        interior = _msd_interior().model_copy(update={"solver": solver})
+        graph = spec_to_graph(_acausal_graph_spec(interior), registry)
+        outputs, _, _ = graph.rollout_with_trace(
+            {"u": jnp.ones(1)}, graph.init_state(key=key), key=key, n_steps=1, trace=()
+        )
+        return jax.block_until_ready(outputs["pos"])
+
+    with pytest.raises(RuntimeError, match=r"maximum number of steps.*nonlinear solver"):
+        rollout(max_steps=1)
+
+    assert rollout(max_steps=8)[0].item() == pytest.approx(expected_position, abs=1e-7)
 
 
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("explicit_order", [False, True])
 def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested, explicit_order):
-    from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
     from feedbax.contracts.migrations import migrate_acausal_graph_spec
 
     spec = AcausalGraphSpec(
@@ -334,8 +765,6 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
 
 
 def test_invalid_persisted_gear_has_actionable_authoring_diagnostic():
-    from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
-
     spec = AcausalGraphSpec(
         physical_domain="rotational",
         nodes={"gear": ComponentSpec(type="GearRatio", params={"ratio": 0.0})},
@@ -353,7 +782,6 @@ def test_invalid_persisted_gear_has_actionable_authoring_diagnostic():
 
 @pytest.mark.parametrize("with_adapter", [False, True])
 def test_persisted_direct_element_signal_input_binds_with_adapters(with_adapter):
-    from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
     from feedbax.contracts.migrations import migrate_acausal_graph_spec
 
     nodes = {

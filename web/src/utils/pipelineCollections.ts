@@ -43,6 +43,10 @@ export interface TrainingRunSummary {
   axisCoordinates: Record<string, unknown>;
   runSetId: string | null;
   planned: boolean;
+  nativeLaunchGeneration?: string;
+  nativeInProgressGeneration?: string;
+  resultManifestId?: string;
+  resultManifestUri?: string;
   supersededBy: string | null;
   supersedes: string | null;
   statusReason: string | null;
@@ -58,7 +62,7 @@ export interface EvaluationRunSummary {
   selectedTrainingRunId: string | null;
   trainingRunIds: string[];
   targets: string | null;
-  sisu: number | null;
+  conditionLabel: string | null;
   perturbation: string | null;
   sourceIssue: string | null;
   provenanceId: string;
@@ -235,6 +239,10 @@ export function trainingRunSummaries(
     });
 }
 
+export function nativeTrainingInProgress(status: string): boolean {
+  return status === 'claimed' || status === 'running';
+}
+
 export function trainingInputSummaries(
   stage: StudioStageSpec | null | undefined,
   options: RunSummaryOptions = {}
@@ -299,9 +307,9 @@ export function runParameterSummary(row: TrainingRunSummary): string {
 }
 
 export function evaluationProtocolLabel(row: EvaluationRunSummary): string {
+  if (row.conditionLabel !== null) return row.conditionLabel;
   const parts = [
     row.targets,
-    row.sisu !== null ? `SISU ${row.sisu}` : null,
     row.perturbation ? perturbationLabel(row.perturbation) : null,
   ];
   return parts.filter(Boolean).join(' - ') || 'Protocol not recorded';
@@ -721,11 +729,17 @@ function trainingRunSummary(
   const typedCheckpointAvailable = booleanValue(ref.metadata.checkpoint_available);
   const axisCoordinates = axisCoordinatesFromRef(ref);
   const baseStatus = stringValue(ref.metadata.status) ?? 'unknown';
+  const stagingDraftHashes = ref.metadata.staging_draft_spec_hashes;
   const specHashComparisons = compareSpecHashes(
-    specHashesFromMetadata(ref.metadata),
+    stagingDraftHashes ?? specHashesFromMetadata(ref.metadata),
     options.currentSpecHashes
   );
-  const draftChanged = specHashComparisons.some((comparison) => comparison.status === 'changed');
+  const draftChanged = specHashComparisons.some((comparison) =>
+    comparison.status === 'changed' ||
+    (stagingDraftHashes != null && options.currentSpecHashes != null &&
+      comparison.snapshotHash !== comparison.currentHash &&
+      (comparison.status === 'missing-current' || comparison.status === 'missing-snapshot'))
+  );
   const draftNeedsRehash = specHashComparisons.some(
     (comparison) => comparison.status === 'rehash-required'
   );
@@ -737,6 +751,13 @@ function trainingRunSummary(
         ? 'draft changed'
         : null);
   const status = staleReason ? 'stale' : baseStatus;
+  const nativeGeneration =
+    ref.metadata.planned === true &&
+    ref.metadata.native_launch_supported === true &&
+    ref.metadata.execution_target === 'local' &&
+    !isSupersededRef(ref)
+      ? stringValue(ref.metadata.staging_generation) ?? undefined
+      : undefined;
   return {
     id: ref.id,
     label: stringValue(ref.metadata.name) ?? ref.id,
@@ -759,14 +780,20 @@ function trainingRunSummary(
     ),
     checkpointAvailable:
       typedCheckpointAvailable ??
-      (Boolean(ref.uri) || stringValue(ref.metadata.checkpoint_uri) !== null),
+      (nativeGeneration === undefined &&
+        (Boolean(ref.uri) || stringValue(ref.metadata.checkpoint_uri) !== null)),
     sourceIssue: stringValue(ref.metadata.source_issue),
     provenanceId: stringValue(ref.metadata.provenance_id) ?? ref.id,
     uri: ref.uri ?? null,
     jobId: stringValue(ref.metadata.job_id),
     axisCoordinates,
-    runSetId: stringValue(ref.metadata.run_set_id),
+    runSetId: stringValue(ref.metadata.run_set_id ?? objectValue(ref.metadata.studio)?.run_set_id),
     planned: booleanValue(ref.metadata.planned) ?? false,
+    nativeLaunchGeneration: status === 'pending' ? nativeGeneration : undefined,
+    nativeInProgressGeneration: nativeTrainingInProgress(status) || ref.metadata.teardown_pending === true
+      ? nativeGeneration : undefined,
+    resultManifestId: stringValue(ref.metadata.result_manifest_id) ?? undefined,
+    resultManifestUri: stringValue(ref.metadata.result_manifest_uri) ?? undefined,
     supersededBy: supersessionValue(ref.id, ref.metadata, 'superseded_by'),
     supersedes: supersessionValue(ref.id, ref.metadata, 'supersedes'),
     statusReason: staleReason ?? statusReason(ref.metadata),
@@ -1046,7 +1073,7 @@ function evaluationRunSummary(ref: StudioManifestRef): EvaluationRunSummary {
     selectedTrainingRunId: stringValue(ref.metadata.selected_training_run_id),
     trainingRunIds,
     targets: stringValue(protocol?.targets),
-    sisu: numberValue(protocol?.sisu),
+    conditionLabel: stringValue(ref.metadata.condition_label),
     perturbation: stringValue(protocol?.perturbation),
     sourceIssue: stringValue(ref.metadata.source_issue),
     provenanceId: ref.id,

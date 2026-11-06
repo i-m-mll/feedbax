@@ -15,6 +15,8 @@ under `feedbax._vendor.jax_cookbook`:
 - `_vmap.py`
 - `progress.py`
 
-All other Python source files retain the exact upstream bytes. Feedbax source
+Feedbax also changes `_io.py` to reject unread checkpoint data after deserialization and `tree.py` to accept explicit Equinox output axes when building ensembles.
+
+The remaining Python source files retain the exact upstream bytes. Feedbax source
 imports use the internal namespace directly; this bundle does not install or
 alias the external `jax_cookbook` namespace.

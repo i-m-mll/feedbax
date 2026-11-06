@@ -23,6 +23,7 @@ import pytest
 from equinox.nn import StateIndex
 
 import feedbax.training.checkpoint_custody as custody_module
+from feedbax.components.equinox import Embedding, MLP, PReLU
 from feedbax.training import CheckpointForkPlanRelockResult
 from feedbax.contracts.checkpoints import (
     BatchHistory,
@@ -654,6 +655,115 @@ def test_checkpoint_transaction_derives_slots_and_loads_multi_slot_state(tmp_pat
     assert loaded.manifest.transaction_id == result.manifest.transaction_id
     assert loaded.slots["controller"].tolist() == [1.0, 2.0]
     assert loaded.slots["rng"].dtype == jnp.uint32
+
+
+@pytest.mark.parametrize("legacy_slot", [None, "controller", "controller_optimizer"])
+def test_generated_wrapper_checkpoint_requires_current_state_layout(
+    tmp_path: Path, legacy_slot: str | None
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    model = PReLU(jnp.asarray(0.5))
+    slots = _minimax_slots()
+    slots["controller"] = model
+    slots["controller_optimizer"] = optax.adam(0.01).init(model)
+    # Recreate the old pickle state, including a None in a filtered optimizer tree.
+    if legacy_slot == "controller":
+        vars(model)["init_alpha"] = 0.25
+    elif legacy_slot == "controller_optimizer":
+        vars(slots["controller_optimizer"][0].mu)["init_alpha"] = None
+
+    published = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=slots,
+    )
+
+    def resume():
+        return load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=slots,
+        )
+
+    if legacy_slot is not None:
+        with pytest.raises(
+            CheckpointCompatibilityError, match=rf"slot '{legacy_slot}'.*pre-v3.*init_alpha"
+        ):
+            resume()
+        return
+
+    loaded = resume()
+    assert loaded.manifest == published.manifest
+    assert loaded.slots["controller"].init_alpha == 0.5
+    assert loaded.slots["controller_optimizer"][0].mu.init_alpha == 0.0
+
+
+def _generated_default_slots(seed: int) -> dict[str, object]:
+    key = jax.random.key(seed)
+    slots = _minimax_slots()
+    slots["controller"] = {
+        "embedding": Embedding(4, 3, key=key),
+        "mlp": MLP(3, 2, 4, 1, key=key),
+    }
+    return slots
+
+
+def test_generated_wrapper_defaults_resume_in_fresh_process(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    with jax.experimental.enable_x64():
+        write_checkpoint_transaction(
+            tmp_path,
+            run_spec=run_spec,
+            phase_program=program,
+            barrier_name="after_warmup",
+            coordinate=_coordinate(),
+            slots=_generated_default_slots(0),
+        )
+
+    code = """
+import sys
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from feedbax.training.checkpoint_custody import load_latest_checkpoint
+from tests.test_checkpoint_custody import _generated_default_slots, _run_spec
+
+spec = _run_spec(minimax=True)
+loaded = load_latest_checkpoint(
+    sys.argv[1],
+    expected_run_spec=spec,
+    expected_phase_program=spec.worker_execution.method_contract.phase_program,
+    expected_slots=_generated_default_slots(1),
+)
+key = jax.random.key(0)
+controller = loaded.slots["controller"]
+for name, inputs, original in (
+    ("embedding", jnp.asarray(2), eqx.nn.Embedding(4, 3, dtype=jnp.float32, key=key)),
+    ("mlp", jnp.asarray([1, -2, 3], dtype=jnp.float32),
+     eqx.nn.MLP(3, 2, 4, 1, dtype=jnp.float32, key=key)),
+):
+    outputs, _ = controller[name]({"input": inputs}, None, key=key)
+    assert outputs["output"].dtype == jnp.float32
+    np.testing.assert_array_equal(outputs["output"], original(inputs))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path)],
+        cwd=Path(__file__).parents[1],
+        env={**os.environ, "JAX_ENABLE_X64": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_load_reuses_manifest_structural_fingerprints_for_loaded_slots(

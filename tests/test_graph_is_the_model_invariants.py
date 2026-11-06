@@ -26,7 +26,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
@@ -387,7 +386,8 @@ def test_built_component_params_match_spec_exactly() -> None:
     assert linear.use_bias is False
     assert linear.layer.bias is None
     assert linear.activation_name == "tanh"
-    assert linear.activation is jax.nn.tanh
+    values = jnp.array([-2.0, 1.0])
+    assert jnp.array_equal(linear.activation(values), jax.nn.tanh(values))
 
 
 def test_linear_zero_initialization_is_compiled_executed_and_serialized() -> None:
@@ -433,11 +433,12 @@ def test_linear_zero_initialization_is_compiled_executed_and_serialized() -> Non
         _registry(),
     )
     default = spec_to_graph(linear_spec({}), _registry())
-    expected_default = eqx.nn.Linear(3, 2, key=jax.random.PRNGKey(0))
-    assert legacy.nodes["linear"].initialization == "random"
-    assert default.nodes["linear"].initialization == "random"
-    assert jnp.array_equal(default.nodes["linear"].layer.weight, expected_default.weight)
-    assert jnp.array_equal(default.nodes["linear"].layer.bias, expected_default.bias)
+    legacy_linear = legacy.nodes["linear"]
+    default_linear = default.nodes["linear"]
+    assert legacy_linear.initialization == default_linear.initialization == "random"
+    assert jnp.any(default_linear.layer.weight != 0)
+    assert jnp.array_equal(legacy_linear.layer.weight, default_linear.layer.weight)
+    assert jnp.array_equal(legacy_linear.layer.bias, default_linear.layer.bias)
 
 
 def test_round_trip_preserves_node_types_and_topology() -> None:
@@ -531,7 +532,7 @@ def _worker_task_binding_spec(
     if value_spec is not None:
         exposed["value_spec"] = value_spec
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [exposed],
         "bindings": [
             {
@@ -638,12 +639,15 @@ def test_leaky_rnn_cell_vocabulary_builds_a_leaky_cell() -> None:
     first = spec_to_graph(spec, _registry())
     second = spec_to_graph(graph_to_spec(first), _registry())
 
+    values = jnp.array([-2.0, 0.0, 3.0])
     for graph in (first, second):
         cell = graph.nodes["cell"].cell
         assert float(cell.dt) == pytest.approx(0.05)
         assert float(cell.tau) == pytest.approx(0.5)
         assert cell.use_bias is False
-        assert cell.nonlinearity is jax.nn.relu
+        activated, slope = jax.jvp(cell.nonlinearity, (values,), (jnp.ones_like(values),))
+        assert jnp.array_equal(activated, jnp.array([0.0, 0.0, 3.0]))
+        assert jnp.array_equal(slope, jnp.array([0.0, 0.0, 1.0]))
         assert cell.use_noise is True
         assert float(cell.noise_strength) == pytest.approx(0.03)
         assert float(cell.alpha) == pytest.approx(0.1)

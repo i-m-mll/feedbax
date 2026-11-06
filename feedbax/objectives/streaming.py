@@ -30,7 +30,7 @@ from feedbax.objectives.loss import (
     ModelLoss,
     NthDifferenceLoss,
     TargetStateLoss,
-    _TARGET_FIRST_STEP,
+    _target_start_step,
     _align_target_shape,
     _multiply_time_weights,
     _prepare_time_weight,
@@ -162,7 +162,7 @@ def _collect_leaf_terms(
     if isinstance(loss, CompositeLoss):
         result = []
         for name, child in loss.terms.items():
-            w = loss.weights.get(name, 1.0)
+            w = loss.weights[name]
             result.extend(_collect_leaf_terms(child, parent_weight * w))
         return result
 
@@ -186,9 +186,8 @@ def _make_target_state_closure(
     """
     target, _ = _resolve_target_spec(loss, trial_specs)
     value = jnp.asarray(target.value)
-    # The retained loss drops the first scan output. Its weights and targets
-    # are indexed by the remaining outputs, starting at scan step one.
-    target_steps = n_steps - _TARGET_FIRST_STEP
+    target_start_step = _target_start_step(trial_specs)
+    target_steps = n_steps - target_start_step
     weights = tuple(
         _prepare_time_weight(selector, trial_specs, target_steps)
         for selector in _target_weight_selectors(target, target_steps)
@@ -212,7 +211,7 @@ def _make_target_state_closure(
             return jnp.zeros_like(cum_weight * density_at(target_step))
 
         def contribution():
-            target_index = t - _TARGET_FIRST_STEP
+            target_index = t - target_start_step
             target_step = aligned_target[0 if aligned_target.shape[0] == 1 else target_index]
             density = density_at(target_step)
             if weights:
@@ -221,7 +220,7 @@ def _make_target_state_closure(
                 )
             return cum_weight * density
 
-        return _when_valid(t >= _TARGET_FIRST_STEP, contribution)
+        return _when_valid(t >= target_start_step, contribution)
 
     return _step
 
@@ -248,13 +247,12 @@ def _make_cross_timestep_closure(
             for arr in leaves:
                 # Reintroduce the singleton trial axis used by retained losses.
                 window = arr[None, -(order + 1):]
-                axis = loss.time_axis if loss.time_axis >= 0 else window.ndim + loss.time_axis
-                if axis != 1:
+                if loss.time_axis not in (1, 1 - window.ndim):
                     raise ValueError(
                         f"{type(loss).__name__}('{loss.label}') must use the "
                         "rollout time axis for streaming loss."
                     )
-                density = loss._difference_density(window, axis)
+                density, _ = loss._difference_density(window, time_axis=1)
                 if density.shape != (1, 1):
                     raise ValueError(
                         f"{type(loss).__name__}('{loss.label}') must produce one "

@@ -8,6 +8,19 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
 import feedbax.analysis as analysis_pkg
+from feedbax._delayed_reaches import (
+    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
+    DEFAULT_DELAYED_MOVE_EPOCHS,
+    apply_delayed_reaches_preset,
+    delayed_reaches_n_steps_from_params,
+    delayed_timing_issues,
+)
+from feedbax.compiler import (
+    CompilationFailureRecord,
+    CompilationRecord,
+    GraphDocument,
+    ResolvedGraph,
+)
 from feedbax.contracts.artifact_custody import (
     ImmutableArtifactBlobProviderConfig,
     ImmutableArtifactBlobProviderSpec,
@@ -68,6 +81,7 @@ from feedbax.contracts.selection import SelectionSpec
 from feedbax.contracts.training_matrix_composition import TrainingRunMatrixDeltaSpec
 from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
+    default_spec_registry,
     migrate_graph_spec,
     migrate_studio_task_binding_spec,
     migrate_studio_workspace_spec,
@@ -90,6 +104,8 @@ from feedbax.orchestration.controller import (
 from feedbax.orchestration.realization import Attempt, BackendPlan
 from feedbax.studio.protocol import parse_positive_n_steps, task_n_steps_values
 from feedbax.studio.execution import (
+    StudioNativeTrainingDispatchAccepted,
+    StudioNativeTrainingDispatchRequest,
     StudioPipelineMaterializationRequest,
     StudioPipelineMaterializationResult,
     StudioTrainingExecutionPreparation,
@@ -116,6 +132,7 @@ from feedbax.contracts.graph import (
     GraphSpec,
     StudioTaskBindingSpec,
     StudioWorkspaceSpec,
+    graph_input_driver_conflicts,
 )
 from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo
 from feedbax.contracts.training import (
@@ -129,7 +146,6 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
-from feedbax.tasks.presets import apply_delayed_reaches_preset
 
 TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
 
@@ -270,6 +286,10 @@ def health() -> ProviderHealth:
 def _schema_models() -> dict[str, type[BaseModel]]:
     return {
         "GraphSpec": GraphSpec,
+        "GraphDocument": GraphDocument,
+        "ResolvedGraph": ResolvedGraph,
+        "CompilationRecord": CompilationRecord,
+        "CompilationFailureRecord": CompilationFailureRecord,
         "AdditiveGraphChannelAdapterSpec": AdditiveGraphChannelAdapterSpec,
         "AdditiveGraphChannelTargetSpec": AdditiveGraphChannelTargetSpec,
         "AnalysisInputRequirement": AnalysisInputRequirement,
@@ -324,6 +344,8 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "OrphanHandlingPolicy": OrphanHandlingPolicy,
         "StudioTrainingExecutionRequest": StudioTrainingExecutionRequest,
         "StudioTrainingExecutionPreparation": StudioTrainingExecutionPreparation,
+        "StudioNativeTrainingDispatchRequest": StudioNativeTrainingDispatchRequest,
+        "StudioNativeTrainingDispatchAccepted": StudioNativeTrainingDispatchAccepted,
         "StudioPipelineMaterializationRequest": StudioPipelineMaterializationRequest,
         "StudioPipelineMaterializationResult": StudioPipelineMaterializationResult,
         "WorkspaceReplayProduct": WorkspaceReplayProduct,
@@ -356,6 +378,13 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "MandibleArtifactMapping": MandibleArtifactMapping,
         "MandibleManifestMapping": MandibleManifestMapping,
         "ProviderManifest": ProviderManifest,
+        "ProviderHealth": ProviderHealth,
+        "ProviderValidationResult": ProviderValidationResult,
+        **{
+            name: RegistrySnapshot
+            for name, policy in default_spec_registry.policy_matrix().items()
+            if name != "RegistrySnapshot" and policy.covers == "RegistrySnapshot"
+        },
         **objective_schema_models(),
     }
 
@@ -798,6 +827,18 @@ def provider_manifest() -> ProviderManifest:
             artifact_roles=["invocation", "backend_plan"],
             selected_node_kinds=["feedbax.studio_stage.train"],
         ),
+        "dispatch_studio_native_training": CapabilitySpec(
+            input_schema="StudioNativeTrainingDispatchRequest",
+            output_schema="StudioNativeTrainingDispatchAccepted",
+            description="Dispatch one staged local native matrix row by receipt generation.",
+            transports=["http"],
+            action="execute",
+            compatibility_predicates=["unclaimed staged local TrainingRunSpec matrix row"],
+            mutates_state=True,
+            may_launch_compute=True,
+            artifact_roles=["staged_training_receipt", "run_set_state", "training_manifest"],
+            selected_node_kinds=["feedbax.studio_stage.train"],
+        ),
         "materialize_studio_pipeline": CapabilitySpec(
             input_schema="StudioPipelineMaterializationRequest",
             output_schema="StudioPipelineMaterializationResult",
@@ -1063,6 +1104,7 @@ def validate_graph_spec(
     from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 
     migration_records: list[ArtifactMigrationRecord] = []
+    parsed: GraphSpec | None = None
     try:
         migrated = migrate_graph_spec(payload)
         migration_records = migrated.migration_records
@@ -1092,9 +1134,18 @@ def validate_graph_spec(
             migration_records=migration_records,
         )
     except ValueError as exc:
+        conflicts = () if parsed is None else graph_input_driver_conflicts(parsed)
         return ProviderValidationResult(
             valid=False,
             errors=[
+                *(
+                    ValidationIssue(
+                        type="graph_input_occupied",
+                        message=str(conflict),
+                        location={"path": conflict.authored_path, "occupied_by": conflict.occupied_by},
+                    )
+                    for conflict in conflicts
+                ),
                 ValidationIssue(
                     type="invalid_additive_channel_adapter",
                     message=str(exc),
@@ -1440,9 +1491,10 @@ def validate_task_spec(payload: dict[str, Any] | TaskSpec) -> ProviderValidation
                 location={"path": "/type"},
             )
         )
-    errors.extend(_validate_task_n_steps(spec))
+    step_errors = _validate_task_n_steps(spec)
+    errors.extend(step_errors)
     if spec.type in {"DelayedReaches", "feedbax.task.DelayedReaches"}:
-        errors.extend(_validate_delayed_reaches_task_params(spec.params))
+        errors.extend(_validate_delayed_reaches_task_params(spec.params, not step_errors))
     return ProviderValidationResult(valid=not errors, errors=errors)
 
 
@@ -1475,7 +1527,9 @@ def _validate_task_n_steps(spec: TaskSpec) -> list[ValidationIssue]:
     return errors
 
 
-def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[ValidationIssue]:
+def _validate_delayed_reaches_task_params(
+    params: dict[str, Any], step_count_valid: bool
+) -> list[ValidationIssue]:
     """Validate compact DelayedReaches task params at the Studio boundary."""
     errors: list[ValidationIssue] = []
     try:
@@ -1505,47 +1559,45 @@ def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[Valida
             )
         )
 
-    epoch_len_ranges = params.get("epoch_len_ranges", [[5, 15], [10, 20]])
-    if not isinstance(epoch_len_ranges, list):
-        errors.append(
-            ValidationIssue(
-                type="invalid_epoch_len_ranges",
-                message="DelayedReaches epoch_len_ranges must be a list of [min, max] pairs",
-                location={"path": "/params/epoch_len_ranges"},
+    epoch_len_ranges = params.get("epoch_len_ranges", DEFAULT_DELAYED_EPOCH_LEN_RANGES)
+    move_epochs = params.get("move_epochs", DEFAULT_DELAYED_MOVE_EPOCHS)
+    if "n_control_stages" in params:
+        n_control_stages = parse_positive_n_steps(params["n_control_stages"])
+        if n_control_stages is None:
+            errors.append(
+                ValidationIssue(
+                    type="invalid_task_n_steps",
+                    message="DelayedReaches n_control_stages must be a positive integer",
+                    location={"path": "/params/n_control_stages"},
+                )
             )
-        )
-        return errors
+            step_count_valid = False
+        elif "n_steps" in params and step_count_valid:
+            n_steps = parse_positive_n_steps(params["n_steps"])
+            if n_steps != n_control_stages + 1:
+                errors.append(
+                    ValidationIssue(
+                        type="task_n_steps_mismatch",
+                        message=(
+                            "DelayedReaches n_steps must equal "
+                            "n_control_stages + 1 when both are provided"
+                        ),
+                        location={"path": "/"},
+                    )
+                )
+                step_count_valid = False
 
-    for index, item in enumerate(epoch_len_ranges):
-        if not isinstance(item, list) or len(item) != 2:
-            errors.append(
-                ValidationIssue(
-                    type="invalid_epoch_len_range",
-                    message="Each DelayedReaches epoch_len_ranges entry must be [min, max]",
-                    location={"path": f"/params/epoch_len_ranges/{index}"},
-                )
-            )
-            continue
-        try:
-            lower = int(item[0])
-            upper = int(item[1])
-        except (TypeError, ValueError):
-            errors.append(
-                ValidationIssue(
-                    type="invalid_epoch_len_range",
-                    message="DelayedReaches epoch lengths must be integers",
-                    location={"path": f"/params/epoch_len_ranges/{index}"},
-                )
-            )
-            continue
-        if lower < 0 or upper < lower:
-            errors.append(
-                ValidationIssue(
-                    type="invalid_epoch_len_range",
-                    message="DelayedReaches epoch length ranges must satisfy 0 <= min <= max",
-                    location={"path": f"/params/epoch_len_ranges/{index}"},
-                )
-            )
+    n_steps = delayed_reaches_n_steps_from_params(params) if step_count_valid else None
+    errors.extend(
+        ValidationIssue(
+            type=issue.code,
+            message=issue.message,
+            location={"path": f"/params/{issue.path}"},
+        )
+        for issue in delayed_timing_issues(n_steps, epoch_len_ranges, move_epochs)
+    )
+    if not isinstance(epoch_len_ranges, (list, tuple)):
+        return errors
 
     epoch_count = len(epoch_len_ranges) + 1
     epoch_names = params.get("epoch_names", [])
@@ -1571,7 +1623,7 @@ def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[Valida
                 )
             )
 
-    for key in ("target_on_epochs", "hold_epochs", "move_epochs"):
+    for key in ("target_on_epochs", "hold_epochs"):
         value = params.get(key, [])
         if not isinstance(value, list):
             errors.append(
@@ -1672,42 +1724,6 @@ def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[Valida
             )
         )
 
-    if "n_control_stages" in params:
-        try:
-            n_control_stages = int(params["n_control_stages"])
-        except (TypeError, ValueError):
-            errors.append(
-                ValidationIssue(
-                    type="invalid_task_n_steps",
-                    message="DelayedReaches n_control_stages must be a positive integer",
-                    location={"path": "/params/n_control_stages"},
-                )
-            )
-        else:
-            if n_control_stages <= 0:
-                errors.append(
-                    ValidationIssue(
-                        type="invalid_task_n_steps",
-                        message="DelayedReaches n_control_stages must be a positive integer",
-                        location={"path": "/params/n_control_stages"},
-                    )
-                )
-            if "n_steps" in params:
-                try:
-                    n_steps = int(params["n_steps"])
-                except (TypeError, ValueError):
-                    n_steps = None
-                if n_steps is not None and n_steps != n_control_stages + 1:
-                    errors.append(
-                        ValidationIssue(
-                            type="task_n_steps_mismatch",
-                            message=(
-                                "DelayedReaches n_steps must equal "
-                                "n_control_stages + 1 when both are provided"
-                            ),
-                            location={"path": "/"},
-                        )
-                    )
     return errors
 
 

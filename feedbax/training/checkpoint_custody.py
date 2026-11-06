@@ -41,6 +41,7 @@ from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from feedbax._atomic import write_bytes_atomic as _write_bytes_atomic
+from feedbax._checkpoint_errors import _LegacyWrapperLayoutError
 from feedbax._secure_fs import (
     SecurePathRigor,
     directory_open_flags,
@@ -78,6 +79,7 @@ from feedbax.contracts.checkpoints import (
     CHECKPOINT_CONTENT_INTEGRITY_SCHEMA_VERSION_V1,
     ContentIntegrityDigest,
     LegacySlotContentDigest,
+    PHASE_BOUNDARY_DECISION_METADATA_KEY,
     PopulationIdentityRecord,
     RunContractBinding,
     SerializerVersionRecord,
@@ -1120,8 +1122,20 @@ def authenticate_checkpoint_custody_ref(
         ) from exc
 
 
+def _checkpoint_latest_parent_ref(latest: CheckpointLatestPointer) -> ParentRef:
+    return ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id=latest.transaction_id,
+        role="training_checkpoint_custody",
+        uri=latest.manifest_relative_path,
+        metadata={"manifest_sha256": latest.manifest_sha256},
+    )
+
+
 def authenticate_published_checkpoint_custody(
     root: str | Path,
+    *,
+    require_single_transaction: bool = False,
 ) -> AuthenticatedCheckpointTransaction:
     """Authenticate the published latest checkpoint without executing payloads."""
     try:
@@ -1151,15 +1165,8 @@ def authenticate_published_checkpoint_custody(
                 raise CheckpointReferenceResolutionError(
                     "checkpoint latest pointer manifest_sha256 does not match raw manifest bytes"
                 )
-            ref = ParentRef(
-                kind="TrainingCheckpointTransactionManifest",
-                id=latest.transaction_id,
-                role="training_checkpoint_custody",
-                uri="/".join(manifest_parts),
-                metadata={"manifest_sha256": manifest_sha256},
-            )
             authenticated = _authenticate_checkpoint_custody_bytes(
-                ref,
+                _checkpoint_latest_parent_ref(latest),
                 raw_manifest=raw_manifest,
                 manifest_parts=manifest_parts,
                 root_descriptor=root_descriptor,
@@ -1171,6 +1178,19 @@ def authenticate_published_checkpoint_custody(
                 raise CheckpointReferenceResolutionError(
                     "checkpoint latest pointer transaction root does not match manifest"
                 )
+            if require_single_transaction:
+                transaction_root = os.open(
+                    TRANSACTIONS_DIR_NAME,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=root_descriptor,
+                )
+                try:
+                    if os.listdir(transaction_root) != [latest.transaction_id]:
+                        raise CheckpointReferenceResolutionError(
+                            "inherited checkpoint custody must contain only the source transaction"
+                        )
+                finally:
+                    os.close(transaction_root)
             return authenticated
         finally:
             os.close(root_descriptor)
@@ -3505,7 +3525,7 @@ def _load_checkpoint_from_pointer(
     """Load and validate a transaction through the same gates as latest resume."""
     manifest_path, manifest = _manifest_from_latest_pointer(root_path, latest)
 
-    _validate_contract_binding(
+    validate_checkpoint_run_contract(
         manifest,
         expected_run_spec,
         expected_phase_program,
@@ -3580,6 +3600,7 @@ def _load_checkpoint_from_pointer(
 
     return CheckpointResumeResult(
         manifest=manifest,
+        parent_ref=_checkpoint_latest_parent_ref(latest),
         slots=loaded_slots,
         provenance_notices=provenance_notices,
         new_lineage_required=allow_new_lineage_override
@@ -5433,6 +5454,23 @@ def _fork_checkpoint_transaction_from_path(
         manifest_metadata["phase"] = barrier.phase
         manifest_metadata["forked_from_transaction_id"] = source.manifest.transaction_id
         manifest_metadata.update(dict(metadata or {}))
+        target_binding = run_contract_binding(target_run_spec, phase_program)
+        source_coordinate = source.manifest.completed_coordinate
+        boundary_coordinate_fields = {
+            "phase", "inner_step", "outer_step", "program_step", "schedule_origin_step"
+        }
+        manifest_metadata.pop(PHASE_BOUNDARY_DECISION_METADATA_KEY, None)
+        if (
+            PHASE_BOUNDARY_DECISION_METADATA_KEY in source.manifest.metadata
+            and resolved_barrier_mapping is None
+            and source.manifest.run_contract_binding.phase_program_sha256
+            == target_binding.phase_program_sha256
+            and source_coordinate.model_dump(include=boundary_coordinate_fields)
+            == coordinate.model_dump(include=boundary_coordinate_fields)
+        ):
+            manifest_metadata[PHASE_BOUNDARY_DECISION_METADATA_KEY] = source.manifest.metadata[
+                PHASE_BOUNDARY_DECISION_METADATA_KEY
+            ]
         if request is not None:
             manifest_metadata["checkpoint_continuation"] = request.model_dump(
                 mode="json",
@@ -5498,7 +5536,7 @@ def _fork_checkpoint_transaction_from_path(
                 history_granularities=_history_granularities(prepared_slots),
             ),
             consistency_predicate=derive_consistency_predicate(phase_program),
-            run_contract_binding=run_contract_binding(target_run_spec, phase_program),
+            run_contract_binding=target_binding,
             slots=slot_records,
             content_integrity_digest=ContentIntegrityDigest(
                 semantic_state_root_algorithm_version=SEMANTIC_STATE_ROOT_ALGORITHM_VERSION,
@@ -6751,13 +6789,14 @@ def _manifest_optimizer_bindings(
     return tuple(binding for binding in bindings or () if isinstance(binding, Mapping))
 
 
-def _validate_contract_binding(
+def validate_checkpoint_run_contract(
     manifest: CheckpointTransactionManifest,
     expected_run_spec: TrainingRunSpec,
     expected_phase_program: PhaseProgramSpec,
     *,
-    allow_new_lineage_override: bool,
+    allow_new_lineage_override: bool = False,
 ) -> None:
+    """Check the resume contract without loading checkpoint slots."""
     expected = run_contract_binding(expected_run_spec, expected_phase_program)
     if _contract_binding_matches(
         manifest.run_contract_binding,
@@ -7186,6 +7225,8 @@ def _deserialize_checkpoint_slot(slot: CheckpointSlotBlobRef, path: Path) -> Any
     blob_bytes = _read_blob(slot, path)
     try:
         return pickle.loads(blob_bytes)
+    except _LegacyWrapperLayoutError as exc:
+        raise CheckpointCompatibilityError(f"checkpoint slot {slot.slot!r}: {exc}") from exc
     except Exception as exc:
         raise CheckpointIntegrityError(
             f"checkpoint slot {slot.slot!r} could not be deserialized"

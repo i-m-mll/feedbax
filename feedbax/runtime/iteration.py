@@ -9,32 +9,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Optional
 
-import jax.random as jr
 from jaxtyping import PRNGKeyArray, PyTree
 
 from equinox.nn import State
+from feedbax.runtime._graph_key_schedule import step_keys
 from feedbax.runtime._rollout import scan_rollout, select_step_inputs
 from feedbax.runtime.graph import Component, Graph, RolloutStepHook
-
-
-def _run_component_step(
-    component: Component,
-    step_input: PyTree,
-    state: State,
-    *,
-    key: PRNGKeyArray,
-    t: PyTree,
-    rollout_step_hook: Optional[RolloutStepHook],
-):
-    if isinstance(component, Graph):
-        return component(
-            step_input,
-            state,
-            key=key,
-            t=t,
-            rollout_step_hook=rollout_step_hook,
-        )
-    return component(step_input, state, key=key)
 
 
 def iterate_component(
@@ -48,7 +28,7 @@ def iterate_component(
     streaming_loss_fn: Optional[Callable] = None,
     rollout_step_hook: Optional[RolloutStepHook] = None,
 ) -> tuple[PyTree, State, PyTree | None]:
-    """Iterate an acyclic component over multiple timesteps.
+    """Iterate a component over multiple timesteps.
 
     When ``streaming_loss_fn`` is provided the scan accumulates a scalar loss
     instead of storing state history, eliminating trajectory memory entirely.
@@ -58,18 +38,25 @@ def iterate_component(
     window is passed so cross-timestep losses can be evaluated without storing
     the full trajectory. ``state_filter`` is ignored in this mode.
     """
-    keys = jr.split(key, n_steps)
+    if isinstance(component, Graph):
+        outputs, final_state, aux, _ = component._scan_rollout(
+            inputs,
+            init_state,
+            key=key,
+            n_steps=n_steps,
+            save_history=state_filter is not False,
+            state_filter=state_filter,
+            streaming_loss_fn=streaming_loss_fn,
+            rollout_step_hook=rollout_step_hook,
+            checkpoint=checkpoint,
+        )
+        return outputs, final_state, aux
+
+    keys = step_keys(key, n_steps)
     step_inputs = select_step_inputs(inputs, n_steps)
 
     def step_fn(step_input, state, step_carry, step_key, t):
-        outputs, new_state = _run_component_step(
-            component,
-            step_input,
-            state,
-            key=step_key,
-            t=t,
-            rollout_step_hook=rollout_step_hook,
-        )
+        outputs, new_state = component(step_input, state, key=step_key)
         return outputs, new_state, step_carry
 
     return scan_rollout(
@@ -78,7 +65,7 @@ def iterate_component(
         step_inputs,
         keys,
         n_steps,
-        state_view_fn=component.state_view,
+        state_view_fn=lambda state, _: component.state_view(state),
         checkpoint=checkpoint,
         save_history=state_filter is not False,
         state_filter=state_filter,

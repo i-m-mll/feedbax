@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from operator import index
 import time
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 import equinox as eqx
 import jax
@@ -15,12 +15,14 @@ import jax.numpy as jnp
 import jax.tree as jt
 import numpy as np
 
+from feedbax.contracts.checkpoints import PHASE_BOUNDARY_DECISION_METADATA_KEY
 from feedbax.contracts.worker import (
     MaterializedMappingLevelSpec,
     MaterializedSlotAxisBinding,
     PhaseProgramSpec,
     ProgressCoordinate,
     StateSlotSpec,
+    UpdateStepSpec,
 )
 from feedbax.training.worker_validation import (
     WorkerContractValidationError,
@@ -88,13 +90,54 @@ def _reconstruct_updates(
 
 
 @dataclass(frozen=True)
+class _NumericalWrite:
+    """Rebuild a write from compiled arrays and its static leaf sources."""
+
+    tree: Any
+    array_indices: tuple[int, ...]
+    static_leaves: tuple[tuple[int, Any], ...]
+    input_offset: int | None
+
+    def restore(
+        self,
+        arrays: tuple[jax.Array, ...],
+        input_leaves: list[Any],
+        *,
+        mapped: bool,
+    ) -> Any:
+        leaves = [None] * self.tree.num_leaves
+        offset = self.input_offset
+        for i, value in self.static_leaves:
+            leaves[i] = value if offset is None else deepcopy(input_leaves[offset + i])
+        for i, array in zip(self.array_indices, arrays, strict=True):
+            if mapped and offset is not None:
+                source = input_leaves[offset + i]
+                # AOT canonicalizes NumPy dtypes, but a mapped write must keep
+                # the live destination's dtype and array category.
+                if not isinstance(source, jax.Array) and (
+                    not isinstance(source, np.ndarray) or source.dtype != array.dtype
+                ):
+                    raise ValueError("mapped write changes destination array category or dtype")
+            leaves[i] = array
+        return self.tree.unflatten(leaves)
+
+
+@dataclass(frozen=True)
 class _PreparedNumericalUpdate:
+    """A fixed input and write ABI around an array-only JAX executable."""
+
     declaration: NumericalUpdateKernel
     executable: Any
-    static_inputs: Any
-    input_structure: Any
+    static_inputs: tuple[Any, ...]
+    static_indices: tuple[int, ...]
+    array_indices: tuple[int, ...]
+    input_tree: Any
     slot_names: tuple[str, ...]
-    context_names: tuple[str, ...]
+    context_names: frozenset[str]
+    writes: tuple[tuple[str, _NumericalWrite], ...]
+    unprojected_writes: tuple[str, ...]
+    mapped: bool
+    custom_projection: bool
 
     def __call__(
         self,
@@ -103,21 +146,31 @@ class _PreparedNumericalUpdate:
         context: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         del coordinate
-        projected_slots, projected_context = self.declaration.project(slots, context)
-        if set(projected_context) != set(self.context_names):
+        projected_slots, selected_context = self.declaration.project(slots, context)
+        if selected_context.keys() != self.context_names:
             raise ValueError("selected numerical context keys changed after preparation")
-        missing = set(self.slot_names) - set(projected_slots)
-        if missing:
-            raise ValueError(f"selected numerical slots disappeared: {sorted(missing)!r}")
-        selected = {k: projected_slots[k] for k in self.slot_names}
-        inputs = (selected, projected_context)
-        if jt.structure(inputs) != self.input_structure:
+        try:
+            selected = {k: projected_slots[k] for k in self.slot_names}
+        except KeyError as exc:
+            missing = sorted(set(self.slot_names) - projected_slots.keys())
+            raise ValueError(f"selected numerical slots disappeared: {missing!r}") from exc
+        leaves, tree = jt.flatten((selected, selected_context))
+        if tree != self.input_tree:
             raise ValueError("numerical input PyTree structure changed after preparation")
-        static = eqx.filter(inputs, lambda x: not eqx.is_array(x))
-        if eqx.tree_equal(static, self.static_inputs) is not True:
+        static = tuple(leaves[i] for i in self.static_indices)
+        if static and eqx.tree_equal(static, self.static_inputs) is not True:
             raise ValueError("numerical static inputs changed after preparation")
-        updates = self.executable(*inputs)
-        return _reconstruct_updates(updates, selected)
+        arrays = tuple(leaves[i] for i in self.array_indices)
+        if not all(map(eqx.is_array, arrays)):
+            raise ValueError("numerical input array/static leaf category changed after preparation")
+        outputs = self.executable(arrays)
+        updates = {
+            name: write.restore(outputs[name], leaves, mapped=self.mapped)
+            for name, write in self.writes
+        }
+        if self.custom_projection:
+            return _reconstruct_updates(updates, selected)
+        return updates
 
 
 @jax.jit
@@ -190,6 +243,7 @@ def _copy_phase_checkpoint(checkpoint: "PhaseCheckpoint") -> "PhaseCheckpoint":
         coordinate=deepcopy(checkpoint.coordinate),
         slots=_copy_executor_mapping(checkpoint.slots),
         visit_ordinal=checkpoint.visit_ordinal,
+        boundary_decision=checkpoint.boundary_decision,
     )
 
 
@@ -208,6 +262,33 @@ def _progress_observation(
     return coordinate
 
 
+@dataclass(frozen=True)
+class PhaseBoundaryDecision:
+    """The transition selected at a completed phase, with None for termination."""
+
+    next_phase: str | None
+
+    @classmethod
+    def from_checkpoint_metadata(
+        cls, metadata: Mapping[str, Any]
+    ) -> PhaseBoundaryDecision | None:
+        if PHASE_BOUNDARY_DECISION_METADATA_KEY not in metadata:
+            return None
+        decision = metadata[PHASE_BOUNDARY_DECISION_METADATA_KEY]
+        path = "/checkpoint/phase_boundary_decision"
+        if (
+            not isinstance(decision, Mapping)
+            or set(decision) != {"schema_version", "next_phase"}
+            or type(decision["schema_version"]) is not int
+            or decision["schema_version"] != 1
+        ):
+            raise WorkerContractValidationError(path, "invalid or unsupported boundary decision")
+        target = decision["next_phase"]
+        if target is not None and (not isinstance(target, str) or not target):
+            raise WorkerContractValidationError(f"{path}/next_phase", "invalid next phase")
+        return cls(target)
+
+
 @dataclass
 class PhaseCheckpoint:
     """In-memory checkpoint captured at a phase barrier."""
@@ -216,6 +297,7 @@ class PhaseCheckpoint:
     coordinate: ProgressCoordinate
     slots: dict[str, Any]
     visit_ordinal: int | None = None
+    boundary_decision: PhaseBoundaryDecision | None = None
 
 
 @dataclass
@@ -229,6 +311,8 @@ class PhaseExecutionResult:
     progress: list[ProgressCoordinate] = field(default_factory=list)
     checkpoints: dict[str, PhaseCheckpoint] = field(default_factory=dict)
     checkpoint_visits: tuple[PhaseCheckpoint, ...] = ()
+    interrupted: bool = False
+    resumed_terminal: bool = False
 
 
 @dataclass(frozen=True)
@@ -240,14 +324,16 @@ class StepGuardResult:
     coordinate: ProgressCoordinate | None = None
 
 
-class PhaseCheckpointStore(Protocol):
-    """Minimal checkpoint-store contract consumed by ``PhaseProgramExecutor``."""
+class PhaseCheckpointWriter(Protocol):
+    """Accept checkpoint payloads captured by the phase executor."""
 
     def save(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
         """Persist one checkpoint visit and return the stored checkpoint."""
 
-    def remember(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
-        """Record a pre-existing checkpoint visit without publishing side effects."""
+
+@runtime_checkable
+class PhaseCheckpointStore(PhaseCheckpointWriter, Protocol):
+    """Checkpoint writer that also keeps payloads available in memory."""
 
     def load(self, barrier: str) -> PhaseCheckpoint:
         """Return the latest checkpoint visit for ``barrier``."""
@@ -257,6 +343,14 @@ class PhaseCheckpointStore(Protocol):
 
     def visits(self, barrier: str | None = None) -> tuple[PhaseCheckpoint, ...]:
         """Return stored checkpoint visits in append order."""
+
+
+def _next_checkpoint_visit_ordinal(
+    checkpoint: PhaseCheckpoint,
+    previous_ordinal: int | None,
+) -> int:
+    next_ordinal = 0 if previous_ordinal is None else previous_ordinal + 1
+    return max(next_ordinal, checkpoint.visit_ordinal or 0)
 
 
 class InMemoryCheckpointStore:
@@ -270,13 +364,15 @@ class InMemoryCheckpointStore:
     def __init__(self) -> None:
         self._checkpoints: dict[str, list[PhaseCheckpoint]] = {}
         self._visit_log: list[PhaseCheckpoint] = []
-        self._next_visit_ordinal: dict[str, int] = {}
 
     def save(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
         return self.remember(checkpoint)
 
     def remember(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
-        saved = self._checkpoint_with_visit_ordinal(checkpoint)
+        visits = self._checkpoints.get(checkpoint.barrier)
+        previous_ordinal = visits[-1].visit_ordinal if visits else None
+        ordinal = _next_checkpoint_visit_ordinal(checkpoint, previous_ordinal)
+        saved = _copy_phase_checkpoint(replace(checkpoint, visit_ordinal=ordinal))
         self._checkpoints.setdefault(saved.barrier, []).append(saved)
         self._visit_log.append(saved)
         return _copy_phase_checkpoint(saved)
@@ -307,23 +403,6 @@ class InMemoryCheckpointStore:
             visits = self._checkpoints.get(barrier, ())
         return tuple(_copy_phase_checkpoint(visit) for visit in visits)
 
-    def _checkpoint_with_visit_ordinal(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
-        next_ordinal = self._next_visit_ordinal.get(checkpoint.barrier, 0)
-        visit_ordinal = (
-            next_ordinal
-            if checkpoint.visit_ordinal is None
-            else max(checkpoint.visit_ordinal, next_ordinal)
-        )
-        self._next_visit_ordinal[checkpoint.barrier] = visit_ordinal + 1
-        return _copy_phase_checkpoint(
-            PhaseCheckpoint(
-                barrier=checkpoint.barrier,
-                coordinate=checkpoint.coordinate,
-                slots=checkpoint.slots,
-                visit_ordinal=visit_ordinal,
-            )
-        )
-
 
 class PhaseProgramExecutor:
     """Execute a validated phase program through fixed-signature kernels."""
@@ -334,7 +413,7 @@ class PhaseProgramExecutor:
         kernels: Mapping[str, UpdateKernel],
         *,
         guard_predicates: Mapping[str, UpdateKernel] | None = None,
-        checkpoint_store: PhaseCheckpointStore | None = None,
+        checkpoint_store: PhaseCheckpointWriter | None = None,
         state_slots: Sequence[StateSlotSpec] = (),
         mapping_levels: Sequence[MaterializedMappingLevelSpec] = (),
         slot_axis_bindings: Mapping[str, Sequence[MaterializedSlotAxisBinding]] | None = None,
@@ -344,7 +423,14 @@ class PhaseProgramExecutor:
         self._prepared_numerical: dict[str, _PreparedNumericalUpdate] = {}
         self.preparation_telemetry: dict[str, Any] = {}
         self.guard_predicates = dict(guard_predicates or {})
-        self.checkpoint_store = checkpoint_store or InMemoryCheckpointStore()
+        self.checkpoint_store = (
+            InMemoryCheckpointStore() if checkpoint_store is None else checkpoint_store
+        )
+        self._checkpoint_history = (
+            self.checkpoint_store
+            if isinstance(self.checkpoint_store, PhaseCheckpointStore)
+            else None
+        )
         self._metric_slots = tuple(slot.name for slot in state_slots if slot.role == "metric")
         self.mapping_levels = tuple(mapping_levels)
         self.slot_axis_bindings = {
@@ -384,6 +470,102 @@ class PhaseProgramExecutor:
             out_axes=eqx.if_array(0),
         )
 
+    def _prepare_numerical(
+        self,
+        kernel: NumericalUpdateKernel,
+        step: UpdateStepSpec,
+        slots: Mapping[str, Any],
+        context: Mapping[str, Any],
+        *,
+        mapped_step: bool,
+    ) -> _PreparedNumericalUpdate:
+        inputs = kernel.project(slots, context)
+        numeric_slots, numeric_context = inputs
+        input_leaves, input_tree = jt.flatten(inputs)
+        slot_names = tuple(sorted(numeric_slots))
+        array_indices = tuple(i for i, x in enumerate(input_leaves) if eqx.is_array(x))
+        static_indices = tuple(i for i, x in enumerate(input_leaves) if not eqx.is_array(x))
+        destinations = {}
+        custom_projection = type(kernel).project is not NumericalUpdateKernel.project
+        # Only the declared key projection proves that the operand is the destination.
+        if not custom_projection:
+            offset = 0
+            for name, tree in zip(slot_names, input_tree.children()[0].children(), strict=True):
+                destinations[name] = offset
+                offset += tree.num_leaves
+        writes = {}
+
+        def numerical_call(arrays):
+            leaves = input_leaves.copy()
+            for i, array in zip(array_indices, arrays, strict=True):
+                leaves[i] = array
+            selected_slots, selected_context = input_tree.unflatten(leaves)
+            if mapped_step:
+                mapped = {k: v for k, v in selected_slots.items() if k in self._mapped_slots}
+                shared = {
+                    k: v
+                    for k, v in selected_slots.items()
+                    if k not in self._mapped_slots
+                }
+
+                def scalar_call(mapped, shared, ctx):
+                    return kernel.update({**shared, **mapped}, ctx)
+
+                updates = eqx.filter_vmap(
+                    scalar_call,
+                    in_axes=(eqx.if_array(0), None, None),
+                    out_axes=eqx.if_array(0),
+                )(mapped, shared, selected_context)
+            else:
+                updates = kernel.update(selected_slots, selected_context)
+            output_template = jt.map(
+                lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype)
+                if eqx.is_array(x)
+                else x,
+                updates,
+            )
+            self._validate_destination_updates(
+                step.name,
+                step.writes,
+                output_template,
+                slots,
+                fixed_static=True,
+            )
+            outputs = {}
+            for name, value in updates.items():
+                leaves, tree = jt.flatten(value)
+                array_positions = tuple(i for i, x in enumerate(leaves) if eqx.is_array(x))
+                writes[name] = _NumericalWrite(
+                    tree=tree,
+                    array_indices=array_positions,
+                    static_leaves=tuple(
+                        (i, x) for i, x in enumerate(leaves) if not eqx.is_array(x)
+                    ),
+                    input_offset=destinations.get(name),
+                )
+                outputs[name] = tuple(leaves[i] for i in array_positions)
+            return outputs
+
+        if mapped_step and set(step.writes) & self._shared_slots:
+            raise ValueError("mapped numerical step writes shared slots")
+        executable = jax.jit(numerical_call).lower(
+            tuple(input_leaves[i] for i in array_indices)
+        ).compile()
+        return _PreparedNumericalUpdate(
+            declaration=kernel,
+            executable=executable,
+            static_inputs=tuple(deepcopy(input_leaves[i]) for i in static_indices),
+            static_indices=static_indices,
+            array_indices=array_indices,
+            input_tree=input_tree,
+            slot_names=slot_names,
+            context_names=frozenset(numeric_context),
+            writes=tuple(writes.items()),
+            unprojected_writes=tuple(name for name in writes if name not in destinations),
+            mapped=mapped_step,
+            custom_projection=custom_projection,
+        )
+
     def preflight(
         self,
         slots: Mapping[str, Any],
@@ -405,55 +587,8 @@ class PhaseProgramExecutor:
             try:
                 if isinstance(kernel, NumericalUpdateKernel):
                     started = time.perf_counter()
-                    inputs = kernel.project(slots, dict(context or {}))
-                    numeric_slots, _ = inputs
-
-                    def numerical_call(selected_slots, selected_context):
-                        if mapped_step:
-                            mapped = {
-                                k: v for k, v in selected_slots.items() if k in self._mapped_slots
-                            }
-                            shared = {
-                                k: v
-                                for k, v in selected_slots.items()
-                                if k not in self._mapped_slots
-                            }
-
-                            def scalar_call(mapped, shared, ctx):
-                                return kernel.update({**shared, **mapped}, ctx)
-
-                            updates = eqx.filter_vmap(
-                                scalar_call,
-                                in_axes=(eqx.if_array(0), None, None),
-                                out_axes=eqx.if_array(0),
-                            )(mapped, shared, selected_context)
-                        else:
-                            updates = kernel.update(selected_slots, selected_context)
-                        output_template = jt.map(
-                            lambda x: jax.ShapeDtypeStruct(x.shape, x.dtype)
-                            if eqx.is_array(x)
-                            else x,
-                            updates,
-                        )
-                        self._validate_destination_updates(
-                            step.name,
-                            step.writes,
-                            output_template,
-                            slots,
-                            fixed_static=True,
-                        )
-                        return updates
-
-                    if mapped_step and set(step.writes) & self._shared_slots:
-                        raise ValueError("mapped numerical step writes shared slots")
-                    executable = eqx.filter_jit(numerical_call).lower(*inputs).compile()
-                    self._prepared_numerical[step.name] = _PreparedNumericalUpdate(
-                        kernel,
-                        executable,
-                        _copy_executor_value(eqx.filter(inputs, lambda x: not eqx.is_array(x))),
-                        jt.structure(inputs),
-                        tuple(numeric_slots),
-                        tuple(inputs[1]),
+                    self._prepared_numerical[step.name] = self._prepare_numerical(
+                        kernel, step, slots, dict(context or {}), mapped_step=mapped_step
                     )
                     preparation_seconds += time.perf_counter() - started
                     prepared.append({"step": step.name, "kernel_ref": step.kernel.kernel_ref})
@@ -537,16 +672,21 @@ class PhaseProgramExecutor:
         *,
         run_id: str,
         resume_from_barrier: str | None = None,
+        resume_checkpoint: PhaseCheckpoint | None = None,
+        extend_terminal_phase: bool = False,
         stop_after_barrier: str | None = None,
         stop_after_next_barrier: Callable[[str], bool] | None = None,
         context: Mapping[str, Any] | None = None,
+        start_callback: Callable[[int], None] | None = None,
         progress_callback: ProgressCallback | None = None,
+        retain_progress: bool = True,
         method_observation_callback: MethodObservationCallback | None = None,
         step_guard: StepGuard | None = None,
         checkpoint_interval: int | None = None,
         progress_interval: int | None = None,
         include_completed_batches_in_progress: bool = False,
         update_budget: int | None = None,
+        stop_before_update: Callable[[], bool] | None = None,
     ) -> PhaseExecutionResult:
         """Execute phases from the start or from a checkpoint barrier.
 
@@ -554,7 +694,18 @@ class PhaseProgramExecutor:
         training-batch authority, not against phase boundaries or checkpoint
         visit ordinals. ``update_budget`` uses the same authority as a delta
         from the entry counter and may end naturally before the budget is used.
-        A terminal partial interval is always emitted.
+        A terminal partial interval is always emitted. A stop observed before
+        an update saves any unsaved progress at the last committed coordinate
+        through that phase's authored barrier, even without a checkpoint interval.
+        Set `retain_progress=False` to omit the observations from the result
+        while still delivering them to `progress_callback`.
+
+        ``start_callback`` receives the entry batch after restoration and before updates.
+
+        A checkpoint restored by external custody can be passed directly as
+        ``resume_checkpoint``. ``resume_from_barrier`` selects a stored in-memory visit.
+        Set ``extend_terminal_phase`` only for an authorized additional-batch
+        continuation that can restart a terminal phase.
         """
         self._validate_interval(checkpoint_interval, name="checkpoint_interval")
         self._validate_interval(progress_interval, name="progress_interval")
@@ -575,15 +726,26 @@ class PhaseProgramExecutor:
         resume_inner_step = 0
         resuming_within_phase = False
         if resume_from_barrier is not None:
-            checkpoint = self.checkpoint_store.load(resume_from_barrier)
-            current_slots = self.merge_resume_slots(slots, checkpoint)
-            start_phase, resume_inner_step = self._resume_position(checkpoint)
+            if resume_checkpoint is not None or self._checkpoint_history is None:
+                raise WorkerContractValidationError(
+                    "/checkpoint_store",
+                    "resume_from_barrier requires an in-memory checkpoint store "
+                    "and cannot be used with resume_checkpoint",
+                )
+            resume_checkpoint = self._checkpoint_history.load(resume_from_barrier)
+        if resume_checkpoint is not None:
+            current_slots = self.merge_resume_slots(slots, resume_checkpoint)
+            start_phase, resume_inner_step = self.resume_position(
+                resume_checkpoint.barrier,
+                resume_checkpoint.coordinate,
+                resume_checkpoint.boundary_decision,
+                extend_terminal_phase=extend_terminal_phase,
+            )
             resuming_within_phase = resume_inner_step > 0
-            coordinate = checkpoint.coordinate.model_copy(
+            coordinate = resume_checkpoint.coordinate.model_copy(
                 update={
                     "run_id": run_id,
-                    "phase": start_phase,
-                    "completed_barrier": resume_from_barrier,
+                    "completed_barrier": resume_checkpoint.barrier,
                 }
             )
         else:
@@ -592,17 +754,24 @@ class PhaseProgramExecutor:
             coordinate = ProgressCoordinate(run_id=run_id, phase=start_phase)
 
         if (
-            any(isinstance(k, NumericalUpdateKernel) for k in self.kernels.values())
+            start_phase is not None
+            and any(isinstance(k, NumericalUpdateKernel) for k in self.kernels.values())
             and not self._prepared_numerical
         ):
             self.preflight(current_slots, run_id=run_id, context=checkpoint_context)
         initial_batch = self._completed_training_batches(current_slots, coordinate)
+        if start_callback is not None:
+            start_callback(initial_batch)
         previous_completed_batch = initial_batch
         last_progress_batch = initial_batch
         last_checkpoint_batch = initial_batch
+        last_checkpoint_step = coordinate.program_step
         phase_name: str | None = start_phase
+        interrupted = False
+        last_committed_boundary_decision = None
         while phase_name is not None:
             phase = self._phases[phase_name]
+            entry_coordinate = coordinate
             schedule_origin_step = (
                 coordinate.schedule_origin_step
                 if resuming_within_phase
@@ -614,7 +783,13 @@ class PhaseProgramExecutor:
                     "schedule_origin_step": schedule_origin_step,
                 }
             )
+            boundary_decision = None
             for inner_step in range(resume_inner_step, phase.max_steps):
+                if phase.update_steps and stop_before_update is not None and stop_before_update():
+                    if inner_step == resume_inner_step:
+                        coordinate = entry_coordinate
+                    interrupted = True
+                    break
                 coordinate = coordinate.model_copy(update={"inner_step": inner_step})
                 for step_name in phase.update_steps:
                     step = self._steps[step_name]
@@ -624,21 +799,22 @@ class PhaseProgramExecutor:
                             f"/phase_program/update_steps/{step_name}/kernel_ref",
                             f"missing callable for kernel_ref {step.kernel.kernel_ref!r}",
                         )
+                    prepared = None
                     if isinstance(kernel, NumericalUpdateKernel):
                         try:
-                            updates = self._prepared_numerical[step.name](
-                                current_slots,
-                                coordinate,
-                                checkpoint_context,
-                            )
+                            prepared = self._prepared_numerical[step.name]
+                            updates = prepared(current_slots, coordinate, checkpoint_context)
                         except Exception as exc:
                             raise WorkerContractValidationError(
                                 f"/phase_program/update_steps/{step.name}",
                                 f"prepared numerical execution failed: {exc}",
                             ) from exc
-                        if self._active_axis is not None and self._active_axis in step.axes:
+                        if prepared.mapped and prepared.unprojected_writes:
                             self._validate_destination_updates(
-                                step.name, step.writes, updates, current_slots
+                                step.name,
+                                step.writes,
+                                {name: updates[name] for name in prepared.unprojected_writes},
+                                current_slots,
                             )
                     elif self._active_axis is not None and self._active_axis in step.axes:
                         updates = mapped_kernels[step.kernel.kernel_ref](
@@ -666,7 +842,17 @@ class PhaseProgramExecutor:
                             f"/phase_program/update_steps/{step_name}/writes",
                             f"kernel returned undeclared writes {unknown!r}",
                         )
-                    current_slots.update(_copy_executor_mapping(updates))
+                    if prepared is None:
+                        updates = _copy_executor_mapping(updates)
+                    elif prepared.unprojected_writes:
+                        updates = {
+                            **updates,
+                            **{
+                                name: _copy_executor_value(updates[name])
+                                for name in prepared.unprojected_writes
+                            },
+                        }
+                    current_slots.update(updates)
                 coordinate = coordinate.model_copy(
                     update={
                         "program_step": coordinate.program_step + 1,
@@ -685,16 +871,11 @@ class PhaseProgramExecutor:
                             current_slots if guard_result.slots is None else guard_result.slots
                         )
                         halted_coordinate = guard_result.coordinate or coordinate
-                        return PhaseExecutionResult(
-                            slots=_copy_executor_mapping(halted_slots),
-                            coordinate=halted_coordinate,
+                        return self._result(
+                            halted_slots,
+                            halted_coordinate,
+                            progress,
                             start_completed_batches=initial_batch,
-                            end_completed_batches=self._completed_training_batches(
-                                halted_slots, halted_coordinate
-                            ),
-                            progress=progress,
-                            checkpoints=self.checkpoint_store.as_dict(),
-                            checkpoint_visits=self.checkpoint_store.visits(),
                         )
                 completed_batches = observation.completed_batches()
                 if completed_batches < previous_completed_batch:
@@ -724,7 +905,8 @@ class PhaseProgramExecutor:
                         completed_batches,
                         include_completed_batches=include_completed_batches_in_progress,
                     )
-                    progress.append(observed_coordinate)
+                    if retain_progress:
+                        progress.append(observed_coordinate)
                     last_progress_batch = completed_batches
                     if progress_callback is not None:
                         progress_callback(_copy_progress_coordinate(observed_coordinate))
@@ -736,37 +918,32 @@ class PhaseProgramExecutor:
                         f"start={initial_batch}, current={completed_batches}, "
                         f"budget={update_budget}",
                     )
-                if update_budget is not None and completed_batch_delta == update_budget:
-                    saved_checkpoint = self._save_phase_barrier(
-                        phase.name,
-                        coordinate,
-                        current_slots,
+                budget_reached = update_budget is not None and completed_batch_delta == update_budget
+                interval_due = checkpoint_interval is not None and self._interval_due(
+                    completed_batches, checkpoint_interval, last_checkpoint_batch
+                )
+                if inner_step == phase.max_steps - 1:
+                    boundary_coordinate = coordinate
+                    if interval_due and phase.checkpoint_barrier is not None:
+                        boundary_coordinate = coordinate.model_copy(
+                            update={"completed_barrier": phase.checkpoint_barrier}
+                        )
+                    boundary_decision = PhaseBoundaryDecision(
+                        self._next_phase(
+                            phase.name, (current_slots, boundary_coordinate, checkpoint_context)
+                        )
                     )
-                    coordinate = coordinate.model_copy(
-                        update={"completed_barrier": saved_checkpoint.barrier}
-                    )
-                    return self._result(
-                        current_slots,
-                        coordinate,
-                        progress,
-                        start_completed_batches=initial_batch,
-                    )
-                if checkpoint_interval is not None and self._interval_due(
-                    completed_batches,
-                    checkpoint_interval,
-                    last_checkpoint_batch,
-                ):
-                    saved_checkpoint = self._save_phase_barrier(
-                        phase.name,
-                        coordinate,
-                        current_slots,
+                if budget_reached or interval_due:
+                    saved_barrier = self._save_phase_barrier(
+                        phase.name, coordinate, current_slots, boundary_decision
                     )
                     last_checkpoint_batch = completed_batches
+                    last_checkpoint_step = coordinate.program_step
                     coordinate = coordinate.model_copy(
-                        update={"completed_barrier": saved_checkpoint.barrier}
+                        update={"completed_barrier": saved_barrier}
                     )
-                    if self._should_stop_at_barrier(
-                        saved_checkpoint.barrier,
+                    if budget_reached or self._should_stop_at_barrier(
+                        saved_barrier,
                         stop_after_barrier=stop_after_barrier,
                         stop_after_next_barrier=stop_after_next_barrier,
                     ):
@@ -777,12 +954,7 @@ class PhaseProgramExecutor:
                             start_completed_batches=initial_batch,
                         )
 
-            next_phase = self._next_phase(
-                phase.name,
-                current_slots,
-                coordinate,
-                checkpoint_context,
-            )
+            next_phase = boundary_decision.next_phase if boundary_decision is not None else None
             completed_batches = self._completed_training_batches(current_slots, coordinate)
             if (
                 next_phase is None
@@ -794,35 +966,40 @@ class PhaseProgramExecutor:
                     completed_batches,
                     include_completed_batches=include_completed_batches_in_progress,
                 )
-                progress.append(observed_coordinate)
+                if retain_progress:
+                    progress.append(observed_coordinate)
                 last_progress_batch = completed_batches
                 if progress_callback is not None:
                     progress_callback(_copy_progress_coordinate(observed_coordinate))
 
-            saved_checkpoint: PhaseCheckpoint | None = None
-            if checkpoint_interval is None and phase.checkpoint_barrier is not None:
-                saved_checkpoint = self._save_barrier(
-                    phase.checkpoint_barrier,
-                    coordinate,
-                    current_slots,
-                )
+            saved_barrier: str | None = None
+            if interrupted:
+                if coordinate.program_step != last_checkpoint_step:
+                    saved_barrier = self._save_phase_barrier(
+                        coordinate.phase,
+                        coordinate,
+                        current_slots,
+                        last_committed_boundary_decision
+                        if coordinate.program_step == entry_coordinate.program_step
+                        else None,
+                    )
+            elif checkpoint_interval is None:
+                if phase.checkpoint_barrier is not None:
+                    saved_barrier = self._save_barrier(
+                        phase.checkpoint_barrier, coordinate, current_slots, boundary_decision
+                    )
             elif (
-                checkpoint_interval is not None
-                and next_phase is None
+                next_phase is None
                 and completed_batches != last_checkpoint_batch
             ):
-                saved_checkpoint = self._save_phase_barrier(
-                    phase.name,
-                    coordinate,
-                    current_slots,
+                saved_barrier = self._save_phase_barrier(
+                    coordinate.phase, coordinate, current_slots, boundary_decision
                 )
-                last_checkpoint_batch = completed_batches
-            if saved_checkpoint is not None:
-                coordinate = coordinate.model_copy(
-                    update={"completed_barrier": saved_checkpoint.barrier}
-                )
-                if self._should_stop_at_barrier(
-                    saved_checkpoint.barrier,
+            if saved_barrier is not None:
+                last_checkpoint_step = coordinate.program_step
+                coordinate = coordinate.model_copy(update={"completed_barrier": saved_barrier})
+                if not interrupted and self._should_stop_at_barrier(
+                    saved_barrier,
                     stop_after_barrier=stop_after_barrier,
                     stop_after_next_barrier=stop_after_next_barrier,
                 ):
@@ -833,6 +1010,7 @@ class PhaseProgramExecutor:
                         start_completed_batches=initial_batch,
                     )
 
+            last_committed_boundary_decision = boundary_decision
             phase_name = next_phase
             resume_inner_step = 0
             resuming_within_phase = False
@@ -842,6 +1020,8 @@ class PhaseProgramExecutor:
             coordinate,
             progress,
             start_completed_batches=initial_batch,
+            interrupted=interrupted,
+            resumed_terminal=resume_checkpoint is not None and start_phase is None,
         )
 
     def _validate_destination_updates(
@@ -903,17 +1083,22 @@ class PhaseProgramExecutor:
         progress: list[ProgressCoordinate],
         *,
         start_completed_batches: int,
+        interrupted: bool = False,
+        resumed_terminal: bool = False,
     ) -> PhaseExecutionResult:
-        end_completed_batches = self._completed_training_batches(slots, coordinate)
-        return PhaseExecutionResult(
+        result = PhaseExecutionResult(
             slots=_copy_executor_mapping(slots),
             coordinate=coordinate,
             start_completed_batches=start_completed_batches,
-            end_completed_batches=end_completed_batches,
+            end_completed_batches=self._completed_training_batches(slots, coordinate),
             progress=progress,
-            checkpoints=self.checkpoint_store.as_dict(),
-            checkpoint_visits=self.checkpoint_store.visits(),
+            interrupted=interrupted,
+            resumed_terminal=resumed_terminal,
         )
+        if self._checkpoint_history is not None:
+            result.checkpoints = self._checkpoint_history.as_dict()
+            result.checkpoint_visits = self._checkpoint_history.visits()
+        return result
 
     @staticmethod
     def _validate_interval(value: int | None, *, name: str) -> None:
@@ -1035,14 +1220,15 @@ class PhaseProgramExecutor:
         phase_name: str,
         coordinate: ProgressCoordinate,
         slots: Mapping[str, Any],
-    ) -> PhaseCheckpoint:
+        boundary_decision: PhaseBoundaryDecision | None = None,
+    ) -> str:
         barrier_name = self._phases[phase_name].checkpoint_barrier
         if barrier_name is None:
             raise WorkerContractValidationError(
                 f"/phase_program/phases/{phase_name}/checkpoint_barrier",
-                "authored checkpoint cadence requires a barrier for every phase where it fires",
+                "cannot checkpoint a phase without an authored barrier",
             )
-        return self._save_barrier(barrier_name, coordinate, slots)
+        return self._save_barrier(barrier_name, coordinate, slots, boundary_decision)
 
     @staticmethod
     def _should_stop_at_barrier(
@@ -1060,7 +1246,8 @@ class PhaseProgramExecutor:
         barrier_name: str,
         coordinate: ProgressCoordinate,
         slots: Mapping[str, Any],
-    ) -> PhaseCheckpoint:
+        boundary_decision: PhaseBoundaryDecision | None = None,
+    ) -> str:
         barrier = self._barriers[barrier_name]
         capture_slots = [slot.slot for slot in barrier.slots]
         capture_slots.extend(
@@ -1087,36 +1274,73 @@ class PhaseProgramExecutor:
                 f"/checkpoint_barriers/{barrier_name}/artifact_sinks",
                 f"missing required artifact sink slots {missing_artifact_sinks!r}",
             )
-        return self.checkpoint_store.save(
+        saved = self.checkpoint_store.save(
             PhaseCheckpoint(
                 barrier=barrier_name,
                 coordinate=coordinate.model_copy(update={"completed_barrier": barrier_name}),
                 slots=captured,
+                boundary_decision=boundary_decision,
             )
         )
+        return saved.barrier
 
     def _progress_metrics(self, slots: Mapping[str, Any]) -> dict[str, Any]:
         return {
             slot: _copy_executor_value(slots[slot]) for slot in self._metric_slots if slot in slots
         }
 
-    def _resume_phase_for_barrier(self, barrier_name: str) -> str:
-        barrier = self._barriers.get(barrier_name)
-        if barrier is None:
-            raise WorkerContractValidationError(
-                f"/checkpoint_barriers/{barrier_name}",
-                f"unknown checkpoint barrier {barrier_name!r}",
-            )
+    def resume_position(
+        self,
+        barrier_name: str,
+        coordinate: ProgressCoordinate,
+        decision: PhaseBoundaryDecision | None,
+        *,
+        extend_terminal_phase: bool = False,
+    ) -> tuple[str | None, int]:
+        """Resolve the resume point using the program and recorded checkpoint metadata."""
+        barrier = self._barriers[barrier_name]
+        coordinate_phase = self._phases.get(coordinate.phase)
+        inner_step = coordinate.inner_step
+        next_inner_step = (
+            inner_step + 1
+            if coordinate_phase is not None
+            and inner_step is not None
+            and 0 <= inner_step < coordinate_phase.max_steps - 1
+            else 0
+        )
+        if decision is None and next_inner_step:
+            return coordinate.phase, next_inner_step
         if barrier.resume_coordinate is not None:
-            return barrier.resume_coordinate.phase
-        return self._next_phase(barrier.phase) or barrier.phase
-
-    def _resume_position(self, checkpoint: PhaseCheckpoint) -> tuple[str, int]:
-        phase = self._phases.get(checkpoint.coordinate.phase)
-        inner_step = checkpoint.coordinate.inner_step
-        if phase is not None and inner_step is not None and 0 <= inner_step < phase.max_steps - 1:
-            return phase.name, inner_step + 1
-        return self._resume_phase_for_barrier(checkpoint.barrier), 0
+            return barrier.resume_coordinate.phase, 0
+        if decision is None:
+            phase_name = barrier.phase
+            next_phase = self._next_phase(phase_name, None)
+        else:
+            if coordinate_phase is None or coordinate_phase.checkpoint_barrier != barrier.name:
+                raise WorkerContractValidationError(
+                    "/checkpoint/phase_boundary_decision",
+                    "recorded phase boundary does not belong to the checkpoint barrier",
+                )
+            phase_name = coordinate_phase.name
+            next_phase = decision.next_phase
+            if inner_step != coordinate_phase.max_steps - 1 and not (
+                extend_terminal_phase and next_phase is None and next_inner_step
+            ):
+                raise WorkerContractValidationError(
+                    "/checkpoint/phase_boundary_decision",
+                    "recorded decision requires a completed phase boundary",
+                )
+            if next_phase is not None and (
+                next_phase not in coordinate_phase.legal_next
+                or (phase_name, next_phase) not in self._transitions
+            ):
+                raise WorkerContractValidationError(
+                    "/checkpoint/phase_boundary_decision/next_phase",
+                    f"recorded successor {next_phase!r} is not legal for phase {phase_name!r}",
+                )
+        if next_phase is None and extend_terminal_phase:
+            return phase_name, next_inner_step
+        return next_phase, 0
 
     def _schedule_origin_step(self, phase_name: str, coordinate: ProgressCoordinate) -> int | None:
         phase = self._phases[phase_name]
@@ -1131,9 +1355,7 @@ class PhaseProgramExecutor:
     def _next_phase(
         self,
         phase_name: str,
-        slots: Mapping[str, Any] | None = None,
-        coordinate: ProgressCoordinate | None = None,
-        context: Mapping[str, Any] | None = None,
+        guard_inputs: tuple[Mapping[str, Any], ProgressCoordinate, Mapping[str, Any]] | None,
     ) -> str | None:
         phase = self._phases[phase_name]
         if not phase.legal_next:
@@ -1147,15 +1369,21 @@ class PhaseProgramExecutor:
                 )
             if transition.guard is None:
                 return target
-            if slots is None or coordinate is None:
-                continue
+            if guard_inputs is None:
+                raise WorkerContractValidationError(
+                    "/checkpoint/phase_boundary_decision",
+                    f"legacy checkpoint for guarded phase {phase_name!r} lacks a recorded "
+                    "boundary decision; resume from a checkpoint with a recorded decision "
+                    "or an authored resume coordinate",
+                )
+            slots, coordinate, context = guard_inputs
             predicate = self.guard_predicates.get(transition.guard.predicate_ref)
             if predicate is None:
                 raise WorkerContractValidationError(
                     f"/phase_program/transitions/{phase_name}->{target}/guard",
                     f"missing predicate for guard {transition.guard.predicate_ref!r}",
                 )
-            if bool(predicate(slots, coordinate, dict(context or {}))):
+            if bool(predicate(slots, coordinate, dict(context))):
                 return target
         return None
 

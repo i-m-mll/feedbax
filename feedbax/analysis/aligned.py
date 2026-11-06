@@ -1,6 +1,4 @@
-from collections.abc import Callable, Mapping, Sequence
-from functools import cached_property, partial
-from types import MappingProxyType
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Optional
 
 import equinox as eqx
@@ -15,7 +13,6 @@ from feedbax._vendor.jax_cookbook import (
     is_module,
     is_type,
 )
-from feedbax._vendor.jax_cookbook._func import compose_
 from jaxtyping import Array, Float, PyTree
 
 from feedbax.analysis.analysis import (
@@ -72,6 +69,15 @@ def _where_force(states, *_):
     return states.efferent.output
 
 
+def _where_command(states, *_):
+    channel = states.efferent
+    if channel.queue:
+        return channel.queue[-1]
+    if channel.noise is None:
+        return channel.output
+    return channel.output - channel.noise
+
+
 DEFAULT_VARSET: LDict[str, VarSpec] = LDict.of(VAR_LEVEL_LABEL)(
     {
         ResponseVar.POSITION: VarSpec(
@@ -84,7 +90,7 @@ DEFAULT_VARSET: LDict[str, VarSpec] = LDict.of(VAR_LEVEL_LABEL)(
             labels=Labels("Velocity", "Vel.", "v"),
         ),
         ResponseVar.COMMAND: VarSpec(
-            where=lambda states, *_: states.net.output,
+            where=_where_command,
             labels=Labels("Control command", "Command", "u"),
         ),
         ResponseVar.FORCE: VarSpec(
@@ -277,27 +283,47 @@ def get_aligned_trajectories_node(
     for transform_fn in pre_transform_fns:
         node = node.after_transform(transform_fn)
     if align_epoch is not None:
-        node = node.after_transform(
-            lambda vars, *, data: get_align_epoch_start(align_epoch)(vars, data=data)
+        node = node._add_prep_op(
+            name="align_epoch_start",
+            dep_name=None,
+            fn=get_align_epoch_start(align_epoch),
+            params=dict(epoch=align_epoch),
+            uses_callback=False,
         )
     if colorscale_key is not None:
         node = node.after_stacking(colorscale_key)
     if pos_endpoints:
-        node = node.then_transform_figs(add_aligned_position_endpoints)
+        import plotly.graph_objects as go
+
+        node = node._add_final_op(
+            op_type="figs",
+            name="add_aligned_position_endpoints",
+            fn=add_aligned_position_endpoints,
+            is_leaf=is_type(go.Figure),
+            uses_callback=False,
+        )
     return node
 
 
 #! TODO: This should not be limited to `ResponseVar`
 class Measure(Module):
-    """Unified measure class for computing response metrics.
+    """Measure a response by slicing time, selecting a direction, transforming, and reducing.
 
     Attributes:
-        response_var: Which response variable to measure (pos, vel, force)
-        agg_fn: Function to aggregate over time axis (e.g. jnp.max, jnp.mean)
-        direction: Optional direction to extract vector component
-        timesteps: Optional slice to select specific timesteps
-        transform_fn: Optional function to transform values (e.g. jnp.linalg.norm)
-        normalizer: Optional value to divide result by
+        response_var: Response variable to measure.
+        time_axis: Input time axis. Defaults to the variable's `VarSpec.time_axis`
+            for aligned arrays (`(..., time, component)`) and to axis 0 for
+            one-dimensional time series. Set explicitly for other layouts,
+            including batched scalar series.
+        timesteps: Slice along the input time axis.
+        direction: Component to extract from the trailing direction axis.
+        transform_fn: Whole-array transform applied after slicing and direction
+            selection. If aggregating, the transform must preserve the time axis
+            at its absolute position unless `transformed_time_axis` is supplied.
+        transformed_time_axis: Time axis in the output of `transform_fn` when
+            it moves time to a different position.
+        agg_fn: Reducer called as `agg_fn(values, axis=...)` with the time axis.
+        normalizer: Divisor applied to the result.
     """
 
     response_var: ResponseVar = field(converter=ResponseVar)
@@ -312,62 +338,47 @@ class Measure(Module):
     normalizer: Optional[Callable[..., float]] = field(
         default=None, converter=_OptionalCallableFieldConverter[float]("Measure.normalizer")
     )
-
-    @cached_property
-    def _methods(self) -> Mapping[str, Callable]:
-        return MappingProxyType(
-            dict(
-                timesteps=self._select_timesteps,
-                direction=self._select_direction,
-                transform_fn=self._apply_transform,
-                agg_fn=self._aggregate,
-                normalizer=self._normalize,
-            )
-        )
-
-    def _call_methods(self, **kwargs) -> list[Callable]:
-        return [self._get_response_var] + [
-            partial(method, **kwargs)
-            for key, method in self._methods.items()
-            if getattr(self, key) is not None
-        ]
-
-    def _get_response_var(self, input: LDict) -> Float[Array, "..."]:
-        """Extract the specified response variable."""
-        return input[self.response_var.value]
-
-    def _select_timesteps(self, values: Float[Array, "..."], **kwargs) -> Float[Array, "..."]:
-        """Select specified timesteps."""
-        assert self.timesteps is not None
-        return values[..., self.timesteps(**kwargs), :]
-
-    def _select_direction(self, values: Float[Array, "..."], **kwargs) -> Float[Array, "..."]:
-        """Select specified direction component."""
-        assert self.direction is not None
-        return values[..., DIRECTION_IDXS[self.direction(**kwargs)]]
-
-    def _aggregate(self, values: Float[Array, "..."], **kwargs) -> Float[Array, "..."]:
-        """Apply aggregation function over time axis."""
-        assert self.agg_fn is not None
-        return self.agg_fn(values, axis=-1)
-
-    def _normalize(self, values: Float[Array, "..."], **kwargs) -> Float[Array, "..."]:
-        """Apply normalization."""
-        assert self.normalizer is not None
-        return values / self.normalizer(**kwargs)
-
-    def _apply_transform(self, values: Float[Array, "..."], **kwargs) -> Float[Array, "..."]:
-        """Apply custom transformation function."""
-        assert self.transform_fn is not None
-        return self.transform_fn(values)
+    time_axis: int | None = field(default=None, kw_only=True)
+    transformed_time_axis: int | None = field(default=None, kw_only=True)
 
     def __call__(self, input: LDict, **kwargs) -> Float[Array, "..."]:
-        """Calculate measure for response state.
+        """Calculate the measure from a mapping of response trajectories."""
+        values = input[self.response_var.value]
+        axis = None
+        if self.timesteps is not None or self.direction is not None or self.agg_fn is not None:
+            ndim = jnp.ndim(values)
+            input_axis = self.time_axis
+            if input_axis is None:
+                input_axis = 0 if ndim == 1 else DEFAULT_VARSET[self.response_var].time_axis
+            if not -ndim <= input_axis < ndim:
+                raise ValueError(
+                    f"Measure time_axis {input_axis} is invalid for shape {jnp.shape(values)}"
+                )
+            axis = input_axis % ndim
 
-        Args:
-            responses: Response state containing trajectories
-
-        Returns:
-            Computed measure values
-        """
-        return compose_(*self._call_methods(**kwargs))(input)
+        if self.timesteps is not None:
+            assert axis is not None
+            index = (slice(None),) * axis + (self.timesteps(**kwargs),)
+            values = values[index]
+        if self.direction is not None:
+            if axis == values.ndim - 1:
+                raise ValueError(
+                    "Measure.direction requires a trailing component axis distinct from time"
+                )
+            values = values[..., DIRECTION_IDXS[self.direction(**kwargs)]]
+        if self.transform_fn is not None:
+            values = self.transform_fn(values)
+            if self.transformed_time_axis is not None:
+                axis = self.transformed_time_axis
+        if self.agg_fn is not None:
+            assert axis is not None
+            ndim = jnp.ndim(values)
+            if not -ndim <= axis < ndim:
+                raise ValueError(
+                    f"Measure time axis {axis} is invalid for result shape {jnp.shape(values)}"
+                )
+            # Keep the negative-axis convention for aggregation callbacks.
+            values = self.agg_fn(values, axis=axis % ndim - ndim)
+        if self.normalizer is not None:
+            values = values / self.normalizer(**kwargs)
+        return values

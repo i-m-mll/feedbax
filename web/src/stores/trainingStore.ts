@@ -17,7 +17,7 @@ import { LOSS_TERM_SPEC_SCHEMA_ID, LOSS_TERM_SPEC_SCHEMA_VERSION } from '@/types
 
 export type TrajectorySnapshot = LiveTrainingFrame;
 
-export type TrainingStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error';
+export type TrainingStatus = 'idle' | 'running' | 'paused' | 'completed' | 'stopped' | 'error';
 export type WorkerMode = 'local' | 'remote';
 
 export const defaultTrainingSpec: TrainingSpec = {
@@ -245,6 +245,7 @@ export const useTrainingStore = create<TrainingStoreState>((set, get) => ({
     }),
   clearHistory: () =>
     set({
+      progress: null,
       lossHistory: [],
       consoleLogs: [],
       trainingDiagnostics: [],

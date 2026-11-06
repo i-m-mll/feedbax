@@ -122,7 +122,8 @@ EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v2"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v3"
 EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v4"
-EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V5 = f"{EXPERIMENT_COMPILE_LOCK_SCHEMA_ID}.v5"
+EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION = EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V5
 
 #: The only lock versions read. Enumerated, never inferred. v1 remains readable
 #: as exactly the grammar it names: a lock recorded before figure runtime input
@@ -133,6 +134,7 @@ EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS: tuple[str, ...] = (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V5,
 )
 
 #: Versions this loader migrates, mapped to their explicit target. v1 and v2
@@ -393,10 +395,9 @@ class GovernedParentReference(StrictModel):
 class PlannedProductReference(StrictModel):
     """A product another envelope compiles to, pinned before anything runs.
 
-    Both facts that exist pre-run are recorded: the upstream envelope's own hash,
-    and the content hash of the document it compiles into. The expected output
-    schema is stated so a consumer can check the shape it is planning against
-    without opening the upstream file.
+    The producer's envelope, compiled document, output schema and execution
+    identity are pinned independently. Only historical locks can omit the
+    execution identity, and those references cannot bind a workflow edge.
     """
 
     kind: Literal["planned_product"] = "planned_product"
@@ -406,6 +407,7 @@ class PlannedProductReference(StrictModel):
     product_schema_id: str
     product_schema_version: str
     compiled_content_hash: str
+    producer_execution_identity: str | None = None
     role_path: str
     consumer: CompileLockConsumerBinding
 
@@ -421,6 +423,10 @@ class PlannedProductReference(StrictModel):
                 f"does not extend schema id {self.product_schema_id!r}"
             )
         _require_digest(self.compiled_content_hash, "planned_product compiled_content_hash")
+        if self.producer_execution_identity is not None:
+            _require_digest(
+                self.producer_execution_identity, "planned_product producer_execution_identity"
+            )
         _require_role_path(self.role_path, "planned_product role_path")
         return self
 
@@ -745,19 +751,11 @@ class CompileLockInputs:
 def build_compile_lock(inputs: CompileLockInputs) -> dict[str, Any]:
     """Assemble the immutable compile lock for one compiled envelope.
 
-    Execution identity is the canonical hash of an ordered preimage: the compiled
-    document's content hash, plus each declared identity contribution hashed in
-    its own right. ``inputs`` records what went in, so a consumer can see which
-    facts an identity was built from without re-deriving them.
+    Execution identity includes the compiled document, its planned products and
+    any additional identity contributions. ``inputs`` names those facts.
     """
     document_hash = canonical_sha256(inputs.compiled_document)
     contributions = dict(inputs.identity_contributions or {})
-    preimage: dict[str, Any] = {"compiled_document": document_hash}
-    identity_inputs = ["compiled_document.content_hash"]
-    for key in sorted(contributions):
-        preimage[key] = canonical_sha256(contributions[key])
-        identity_inputs.append(f"identity_contributions.{key}")
-
     lock: dict[str, Any] = {
         "schema_id": EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
         "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
@@ -787,16 +785,18 @@ def build_compile_lock(inputs: CompileLockInputs) -> dict[str, Any]:
         },
         "compiler_contract": inputs.contract.record(),
         "compiler_implementation": inputs.implementation.record(),
-        "execution_identity": {
-            "sha256": canonical_sha256(preimage),
-            "inputs": identity_inputs,
-            "pin_algorithm": CANONICAL_PIN_ALGORITHM,
-        },
     }
     if inputs.issue is not None:
         lock["issue"] = inputs.issue
     if contributions:
         lock["identity_contributions"] = contributions
+    planned = _planned_product_pins(lock["references"], field="references", current=True)
+    identity, identity_inputs = _execution_identity_facts(lock, planned)
+    lock["execution_identity"] = {
+        "sha256": identity,
+        "inputs": identity_inputs,
+        "pin_algorithm": CANONICAL_PIN_ALGORITHM,
+    }
     check_plan_receipt_boundary(lock)
     return lock
 
@@ -1083,6 +1083,7 @@ def _validate_lock_execution_identity(
     field: str,
     *,
     pin_required: bool,
+    planned: Sequence[Mapping[str, Any]],
 ) -> None:
     """Re-derive execution identity from the lock's own facts.
 
@@ -1105,21 +1106,13 @@ def _validate_lock_execution_identity(
     inputs = _lock_sequence(
         identity["inputs"], f"{field}#execution_identity.inputs", f"{what} inputs"
     )
-    contributions = lock.get("identity_contributions", {})
-    expected_inputs = [
-        _IDENTITY_DOCUMENT_INPUT,
-        *(f"identity_contributions.{key}" for key in sorted(contributions)),
-    ]
+    expected_sha256, expected_inputs = _execution_identity_facts(lock, planned)
     if list(inputs) != expected_inputs:
         _lock_reject(
             f"{field}#execution_identity.inputs",
             f"{what} names the facts it was built from; expected {expected_inputs!r}, "
             f"found {list(inputs)!r}",
         )
-    preimage: dict[str, Any] = {"compiled_document": lock["compiled_document"]["content_hash"]}
-    for key in sorted(contributions):
-        preimage[key] = canonical_sha256(contributions[key])
-    expected_sha256 = canonical_sha256(preimage)
     if identity["sha256"] != expected_sha256:
         _lock_reject(
             f"{field}#execution_identity.sha256",
@@ -1133,6 +1126,7 @@ def _validate_compile_lock_body(
     field: str,
     *,
     pin_required: bool,
+    planned: Sequence[Mapping[str, Any]],
 ) -> None:
     """Validate the whole document, not only the blocks a reader happens to use.
 
@@ -1183,7 +1177,7 @@ def _validate_compile_lock_body(
     _validate_lock_resolved_deltas(lock, field)
     _validate_lock_assertions(lock, field)
     _validate_lock_provenance(lock, field)
-    _validate_lock_execution_identity(lock, field, pin_required=pin_required)
+    _validate_lock_execution_identity(lock, field, pin_required=pin_required, planned=planned)
 
 
 def _refuse_v1_figure_input_contract(references: Sequence[Any], *, field: str) -> None:
@@ -1244,6 +1238,49 @@ def _refuse_pre_v4_governed_parent(references: Sequence[Any], *, field: str) -> 
             )
 
 
+def _planned_product_pins(
+    references: Sequence[Any], *, field: str, current: bool
+) -> list[Mapping[str, Any]]:
+    planned = []
+    for index, reference in enumerate(references):
+        if not isinstance(reference, Mapping) or reference.get("kind") != "planned_product":
+            continue
+        pin_field = f"{field}[{index}].producer_execution_identity"
+        if current and reference.get("producer_execution_identity") is None:
+            _lock_reject(
+                pin_field,
+                "a planned product must pin its producer's execution identity. "
+                "Recompile the consumer and its producer from their authored envelopes",
+                ExperimentEnvelopeRejectionCategory.MISSING_FIELD,
+            )
+        if not current and "producer_execution_identity" in reference:
+            _lock_reject(
+                pin_field,
+                "a producer execution pin requires compile-lock v5",
+                ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+            )
+        if current:
+            planned.append(reference)
+    return planned
+
+
+def _execution_identity_facts(
+    lock: Mapping[str, Any], planned: Sequence[Mapping[str, Any]]
+) -> tuple[str, list[str]]:
+    contributions = lock.get("identity_contributions", {})
+    inputs = [_IDENTITY_DOCUMENT_INPUT]
+    preimage = {"compiled_document": lock["compiled_document"]["content_hash"]}
+    for key in sorted(contributions):
+        preimage[key] = canonical_sha256(contributions[key])
+        inputs.append(f"identity_contributions.{key}")
+    if planned:
+        inputs.append("references.planned_product")
+        # Keep legacy preimages stable, and keep producer pins outside the
+        # contribution namespace where a caller could use the same key.
+        return canonical_sha256({"product": preimage, "planned_products": planned}), inputs
+    return canonical_sha256(preimage), inputs
+
+
 def _validate_compile_lock_payload(
     lock: Mapping[str, Any],
     *,
@@ -1282,10 +1319,19 @@ def _validate_compile_lock_payload(
         )
     for index, record in enumerate(provenance):
         parse_row_provenance_reference(record, field=f"{field}#row_provenance[{index}]")
+    planned = _planned_product_pins(
+        references,
+        field=f"{field}#references",
+        current=version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V5,
+    )
     _validate_compile_lock_body(
         lock,
         field,
-        pin_required=version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+        pin_required=version in (
+            EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+            EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V5,
+        ),
+        planned=planned,
     )
 
 
@@ -1413,6 +1459,26 @@ def compile_lock_plan_edges(lock: Mapping[str, Any], *, field: str) -> tuple[Any
     )
 
 
+def migrate_compile_lock_v4_to_v5(document: Mapping[str, Any]) -> dict[str, Any]:
+    """Upgrade a v4 lock only when it needs no new producer pins."""
+    field = "ExperimentCompileLock migration input"
+    lock = load_compile_lock(document, field=field)
+    if document["schema_version"] != EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4:
+        _lock_reject(
+            f"{field}#schema_version",
+            "the planned product pin migration accepts exactly compile-lock v4",
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+        )
+    if any(reference["kind"] == "planned_product" for reference in lock["references"]):
+        _lock_reject(
+            f"{field}#references",
+            "a historical planned product does not pin its producer's execution identity. "
+            "Recompile the consumer and its producer from their authored envelopes",
+            ExperimentEnvelopeRejectionCategory.UNSUPPORTED_SCHEMA_VERSION,
+        )
+    return {**lock, "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V5}
+
+
 __all__ = [
     "COMPILE_LOCK_PLAN_EDGE_KINDS",
     "COMPILE_LOCK_REFERENCE_KINDS",
@@ -1425,6 +1491,7 @@ __all__ = [
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3",
     "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4",
+    "EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V5",
     "GovernedParentReference",
     "EXPERIMENT_COMPILE_LOCK_SUPPORTED_SCHEMA_VERSIONS",
     "RUN_RECEIPT_ONLY_FACTS",
@@ -1453,6 +1520,7 @@ __all__ = [
     "compile_lock_reference_record",
     "load_compile_lock",
     "migrate_compile_lock_v3_to_v4",
+    "migrate_compile_lock_v4_to_v5",
     "parse_compile_lock_reference",
     "parse_row_provenance_reference",
     "row_provenance_record",

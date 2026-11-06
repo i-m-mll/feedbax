@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+import equinox as eqx
 from equinox import field
 from equinox.nn import State, StateIndex
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
@@ -19,6 +21,9 @@ class AffineFeedbackController(Component):
     supplied, ``feedback`` is interpreted as observed state and the controller
     instead uses ``reference - feedback``. A feedforward command may be supplied
     either as a parameter schedule or through the ``feedforward`` input port.
+
+    Schedules use the controller state's zero-based step. After a schedule's
+    last sample, ``hold`` reuses it and ``error`` raises on the next sample.
     """
 
     input_ports = ("feedback", "reference", "feedforward")
@@ -73,10 +78,12 @@ class AffineFeedbackController(Component):
     ) -> tuple[dict[str, PyTree], State]:
         del key
         step = state.get(self.state_index)
-        state = state.set(self.state_index, step + 1)
+        command = self._command(inputs, step)
+        return {"command": command}, state.set(self.state_index, step + 1)
 
+    def _command(self, inputs: Mapping[str, PyTree], step: Array | int) -> Array:
         feedback = jnp.asarray(inputs["feedback"])
-        if feedback.shape[-1] != self.input_size:
+        if feedback.ndim == 0 or feedback.shape[-1] != self.input_size:
             raise ValueError(
                 f"AffineFeedbackController expected feedback width {self.input_size}; "
                 f"got shape {feedback.shape}."
@@ -111,7 +118,7 @@ class AffineFeedbackController(Component):
         if feedforward is not None:
             command = command + feedforward
 
-        return {"command": command}, state
+        return command
 
     def to_params(self) -> dict[str, Any]:
         """Return GraphSpec parameters that rebuild this controller."""
@@ -146,11 +153,13 @@ def affine_feedback_output_prototype(
 ) -> dict[str, Any]:
     """Return output prototypes for an affine feedback controller spec."""
 
-    del inputs
-    gain = jnp.asarray(params["gain"])
-    if gain.ndim not in (2, 3):
-        raise ValueError("AffineFeedbackController gain must be a matrix or matrix schedule.")
-    return {"command": jnp.zeros((int(gain.shape[-2]),), dtype=gain.dtype)}
+    if "feedback" not in inputs:
+        from feedbax.component_registry.declarations import MissingPrototypeInput
+
+        raise MissingPrototypeInput("Affine feedback output requires input prototype 'feedback'.")
+    controller = build_affine_feedback_controller(params)
+    command = jax.eval_shape(lambda sample: controller._command(sample, step=0), dict(inputs))
+    return {"command": jnp.zeros(command.shape, dtype=command.dtype)}
 
 
 def _optional_vector_schedule(name: str, value: PyTree | None, output_size: int) -> Array | None:
@@ -173,7 +182,7 @@ def _optional_vector_schedule(name: str, value: PyTree | None, output_size: int)
 def _schedule_value(
     name: str,
     value: Array | None,
-    step: PyTree,
+    step: Array | int,
     *,
     rank: int,
     policy: str,
@@ -185,15 +194,15 @@ def _schedule_value(
     if value.ndim != rank + 1:
         raise ValueError(f"AffineFeedbackController {name} has invalid rank {value.ndim}.")
 
-    if policy == "error":
-        try:
-            step_int = int(step)
-        except TypeError:
-            step_int = None
-        if step_int is not None and step_int >= value.shape[0]:
-            raise ValueError(
-                f"AffineFeedbackController {name} schedule length {value.shape[0]} "
-                f"was exhausted at step {step_int}."
-            )
-    index = jnp.minimum(jnp.asarray(step, dtype=jnp.int32), value.shape[0] - 1)
-    return jnp.take(value, index, axis=0)
+    length = value.shape[0]
+    if length == 0:
+        raise ValueError(f"AffineFeedbackController {name} schedule must contain a sample.")
+    if policy == "hold":
+        step = jnp.minimum(step, length - 1)
+    else:
+        message = f"AffineFeedbackController {name} schedule length {length} was exhausted"
+        if isinstance(step, jax.core.Tracer):
+            step = eqx.error_if(step, step >= length, f"{message}.", on_error="raise")
+        elif (step_int := int(step)) >= length:
+            raise ValueError(f"{message} at step {step_int}.")
+    return value[step]

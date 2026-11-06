@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 
 from feedbax.acausal.base import AcausalElement, AcausalEquation, AcausalPort, Domain
+from feedbax._acausal_payload import ACTIVATION_PAYLOAD
 
 
 def _fqn(element: str, port: str, slot: str) -> str:
@@ -24,6 +25,8 @@ class RigidTendonHillMuscle(AcausalElement):
     once multibody links, joints, and path geometry exist.
     """
 
+    source_payload = ACTIVATION_PAYLOAD
+
     def __init__(
         self,
         name: str,
@@ -37,7 +40,7 @@ class RigidTendonHillMuscle(AcausalElement):
             across_vars=("pos", "vel"),
             through_var="force",
         )
-        self.signal_inputs = ("activation",)
+        self.signal_inputs = self.source_payload.slots
         self.params[f"{name}.max_isometric_force"] = max_isometric_force
         self.params[f"{name}.direction"] = direction
 

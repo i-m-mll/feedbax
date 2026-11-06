@@ -5,9 +5,11 @@ import jax
 import jax.numpy as jnp
 
 from feedbax._vendor.jax_cookbook.tree import filter_spec_leaves
+from feedbax.runtime.components import Pulse
 from feedbax.runtime.graph import (
     Component,
     Graph,
+    GraphState,
     GraphTraceRequest,
     RolloutStepHookResult,
     Wire,
@@ -64,6 +66,112 @@ class Accumulator(Component):
         if state_value is None:
             return {}
         return {"total": state_value}
+
+
+@pytest.fixture
+def acyclic_pulse_graph():
+    return Graph(
+        nodes={"pulse": Pulse(dt=0.25), "acc": Accumulator(), "counter": Counter()},
+        wires=(
+            Wire("pulse", "output", "acc", "delta"),
+            Wire("counter", "output", "acc", "base"),
+        ),
+        input_ports=(),
+        output_ports=("pulse", "total"),
+        input_bindings={},
+        output_bindings={"pulse": ("pulse", "output"), "total": ("acc", "total")},
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["filtered-history", "streaming-loss"])
+def test_acyclic_graph_explicit_rollout_matches_run_component(acyclic_pulse_graph, streaming):
+    graph = acyclic_pulse_graph
+    state_filter = GraphState({"acc": True, "counter": False})
+
+    def streaming_loss(state_view, t):
+        return state_view.acc + state_view.counter + t
+
+    options = dict(
+        key=jax.random.key(0),
+        n_steps=4,
+        state_filter=state_filter,
+        streaming_loss_fn=streaming_loss if streaming else None,
+    )
+    outputs, final_state, aux = graph(
+        {}, init_state_from_component(graph), return_state_history=True, **options
+    )
+    expected_outputs, expected_state, expected_aux = run_component(
+        graph, {}, init_state_from_component(graph), **options
+    )
+
+    assert eqx.tree_equal(outputs, expected_outputs)
+    assert eqx.tree_equal(final_state, expected_state)
+    assert eqx.tree_equal(aux, expected_aux)
+    assert jnp.array_equal(outputs["pulse"], jnp.array([1.0, 1.0, 0.0, 0.0]))
+    if streaming:
+        assert aux.shape == ()
+        assert aux == 23.0
+    else:
+        assert jnp.array_equal(aux.acc, jnp.array([0.0, 1.0, 2.0, 2.0, 2.0]))
+        assert aux.counter is None
+
+
+def test_acyclic_graph_omitted_length_takes_single_step(acyclic_pulse_graph):
+    graph = acyclic_pulse_graph
+
+    def set_delta_from_time(context):
+        if context.node_name == "acc":
+            delta = jnp.asarray(context.t, dtype=jnp.float32) + 3.0
+            return RolloutStepHookResult(
+                port_values={**context.port_values, ("acc", "delta"): delta}
+            )
+
+    options = dict(key=jax.random.key(0), rollout_step_hook=set_delta_from_time)
+    outputs, _ = graph({}, init_state_from_component(graph), t=2, **options)
+    scanned_outputs, _ = graph(
+        {},
+        init_state_from_component(graph),
+        n_steps=1,
+        return_state_history=True,
+        state_filter=False,
+        **options,
+    )
+
+    assert outputs["pulse"].shape == ()
+    assert outputs["total"] == 5.0
+    assert jnp.array_equal(scanned_outputs["pulse"], jnp.array([1.0]))
+    assert jnp.array_equal(scanned_outputs["total"], jnp.array([3.0]))
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        pytest.param(
+            {"streaming_loss_fn": lambda state, t: state.acc},
+            r"(?=.*streaming_loss_fn)(?=.*n_steps)",
+            id="streaming-without-length",
+        ),
+        pytest.param(
+            {"state_filter": False, "return_state_history": True},
+            r"(?=.*state_filter)(?=.*n_steps)",
+            id="state-filter-without-length",
+        ),
+        pytest.param(
+            {"n_steps": 4, "cycle_init": {("pulse", "output"): jnp.array(0.0)}},
+            r"(?=.*cycle_init)(?=.*recurrent)",
+            id="cycle-init-without-recurrent-wire",
+        ),
+        pytest.param(
+            {"n_steps": 4, "t": 2},
+            r"(?=.*\bt\b)(?=.*step)",
+            id="custom-time-with-rollout-length",
+        ),
+    ],
+)
+def test_acyclic_graph_rejects_incompatible_call_options(acyclic_pulse_graph, options, message):
+    graph = acyclic_pulse_graph
+    with pytest.raises(ValueError, match=message):
+        graph({}, init_state_from_component(graph), key=jax.random.key(0), **options)
 
 
 def test_graph_cycle_iteration():
@@ -124,35 +232,6 @@ def _counter_to_accumulator_delta_hook(context):
     return RolloutStepHookResult(port_values=updated)
 
 
-def test_rollout_step_hook_none_preserves_scan_behavior():
-    graph = _make_dynamic_input_graph()
-    state_a = init_state_from_component(graph)
-    state_b = init_state_from_component(graph)
-    inputs = {"delta": jnp.zeros((3,), dtype=jnp.float32)}
-
-    outputs_a, final_state_a, _ = run_component(
-        graph,
-        inputs,
-        state_a,
-        key=jax.random.PRNGKey(0),
-        n_steps=3,
-    )
-    outputs_b, final_state_b, _ = run_component(
-        graph,
-        inputs,
-        state_b,
-        key=jax.random.PRNGKey(0),
-        n_steps=3,
-        rollout_step_hook=None,
-    )
-
-    assert jnp.allclose(outputs_a["total"], outputs_b["total"])
-    assert jnp.allclose(
-        graph.state_view(final_state_a).nodes["acc"],
-        graph.state_view(final_state_b).nodes["acc"],
-    )
-
-
 def test_rollout_step_hook_updates_node_input_from_live_port_values():
     graph = _make_dynamic_input_graph()
     inputs = {"delta": jnp.zeros((3,), dtype=jnp.float32)}
@@ -206,7 +285,7 @@ def test_rollout_step_hook_affects_streaming_loss_without_state_history():
     assert hook_loss == jnp.array(10.0)
 
 
-def test_rollout_step_hook_affects_cyclic_graph_streaming_loss():
+def test_rollout_step_hook_drives_cyclic_streaming_and_traced_rollouts():
     graph = Graph(
         nodes={"acc": Accumulator()},
         wires=(Wire("acc", "total", "acc", "base", temporality="recurrent"),),
@@ -224,7 +303,7 @@ def test_rollout_step_hook_affects_cyclic_graph_streaming_loss():
         if context.node_name != "acc":
             return None
         updated = dict(context.port_values)
-        updated[(context.node_name, "delta")] = context.node_inputs["base"] + 1.0
+        updated[(context.node_name, "delta")] = context.node_inputs["base"] + 1.0 + context.t
         return RolloutStepHookResult(port_values=updated)
 
     _, _, no_hook_loss = run_component(
@@ -246,7 +325,18 @@ def test_rollout_step_hook_affects_cyclic_graph_streaming_loss():
     )
 
     assert no_hook_loss == jnp.array(0.0)
-    assert hook_loss == jnp.array(11.0)
+    assert hook_loss == jnp.array(16.0)
+
+    outputs, _, trace = graph.rollout_with_trace(
+        inputs,
+        init_state_from_component(graph),
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+        trace=(GraphTraceRequest(kind="port", selector="port:acc.delta", node="acc", port="delta"),),
+        rollout_step_hook=recurrent_base_to_delta_hook,
+    )
+    assert jnp.array_equal(trace["port:acc.delta"], jnp.array([1.0, 3.0, 7.0]))
+    assert jnp.array_equal(outputs["total"], jnp.array([1.0, 4.0, 11.0]))
 
 
 # =============================================================================
@@ -305,7 +395,6 @@ def _make_cyclic_graph():
     ``b``: y = x + 1
 
     Wires:
-      external "input" -> a.x
       a.y -> b.x
       b.y -> a.x   (recurrent one-step feedback)
 
@@ -319,9 +408,7 @@ def _make_cyclic_graph():
             Wire("a", "y", "b", "x"),
             Wire("b", "y", "a", "x", temporality="recurrent"),
         ),
-        input_ports=("input",),
         output_ports=("out",),
-        input_bindings={"input": ("a", "x")},
         output_bindings={"out": ("b", "y")},
     )
     return graph
@@ -393,9 +480,7 @@ def test_graph_rejects_instant_cycles():
                 Wire("a", "y", "b", "x"),
                 Wire("b", "y", "a", "x"),
             ),
-            input_ports=("input",),
             output_ports=("out",),
-            input_bindings={"input": ("a", "x")},
             output_bindings={"out": ("b", "y")},
         )._execution_order
 
@@ -447,6 +532,42 @@ def test_graph_with_state_view_attaches_view_out_of_place() -> None:
     view = updated.state_view(state)
     assert set(view) == {"counter_value"}
     assert jnp.array_equal(view["counter_value"], jnp.array(0))
+
+
+def test_nested_graph_projects_each_node_state_once() -> None:
+    calls = []
+
+    class ProjectedCounter(Counter):
+        label: str = eqx.field(static=True)
+
+        def __init__(self, label, value):
+            self.label = label
+            self.state_index = StateIndex(value)
+
+        def state_view(self, state):
+            calls.append(self.label)
+            return super().state_view(state)
+
+    def wrap_view(node_states):
+        return {"projected": node_states}
+
+    inner = Graph(
+        nodes={
+            "zero": ProjectedCounter("zero", jnp.array(0)),
+            "omitted": ProjectedCounter("omitted", None),
+            "array": ProjectedCounter("array", jnp.array([1, 2])),
+        },
+        state_view_fn=wrap_view,
+    )
+    graph = Graph(nodes={"inner": inner})
+
+    view = graph.state_view(init_state_from_component(graph))
+
+    assert calls == ["zero", "omitted", "array"]
+    projected = view.inner["projected"]
+    assert list(projected) == ["zero", "array"]
+    assert jnp.array_equal(projected["zero"], jnp.array(0))
+    assert jnp.array_equal(projected["array"], jnp.array([1, 2]))
 
 
 class _RuntimeCallbackGraph(Graph):
@@ -602,58 +723,42 @@ def test_attr_string_where_supports_explicit_nodes_index_path():
     assert where(graph) == graph.nodes["net"].factor
 
 
-def test_graph_step_cyclic_threads_cycle_values():
-    """Smoke: chain three ``step`` calls on a cyclic graph; cycle values propagate.
+def test_recurrent_wire_and_external_input_cannot_share_a_target():
+    cyclic = _make_cyclic_graph()
+    with pytest.raises(ValueError, match=r"a\.x.*external input 'input'.*recurrent wire b\.y"):
+        Graph(
+            nodes=cyclic.nodes,
+            wires=cyclic.wires,
+            input_ports=("input",),
+            input_bindings={"input": ("a", "x")},
+        )
 
-    The back-edge target is ``a.x`` (cycle wire b.y -> a.x). Because external
-    "input" also binds to ``a.x``, the explicit input wins on any step that
-    provides one. We chain calls and verify the contract: ``cycle_port_values``
-    returned is keyed by ``("a", "x")`` and equals ``b.y`` from the
-    just-completed step.
-    """
+
+def test_graph_surgery_rejects_competing_wire_and_preserves_recurrent_delay():
     graph = _make_cyclic_graph()
-    assert graph._needs_iteration  # sanity: cycle detected
+    with pytest.raises(ValueError, match=r"a\.x.*recurrent wire b\.y.*instant wire a\.y"):
+        graph.add_wire(Wire("a", "y", "a", "x"))
 
-    state = init_state_from_component(graph)
-
-    # First step: seed cycle explicitly (the toy components are stateless and
-    # don't expose initial_outputs, so None would raise — see
-    # _get_initial_cycle_values).
-    seed_cycle = {("a", "x"): jnp.array(0.0)}
-
-    # Step 1: input = 4, a.y = 0.5*4 = 2, b.y = 2 + 1 = 3
-    out1, state, cyc1 = graph.step(
-        {"input": jnp.array(4.0)},
-        state,
-        seed_cycle,
-        key=jax.random.PRNGKey(0),
+    graph = graph.remove_wire(graph.wires[-1]).add_wire(
+        Wire(
+            "b",
+            "y",
+            "a",
+            "x",
+            temporality="recurrent",
+            recurrent_initializer={"kind": "constant", "value": 4.0},
+        )
     )
-    assert out1["out"] == jnp.array(3.0)
-    assert ("a", "x") in cyc1
-    # cycle stores the source value (b.y) of the back-edge.
-    assert cyc1[("a", "x")] == jnp.array(3.0)
-
-    # Step 2: pass cycle from step 1; input dominates a.x again.
-    out2, state, cyc2 = graph.step(
-        {"input": jnp.array(2.0)},
-        state,
-        cyc1,
-        key=jax.random.PRNGKey(1),
+    modified = graph.insert_between(
+        "double", _Scaler(2.0), "b", "y", "a", "x", input_port="x", output_port="y"
     )
-    # a.y = 0.5*2 = 1, b.y = 2
-    assert out2["out"] == jnp.array(2.0)
-    assert cyc2[("a", "x")] == jnp.array(2.0)
-
-    # Step 3: omit external input -> cycle value (b.y = 2.0) drives a.x.
-    # a.y = 0.5*2 = 1, b.y = 2
-    out3, _, cyc3 = graph.step(
+    outputs, _ = modified(
         {},
-        state,
-        cyc2,
-        key=jax.random.PRNGKey(2),
+        init_state_from_component(modified),
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
     )
-    assert out3["out"] == jnp.array(2.0)
-    assert cyc3[("a", "x")] == jnp.array(2.0)
+    assert jnp.array_equal(outputs["out"], jnp.array([5.0, 6.0, 7.0]))
 
 
 def test_graph_input_recurrent_initializer_seeds_call_once_from_trial_input() -> None:
@@ -1026,8 +1131,6 @@ def test_graph_step_equivalent_to_call_with_iteration():
     graph = _make_cyclic_graph()
     n_steps = 5
 
-    # Use varying inputs so each timestep is distinguishable.
-    inputs_seq = jnp.arange(1.0, 1.0 + n_steps, dtype=jnp.float32)
     base_key = jax.random.PRNGKey(42)
     keys = jax.random.split(base_key, n_steps)
     seed_cycle = {("a", "x"): jnp.array(0.0, dtype=jnp.float32)}
@@ -1036,7 +1139,7 @@ def test_graph_step_equivalent_to_call_with_iteration():
     # (it does jax.random.split(key, n_steps) internally).
     state_ref = init_state_from_component(graph)
     outputs_ref, _ = graph(
-        {"input": inputs_seq},
+        {},
         state_ref,
         key=base_key,
         n_steps=n_steps,
@@ -1049,7 +1152,7 @@ def test_graph_step_equivalent_to_call_with_iteration():
     out_history = []
     for t in range(n_steps):
         out_t, state_manual, cycle = graph.step(
-            {"input": inputs_seq[t]},
+            {},
             state_manual,
             cycle,
             key=keys[t],
@@ -1063,10 +1166,10 @@ def test_graph_step_equivalent_to_call_with_iteration():
 def test_graph_step_with_trace_returns_selected_boundary_values():
     graph = _make_cyclic_graph()
     state = init_state_from_component(graph)
-    seed_cycle = {("a", "x"): jnp.array(0.0)}
+    seed_cycle = {("a", "x"): jnp.array(4.0)}
 
     outputs, state, cycle, trace = graph.step_with_trace(
-        {"input": jnp.array(4.0)},
+        {},
         state,
         seed_cycle,
         key=jax.random.PRNGKey(0),
@@ -1134,3 +1237,78 @@ def test_parent_graph_threads_nested_recurrent_carry():
     )
 
     assert jnp.allclose(outputs["out"], jnp.array([1.0, 2.0, 3.0]))
+
+
+def test_wired_nested_reset_does_not_advance_live_source_state():
+    class AutonomousCounter(Counter):
+        input_ports = ()
+
+    graph = Graph(
+        nodes={"source": AutonomousCounter(), "inner": _make_graph_input_initialized_cycle()},
+        wires=(Wire("source", "output", "inner", "seed"),),
+        output_ports=("count", "out"),
+        output_bindings={"count": ("source", "output"), "out": ("inner", "out")},
+    )
+    key = jax.random.PRNGKey(0)
+    first, state, carry = graph.step({}, init_state_from_component(graph), key=key)
+    second, _ = graph({}, state, key=key, n_steps=1, cycle_init=carry)
+
+    assert first["count"] == 1
+    assert first["out"] == 1.5
+    assert second["count"][0] == 2
+    assert second["out"][0] == 1.75
+
+
+def test_wired_nested_reset_rejects_recurrent_upstream_edge():
+    graph = Graph(
+        nodes={"encoder": _Scaler(2.0), "inner": _make_graph_input_initialized_cycle()},
+        wires=(
+            Wire("encoder", "y", "inner", "seed"),
+            Wire(
+                "inner",
+                "out",
+                "encoder",
+                "x",
+                temporality="recurrent",
+                recurrent_initializer={"kind": "constant", "value": 0.0},
+            ),
+        ),
+        output_ports=("out",),
+        output_bindings={"out": ("inner", "out")},
+    )
+    with pytest.raises(ValueError, match=r"initializer input inner\.seed.*recurrent edge"):
+        graph({}, init_state_from_component(graph), key=jax.random.PRNGKey(0), n_steps=1)
+
+
+def test_wired_nested_reset_uses_source_state_before_seed_input():
+    accumulator = Accumulator()
+    inner = Graph(
+        nodes={"acc": accumulator},
+        wires=(
+            Wire(
+                "acc",
+                "total",
+                "acc",
+                "delta",
+                temporality="recurrent",
+                recurrent_initializer={"kind": "graph-input", "source": "seed"},
+            ),
+        ),
+        input_ports=("seed",),
+        output_ports=("out",),
+        output_bindings={"out": ("acc", "total")},
+    )
+    graph = Graph(
+        nodes={"encoder": _Scaler(2.0), "inner": inner},
+        wires=(Wire("encoder", "y", "inner", "seed"),),
+        input_ports=("context",),
+        input_bindings={"context": ("encoder", "x")},
+        output_ports=("out",),
+        output_bindings={"out": ("inner", "out")},
+    )
+    state = init_state_from_component(graph).set(
+        accumulator.state_index, jnp.array(5.0, dtype=jnp.float32)
+    )
+    output, _, _ = graph.step({}, state, key=jax.random.PRNGKey(0))
+
+    assert output["out"] == 10.0

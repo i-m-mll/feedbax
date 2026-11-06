@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import UnionType
-from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+import jax.numpy as jnp
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, create_model
 
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.component import (
@@ -128,6 +129,13 @@ class ParameterField(ParamSchema):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+def _dtype_name(value: Any) -> str:
+    try:
+        return jnp.dtype(value).name
+    except TypeError as exc:
+        raise ValueError(f"Invalid dtype {value!r}") from exc
+
+
 def _field_annotation(parameter: ParamSchema) -> Any:
     annotation: Any
     if parameter.type == "bool":
@@ -137,7 +145,7 @@ def _field_annotation(parameter: ParamSchema) -> Any:
     elif parameter.type == "float":
         annotation = float
     elif parameter.type == "str":
-        annotation = str
+        annotation = Annotated[str, BeforeValidator(_dtype_name)] if parameter.name == "dtype" else str
     elif parameter.type == "enum" and parameter.options:
         annotation = Literal.__getitem__(tuple(parameter.options))
     elif parameter.type == "bounds2d":
@@ -410,7 +418,9 @@ class ComponentParamContract:
                     for name in names
                 }
             )
-        constructor_values.update(self.constructor.injections)
+        for name, value in self.constructor.injections.items():
+            if name not in self.build_context_fields or name not in constructor_values:
+                constructor_values[name] = value
         return self.runtime_type(**constructor_values)
 
     def extract(self, component: "Component") -> BaseModel:
@@ -461,6 +471,15 @@ class ComponentDeclaration:
 
 
 @dataclass(frozen=True)
+class InputPrototypeParameter:
+    """A constructor parameter constrained by one input port's prototype."""
+
+    port: str
+    parameter: str
+    resolve: Callable[[Mapping[str, Any], Any | None], Any]
+
+
+@dataclass(frozen=True)
 class ComponentCompilerFacet:
     parameter_contract: ComponentParamContract
     input_ports: tuple[str, ...]
@@ -471,6 +490,10 @@ class ComponentCompilerFacet:
     interior_domain: str | None = None
     is_composite: bool = False
     output_prototype_fn: OutputPrototypeFn | None = None
+    prototype_depends_on_connected_inputs: bool = False
+    input_prototype_parameter: InputPrototypeParameter | None = None
+    # Bind runtime-only constructor parameters to resolved output ports.
+    build_output_prototypes: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def param_schema(self) -> tuple[ParamSchema, ...]:
@@ -657,6 +680,9 @@ def declare_component(
     extractor: ComponentParamExtractor | None = None,
     override_reason: str | None = None,
     output_prototype_fn: OutputPrototypeFn | None = None,
+    prototype_depends_on_connected_inputs: bool = False,
+    input_prototype_parameter: InputPrototypeParameter | None = None,
+    build_output_prototypes: Mapping[str, str] | None = None,
     provenance: str | None = None,
     identity: ComponentIdentity | None = None,
     owner: str | None = None,
@@ -680,6 +706,12 @@ def declare_component(
     )
     public_schema = _param_schema_from_model(model)
     required_fields = frozenset(schema.name for schema in public_schema if schema.required)
+    prototype_bindings = dict(build_output_prototypes or {})
+    if prototype_bindings:
+        if output_prototype_fn is None or set(prototype_bindings.values()) - set(output_ports):
+            raise ValueError(f"Component {name!r} must infer each output prototype it builds from")
+        if set(prototype_bindings) & (set(model.model_fields) | set(build_context_fields)):
+            raise ValueError(f"Component {name!r} cannot author compiler-provided prototypes")
     if extractor is not None and override_reason is None:
         raise ValueError(f"Component {name!r} extractor override requires a reason")
     if override_reason is not None and builder is None and extractor is None:
@@ -738,6 +770,9 @@ def declare_component(
             interior_domain=interior_domain,
             is_composite=is_composite,
             output_prototype_fn=output_prototype_fn,
+            prototype_depends_on_connected_inputs=prototype_depends_on_connected_inputs,
+            input_prototype_parameter=input_prototype_parameter,
+            build_output_prototypes=prototype_bindings,
         ),
         serialization=ComponentSerializationFacet(
             param_schema_version=param_schema_version,

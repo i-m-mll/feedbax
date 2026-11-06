@@ -1,8 +1,13 @@
 """Where-function conversion helpers for the scientific runtime."""
 
 from collections.abc import Callable, Iterable, Mapping, MutableSequence
+from dataclasses import dataclass
+import dis
 import functools
+import inspect
+from operator import attrgetter, itemgetter
 import re
+from types import CodeType, FunctionType
 from typing import Any, Tuple, TypeVar
 
 import equinox as eqx
@@ -12,6 +17,93 @@ from jaxtyping import PyTree
 
 T1 = TypeVar("T1")
 T2 = TypeVar("T2")
+
+
+@dataclass(frozen=True)
+class WherePath:
+    """An executable, immutable path into a PyTree."""
+
+    steps: tuple[jtu.GetAttrKey | jtu.DictKey, ...]
+
+    @functools.cached_property
+    def address(self) -> str:
+        return jtu.keystr(self.steps).removeprefix(".").replace("#", r"\x23")
+
+    def __call__(self, tree: PyTree) -> Any:
+        for step in self.steps:
+            if isinstance(step, jtu.GetAttrKey):
+                tree = getattr(tree, step.name)
+            else:
+                tree = tree[step.key]
+        return tree
+
+    def __repr__(self) -> str:
+        return f"(lambda state: state{jtu.keystr(self.steps)})"
+
+
+_WHERE_PATH_ERROR = (
+    "A WhereDict selector must return its single argument or a path of attributes "
+    "and literal string or integer indices on that argument"
+)
+
+
+def where_path(where: Callable) -> WherePath:
+    """Compile a selector without executing arbitrary code on a proxy."""
+    if isinstance(where, WherePath):
+        return where
+    if isinstance(where, FunctionType):
+        return _compile_where_path(where.__code__)
+    if isinstance(where, attrgetter):
+        _, attrs = where.__reduce__()
+        if len(attrs) == 1:
+            names = attrs[0].split(".")
+            if all(name.isidentifier() for name in names):
+                return WherePath(tuple(jtu.GetAttrKey(name) for name in names))
+    if isinstance(where, itemgetter):
+        _, keys = where.__reduce__()
+        if len(keys) == 1 and type(keys[0]) in (int, str):
+            return WherePath((jtu.DictKey(keys[0]),))
+    raise ValueError(_WHERE_PATH_ERROR)
+
+
+@functools.lru_cache(maxsize=512)
+def _compile_where_path(code: CodeType) -> WherePath:
+    if (
+        code.co_argcount != 1
+        or code.co_kwonlyargcount
+        or code.co_flags & (inspect.CO_VARARGS | inspect.CO_VARKEYWORDS)
+    ):
+        raise ValueError(_WHERE_PATH_ERROR)
+
+    instructions = iter(dis.get_instructions(code))
+    start = next(instructions)
+    root = next(instructions, None)
+    if (
+        start.opname != "RESUME"
+        or root is None
+        or root.opname not in {"LOAD_FAST", "LOAD_FAST_BORROW"}
+        or root.arg != 0
+    ):
+        raise ValueError(_WHERE_PATH_ERROR)
+
+    steps = []
+    for instruction in instructions:
+        match instruction.opname:
+            case "LOAD_ATTR":
+                steps.append(jtu.GetAttrKey(instruction.argval))
+            case "LOAD_CONST" | "LOAD_SMALL_INT" if type(instruction.argval) in (int, str):
+                subscript = next(instructions, None)
+                if subscript is None or (
+                    subscript.opname != "BINARY_SUBSCR"
+                    and (subscript.opname, subscript.argrepr) != ("BINARY_OP", "[]")
+                ):
+                    raise ValueError(_WHERE_PATH_ERROR)
+                steps.append(jtu.DictKey(instruction.argval))
+            case "RETURN_VALUE" if next(instructions, None) is None:
+                return WherePath(tuple(steps))
+            case _:
+                raise ValueError(_WHERE_PATH_ERROR)
+    raise ValueError(_WHERE_PATH_ERROR)
 
 
 def unzip2(xys: Iterable[Tuple[T1, T2]]) -> Tuple[Tuple[T1, ...], Tuple[T2, ...]]:

@@ -10,9 +10,6 @@ import re
 import types
 from typing import Any, Optional, get_origin
 
-import jax.tree as jt
-import feedbax._vendor.jax_cookbook.tree as jtree
-from feedbax._vendor.jax_cookbook import is_type
 from feedbax._vendor.jax_cookbook._func import wrap_to_accept_var_kwargs
 
 logger = logging.getLogger(__name__)
@@ -115,16 +112,6 @@ def get_name_of_callable(
     if func_name is not None:
         return func.__name__
     return repr(func)
-
-
-def take_model(*args, **kwargs):
-    """Apply `jtree.take` to a Feedbax model while treating intervenors as leaves."""
-    from feedbax.intervene import AbstractIntervenor
-
-    return jtree.filter_wrap(
-        lambda x: not is_type(AbstractIntervenor)(x),
-        is_leaf=is_type(AbstractIntervenor),
-    )(jtree.take)(*args, **kwargs)
 
 
 @dataclass

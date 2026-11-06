@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 import json
 import os
 import uuid
@@ -10,7 +10,10 @@ import uuid
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import DomainCompileReport
 from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
-from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report
+from feedbax.compiler.penzai_compiler import (
+    compile_penzai_authoring_report,
+    inspect_penzai_model,
+)
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
 from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
@@ -33,9 +36,11 @@ from feedbax.contracts.graph import (
     SemanticAnchor,
     WorkspaceDocument,
     build_default_studio_workspace,
+    graph_input_driver_conflicts,
     studio_semantic_document_sha256,
 )
 from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.contracts.studio_api import PenzaiInspectorPayload, PenzaiNodeRequest
 
 
 @dataclass
@@ -224,17 +229,26 @@ class GraphService:
             path.unlink()
 
     def validate_graph(self, graph: GraphSpec) -> list[DomainDiagnostic]:
-        diagnostics: list[DomainDiagnostic] = []
+        diagnostics = [
+            DomainDiagnostic(
+                code="graph.input_occupied",
+                message=str(conflict),
+                node_ids=[conflict.target[0]],
+                ports=[conflict.target],
+                location={"path": conflict.authored_path, "occupied_by": conflict.occupied_by},
+            )
+            for conflict in graph_input_driver_conflicts(graph)
+        ]
+        driven_inputs = set(graph.input_bindings.values()) | {
+            (wire.target_node, wire.target_port) for wire in graph.wires
+        }
+        used_outputs = set(graph.output_bindings.values()) | {
+            (wire.source_node, wire.source_port) for wire in graph.wires
+        }
 
         for node_name, node in graph.nodes.items():
             for input_port in node.input_ports:
-                has_wire = any(
-                    w.target_node == node_name and w.target_port == input_port for w in graph.wires
-                )
-                has_binding = any(
-                    binding == (node_name, input_port) for binding in graph.input_bindings.values()
-                )
-                if not has_wire and not has_binding:
+                if (node_name, input_port) not in driven_inputs:
                     diagnostics.append(
                         DomainDiagnostic(
                             severity="error",
@@ -247,14 +261,7 @@ class GraphService:
                     )
 
             for output_port in node.output_ports:
-                has_wire = any(
-                    w.source_node == node_name and w.source_port == output_port for w in graph.wires
-                )
-                has_binding = any(
-                    binding == (node_name, output_port)
-                    for binding in graph.output_bindings.values()
-                )
-                if not has_wire and not has_binding:
+                if (node_name, output_port) not in used_outputs:
                     diagnostics.append(
                         DomainDiagnostic(
                             severity="warning",
@@ -288,19 +295,16 @@ class GraphService:
         node_path: list[str],
         interior: AcausalGraphSpec,
         component_registry: object,
+        authored_interior: dict[str, Any] | None = None,
     ) -> DomainCompileReport:
         record = self.get_graph(graph_id)
         report = compile_acausal_authoring_report(
             interior,
             node_path=node_path,
             component_registry=component_registry,
+            authored_interior=authored_interior,
         )
-        key = "/".join(node_path)
-        record.project.compile_reports = {
-            **(record.project.compile_reports or {}),
-            key: report,
-        }
-        self._save_project(self._path_for(graph_id), record.project)
+        self._save_compile_report(record, node_path, report)
         return report
 
     def compile_penzai_node(
@@ -321,13 +325,32 @@ class GraphService:
             output_port=output_port,
             node_path=node_path,
         )
+        self._save_compile_report(record, node_path, report)
+        return report
+
+    def inspect_penzai_node(
+        self, graph_id: str, payload: PenzaiNodeRequest
+    ) -> PenzaiInspectorPayload:
+        record = self.get_graph(graph_id)
+        report, html = inspect_penzai_model(
+            builder_name=payload.builder_name,
+            params=payload.params,
+            input_port=payload.input_port,
+            output_port=payload.output_port,
+            node_path=payload.node_path,
+        )
+        self._save_compile_report(record, payload.node_path, report)
+        return PenzaiInspectorPayload(html=html, report=report)
+
+    def _save_compile_report(
+        self, record: GraphRecord, node_path: list[str], report: DomainCompileReport
+    ) -> None:
         key = "/".join(node_path)
         record.project.compile_reports = {
             **(record.project.compile_reports or {}),
             key: report,
         }
-        self._save_project(self._path_for(graph_id), record.project)
-        return report
+        self._save_project(self._path_for(record.graph_id), record.project)
 
     def export_graph(self, graph_id: str, export_format: str) -> dict:
         record = self.get_graph(graph_id)

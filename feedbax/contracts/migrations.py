@@ -304,7 +304,9 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
     migrate_compile_lock_v3_to_v4,
+    migrate_compile_lock_v4_to_v5,
 )
 from feedbax.contracts.experiment_envelope import (
     EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
@@ -1867,6 +1869,71 @@ def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str
     return migrated
 
 
+def _migrate_studio_task_binding_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Translate legacy task data already routed to a concrete graph input."""
+
+    source_data = payload.get("exposed_data") or []
+    data_by_id = {data["id"]: data for data in source_data}
+    bindings = []
+    for raw_binding in payload.get("bindings") or []:
+        binding = dict(raw_binding)
+        data = data_by_id.get(binding.get("source_data_id"), {})
+        metadata = data.get("metadata") or {}
+        role = binding.get("role") or data.get("role") or metadata.get("task_data_role")
+        if role == "component_parameter":
+            temporal = metadata.get("temporality") or metadata.get("temporal_support")
+            temporal = temporal if isinstance(temporal, str) else None
+            shape = data.get("expected_shape")
+            if shape is None:
+                shape = (data.get("value_spec") or {}).get("shape")
+            time_varying = temporal in {
+                "trajectory", "materialized_trajectory", "epoch_masked_signal",
+                "time_varying", "per_step",
+            } or (
+                temporal not in {"constant", "trial_constant", "initial", "per_trial"}
+                and isinstance(shape, (list, tuple))
+                and bool(shape)
+                and shape[0] == "time"
+            )
+            if not time_varying:
+                raise ValueError(
+                    f"Legacy constant task binding {binding['id']!r} selected a global "
+                    "state label. Open it in the original producer to identify the "
+                    "owning component, then reauthor it for that component's input."
+                )
+            binding["role"] = "graph_input"
+            binding["metadata"] = dict(binding.get("metadata", {}))
+            binding["metadata"].pop("task_parameter_label", None)
+        bindings.append(binding)
+
+    exposed_data = []
+    for raw_data in source_data:
+        data = dict(raw_data)
+        if (
+            data.get("kind") == "intervention"
+            and data.get("id") == "intervene"
+            and data.get("path") == "intervene"
+            and not data.get("bindable")
+        ):
+            continue
+        metadata = dict(data.get("metadata", {}))
+        role = data.get("role") or metadata.get("task_data_role")
+        if role == "component_parameter" or data.get("kind") == "intervention":
+            if data.get("bindable"):
+                data.update(role="graph_input", kind="signal")
+            else:
+                data.update(role="protocol_value", kind="protocol_value")
+            path = data.get("path", "")
+            if path.startswith("intervene."):
+                data["path"] = f"inputs.{data['id']}"
+            metadata.pop("task_parameter_label", None)
+            if "task_data_role" in metadata:
+                metadata["task_data_role"] = data["role"]
+            data["metadata"] = metadata
+        exposed_data.append(data)
+    return {**payload, "exposed_data": exposed_data, "bindings": bindings}
+
+
 def _migrate_studio_value_spec_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Migrate legacy Studio ValueSpec v1 payloads to the v2 envelope."""
     from feedbax.contracts.graph import StudioValueSpec
@@ -2259,6 +2326,11 @@ def migrate_structured_spec_payload(
     )
 
 
+_STUDIO_OBJECTIVE_SCHEMA_ID = "feedbax.spec.studio.objective"
+_STUDIO_OBJECTIVE_SCHEMA_VERSION = f"{_STUDIO_OBJECTIVE_SCHEMA_ID}.v1"
+_LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION = "feedbax.studio.objective.v1"
+
+
 _SCENARIO_STRUCTURED_FIELDS = {
     "training_spec": "TrainingSpec",
     "task_spec": "TaskSpec",
@@ -2314,6 +2386,14 @@ def migrate_studio_scenario_spec(
     for field_name, kind in _SCENARIO_STRUCTURED_FIELDS.items():
         field_payload = migrated_payload.get(field_name)
         if isinstance(field_payload, Mapping):
+            if field_name == "objective_spec" and (
+                field_payload.get("schema_id") == _STUDIO_OBJECTIVE_SCHEMA_ID
+                or field_payload.get("schema_version") in (
+                    _STUDIO_OBJECTIVE_SCHEMA_VERSION,
+                    _LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION,
+                )
+            ):
+                kind = "StudioObjectiveSpec"
             if not assume_current:
                 field_payload = _stamp_parent_carried_nested_schema_version(
                     kind,
@@ -2979,6 +3059,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     manifest_emitters = ("feedbax.contracts.manifest", "feedbax.integrations.provider")
     studio_schema_emitters = ("feedbax.studio.schema", "feedbax.integrations.provider")
     studio_execution_emitters = ("feedbax.studio.execution", "feedbax.integrations.provider")
+    studio_execution_version = "feedbax.spec.studio.execution.v1"
     objective_emitters = ("feedbax.objective_spec", "feedbax.integrations.provider")
     invocation_emitters = ("feedbax.execution.records", "feedbax.integrations.provider")
     realization_emitters = (
@@ -3072,7 +3153,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.compiler.compile_graph",),
             consumed_by=("feedbax.compiler.ExecutableGraph",),
             description="Canonical executable semantic graph with source and key schedules.",
-            rejected_old_versions=("1", "2", "3"),
+            rejected_old_versions=("1", "2", "3", "4", "5"),
             required_tests=("tests/test_graph_compiler.py", "tests/test_graph_key_schedule.py"),
         ),
         _family(
@@ -3083,7 +3164,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             emitted_by=("feedbax.compiler.compile_graph",),
             consumed_by=("compiler evidence readers",),
             description="Successful graph compilation evidence with structured diagnostics.",
-            rejected_old_versions=("1", "2", "3", "4"),
+            rejected_old_versions=("1", "2", "3", "4", "5", "6"),
             required_tests=("tests/test_graph_compiler.py", "tests/test_graph_key_schedule.py"),
         ),
         _family(
@@ -3932,7 +4013,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "with compiler contract and implementation provenance recorded apart."
             ),
             stance="migrate",
-            supported_old_versions=(EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,),
+            supported_old_versions=(
+                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+            ),
             required_tests=("tests/test_envelope_engine_kernel.py",),
             notes=(
                 "v2 adds the optional typed artifact contract a figure runtime input "
@@ -3948,7 +4032,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "canonical_json_v1 and admits the governed_parent compile-time input with "
                 "exact typed parent and artifact byte/schema identity. Only attributable "
                 "built-in Feedbax v3 locks migrate; v1/v2 remain readable, and older "
-                "grammars cannot be relabelled to carry governed_parent."
+                "grammars cannot be relabelled to carry governed_parent. v5 pins the "
+                "producer execution identity in each planned product reference and hashes "
+                "these references into the consumer execution identity. Older locks remain "
+                "readable. Locks with planned products need recompilation before use "
+                "because migration cannot recover the original producer pins."
             ),
         ),
         _family(
@@ -5042,6 +5130,17 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "StudioObjectiveSpec",
+            _STUDIO_OBJECTIVE_SCHEMA_ID,
+            _STUDIO_OBJECTIVE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("Studio objective authoring",),
+            consumed_by=("StudioScenarioSpec.objective_spec",),
+            description="Studio-authored objective with editor selectors and legacy loss provenance.",
+            stance="migrate",
+            supported_old_versions=(_LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION,),
+        ),
+        _family(
             "ObjectiveSpec",
             "feedbax.spec.objective",
             "feedbax.spec.objective.v1",
@@ -5936,9 +6035,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported = None
             rejected = ("feedbax.spec.studio.biomechanics.v0",)
         elif kind == "StudioTaskBindingSpec":
-            current_version = f"{schema_id}.v2"
+            current_version = f"{schema_id}.v3"
             stance = "migrate"
-            supported = (STUDIO_TASK_BINDING_LEGACY_V1,)
+            supported = (STUDIO_TASK_BINDING_LEGACY_V1, f"{schema_id}.v2")
             rejected = ("feedbax.studio.task_bindings.v0",)
         elif kind == "StudioValueSpec":
             current_version = f"{schema_id}.v2"
@@ -6014,7 +6113,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     if kind == "WorkspaceReplayProduct"
                     else "feedbax.manifest.studio.execution.v1"
                     if kind.endswith("Result")
-                    else "feedbax.spec.studio.execution.v1"
+                    else studio_execution_version
                 ),
                 owner_module=(
                     "feedbax.contracts.workspace_replay"
@@ -6048,6 +6147,39 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     )
                     if kind == "WorkspaceReplayProduct"
                     else ("tests/test_structured_spec_migrations.py",)
+                ),
+            )
+        )
+
+    for kind, schema_id, description in (
+        (
+            "StudioNativeTrainingDispatchRequest",
+            "feedbax.spec.studio.native_training_dispatch_request",
+            "Request to dispatch one staged native training row by receipt generation.",
+        ),
+        (
+            "StudioNativeTrainingDispatchAccepted",
+            "feedbax.spec.studio.native_training_dispatch_accepted",
+            "Identity of the admitted native training attempt.",
+        ),
+    ):
+        families.append(
+            _family(
+                kind,
+                schema_id,
+                studio_execution_version,
+                owner_module="feedbax.studio.execution",
+                emitted_by=studio_execution_emitters,
+                consumed_by=("provider HTTP API", "Studio frontend"),
+                durable=False,
+                description=description,
+                required_tests=(
+                    "tests/test_structured_spec_migrations.py",
+                    "tests/test_training_native_row_handoff.py",
+                ),
+                notes=(
+                    "The HTTP payload carries no schema version and has no prior wire format. "
+                    "The v0 entry is a rejection sentinel."
                 ),
             )
         )
@@ -6655,13 +6787,23 @@ default_spec_registry.register_migration(
     "ExperimentCompileLock",
     SchemaMigration(
         source_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
-        target_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
+        target_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
         migration_id="experiment-compile-lock-v3-to-v4-execution-identity-pin",
         migrate=migrate_compile_lock_v3_to_v4,
         description=(
             "Pin execution identity to canonical_json_v1 only when the v3 lock records "
             "attributable built-in Feedbax compiler provenance."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "ExperimentCompileLock",
+    SchemaMigration(
+        source_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+        target_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
+        migration_id="experiment-compile-lock-v4-to-v5-without-planned-products",
+        migrate=migrate_compile_lock_v4_to_v5,
+        description="Upgrade locks whose references do not require producer execution pins.",
     ),
 )
 default_spec_registry.register_migration(
@@ -7505,6 +7647,16 @@ default_spec_registry.register_migration(
     ),
 )
 default_spec_registry.register_migration(
+    "StudioObjectiveSpec",
+    SchemaMigration(
+        source_version=_LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION,
+        target_version=_STUDIO_OBJECTIVE_SCHEMA_VERSION,
+        migration_id="studio-objective-v1-governed-identity",
+        migrate=dict,
+        description="Preserve authored objective terms under the governed Studio schema identity.",
+    ),
+)
+default_spec_registry.register_migration(
     "StudioTaskBindingSpec",
     SchemaMigration(
         source_version=STUDIO_TASK_BINDING_LEGACY_V1,
@@ -7515,6 +7667,16 @@ default_spec_registry.register_migration(
             "Rename exposed_outputs to exposed_data and source_output_id to "
             "source_data_id for scenario-owned task data bindings."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioTaskBindingSpec",
+    SchemaMigration(
+        source_version="feedbax.spec.studio.task_bindings.v2",
+        target_version="feedbax.spec.studio.task_bindings.v3",
+        migration_id="studio-task-bindings-v2-to-v3",
+        migrate=_migrate_studio_task_binding_v2_payload,
+        description="Bind task controls directly to graph input ports.",
     ),
 )
 default_spec_registry.register_migration(

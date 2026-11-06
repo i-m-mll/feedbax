@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 
 import equinox as eqx
@@ -38,7 +39,10 @@ def runtime(update, *, mapped=False):
         )
     contract.phase_program.phases[0].max_steps = 3
     kernel = NumericalUpdateKernel(
-        update, ("rate", "schedule_origin_step"), excluded_slots=("objective",)
+        update,
+        ("rate", "schedule_origin_step"),
+        optional_context_names=("optional_rate",),
+        excluded_slots=("objective",),
     )
     executor = PhaseProgramExecutor(
         contract.phase_program,
@@ -118,15 +122,100 @@ def test_preparation_is_pure_and_execution_matches_science_without_retracing(map
     assert executor.preparation_telemetry["kernel_preparation_seconds"] >= 0
     for changed, match in [
         ({**context, "schedule_origin_step": 8}, "static inputs"),
+        ({**context, "optional_rate": jnp.asarray(1.0)}, "context keys"),
+        ({**context, "rate": 0.5}, "array/static"),
         ({"rate": context["rate"]}, "schedule_origin_step"),
     ]:
         with pytest.raises((ValueError, KeyError), match=match):
             prepared(current, None, changed)
     with pytest.raises((ValueError, TypeError), match="shape|Shape|types"):
         prepared({**current, "model": jnp.zeros((4,))}, None, context)
+    with pytest.raises((ValueError, TypeError), match="types|dtype"):
+        prepared({**current, "model": current["model"].astype(jnp.int32)}, None, context)
     del current["optimizer"]
     with pytest.raises(ValueError, match="disappeared"):
         prepared(current, None, context)
+
+
+def test_mapped_prepared_writes_own_static_leaves_and_check_unprojected_destinations():
+    @dataclass(unsafe_hash=True)
+    class Tag:
+        mode: str
+
+    def update(slots, _context):
+        model = slots["model"]
+        return {
+            "model": {**model, "parameters": model["parameters"] + 1},
+            "optimizer": jnp.asarray(1, dtype=jnp.int32),
+            "batch_counter": slots["batch_counter"] + 1,
+        }
+
+    executor, kernel, slots = runtime(update, mapped=True)
+    kernel_ref = executor.program.update_steps[0].kernel.kernel_ref
+    executor.kernels[kernel_ref] = replace(kernel, excluded_slots=("objective", "optimizer"))
+    initial_tag = Tag("train")
+    slots["model"] = {"parameters": slots["model"], "tag": initial_tag}
+    context = {"rate": jnp.asarray(1.0), "schedule_origin_step": 0}
+    executor.preflight(slots, run_id="prepare", context=context)
+    tags = []
+
+    def observe(current, *_args):
+        tags.append(current["model"]["tag"])
+
+    result = executor.run(slots, run_id="run", context=context, step_guard=observe)
+    np.testing.assert_array_equal(result.slots["model"]["parameters"], np.full((3, 2), 3))
+    assert len({id(tag) for tag in tags}) == 3
+    tags[0].mode = "changed"
+    assert initial_tag.mode == tags[-1].mode == result.slots["model"]["tag"].mode == "train"
+
+    def replace_unprojected_slot(current, *_args):
+        current["optimizer"] = jnp.zeros((3, 2), dtype=jnp.int32)
+
+    with pytest.raises(WorkerContractValidationError, match="/writes/optimizer.*shape or dtype"):
+        executor.run(
+            slots, run_id="bad_destination", context=context, step_guard=replace_unprojected_slot
+        )
+
+    def change_static_slot(current, *_args):
+        current["model"]["tag"].mode = "eval"
+
+    with pytest.raises(WorkerContractValidationError, match="static inputs changed"):
+        executor.run(slots, run_id="bad_static", context=context, step_guard=change_static_slot)
+
+
+def test_mapped_prepared_write_preserves_numpy_destination_dtype():
+    def update(slots, context):
+        return {"model": slots["model"] + context["rate"]}
+
+    with jax.experimental.enable_x64(False):
+        executor, _, slots = runtime(update, mapped=True)
+        context = {"rate": jnp.asarray(1.0), "schedule_origin_step": 0}
+        executor.preflight(slots, run_id="prepare", context=context)
+        slots["model"] = np.zeros((3, 2), dtype=np.float64)
+        with pytest.raises(WorkerContractValidationError, match="destination.*dtype"):
+            executor.run(slots, run_id="bad_dtype", context=context)
+
+
+def test_mapped_projection_can_transform_a_written_slots_operands():
+    class ParameterProjection(NumericalUpdateKernel):
+        def project(self, slots, context):
+            selected, selected_context = super().project(slots, context)
+            selected["model"] = selected["model"]["parameters"]
+            return selected, selected_context
+
+    def update(slots, _context):
+        return {
+            "model": {"parameters": slots["model"] + 1, "mode": "train"},
+            "batch_counter": slots["batch_counter"] + 1,
+        }
+
+    executor, _, slots = runtime(update, mapped=True)
+    kernel_ref = executor.program.update_steps[0].kernel.kernel_ref
+    executor.kernels[kernel_ref] = ParameterProjection(update, excluded_slots=("objective",))
+    slots["model"] = {"parameters": slots["model"], "mode": "train"}
+    result = executor.run(slots, run_id="custom_projection")
+    np.testing.assert_array_equal(result.slots["model"]["parameters"], np.full((3, 2), 3))
+    assert result.slots["model"]["mode"] == "train"
 
 
 def test_prepared_run_keeps_host_coordinate_semantics_and_no_warmup():

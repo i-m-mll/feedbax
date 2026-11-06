@@ -35,7 +35,7 @@ def _run_import_probe(source: str) -> dict[str, Any]:
     return json.loads(result.stdout)
 
 
-def test_importing_feedbax_does_not_load_web_package() -> None:
+def test_importing_feedbax_defers_web_and_plotly() -> None:
     payload = _run_import_probe(
         """
         import importlib
@@ -47,11 +47,11 @@ def test_importing_feedbax_does_not_load_web_package() -> None:
             name for name in sys.modules
             if name == "feedbax.web" or name.startswith("feedbax.web.")
         )
-        print(json.dumps({"web_modules": web_modules}))
+        print(json.dumps({"web_modules": web_modules, "plotly_loaded": "plotly" in sys.modules}))
         """
     )
 
-    assert payload["web_modules"] == []
+    assert payload == {"web_modules": [], "plotly_loaded": False}
 
 
 def test_core_training_contract_imports_do_not_load_web_package() -> None:

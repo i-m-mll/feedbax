@@ -22,9 +22,8 @@ from feedbax.contracts.array_values import (
 )
 
 
-STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION = (
-    "feedbax.component.structural_linear_state_space.v1"
-)
+STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION_V1 = "feedbax.component.structural_linear_state_space.v1"
+STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION = "feedbax.component.structural_linear_state_space.v2"
 
 
 class StructuralLinearDynamicsPerturbation(Module):
@@ -87,16 +86,24 @@ class StructuralLinearDynamicsPerturbation(Module):
         return cls(materialize_array_value(declaration), scale=scale, active=active)
 
     def effective_transition(self, transition: Array) -> Array:
-        """Return the transition matrix with this structural change applied."""
-        transition = jnp.asarray(transition, dtype=self.delta_A.dtype)
+        """Apply the change in the nominal floating-point matrix's dtype.
+
+        When enabled, cast the stored scale and delta to the nominal dtype
+        before multiplying and adding. When disabled, return the nominal
+        matrix directly.
+        """
+        transition = jnp.asarray(transition)
         if transition.shape != self.delta_A.shape:
             raise ValueError("delta_A must have the same shape as the transition matrix.")
-        delta_A = jax.lax.cond(
-            self.active,
-            lambda: self.scale * self.delta_A,
-            lambda: jnp.zeros_like(self.delta_A),
-        )
-        return transition + delta_A
+        if not jnp.issubdtype(transition.dtype, jnp.floating):
+            raise TypeError("The nominal transition matrix must have a floating-point dtype.")
+
+        def apply_change() -> Array:
+            scale = self.scale.astype(transition.dtype)
+            delta_A = self.delta_A.astype(transition.dtype)
+            return transition + scale * delta_A
+
+        return jax.lax.cond(self.active, apply_change, lambda: transition)
 
 
 def structural_linear_transition(
@@ -104,7 +111,7 @@ def structural_linear_transition(
     state: Array,
     perturbation: StructuralLinearDynamicsPerturbation,
 ) -> Array:
-    """Apply a structural linear transition without an additive input channel."""
+    """Apply a floating-point structural transition without an additive input channel."""
     return perturbation.effective_transition(transition) @ state
 
 
@@ -251,8 +258,8 @@ class StructuralLinearStateSpace(LinearStateSpace):
 
     Unlike force-port interventions, the perturbation changes the matrix that
     advances the state. Parameters live in an Equinox ``StateIndex`` so an
-    existing task can select one constant signed, nominal, or zero variant per
-    trial through ``TaskTrialSpec.intervene``.
+    task can select one constant signed, nominal, or zero variant in its
+    trial initial state.
     """
 
     structural_params_index: StateIndex
@@ -260,7 +267,6 @@ class StructuralLinearStateSpace(LinearStateSpace):
     initial_delta_A_value_spec: ArrayValueSpec | None = field(static=True)
     initial_scale: float = field(static=True)
     initial_active: bool = field(static=True)
-    label: str = field(static=True)
 
     def __init__(
         self,
@@ -276,7 +282,6 @@ class StructuralLinearStateSpace(LinearStateSpace):
         vel_slice: tuple[int, int] = (2, 4),
         scale: float | Array = 1.0,
         active: bool | Array = False,
-        label: str = "structural_linear_dynamics",
     ):
         super().__init__(
             A=A,
@@ -302,7 +307,6 @@ class StructuralLinearStateSpace(LinearStateSpace):
         self.initial_scale = float(params.scale)
         self.initial_active = bool(params.active)
         self.structural_params_index = StateIndex(params)
-        self.label = str(label)
 
     def __call__(
         self,
@@ -332,7 +336,3 @@ class StructuralLinearStateSpace(LinearStateSpace):
             "effector": self._effector(vector, force),
             "state": vector,
         }, state
-
-    def task_parameter_state_indices(self) -> dict[str, StateIndex]:
-        """Expose the trial-constant structural parameters under ``label``."""
-        return {self.label: self.structural_params_index}

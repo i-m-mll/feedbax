@@ -96,6 +96,7 @@ from feedbax.contracts.manifest import (
     safe_manifest_key,
     write_manifest,
 )
+from feedbax.persistence.terminal_publication import manifest_publication_lock
 
 
 FULFILLMENT_PROJECTION_SCHEMA_ID = "feedbax.fulfillment.output_projection"
@@ -773,8 +774,9 @@ def repair_node(
     bytes by observed SHA-256, execute a candidate into shadow custody, admit
     the candidate completely in the shadow root, promote its artifacts, re-admit
     the promoted manifest against the authoritative root, and only then publish
-    the manifest by write-then-rename. A failure at any gate leaves the
-    authoritative manifest exactly as it was.
+    the manifest by write-then-rename. The gates before publication leave the
+    authoritative manifest byte-for-byte intact on failure. Once replacement
+    occurs, subsequent indexing and repair-record errors propagate to the caller.
 
     Args:
         request: The node to repair.
@@ -784,7 +786,7 @@ def repair_node(
 
     Raises:
         FulfillmentRepairError: If there is nothing to repair, the receipt is
-            absent, or the candidate fails admission. Nothing is promoted.
+            absent, or the candidate fails admission.
     """
     if isinstance(request, EvaluationMatrixNodeRequest):
         raise TypeError(
@@ -853,10 +855,11 @@ def repair_node(
             f"authoritative root: {promoted_outcome.describe()}",
             outcome=promoted_outcome,
         )
-    _publish_manifest_bytes(promoted, path=manifest_path, root=root, original=failed_bytes.raw)
-
+    _validate_repair_destination(promoted, path=manifest_path, root=root)
     repaired_bytes = AdmittedManifestBytes()
-    admission_after = admit_node(request, environment=environment, capture=repaired_bytes)
+    with manifest_publication_lock(manifest_path):
+        _publish_manifest_bytes(promoted, path=manifest_path, root=root, original=failed_bytes.raw)
+        admission_after = admit_node(request, environment=environment, capture=repaired_bytes)
     if not admission_after.admitted:  # pragma: no cover - promoted admission already passed
         raise FulfillmentRepairError(
             f"repaired node {request.node_key!r} does not admit from its published bytes: "

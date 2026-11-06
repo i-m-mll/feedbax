@@ -11,10 +11,19 @@ import jax.tree as jt
 import optax
 import pytest
 
+from feedbax.compiler.serialization import graph_to_spec
+from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.components import GRU, RateLimiter
 from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Graph
-from feedbax.web.worker.execution import _trainable_filter
+from feedbax.web.worker.execution import _compile_trainability
+
+
+def _prepare_studio_gru(key):
+    graph = Graph(nodes={"cell": GRU(2, 3, key=key)}, wires=()).prepare()
+    registry = ComponentRegistry(load_user_components=False)
+    _, trainable_filter = _compile_trainability(graph_to_spec(graph, registry), graph, registry)
+    return SimpleNamespace(graph=graph, trainable_filter=trainable_filter)
 
 
 def test_prepared_gru_reconstruction_reuses_trace_and_retains_weight_updates():
@@ -111,8 +120,8 @@ def test_filter_change_input_preserves_solver_configuration_and_mixed_float_rese
 def test_studio_update_trains_weights_and_keeps_reset_template_fixed():
     from feedbax.training.studio_executor import StudioUpdateKernel
 
-    graph = Graph(nodes={"cell": GRU(2, 3, key=jax.random.PRNGKey(0))}, wires=()).prepare()
-    compiled = SimpleNamespace(graph=graph, trainable_filter=_trainable_filter(graph, ("cell",)))
+    compiled = _prepare_studio_gru(jax.random.PRNGKey(0))
+    graph = compiled.graph
     optimizer = optax.sgd(0.1)
 
     def rollout(model, plan, key):
@@ -164,7 +173,7 @@ def test_eager_point_mass_rebuild_consistency_and_custom_callbacks_use_current_n
 
     key = jax.random.PRNGKey(0)
     task = SimpleNamespace(
-        get_train_trial_with_intervenor_params=lambda **kwargs: SimpleNamespace(inputs=jnp.zeros(1))
+        sample_trial=lambda **kwargs: SimpleNamespace(inputs=jnp.zeros(1))
     )
 
     def build():
@@ -206,20 +215,23 @@ def test_eager_point_mass_rebuild_consistency_and_custom_callbacks_use_current_n
     assert eqx.tree_equal(outputs, rebuilt_outputs)
 
     def consistency(current, state):
-        return state.set(current.net.state_index, current.net.state_index.init)
+        cell = current.net.nodes["cell"]
+        return state.set(cell.state_index, cell.state_index.init)
 
     def view(node_states):
-        return node_states["net"]
+        return node_states["net"].cell
 
     customized = model.with_state_consistency(consistency).with_state_view(view).prepare()
     assert customized.state_consistency_fn is consistency
     assert customized.state_view_fn is view
     state = customized.state_consistency_update(customized.init_state(key=key))
-    assert eqx.tree_equal(customized.state_view(state), customized.net.state_index.init)
+    assert eqx.tree_equal(
+        customized.state_view(state), customized.net.nodes["cell"].state_index.init
+    )
 
 
 def test_preparation_keeps_task_parameter_and_latch_slots_independent():
-    from feedbax.intervene import StateSelector, ThresholdLatchedForce, ThresholdLatchedForceParams
+    from feedbax.mechanics.force_fields import StateSelector, ThresholdLatchedForce, ThresholdLatchedForceParams
 
     def build():
         return ThresholdLatchedForce(
@@ -241,7 +253,6 @@ def test_preparation_keeps_task_parameter_and_latch_slots_independent():
     assert bool(state.get(right.params_index).active)
     assert bool(state.get(left.latch_index).latched)
     assert not bool(state.get(right.latch_index).latched)
-    assert left.task_parameter_state_indices()[left.label].marker == left.params_index.marker
     assert state.get(right.params_index).scale.dtype == jnp.float32
 
 
@@ -256,11 +267,8 @@ def test_prepared_studio_gru_checkpoint_continues_next_adam_step(tmp_path):
 
     key = jax.random.PRNGKey(0)
 
-    def build():
-        return Graph(nodes={"cell": GRU(2, 3, key=key)}, wires=()).prepare()
-
-    graph = build()
-    compiled = SimpleNamespace(graph=graph, trainable_filter=_trainable_filter(graph, ("cell",)))
+    compiled = _prepare_studio_gru(key)
+    graph = compiled.graph
     optimizer = optax.adam(0.05)
 
     def predict(model, plan, key):
@@ -273,17 +281,16 @@ def test_prepared_studio_gru_checkpoint_continues_next_adam_step(tmp_path):
         compiled=compiled, optimizer=optimizer, rollout_fn=predict, evaluate_loss_fn=loss
     )
 
-    def initial_slots(model):
+    def initial_slots(prepared):
+        trainable, _ = eqx.partition(prepared.graph, prepared.trainable_filter)
         return {
-            "model": model,
-            "optimizer": optimizer.init(
-                eqx.partition(model, _trainable_filter(model, ("cell",)))[0]
-            ),
+            "model": prepared.graph,
+            "optimizer": optimizer.init(trainable),
             "prng": key,
             "batch_counter": jnp.array(0, dtype=jnp.int32),
         }
 
-    slots = initial_slots(graph)
+    slots = initial_slots(compiled)
     for _ in range(2):
         updated = kernel(slots)
         slots = {name: updated[name] for name in slots}
@@ -310,7 +317,7 @@ def test_prepared_studio_gru_checkpoint_continues_next_adam_step(tmp_path):
         tmp_path,
         expected_run_spec=run_spec,
         expected_phase_program=program,
-        expected_slots=initial_slots(build()),
+        expected_slots=initial_slots(_prepare_studio_gru(key)),
     )
     resumed = kernel(loaded.slots)
     assert eqx.tree_equal(resumed, uninterrupted)

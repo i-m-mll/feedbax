@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Literal
 
@@ -8,6 +11,7 @@ import numpy as np
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from feedbax.analysis import evaluation
 from feedbax.analysis.evaluation import (
     EvaluationAuthoringSchema,
     EvaluationRecipeResult,
@@ -16,6 +20,8 @@ from feedbax.analysis.evaluation import (
     compile_evaluation_run_matrix,
     execute_evaluation_run_matrix,
     execute_evaluation_run_spec,
+    load_evaluation_states,
+    load_evaluation_states_cache,
     materialize_evaluation_run_matrix,
     resolve_staged_evaluation_prerequisite,
 )
@@ -51,8 +57,8 @@ from feedbax.contracts.manifest import (
     OverridePatch,
     SpecPayload,
     StagedEvaluationPrerequisite,
-    TrainingSweepAxisGroup,
     TrainingRunManifest,
+    evaluation_states_cache_path,
     load_manifest,
     migrate_spec_payload,
     spec_payload,
@@ -67,7 +73,6 @@ from feedbax.contracts.matrix_core import (
     RowDerivation,
     derive_row_path,
     expand_matrix_axes,
-    ordered_index_product,
 )
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.staged_execution import (
@@ -76,6 +81,8 @@ from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
 )
 from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
+from feedbax.persistence import manifest_index
+from feedbax.persistence.manifest_index import default_index_path
 
 
 def _axis_matrix_payload(tmp_path: Path) -> dict:
@@ -296,6 +303,140 @@ def test_evaluation_matrix_executes_through_harness(tmp_path: Path, evaluation_r
         "regeneration_spec",
         "resolved_row_spec",
     }
+
+
+def test_scalar_matrix_does_not_overwrite_newer_forced_publication(
+    tmp_path: Path, evaluation_registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generations = iter(range(1, 5))
+
+    def recipe(_spec, _root, _states_path, _execution_context):
+        generation = next(generations)
+        return EvaluationRecipeResult(
+            states={"generation": generation},
+            summary_metrics={"generation": generation},
+        )
+
+    evaluation_registry.register("example.evaluate", recipe)
+    matrix = _matrix()
+    matrix.base.params["states_custody"] = "durable"
+    newer = {}
+
+    def force_after_row_execution(spec, **kwargs):
+        first, path = execute_evaluation_run_spec(spec, **kwargs)
+        row_root = kwargs["root"]
+        forced, forced_path = execute_evaluation_run_spec(
+            spec, registry=kwargs["registry"], root=row_root, force=True
+        )
+        assert forced_path == path
+        cache_path = evaluation_states_cache_path(forced.id, root=row_root)
+        newer[path] = (path.read_bytes(), cache_path.read_bytes())
+        return first, path
+
+    monkeypatch.setattr(evaluation, "execute_evaluation_run_spec", force_after_row_execution)
+    result = execute_evaluation_run_matrix(matrix, registry=evaluation_registry, root=tmp_path)
+
+    for row, generation in zip(result.rows, [2, 4], strict=True):
+        path = row.manifest_path
+        assert path is not None
+        row_root = tmp_path / row.row_id
+        canonical = load_manifest(path)
+        assert canonical.summary_metrics["generation"] == generation
+        receipt_bytes, cache_bytes = newer[path]
+        assert path.read_bytes() == receipt_bytes
+        cache_path = evaluation_states_cache_path(canonical.id, root=row_root)
+        assert cache_path.read_bytes() == cache_bytes
+        assert load_evaluation_states_cache(cache_path, manifest=canonical) == {
+            "generation": generation
+        }
+        assert load_evaluation_states(canonical, root=row_root) == {"generation": generation}
+        assert resolve_manifest_regeneration(canonical, root=tmp_path) == row.regeneration
+        assert canonical.metadata["matrix_harness"]["row_id"] == row.row_id
+        with closing(sqlite3.connect(default_index_path(row_root))) as index:
+            projected_artifacts = index.execute(
+                "SELECT role, sha256 FROM artifacts WHERE manifest_id = ?", (canonical.id,)
+            ).fetchall()
+        assert sorted(projected_artifacts) == sorted(
+            (artifact.role, artifact.sha256) for artifact in canonical.artifacts
+        )
+
+
+def test_scalar_matrix_preserves_row_context_across_force_and_warm_reuse(
+    tmp_path: Path, evaluation_registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+
+    def recipe(spec, _root, _states_path, _execution_context):
+        calls.append(spec.params["gain"])
+        generation = len(calls)
+        return EvaluationRecipeResult(
+            states={"generation": generation},
+            summary_metrics={"generation": generation},
+        )
+
+    evaluation_registry.register("example.evaluate", recipe)
+    matrix = _matrix()
+    control_spec, _ = materialize_evaluation_run_matrix(matrix, registry=evaluation_registry)
+    row_root = tmp_path / control_spec.row_id
+    bare, bare_path = execute_evaluation_run_spec(
+        control_spec.payload, registry=evaluation_registry, root=row_root
+    )
+    cache_path = evaluation_states_cache_path(bare.id, root=row_root)
+    bare_index = default_index_path(row_root)
+    bare_publication = tuple(path.read_bytes() for path in (bare_path, cache_path, bare_index))
+    index_manifest = manifest_index.index_manifest
+
+    def fail_after_indexing(conn, candidate, *, path):
+        index_manifest(conn, candidate, path=path)
+        raise sqlite3.OperationalError("matrix context projection failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(manifest_index, "index_manifest", fail_after_indexing)
+        with pytest.raises(EvaluationRecipeExecutionError) as exc_info:
+            execute_evaluation_run_matrix(matrix, registry=evaluation_registry, root=tmp_path)
+
+    assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+    assert exc_info.value.path != bare_path
+    assert tuple(path.read_bytes() for path in (bare_path, cache_path, bare_index)) == (
+        bare_publication
+    )
+
+    initial = execute_evaluation_run_matrix(matrix, registry=evaluation_registry, root=tmp_path)
+    control, treatment = initial.rows
+    assert calls == [2.0, 3.0]
+    assert control.manifest_path == bare_path
+    assert control.result.summary_metrics == bare.summary_metrics
+    assert cache_path.read_bytes() == bare_publication[1]
+    assert resolve_manifest_regeneration(load_manifest(bare_path), root=tmp_path) == (
+        control.regeneration
+    )
+
+    # Historical matrix receipts held replay artifacts only in the matrix root.
+    shutil.rmtree(row_root / "artifacts")
+    forced, path = execute_evaluation_run_spec(
+        control_spec.payload, registry=evaluation_registry, root=row_root, force=True
+    )
+
+    assert path == control.manifest_path
+    assert forced.summary_metrics["generation"] == 3
+    assert resolve_manifest_regeneration(forced, root=row_root) == control.regeneration
+    publication_paths = [
+        path
+        for row in initial.rows
+        for path in (
+            row.manifest_path,
+            evaluation_states_cache_path(row.result.id, root=tmp_path / row.row_id),
+            default_index_path(tmp_path / row.row_id),
+        )
+    ]
+    published = {path: (path.stat().st_ino, path.read_bytes()) for path in publication_paths}
+
+    warm = execute_evaluation_run_matrix(matrix, registry=evaluation_registry, root=tmp_path)
+    assert calls == [2.0, 3.0, 2.0]
+    assert [row.result for row in warm.rows] == [forced, treatment.result]
+    assert {
+        path: (path.stat().st_ino, path.read_bytes()) for path in publication_paths
+    } == published
 
 
 def _generator_axis_base(tmp_path: Path) -> dict:
@@ -804,38 +945,6 @@ def test_axis_matrix_applies_rfc_6902_list_append(tmp_path: Path, evaluation_reg
     assert rows[1].payload.training_run_ids == ["train-a", "train-b"]
     assert rows[2].payload.training_run_ids == ["train-a"]
     assert rows[3].payload.training_run_ids == ["train-a"]
-
-
-def test_training_cross_group_delegates_to_matrix_core_and_matches_axis_order(
-    monkeypatch,
-) -> None:
-    import feedbax.training.run_matrix as training_matrix
-
-    calls: list[list[tuple[str, int]]] = []
-
-    def traced(lengths):
-        calls.append(list(lengths))
-        return ordered_index_product(lengths)
-
-    monkeypatch.setattr(training_matrix, "ordered_index_product", traced)
-    training = training_matrix._expand_group(
-        TrainingSweepAxisGroup(id="all", axes=["gain", "mode"], mode="cross"),
-        {"gain": 2, "mode": 2},
-    )
-    evaluation = [
-        coordinate.value_indices
-        for coordinate in expand_matrix_axes(
-            [
-                MatrixAxis(
-                    id="gain", values=[MatrixAxisValue(id="low"), MatrixAxisValue(id="high")]
-                ),
-                MatrixAxis(id="mode", values=[MatrixAxisValue(id="a"), MatrixAxisValue(id="b")]),
-            ]
-        )
-    ]
-
-    assert calls == [[("gain", 2), ("mode", 2)]]
-    assert training == evaluation
 
 
 def test_direct_single_run_keeps_empty_staged_context(tmp_path: Path, evaluation_registry) -> None:

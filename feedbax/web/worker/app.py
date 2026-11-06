@@ -8,17 +8,16 @@ import hmac
 import json
 import logging
 import os
-import queue
 import threading
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Deque, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError as PydanticValidationError
 
@@ -51,6 +50,7 @@ from feedbax.web.worker.checkpoint import (
     cleanup_worker_checkpoint,
 )
 from feedbax.web.worker.identity import require_worker_job_id
+from feedbax.web.worker.transport import WORKER_EVENT_CURSOR_EXPIRED
 
 
 logger = logging.getLogger(__name__)
@@ -60,11 +60,13 @@ class WorkerStatus(str, Enum):
     IDLE = "idle"
     RUNNING = "running"
     COMPLETED = "completed"
+    STOPPED = "stopped"
     ERROR = "error"
 
 
-# Maximum number of past events to buffer per job for from_seq replay.
+# Maximum number of events retained per job.
 _EVENT_BUFFER_MAX = 1000
+_STREAM_KEEPALIVE_SECONDS = 5
 
 # Maximum number of terminal jobs retained for status/manifest lookup.
 _TERMINAL_JOB_RETENTION_MAX = 32
@@ -75,12 +77,10 @@ class _Job:
     job_id: str
     run_set_id: str
     total_batches: int
-    event_queue: queue.Queue
     stop_event: threading.Event
     # Parsed training configuration dict passed from the API layer.
     training_config: Optional[Dict[str, Any]] = None
-    # Buffer of (seq, event_dict) for replay support.
-    event_buffer: Deque[Tuple[int, dict]] = field(
+    event_log: collections.deque[dict[str, Any]] = field(
         default_factory=lambda: collections.deque(maxlen=_EVENT_BUFFER_MAX)
     )
     thread: Optional[threading.Thread] = None
@@ -103,25 +103,31 @@ class _Job:
     retention_plan_payload: Optional[Dict[str, Any]] = None
     retained_observables_payload: Optional[Dict[str, Any]] = None
     batch: int = 0
+    program_step: int | None = None
     last_loss: float = 0.0
     snapshot_interval: int = 100
     terminal_at: Optional[float] = None
     _state_lock: threading.RLock = field(default_factory=threading.RLock)
-    # Monotonically increasing sequence counter; protected by _seq_lock.
-    _seq: int = 0
-    _seq_lock: threading.Lock = field(default_factory=threading.Lock)
+    _next_seq: int = 0
+    _stream_finished: bool = False
+    _stream_waiters: dict[asyncio.Event, asyncio.AbstractEventLoop] = field(default_factory=dict)
 
-    def next_seq(self) -> int:
-        """Return the next sequence number and advance the counter."""
-        with self._seq_lock:
-            seq = self._seq
-            self._seq += 1
-            return seq
+    def _wake_stream_waiters_locked(self) -> None:
+        """Notify each waiting stream once until it reads the log again."""
+        for ready, loop in self._stream_waiters.items():
+            loop.call_soon_threadsafe(ready.set)
+        self._stream_waiters.clear()
+
+    def _oldest_seq_locked(self) -> int:
+        return self._next_seq - len(self.event_log)
+
+    def _terminal_event_published_locked(self) -> bool:
+        return bool(self.event_log and self.event_log[-1]["type"] in RUN_EVENT_TERMINAL_TYPES)
 
 
 def _is_terminal_status(status: WorkerStatus) -> bool:
     """Return whether *status* represents a finished registry entry."""
-    return status in {WorkerStatus.IDLE, WorkerStatus.COMPLETED, WorkerStatus.ERROR}
+    return status is not WorkerStatus.RUNNING
 
 
 def _mark_job_terminal(job: _Job, status: WorkerStatus) -> None:
@@ -133,18 +139,13 @@ def _mark_job_terminal(job: _Job, status: WorkerStatus) -> None:
         job.terminal_at = time.monotonic()
 
 
-def _job_status(job: _Job) -> WorkerStatus:
-    """Return a consistent status value for *job*."""
-    with job._state_lock:
-        return job.status
-
-
 def _job_status_payload(job: _Job) -> dict[str, Any]:
     """Return the status route payload from one state snapshot."""
     with job._state_lock:
         return {
             "status": job.status,
             "batch": job.batch,
+            "program_step": job.program_step,
             "total_batches": job.total_batches,
             "last_loss": job.last_loss,
             "job_id": job.job_id,
@@ -157,6 +158,7 @@ def _job_checkpoint_payload(job: _Job) -> dict[str, Any]:
     with job._state_lock:
         return {
             "batch": job.batch,
+            "program_step": job.program_step,
             "loss": job.last_loss,
             "weights_available": (
                 job.checkpoint_path is not None and job.checkpoint_cleanup_error is None
@@ -172,17 +174,21 @@ def _cleanup_checkpoint_path(path: str | None) -> None:
 
 def _manifest_history_events(job: _Job) -> list[dict[str, Any]]:
     """Return compact event history suitable for a durable JSON artifact."""
-    history_types = {"training_progress", "training_log", "training_error", "training_complete"}
+    history_types = {
+        "training_progress",
+        "training_log",
+        "training_error",
+        "training_complete",
+        "training_stopped",
+    }
     with job._state_lock:
-        events = []
-        for _, event in job.event_buffer:
-            if event.get("schema_id") == "feedbax.run_event":
-                legacy_event = legacy_worker_event_from_run_event(event)
-                if legacy_event.get("type") in history_types:
-                    events.append(legacy_event)
-            elif event.get("type") in history_types:
-                events.append(dict(event))
-        return events
+        events = tuple(job.event_log)
+    history = []
+    for event in events:
+        legacy_event = legacy_worker_event_from_run_event(event)
+        if legacy_event.get("type") in history_types:
+            history.append(legacy_event)
+    return history
 
 
 def _write_job_manifest(job: _Job) -> None:
@@ -427,16 +433,14 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg", bootstrap_state: Bootstra
         emit=lambda event: _emit(job, event),
     )
     try:
-        terminal_status = WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
         with job._state_lock:
             job.last_loss = result.final_loss
             job.batch = result.final_batch
+            job.program_step = result.final_program_step
             job.retention_plan_payload = result.retention_plan
             job.retained_observables_payload = result.retained_observables
             job.manifest_path = result.manifest_path
             job.manifest_payload = result.manifest_payload
-            job.status = terminal_status
-            job.terminal_at = time.monotonic()
             job.checkpoint_path = result.checkpoint_path
             job.checkpoint_cleanup_error = None
             batch = job.batch
@@ -481,18 +485,21 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg", bootstrap_state: Bootstra
                 "execution": "contract_executor",
             },
         )
-    complete_event = {
-        "type": "training_complete",
+    terminal_event = {
+        "type": "training_stopped" if result.stopped else "training_complete",
         "job_id": job.job_id,
         "batch": batch,
+        "program_step": result.final_program_step,
         "loss": last_loss,
         "execution": "contract_executor",
     }
     if manifest_path is not None:
-        complete_event["manifest_path"] = manifest_path
+        terminal_event["manifest_path"] = manifest_path
     if manifest_payload is not None:
-        complete_event["manifest_id"] = manifest_payload.get("id")
-    _emit(job, complete_event)
+        terminal_event["manifest_id"] = manifest_payload.get("id")
+    with job._state_lock:
+        _emit(job, terminal_event)
+        _mark_job_terminal(job, WorkerStatus.STOPPED if result.stopped else WorkerStatus.COMPLETED)
 
 
 def _run_training(job: _Job, bootstrap_state: BootstrapState) -> None:
@@ -553,33 +560,32 @@ def _run_training(job: _Job, bootstrap_state: BootstrapState) -> None:
                     "diagnostics": [diagnostic.model_dump(mode="json", exclude_none=True)],
                 },
             )
-    finally:
-        # Sentinel: tells SSE generator the stream is done.
-        job.event_queue.put(None)
 
 
 def _emit(job: _Job, event: dict) -> None:
-    """Assign a seq number to *event*, buffer it, and enqueue it for SSE delivery."""
-    seq = job.next_seq()
-    emitted_at_ms = int(time.time() * 1000)
-    legacy_event = dict(event)
-    legacy_event["seq"] = seq
-    legacy_event["emitted_at_ms"] = emitted_at_ms
-    if legacy_event.get("type") == "training_progress":
-        with job._state_lock:
-            job.batch = int(legacy_event.get("program_step", job.batch) or job.batch)
-            if "loss" in legacy_event:
-                job.last_loss = float(legacy_event["loss"])
-    run_event = run_event_from_legacy_worker_event(
-        legacy_event,
-        run_set_id=job.run_set_id,
-        row_id=job.job_id,
-        seq=seq,
-        emitted_at_ms=emitted_at_ms,
-    ).model_dump(mode="json", exclude_none=True)
+    """Publish a RunEvent to the job's retained log."""
     with job._state_lock:
-        job.event_buffer.append((seq, run_event))
-    job.event_queue.put(run_event)
+        if job._stream_finished or job._terminal_event_published_locked():
+            raise RuntimeError(f"Cannot publish to finished worker job {job.job_id}")
+        seq = job._next_seq
+        emitted_at_ms = int(time.time() * 1000)
+        run_event = run_event_from_legacy_worker_event(
+            event,
+            run_set_id=job.run_set_id,
+            row_id=job.job_id,
+            seq=seq,
+            emitted_at_ms=emitted_at_ms,
+        ).model_dump(mode="json", exclude_none=True)
+        if event.get("type") == "training_progress":
+            if (batch := event.get("batch")) is not None:
+                job.batch = int(batch)
+            if (program_step := event.get("program_step")) is not None:
+                job.program_step = int(program_step)
+            if "loss" in event:
+                job.last_loss = float(event["loss"])
+        job.event_log.append(run_event)
+        job._next_seq += 1
+        job._wake_stream_waiters_locked()
 
 
 def create_app(
@@ -632,7 +638,7 @@ def create_app(
         terminal_jobs: list[tuple[float, str]] = []
         for job_id, job in _jobs.items():
             with job._state_lock:
-                if _is_terminal_status(job.status):
+                if job._stream_finished and _is_terminal_status(job.status):
                     terminal_jobs.append((job.terminal_at or 0.0, job_id))
         overflow = len(terminal_jobs) - retained
         if overflow <= 0:
@@ -655,8 +661,9 @@ def create_app(
     def _running_job_id_locked() -> Optional[str]:
         """Return the active job id if the single-worker slot is occupied."""
         for job in _jobs.values():
-            if _job_status(job) == WorkerStatus.RUNNING:
-                return job.job_id
+            with job._state_lock:
+                if not job._stream_finished:
+                    return job.job_id
         return None
 
     def _get_job(job_id: str) -> _Job:
@@ -723,13 +730,11 @@ def create_app(
             raise HTTPException(status_code=400, detail="start request requires run_set_id")
         run_set_id = run_set_id_raw.strip()
         stop_event = threading.Event()
-        event_queue: queue.Queue = queue.Queue()
 
         job = _Job(
             job_id=job_id,
             run_set_id=run_set_id,
             total_batches=total_batches,
-            event_queue=event_queue,
             stop_event=stop_event,
             training_config=training_config,
             training_spec=training_spec,
@@ -745,6 +750,8 @@ def create_app(
                 _run_training(job, app.state.bootstrap_state)
             finally:
                 with job._state_lock:
+                    job._stream_finished = True
+                    job._wake_stream_waiters_locked()
                     if _is_terminal_status(job.status) and job.terminal_at is None:
                         job.terminal_at = time.monotonic()
                 with _jobs_lock:
@@ -769,19 +776,18 @@ def create_app(
             with _jobs_lock:
                 if _jobs.get(job_id) is job:
                     del _jobs[job_id]
+                with job._state_lock:
+                    job._stream_finished = True
+                    job._wake_stream_waiters_locked()
             raise
         return {"job_id": job_id}
 
     @app.post("/jobs/{job_id}/stop", dependencies=[_auth_dep])
     def stop(job_id: str):
         job = _get_job(job_id)
-        job.stop_event.set()
         with job._state_lock:
-            thread = job.thread
-        if thread is None or not thread.is_alive():
-            _mark_job_terminal(job, WorkerStatus.IDLE)
-            with _jobs_lock:
-                _evict_terminal_jobs_locked()
+            if job.status is WorkerStatus.RUNNING:
+                job.stop_event.set()
         return {"ok": True}
 
     @app.get("/jobs/{job_id}/status", dependencies=[_auth_dep])
@@ -790,62 +796,65 @@ def create_app(
         return _job_status_payload(job)
 
     @app.get("/jobs/{job_id}/stream", dependencies=[_auth_dep])
-    def stream(job_id: str, from_seq: Optional[int] = Query(default=None, alias="from_seq")):
-        """SSE stream of training events for a job.
-
-        Args:
-            job_id: Worker job identifier returned by ``POST /start``.
-            from_seq: When provided, replay buffered events with seq >=
-                *from_seq* before streaming live ones. Used by the client for
-                reconnection.
-        """
+    async def stream(job_id: str, from_seq: Optional[int] = Query(default=None, ge=0)) -> Response:
+        """Read a job's SSE log from the inclusive cursor or oldest retained event."""
         job = _get_job(job_id)
 
-        # Collect any buffered events to replay before the live stream.
-        replay_events: list[dict] = []
-        if from_seq is not None:
-            with job._state_lock:
-                replay_events = [evt for seq, evt in job.event_buffer if seq >= from_seq]
+        def cursor_expired(requested_seq: int, oldest_seq: int) -> dict[str, Any]:
+            return {
+                "code": WORKER_EVENT_CURSOR_EXPIRED,
+                "requested_seq": requested_seq,
+                "oldest_seq": oldest_seq,
+            }
 
-        async def _generate():
+        with job._state_lock:
+            oldest_seq = job._oldest_seq_locked()
+            cursor = oldest_seq if from_seq is None else from_seq
+            if cursor < oldest_seq:
+                raise HTTPException(status_code=410, detail=cursor_expired(cursor, oldest_seq))
+            if cursor > job._next_seq:
+                raise HTTPException(status_code=422, detail="from_seq is ahead of the event log")
+            if cursor == job._next_seq and job._terminal_event_published_locked():
+                return Response(status_code=204)
+
+        async def _generate() -> AsyncIterator[str]:
             loop = asyncio.get_running_loop()
+            ready = asyncio.Event()
+            next_seq = cursor
 
-            # --- Replay phase ---
-            for event in replay_events:
-                yield f"data: {json.dumps(event)}\n\n"
-                if event.get("type") in RUN_EVENT_TERMINAL_TYPES or event.get("type") in (
-                    "training_complete",
-                    "training_error",
-                ):
-                    return
-
-            # --- Live streaming phase ---
             while True:
-                try:
-                    # Poll the thread-safe queue without blocking the event loop.
-                    event = await loop.run_in_executor(
-                        None, lambda: job.event_queue.get(timeout=1.0)
-                    )
-                except queue.Empty:
-                    # Worker still alive; keep the connection open.
-                    with job._state_lock:
-                        t = job.thread
-                    if t is None or not t.is_alive():
-                        break
-                    continue
+                event = None
+                with job._state_lock:
+                    oldest_seq = job._oldest_seq_locked()
+                    if oldest_seq <= next_seq < job._next_seq:
+                        event = job.event_log[next_seq - oldest_seq]
+                    elif next_seq == job._next_seq:
+                        if job._stream_finished or job._terminal_event_published_locked():
+                            return
+                        ready.clear()
+                        job._stream_waiters[ready] = loop
 
+                if next_seq < oldest_seq:
+                    detail = cursor_expired(next_seq, oldest_seq)
+                    yield f"event: stream_gap\ndata: {json.dumps(detail)}\n\n"
+                    return
                 if event is None:
-                    # Sentinel: stream is finished.
-                    break
-
+                    idle = False
+                    try:
+                        async with asyncio.timeout(_STREAM_KEEPALIVE_SECONDS):
+                            await ready.wait()
+                    except TimeoutError:
+                        idle = True
+                    finally:
+                        with job._state_lock:
+                            job._stream_waiters.pop(ready, None)
+                    if idle:
+                        yield ": keep-alive\n\n"
+                    continue
+                next_seq += 1
                 yield f"data: {json.dumps(event)}\n\n"
-
-                # Stop streaming after the terminal events.
-                if event.get("type") in RUN_EVENT_TERMINAL_TYPES or event.get("type") in (
-                    "training_complete",
-                    "training_error",
-                ):
-                    break
+                if event["type"] in RUN_EVENT_TERMINAL_TYPES:
+                    return
 
         return StreamingResponse(_generate(), media_type="text/event-stream")
 

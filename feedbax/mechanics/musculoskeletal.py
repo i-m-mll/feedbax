@@ -14,7 +14,6 @@ motor control studies and neural network training.
 
 from __future__ import annotations
 
-from functools import cached_property
 import logging
 from typing import Optional, Type
 
@@ -37,6 +36,7 @@ from feedbax.mechanics.hill_muscles import (
     ForceVelocityCurve,
     TendonForceLengthCurve,
 )
+from feedbax.mechanics.skeleton._planar import link_kinematics, two_link_angular_acceleration
 from feedbax.mechanics.skeleton.arm import TwoLinkArmState
 from feedbax.mechanics.units import (
     DEFAULT_MUSCLE_VMAX,
@@ -49,6 +49,11 @@ from feedbax.runtime.state import CartesianState
 
 
 logger = logging.getLogger(__name__)
+
+
+def _arm_effector(lengths: Array, arm_state: TwoLinkArmState) -> CartesianState:
+    pos, vel = link_kinematics(lengths, arm_state.angle, arm_state.d_angle)
+    return CartesianState(pos=pos[-1], vel=vel[-1])
 
 
 # ============================================================================
@@ -229,15 +234,6 @@ class RigidTendonMusculoskeletalArm(Component):
         )
         self.state_index = StateIndex(initial_state)
 
-    @cached_property
-    def _arm_a(self) -> tuple[Array, Array, Array]:
-        """Precomputed arm inertia constants."""
-        return (
-            self.arm_I[0] + self.arm_I[1] + self.arm_m[1] * self.arm_l[0] ** 2,
-            self.arm_m[1] * self.arm_l[0] * self.arm_s[1],
-            self.arm_I[1],
-        )
-
     @property
     def n_muscles(self) -> int:
         """Number of muscles."""
@@ -332,22 +328,10 @@ class RigidTendonMusculoskeletalArm(Component):
         # Muscle forces to joint torques
         torques = moment_arms.T @ forces  # [n_joints]
 
-        # Arm dynamics
-        c_vec = (
-            jnp.array((-d_angle[1] * (2 * d_angle[0] + d_angle[1]), d_angle[0] ** 2))
-            * self._arm_a[1]
-            * jnp.sin(angle[1])
+        dd_angle = two_link_angular_acceleration(
+            self.arm_l, self.arm_m, self.arm_I, self.arm_s, self.arm_B,
+            angle, d_angle, torques,
         )
-
-        cs1 = jnp.cos(angle[1])
-        tmp = self._arm_a[2] + self._arm_a[1] * cs1
-        inertia_mat = jnp.array([
-            [self._arm_a[0] + 2 * self._arm_a[1] * cs1, tmp],
-            [tmp, self._arm_a[2] * jnp.ones_like(cs1)],
-        ])
-
-        net_torque = torques - c_vec.T - jnp.matmul(d_angle, self.arm_B.T)
-        dd_angle = jnp.linalg.solve(inertia_mat, net_torque)
 
         d_arm = TwoLinkArmState(
             angle=d_angle,
@@ -426,33 +410,9 @@ class RigidTendonMusculoskeletalArm(Component):
 
         return outputs, state
 
-    def _forward_pos(self, angle: Array) -> tuple[Array, Array]:
-        """Forward kinematics position computation."""
-        angle_sum = jnp.cumsum(angle)
-        length_components = self.arm_l * jnp.array([
-            jnp.cos(angle_sum),
-            jnp.sin(angle_sum),
-        ])
-        xy_pos = jnp.cumsum(length_components, axis=1)
-        return xy_pos.T, length_components
-
     def _effector(self, arm_state: TwoLinkArmState) -> CartesianState:
         """Compute effector Cartesian state."""
-        xy_pos, length_components = self._forward_pos(arm_state.angle)
-
-        from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS
-        ang_vel_sum = jnp.cumsum(arm_state.d_angle)
-        xy_vel = jnp.cumsum(
-            SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] * ang_vel_sum,
-            axis=1,
-        ).T
-
-        effector = CartesianState(
-            pos=xy_pos[-1],
-            vel=xy_vel[-1],
-            force=jnp.zeros(2),
-        )
-        return effector
+        return _arm_effector(self.arm_l, arm_state)
 
     def state_view(self, state: State) -> MusculoskeletalState:
         """Return the musculoskeletal state."""
@@ -471,6 +431,12 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
     stiff dynamics. Uses explicit Euler solver by default for simplicity.
     For very stiff dynamics, consider using an implicit solver
     (e.g., ImplicitEuler, Kvaerno3, Kvaerno5).
+
+    Joint torque comes from the tendon spring forces at the current joint
+    angles and fiber lengths. If the required force lies outside the range
+    the fibers can produce, the inverse force-velocity law limits the speed
+    of fiber length evolution. The tendon spring still determines the
+    instantaneous transmitted force.
 
     Warning:
         This is computationally more expensive than the rigid tendon
@@ -577,14 +543,6 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
     def n_muscles(self) -> int:
         return self.geometry.n_muscles
 
-    @cached_property
-    def _arm_a(self) -> tuple[Array, Array, Array]:
-        return (
-            self.arm_I[0] + self.arm_I[1] + self.arm_m[1] * self.arm_l[0] ** 2,
-            self.arm_m[1] * self.arm_l[0] * self.arm_s[1],
-            self.arm_I[1],
-        )
-
     def _compute_tendon_force(self, fiber_length: Array, mt_length: Array, mp: HillMuscleParams) -> Array:
         """Compute tendon force from fiber and MT lengths."""
         # Clamp fiber length to reasonable range
@@ -602,25 +560,25 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
         norm_force = jnp.clip(norm_force, 0.0, 10.0)  # Max 10x isometric
         return mp.max_isometric_force * norm_force
 
+    def _tendon_loads(self, state: MusculoskeletalState) -> tuple[Array, Array]:
+        """Return tendon forces and their joint torques at the given state."""
+        angle = state.arm.angle
+        mt_lengths = self.geometry.musculotendon_lengths(angle)
+        tendon_forces = jnp.array([
+            self._compute_tendon_force(state.fiber_lengths[i], mt_lengths[i], mp)
+            for i, mp in enumerate(self.muscle_params)
+        ])
+        torques = self.geometry.moment_arms(angle).T @ tendon_forces
+        return tendon_forces, torques
+
     def _compute_fiber_velocity(
         self,
         activation: Array,
         fiber_length: Array,
-        mt_length: Array,
+        tendon_force: Array,
         mp: HillMuscleParams,
     ) -> Array:
-        """Compute fiber velocity from force equilibrium.
-
-        Inverts the force-velocity relationship to find the velocity that
-        produces the required force. Uses piecewise inversion:
-        - If fv_required < 1.0: concentric (shortening) branch
-        - If fv_required >= 1.0: eccentric (lengthening) branch
-
-        This follows MotorNet's `_normalized_muscle_vel` approach.
-        """
-        # Tendon force
-        tendon_force = self._compute_tendon_force(fiber_length, mt_length, mp)
-
+        """Compute the bounded fiber speed from the instantaneous tendon force."""
         # Required fiber force
         cos_alpha = jnp.cos(mp.pennation_angle)
         required_fiber_force = tendon_force / cos_alpha
@@ -632,38 +590,8 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
 
         # Solve for velocity
         norm_required = required_fiber_force / mp.max_isometric_force
-        active_required = jnp.maximum(norm_required - passive, 0.0)
-
-        afl = jnp.maximum(activation * fl, 1e-6)
-        fv_required = jnp.clip(active_required / afl, 0.0, self.force_velocity.eccentric_force_max)
-
-        # Invert force-velocity relationship (piecewise)
-        a = self.force_velocity.concentric_curvature
-        b = self.force_velocity.eccentric_curvature
-        fmax = self.force_velocity.eccentric_force_max
-
-        # Concentric branch (fv < 1): shortening
-        # fv = (1 + v/a) / (1 - v/a)  =>  v = a * (fv - 1) / (fv + 1)
-        concentric_vel = a * (fv_required - 1.0) / (fv_required + 1.0 + 1e-8)
-
-        # Eccentric branch (fv >= 1): lengthening
-        # fv = fmax - (fmax-1) * (1 - v/b) / (1 + v/b)
-        # Solve for v:
-        # (fmax - fv) / (fmax - 1) = (1 - v/b) / (1 + v/b)
-        # Let r = (fmax - fv) / (fmax - 1 + 1e-8)
-        # r * (1 + v/b) = 1 - v/b
-        # r + r*v/b = 1 - v/b
-        # v/b * (r + 1) = 1 - r
-        # v = b * (1 - r) / (r + 1 + 1e-8)
-        r = (fmax - fv_required) / (fmax - 1.0 + 1e-8)
-        eccentric_vel = b * (1.0 - r) / (r + 1.0 + 1e-8)
-
-        # Select based on fv_required
-        norm_velocity = jnp.where(fv_required < 1.0, concentric_vel, eccentric_vel)
-
-        # Clamp to the shared normalized velocity convention.
-        norm_velocity = jnp.clip(
-            norm_velocity, -1.0, ECCENTRIC_VELOCITY_LIMIT_FRACTION
+        norm_velocity = self.force_velocity._inverse_active_force(
+            norm_required - passive, activation * fl,
         )
 
         return norm_velocity * mp.vmax * mp.optimal_fiber_length
@@ -690,52 +618,22 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
             for i in range(self.n_muscles)
         ])
 
-        # Muscle geometry
-        mt_lengths = self.geometry.musculotendon_lengths(angle)
-        moment_arms = self.geometry.moment_arms(angle)
+        tendon_forces, torques = self._tendon_loads(state)
 
-        # Fiber velocities (from force equilibrium)
         fiber_velocities = jnp.array([
             self._compute_fiber_velocity(
                 state.activations[i],
                 state.fiber_lengths[i],
-                mt_lengths[i],
+                tendon_forces[i],
                 self.muscle_params[i],
             )
             for i in range(self.n_muscles)
         ])
 
-        # Muscle forces
-        forces = []
-        for i, mp in enumerate(self.muscle_params):
-            norm_length = state.fiber_lengths[i] / mp.optimal_fiber_length
-            norm_velocity = fiber_velocities[i] / (mp.vmax * mp.optimal_fiber_length)
-            fl = self.force_length(norm_length)
-            fv = self.force_velocity(norm_velocity)
-            passive = self.passive_force_length(norm_length)
-            force = mp.max_isometric_force * (state.activations[i] * fl * fv + passive)
-            forces.append(force)
-        forces = jnp.array(forces)
-
-        # Joint torques
-        torques = moment_arms.T @ forces
-
-        # Arm dynamics
-        c_vec = (
-            jnp.array((-d_angle[1] * (2 * d_angle[0] + d_angle[1]), d_angle[0] ** 2))
-            * self._arm_a[1]
-            * jnp.sin(angle[1])
+        dd_angle = two_link_angular_acceleration(
+            self.arm_l, self.arm_m, self.arm_I, self.arm_s, self.arm_B,
+            angle, d_angle, torques,
         )
-
-        cs1 = jnp.cos(angle[1])
-        tmp = self._arm_a[2] + self._arm_a[1] * cs1
-        inertia_mat = jnp.array([
-            [self._arm_a[0] + 2 * self._arm_a[1] * cs1, tmp],
-            [tmp, self._arm_a[2] * jnp.ones_like(cs1)],
-        ])
-
-        net_torque = torques - c_vec.T - jnp.matmul(d_angle, self.arm_B.T)
-        dd_angle = jnp.linalg.solve(inertia_mat, net_torque)
 
         d_arm = TwoLinkArmState(
             angle=d_angle,
@@ -748,7 +646,7 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
             activations=d_activations,
             fiber_lengths=fiber_velocities,  # d_fiber_length = velocity
             fiber_velocities=jnp.zeros_like(fiber_velocities),
-            forces=jnp.zeros_like(forces),
+            forces=jnp.zeros_like(tendon_forces),
         )
 
     def init_system_state(self, *, key: PRNGKeyArray) -> MusculoskeletalState:
@@ -807,17 +705,7 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
 
         # Compute additional outputs
         effector = self._effector(ms_state.arm)
-        mt_lengths = self.geometry.musculotendon_lengths(ms_state.arm.angle)
-
-        forces = jnp.array([
-            self._compute_tendon_force(
-                ms_state.fiber_lengths[i],
-                mt_lengths[i],
-                self.muscle_params[i],
-            )
-            for i in range(self.n_muscles)
-        ])
-        torques = self.geometry.moment_arms(ms_state.arm.angle).T @ forces
+        forces, torques = self._tendon_loads(ms_state)
 
         outputs.update({
             "effector": effector,
@@ -827,27 +715,5 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
 
         return outputs, state
 
-    def _forward_pos(self, angle: Array) -> tuple[Array, Array]:
-        angle_sum = jnp.cumsum(angle)
-        length_components = self.arm_l * jnp.array([
-            jnp.cos(angle_sum),
-            jnp.sin(angle_sum),
-        ])
-        xy_pos = jnp.cumsum(length_components, axis=1)
-        return xy_pos.T, length_components
-
     def _effector(self, arm_state: TwoLinkArmState) -> CartesianState:
-        xy_pos, length_components = self._forward_pos(arm_state.angle)
-
-        from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS
-        ang_vel_sum = jnp.cumsum(arm_state.d_angle)
-        xy_vel = jnp.cumsum(
-            SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] * ang_vel_sum,
-            axis=1,
-        ).T
-
-        return CartesianState(
-            pos=xy_pos[-1],
-            vel=xy_vel[-1],
-            force=jnp.zeros(2),
-        )
+        return _arm_effector(self.arm_l, arm_state)

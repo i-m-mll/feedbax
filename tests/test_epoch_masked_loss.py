@@ -16,6 +16,7 @@ Verifies that the compositional epoch-mask wrapper:
 """
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -123,9 +124,82 @@ def _make_trial_specs(
         inits=WhereDict(),
         targets=targets,
         inputs={},
-        intervene={},
+
         timeline=timeline,
     )
+
+
+
+def test_jit_target_loss_isolates_inactive_states_targets_and_weights():
+    def where(state):
+        return state.net.output
+
+    specs = _make_trial_specs(n_trials=1, n_steps=5, epoch_bounds=[0, 2, 3, 5])
+    states = _make_states(n_trials=1, n_steps=5, units=2)
+    state = jnp.array(
+        [
+            [
+                [jnp.nan, jnp.nan],
+                [jnp.nan, jnp.inf],
+                [4.0, 6.0],
+                [jnp.inf, jnp.nan],
+                [jnp.nan, jnp.inf],
+            ]
+        ]
+    )
+    target = jnp.array([[[jnp.inf, jnp.nan], [1.0, 2.0], [jnp.nan, jnp.inf], [jnp.inf, jnp.nan]]])
+    discount = jnp.array([jnp.nan, 4.0, jnp.inf, jnp.nan])
+    loss = EpochMaskedLoss(
+        base_loss=TargetStateLoss(
+            label="distance",
+            where=where,
+            norm=lambda x: jnp.linalg.norm(x, axis=-1),
+            spec=TargetSpec(value=0.0, time_mask=jnp.array([jnp.inf, 0.5, 0.0, jnp.nan])),
+        ),
+        epoch_indices=(1,),
+    )
+
+    def score(state, target, discount, bounds):
+        trial_target = TargetSpec(value=target, discount=discount)
+        trial_specs = eqx.tree_at(
+            lambda s: (s.targets[where], s.timeline.epoch_bounds),
+            specs,
+            (trial_target, bounds),
+        )
+        return loss(eqx.tree_at(where, states, state), trial_specs, None).value.sum()
+
+    evaluate = jax.jit(jax.value_and_grad(score, argnums=(0, 1, 2)))
+    bounds = specs.timeline.epoch_bounds
+    value, (state_grad, target_grad, discount_grad) = evaluate(state, target, discount, bounds)
+    assert float(value) == pytest.approx(10.0)
+    assert jnp.allclose(state_grad, jnp.zeros_like(state).at[0, 2].set(jnp.array([1.2, 1.6])))
+    assert jnp.allclose(target_grad, -state_grad[:, 1:])
+    assert jnp.array_equal(discount_grad, jnp.array([0.0, 2.5, 0.0, 0.0]))
+
+    empty_bounds = jnp.array([[0, 2, 2, 5]])
+    empty_value, empty_grads = evaluate(state, target, discount, empty_bounds)
+    assert float(empty_value) == 0.0
+    assert all(jnp.all(grad == 0) for grad in empty_grads)
+    assert jnp.isnan(evaluate(state.at[0, 2, 0].set(jnp.nan), target, discount, bounds)[0])
+
+
+def test_jit_second_difference_keeps_predecessors_of_active_step():
+    loss = EpochMaskedLoss(
+        base_loss=OutputJerkLoss(where=lambda x: x, time_axis=-1), epoch_indices=(1,)
+    )
+    specs = _make_trial_specs(n_trials=1, n_steps=5, epoch_bounds=[0, 2, 3, 5])
+    state = jnp.array([[1.0, 2.0, 4.0, jnp.inf, jnp.nan]])
+
+    @jax.jit
+    @jax.value_and_grad
+    def score(state, trial_specs):
+        shaped = jnp.broadcast_to(state[:, None, None, :], (1, 2, 3, 5))
+        return loss((state, shaped), trial_specs, None).value.sum()
+
+    value, grad = score(state, specs)
+    # The mask includes only the window ending at index 2, across seven features.
+    assert float(value) == pytest.approx(7 / 3)
+    assert jnp.allclose(grad[0], jnp.array([1.0, -2.0, 1.0, 0.0, 0.0]) * (14 / 3))
 
 
 # ---------------------------------------------------------------------------

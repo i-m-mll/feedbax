@@ -6,10 +6,18 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable, Literal, Mapping, TypeVar
 
+import jax.random as jr
+from jaxtyping import PRNGKeyArray
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from feedbax.contracts._causal_inputs import InputDriverConflict
 from feedbax.contracts.authored_canonical import canonical_sha256
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, SemanticAnchor
+from feedbax.contracts.graph import (
+    ComponentSpec,
+    GraphSpec,
+    SemanticAnchor,
+    graph_input_driver_conflicts,
+)
 from feedbax.contracts.scientific_compiler_schema import (
     COMPILATION_FAILURE_SCHEMA_ID,
     COMPILATION_FAILURE_SCHEMA_VERSION,
@@ -20,22 +28,26 @@ from feedbax.contracts.scientific_compiler_schema import (
     RESOLVED_GRAPH_SCHEMA_ID,
     RESOLVED_GRAPH_SCHEMA_VERSION,
 )
+from feedbax.compiler.feedback_migration import lower_legacy_feedback
 from feedbax.compiler.resolution import (
+    GraphParameterResolution,
     ParameterResolutionError,
     resolve_component_node,
     resolve_graph_parameters,
 )
+from feedbax.compiler.studio_taps import lower_studio_taps
 from feedbax.component_registry.declarations import ComponentParamValidationError
 from feedbax.compiler.serialization import (
     _instantiate_graph,
 )
+from feedbax.runtime._graph_key_schedule import KEY_SCHEDULE_ID
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
+from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 
 
 GRAPH_COMPILER_ID = "feedbax.graph.compiler"
-GRAPH_COMPILER_VERSION = "3"
-KEY_SCHEDULE_ID = "feedbax.graph_key_schedule.canonical_topological_split.v2"
+GRAPH_COMPILER_VERSION = "5"
 
 
 class CompilerPhase(StrEnum):
@@ -126,12 +138,24 @@ class GraphSourceMap(BaseModel):
 
 
 class GraphKeySchedule(BaseModel):
-    """Split by node count in canonical topological order at every graph depth."""
+    """Random schedule identity and root execution order as compilation evidence."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schedule_id: Literal[KEY_SCHEDULE_ID] = KEY_SCHEDULE_ID
+    schedule_id: Literal[KEY_SCHEDULE_ID]
     node_order: tuple[str, ...]
+
+    @field_validator("schedule_id", mode="before")
+    @classmethod
+    def reject_unsupported_schedule(cls, value: str) -> str:
+        if value != KEY_SCHEDULE_ID:
+            raise ValueError(
+                f"Unsupported graph key schedule: source_schedule={value!r}; "
+                f"current_schedule={KEY_SCHEDULE_ID!r}; "
+                "recompile the authored GraphDocument to obtain current compiler evidence; "
+                "exact historical replay requires the original producer revision and environment"
+            )
+        return value
 
 
 class ResolvedGraph(BaseModel):
@@ -139,15 +163,15 @@ class ResolvedGraph(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal[RESOLVED_GRAPH_SCHEMA_ID] = RESOLVED_GRAPH_SCHEMA_ID
-    schema_version: str = RESOLVED_GRAPH_SCHEMA_VERSION
+    schema_id: Literal[RESOLVED_GRAPH_SCHEMA_ID]
+    schema_version: Literal[RESOLVED_GRAPH_SCHEMA_VERSION]
     graph: GraphSpec
     source_map: GraphSourceMap
     key_schedule: GraphKeySchedule
     document_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     resolved_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
-    @field_validator("schema_version")
+    @field_validator("schema_version", mode="before")
     @classmethod
     def reject_unsupported_version(cls, value: str) -> str:
         return _require_version("ResolvedGraph", value, RESOLVED_GRAPH_SCHEMA_VERSION)
@@ -167,10 +191,10 @@ class CompilationRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal[COMPILATION_RECORD_SCHEMA_ID] = COMPILATION_RECORD_SCHEMA_ID
-    schema_version: str = COMPILATION_RECORD_SCHEMA_VERSION
-    compiler_id: Literal[GRAPH_COMPILER_ID] = GRAPH_COMPILER_ID
-    compiler_version: Literal[GRAPH_COMPILER_VERSION] = GRAPH_COMPILER_VERSION
+    schema_id: Literal[COMPILATION_RECORD_SCHEMA_ID]
+    schema_version: Literal[COMPILATION_RECORD_SCHEMA_VERSION]
+    compiler_id: Literal[GRAPH_COMPILER_ID]
+    compiler_version: Literal[GRAPH_COMPILER_VERSION]
     document_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     resolved_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_map: GraphSourceMap
@@ -180,7 +204,7 @@ class CompilationRecord(BaseModel):
     migration_record_count: int = Field(ge=0)
     diagnostics: tuple[CompilerDiagnostic, ...] = ()
 
-    @field_validator("schema_version")
+    @field_validator("schema_version", mode="before")
     @classmethod
     def reject_unsupported_version(cls, value: str) -> str:
         return _require_version("CompilationRecord", value, COMPILATION_RECORD_SCHEMA_VERSION)
@@ -196,14 +220,14 @@ class CompilationFailureRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal[COMPILATION_FAILURE_SCHEMA_ID] = COMPILATION_FAILURE_SCHEMA_ID
-    schema_version: str = COMPILATION_FAILURE_SCHEMA_VERSION
-    compiler_id: Literal[GRAPH_COMPILER_ID] = GRAPH_COMPILER_ID
-    compiler_version: Literal[GRAPH_COMPILER_VERSION] = GRAPH_COMPILER_VERSION
+    schema_id: Literal[COMPILATION_FAILURE_SCHEMA_ID]
+    schema_version: Literal[COMPILATION_FAILURE_SCHEMA_VERSION]
+    compiler_id: Literal[GRAPH_COMPILER_ID]
+    compiler_version: Literal[GRAPH_COMPILER_VERSION]
     document_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     diagnostics: tuple[CompilerDiagnostic, ...] = Field(min_length=1)
 
-    @field_validator("schema_version")
+    @field_validator("schema_version", mode="before")
     @classmethod
     def reject_unsupported_version(cls, value: str) -> str:
         return _require_version(
@@ -242,7 +266,8 @@ def _require_compiler_version(value: str) -> str:
         raise ValueError(
             f"Unsupported graph compiler version: source_version={value!r}; "
             f"current_version={GRAPH_COMPILER_VERSION!r}; "
-            "recompile the authored GraphDocument to obtain current compiler evidence"
+            "recompile the authored GraphDocument to obtain current compiler evidence; "
+            "exact historical replay requires the original producer revision and environment"
         )
     return value
 
@@ -252,7 +277,8 @@ def _require_version(family: str, value: str, current: str) -> str:
         raise ValueError(
             f"Unsupported {family} schema version: source_version={value!r}; "
             f"current_version={current!r}; migration_intentionally_absent=yes; "
-            "recompile the authored GraphDocument"
+            "recompile the authored GraphDocument for current evidence; "
+            "exact historical replay requires the original producer revision and environment"
         )
     return value
 
@@ -283,6 +309,10 @@ def _compile_phase(
         raise
     except (KeyError, TypeError, ValueError) as exc:
         cause = exc.cause if isinstance(exc, ParameterResolutionError) else exc
+        context = {"action": action, "exception_type": type(exc).__name__}
+        if isinstance(exc, InputDriverConflict):
+            context["action"] = "remove a driver or route both through an explicit merge"
+            context["occupied_by"] = exc.occupied_by
         diagnostic = CompilerDiagnostic(
             code=(
                 "compiler.constraint_solving.invalid_component_parameters"
@@ -299,13 +329,14 @@ def _compile_phase(
             ),
             expected_condition=expected,
             observed_condition=str(exc) or type(exc).__name__,
-            actionable_context={
-                "action": action,
-                "exception_type": type(exc).__name__,
-            },
+            actionable_context=context,
         )
         raise GraphCompilationError(
             CompilationFailureRecord(
+                schema_id=COMPILATION_FAILURE_SCHEMA_ID,
+                schema_version=COMPILATION_FAILURE_SCHEMA_VERSION,
+                compiler_id=GRAPH_COMPILER_ID,
+                compiler_version=GRAPH_COMPILER_VERSION,
                 document_sha256=document_sha256,
                 diagnostics=(diagnostic,),
             )
@@ -321,73 +352,60 @@ def _source_map(
     authored_graph: GraphSpec,
     graph: GraphSpec,
     document_sha256: str,
+    tap_origins: Mapping[tuple[str, str], str],
+    graph_path: str = "/graph",
 ) -> GraphSourceMap:
     authored_wires = [
         wire.model_dump(mode="json", exclude_none=True) for wire in authored_graph.wires
     ]
-    entries = [
-        GraphSourceMapEntry(
-            resolved_path="/graph",
-            authored_path="/graph",
+
+    def entry(resolved_path: str, authored_path: str, *, generated: bool) -> GraphSourceMapEntry:
+        return GraphSourceMapEntry(
+            resolved_path=resolved_path,
+            authored_path=authored_path,
+            origin="compiler-generated" if generated else "authored",
             authored_anchor=SemanticAnchor(
-                semantic_document_sha256=document_sha256,
-                authored_path="/graph",
+                semantic_document_sha256=document_sha256, authored_path=authored_path
             ),
-        ),
-        *(
-            GraphSourceMapEntry(
-                resolved_path=f"/graph/nodes/{_json_pointer_token(node_id)}",
-                authored_path=(
-                    f"/graph/nodes/{_json_pointer_token(node_id)}"
-                    if node_id in authored_graph.nodes
-                    else "/graph"
-                ),
-                origin=("authored" if node_id in authored_graph.nodes else "compiler-generated"),
-                authored_anchor=SemanticAnchor(
-                    semantic_document_sha256=document_sha256,
-                    authored_path=(
-                        f"/graph/nodes/{_json_pointer_token(node_id)}"
-                        if node_id in authored_graph.nodes
-                        else "/graph"
-                    ),
-                ),
-            )
-            for node_id in sorted(graph.nodes)
-        ),
-        *(
-            GraphSourceMapEntry(
-                resolved_path=f"/graph/wires/{index}",
-                authored_path=(
-                    f"/graph/wires/{authored_wires.index(wire_payload)}"
-                    if wire_payload in authored_wires
-                    else "/graph"
-                ),
-                origin=("authored" if wire_payload in authored_wires else "compiler-generated"),
-                authored_anchor=SemanticAnchor(
-                    semantic_document_sha256=document_sha256,
-                    authored_path=(
-                        f"/graph/wires/{authored_wires.index(wire_payload)}"
-                        if wire_payload in authored_wires
-                        else "/graph"
-                    ),
-                ),
-            )
-            for index, wire_payload in enumerate(
-                wire.model_dump(mode="json", exclude_none=True) for wire in graph.wires
-            )
-        ),
-    ]
+        )
+
+    def tap_path(node_id: str) -> str | None:
+        origin = tap_origins.get((graph_path, node_id))
+        return "/graph" + origin.removeprefix(graph_path) if origin else None
+
+    entries = [entry("/graph", "/graph", generated=False)]
+    for node_id in sorted(graph.nodes):
+        path = f"/graph/nodes/{_json_pointer_token(node_id)}"
+        authored = node_id in authored_graph.nodes
+        entries.append(
+            entry(path, path if authored else tap_path(node_id) or "/graph", generated=not authored)
+        )
+    for index, wire in enumerate(graph.wires):
+        wire_payload = wire.model_dump(mode="json", exclude_none=True)
+        authored_index = (
+            authored_wires.index(wire_payload) if wire_payload in authored_wires else None
+        )
+        authored_path = (
+            f"/graph/wires/{authored_index}"
+            if authored_index is not None
+            else tap_path(wire.source_node) or tap_path(wire.target_node) or "/graph"
+        )
+        entries.append(
+            entry(f"/graph/wires/{index}", authored_path, generated=authored_index is None)
+        )
     for node_id, subgraph in sorted((graph.subgraphs or {}).items()):
         authored_subgraph = (authored_graph.subgraphs or {}).get(node_id)
         if not isinstance(subgraph, GraphSpec) or not isinstance(authored_subgraph, GraphSpec):
             continue
+        prefix = f"/graph/subgraphs/{_json_pointer_token(node_id)}"
         nested_map = _source_map(
             GraphDocument(graph=authored_subgraph),
             authored_subgraph,
             subgraph,
             document_sha256,
+            tap_origins,
+            graph_path + prefix.removeprefix("/graph"),
         )
-        prefix = f"/graph/subgraphs/{_json_pointer_token(node_id)}"
         for entry in nested_map.entries:
             authored_path = prefix + entry.authored_path.removeprefix("/graph")
             entries.append(
@@ -490,8 +508,17 @@ def compile_graph(
     document: GraphDocument,
     component_registry: Any,
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
+    *,
+    initialization_keys: Mapping[str | tuple[str, ...], PRNGKeyArray] | None = None,
 ) -> ExecutableGraph:
-    """Compile one exact graph document through resolution and realization."""
+    """Compile one exact graph document through resolution and realization.
+
+    Stochastic builders receive a key derived from seed zero and their
+    scoped occurrence ID. An explicit
+    ``initialization_keys`` entry overrides derivation for one leaf. Use a node
+    ID for a top-level leaf or a tuple of IDs for a nested leaf. These keys
+    do not change the resolved topology.
+    """
     document_sha256 = canonical_sha256(document.model_dump(mode="json", exclude_none=True))
     graph_anchor = SemanticAnchor(
         semantic_document_sha256=document_sha256,
@@ -500,7 +527,10 @@ def compile_graph(
 
     def parse_graph() -> tuple[Any, GraphSpec]:
         migration = migrate_graph_spec(document.graph)
-        return migration, GraphSpec.model_validate(migration.payload)
+        graph = GraphSpec.model_validate(migration.payload)
+        if conflict := next(graph_input_driver_conflicts(graph, "/graph"), None):
+            raise conflict
+        return migration, graph
 
     migration, authored_graph = _compile_phase(
         phase=CompilerPhase.STRUCTURAL_PARSING,
@@ -511,38 +541,58 @@ def compile_graph(
         action="correct the authored graph payload or migrate it through a registered schema",
         operation=parse_graph,
     )
+    resolved_inputs = dict(input_prototypes or {})
+    feedback_graph = _compile_phase(
+        phase=CompilerPhase.STRUCTURAL_PARSING,
+        code="compiler.structural_parsing.invalid_legacy_feedback",
+        anchor=graph_anchor,
+        document_sha256=document_sha256,
+        expected="legacy feedback nodes declare recoverable mechanics selector paths",
+        action="replace the legacy wrapper with SelectState and Channel nodes",
+        operation=lambda: lower_legacy_feedback(authored_graph),
+    )
     typed_graph = _map_component_nodes(
-        authored_graph,
+        feedback_graph,
         lambda node_id, node: resolve_component_node(node, component_registry),
         document_sha256=document_sha256,
     )
-    graph = _compile_phase(
-        phase=CompilerPhase.COMPOSITE_AND_ACAUSAL_LOWERING,
-        code="compiler.composite_and_acausal_lowering.invalid_lowering",
-        anchor=graph_anchor,
-        document_sha256=document_sha256,
-        expected="every authored lowering rule produces one valid literal semantic graph",
-        action="correct the authored composite, acausal, or channel-adapter declaration",
-        operation=lambda: _map_component_nodes(
-            materialize_additive_channel_adapters(typed_graph),
+
+    def lower_graph() -> tuple[GraphSpec, dict[tuple[str, str], str]]:
+        lowered, tap_origins = lower_studio_taps(typed_graph)
+        lowered = materialize_additive_channel_adapters(lowered)
+        if conflict := next(graph_input_driver_conflicts(lowered, "/graph"), None):
+            raise conflict
+        graph = _map_component_nodes(
+            lowered,
             lambda node_id, node: (
                 resolve_component_node(node, component_registry)
                 if node.param_schema_version is None
                 else node
             ),
             document_sha256=document_sha256,
-        ),
+        )
+
+        return graph, tap_origins
+
+    graph, tap_origins = _compile_phase(
+        phase=CompilerPhase.COMPOSITE_AND_ACAUSAL_LOWERING,
+        code="compiler.composite_and_acausal_lowering.invalid_lowering",
+        anchor=graph_anchor,
+        document_sha256=document_sha256,
+        expected="every authored lowering rule produces one valid literal semantic graph",
+        action="correct the authored composite, acausal, channel-adapter, or intervention tap declaration",
+        operation=lower_graph,
     )
 
-    def solve_constraints() -> GraphSpec:
+    def solve_constraints() -> GraphParameterResolution:
         return resolve_graph_parameters(
             graph,
-            input_prototypes or {},
+            resolved_inputs,
             component_registry,
             identities_resolved=True,
-        ).graph
+        )
 
-    graph = _compile_phase(
+    resolution = _compile_phase(
         phase=CompilerPhase.CONSTRAINT_SOLVING,
         code="compiler.constraint_solving.inconsistent_graph_constraints",
         anchor=graph_anchor,
@@ -559,12 +609,25 @@ def compile_graph(
         expected="the lowered graph satisfies every cross-reference and semantic invariant",
         action="correct the authored semantic reference named by the diagnostic",
         operation=lambda: GraphSpec.model_validate(
-            graph.model_dump(mode="json", exclude_none=True)
+            resolution.graph.model_dump(mode="json", exclude_none=True)
         ),
     )
 
     def build_schedule() -> tuple[Graph, tuple[str, ...]]:
-        executable = _instantiate_graph(graph, component_registry).prepare()
+        leaf_keys = {}
+        for name, key in (initialization_keys or {}).items():
+            path = (name,) if isinstance(name, str) else name
+            if not path or path in leaf_keys:
+                raise ValueError(f"Invalid or duplicate initialization key path {path!r}")
+            leaf_keys[path] = key
+        instantiated = _instantiate_graph(
+            graph,
+            component_registry,
+            resolution,
+            construction_key=jr.PRNGKey(0),
+            initialization_keys=leaf_keys,
+        )
+        executable = apply_parameter_constraints(instantiated).prepare()
         return executable, tuple(executable._execution_order)
 
     executable, node_order = _compile_phase(
@@ -584,10 +647,12 @@ def compile_graph(
     )
 
     def emit_resolved_ir() -> tuple[ResolvedGraph, CompilationRecord]:
-        source_map = _source_map(document, authored_graph, graph, document_sha256)
-        key_schedule = GraphKeySchedule(node_order=node_order)
+        source_map = _source_map(document, authored_graph, graph, document_sha256, tap_origins)
+        key_schedule = GraphKeySchedule(schedule_id=KEY_SCHEDULE_ID, node_order=node_order)
         resolved_sha256 = _resolved_digest(graph, source_map, key_schedule)
         resolved = ResolvedGraph(
+            schema_id=RESOLVED_GRAPH_SCHEMA_ID,
+            schema_version=RESOLVED_GRAPH_SCHEMA_VERSION,
             graph=graph,
             source_map=source_map,
             key_schedule=key_schedule,
@@ -595,6 +660,10 @@ def compile_graph(
             resolved_sha256=resolved_sha256,
         )
         record = CompilationRecord(
+            schema_id=COMPILATION_RECORD_SCHEMA_ID,
+            schema_version=COMPILATION_RECORD_SCHEMA_VERSION,
+            compiler_id=GRAPH_COMPILER_ID,
+            compiler_version=GRAPH_COMPILER_VERSION,
             document_sha256=document_sha256,
             resolved_sha256=resolved_sha256,
             source_map=source_map,

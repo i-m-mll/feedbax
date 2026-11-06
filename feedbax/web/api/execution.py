@@ -93,7 +93,9 @@ def _timeline_cues(trial: TaskTrialSpec) -> list[TaskTimelineCue]:
     return cues
 
 
-def _sampled_trial_payload(trial: TaskTrialSpec, *, index: int) -> SampledTaskTrial:
+def _sampled_trial_payload(
+    trial: TaskTrialSpec, *, index: int, state_steps: int
+) -> SampledTaskTrial:
     try:
         start = _as_pair(trial.inits["mechanics.effector"].pos, path="inits.mechanics.effector.pos")
         goal = _as_pair(
@@ -116,7 +118,7 @@ def _sampled_trial_payload(trial: TaskTrialSpec, *, index: int) -> SampledTaskTr
         index=index,
         start=start,
         goal=goal,
-        n_steps=int(trial.timeline.n_steps),
+        n_steps=state_steps,
         timeline=_timeline_cues(trial),
         metadata=metadata,
     )
@@ -159,7 +161,7 @@ async def sample_task_trials(
     for index, key in enumerate(keys):
         try:
             trial = task.sample_trial(jnp.asarray(key))
-            trials.append(_sampled_trial_payload(trial, index=index))
+            trials.append(_sampled_trial_payload(trial, index=index, state_steps=task.n_steps))
         except (ValueError, TypeError, KeyError, AttributeError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 

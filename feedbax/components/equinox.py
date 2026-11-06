@@ -12,16 +12,16 @@ from __future__ import annotations
 from collections.abc import Hashable
 from typing import Any, Callable, Literal, Optional, Sequence, Union
 
-import jax
-import jax.numpy as jnp
 import equinox as eqx
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
+from feedbax._checkpoint_errors import _LegacyWrapperLayoutError
+from feedbax.runtime.components import identity_activation, relu
 from feedbax.runtime.graph import Component
 
 
-EQUINOX_WRAPPER_SCHEMA_VERSION = "feedbax.equinox_wrappers.v2"
+EQUINOX_WRAPPER_SCHEMA_VERSION = "feedbax.equinox_wrappers.v3"
 EQUINOX_WRAPPER_GENERATOR = "scripts/generate_eqx_components.py"
 EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
 
@@ -220,6 +220,26 @@ EQUINOX_WRAPPER_CONTRACTS = {
 }
 
 
+_PickleState = dict[str, Any] | tuple[dict[str, Any] | None, dict[str, Any]]
+
+
+def _restore_wrapper_state(
+    component: Component, state: _PickleState, former_fields: tuple[str, ...]
+) -> None:
+    attrs, slots = state if isinstance(state, tuple) else (state, {})
+    obsolete = ((attrs or {}).keys() | slots.keys()).intersection(former_fields)
+    if obsolete:
+        fields = ", ".join(sorted(obsolete))
+        raise _LegacyWrapperLayoutError(
+            f"{type(component).__name__} uses the pre-v3 wrapper layout ({fields}). "
+            "Use the producer version of Feedbax to export the live layer parameters."
+        )
+    if attrs is not None:
+        vars(component).update(attrs)
+    for name, value in slots.items():
+        object.__setattr__(component, name, value)
+
+
 def _call_single_input_layer(
     component: Component,
     inputs: dict[str, PyTree],
@@ -323,7 +343,7 @@ class Linear(Component):
         in_features: Union[int, Literal["scalar"]],
         out_features: Union[int, Literal["scalar"]],
         use_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -378,7 +398,13 @@ class Identity(Component):
 
 
 class MLP(Component):
-    """Multi-layer perceptron with configurable depth and activations."""
+    """Multi-layer perceptron with configurable depth and activations.
+
+    The constructor's `activation` and `final_activation` seed the layer's
+    activations. The properties expose the live callables used by the layer,
+    with learned parameters batched per hidden layer and neuron for
+    `activation` and per output neuron for a vector-valued `final_activation`.
+    """
 
     input_ports = ("input",)
     output_ports = ("output",)
@@ -395,8 +421,6 @@ class MLP(Component):
     out_size: Union[int, Literal["scalar"]]
     width_size: int
     depth: int
-    activation: Callable
-    final_activation: Callable
     use_bias: bool
     use_final_bias: bool
     dtype: Any
@@ -407,11 +431,11 @@ class MLP(Component):
         out_size: Union[int, Literal["scalar"]],
         width_size: int,
         depth: int,
-        activation: Callable = jax.nn.relu,
-        final_activation: Callable = lambda x: x,
+        activation: Callable = relu,
+        final_activation: Callable = identity_activation,
         use_bias: bool = True,
         use_final_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -419,8 +443,6 @@ class MLP(Component):
         self.out_size = out_size
         self.width_size = width_size
         self.depth = depth
-        self.activation = activation
-        self.final_activation = final_activation
         self.use_bias = use_bias
         self.use_final_bias = use_final_bias
         self.dtype = dtype
@@ -436,6 +458,17 @@ class MLP(Component):
             dtype=dtype,
             key=key,
         )
+
+    @property
+    def activation(self) -> Callable:
+        return self.layer.activation
+
+    @property
+    def final_activation(self) -> Callable:
+        return self.layer.final_activation
+
+    def __setstate__(self, state: _PickleState) -> None:
+        _restore_wrapper_state(self, state, ("activation", "final_activation"))
 
     def __call__(
         self,
@@ -488,7 +521,7 @@ class Conv1d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -562,7 +595,7 @@ class Conv2d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -636,7 +669,7 @@ class Conv3d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -712,7 +745,7 @@ class ConvTranspose1d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -790,7 +823,7 @@ class ConvTranspose2d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -868,7 +901,7 @@ class ConvTranspose3d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -937,7 +970,7 @@ class GRUCell(Component):
         input_size: int,
         hidden_size: int,
         use_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -983,7 +1016,7 @@ class LSTMCell(Component):
         input_size: int,
         hidden_size: int,
         use_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -1037,7 +1070,7 @@ class LayerNorm(Component):
         eps: float = 1e-05,
         use_weight: bool = True,
         use_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
         elementwise_affine: Optional[bool] = None,
     ):
         self.shape = shape
@@ -1091,7 +1124,7 @@ class RMSNorm(Component):
         eps: float = 1e-05,
         use_weight: bool = True,
         use_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
     ):
         self.shape = shape
         self.eps = eps
@@ -1138,7 +1171,7 @@ class GroupNorm(Component):
         channels: Optional[int] = None,
         eps: float = 1e-05,
         channelwise_affine: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
     ):
         self.groups = groups
         self.channels = channels
@@ -1193,7 +1226,7 @@ class BatchNorm(Component):
         channelwise_affine: bool = True,
         momentum: float = 0.99,
         inference: bool = False,
-        dtype=jnp.float32,
+        dtype="float32",
     ):
         self.input_size = input_size
         self.axis_name = axis_name
@@ -1720,7 +1753,7 @@ class MultiheadAttention(Component):
         use_output_bias: bool = False,
         dropout_p: float = 0.0,
         inference: bool = False,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -1808,7 +1841,11 @@ class RotaryPositionalEmbedding(Component):
 
 
 class Embedding(Component):
-    """Embedding layer for discrete tokens."""
+    """Embedding layer for discrete tokens.
+
+    The optional constructor `weight` seeds the embedding table. The
+    `weight` property exposes the live table, including when randomly initialized.
+    """
 
     input_ports = ("input",)
     output_ports = ("output",)
@@ -1823,7 +1860,6 @@ class Embedding(Component):
     layer: eqx.nn.Embedding
     num_embeddings: Optional[int]
     embedding_size: Optional[int]
-    weight: Optional[Float[Array, "num_embeddings embedding_size"]]
     dtype: Any
 
     def __init__(
@@ -1831,13 +1867,12 @@ class Embedding(Component):
         num_embeddings: Optional[int] = None,
         embedding_size: Optional[int] = None,
         weight: Optional[Float[Array, "num_embeddings embedding_size"]] = None,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
         self.num_embeddings = num_embeddings
         self.embedding_size = embedding_size
-        self.weight = weight
         self.dtype = dtype
         self.layer = eqx.nn.Embedding(
             num_embeddings=num_embeddings,
@@ -1846,6 +1881,13 @@ class Embedding(Component):
             dtype=dtype,
             key=key,
         )
+
+    @property
+    def weight(self) -> Float[Array, "num_embeddings embedding_size"]:
+        return self.layer.weight
+
+    def __setstate__(self, state: _PickleState) -> None:
+        _restore_wrapper_state(self, state, ("weight",))
 
     def __call__(
         self,
@@ -1894,7 +1936,11 @@ class Dropout(Component):
 
 
 class PReLU(Component):
-    """Parametric ReLU activation."""
+    """Parametric ReLU activation.
+
+    The constructor `init_alpha` seeds the negative slope. The
+    `init_alpha` property exposes the live slope as an array.
+    """
 
     input_ports = ("input",)
     output_ports = ("output",)
@@ -1907,11 +1953,16 @@ class PReLU(Component):
     }
 
     layer: eqx.nn.PReLU
-    init_alpha: Union[float, Array, None]
 
     def __init__(self, init_alpha: Union[float, Array, None] = 0.25):
-        self.init_alpha = init_alpha
         self.layer = eqx.nn.PReLU(init_alpha=init_alpha)
+
+    @property
+    def init_alpha(self) -> Array:
+        return self.layer.negative_slope
+
+    def __setstate__(self, state: _PickleState) -> None:
+        _restore_wrapper_state(self, state, ("init_alpha",))
 
     def __call__(
         self,

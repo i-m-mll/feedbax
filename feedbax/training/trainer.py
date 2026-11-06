@@ -4,19 +4,19 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
+from contextlib import nullcontext
 from functools import wraps
 from typing import Optional, Tuple
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.tree as jt
 import optax  # type: ignore
 from equinox import field
 from feedbax._vendor.jax_cookbook.misc import mse
-from feedbax._vendor.jax_cookbook.progress import piter
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from feedbax._vendor.jax_cookbook.progress import progress_piter
+from jaxtyping import Array, Float, PRNGKeyArray
 
 from feedbax.objectives.loss import AbstractLoss, TermTree
 from feedbax.runtime.graph import Component, RolloutStepHook
@@ -25,34 +25,9 @@ from feedbax.runtime.parameter_constraints import project_component_parameters
 from feedbax.runtime.state import StateT
 from feedbax.tasks import (
     TaskTrialSpec,
-    extract_timeseries_params,
     infer_n_steps,
     prepare_inputs,
 )
-
-
-def _cast_to_state_dtypes(new_value, current_value):
-    """Cast a replacement StateIndex value to the stored State leaf dtypes."""
-
-    def _cast_leaf(new_leaf, current_leaf):
-        if hasattr(current_leaf, "dtype"):
-            if getattr(current_leaf, "weak_type", False):
-                raise ValueError(
-                    "Cannot update a weakly typed StateIndex leaf with public "
-                    "Equinox State.set(); initialize the component StateIndex "
-                    "with an explicitly typed JAX array."
-                )
-            return jnp.asarray(new_leaf, dtype=current_leaf.dtype)
-        return new_leaf
-
-    return jt.map(_cast_leaf, new_value, current_value)
-
-
-def _state_set_matching_dtypes(state, idx, new_value):
-    """Set a StateIndex value via public Equinox API after dtype normalization."""
-
-    current_value = state.get(idx)
-    return state.set(idx, _cast_to_state_dtypes(new_value, current_value))
 
 
 def grad_wrap_simple_loss_func(
@@ -84,7 +59,10 @@ def grad_wrap_simple_loss_func(
 
 
 class SimpleTrainer(eqx.Module):
-    """Train a model on a whole in-memory dataset for a fixed iteration count."""
+    """Train a model on a whole in-memory dataset for a fixed iteration count.
+
+    Only floating-point and complex array leaves are optimized.
+    """
 
     loss_func: Callable[[eqx.Module, Array, Array], Float] = field(
         default=grad_wrap_simple_loss_func(mse),
@@ -94,48 +72,29 @@ class SimpleTrainer(eqx.Module):
     )
 
     def __call__(self, model, x, y, n_iter=100, progress_bar=True):
-        opt_state = self.optimizer.init(model)
+        trainable, frozen = eqx.partition(model, eqx.is_inexact_array)
+        opt_state = self.optimizer.init(trainable)
 
-        def train_step(current_model, current_opt_state, x_batch, y_batch):
-            loss_value, grads = jax.value_and_grad(self.loss_func)(
-                current_model,
-                x_batch,
-                y_batch,
-            )
-            updates, new_opt_state = self.optimizer.update(grads, current_opt_state)
-            new_model = eqx.apply_updates(current_model, updates)
-            return new_model, new_opt_state, loss_value
+        def loss_from_trainable(candidate):
+            return self.loss_func(eqx.combine(candidate, frozen), x, y)
 
-        if progress_bar:
-            train_iter = piter(range(n_iter), description="Training")
-        else:
-            train_iter = range(n_iter)
+        value_and_grad = eqx.filter_value_and_grad(loss_from_trainable)
 
-        for _ in train_iter:
-            model, opt_state, loss = train_step(model, opt_state, x, y)
-            if progress_bar:
-                train_iter.set_postfix(loss=f"{loss:.4f}")
+        iterations = range(n_iter)
+        progress = (
+            progress_piter(iterations, description="Training")
+            if progress_bar
+            else nullcontext((iterations, None))
+        )
+        with progress as (train_iter, progress_update):
+            for _ in train_iter:
+                loss, grads = value_and_grad(trainable)
+                updates, opt_state = self.optimizer.update(grads, opt_state, trainable)
+                trainable = eqx.apply_updates(trainable, updates)
+                if progress_update is not None:
+                    progress_update.subdescription(f"loss={loss:.4f}")
 
-        return model
-
-
-def _extract_intervene_inputs(
-    intervene: Mapping,
-    model: Component,
-) -> dict[str, PyTree]:
-    """Extract time-varying intervention params from a trial spec."""
-
-    indices = model.intervention_state_indices()
-    result = {}
-    for label, params in intervene.items():
-        if label not in indices:
-            continue
-        idx = indices[label]
-        default_params = idx.init
-        tv_params = extract_timeseries_params(params, default_params)
-        if tv_params is not None:
-            result[f"intervene:{label}"] = tv_params
-    return result
+        return eqx.combine(trainable, frozen)
 
 
 def grad_wrap_abstract_loss(
@@ -158,13 +117,6 @@ def grad_wrap_abstract_loss(
         def _run_trial(trial_spec, init_state, key):
             inputs = prepare_inputs(model, trial_spec.inputs)
             n_steps = infer_n_steps(inputs, getattr(trial_spec, "timeline", None))
-            if trial_spec.intervene:
-                intervene_inputs = _extract_intervene_inputs(
-                    trial_spec.intervene,
-                    model,
-                )
-                if intervene_inputs:
-                    inputs = {**inputs, **intervene_inputs}
             _, _, state_history = run_component(
                 model,
                 inputs,
@@ -175,7 +127,9 @@ def grad_wrap_abstract_loss(
             )
             return jt.map(lambda x: x[1:] if x is not None else x, state_history)
 
-        states: StateT = eqx.filter_vmap(_run_trial)(trial_specs, init_states, keys)
+        states: StateT = eqx.filter_vmap(
+            _run_trial, in_axes=(trial_specs.batch_axes, eqx.if_array(0), 0)
+        )(trial_specs, init_states, keys)
         losses = loss_func(states, trial_specs, model)
 
         if loss_reduction_fn is not None:

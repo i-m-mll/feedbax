@@ -609,16 +609,16 @@
       "schemas": {
         "current": [
           "feedbax.graph_document version 1",
-          "feedbax.resolved_graph version 4",
-          "feedbax.graph_compilation_record version 5",
+          "feedbax.resolved_graph version 5",
+          "feedbax.graph_compilation_record version 6",
           "feedbax.graph_compilation_failure version 1"
         ],
         "migrated": [
           "GraphSpec 1.0.0 through feedbax.spec.graph.v4"
         ],
         "rejected": [
-          "feedbax.resolved_graph versions 1 through 3",
-          "feedbax.graph_compilation_record versions 1 through 4",
+          "feedbax.resolved_graph versions 1 through 4",
+          "feedbax.graph_compilation_record versions 1 through 5",
           "earlier and unknown compiler versions",
           "unknown"
         ]

@@ -13,8 +13,17 @@ from feedbax.component_registry import (
     format_missing_interior_message,
     required_interior_domain,
 )
-from feedbax.component_registry.declarations import MissingPrototypeInput
-from feedbax.contracts.acausal_interface import normalize_acausal_interfaces_for_graph
+from feedbax.component_registry.declarations import (
+    DeclaredComponent,
+    InputPrototypeParameter,
+    MissingPrototypeInput,
+)
+from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.acausal_interface import (
+    SourcePayload,
+    derive_acausal_interface,
+    normalize_acausal_interfaces_for_graph,
+)
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler.prototypes import (
@@ -24,6 +33,7 @@ from feedbax.compiler.prototypes import (
     array_proto_from_shape,
     explicit_proto,
     shape_from_proto,
+    subgraph_input_prototypes,
     validate_or_add_input_shape,
     _lookup_output_prototype_fn,
 )
@@ -45,6 +55,7 @@ class GraphParameterResolution:
     node_inputs: dict[tuple[str, str], Any]
     node_outputs: dict[tuple[str, str], Any]
     errors: tuple[ParameterResolutionError, ...]
+    subgraphs: dict[str, GraphParameterResolution]
 
     @property
     def graph_outputs(self) -> dict[str, Any]:
@@ -68,7 +79,7 @@ def resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
             param_schema_version=node.param_schema_version,
         )
     ):
-        params, lowering_metadata = _split_lowering_metadata(node)
+        params, lowering_metadata = _split_lowering_metadata(node, registry)
         resolution = resolver(
             node.type,
             params,
@@ -96,18 +107,18 @@ def _complete_component_node(
     node_name: str,
     node: ComponentSpec,
     registry: Any,
+    meta: DeclaredComponent | None,
 ) -> ComponentSpec:
     from feedbax.compiler.serialization import (
         _split_lowering_metadata,
         _validate_dynamic_component_ports,
     )
 
-    meta = registry.get(node.type)
     if meta is None:
         return node
+    params, lowering_metadata = _split_lowering_metadata(node, registry)
     if meta.is_composite:
-        return node.model_copy(update={"params": {}})
-    params, lowering_metadata = _split_lowering_metadata(node)
+        return node.model_copy(update={"params": lowering_metadata})
     context = {
         key: value for key, value in params.items() if key in meta.params.build_context_fields
     }
@@ -140,17 +151,39 @@ def _prototype_signature(proto: Any) -> Any:
 
 
 class _Completion:
-    def __init__(self, graph: GraphSpec, registry: Any, path: str, identities_resolved: bool):
+    def __init__(
+        self,
+        graph: GraphSpec,
+        registry: Any,
+        path: str,
+        identities_resolved: bool,
+        driven_boundary_ports: frozenset[str] = frozenset(),
+        external_boundary_ports: frozenset[str] | None = None,
+    ):
         self.registry = registry
         self.path = path
         self.graph = normalize_acausal_interfaces_for_graph(graph)
+        self.driven_inputs = {(wire.target_node, wire.target_port) for wire in self.graph.wires} | {
+            tuple(binding)
+            for port, binding in self.graph.input_bindings.items()
+            if port in driven_boundary_ports
+        }
+        self.external_inputs = {
+            tuple(binding)
+            for port, binding in self.graph.input_bindings.items()
+            if external_boundary_ports is None or port in external_boundary_ports
+        }
+        self.connected_inputs = self.driven_inputs | self.external_inputs
         self.nodes: dict[str, ComponentSpec] = {}
+        self.metadata: dict[str, DeclaredComponent | None] = {}
+        self.prototype_parameters: dict[str, InputPrototypeParameter] = {}
         self.completed: dict[str, ComponentSpec] = {}
         self.inputs: dict[tuple[str, str], Any] = {}
         self.outputs: dict[tuple[str, str], Any] = {}
         self.published: set[str] = set()
         self.deferred: dict[str, ValueError] = {}
         self.children: dict[str, _Completion] = {}
+        self.acausal_payloads: dict[str, dict[str, SourcePayload]] = {}
         self.errors: dict[str, ParameterResolutionError] = {}
         for name, node in self.graph.nodes.items():
             try:
@@ -160,6 +193,13 @@ class _Completion:
             except (KeyError, TypeError, ValueError) as exc:
                 self.fail(name, exc)
                 self.nodes[name] = node
+                continue
+            type_id = self.nodes[name].type
+            if type_id not in self.metadata:
+                self.metadata[type_id] = registry.get(type_id)
+            meta = self.metadata[type_id]
+            if meta is not None and meta.compiler.input_prototype_parameter is not None:
+                self.prototype_parameters[name] = meta.compiler.input_prototype_parameter
         for index, rule in enumerate(self.graph.derived_dimensions):
             node = self.nodes.get(rule.node)
             if node is None:
@@ -184,7 +224,19 @@ class _Completion:
                     registry,
                     f"{path}/subgraphs/{_token(name)}",
                     identities_resolved,
+                    frozenset(
+                        port
+                        for port in subgraph.input_bindings
+                        if (name, port) in self.driven_inputs
+                    ),
+                    external_boundary_ports=frozenset(
+                        port
+                        for port in subgraph.input_bindings
+                        if (name, port) in self.external_inputs
+                    ),
                 )
+            elif isinstance(subgraph, AcausalGraphSpec) and name in self.nodes:
+                self.acausal_payloads[name] = derive_acausal_interface(subgraph).input_payloads
 
     def fail(self, name: str, cause: Exception) -> None:
         self.errors[name] = (
@@ -194,6 +246,12 @@ class _Completion:
         )
 
     def put_input(self, key: tuple[str, str], proto: Any) -> bool:
+        node, port = key
+        payload = self.acausal_payloads.get(node, {}).get(port)
+        if payload is not None:
+            dims = shape_from_proto(proto)
+            shape = tuple(dims) if dims is not None else None
+            payload.validate_shape(f"{node}.{port}", shape)
         if key in self.inputs:
             if _prototype_signature(self.inputs[key]) != _prototype_signature(proto):
                 old_shape, new_shape = shape_from_proto(self.inputs[key]), shape_from_proto(proto)
@@ -203,6 +261,9 @@ class _Completion:
                     f"existing prototype {self.inputs[key]!r}, source provides {proto!r}"
                 )
             return False
+        if node in self.completed and (rule := self.prototype_parameters.get(node)) is not None:
+            if port == rule.port:
+                rule.resolve(self.completed[node].params, proto)
         self.inputs[key] = proto
         return True
 
@@ -227,7 +288,7 @@ class _Completion:
             if initial is not None:
                 kind = initial.get("kind")
                 if kind == "zeros":
-                    proto = array_proto_from_shape(initial.get("shape"))
+                    proto = array_proto_from_shape(initial.get("shape"), dtype=initial.get("dtype"))
                 elif kind == "constant" and "value" in initial:
                     proto = jnp.zeros_like(
                         jnp.asarray(initial["value"], dtype=initial.get("dtype"))
@@ -290,6 +351,18 @@ class _Completion:
                 )
             if rule.param not in params:
                 params[rule.param] = derived
+        prototype_parameter = self.prototype_parameters.get(name)
+        connected_prototype = None
+        if prototype_parameter is not None:
+            key = (name, prototype_parameter.port)
+            connected_prototype = self.inputs.get(key)
+            if (
+                connected_prototype is None
+                and key in self.driven_inputs
+                and params.get(prototype_parameter.parameter) is None
+            ):
+                return False
+
         prototype = None
         if node.type in STATEFUL_PROTOTYPE_TYPES:
             prototype = self.inputs.get((name, "input"))
@@ -301,7 +374,10 @@ class _Completion:
                 params, prototype, node_name=name, node_type=node.type
             )
         final = _complete_component_node(
-            name, node.model_copy(update={"params": params}), self.registry
+            name,
+            node.model_copy(update={"params": params}),
+            self.registry,
+            self.metadata[node.type],
         )
         for rule, derived in dimensions:
             declared = final.params.get(rule.param)
@@ -323,6 +399,11 @@ class _Completion:
         if prototype is not None:
             validate_or_add_input_shape(
                 final.params, prototype, node_name=name, node_type=node.type
+            )
+        if prototype_parameter is not None:
+            value = prototype_parameter.resolve(final.params, connected_prototype)
+            final = final.model_copy(
+                update={"params": {**final.params, prototype_parameter.parameter: value}}
             )
         self.completed[name] = final
         return True
@@ -370,6 +451,19 @@ class _Completion:
                 for port in node.input_ports
                 if (name, port) in self.inputs
             }
+            meta = self.metadata[node.type]
+            if meta is not None and meta.compiler.prototype_depends_on_connected_inputs:
+                pending_ports = [
+                    port
+                    for port in node.input_ports
+                    if (name, port) in self.connected_inputs and port not in inputs
+                ]
+                if pending_ports:
+                    self.deferred[name] = MissingPrototypeInput(
+                        f"{node.type} node {name!r} needs prototypes for connected "
+                        f"input ports {pending_ports!r}"
+                    )
+                    return False
             from feedbax.compiler.serialization import _materialize_component_param_value
 
             params = _materialize_component_param_value(node.params, declarations={}, path=())
@@ -401,12 +495,8 @@ class _Completion:
                 changed = self.complete(name) or changed
                 if name in self.children:
                     child = self.children[name]
-                    nested = {
-                        (node, port): self.inputs[(name, graph_port)]
-                        for graph_port, (node, port) in child.graph.input_bindings.items()
-                        if (name, graph_port) in self.inputs
-                    }
-                    changed = child.advance(nested) or changed
+                    nested_inputs = subgraph_input_prototypes(name, child.graph, self.inputs)
+                    changed = child.advance(nested_inputs) or changed
                 changed = self.publish(name) or changed
             except (KeyError, TypeError, ValueError) as exc:
                 self.fail(name, exc)
@@ -429,12 +519,25 @@ class _Completion:
     def finish(self) -> GraphParameterResolution:
         subgraphs = dict(self.graph.subgraphs or {})
         errors = list(self.errors.values())
-        for name, child in self.children.items():
-            resolved = child.finish()
-            subgraphs[name] = resolved.graph
-            errors.extend(resolved.errors)
+        children = {name: child.finish() for name, child in self.children.items()}
+        for name, child in children.items():
+            subgraphs[name] = child.graph
+            errors.extend(child.errors)
         for name, node in self.nodes.items():
-            if name in self.errors or name in self.completed:
+            if name in self.errors:
+                continue
+            if name in self.completed:
+                meta = self.metadata[node.type]
+                ports = meta.compiler.build_output_prototypes.values() if meta else ()
+                missing = next((port for port in ports if (name, port) not in self.outputs), None)
+                if missing is not None:
+                    cause = self.deferred.get(name) or ValueError(
+                        f"{node.type} node {name!r} requires a resolved output "
+                        f"prototype for port {missing!r}"
+                    )
+                    errors.append(
+                        ParameterResolutionError(f"{self.path}/nodes/{_token(name)}", cause)
+                    )
                 continue
             for wire in self.graph.wires:
                 if wire.target_node == name and wire.source_node in self.deferred:
@@ -453,23 +556,29 @@ class _Completion:
                 ),
                 None,
             )
-            cause = (
-                DerivedDimensionError(
+            if rule is not None:
+                cause = DerivedDimensionError(
                     f"Derived dimension for {name}.{rule.param} could not resolve a prototype "
                     f"for input port {rule.port!r}",
                     rule=rule,
                 )
-                if rule is not None
-                else ValueError(
-                    f"{node.type} node {name!r} port 'input' requires an input prototype. "
-                    "Connect a completed source or provide input_shape."
+            else:
+                prototype_parameter = self.prototype_parameters.get(name)
+                port = prototype_parameter.port if prototype_parameter is not None else "input"
+                parameter = (
+                    prototype_parameter.parameter
+                    if prototype_parameter is not None
+                    else "input_shape"
                 )
-            )
+                cause = ValueError(
+                    f"{node.type} node {name!r} port {port!r} requires an input prototype. "
+                    f"Connect a completed source or provide {parameter}."
+                )
             errors.append(ParameterResolutionError(f"{self.path}/nodes/{_token(name)}", cause))
         graph = self.graph.model_copy(
             update={"nodes": {**self.nodes, **self.completed}, "subgraphs": subgraphs or None}
         )
-        return GraphParameterResolution(graph, self.inputs, self.outputs, tuple(errors))
+        return GraphParameterResolution(graph, self.inputs, self.outputs, tuple(errors), children)
 
 
 def _token(value: str) -> str:

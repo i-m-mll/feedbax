@@ -541,28 +541,80 @@ assert "plotly" not in sys.modules
     subprocess.run([sys.executable, "-c", source], env=environment, check=True)
 
 
-def test_analysis_figure_surface_imports_without_matplotlib() -> None:
+def test_plotly_analysis_publishes_without_matplotlib_or_pyexiv2(tmp_path: Path) -> None:
     source = r"""
 import importlib.abc
+import json
 import sys
+from pathlib import Path
+from types import ModuleType
 
-class NoMatplotlib(importlib.abc.MetaPathFinder):
+class UnavailableOptionalDependencies(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path, target=None):
-        if fullname == "matplotlib" or fullname.startswith("matplotlib."):
-            raise ModuleNotFoundError("matplotlib is deliberately unavailable")
+        if fullname.split(".", 1)[0] in {"matplotlib", "pyexiv2"}:
+            raise AssertionError(f"Plotly publication attempted to import {fullname}")
         return None
 
-sys.meta_path.insert(0, NoMatplotlib())
+sys.meta_path.insert(0, UnavailableOptionalDependencies())
 import feedbax.analysis.figures
-from feedbax.plot import calculate_array_minmax
+from feedbax.analysis.context import AnalysisRunContext
+from feedbax.contracts.manifest import AnalysisRunSpec
+from feedbax.plugins.registry import ExperimentRegistry
+from plotly.io import read_json
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
-assert calculate_array_minmax({"left": [-2.0], "right": [2.0]}) == (-2.2, 2.2)
-assert "matplotlib" not in sys.modules
+root = Path(sys.argv[1])
+package = ModuleType("toy_package")
+package.__file__ = str(root / "__init__.py")
+(root / ".git").mkdir()
+registry = ExperimentRegistry()
+registry.register_package(
+    "toy", package, parts=[], analysis_module_root="analysis",
+    training_module_root="training", config_resource_root="config",
+    figure_routing={
+        "spec_dir_template": "specs/{topic}",
+        "render_dir_template": "renders/{topic}",
+        "render_format": "json",
+        "create_symlink_in_spec_dir": True,
+    },
+)
+context = AnalysisRunContext(
+    spec=AnalysisRunSpec(analysis_type="toy_analysis", inputs=[]),
+    root=root,
+    experiment_registry=registry,
+    metadata={"figure_routing": {"package": "toy", "experiment": "exp", "topic": "profile"}},
+)
+analysis = ToyAnalysis(variant="toy")
+data = build_toy_analysis_data()
+result = analysis.compute(data)
+analysis.save_outputs(
+    context, result, analysis.make_figs(data, result=result), data.hps,
+    dump_formats=("html", "json"), label="toy",
+)
+manifest, _ = context.finalize()
+artifacts = {artifact.metadata["format"]: artifact for artifact in manifest.artifacts}
+assert artifacts.keys() == {"html", "json"}
+assert all(artifact.metadata["params"]["result_value"] == 3 for artifact in artifacts.values())
+assert 'id="toy_toy_analysis_0"' in Path(artifacts["html"].uri).read_text()
+figure = read_json(artifacts["json"].uri)
+assert list(figure.data[0].y) == [2, 3]
+assert figure.layout.meta["result_value"] == 3
+projection = artifacts["json"].metadata["figure_routing"]
+render = Path(projection["render_path"])
+assert Path(projection["symlink_path"]).resolve(strict=True) == render
+assert read_json(render).layout.meta["result_value"] == 3
+spec = json.loads(Path(projection["spec_path"]).read_text())
+assert spec["analysis"]["manifest_id"] == manifest.id
 """
     environment = dict(os.environ)
     environment["PYTHONPATH"] = str(ROOT)
 
-    subprocess.run([sys.executable, "-c", source], env=environment, check=True)
+    subprocess.run(
+        [sys.executable, "-c", source, str(tmp_path)],
+        env=environment,
+        check=True,
+        timeout=30,
+    )
 
 
 def test_fixture_analysis_dependency_does_not_require_matplotlib() -> None:

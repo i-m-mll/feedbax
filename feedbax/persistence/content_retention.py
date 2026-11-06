@@ -9,12 +9,14 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from feedbax.contracts.artifact_custody import (
     CONTENT_OBJECT_REF_PREFIX,
+    ArtifactBlobCustodyError,
     ContentGcDecision,
     ContentGcReceipt,
     ContentGcRequest,
@@ -48,12 +50,11 @@ def _receipt_path(
     return provider.root / "retention" / "receipts" / receipt_id / f"{stage}.json"
 
 
-def _quarantine_path(
+def _quarantine_directory(
     provider: ImmutableArtifactBlobProvider,
     pending: ContentPendingGc,
-    digest: str,
 ) -> Path:
-    return provider.root / "retention" / "quarantine" / pending.domain / pending.receipt_id / digest
+    return provider.root / "retention" / "quarantine" / pending.domain / pending.receipt_id
 
 
 def _automatic_job_path(provider: ImmutableArtifactBlobProvider, job_id: str) -> Path:
@@ -66,6 +67,14 @@ def _is_single_regular_file(path: Path) -> bool:
     except FileNotFoundError:
         return False
     return stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1
+
+
+def _entry_exists(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    return True
 
 
 def _read_index(provider: ImmutableArtifactBlobProvider) -> ContentRetentionIndex:
@@ -101,6 +110,14 @@ def _read_index(provider: ImmutableArtifactBlobProvider) -> ContentRetentionInde
     return index
 
 
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _ensure_store_directory(provider: ImmutableArtifactBlobProvider, path: Path) -> None:
     try:
         relative = path.relative_to(provider.root)
@@ -116,6 +133,8 @@ def _ensure_store_directory(provider: ImmutableArtifactBlobProvider, path: Path)
         mode = current.lstat().st_mode
         if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
             raise ContentRetentionError(f"retention path contains an unsafe component: {current}")
+        # An earlier attempt may have created the directory but failed to sync its parent.
+        _sync_directory(current.parent)
 
 
 def _write_new_or_replace(
@@ -138,11 +157,7 @@ def _write_new_or_replace(
         os.close(descriptor)
         descriptor = None
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        _sync_directory(path.parent)
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -163,9 +178,11 @@ def _write_index(provider: ImmutableArtifactBlobProvider, index: ContentRetentio
 def _write_receipt(provider: ImmutableArtifactBlobProvider, receipt: ContentGcReceipt) -> None:
     path = _receipt_path(provider, receipt.receipt_id, receipt.stage)
     data = canonical_json_v1_bytes(receipt.model_dump(mode="json"))
-    if path.exists():
-        if path.read_bytes() != data:
+    if _entry_exists(path):
+        _ensure_store_directory(provider, path.parent)
+        if not _is_single_regular_file(path) or path.read_bytes() != data:
             raise ContentRetentionError("GC receipt identity drifted during recovery")
+        _sync_directory(path.parent)
         return
     _write_new_or_replace(provider, path, data)
 
@@ -192,18 +209,19 @@ def _target_digests(
 ) -> set[str]:
     if target.ref_kind == "object":
         assert target.object is not None
-        provider.get_object(target.object)
+        provider.verify_object(target.object)
         return {target.object.sha256}
     if target.ref_kind == "tree":
         assert target.tree is not None
         tree = provider.get_tree(target.tree)
         digests = {target.tree.descriptor.sha256}
         for member in tree.files:
-            provider.get_object(member.object)
+            provider.verify_object(member.object)
             digests.add(member.object.sha256)
         return digests
     assert target.manifest is not None
-    resolved, _raw = provider.resolve_manifest(target.manifest.kind, target.manifest.id)
+    resolved = provider._resolve_manifest_ref(target.manifest.kind, target.manifest.id)
+    provider.verify_object(resolved.object)
     if resolved != target.manifest:
         raise ContentRetentionError(
             f"manifest retention target identity drifted: {target.manifest.ref}"
@@ -219,6 +237,22 @@ def _validate_targets(
     for target in targets:
         digests.update(_target_digests(provider, target))
     return digests
+
+
+def require_active_root(
+    provider: ImmutableArtifactBlobProvider,
+    root_id: str,
+) -> ContentRootRecord:
+    """Verify one active canonical root and its retained objects without changing it."""
+    with provider._exclusive_lock():
+        index = _read_index(provider)
+        if index.pending_gc is not None:
+            raise ContentRetentionError("recover the pending GC generation before verifying roots")
+        for root in index.roots:
+            if root.root_id == root_id and not root.released and root.domain == "canonical":
+                _validate_targets(provider, root.targets)
+                return root
+    raise ContentRetentionError(f"active retention root is unavailable: {root_id}")
 
 
 def register_root(
@@ -288,6 +322,117 @@ def release_root(provider: ImmutableArtifactBlobProvider, root_id: str) -> Conte
         if updated != index:
             _write_index(provider, updated)
         return released
+
+
+def finalize_run_retention(
+    provider: ImmutableArtifactBlobProvider,
+    root_id: str,
+    targets: tuple[ContentRetentionTarget, ...],
+    *,
+    lease: ContentLeaseRecord | None,
+) -> str:
+    """Atomically keep a terminal run root or transfer its objects to a release lease."""
+    with provider._exclusive_lock():
+        index = _read_index(provider)
+        root, existing_lease = _match_run_retention(index, root_id, targets, lease)
+        if _run_retention_is_final(root, lease, existing_lease):
+            return root_id if lease is None else lease.lease_id
+        if index.pending_gc is not None:
+            raise ContentRetentionError("recover the pending GC generation before finalizing roots")
+        if root.released or (existing_lease is not None and existing_lease.released):
+            raise ContentRetentionError(f"released run root lacks its terminal lease: {root_id}")
+        _validate_targets(provider, targets)
+        terminal = root.model_copy(
+            update={"nonterminal": False, "restartable": False, "released": lease is not None}
+        )
+        updated = _replace_record(index, "roots", terminal, "root_id")
+        if lease is not None and existing_lease is None:
+            updated = _replace_record(updated, "leases", lease, "lease_id")
+        _write_index(provider, updated)
+        return root_id if lease is None else lease.lease_id
+
+
+def verify_finalized_run_retention(
+    provider: ImmutableArtifactBlobProvider,
+    root_id: str,
+    targets: tuple[ContentRetentionTarget, ...],
+    *,
+    lease: ContentLeaseRecord | None,
+) -> None:
+    """Authenticate an existing terminal run record, even after its lease was collected."""
+    with provider._exclusive_lock():
+        root, existing_lease = _match_run_retention(_read_index(provider), root_id, targets, lease)
+        if not _run_retention_is_final(root, lease, existing_lease):
+            raise ContentRetentionError(f"run retention is not finalized: {root_id}")
+
+
+def require_released_leases(
+    provider: ImmutableArtifactBlobProvider,
+    leases: Mapping[str, tuple[ContentRetentionTarget, ...]],
+    *,
+    owner: str,
+) -> None:
+    """Verify that each named lease previously authorized disposal of its exact objects."""
+    with provider._exclusive_lock():
+        by_id = {item.lease_id: item for item in _read_index(provider).leases}
+        for lease_id, targets in leases.items():
+            lease = by_id.get(lease_id)
+            if (
+                lease is None
+                or not lease.released
+                or lease.domain != "canonical"
+                or lease.owner != owner
+                or lease.expiry_disposition != "release"
+                or lease.targets != targets
+            ):
+                raise ContentRetentionError(
+                    f"exact released retention lease is unavailable: {lease_id}"
+                )
+
+
+def _match_run_retention(
+    index: ContentRetentionIndex,
+    root_id: str,
+    targets: tuple[ContentRetentionTarget, ...],
+    lease: ContentLeaseRecord | None,
+) -> tuple[ContentRootRecord, ContentLeaseRecord | None]:
+    root = next((item for item in index.roots if item.root_id == root_id), None)
+    if (
+        root is None
+        or root.root_kind != "run"
+        or root.domain != "canonical"
+        or _target_identities(root.targets) != _target_identities(targets)
+    ):
+        raise ContentRetentionError(f"exact run retention root is unavailable: {root_id}")
+    existing = None
+    if lease is not None:
+        if lease.released or lease.expiry_disposition != "release" or lease.targets != targets:
+            raise ContentRetentionError("terminal run lease must release the exact run targets")
+        existing = next((item for item in index.leases if item.lease_id == lease.lease_id), None)
+        if existing is not None and (
+            existing.owner != lease.owner
+            or existing.domain != lease.domain
+            or existing.expiry_disposition != lease.expiry_disposition
+            or _target_identities(existing.targets) != _target_identities(targets)
+        ):
+            raise ContentRetentionError(f"terminal run lease identity drifted: {lease.lease_id}")
+    return root, existing
+
+
+def _target_identities(targets: tuple[ContentRetentionTarget, ...]) -> set[bytes]:
+    return {canonical_json_v1_bytes(target.model_dump(mode="json")) for target in targets}
+
+
+def _run_retention_is_final(
+    root: ContentRootRecord,
+    lease: ContentLeaseRecord | None,
+    existing_lease: ContentLeaseRecord | None,
+) -> bool:
+    if root.nonterminal or root.restartable:
+        return False
+    if lease is None:
+        return not root.released
+    return root.released and existing_lease is not None
 
 
 def place_hold(
@@ -418,7 +563,14 @@ def release_lease(provider: ImmutableArtifactBlobProvider, lease_id: str) -> Con
     return _release_record(provider, "leases", "lease_id", lease_id)
 
 
-def _release_record(provider, field: str, key: str, record_id: str):
+def release_owned_lease(
+    provider: ImmutableArtifactBlobProvider, lease_id: str, *, owner: str
+) -> ContentLeaseRecord | None:
+    """Release only a lease belonging to the given owner, if one exists."""
+    return _release_record(provider, "leases", "lease_id", lease_id, owner=owner)
+
+
+def _release_record(provider, field: str, key: str, record_id: str, *, owner: str | None = None):
     with provider._exclusive_lock():
         index = _read_index(provider)
         if index.pending_gc is not None:
@@ -429,7 +581,11 @@ def _release_record(provider, field: str, key: str, record_id: str):
             (item for item in getattr(index, field) if getattr(item, key) == record_id), None
         )
         if current is None:
+            if owner is not None:
+                return None
             raise ContentRetentionError(f"retention record is unavailable: {record_id}")
+        if owner is not None and current.owner != owner:
+            raise ContentRetentionError(f"lease has a different owner: {record_id}")
         released = current.model_copy(update={"released": True})
         updated = _replace_record(index, field, released, key)
         if updated != index:
@@ -439,17 +595,18 @@ def _release_record(provider, field: str, key: str, record_id: str):
 
 def _inventory(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, int], list[str]]:
     root = provider.root / "artifacts" / "sha256"
-    if not root.exists():
+    try:
+        root_mode = root.lstat().st_mode
+    except FileNotFoundError:
         return {}, []
-    root_mode = root.lstat().st_mode
-    if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
+    if not stat.S_ISDIR(root_mode):
         return {}, ["canonical object namespace is not one directory"]
     objects: dict[str, int] = {}
     errors: list[str] = []
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
         current = path.lstat()
-        if path.is_dir() and not stat.S_ISLNK(current.st_mode):
+        if stat.S_ISDIR(current.st_mode):
             if path.name == ".feedbax-materialization-staging" and any(path.iterdir()):
                 errors.append(f"incomplete materialization staging directory: {relative}")
             continue
@@ -459,16 +616,12 @@ def _inventory(provider: ImmutableArtifactBlobProvider) -> tuple[dict[str, int],
         if not expected or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
             errors.append(f"unsafe or unknown object-store entry: {relative}")
             continue
-        raw = path.read_bytes()
-        after = path.lstat()
-        if (current.st_dev, current.st_ino, current.st_size) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-        ) or hashlib.sha256(raw).hexdigest() != digest:
-            errors.append(f"object identity drift: {digest}")
+        try:
+            provider._verify_blob(path, sha256=digest, size_bytes=current.st_size)
+        except (ArtifactBlobCustodyError, OSError) as exc:
+            errors.append(f"object identity drift: {digest}: {exc}")
             continue
-        objects[digest] = len(raw)
+        objects[digest] = current.st_size
     return objects, errors
 
 
@@ -712,19 +865,6 @@ def collect_garbage(
             update={"generation": pending.generation, "pending_gc": pending}
         )
         _write_index(provider, marked_index)
-        _write_receipt(
-            provider,
-            _receipt(
-                receipt_id=receipt_id,
-                request=request,
-                generation=pending.generation,
-                stage="marked",
-                roots=roots,
-                leases=leases,
-                holds=holds,
-                decisions=candidates,
-            ),
-        )
         return _recover_locked(provider, marked_index)
 
 
@@ -913,6 +1053,22 @@ def launch_scheduled_lease_collection(
     return process.pid
 
 
+def _verify_quarantine(
+    provider: ImmutableArtifactBlobProvider,
+    pending: ContentPendingGc,
+    quarantine: Path,
+) -> list[Path]:
+    remaining = []
+    for candidate in pending.decisions:
+        path = quarantine / candidate.sha256
+        if _entry_exists(path):
+            provider._verify_blob(path, sha256=candidate.sha256, size_bytes=candidate.size_bytes)
+            remaining.append(path)
+        elif pending.stage == "marked":
+            raise ContentRetentionError(f"marked candidate is missing: {candidate.sha256}")
+    return remaining
+
+
 def _recover_locked(
     provider: ImmutableArtifactBlobProvider,
     index: ContentRetentionIndex,
@@ -924,100 +1080,79 @@ def _recover_locked(
         destructive=True,
         expected_generation=pending.generation,
     )
-    quarantined: list[ContentGcDecision] = []
+    quarantine = _quarantine_directory(provider, pending)
+    marked = pending.stage == "marked"
     try:
-        for candidate in pending.decisions:
-            source = provider._canonical_path(candidate.sha256)
-            destination = _quarantine_path(provider, pending, candidate.sha256)
-            _ensure_store_directory(provider, destination.parent)
-            if source.exists() and destination.exists():
-                raise ContentRetentionError(
-                    f"candidate exists in canonical and quarantine paths: {candidate.sha256}"
-                )
-            if source.exists():
-                current = source.lstat()
-                if (
-                    not stat.S_ISREG(current.st_mode)
-                    or current.st_nlink != 1
-                    or current.st_size != candidate.size_bytes
-                    or hashlib.sha256(source.read_bytes()).hexdigest() != candidate.sha256
-                ):
-                    raise ContentRetentionError(
-                        f"candidate identity drift before quarantine: {candidate.sha256}"
-                    )
-                os.replace(source, destination)
-            if not destination.exists():
-                if pending.stage == "quarantined":
-                    quarantined.append(candidate)
-                    continue
-                raise ContentRetentionError(f"marked candidate is missing: {candidate.sha256}")
-            current = destination.lstat()
-            if (
-                not stat.S_ISREG(current.st_mode)
-                or current.st_nlink != 1
-                or current.st_size != candidate.size_bytes
-                or hashlib.sha256(destination.read_bytes()).hexdigest() != candidate.sha256
-            ):
-                raise ContentRetentionError(
-                    f"quarantined candidate identity drift: {candidate.sha256}"
-                )
-            quarantined.append(
-                candidate.model_copy(
-                    update={"decision": "quarantined", "reason": "generation-guarded quarantine"}
-                )
-            )
-        quarantined_pending = pending.model_copy(
-            update={"stage": "quarantined", "decisions": tuple(quarantined)}
-        )
-        quarantined_index = index.model_copy(update={"pending_gc": quarantined_pending})
-        _write_index(provider, quarantined_index)
-        quarantined_receipt = _receipt(
-            receipt_id=pending.receipt_id,
-            request=request,
-            generation=pending.generation,
-            stage="quarantined",
-            roots=pending.root_ids,
-            leases=pending.lease_ids,
-            holds=pending.hold_ids,
-            decisions=tuple(quarantined),
-        )
-        _write_receipt(provider, quarantined_receipt)
-        deleted: list[ContentGcDecision] = []
-        for candidate in quarantined:
-            path = _quarantine_path(provider, quarantined_pending, candidate.sha256)
-            if path.exists():
-                current = path.lstat()
-                if (
-                    not stat.S_ISREG(current.st_mode)
-                    or current.st_nlink != 1
-                    or current.st_size != candidate.size_bytes
-                    or hashlib.sha256(path.read_bytes()).hexdigest() != candidate.sha256
-                ):
-                    raise ContentRetentionError(
-                        f"quarantined candidate identity drift before sweep: {candidate.sha256}"
-                    )
-        for candidate in quarantined:
-            path = _quarantine_path(provider, quarantined_pending, candidate.sha256)
-            if path.exists():
-                path.unlink()
-            deleted.append(
-                candidate.model_copy(
-                    update={"decision": "deleted", "reason": "quarantine identity verified"}
-                )
-            )
-        expired_lease_ids = set(quarantined_pending.expired_lease_ids)
-        completed = quarantined_index.model_copy(
-            update={
-                "leases": tuple(
-                    lease.model_copy(update={"released": True})
-                    if lease.lease_id in expired_lease_ids
-                    else lease
-                    for lease in quarantined_index.leases
+        if pending.decisions:
+            _ensure_store_directory(provider, quarantine)
+        if marked:
+            _write_receipt(
+                provider,
+                _receipt(
+                    receipt_id=pending.receipt_id,
+                    request=request,
+                    generation=pending.generation,
+                    stage="marked",
+                    roots=pending.root_ids,
+                    leases=pending.lease_ids,
+                    holds=pending.hold_ids,
+                    decisions=pending.decisions,
                 ),
-                "pending_gc": None,
-            }
+            )
+            source_directories: set[Path] = set()
+            for candidate in pending.decisions:
+                source = provider._canonical_path(candidate.sha256)
+                destination = quarantine / candidate.sha256
+                source_directories.add(source.parent)
+                if _entry_exists(source):
+                    if _entry_exists(destination):
+                        raise ContentRetentionError(
+                            f"candidate exists in canonical and quarantine paths: {candidate.sha256}"
+                        )
+                    provider._verify_blob(
+                        source, sha256=candidate.sha256, size_bytes=candidate.size_bytes
+                    )
+                    os.replace(source, destination)
+            for directory in sorted(source_directories):
+                _sync_directory(directory)
+            if pending.decisions:
+                _sync_directory(quarantine)
+            _verify_quarantine(provider, pending, quarantine)
+            pending = pending.model_copy(
+                update={
+                    "stage": "quarantined",
+                    "decisions": tuple(
+                        candidate.model_copy(
+                            update={
+                                "decision": "quarantined",
+                                "reason": "generation-guarded quarantine",
+                            }
+                        )
+                        for candidate in pending.decisions
+                    ),
+                }
+            )
+            index = index.model_copy(update={"pending_gc": pending})
+            _write_index(provider, index)
+        _write_receipt(
+            provider,
+            _receipt(
+                receipt_id=pending.receipt_id,
+                request=request,
+                generation=pending.generation,
+                stage="quarantined",
+                roots=pending.root_ids,
+                leases=pending.lease_ids,
+                holds=pending.hold_ids,
+                decisions=pending.decisions,
+            ),
         )
-        _write_index(provider, completed)
+        # After the quarantine commit, a canonical name may contain a later publication.
+        for path in _verify_quarantine(provider, pending, quarantine):
+            path.unlink()
+        if pending.decisions:
+            _sync_directory(quarantine)
+
         receipt = _receipt(
             receipt_id=pending.receipt_id,
             request=request,
@@ -1026,9 +1161,29 @@ def _recover_locked(
             roots=pending.root_ids,
             leases=pending.lease_ids,
             holds=pending.hold_ids,
-            decisions=tuple(deleted),
+            decisions=tuple(
+                candidate.model_copy(
+                    update={"decision": "deleted", "reason": "quarantine identity verified"}
+                )
+                for candidate in pending.decisions
+            ),
         )
         _write_receipt(provider, receipt)
+        expired_lease_ids = set(pending.expired_lease_ids)
+        _write_index(
+            provider,
+            index.model_copy(
+                update={
+                    "leases": tuple(
+                        lease.model_copy(update={"released": True})
+                        if lease.lease_id in expired_lease_ids
+                        else lease
+                        for lease in index.leases
+                    ),
+                    "pending_gc": None,
+                }
+            ),
+        )
         return receipt
     except Exception as exc:
         return _receipt(
@@ -1039,7 +1194,7 @@ def _recover_locked(
             roots=pending.root_ids,
             leases=pending.lease_ids,
             holds=pending.hold_ids,
-            decisions=tuple(quarantined) or pending.decisions,
+            decisions=pending.decisions,
             errors=(str(exc),),
         )
 
@@ -1055,6 +1210,7 @@ __all__ = [
     "register_root",
     "release_hold",
     "release_lease",
+    "release_owned_lease",
     "release_root",
     "renew_lease",
     "run_scheduled_lease_collection",

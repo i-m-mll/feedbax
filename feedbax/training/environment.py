@@ -33,8 +33,6 @@ class EnvironmentStep(NamedTuple):
         obs: Observation to feed to the agent. Can be any JAX PyTree.
         target: Supervision target for the current timestep. None for RL
             environments that do not use per-step supervised targets.
-        intervene: Intervention parameters for the current timestep. None if
-            no intervention is active.
         reward: Per-step scalar reward signal. None for supervised training
             environments.
         done: Episode termination flag. None for supervised training
@@ -43,7 +41,6 @@ class EnvironmentStep(NamedTuple):
 
     obs: PyTree
     target: Optional[PyTree]
-    intervene: Optional[PyTree]
     reward: Optional[Array]
     done: Optional[Array]
 
@@ -94,7 +91,7 @@ class EnvironmentProtocol(Protocol):
 
         Returns:
             An EnvironmentStep containing the next observation and optional
-            reward, done flag, target, and intervention parameters.
+            reward, done flag, and target.
         """
         ...
 

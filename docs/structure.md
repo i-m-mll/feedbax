@@ -21,6 +21,8 @@ Note that Feedbax models are immutable. We cannot modify a model in-place: we ha
 
 Most Feedbax models are graphs of components. Each component performs a single step; iteration is handled externally or by cycles in the graph. When a graph contains a feedback cycle, it internally iterates using `lax.scan`, producing a history of component states.
 
+The graph random schedule uses scoped node IDs for construction, recurrent reset, and transitions. Keep a node's ID to preserve its stream across display changes or edits to unrelated nodes. To reproduce a scan with manual steps, pass the same trial key on each call and supply the timestep as `t`. Compiler evidence records the schedule version. Exact replay of older runs uses their recorded producer revision and environment.
+
 ## Tasks and losses
 
 In Feedbax, models are trained to perform tasks. Typically, this means running the model through trials of the task, then scoring its performance, then getting an updated model that should perform slightly better on the next set of trials.
@@ -55,6 +57,8 @@ hardlinks are created on the target filesystem. Sync the source checkpoint as
 the durable transfer unit; ordinary `rsync` without `-H` re-duplicates
 hardlinked fork trees.
 
+Checkpoint replay uses the recorded producer revision and model structure. The native graph factories use different state and parameter paths from the former staged recurrent and CDE runtime classes. To bring a checkpoint from one of those classes into a native graph, load it with its producer revision and explicitly map the parameters into the new graph. Resuming an optimizer or a trial also requires a mapping of its optimizer state or recurrent carry. GraphSpec describes the topology and its initializers, while the checkpoint retains trained values and continuation state.
+
 ### Artifact publication
 
 `feedbax.contracts.publication` is the storage-neutral authority for blob,
@@ -76,17 +80,13 @@ A core feature of Feedbax is the ability to modify models and tasks with [interv
 
 ## Components of feedback models
 
-So far, `SimpleFeedback` is the only top-level single-step model in Feedbax. It defines a feedback loop in which a neural network controls a biomechanical model—such as a model of an arm—based on delayed and noisy sensory feedback it receives about the state of the biomechanical model—such as the current position of the arm.
-
-TODO: Biomechanics can refer to other stuff (e.g. biofluid mech) so we should be clear in the way we speak about limbs
-
-There are three main types of components, here.
+[`SimpleFeedback`][feedbax.models.feedback.SimpleFeedback] builds a native graph that connects a controller, sensory and motor channels, and a mechanics model. For example, a controller can learn to move a limb using delayed, noisy measurements of its position.
 
 ### Controllers
 
 In control theory, the neural network is a *controller*. In reinforcement learning, we'd call it an *agent*—or at a given moment, a *policy*.
 
-So far there isn't an `AbstractNetwork` or `AbstractController` that defines how controllers should behave in general. If you want to be able to intervene on the hidden state of your network while also having a separate readout or encoding layers, then [`SimpleStagedNetwork`][feedbax.models.networks.SimpleStagedNetwork] is suitable. Otherwise, you can [use](/feedbax/examples/5_model_stages#using-non-staged-components) arbitrarily complex neural networks as controllers.
+[`recurrent_controller`][feedbax.models.networks.recurrent_controller] builds a graph with an optional encoder, a recurrent cell, and a readout. [`cde_controller`][feedbax.models.cde.cde_controller] builds a neural controlled differential equation graph. In either case, the graph exposes the controller's `hidden` and `output` ports for wiring and observation.
 
 ### Channels
 

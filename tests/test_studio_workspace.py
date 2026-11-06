@@ -492,7 +492,7 @@ def test_project_load_migrates_workspace_task_binding_spec(tmp_path):
     assert workspace is not None
     scenario = workspace.scenarios["scenario:train"]
     assert scenario.task_binding_spec is not None
-    assert scenario.task_binding_spec.schema_version == "feedbax.spec.studio.task_bindings.v2"
+    assert scenario.task_binding_spec.schema_version == "feedbax.spec.studio.task_bindings.v3"
     assert scenario.task_binding_spec.bindings[0].source_data_id == "inputs"
     assert record.project.workspace_document.workspace_ui_state == {"top_pane": {"kind": "model"}}
     assert record.project.workspace_document.stage_ui_state == {"stage:train": {"collapsed": True}}

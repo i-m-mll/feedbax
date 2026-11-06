@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import threading
@@ -153,26 +154,74 @@ def _normalize_structured_mapped_value(
     return normalized
 
 
+def _json_metric_value(value: Any) -> Any:
+    import jax
+    import jax.numpy as jnp
+
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, (jax.Array, np.ndarray, np.generic)):
+        if value.ndim != 0:
+            raise ValueError("an unmapped array must be scalar")
+        dtype = value.dtype
+        kind = getattr(dtype, "kind", None)
+        if kind == "b":
+            return bool(value.item())
+        if kind in ("i", "u") or (kind == "V" and jnp.issubdtype(dtype, jnp.integer)):
+            return int(value.item())
+        if kind != "f" and not (kind == "V" and jnp.issubdtype(dtype, jnp.floating)):
+            raise ValueError(f"unsupported scalar dtype {dtype}")
+        value = float(value.item())
+
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("numbers must be finite")
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_metric_value(item) for item in value]
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("object keys must be strings")
+        return {key: _json_metric_value(item) for key, item in value.items()}
+    raise ValueError(f"unsupported value type {type(value).__name__}")
+
+
+def _normalize_json_metric(name: str, value: Any) -> Any:
+    try:
+        return _json_metric_value(value)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise RunEventProtocolError(
+            f"metric {name!r} must have a finite JSON representation: {exc}"
+        ) from exc
+
+
 def normalize_serialized_metrics(
     coordinate: ProgressCoordinate,
     named_metrics: Mapping[str, Any],
     slot_axis_bindings: Mapping[str, tuple[MaterializedSlotAxisBinding, ...]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Strip mapped metrics from a coordinate and envelope them in their carrier."""
+    """Serialize shared metrics and move mapped metrics to their named carriers."""
     mapped = {
         name: bindings
         for name, bindings in slot_axis_bindings.items()
         if bindings and bindings[0].mode == "mapped" and name in named_metrics
     }
-    if not mapped:
-        return coordinate.model_dump(mode="json", exclude_none=True), dict(named_metrics)
-    coordinate_metrics = {
-        name: value for name, value in coordinate.metrics.items() if name not in mapped
+    normalized = {
+        name: value if name in mapped else _normalize_json_metric(name, value)
+        for name, value in named_metrics.items()
     }
-    coordinate_payload = coordinate.model_copy(update={"metrics": coordinate_metrics}).model_dump(
-        mode="json", exclude_none=True
+    coordinate_payload = coordinate.model_dump(
+        mode="json", exclude={"metrics"}, exclude_none=True
     )
-    normalized = dict(named_metrics)
+    coordinate_payload["metrics"] = {
+        name: (
+            normalized[name]
+            if name in named_metrics and value is named_metrics[name]
+            else _normalize_json_metric(name, value)
+        )
+        for name, value in coordinate.metrics.items()
+        if name not in mapped
+    }
     for name, axes in mapped.items():
         if isinstance(named_metrics[name], Mapping):
             if (
@@ -814,6 +863,8 @@ def run_event_from_legacy_worker_event(
     event_type = _legacy_worker_type_to_run_event_type(legacy_type)
     payload: MutableMapping[str, Any] = dict(event)
     payload["legacy_type"] = legacy_type
+    if legacy_type == "training_stopped":
+        payload["status"] = "cancelled"
     payload.pop("schema_id", None)
     payload.pop("schema_version", None)
     payload.pop("seq", None)
@@ -832,9 +883,11 @@ def legacy_worker_event_from_run_event(event: Mapping[str, Any]) -> dict[str, An
     """Convert a worker run-event envelope back to the legacy Studio event shape."""
     run_event = RunEvent.model_validate(event)
     payload = dict(run_event.payload)
-    legacy_type = payload.pop("legacy_type", None) or _run_event_type_to_legacy_worker_type(
-        run_event.type
-    )
+    legacy_type = payload.pop("legacy_type", None)
+    if run_event.type == "complete" and payload.get("status") == "cancelled":
+        legacy_type = "training_stopped"
+    if not legacy_type:
+        legacy_type = _run_event_type_to_legacy_worker_type(run_event.type)
     payload["type"] = legacy_type
     payload["seq"] = run_event.seq
     payload.setdefault("job_id", run_event.row_id)
@@ -845,6 +898,7 @@ def _legacy_worker_type_to_run_event_type(legacy_type: str) -> str:
     return {
         "training_progress": "progress",
         "training_complete": "complete",
+        "training_stopped": "complete",
         "training_error": "failed",
         "training_log": "log",
         "training_trajectory": "trajectory",

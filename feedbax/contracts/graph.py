@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import math
 import uuid
+from collections.abc import Iterator
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
+from feedbax.contracts._causal_inputs import InputDriverConflict, input_driver_conflicts
 from feedbax.contracts.array_values import _parse_array_value_payload
 from feedbax.contracts.domain import DomainCompileReport
 from feedbax.contracts.value_schema import ValueSchema
@@ -132,7 +134,12 @@ class ParameterConstraintSpec(BaseModel):
 
 
 class WireSpec(BaseModel):
-    """Specification for a wire connecting two ports."""
+    """Specification for a wire connecting two ports.
+
+    A recurrent `state_output` initializer can opt into
+    `seed_channel_history` when it feeds a Channel directly or through Ravel or SelectState.
+    Fresh trial preparation then repeats the initial sample through the delay.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -463,6 +470,17 @@ class GraphSpec(BaseModel):
 GraphSubgraphSpec = Union[GraphSpec, AcausalGraphSpec]
 
 
+def graph_input_driver_conflicts(
+    graph: GraphSpec, base_path: str = ""
+) -> Iterator[InputDriverConflict]:
+    """Find competing drivers in a causal graph and its causal interiors."""
+    yield from input_driver_conflicts(graph.wires, graph.input_bindings, base_path)
+    for node, subgraph in (graph.subgraphs or {}).items():
+        if isinstance(subgraph, GraphSpec):
+            token = node.replace("~", "~0").replace("/", "~1")
+            yield from graph_input_driver_conflicts(subgraph, f"{base_path}/subgraphs/{token}")
+
+
 class GraphInteriorDomainMismatch(ValueError):
     """Raised when a consumer receives a subgraph from an unsupported domain."""
 
@@ -549,6 +567,7 @@ class NodeUIState(BaseModel):
     """UI state for a node."""
 
     position: CanvasPositionSpec
+    label: Optional[str] = None
     collapsed: bool = False
     selected: bool = False
     reversed: bool = False
@@ -1167,8 +1186,8 @@ class StudioTaskBindingSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["feedbax.spec.studio.task_bindings.v2"] = (
-        "feedbax.spec.studio.task_bindings.v2"
+    schema_version: Literal["feedbax.spec.studio.task_bindings.v3"] = (
+        "feedbax.spec.studio.task_bindings.v3"
     )
     exposed_data: List[StudioTaskDataSpec] = Field(default_factory=list)
     bindings: List[StudioTaskBinding] = Field(default_factory=list)

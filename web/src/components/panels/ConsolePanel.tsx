@@ -46,7 +46,7 @@ export function ConsolePanel() {
         ) : (
           consoleLogs.map((line, idx) => (
             <div key={idx} className={`leading-5 ${levelClass(line.level)}`}>
-              <span className="text-slate-500 mr-2">[{line.batch}]</span>
+              {line.batch != null && <span className="text-slate-500 mr-2">[{line.batch}]</span>}
               {line.message}
             </div>
           ))

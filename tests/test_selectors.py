@@ -48,6 +48,18 @@ class DeepModule(Module):
     config: dict = eqx.field(static=True)
 
 
+class AffineModule(Module):
+    params: dict[str, jax.Array]
+
+    def __call__(self, x):
+        return self.params["frozen"] * x + self.params["train"]
+
+
+@pytest.fixture
+def affine_module():
+    return AffineModule({"frozen": jnp.array(2.0), "train": jnp.array(3.0)})
+
+
 @pytest.fixture
 def simple_module():
     return SimpleModule(
@@ -117,12 +129,6 @@ class TestSelectionBasics:
         sel = select(simple_module)
         assert isinstance(sel, Selection)
         assert sel.tree is simple_module
-
-    def test_selection_repr(self, simple_module):
-        sel = select(simple_module)
-        repr_str = repr(sel)
-        assert "Selection" in repr_str
-        assert "SimpleModule" in repr_str
 
     def test_count_all_leaves(self, simple_module):
         count = select(simple_module).count()
@@ -263,6 +269,117 @@ class TestWhere:
         )
         # weight.sum() = 10, bias.sum() = 0.3
         assert result == 1
+
+
+class TestSelectionComposition:
+    def test_where_preserves_explicit_exclusions(self, affine_module):
+        selection = Selection(
+            affine_module,
+            where=lambda model: model.params,
+            filter_spec={"frozen": False, "train": True},
+        ).where(lambda value: bool(value > 0))
+
+        assert selection.get() == {"frozen": None, "train": jnp.array(3.0)}
+        assert selection.count() == 1
+        updated = selection.apply(lambda value: value * 10)
+        assert updated.params == {"frozen": jnp.array(2.0), "train": jnp.array(30.0)}
+        assert updated(4.0) == 38.0
+
+        frozen = selection.at(lambda params: params["frozen"])
+        assert frozen.count() == 0
+        assert frozen.get() is None
+        assert eqx.tree_equal(frozen.set(jnp.array(99.0)), affine_module)
+
+    def test_accessor_distinguishes_tuple_subtree_from_multiple_locations(self, affine_module):
+        other = AffineModule({"frozen": jnp.array(4.0), "train": jnp.array(5.0)})
+        pair = (affine_module, other)
+        tree = {"group": pair, "spare": (other,)}
+        whole = select(tree).at(
+            lambda root: root["group"] if len(root["group"]) == 2 else root["spare"]
+        )
+        parts = select(tree).at(lambda root: (root["group"][0], root["group"][1]))
+
+        assert whole.count() == 1
+        assert parts.count() == 2
+        assert eqx.tree_equal(whole.apply(lambda group: group[::-1]), {**tree, "group": pair[::-1]})
+        assert eqx.tree_equal(parts.set(other), {**tree, "group": (other, other)})
+        for selection in (whole, parts):
+            assert eqx.tree_equal(Selection.combine(*selection.partition()), pair)
+
+    def test_prefix_mask_selects_every_leaf_below_true(self, affine_module):
+        tree = {"group": affine_module, "other": jnp.array(5.0)}
+        selection = Selection(tree, filter_spec={"group": True, "other": False})
+
+        selected, rest = selection.partition()
+        assert eqx.tree_equal(selected, {"group": affine_module, "other": None})
+        assert eqx.tree_equal(selection.get(), selected)
+        empty_group = AffineModule({"frozen": None, "train": None})
+        assert eqx.tree_equal(rest, {"group": empty_group, "other": tree["other"]})
+        assert eqx.tree_equal(Selection.combine(selected, rest), tree)
+        assert selection.count() == len(jt.leaves(selected)) == 2
+        updated = selection.apply(lambda value: value * 10)
+        assert updated["group"](4.0) == 110.0
+        assert updated["other"] == tree["other"]
+        replacement = jnp.array(7.0)
+        assert eqx.tree_equal(
+            selection.set(replacement),
+            {
+                "group": AffineModule({"frozen": replacement, "train": replacement}),
+                "other": tree["other"],
+            },
+        )
+
+    def test_composed_accessors_intersect_type_and_predicate(self, deep_module):
+        tree = {"model": deep_module}
+        selection = (
+            select(tree)
+            .at(lambda root: root["model"])
+            .at(lambda model: model.encoder)
+            .at_instances_of(SimpleModule)
+            .where(lambda layer: layer.name == "enc_l2")
+        )
+        chosen_layer = deep_module.encoder.layer2
+
+        selected, rest = selection.partition()
+        assert eqx.tree_equal(selection.get(), selected)
+        assert eqx.tree_equal(selected, NestedModule(None, chosen_layer, None))
+        assert eqx.tree_equal(Selection.combine(selected, rest), deep_module.encoder)
+        assert selection.count() == 1
+        updated = selection.apply(
+            lambda layer: SimpleModule(layer.weight * 2, layer.bias, layer.name)
+        )
+        expected = eqx.tree_at(
+            lambda root: root["model"].encoder.layer2.weight, tree, chosen_layer.weight * 2
+        )
+        assert eqx.tree_equal(updated, expected)
+
+    def test_type_refinement_preserves_custom_leaf_boundary(self, affine_module):
+        tree = {"group": affine_module, "other": jnp.array(5.0)}
+        selection = Selection(tree, is_leaf=lambda node: isinstance(node, AffineModule))
+        updated = selection.at_instances_of(jax.Array).apply(lambda value: value * 10)
+
+        assert eqx.tree_equal(updated, {"group": affine_module, "other": jnp.array(50.0)})
+
+    @pytest.mark.parametrize(
+        ("mask", "diagnostic"),
+        [
+            ({"frozen": True}, "prefix"),
+            ({"frozen": 1, "train": True}, "boolean"),
+        ],
+    )
+    def test_invalid_explicit_mask(self, affine_module, mask, diagnostic):
+        selection = Selection(affine_module.params, filter_spec=mask)
+        with pytest.raises(ValueError, match=diagnostic):
+            selection.apply(lambda value: value * 10)
+
+    def test_partial_mask_cannot_select_an_atomic_module(self, affine_module):
+        selection = Selection(
+            {"group": affine_module},
+            filter_spec={"group": AffineModule({"frozen": False, "train": True})},
+        ).at_instances_of(AffineModule)
+
+        with pytest.raises(ValueError, match="partial.*group"):
+            selection.count()
 
 
 # ========== Partition/Combine Tests ==========

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from feedbax import _atomic
 from feedbax.bin.studio_pipeline import main as studio_pipeline_main
 from feedbax.studio.execution import (
     StudioPipelineMaterializationRequest,
@@ -24,8 +26,10 @@ from feedbax.studio.execution import (
     stage_studio_evaluation_matrix,
 )
 from feedbax.analysis.evaluation import (
+    EvaluationRecipeExecutionError,
     EvaluationRecipeResult,
 )
+from feedbax.analysis.fulfillment import FulfillmentAdmissionError
 from feedbax.analysis.specs import (
     AnalysisRecipeResult,
 )
@@ -38,6 +42,9 @@ from feedbax.orchestration.realization import (
 )
 from feedbax.contracts.base import utc_now
 from feedbax.contracts.artifact_store import store_json_artifact
+from feedbax.contracts.evaluation_states import (
+    EVALUATION_STATES_ARTIFACT_ROLE,
+)
 from feedbax.contracts.manifest import (
     CheckpointSelectionManifest,
     EvaluationRunManifest,
@@ -45,17 +52,19 @@ from feedbax.contracts.manifest import (
     TrainingRunAxisCoordinate,
     TrainingRunManifest,
     TrainingRunSetManifest,
+    canonical_manifest_path,
+    evaluation_states_cache_path,
     load_manifest,
     write_manifest,
 )
 from feedbax.contracts.run_matrix import TrainingRowProvenance
+from feedbax.persistence.manifest_index import index_manifest_file
 from feedbax.training.run_matrix import MaterializedMatrixRow
 from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 from feedbax.web.app import create_app
 from feedbax.contracts.graph import (
     GraphMetadata,
     GraphSpec,
-    StudioCollectionRef,
     StudioManifestRef,
     StudioStageSpec,
     StudioTaskBindingSpec,
@@ -114,7 +123,7 @@ def _workspace():
     }
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -412,6 +421,55 @@ def test_prepare_studio_training_execution_writes_idempotent_pending_manifest(
     assert manifest.provenance.issues == ["9aa8ff2"]
 
 
+def test_studio_plan_retry_requires_durable_pending_receipt(
+    studio_client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_dir = canonical_manifest_path("TrainingRunManifest", "test", root=tmp_path).parent
+    sync_directory = _atomic._fsync_directory
+    sync_allowed = False
+
+    def sync_receipt_directory(path: Path) -> None:
+        if path == receipt_dir.resolve():
+            (receipt,) = receipt_dir.glob("*.json")
+            with receipt.with_suffix(".lock").open("r+b") as probe:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if not sync_allowed:
+                raise OSError("receipt directory sync failed")
+        sync_directory(path)
+
+    monkeypatch.setattr(_atomic, "_fsync_directory", sync_receipt_directory)
+    request = {
+        "workspace": _workspace().model_dump(mode="json", exclude_none=True),
+        "graph": _graph().model_dump(mode="json", exclude_none=True),
+        "job_id": "studio-retry-durability",
+    }
+    endpoint = "/api/provider/studio/training/plan"
+
+    with pytest.raises(OSError, match="receipt directory sync failed"):
+        studio_client.post(endpoint, json=request)
+    (receipt_path,) = receipt_dir.glob("*.json")
+    receipt_bytes = receipt_path.read_bytes()
+    receipt = load_manifest(receipt_path)
+    assert receipt.status == "pending"
+    assert "staged_attempt" not in receipt.metadata
+
+    with pytest.raises(OSError, match="receipt directory sync failed"):
+        studio_client.post(endpoint, json=request)
+    assert receipt_path.read_bytes() == receipt_bytes
+
+    sync_allowed = True
+    retry = studio_client.post(endpoint, json=request)
+    assert retry.status_code == 200, retry.text
+    stage = next(s for s in retry.json()["workspace"]["stages"] if s["kind"] == "train")
+    ref = next(ref for ref in stage["manifest_refs"] if ref["role"] == "training_run")
+    assert ref["id"] == receipt.id
+    assert ref["metadata"]["staging_generation"] == receipt.metadata["staging_generation"]
+    assert receipt_path.read_bytes() == receipt_bytes
+
+
 def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_set(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -476,103 +534,117 @@ def test_prepare_studio_training_execution_expands_sweep_matrix_to_pending_run_s
     assert {run.run_set_id for run in runs} == {run_set.id}
 
 
-def test_prepare_studio_training_execution_uses_queue_subset_target_not_stale_stage_protocol(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def _staged_runpod_queue_request(
     registry_bundle,
-):
-    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    *,
+    staged_target: str,
+) -> tuple[StudioTrainingExecutionRequest, StudioManifestRef]:
     workspace = _workspace()
     train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
-    train_stage.metadata = {"backend_realization": {"execution_target": "gcp"}}
-    runpod_ref = StudioManifestRef(
-        kind="TrainingRunManifest",
-        id="train:runpod",
-        role="training_run",
-        uri="/tmp/feedbax/runpod.json",
-        metadata={"status": "pending", "planned": True, "execution_target": "runpod"},
-    )
-    gcp_ref = StudioManifestRef(
-        kind="TrainingRunManifest",
-        id="train:gcp",
-        role="training_run",
-        uri="/tmp/feedbax/gcp.json",
-        metadata={"status": "pending", "planned": True, "execution_target": "gcp"},
-    )
-    train_stage.manifest_refs = [runpod_ref, gcp_ref]
-    train_stage.output_collections = [
-        StudioCollectionRef(
-            id="collection:training-runs",
-            kind="training_runs",
-            label="Training runs",
-            source_stage_id=train_stage.id,
-            item_refs=[runpod_ref, gcp_ref],
-        )
-    ]
-
-    prepared = prepare_studio_training_execution(
+    train_stage.metadata["backend_realization"] = {"execution_target": staged_target}
+    staged = prepare_studio_training_execution(
         StudioTrainingExecutionRequest(
             workspace=workspace,
+            graph=_graph(),
+            job_id="studio-stage",
+            local_cwd="/tmp/feedbax-studio",
+        ),
+        registry_bundle=registry_bundle,
+    )
+    train_stage = next(stage for stage in staged.workspace.stages if stage.kind == "train")
+    training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
+    return (
+        StudioTrainingExecutionRequest(
+            workspace=staged.workspace,
             graph=_graph(),
             backend="runpod",
             job_id="studio-plan",
             backend_realization=_runpod_realization("studio-plan"),
             queue_target="runpod",
-            queue_manifest_ids=["train:runpod"],
-            issues=["12e49a2"],
+            queue_manifest_ids=[training_ref.id],
         ),
-        registry_bundle=registry_bundle,
+        training_ref,
     )
 
-    prepared_train_stage = next(
-        stage for stage in prepared.workspace.stages if stage.kind == "train"
-    )
-    staged_summary = prepared_train_stage.metadata["last_staged_training"]
+
+def test_prepare_studio_training_execution_uses_durable_queue_receipt(registry_bundle):
+    request, training_ref = _staged_runpod_queue_request(registry_bundle, staged_target="runpod")
+    path = Path(training_ref.uri)
+    original_bytes = path.read_bytes()
+    train_stage = next(stage for stage in request.workspace.stages if stage.kind == "train")
+    train_stage.metadata["backend_realization"] = {"execution_target": "gcp"}
+    for ref in [
+        *train_stage.manifest_refs,
+        *(ref for collection in train_stage.output_collections for ref in collection.item_refs),
+    ]:
+        if ref.id == training_ref.id:
+            ref.uri = "/tmp/feedbax/stale.json"
+            ref.metadata.update(status="cancelled", execution_target="gcp", run_count=100)
+
+    prepared = prepare_studio_training_execution(request, registry_bundle=registry_bundle)
+
+    prepared_stage = next(stage for stage in prepared.workspace.stages if stage.kind == "train")
+    summary = prepared_stage.metadata["last_staged_training"]
+    prepared_ref = next(ref for ref in prepared_stage.manifest_refs if ref.id == training_ref.id)
     assert prepared.backend_plan.backend_id == "runpod"
-    assert staged_summary["source"] == "queue_manifest_subset"
-    assert staged_summary["execution_target"] == "runpod"
-    assert staged_summary["manifest_ids"] == ["train:runpod"]
-    assert not (tmp_path / "manifests").exists()
+    assert summary["source"] == "queue_manifest_subset"
+    assert summary["execution_target"] == "runpod"
+    assert summary["manifest_ids"] == [training_ref.id]
+    assert summary["run_count"] == 1
+    assert prepared_ref.uri == str(path)
+    assert prepared_ref.metadata["status"] == "pending"
+    assert prepared_ref.metadata["execution_target"] == "runpod"
+    assert path.read_bytes() == original_bytes
 
 
-def test_prepare_studio_training_execution_rejects_queue_subset_target_mismatch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    registry_bundle,
-):
-    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
-    workspace = _workspace()
-    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
-    train_stage.metadata = {"backend_realization": {"execution_target": "gcp"}}
-    train_stage.manifest_refs = [
-        StudioManifestRef(
-            kind="TrainingRunManifest",
-            id="train:gcp",
-            role="training_run",
-            uri="/tmp/feedbax/gcp.json",
-            metadata={"status": "pending", "planned": True, "execution_target": "gcp"},
-        )
-    ]
+def test_prepare_studio_training_execution_rejects_durable_queue_target_mismatch(registry_bundle):
+    request, training_ref = _staged_runpod_queue_request(registry_bundle, staged_target="gcp")
+    training_ref.metadata["execution_target"] = "runpod"
 
     with pytest.raises(
         StudioExecutionPreparationError,
         match="targets 'gcp', not selected target 'runpod'",
     ):
-        prepare_studio_training_execution(
-            StudioTrainingExecutionRequest(
-                workspace=workspace,
-                graph=_graph(),
-                backend="runpod",
-                job_id="studio-plan",
-                backend_realization=_runpod_realization("studio-plan"),
-                queue_target="runpod",
-                queue_manifest_ids=["train:gcp"],
-                issues=["12e49a2"],
-            ),
-            registry_bundle=registry_bundle,
-        )
+        prepare_studio_training_execution(request, registry_bundle=registry_bundle)
 
-    assert not (tmp_path / "manifests").exists()
+
+@pytest.mark.parametrize("receipt_state", ["missing", "legacy_only", "running", "owned_pending"])
+def test_prepare_studio_training_execution_refuses_unavailable_queue_receipt(
+    tmp_path: Path,
+    registry_bundle,
+    receipt_state: str,
+):
+    request, training_ref = _staged_runpod_queue_request(registry_bundle, staged_target="runpod")
+    path = Path(training_ref.uri)
+    if receipt_state == "missing":
+        path.unlink()
+        expected_error = "was not found"
+    elif receipt_state == "legacy_only":
+        legacy = path.with_name("older-pending.json")
+        path.rename(legacy)
+        index_manifest_file(legacy, root=tmp_path)
+        expected_error = "was not found"
+    elif receipt_state == "running":
+        running = load_manifest(path).model_copy(update={"status": "running"})
+        write_manifest(running, root=tmp_path)
+        expected_error = "receipt status 'running'"
+    else:
+        owned = load_manifest(path).model_copy(update={"started_at": utc_now()})
+        write_manifest(owned, root=tmp_path)
+        expected_error = "no unclaimed pending intent"
+
+    with pytest.raises(StudioExecutionPreparationError, match=expected_error):
+        prepare_studio_training_execution(request, registry_bundle=registry_bundle)
+
+    if receipt_state == "legacy_only":
+        refreshed, refreshed_ref = _staged_runpod_queue_request(
+            registry_bundle, staged_target="runpod"
+        )
+        assert refreshed_ref.id == training_ref.id
+        assert path.is_file()
+        with pytest.raises(StudioExecutionPreparationError, match="different staging generation"):
+            prepare_studio_training_execution(request, registry_bundle=registry_bundle)
+        prepare_studio_training_execution(refreshed, registry_bundle=registry_bundle)
 
 
 def test_prepare_studio_training_execution_rejects_invalid_expanded_sweep_run(
@@ -615,6 +687,8 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
     studio_client,
 ):
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    now = utc_now()
+    monkeypatch.setattr("feedbax.studio.execution.utc_now", lambda: now)
     request = StudioTrainingExecutionRequest(
         workspace=_workspace(),
         graph=_graph(),
@@ -632,6 +706,17 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
     assert cancelled.status_code == 200
     assert load_manifest(training_ref.uri).status == "cancelled"
 
+    queue_request = request.model_copy(
+        update={
+            "workspace": first.workspace,
+            "queue_target": "local",
+            "queue_manifest_ids": [training_ref.id],
+        }
+    )
+    with pytest.raises(StudioExecutionPreparationError, match="receipt status 'cancelled'"):
+        prepare_studio_training_execution(queue_request, registry_bundle=registry_bundle)
+    assert load_manifest(training_ref.uri).status == "cancelled"
+
     restaged = prepare_studio_training_execution(request, registry_bundle=registry_bundle)
     restaged_stage = next(stage for stage in restaged.workspace.stages if stage.kind == "train")
     restaged_ref = next(ref for ref in restaged_stage.manifest_refs if ref.role == "training_run")
@@ -647,6 +732,11 @@ def test_prepare_studio_training_execution_restages_cancelled_deterministic_mani
     assert "supersedes" not in restaged_ref.metadata
     assert restaged_ref.metadata["spec_hashes"]["pin"] == "fnv1a32-canonical_json_v2"
     assert len(restaged_ref.metadata["spec_hashes"]["hashes"]["training_spec"]) == 8
+
+    with pytest.raises(StudioExecutionPreparationError, match="different staging generation"):
+        prepare_studio_training_execution(queue_request, registry_bundle=registry_bundle)
+    refreshed_queue = queue_request.model_copy(update={"workspace": restaged.workspace})
+    prepare_studio_training_execution(refreshed_queue, registry_bundle=registry_bundle)
 
 
 def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempotent(
@@ -678,14 +768,14 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
     request = StudioEvaluationMatrixRequest(
         workspace=prepared_training.workspace,
         training_run_ids=[training_ref.id],
-        eval_params={"targets": "8-direction center-out"},
+        eval_params={"trial_count": 8},
         condition_matrix={
             "axes": [
                 {
-                    "id": "sisu",
-                    "label": "SISU",
-                    "path": "eval_params.sisu",
-                    "values": [0.25, 0.5],
+                    "id": "gain",
+                    "label": "Feedback gain",
+                    "path": "eval_params.gain",
+                    "values": [0, 0.5],
                 }
             ],
             "mode": "cross",
@@ -702,6 +792,7 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
     first = stage_studio_evaluation_matrix(request)
     second = stage_studio_evaluation_matrix(request)
 
+    assert preview.condition_labels == ["Feedback gain=0", "Feedback gain=0.5"]
     assert preview.total_eval_count == 2
     assert preview.new_manifest_count == 2
     assert first.preview.pending_count == 2
@@ -713,6 +804,8 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
     assert isinstance(eval_manifest, EvaluationRunManifest)
     assert isinstance(checkpoint_manifest, CheckpointSelectionManifest)
     assert eval_manifest.status == "pending"
+    assert [ref.metadata["condition_label"] for ref in first.manifest_refs] == preview.condition_labels
+    assert eval_manifest.metadata["condition_axis_coordinates"] == {"gain": 0}
     assert eval_manifest.evaluation_spec.inline["params"]["checkpoint_policy"] == {
         "mode": "best-by-metric",
         "metric": "final_validation_loss",
@@ -918,6 +1011,59 @@ def test_studio_evaluation_run_local_preserves_skipped_failed_status(
     }
 
 
+def test_studio_evaluation_local_failed_reprocess_preserves_completed_receipt(
+    tmp_path: Path, registry_bundle
+) -> None:
+    workspace = _staged_training_workspace(
+        _workspace(), job_id="studio-reprocess", registry_bundle=registry_bundle
+    )
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
+    request = StudioEvaluationMatrixRequest(
+        workspace=workspace,
+        training_run_ids=[training_ref.id],
+        eval_params={"states_custody": "durable"},
+        checkpoint_policy=StudioEvaluationCheckpointPolicy(mode="last"),
+        root=str(tmp_path),
+    )
+    should_fail = False
+
+    def recipe(_spec, _root, _states_path, _execution_context):
+        if should_fail:
+            raise RuntimeError("Studio forced recipe failed")
+        return EvaluationRecipeResult(states={"generation": 1})
+
+    registry_bundle.evaluation_recipes.register("feedbax.studio.default_eval", recipe)
+    first = run_studio_evaluation_local_execution(request, registry_bundle=registry_bundle)
+    assert first.completed_count == 1, first.errors
+    path = Path(first.manifest_refs[0].uri)
+    completed = load_manifest(path)
+    receipt = path.read_bytes()
+    cache_path = evaluation_states_cache_path(completed.id, root=tmp_path)
+    cache = cache_path.read_bytes()
+
+    should_fail = True
+    forced = run_studio_evaluation_local_execution(
+        request.model_copy(update={"reprocess": "all"}), registry_bundle=registry_bundle
+    )
+
+    assert forced.completed_count == 0
+    assert forced.failed_count == 1
+    assert forced.errors == ["Studio forced recipe failed"]
+    assert path.read_bytes() == receipt
+    assert cache_path.read_bytes() == cache
+    ref = forced.manifest_refs[0]
+    assert ref.metadata["status"] == "completed"
+    assert ref.uri == str(path)
+    evaluation_stage = next(stage for stage in forced.workspace.stages if stage.kind == "eval")
+    evaluation_runs = next(
+        collection for collection in evaluation_stage.output_collections
+        if collection.kind == "evaluation_runs"
+    )
+    assert ref in evaluation_stage.manifest_refs
+    assert ref in evaluation_runs.item_refs
+
+
 def test_studio_evaluation_endpoints_preview_stage_and_run_local(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -942,6 +1088,16 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
         for collection in train_stage.output_collections
         if collection.kind == "training_runs"
     ]
+    eval_stage.selection_spec["condition_matrix"] = {
+        "axes": [
+            {
+                "id": "gain",
+                "label": "Feedback gain",
+                "path": "eval_params.gain",
+                "values": [0],
+            }
+        ]
+    }
     payload = {
         "workspace": prepared_training.workspace.model_dump(mode="json", exclude_none=True),
         "selection_spec": {
@@ -949,7 +1105,6 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
             "manifest_kind": "TrainingRunManifest",
             "ids": [training_ref.id],
         },
-        "eval_params": {"perturbation": "none"},
         "checkpoint_policy": {"mode": "last"},
         "issues": ["717e8fb"],
         "root": str(tmp_path),
@@ -962,6 +1117,7 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
 
     assert preview.status_code == 200
     assert preview.json()["total_eval_count"] == 1
+    assert preview.json()["condition_labels"] == ["Feedback gain=0"]
     assert staged.status_code == 200
     assert staged.json()["preview"]["pending_count"] == 1
     assert launched.status_code == 200
@@ -970,10 +1126,11 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
         stage for stage in launched.json()["workspace"]["stages"] if stage["kind"] == "eval"
     )
     assert eval_stage_payload["status"] == "completed"
-    assert (
-        eval_stage_payload["output_collections"][0]["item_refs"][0]["metadata"]["status"]
-        == "completed"
-    )
+    ref = eval_stage_payload["output_collections"][0]["item_refs"][0]
+    assert ref["metadata"]["status"] == "completed"
+    assert ref["metadata"]["condition_label"] == "Feedback gain=0"
+    assert ref["metadata"]["condition_axis_coordinates"] == {"gain": 0}
+    assert load_manifest(ref["uri"]).metadata["condition_label"] == "Feedback gain=0"
 
 
 def test_studio_training_plan_endpoint_rejects_missing_training_spec(studio_client):
@@ -1008,7 +1165,7 @@ def test_task_binding_spec_rejects_source_output_id():
     with pytest.raises(ValueError, match="source_output_id.*source_data_id"):
         StudioTaskBindingSpec.model_validate(
             {
-                "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v3",
                 "exposed_data": [
                     {
                         "id": "inputs",
@@ -1199,9 +1356,7 @@ def test_materialize_studio_pipeline_consumes_stage_collections(
     assert eval_manifest["provenance"]["parents"][0]["id"].startswith("feedbax-training-run:")
     assert "cache/states" in eval_manifest["metadata"]["cache"]["states_path"]
     assert analysis_manifest["status"] == "completed"
-    assert analysis_manifest["analysis_spec"]["inline"]["analysis_type"] == (
-        STUDIO_ANALYSIS_TYPE
-    )
+    assert analysis_manifest["analysis_spec"]["inline"]["analysis_type"] == (STUDIO_ANALYSIS_TYPE)
     assert analysis_manifest["inputs"][0]["id"] == eval_manifest["id"]
     assert analysis_manifest["provenance"]["parents"][0]["id"] == eval_manifest["id"]
     assert analysis_manifest["summary_metrics"]["analysis_count"] == 1
@@ -1254,6 +1409,63 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
         "feedbax.ref.authenticated_manifest.v1"
     )
     assert source.evaluation_manifest_authority.uri is None
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_studio_scalar_evaluation_checks_durable_states_on_warm_reuse(
+    tmp_path: Path,
+    registry_bundle,
+    damage: str,
+) -> None:
+    workspace = _workspace_with_analysis_type(STUDIO_ANALYSIS_TYPE)
+    analysis_stage = next(stage for stage in workspace.stages if stage.kind == "analysis")
+    scenario = workspace.scenarios[analysis_stage.scenario_id]
+    scenario.analysis_spec["evaluation_states_policy"] = "require_durable"
+    workspace = _staged_training_workspace(
+        workspace,
+        job_id="studio-policy-train",
+        registry_bundle=registry_bundle,
+    )
+    calls = 0
+
+    def recipe(_spec, _root, _states_path, _execution_context):
+        nonlocal calls
+        calls += 1
+        return EvaluationRecipeResult(states={"generation": calls})
+
+    registry_bundle.evaluation_recipes.register("feedbax.studio.default_eval", recipe)
+    request = StudioPipelineMaterializationRequest(
+        workspace=workspace, job_id="studio-policy", root=str(tmp_path), stages=["eval"]
+    )
+    result = materialize_studio_pipeline(request, registry_bundle=registry_bundle)
+    path = Path(result.manifest_paths["stage:eval"])
+    receipt = path.read_bytes()
+    manifest = load_manifest(path)
+    states_ref = next(
+        artifact for artifact in manifest.artifacts if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+    )
+    states_path = tmp_path / states_ref.metadata["relative_path"]
+    cache_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
+    cache = cache_path.read_bytes()
+
+    materialize_studio_pipeline(request, registry_bundle=registry_bundle)
+    assert calls == 1
+    assert path.read_bytes() == receipt
+
+    if damage == "missing":
+        states_path.unlink()
+    else:
+        data = states_path.read_bytes()
+        states_path.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+
+    with pytest.raises(EvaluationRecipeExecutionError) as exc_info:
+        materialize_studio_pipeline(request, registry_bundle=registry_bundle)
+    refusal = exc_info.value.__cause__
+    assert isinstance(refusal, FulfillmentAdmissionError)
+    assert "evaluation_states_invalid" in refusal.outcome.codes
+    assert calls == 1
+    assert path.read_bytes() == receipt
+    assert cache_path.read_bytes() == cache
 
 
 def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(
@@ -1456,17 +1668,19 @@ def test_pending_matrix_manifest_reuses_existing_before_deriving_row_specs(tmp_p
     assert path == write_manifest(existing, root=tmp_path)
 
 
-def test_pending_matrix_manifest_restages_cancelled_run(tmp_path: Path):
-    """The shared reuse helper restages a cancelled matrix row back to pending."""
+@pytest.mark.parametrize("stopped", [False, True])
+def test_explicit_matrix_restage_only_reopens_withdrawn_intent(tmp_path: Path, stopped: bool):
     workspace = _workspace()
     stage = next(stage for stage in workspace.stages if stage.kind == "train")
     cancelled = TrainingRunManifest(
         id="planned-restage-row",
         status="cancelled",
         completed_at=utc_now(),
+        stopped=stopped,
         metadata={"planned": True, "superseded_by": "planned-restage-row"},
     )
-    write_manifest(cancelled, root=tmp_path)
+    receipt_path = write_manifest(cancelled, root=tmp_path)
+    receipt_bytes = receipt_path.read_bytes()
 
     manifest, _ = _write_pending_training_manifest_for_matrix_row(
         _matrix_row_for_scenario(workspace, planned_run_id="planned-restage-row"),
@@ -1481,6 +1695,9 @@ def test_pending_matrix_manifest_restages_cancelled_run(tmp_path: Path):
         execution_target="local",
     )
 
+    if stopped:
+        assert receipt_path.read_bytes() == receipt_bytes
+        return
     assert manifest.status == "pending"
     assert manifest.completed_at is None
     assert manifest.metadata["restaged_from_status"] == "cancelled"

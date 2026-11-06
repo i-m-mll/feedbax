@@ -9,11 +9,8 @@ import {
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
 import { saveActiveStudioDocument } from '@/services/studioPersistence';
-import {
-  ensureTaskBindingSpec,
-  scopedTaskBindingSpec,
-  isRootTaskBindingPath,
-} from '@/features/scenario/taskBindings';
+import { prepareRootTaskBindingRemoval } from '@/services/studioTaskBindings';
+import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
 
 export const FIT_VIEW_SHORTCUT_EVENT = 'feedbax:shortcut-fit-view';
 
@@ -34,35 +31,19 @@ export function useAppShortcuts() {
   const {
     undo,
     redo,
-    deleteSelected,
     duplicateSelected,
     clearSelection,
     selectAll,
-    graph,
-    markDirty,
-    nodes,
-    graphStack,
   } = useGraphStore(
     useShallow((state) => ({
       undo: state.undo,
       redo: state.redo,
-      deleteSelected: state.deleteSelected,
       duplicateSelected: state.duplicateSelected,
       clearSelection: state.clearSelection,
       selectAll: state.selectAll,
-      graph: state.graph,
-      markDirty: state.markDirty,
-      nodes: state.nodes,
-      graphStack: state.graphStack,
     }))
   );
-  const { workspace, updateTaskBindingSpec, selectTopPaneEntity } = useWorkspaceStore(
-    useShallow((state) => ({
-      workspace: state.workspace,
-      updateTaskBindingSpec: state.updateActiveScenarioTaskBindingSpec,
-      selectTopPaneEntity: state.selectTopPaneEntity,
-    }))
-  );
+  const selectTopPaneEntity = useWorkspaceStore((state) => state.selectTopPaneEntity);
   const saveGraph = useCallback(async () => {
     try {
       const outcome = await saveActiveStudioDocument('shortcut');
@@ -76,26 +57,21 @@ export function useAppShortcuts() {
   }, []);
 
   const deleteSelection = useCallback(() => {
+    const { nodes, deleteSelected, markDirty, capturePersistedGraph } = useGraphStore.getState();
+    const { workspace, updateActiveScenarioTaskBindingSpec } = useWorkspaceStore.getState();
     const selectedNodeIds = nodes
       .filter((node) => node.selected && !node.id.startsWith('tap:'))
       .map((node) => node.id);
     const topPane = getTopPaneState(workspace);
-    const trainingScenario = getTrainingScenario(workspace);
-    const rootGraph = useGraphStore.getState().capturePersistedGraph().graph;
-    const taskBindingSpec = trainingScenario
-      ? ensureTaskBindingSpec(trainingScenario.task_binding_spec, rootGraph, trainingScenario.task_spec)
-      : null;
-    const currentGraphPath = graphStack
-      .map((layer) => layer.childNodeId)
-      .filter((id): id is string => Boolean(id));
-    const scopedBindings = taskBindingSpec
-      ? scopedTaskBindingSpec(taskBindingSpec, currentGraphPath).bindings
-      : [];
     const selectedTaskBindingId = topPane.selected_entity_id?.startsWith('task_binding:')
       ? topPane.selected_entity_id.slice('task_binding:'.length)
       : null;
-    if (taskBindingSpec && selectedTaskBindingId) {
-      updateTaskBindingSpec({
+    const trainingScenario = selectedTaskBindingId ? getTrainingScenario(workspace) : null;
+    if (trainingScenario && selectedTaskBindingId) {
+      const taskBindingSpec = ensureTaskBindingSpec(
+        trainingScenario.task_binding_spec, capturePersistedGraph().graph, trainingScenario.task_spec
+      );
+      updateActiveScenarioTaskBindingSpec({
         ...taskBindingSpec,
         bindings: taskBindingSpec.bindings.filter(
           (binding) => binding.id !== selectedTaskBindingId
@@ -105,34 +81,22 @@ export function useAppShortcuts() {
       markDirty();
       return;
     }
-    const impactedBindings = scopedBindings.filter((binding) =>
-      selectedNodeIds.includes(binding.target_node_id)
-    );
+    const bindingRemoval = prepareRootTaskBindingRemoval(selectedNodeIds);
 
     if (
       topPane.active_projection === 'model' &&
-      impactedBindings.length > 0 &&
+      bindingRemoval &&
+      bindingRemoval.bindingCount > 0 &&
       !window.confirm(
-        `Delete selected node? It has ${impactedBindings.length} task binding${
-          impactedBindings.length === 1 ? '' : 's'
+        `Delete selected node? It has ${bindingRemoval.bindingCount} task binding${
+          bindingRemoval.bindingCount === 1 ? '' : 's'
         } wired into it.`
       )
     ) {
       return;
     }
 
-    if (taskBindingSpec && impactedBindings.length > 0) {
-      const impactedIds = new Set(impactedBindings.map((binding) => binding.id));
-      updateTaskBindingSpec({
-        ...taskBindingSpec,
-        bindings: taskBindingSpec.bindings.filter(
-          (binding) =>
-            !impactedIds.has(binding.id) || !isRootTaskBindingPath(currentGraphPath)
-        ),
-      });
-    }
-
-    deleteSelected();
+    deleteSelected(bindingRemoval?.edit);
     if (selectedNodeIds.length > 0) {
       toast.success(
         selectedNodeIds.length === 1
@@ -141,16 +105,7 @@ export function useAppShortcuts() {
         { id: 'node-delete-success' },
       );
     }
-  }, [
-    deleteSelected,
-    graph,
-    graphStack,
-    markDirty,
-    nodes,
-    selectTopPaneEntity,
-    updateTaskBindingSpec,
-    workspace,
-  ]);
+  }, [selectTopPaneEntity]);
 
   const duplicateSelection = useCallback(() => {
     try {

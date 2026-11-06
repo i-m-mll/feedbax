@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { TrainingRunSummary } from '@/utils/pipelineCollections';
+import { trainingRunSummaries, type TrainingRunSummary } from '@/utils/pipelineCollections';
 import {
   progressBindingsForRuns,
   sortTrainingRows,
+  stageWithNativeTrainingRunProgress,
   stageWithTrainingRunLifecyclePatch,
 } from '@/utils/trainRunTable';
 import type { StudioStageSpec } from '@/types/workspace';
@@ -134,5 +135,46 @@ describe('train run table utilities', () => {
 
     expect(removed.output_collections[0].item_refs).toEqual([]);
     expect(removed.manifest_refs).toEqual([]);
+  });
+
+  it('projects a native result into its staged row without replacing its identity or siblings', () => {
+    const train = stage();
+    const [target] = train.manifest_refs;
+    target.metadata = {
+      ...target.metadata,
+      execution_target: 'local',
+      native_launch_supported: true,
+      staging_generation: 'original',
+      axis_coordinates: { seed: 2 },
+      run_set_id: 'set:matrix',
+    };
+    const sibling = { ...target, id: 'run:b' };
+    train.output_collections[0].item_refs.push(sibling);
+
+    const projection = {
+      id: target.id,
+      name: 'Run A',
+      created_at: '2026-07-07T00:00:00Z',
+      status: 'stopped',
+      hyperparams: {},
+      metrics: { completed_batches: 2, total_batches: 10 },
+      checkpoint_available: true,
+      result_manifest_id: 'native-result:a',
+      staging_generation: 'original',
+    };
+    expect(stageWithNativeTrainingRunProgress(train, projection, 'replacement')).toBe(train);
+    const updated = stageWithNativeTrainingRunProgress(train, projection, 'original');
+    expect(updated.output_collections[0].item_refs[1]).toBe(sibling);
+    expect(trainingRunSummaries(updated).find((row) => row.id === target.id)).toMatchObject({
+      status: 'stopped',
+      metrics: { completed_batches: 2, total_batches: 10 },
+      checkpointAvailable: true,
+      resultManifestId: 'native-result:a',
+      runSetId: 'set:matrix',
+      axisCoordinates: { seed: 2 },
+      uri: '/tmp/run-a.json',
+      nativeLaunchGeneration: undefined,
+    });
+    expect(stageWithNativeTrainingRunProgress(updated, projection, 'original')).toBe(updated);
   });
 });

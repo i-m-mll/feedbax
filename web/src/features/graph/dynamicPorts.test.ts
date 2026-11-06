@@ -37,7 +37,7 @@ function graph(inputPorts = ['in_0', 'in_1']): GraphSpec {
 
 function taskBindings(...ports: string[]): StudioTaskBindingSpec {
   return {
-    schema_version: 'feedbax.spec.studio.task_bindings.v2',
+    schema_version: 'feedbax.spec.studio.task_bindings.v3',
     exposed_data: ports.map((port) => ({
       id: port,
       label: port,

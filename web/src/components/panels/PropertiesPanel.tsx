@@ -67,6 +67,7 @@ export function PropertiesPanel() {
   const graph = useGraphStore((state) => state.graph);
   const graphStack = useGraphStore((state) => state.graphStack);
   const updateNodeParams = useGraphStore((state) => state.updateNodeParams);
+  const setNodeLabel = useGraphStore((state) => state.setNodeLabel);
   const renameNode = useGraphStore((state) => state.renameNode);
   const renameSubgraphBoundaryPort = useGraphStore(
     (state) => state.renameSubgraphBoundaryPort
@@ -193,12 +194,17 @@ export function PropertiesPanel() {
     : undefined;
   const selectedPort = parseGraphPortEntityId(topPane.selected_entity_id);
 
-  const [nameValue, setNameValue] = useState('');
+  const displayLabel = selectedNode?.data.label;
+  const selectedNodeLabel = typeof displayLabel === 'string' ? displayLabel : undefined;
+  const [labelValue, setLabelValue] = useState('');
+  const [nodeIdValue, setNodeIdValue] = useState('');
 
   useEffect(() => {
-    if (selectedNode) {
-      setNameValue(selectedNode.id);
-    }
+    setLabelValue(selectedNodeLabel ?? '');
+  }, [selectedNode?.id, selectedNodeLabel]);
+
+  useEffect(() => {
+    setNodeIdValue(selectedNode?.id ?? '');
   }, [selectedNode?.id]);
 
   const addObjectiveFromSelector = (selector: StudioSelectorRef) => {
@@ -455,11 +461,18 @@ export function PropertiesPanel() {
   // Check for analysis-specific metadata on the node spec
   const analysisMeta = nodeSpec?.params?._analysis_meta as unknown as AnalysisNodeMeta | undefined;
 
-  const commitRename = () => {
-    const nextNodeId = nameValue.trim();
+  const commitLabel = () => {
+    setNodeLabel(selectedNode.id, labelValue);
+    setLabelValue(labelValue.trim() || selectedNode.id);
+  };
+
+  const commitNodeId = () => {
+    const nextNodeId = nodeIdValue.trim();
     if (nextNodeId && nextNodeId !== selectedNode.id && !graph.nodes[nextNodeId]) {
       retargetTaskBindingsForNodeRename(selectedNode.id, nextNodeId, currentGraphPath);
       renameNode(selectedNode.id, nextNodeId);
+    } else {
+      setNodeIdValue(selectedNode.id);
     }
   };
 
@@ -488,21 +501,38 @@ export function PropertiesPanel() {
     <div className="p-6 space-y-6">
       <div>
         <input
-          aria-label="Node name"
-          value={nameValue}
-          onChange={(event) => setNameValue(event.target.value)}
-          onBlur={commitRename}
+          aria-label="Node label"
+          value={labelValue}
+          onChange={(event) => setLabelValue(event.target.value)}
+          onBlur={commitLabel}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
-              commitRename();
+              commitLabel();
             }
             if (event.key === 'Escape') {
-              setNameValue(selectedNode.id);
+              setLabelValue(selectedNodeLabel ?? selectedNode.id);
             }
           }}
           className="-mx-1 w-full rounded-md border border-transparent bg-transparent px-1 py-1 text-sm font-semibold text-slate-800 outline-none hover:border-slate-200 focus:border-brand-300 focus:bg-white"
         />
-        <div className="mt-1 text-sm text-slate-500">{nodeSpec.type}</div>
+        <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
+          <span className="shrink-0">{nodeSpec.type}</span>
+          <label className="flex min-w-0 items-center gap-1">
+            <span>ID</span>
+            <input
+              aria-label="Node ID"
+              title="Changing the node ID also changes its random stream"
+              value={nodeIdValue}
+              onChange={(event) => setNodeIdValue(event.target.value)}
+              onBlur={commitNodeId}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') commitNodeId();
+                if (event.key === 'Escape') setNodeIdValue(selectedNode.id);
+              }}
+              className="min-w-0 rounded border border-transparent bg-transparent px-1 font-mono hover:border-slate-200 focus:border-brand-300"
+            />
+          </label>
+        </div>
       </div>
 
       {component?.is_composite && component.template_kind !== 'display' ? (
@@ -913,7 +943,7 @@ function parseNumericDraft(value: string): number | null {
 }
 
 function constantInterventionValue(
-  value: unknown,
+  value: number,
   intervention: StudioInterventionTransformSpec
 ): StudioValueSpec {
   return {
@@ -934,7 +964,7 @@ function defaultInterventionSpec(
   selector: StudioSelectorRef | null | undefined
 ): StudioInterventionTransformSpec {
   return {
-    operation: 'clamp',
+    operation: 'scale',
     target_selector: selector ?? null,
     bounds: null,
     value: null,
@@ -959,30 +989,29 @@ function TapEditor({
   const [newOutputName, setNewOutputName] = useState('');
   const [newOutputPath, setNewOutputPath] = useState('');
 
-  const transform = tap.transform ?? { type: 'custom', params: {} };
-  const intervention =
-    transform.intervention ?? defaultInterventionSpec(selectorOptions[0]?.selector);
-  const [transformJson, setTransformJson] = useState(
-    JSON.stringify(transform.params ?? {}, null, 2)
+  const executableTargets = selectorOptions.filter(({ selector }) =>
+    selector.namespace === 'graph_edge' ||
+    selector.namespace === 'recurrent_carry' ||
+    (selector.namespace === 'graph_port' && selector.metadata?.direction === 'output')
   );
-  const [transformType, setTransformType] = useState(transform.type ?? 'custom');
+  const transform = tap.transform ?? { type: 'intervention', params: {} };
+  const intervention =
+    transform.intervention ?? defaultInterventionSpec(null);
   const [interventionValueJson, setInterventionValueJson] = useState(
-    JSON.stringify(intervention.value?.value ?? null, null, 2)
+    String(intervention.value?.value ?? '')
   );
 
   useEffect(() => {
-    setTransformType(transform.type ?? 'custom');
-    setTransformJson(JSON.stringify(transform.params ?? {}, null, 2));
     setInterventionValueJson(
-      JSON.stringify(transform.intervention?.value?.value ?? null, null, 2)
+      String(transform.intervention?.value?.value ?? '')
     );
   }, [tap.id, tap.transform]);
 
   const updateIntervention = (updates: Partial<StudioInterventionTransformSpec>) => {
     onUpdate({
       transform: {
-        type: transformType || transform.type || 'intervention',
-        params: transform.params ?? {},
+        type: 'intervention',
+        params: {},
         intervention: {
           ...intervention,
           ...updates,
@@ -1038,7 +1067,7 @@ function TapEditor({
         transform: tap.transform ?? {
           type: 'intervention',
           params: {},
-          intervention: defaultInterventionSpec(selectorOptions[0]?.selector),
+          intervention: defaultInterventionSpec(null),
         },
       });
     }
@@ -1069,7 +1098,7 @@ function TapEditor({
           </select>
         </label>
         <label className="flex flex-col gap-1">
-          After node
+          Canvas placement after node
           <select
             value={tap.position.afterNode}
             onChange={(event) =>
@@ -1091,7 +1120,7 @@ function TapEditor({
           </select>
         </label>
         <label className="flex flex-col gap-1">
-          Target node
+          Canvas placement toward node
           <select
             value={tap.position.targetNode ?? ''}
             onChange={(event) =>
@@ -1114,45 +1143,47 @@ function TapEditor({
         </label>
       </div>
 
-      <div className="border-t border-slate-100 pt-4 space-y-3">
-        <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Outputs</div>
-        {Object.entries(tap.paths ?? {}).length === 0 ? (
-          <div className="text-sm text-slate-400">No outputs defined yet.</div>
-        ) : (
-          <div className="space-y-2">
-            {Object.entries(tap.paths).map(([name, path]) => (
-              <TapPathRow
-                key={name}
-                name={name}
-                path={path}
-                onRename={(nextName) => handleRename(name, nextName)}
-                onPathChange={(nextPath) => handlePathChange(name, nextPath)}
-                onRemove={() => handleRemovePath(name)}
-              />
-            ))}
+      {tap.type === 'probe' && (
+        <div className="border-t border-slate-100 pt-4 space-y-3">
+          <div className="text-xs uppercase tracking-[0.3em] text-slate-400">Outputs</div>
+          {Object.entries(tap.paths ?? {}).length === 0 ? (
+            <div className="text-sm text-slate-400">No outputs defined yet.</div>
+          ) : (
+            <div className="space-y-2">
+              {Object.entries(tap.paths).map(([name, path]) => (
+                <TapPathRow
+                  key={name}
+                  name={name}
+                  path={path}
+                  onRename={(nextName) => handleRename(name, nextName)}
+                  onPathChange={(nextPath) => handlePathChange(name, nextPath)}
+                  onRemove={() => handleRemovePath(name)}
+                />
+              ))}
+            </div>
+          )}
+          <div className="grid grid-cols-[1fr_1.5fr_auto] gap-2">
+            <input
+              value={newOutputName}
+              onChange={(event) => setNewOutputName(event.target.value)}
+              className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
+              placeholder="output name"
+            />
+            <input
+              value={newOutputPath}
+              onChange={(event) => setNewOutputPath(event.target.value)}
+              className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
+              placeholder="state.path"
+            />
+            <button
+              className="rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:text-slate-800"
+              onClick={handleAddPath}
+            >
+              Add
+            </button>
           </div>
-        )}
-        <div className="grid grid-cols-[1fr_1.5fr_auto] gap-2">
-          <input
-            value={newOutputName}
-            onChange={(event) => setNewOutputName(event.target.value)}
-            className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
-            placeholder="output name"
-          />
-          <input
-            value={newOutputPath}
-            onChange={(event) => setNewOutputPath(event.target.value)}
-            className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
-            placeholder="state.path"
-          />
-          <button
-            className="rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:text-slate-800"
-            onClick={handleAddPath}
-          >
-            Add
-          </button>
         </div>
-      </div>
+      )}
 
       {tap.type === 'intervention' && (
         <div className="border-t border-slate-100 pt-4 space-y-3">
@@ -1166,14 +1197,18 @@ function TapEditor({
               onChange={(event) =>
                 updateIntervention({
                   operation: event.target.value as StudioInterventionOperation,
+                  value: null,
+                  bounds: null,
                 })
               }
               className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
             >
               <option value="clamp">Clamp</option>
-              <option value="noise">Noise</option>
-              <option value="constant">Constant</option>
-              <option value="offset">Offset</option>
+              {!['clamp', 'scale'].includes(intervention.operation) && (
+                <option value={intervention.operation} disabled>
+                  {intervention.operation} (unsupported)
+                </option>
+              )}
               <option value="scale">Scale</option>
             </select>
           </label>
@@ -1182,15 +1217,22 @@ function TapEditor({
             <select
               value={intervention.target_selector?.compact ?? ''}
               onChange={(event) => {
-                const option = selectorOptions.find(
+                const option = executableTargets.find(
                   (candidate) => candidate.selector.compact === event.target.value
                 );
-                updateIntervention({ target_selector: option?.selector ?? null });
+                updateIntervention({ target_selector: option?.selector ?? null, parameters: null });
               }}
               className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
             >
               <option value="">Select target</option>
-              {selectorOptions.map((option) => (
+              {intervention.target_selector && !executableTargets.some(
+                ({ selector }) => selector.compact === intervention.target_selector?.compact
+              ) && (
+                <option value={intervention.target_selector.compact} disabled>
+                  {intervention.target_selector.compact} (unsupported)
+                </option>
+              )}
+              {executableTargets.map((option) => (
                 <option key={option.id} value={option.selector.compact}>
                   {option.label}
                 </option>
@@ -1204,6 +1246,22 @@ function TapEditor({
               </div>
               <div className="mt-0.5">{selectorDetail(intervention.target_selector)}</div>
             </div>
+          )}
+          {intervention.target_selector?.namespace === 'recurrent_carry' && (
+            <label className="flex flex-col gap-1 text-xs text-slate-500">
+              Carry phase
+              <select
+                value={String(intervention.parameters?.phase ?? '')}
+                onChange={(event) =>
+                  updateIntervention({ parameters: event.target.value ? { phase: event.target.value } : null })
+                }
+                className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
+              >
+                <option value="">Select phase</option>
+                <option value="read">Read the delayed sample</option>
+                <option value="write">Write the next sample</option>
+              </select>
+            </label>
           )}
           {intervention.operation === 'clamp' ? (
             <div className="grid grid-cols-2 gap-2">
@@ -1240,70 +1298,21 @@ function TapEditor({
             </div>
           ) : (
             <label className="flex flex-col gap-1 text-xs text-slate-500">
-              Value (JSON)
-              <textarea
-                rows={3}
+              Scalar value
+              <input
+                inputMode="decimal"
                 value={interventionValueJson}
                 onChange={(event) => setInterventionValueJson(event.target.value)}
                 onBlur={() => {
-                  try {
-                    updateIntervention({
-                      value: constantInterventionValue(
-                        JSON.parse(interventionValueJson),
-                        intervention
-                      ),
-                    });
-                  } catch {
-                    // ignore invalid JSON
-                  }
+                  const value = parseNumericDraft(interventionValueJson);
+                  updateIntervention({
+                    value: value === null ? null : constantInterventionValue(value, intervention),
+                  });
                 }}
-                className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700 font-mono"
+                className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
               />
             </label>
           )}
-          <div className="text-xs uppercase tracking-[0.3em] text-slate-400">
-            Runtime Transform
-          </div>
-          <label className="flex flex-col gap-1 text-xs text-slate-500">
-            Type
-            <input
-              value={transformType}
-              onChange={(event) => setTransformType(event.target.value)}
-              onBlur={() =>
-                onUpdate({
-                  transform: {
-                    type: transformType || 'custom',
-                    params: transform.params ?? {},
-                    intervention: transform.intervention ?? null,
-                  },
-                })
-              }
-              className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-slate-500">
-            Params (JSON)
-            <textarea
-              rows={4}
-              value={transformJson}
-              onChange={(event) => setTransformJson(event.target.value)}
-              onBlur={() => {
-                try {
-                  const parsed = JSON.parse(transformJson);
-                  onUpdate({
-                    transform: {
-                      type: transformType || 'custom',
-                      params: parsed,
-                      intervention: transform.intervention ?? null,
-                    },
-                  });
-                } catch {
-                  // ignore invalid JSON
-                }
-              }}
-              className="rounded-lg border border-slate-200 px-2 py-1 text-sm text-slate-700 font-mono"
-            />
-          </label>
         </div>
       )}
     </div>
@@ -1394,6 +1403,8 @@ function descriptorForParamSchema(schema: ParamSchema): ValueSpecFieldDescriptor
     ownerKind: 'component_param',
     semanticKind: staticShape ? 'static_shape' : 'static_leaf',
     valueSchema: {
+      type: schema.type,
+      nullable: schema.default === null && !schema.required,
       dtype:
         schema.type === 'int'
           ? 'int32'

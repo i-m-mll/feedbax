@@ -132,7 +132,7 @@ describe('graph authoring normalization', () => {
 
   it('normalizes dynamic mux ports after task-data binding ingress', () => {
     const normalized = normalizeGraphForStudioAuthoring(runtimeGraph, {
-      schema_version: 'feedbax.spec.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v3',
       exposed_data: [],
       bindings: [
         {
@@ -191,7 +191,7 @@ describe('graph authoring normalization', () => {
     const graph = normalizeGraphForStudioAuthoring(runtimeGraph);
     const normalized = normalizeTaskBindingSpecForStudioAuthoring(
       {
-        schema_version: 'feedbax.spec.studio.task_bindings.v2',
+        schema_version: 'feedbax.spec.studio.task_bindings.v3',
         exposed_data: [],
         bindings: [
           {
@@ -241,7 +241,7 @@ describe('graph authoring normalization', () => {
     };
     const normalized = normalizeTaskBindingSpecForStudioAuthoring(
       {
-        schema_version: 'feedbax.spec.studio.task_bindings.v2',
+        schema_version: 'feedbax.spec.studio.task_bindings.v3',
         exposed_data: [],
         bindings: [
           {
@@ -351,7 +351,7 @@ describe('graph authoring normalization', () => {
           output_ports: ['effector'],
         },
         feedback: {
-          type: 'FeedbackChannels',
+          type: 'Channel',
           params: {},
           input_ports: ['input'],
           output_ports: ['output'],

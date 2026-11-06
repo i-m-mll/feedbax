@@ -13,6 +13,7 @@ from typing import Any, Iterable, Literal, Mapping, Optional
 
 import jax.numpy as jnp
 
+from feedbax._numerics import broadcast_vector, sqrt_with_zero_grad
 from feedbax.contracts.graph import (
     AnalysisInputRequirement,
     GraphSpec,
@@ -304,16 +305,32 @@ def evaluate_loss_term(term: LossTermPlan, trace: Mapping[str, Any]) -> Any:
         )
 
     diff = jnp.asarray(source) - jnp.asarray(target)
-    if term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}:
+    path = f"/loss/{term.key}/time_agg"
+    matrix_quadratic = term.type in {"MatrixQuadraticLoss", "matrix_quadratic"}
+    mask = None
+    if term.time_agg.mode == "segment":
+        if term.time_mask is None:
+            raise RetentionPlanError(
+                "Segment time aggregation requires task timeline masks",
+                path=path,
+            )
+        try:
+            mask = align_time_mask(term.time_mask, diff, path=path)
+        except TaskTimelineMaskError as exc:
+            raise RetentionPlanError(str(exc), path=exc.path) from exc
+        # Mask before nonlinear operations so inactive NaNs cannot enter their
+        # derivatives.
+        diff = jnp.where(broadcast_vector(mask, diff.ndim, axis=0), diff, 0)
+
+    if matrix_quadratic:
         per_step = _matrix_quadratic_values(diff, term.matrix, term.matrix_kind)
     else:
         per_step = _norm_values(diff, term.norm)
-    return _aggregate_time(
-        per_step,
-        term.time_agg,
-        f"/loss/{term.key}/time_agg",
-        time_mask=term.time_mask,
-    )
+    if mask is not None:
+        if per_step.ndim == 0:
+            raise RetentionPlanError("Segment time aggregation requires a time dimension", path=path)
+        return jnp.mean(per_step, where=broadcast_vector(mask, per_step.ndim, axis=0))
+    return _aggregate_time(per_step, term.time_agg, path)
 
 
 def retention_plan_to_json(plan: RetentionPlan) -> dict[str, Any]:
@@ -900,9 +917,7 @@ def _lookup_trace(trace: Mapping[str, Any], selector: str, path: str) -> Any:
 
 def _norm_values(values: Any, norm: str) -> Any:
     arr = jnp.asarray(values)
-    if norm == "squared_l2":
-        per_element = jnp.square(arr)
-    elif norm == "l2":
+    if norm in {"squared_l2", "l2"}:
         per_element = jnp.square(arr)
     elif norm == "l1":
         per_element = jnp.abs(arr)
@@ -920,7 +935,7 @@ def _norm_values(values: Any, norm: str) -> Any:
     else:
         reduced = jnp.sum(per_element, axis=tuple(range(1, arr.ndim)))
     if norm == "l2":
-        return jnp.sqrt(reduced)
+        return sqrt_with_zero_grad(reduced)
     return reduced
 
 
@@ -1007,13 +1022,7 @@ def _matrix_quadratic_values(
     )
 
 
-def _aggregate_time(
-    values: Any,
-    time_agg: TimeAggregationSpec,
-    path: str,
-    *,
-    time_mask: Optional[Any] = None,
-) -> Any:
+def _aggregate_time(values: Any, time_agg: TimeAggregationSpec, path: str) -> Any:
     arr = jnp.asarray(values)
     mode = time_agg.mode
     if mode in {"all", "mean"}:
@@ -1044,15 +1053,4 @@ def _aggregate_time(
         if not time_agg.time_idxs:
             raise RetentionPlanError("Custom time aggregation requires time_idxs", path=path)
         return jnp.mean(arr[jnp.asarray(time_agg.time_idxs)])
-    if mode == "segment":
-        if time_mask is None:
-            raise RetentionPlanError(
-                "Segment time aggregation requires task timeline masks",
-                path=path,
-            )
-        try:
-            mask = align_time_mask(time_mask, arr, path=path)
-        except TaskTimelineMaskError as exc:
-            raise RetentionPlanError(str(exc), path=exc.path) from exc
-        return jnp.mean(arr[mask])
     raise RetentionPlanError(f"Unsupported time aggregation {mode!r}", path=path)

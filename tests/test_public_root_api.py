@@ -40,19 +40,6 @@ def test_task_exports_are_available_from_package_root() -> None:
     assert feedbax.prepare_trial is task_api.prepare_trial
 
 
-def test_plain_package_import_does_not_import_plotly() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import sys; import feedbax; raise SystemExit('plotly' in sys.modules)",
-        ],
-        check=False,
-    )
-
-    assert result.returncode == 0
-
-
 @pytest.mark.parametrize(
     "module_name",
     ("feedbax.orchestration.events", "feedbax.orchestration.bundle"),

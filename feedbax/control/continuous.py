@@ -11,13 +11,13 @@ from __future__ import annotations
 
 from typing import Sequence
 
-import equinox as eqx
 from equinox import field
 from equinox.nn import State, StateIndex
 import jax.numpy as jnp
-import jax.tree as jt
+from jax.typing import DTypeLike
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax.control._vector import initial_control_vector, require_control_vector
 from feedbax.runtime.graph import Component
 
 
@@ -30,6 +30,7 @@ class Integrator(Component):
         dt: Integration time step.
         n_dims: Dimensionality of the integrated signal.
         initial_value: Initial value for all dimensions.
+        input_dtype: Real floating dtype of the input and carry.
     """
 
     input_ports = ("input",)
@@ -37,6 +38,8 @@ class Integrator(Component):
 
     dt: float
     n_dims: int = field(static=True)
+    input_dtype: str = field(static=True)
+    initial_value: float
     state_index: StateIndex
 
     def __init__(
@@ -44,10 +47,14 @@ class Integrator(Component):
         dt: float = 0.01,
         n_dims: int = 1,
         initial_value: float = 0.0,
+        *,
+        input_dtype: DTypeLike | None = None,
     ):
         self.dt = float(dt)
-        self.n_dims = n_dims
-        initial_state = jnp.zeros(n_dims) + initial_value
+        self.initial_value = float(initial_value)
+        initial_state = initial_control_vector(n_dims, input_dtype, self.initial_value)
+        self.n_dims = initial_state.shape[0]
+        self.input_dtype = initial_state.dtype.name
         self.state_index = StateIndex(initial_state)
 
     def __call__(
@@ -58,7 +65,8 @@ class Integrator(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
         y = state.get(self.state_index)
-        y_new = y + inputs["input"] * self.dt
+        u = require_control_vector(inputs["input"], y, port="input")
+        y_new = y + u * self.dt
         state = state.set(self.state_index, y_new)
         return {"output": y_new}, state
 
@@ -72,6 +80,7 @@ class Derivative(Component):
         dt: Time step for the derivative computation.
         n_dims: Dimensionality of the input signal.
         initial_value: Initial previous-input value.
+        input_dtype: Real floating dtype of the input and carry.
     """
 
     input_ports = ("input",)
@@ -79,6 +88,8 @@ class Derivative(Component):
 
     dt: float
     n_dims: int = field(static=True)
+    input_dtype: str = field(static=True)
+    initial_value: float
     state_index: StateIndex
 
     def __init__(
@@ -86,10 +97,14 @@ class Derivative(Component):
         dt: float = 0.01,
         n_dims: int = 1,
         initial_value: float = 0.0,
+        *,
+        input_dtype: DTypeLike | None = None,
     ):
         self.dt = float(dt)
-        self.n_dims = n_dims
-        initial_state = jnp.zeros(n_dims) + initial_value
+        self.initial_value = float(initial_value)
+        initial_state = initial_control_vector(n_dims, input_dtype, self.initial_value)
+        self.n_dims = initial_state.shape[0]
+        self.input_dtype = initial_state.dtype.name
         self.state_index = StateIndex(initial_state)
 
     def __call__(
@@ -100,7 +115,7 @@ class Derivative(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
         u_prev = state.get(self.state_index)
-        u = inputs["input"]
+        u = require_control_vector(inputs["input"], u_prev, port="input")
         deriv = (u - u_prev) / self.dt
         state = state.set(self.state_index, u)
         return {"output": deriv}, state

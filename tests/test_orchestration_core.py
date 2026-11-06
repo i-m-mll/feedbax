@@ -839,7 +839,7 @@ def test_assembly_copies_the_authored_feedbax_revision(
 
 
 def test_resolve_feedbax_revision_uses_imported_package_source_and_disables_git_locks(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     resolved_revision = "a" * 40
     calls: list[tuple[list[str], dict[str, Any]]] = []
@@ -854,7 +854,8 @@ def test_resolve_feedbax_revision_uses_imported_package_source_and_disables_git_
             stdout = f"{resolved_revision}\n"
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
 
-    source = Path(revision.feedbax.__file__).resolve()
+    source = tmp_path / "feedbax" / "__init__.py"
+    monkeypatch.setattr(revision.feedbax, "__file__", str(source))
     monkeypatch.setattr(revision.subprocess, "run", fake_run)
 
     assert revision.resolve_feedbax_revision() == resolved_revision
@@ -4477,7 +4478,7 @@ def test_register_accepts_verified_globally_empty_resource_inventory_gate(
                     error="operator-stop-after-checkpoint",
                 ),
             },
-            None,
+            "operator-stop-after-checkpoint",
             "stopped",
             {
                 "row-a": {
@@ -5432,15 +5433,14 @@ def test_ordered_launch_group_refills_then_crosses_authenticated_barrier(
     monkeypatch.setattr(stages, "uses_registered_native_execution", lambda _row: True)
     verified: list[str] = []
 
-    def verify(row: RunRowSpec, outputs: Mapping[str, str]) -> Mapping[str, Any]:
+    def verify(
+        _bundle: RunBundle, row: RunRowSpec, outputs: Mapping[str, str]
+    ) -> Mapping[str, Any]:
         verified.append(row.row_id)
         assert outputs == {"payload": str(bundle.run_set_dir / row.row_id / "payload.json")}
         return {"transaction_id": f"checkpoint-{row.row_id}"}
 
-    monkeypatch.setattr(stages, "_verify_collected_native_checkpoint_custody", verify)
-    monkeypatch.setattr(
-        stages, "_publish_collected_native_manifest_and_artifacts", lambda _row, _outputs: None
-    )
+    monkeypatch.setattr(stages, "_publish_verified_native_collection", verify)
     rows = [_compiled_row(row_id) for row_id in ("a", "b", "c", "d")]
     bundle = _bundle(
         tmp_path,
@@ -5498,10 +5498,12 @@ def test_ordered_launch_group_does_not_advance_when_custody_authentication_fails
 ) -> None:
     monkeypatch.setattr(stages, "uses_registered_native_execution", lambda _row: True)
 
-    def reject_custody(_row: RunRowSpec, _outputs: Mapping[str, str]) -> Mapping[str, Any]:
+    def reject_custody(
+        _bundle: RunBundle, _row: RunRowSpec, _outputs: Mapping[str, str]
+    ) -> Mapping[str, Any]:
         raise OrchestrationStageError("terminal checkpoint custody rejected")
 
-    monkeypatch.setattr(stages, "_verify_collected_native_checkpoint_custody", reject_custody)
+    monkeypatch.setattr(stages, "_publish_verified_native_collection", reject_custody)
     bundle = _bundle(
         tmp_path,
         rows=[_compiled_row("first"), _compiled_row("later")],

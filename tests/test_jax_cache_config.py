@@ -7,6 +7,43 @@ import sys
 import pytest
 
 
+_PYTEST_IN_CALLER = r"""
+import os
+from pathlib import Path
+import sys
+
+from scripts.full_suite import configure_native_threads
+
+configure_native_threads()
+
+import jax
+import pytest
+
+caller_cache = Path(os.environ["CACHE_CALLER_DIR"])
+caller_config = {
+    "jax_compilation_cache_dir": str(caller_cache),
+    "jax_persistent_cache_min_compile_time_secs": -1.0,
+    "jax_persistent_cache_min_entry_size_bytes": 1,
+}
+for name, value in caller_config.items():
+    jax.config.update(name, value)
+
+expected_exit, warm_cache, *pytest_args = sys.argv[1:]
+if warm_cache == "warm":
+    jax.jit(lambda x: x * 5.0).lower(2.0).compile()
+    assert list(caller_cache.glob("*-cache")), "caller cache did not initialize"
+
+exit_code = pytest.main(pytest_args)
+assert exit_code == int(expected_exit), (exit_code, expected_exit)
+restored = {name: getattr(jax.config, name) for name in caller_config}
+assert restored == caller_config, restored
+
+before = set(caller_cache.glob("*-cache"))
+jax.jit(lambda x: x * 13.0 - 7.0).lower(2.0).compile()
+assert set(caller_cache.glob("*-cache")) - before, "post-pytest compilation missed caller cache"
+"""
+
+
 @pytest.mark.parametrize(
     ("outcome", "workers", "override", "returncode"),
     [
@@ -31,10 +68,12 @@ def test_invocation_cache_lifecycle(tmp_path, outcome, workers, override, return
     sentinel.write_bytes(b"keep")
     records = tmp_path / "records"
     records.mkdir()
-    conftest = (repo / "tests" / "conftest.py").read_text()
-    conftest += r"""
-
+    conftest = r"""
 import json
+import os
+from pathlib import Path
+
+import jax
 
 def pytest_sessionstart(session):
     worker = os.environ.get("PYTEST_XDIST_WORKER", "controller")
@@ -69,13 +108,14 @@ def test_cache():
     if expected:
         child = subprocess.check_output([
             sys.executable, "-c",
-            "from feedbax.orchestration.drivers.local import resolve_jax_compilation_cache_dir; "
-            "print(resolve_jax_compilation_cache_dir())",
+            "import os; print(os.environ['FEEDBAX_JAX_COMPILATION_CACHE_DIR'])",
         ], text=True, timeout=10).strip()
         assert child == expected
-        assert jax.config.jax_compilation_cache_dir == expected
-        assert float(jax.jit(lambda x: x + 1)(jnp.array(2.0))) == 3
-        assert any(Path(expected).iterdir())
+    else:
+        expected = os.environ["CACHE_CALLER_DIR"]
+    assert jax.config.jax_compilation_cache_dir == expected
+    assert float(jax.jit(lambda x: x + 1)(jnp.array(2.0))) == 3
+    assert any(Path(expected).glob("*-cache"))
     outcome = os.environ["CACHE_OUTCOME"]
     if outcome == "interrupt":
         signal.raise_signal(signal.SIGINT)
@@ -99,6 +139,7 @@ def test_cache():
             "TMPDIR": str(cache_parent),
             "CACHE_RECORDS": str(records),
             "CACHE_OUTCOME": outcome,
+            "JAX_ENABLE_COMPILATION_CACHE": "true",
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         }
     )
@@ -111,10 +152,14 @@ def test_cache():
         env["FEEDBAX_DISABLE_JAX_COMPILATION_CACHE"] = "1"
     command = [
         sys.executable,
-        "-m",
-        "pytest",
+        "-c",
+        _PYTEST_IN_CALLER,
+        str(returncode),
+        "warm" if (outcome, workers, override) == ("success", "0", "default") else "cold",
         "-p",
         "xdist.plugin",
+        "-p",
+        "scripts.pytest_jax_cache",
         "-n",
         workers,
         "--dist=each",
@@ -125,14 +170,16 @@ def test_cache():
         str(tmp_path / "pytest-temp"),
     ]
     caches = []
-    for _ in range(2 if override == "default" and outcome == "success" else 1):
+    repeats = 2 if (outcome, workers, override) == ("success", "0", "default") else 1
+    for invocation_index in range(repeats):
+        env["CACHE_CALLER_DIR"] = str(tmp_path / f"caller-cache-{invocation_index}")
         result = subprocess.run(
             command, cwd=corpus, env=env, capture_output=True, text=True, timeout=25, check=False
         )
-        assert result.returncode == returncode, result.stdout + result.stderr
+        assert result.returncode == 0, result.stdout + result.stderr
         observed = {path.stem: json.loads(path.read_text()) for path in records.glob("*.json")}
         if override == "disabled":
-            assert set(observed.values()) == {None}
+            assert observed == {"controller": env["CACHE_CALLER_DIR"]}
         else:
             cache = Path(observed["controller"])
             caches.append(cache)

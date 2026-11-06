@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 import json
 import multiprocessing
 import os
@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.strict_json import (
     StrictJsonError,
     strict_json_loads,
@@ -24,10 +25,16 @@ from feedbax.contracts.strict_json import (
 from feedbax.plugins.bootstrap import BootstrapState
 
 if TYPE_CHECKING:
+    from feedbax.analysis.evaluation import _EvaluationRunPlan
+    from feedbax.contracts.evaluation_lifecycle import EvaluationMatrixBatchPlan
+    from feedbax.orchestration.bundle import RunBundle
     from feedbax.plugins.application import ApplicationRegistryBundle
 
 from feedbax.analysis.rendering import render_markdown_note
+from feedbax.contracts._authoring_inputs import AuthoringInputs
+from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.terminal_publication import manifest_publication_lock
 from feedbax.contracts.base import (
     ArtifactMigrationRecord,
     ArtifactRef,
@@ -50,6 +57,7 @@ CustodyMode = Literal["manifest", "content-addressed"]
 SUPPORTED_EXECUTION_POLICY_OVERRIDE_FLAG = "--allow-large-per-row"
 SHARED_REGENERATION_ROLE = "shared_regeneration_context"
 ROW_REGENERATION_ROLE = "regeneration_spec"
+GOVERNED_BATCH_AUTHORITY = "governed_batch_authority"
 
 
 def _store_compact_json_artifact(
@@ -69,18 +77,16 @@ def _store_compact_json_artifact(
     )
 
 
-def publish_shared_regeneration_context(
+def build_shared_regeneration_context(
     *,
-    root: Path,
     command: Sequence[str],
     source: str,
     custody: CustodyMode,
     escape_hatch_reason: str | None,
     matrix_metadata: Mapping[str, Any],
     regeneration_parameters: Mapping[str, Any],
-) -> ArtifactRef:
-    """Publish the batch-wide replay context once in one custody domain."""
-    shared = RegenerationSpec(
+) -> RegenerationSpec:
+    return RegenerationSpec(
         command=RegenerationCommand(argv=list(command)),
         parameters=dict(regeneration_parameters),
         metadata={
@@ -94,12 +100,47 @@ def publish_shared_regeneration_context(
             **dict(matrix_metadata),
         },
     )
+
+
+def publish_shared_regeneration_context(
+    *,
+    root: Path,
+    command: Sequence[str],
+    source: str,
+    custody: CustodyMode,
+    escape_hatch_reason: str | None,
+    matrix_metadata: Mapping[str, Any],
+    regeneration_parameters: Mapping[str, Any],
+) -> ArtifactRef:
+    """Publish the batch-wide replay context once in one custody domain."""
+    shared = build_shared_regeneration_context(
+        command=command,
+        source=source,
+        custody=custody,
+        escape_hatch_reason=escape_hatch_reason,
+        matrix_metadata=matrix_metadata,
+        regeneration_parameters=regeneration_parameters,
+    )
     return _store_compact_json_artifact(
         shared.model_dump(mode="json", exclude_none=True),
         root=root,
         role=SHARED_REGENERATION_ROLE,
         logical_name="matrix.regeneration.json",
         metadata={"source": source},
+    )
+
+
+def build_row_regeneration_spec(
+    *,
+    command: Sequence[str],
+    row_id: str,
+    resolved: Mapping[str, Any],
+    shared_context: ArtifactRef,
+) -> RegenerationSpec:
+    return RegenerationSpec(
+        command=RegenerationCommand(argv=list(command)),
+        parameters={"row_id": row_id, "resolved": dict(resolved)},
+        inputs=[shared_context],
     )
 
 
@@ -112,10 +153,11 @@ def publish_row_regeneration_spec(
     shared_context: ArtifactRef,
 ) -> tuple[RegenerationSpec, ArtifactRef]:
     """Publish one row-local replay record referencing exact shared context."""
-    row_spec = RegenerationSpec(
-        command=RegenerationCommand(argv=list(command)),
-        parameters={"row_id": row_id, "resolved": dict(resolved)},
-        inputs=[shared_context],
+    row_spec = build_row_regeneration_spec(
+        command=command,
+        row_id=row_id,
+        resolved=resolved,
+        shared_context=shared_context,
     )
     ref = _store_compact_json_artifact(
         row_spec.model_dump(mode="json", exclude_none=True),
@@ -408,6 +450,7 @@ def _validate_evaluation_fragment_checkpoint(
     fragment: ArtifactRef,
     *,
     matrix_intent_hash: str,
+    parent_authorities: Sequence[ParentRef] | None = None,
 ) -> None:
     """Validate one cached fragment against its current terminal declaration."""
     from feedbax.analysis.evaluation_compaction import _validate_fragment_ref
@@ -418,13 +461,21 @@ def _validate_evaluation_fragment_checkpoint(
             fragment,
             matrix_intent_hash=matrix_intent_hash,
             batch_id=batch.batch_id,
+            parent_authorities=parent_authorities,
         )
     except ValueError as exc:
         raise ValueError("evaluation batch fragment checkpoint contract drifted") from exc
 
 
 def _execute_evaluation_batch_partition(
-    task: Mapping[str, Any], registries: ApplicationRegistryBundle
+    task: Mapping[str, Any],
+    registries: ApplicationRegistryBundle,
+    *,
+    bundle: RunBundle,
+    batch_plan: EvaluationMatrixBatchPlan,
+    checkpoint: Path,
+    authoring_inputs: AuthoringInputs,
+    prepare_plan: Callable[[], _EvaluationRunPlan],
 ) -> dict[str, Any]:
     """Execute and compact one authenticated batch in a persistent worker."""
     timing_origin_ns = int(task["timing_origin_ns"])
@@ -435,35 +486,25 @@ def _execute_evaluation_batch_partition(
     )
     from feedbax.analysis.evaluation import (
         EvaluationBatchExecution,
-        execute_evaluation_run_matrix,
+        _PublishedEvaluationRow,
+        _execute_evaluation_run_plan,
+        evaluation_states_cache_matches,
         load_evaluation_states_cache,
     )
-    from feedbax.contracts.evaluation_lifecycle import (
-        EvaluationBatchConsumerDeclaration,
-        EvaluationLifecycleRowOutcome,
-        EvaluationMatrixBatchUnit,
-        EvaluationPayloadRetentionPolicy,
-    )
-    from feedbax.contracts.base import ArtifactRef
+    from feedbax.contracts.manifest import canonical_manifest_path, evaluation_states_cache_path
+    from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleRowOutcome
     from feedbax.contracts.base import (
         AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
         AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-        ParentRef,
-        sha256_bytes,
     )
-    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.analysis.execution_context import (
         resolve_staged_execution_context,
         with_staged_repo_root,
     )
-    from feedbax.orchestration.bundle import RunBundle
     from feedbax.orchestration.input_materialization import (
         staged_execution_bindings_for_bundle,
     )
 
-    bundle = strict_model_validate_json(
-        RunBundle, Path(task["bundle_path"]).read_text(encoding="utf-8")
-    )
     projected = staged_execution_bindings_for_bundle(
         bundle,
         inputs_root=task["inputs_root"],
@@ -475,25 +516,64 @@ def _execute_evaluation_batch_partition(
         checkpoint_custody_bindings=projected.checkpoint_custody_bindings,
     )
     execution_context = with_staged_repo_root(execution_context, task["repo_root"])
-    payload = _read_json_object(task["payload_path"], description="evaluation matrix spec")
-    batch = EvaluationMatrixBatchUnit.model_validate(task["batch"])
-    retention_policy = EvaluationPayloadRetentionPolicy.model_validate(task["retention_policy"])
-    checkpoint_identity = {
-        "matrix_intent_hash": task["matrix_intent_hash"],
-        "batch": batch.model_dump(mode="json", exclude_none=True),
-        "consumers": task["consumers"],
+    batch_index = task["batch_index"]
+    batch = batch_plan.batches[batch_index]
+    leaf_ids = batch.required_leaf_ids or ()
+    batch = batch.model_copy(update={"required_leaf_ids": leaf_ids})
+    declarations = tuple(item for item in batch_plan.consumers if item.leaf_id in leaf_ids)
+    governed_authority = {
+        GOVERNED_BATCH_AUTHORITY: {
+            "bundle_sha256": task["bundle_sha256"],
+            "orchestration_row_id": task["orchestration_row_id"],
+            "compaction_root": str(Path(task["compaction_root"]).resolve()),
+        },
     }
-    checkpoint = Path(task["compaction_root"]) / "fragment-checkpoints" / f"{batch.batch_id}.json"
-    if checkpoint.is_file():
+    batch_identity = {
+        "matrix_intent_hash": batch_plan.matrix_intent_hash,
+        "batch": batch.model_dump(mode="json", exclude_none=True),
+        "consumers": [declaration.model_dump(mode="json") for declaration in declarations],
+    }
+    checkpoint_identity = {**batch_identity, **governed_authority}
+    manifest_root = Path(task["manifest_root"])
+    batch_root = manifest_root / batch.batch_id
+    if os.path.lexists(checkpoint):
+        if not checkpoint.is_file() or checkpoint.is_symlink():
+            raise ValueError("evaluation batch fragment checkpoint must be a regular file")
+        authoring_inputs.revalidate()
         cached = strict_json_loads(checkpoint.read_text(encoding="utf-8"))
-        if canonical_json_bytes(cached.get("checkpoint_identity")) != canonical_json_bytes(
+        cached_identity = cached.get("checkpoint_identity")
+        expected_identity = (
             checkpoint_identity
-        ):
+            if isinstance(cached_identity, Mapping) and GOVERNED_BATCH_AUTHORITY in cached_identity
+            else batch_identity
+        )
+        if canonical_json_bytes(cached_identity) != canonical_json_bytes(expected_identity) or (
+            cached.get("batch_id"),
+            cached.get("batch_index"),
+        ) != (batch.batch_id, batch_index):
             raise ValueError("evaluation batch fragment checkpoint identity drifted")
+        outcomes = tuple(
+            EvaluationLifecycleRowOutcome.model_validate(value) for value in cached["outcomes"]
+        )
+        parent_authorities = tuple(
+            ParentRef.model_validate(value) for value in cached["parent_authorities"]
+        )
+        if tuple(outcome.row_id for outcome in outcomes) != batch.ordered_row_ids:
+            raise ValueError("evaluation batch fragment checkpoint row order drifted")
+        for outcome, authority in zip(outcomes, parent_authorities, strict=True):
+            path = canonical_manifest_path(
+                "EvaluationRunManifest", outcome.manifest_id, root=batch_root
+            )
+            if Path(outcome.manifest_path).absolute() != path.absolute() or not path.is_file():
+                raise ValueError("evaluation batch fragment checkpoint manifest is unavailable")
+            manifest_bytes = path.read_bytes()
+            if (
+                authority.id != outcome.manifest_id
+                or authority.metadata.get("manifest_sha256") != sha256_bytes(manifest_bytes)
+                or authority.metadata.get("size_bytes") != len(manifest_bytes)
+            ):
+                raise ValueError("evaluation batch fragment checkpoint parent authority drifted")
         provider = ImmutableArtifactBlobProvider(Path(task["compaction_root"]))
-        declarations = [
-            EvaluationBatchConsumerDeclaration.model_validate(value) for value in task["consumers"]
-        ]
         for declaration, value in zip(
             declarations,
             cached.get("fragments", []),
@@ -504,25 +584,10 @@ def _execute_evaluation_batch_partition(
                 declaration,
                 batch,
                 fragment,
-                matrix_intent_hash=task["matrix_intent_hash"],
+                matrix_intent_hash=batch_plan.matrix_intent_hash,
+                parent_authorities=parent_authorities,
             )
             provider.get_bytes(fragment)
-        for value, authority_value in zip(
-            cached.get("outcomes", []),
-            cached.get("parent_authorities", []),
-            strict=True,
-        ):
-            outcome = EvaluationLifecycleRowOutcome.model_validate(value)
-            if not Path(outcome.manifest_path).is_file():
-                raise ValueError("evaluation batch fragment checkpoint manifest is unavailable")
-            authority = ParentRef.model_validate(authority_value)
-            manifest_bytes = Path(outcome.manifest_path).read_bytes()
-            if (
-                authority.id != outcome.manifest_id
-                or authority.metadata.get("manifest_sha256") != sha256_bytes(manifest_bytes)
-                or authority.metadata.get("size_bytes") != len(manifest_bytes)
-            ):
-                raise ValueError("evaluation batch fragment checkpoint parent authority drifted")
         completed_offset_ns = time.monotonic_ns() - timing_origin_ns
         return {
             **cached,
@@ -532,22 +597,52 @@ def _execute_evaluation_batch_partition(
             "completed_offset_ns": completed_offset_ns,
             "duration_ns": completed_offset_ns - started_offset_ns,
         }
-    result = execute_evaluation_run_matrix(
-        payload,
+    plan = prepare_plan()
+    authoring_inputs.revalidate()
+    recover_published_batch = os.path.lexists(batch_root)
+    retain_states = (
+        not recover_published_batch
+        and bool(declarations)
+        and all(
+            registries.evaluation_batch_consumers.get(
+                declaration.consumer_id, declaration.consumer_version
+            ).accepts_fresh_states
+            for declaration in declarations
+        )
+    )
+    published_states: dict[tuple[str, str], Any] | None = {} if retain_states else None
+    result = _execute_evaluation_run_plan(
+        plan,
         registry=registries.evaluation_recipes,
-        root=Path(task["manifest_root"]),
+        root=manifest_root,
         repo_root=task["repo_root"],
         execution_context=execution_context,
         batch=EvaluationBatchExecution(batch_units=((batch.batch_id, batch.ordered_row_ids),)),
+        matrix_metadata=governed_authority,
+        published_states=published_states,
+        recover_published_batch=recover_published_batch,
     )
-    outcomes_by_id = {row.row_id: row for row in result.rows}
+    rows = (
+        result
+        if recover_published_batch
+        else tuple(
+            _PublishedEvaluationRow(
+                row_id=row.row_id,
+                manifest=row.result,
+                path=row.manifest_path,
+                raw=row.manifest_path.read_bytes(),
+                states_cache_path=evaluation_states_cache_path(row.result.id, root=batch_root),
+            )
+            for row in result.rows
+        )
+    )
     outcomes = []
     manifests = []
     states = []
     parent_authorities = []
-    for row_id in batch.ordered_row_ids:
-        row = outcomes_by_id[row_id]
-        states_schema = getattr(row.result, "metadata", {}).get("states_schema")
+    for row in rows:
+        manifest = row.manifest
+        states_schema = manifest.metadata.get("states_schema")
         diagnostic_schema_ids = ()
         if isinstance(states_schema, str):
             diagnostic_schema_ids = (states_schema,)
@@ -555,37 +650,50 @@ def _execute_evaluation_batch_partition(
             diagnostic_schema_ids = (states_schema["schema_id"],)
         outcome = EvaluationLifecycleRowOutcome(
             row_id=row.row_id,
-            manifest_id=row.result.id,
-            manifest_path=str(row.manifest_path),
+            manifest_id=manifest.id,
+            manifest_path=str(row.path),
             diagnostic_schema_ids=diagnostic_schema_ids,
         )
         outcomes.append(outcome)
-        manifests.append(row.result.model_dump(mode="json"))
-        manifest_bytes = Path(row.manifest_path).read_bytes()
+        manifests.append(manifest.model_dump(mode="json"))
         parent_authorities.append(
             ParentRef(
                 kind="EvaluationRunManifest",
-                id=row.result.id,
+                id=manifest.id,
                 role="evaluation_run",
                 metadata={
                     "ref_schema_id": AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
                     "ref_schema_version": AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-                    "manifest_sha256": sha256_bytes(manifest_bytes),
-                    "size_bytes": len(manifest_bytes),
+                    "manifest_sha256": sha256_bytes(row.raw),
+                    "size_bytes": len(row.raw),
                 },
             )
         )
-        if task["consumers"]:
-            cache_path = Path(row.result.metadata["cache"]["states_path"])
-            states.append(load_evaluation_states_cache(cache_path, manifest_id=row.result.id))
+        if declarations:
+            cache_path = row.states_cache_path
+            if published_states is None:
+                row_states = (
+                    load_evaluation_states_cache(cache_path, manifest=manifest)
+                    if cache_path.is_file()
+                    else None
+                )
+            else:
+                receipt = manifest.id, manifest.metadata["cache"].get("states_cache_sha256")
+                row_states = published_states.pop(receipt, None)
+                if row_states is not None and not evaluation_states_cache_matches(
+                    cache_path, manifest
+                ):
+                    row_states = None
+            if row_states is None:
+                raise ValueError(f"Evaluation row {row.row_id!r} has no matching state cache")
+            states.append(row_states)
     fragments = []
-    for value in task["consumers"]:
-        declaration = EvaluationBatchConsumerDeclaration.model_validate(value)
+    for declaration in declarations:
         fragments.append(
             compact_evaluation_batch(
                 declaration,
                 EvaluationBatchConsumerInput(
-                    matrix_intent_hash=task["matrix_intent_hash"],
+                    matrix_intent_hash=batch_plan.matrix_intent_hash,
                     batch=batch,
                     outcomes=tuple(outcomes),
                     manifests=tuple(manifests),
@@ -597,20 +705,24 @@ def _execute_evaluation_batch_partition(
                 ),
                 registry=registries.evaluation_batch_consumers,
                 custody_root=Path(task["compaction_root"]),
-                retention_policy=retention_policy,
+                retention_policy=batch_plan.retention,
             )
         )
     completed = {
         "pid": os.getpid(),
         "batch_id": batch.batch_id,
-        "batch_index": task["batch_index"],
+        "batch_index": batch_index,
         "outcomes": [item.model_dump(mode="json") for item in outcomes],
         "fragments": [item.model_dump(mode="json") for item in fragments],
         "parent_authorities": [item.model_dump(mode="json") for item in parent_authorities],
         "checkpoint_identity": checkpoint_identity,
     }
-    checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    checkpoint.write_text(json.dumps(completed, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_bytes_atomic(
+        checkpoint,
+        (json.dumps(completed, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        mode=0o666,
+        replace=False,
+    )
     completed_offset_ns = time.monotonic_ns() - timing_origin_ns
     return {
         **completed,
@@ -621,14 +733,124 @@ def _execute_evaluation_batch_partition(
     }
 
 
+def _evaluation_batch_plan(payload: Any) -> EvaluationMatrixBatchPlan:
+    from feedbax.contracts.evaluation_lifecycle import EvaluationMatrixBatchPlan
+    from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+    return EvaluationMatrixBatchPlan.model_validate(
+        migrate_structured_spec_payload(
+            "EvaluationMatrixBatchPlan", payload, path="launch.metadata.batch_plan"
+        ).payload
+    )
+
+
 def _execute_evaluation_batch_partition_group(
     tasks: Sequence[Mapping[str, Any]], modules: tuple[str, ...]
 ) -> tuple[dict[str, Any], ...]:
-    """Bootstrap once at process-worker startup, then execute assigned batches."""
+    """Bootstrap and resolve authoring once, with fresh execution custody per batch."""
+    from feedbax.analysis.evaluation import _evaluation_matrix_run_plan, _resolve_evaluation_matrix
+    from feedbax.analysis.evaluation_orchestration import (
+        _evaluation_matrix_resolved_semantics,
+        _validate_evaluation_batch_plan,
+    )
+    from feedbax.contracts.spec_storage import build_resolved_semantics_snapshot
+    from feedbax.orchestration.bundle import RunBundle
     from feedbax.plugins.composition import compose_application
 
     state = asyncio.run(compose_application(modules=modules))
-    return tuple(_execute_evaluation_batch_partition(task, state.bundle) for task in tasks)
+    if not tasks:
+        return ()
+    first = tasks[0]
+    authority_fields = (
+        "bundle_path",
+        "bundle_sha256",
+        "orchestration_row_id",
+        "payload_path",
+        "repo_root",
+        "inputs_root",
+        "manifest_root",
+        "compaction_root",
+    )
+    if any(task[key] != first[key] for task in tasks for key in authority_fields):
+        raise ValueError("evaluation worker group tasks must share one matrix authority")
+
+    authoring_inputs = AuthoringInputs()
+    bundle_bytes = authoring_inputs.read_bytes(Path(first["bundle_path"]))
+    if sha256_bytes(bundle_bytes) != first["bundle_sha256"]:
+        raise ValueError("evaluation worker group bundle digest mismatch")
+    bundle = strict_model_validate_json(RunBundle, bundle_bytes)
+    if bundle.execution_family != "evaluation-matrix":
+        raise ValueError("orchestration bundle is not an evaluation-matrix family bundle")
+    (row,) = (row for row in bundle.rows if row.row_id == first["orchestration_row_id"])
+    plan_payload = row.launch.metadata.get("batch_plan")
+    batch_plan = _evaluation_batch_plan(plan_payload)
+    indexes = [task["batch_index"] for task in tasks]
+    if any(
+        type(index) is not int or not 0 <= index < len(batch_plan.batches) for index in indexes
+    ) or len(indexes) != len(set(indexes)):
+        raise ValueError("evaluation worker group has invalid batch indexes")
+
+    payload_bytes = authoring_inputs.read_bytes(Path(first["payload_path"]))
+    if sha256_bytes(payload_bytes) != row.execution.payload.sha256:
+        raise ValueError("evaluation worker group matrix payload digest mismatch")
+    payload = strict_json_loads(payload_bytes)
+    if not isinstance(payload, dict) or (
+        payload.get("schema_id"),
+        payload.get("schema_version"),
+    ) != (row.execution.payload.schema_id, row.execution.payload.schema_version):
+        raise ValueError("evaluation worker group matrix payload schema does not match custody")
+
+    plan: _EvaluationRunPlan | None = None
+
+    def prepare_plan() -> _EvaluationRunPlan:
+        nonlocal plan
+        if plan is None:
+            resolved = _resolve_evaluation_matrix(
+                payload,
+                registry=state.bundle.evaluation_recipes,
+                repo_root=first["repo_root"],
+                read_text=authoring_inputs.read_text,
+            )
+            _validate_evaluation_batch_plan(
+                batch_plan, row.execution.authored_intent.intent_hash, resolved.ordered_row_ids
+            )
+            semantics = _evaluation_matrix_resolved_semantics(
+                resolved,
+                authored=payload,
+                run_set_id=bundle.run_set_id,
+                content_bindings=bundle.content_bindings,
+                plan_payload=plan_payload,
+            )
+            if (
+                build_resolved_semantics_snapshot(semantics)["root_hash"]
+                != row.execution.resolved_snapshot.root_hash
+            ):
+                raise ValueError("evaluation worker group resolved matrix authority drifted")
+            plan = _evaluation_matrix_run_plan(resolved)
+        return plan
+
+    completed = []
+    for task in tasks:
+        batch_id = batch_plan.batches[task["batch_index"]].batch_id
+        batch_root = Path(task["manifest_root"]) / batch_id
+        compaction_root = Path(task["compaction_root"])
+        checkpoint = compaction_root / "fragment-checkpoints" / f"{batch_id}.json"
+        with (
+            manifest_publication_lock(batch_root),
+            manifest_publication_lock(compaction_root / f"fragment-{batch_id}"),
+        ):
+            completed.append(
+                _execute_evaluation_batch_partition(
+                    task,
+                    state.bundle,
+                    bundle=bundle,
+                    batch_plan=batch_plan,
+                    checkpoint=checkpoint,
+                    authoring_inputs=authoring_inputs,
+                    prepare_plan=prepare_plan,
+                )
+            )
+    return tuple(completed)
 
 
 @dataclass(frozen=True)
@@ -762,6 +984,55 @@ def diff_regenerated_archived(
     return semantic_diff(archived, regenerated)
 
 
+_ROW_CONTEXT_ROLES = frozenset(
+    ("resolved_row_spec", SHARED_REGENERATION_ROLE, ROW_REGENERATION_ROLE)
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _MatrixRowPublication:
+    """The harness-owned portion of a canonical row receipt."""
+
+    metadata: dict[str, Any]
+    artifacts: tuple[ArtifactRef, ...]
+
+    @classmethod
+    def from_manifest(cls, manifest: EvaluationRunManifest) -> _MatrixRowPublication | None:
+        metadata = manifest.metadata.get("matrix_harness")
+        if not isinstance(metadata, dict) or not {"row_id", "source", "custody"} <= metadata.keys():
+            return None
+        return cls(
+            metadata=metadata,
+            artifacts=tuple(a for a in manifest.artifacts if a.role in _ROW_CONTEXT_ROLES),
+        )
+
+    def ensure_row_custody(self, row_root: Path, *, matrix_root: Path) -> None:
+        """Keep references verifiable from both the matrix and its standalone row."""
+        if not self.artifacts or row_root == matrix_root:
+            return
+        row_store = ImmutableArtifactBlobProvider(row_root.absolute())
+        matrix_store = ImmutableArtifactBlobProvider(matrix_root.absolute())
+        for artifact in self.artifacts:
+            ref = ContentObjectRef(
+                object_id=f"{CONTENT_OBJECT_REF_PREFIX}{artifact.sha256}",
+                sha256=artifact.sha256,
+                size_bytes=artifact.size_bytes,
+            )
+            try:
+                row_store.get_object(ref)
+            except FileNotFoundError:
+                row_store.store_object(matrix_store.get_object(ref))
+
+    def attach(self, manifest: EvaluationRunManifest) -> EvaluationRunManifest:
+        artifacts = [a for a in manifest.artifacts if a.role not in _ROW_CONTEXT_ROLES]
+        return manifest.model_copy(
+            update={
+                "metadata": {**manifest.metadata, "matrix_harness": self.metadata},
+                "artifacts": [*artifacts, *self.artifacts],
+            }
+        )
+
+
 class MatrixMaterializerHarness:
     """Own row expansion, execution, custody, manifests, replay data, and notes."""
 
@@ -790,7 +1061,11 @@ class MatrixMaterializerHarness:
         self,
         rows: Sequence[tuple[str, Mapping[str, Any]]],
         *,
-        execute: Callable[[str, Mapping[str, Any], Path], tuple[Any, Path | None]],
+        execute: Callable[[str, Mapping[str, Any], Path], tuple[Any, Path | None]] | None = None,
+        publish_row: Callable[
+            [Mapping[str, Any], Path, _MatrixRowPublication], tuple[EvaluationRunManifest, Path]
+        ]
+        | None = None,
         command: Sequence[str],
         title: str,
         source: str,
@@ -798,7 +1073,13 @@ class MatrixMaterializerHarness:
         matrix_metadata: Mapping[str, Any] | None = None,
         regeneration_parameters: Mapping[str, Any] | None = None,
     ) -> HarnessResult:
-        """Execute resolved rows and emit standard custody and regeneration records."""
+        """Materialize rows through a publisher or decorate a legacy executor's result.
+
+        A row publisher owns the canonical receipt and includes the supplied context
+        in that publication. The harness only writes receipts for legacy executors.
+        """
+        if (execute is None) == (publish_row is None):
+            raise ValueError("materializer requires exactly one row executor or publisher")
         if not rows:
             raise ValueError("materializer requires at least one row or condition")
         if escape_hatch_reason is not None and not escape_hatch_reason.strip():
@@ -823,11 +1104,8 @@ class MatrixMaterializerHarness:
             else None
         )
         for row_id, resolved in rows:
-            if not row_id:
-                raise ValueError("materializer row_id must be non-empty")
             row_root = self.root if self.shared_store else self.root / row_id
             row_root.mkdir(parents=True, exist_ok=True)
-            result, manifest_path = execute(row_id, resolved, row_root)
             regeneration = RegenerationSpec(
                 command=RegenerationCommand(argv=list(command)),
                 parameters={
@@ -866,34 +1144,45 @@ class MatrixMaterializerHarness:
                     shared_context=shared_context,
                 )
                 artifacts.extend((shared_context, row_regeneration_ref))
-            if (
-                manifest_path is not None
-                and hasattr(result, "metadata")
-                and hasattr(result, "artifacts")
-            ):
-                harness_metadata = {
-                    "row_id": row_id,
-                    "source": source,
-                    "custody": self.custody,
-                    **(
-                        {"escape_hatch_reason": escape_hatch_reason}
-                        if escape_hatch_reason is not None
-                        else {}
-                    ),
-                }
-                if self.custody == "manifest":
-                    harness_metadata.update(shared_metadata)
-                    harness_metadata["regeneration_spec"] = regeneration.model_dump(
-                        mode="json", exclude_none=True
-                    )
-                result.metadata.setdefault("matrix_harness", {}).update(harness_metadata)
-                known_artifact_ids = {artifact.artifact_id for artifact in result.artifacts}
-                result.artifacts.extend(
-                    artifact
-                    for artifact in artifacts
-                    if artifact.artifact_id not in known_artifact_ids
+            harness_metadata = {
+                "row_id": row_id,
+                "source": source,
+                "custody": self.custody,
+                **(
+                    {"escape_hatch_reason": escape_hatch_reason}
+                    if escape_hatch_reason is not None
+                    else {}
+                ),
+            }
+            if self.custody == "manifest":
+                harness_metadata.update(shared_metadata)
+                harness_metadata["regeneration_spec"] = regeneration.model_dump(
+                    mode="json", exclude_none=True
                 )
-                manifest_path = write_manifest(result, root=row_root, index=not self.shared_store)
+            row_publication = _MatrixRowPublication(harness_metadata, tuple(artifacts))
+            if publish_row is not None:
+                row_publication.ensure_row_custody(row_root, matrix_root=self.root)
+                result, manifest_path = publish_row(resolved, row_root, row_publication)
+            else:
+                assert execute is not None
+                result, manifest_path = execute(row_id, resolved, row_root)
+                if (
+                    manifest_path is not None
+                    and hasattr(result, "metadata")
+                    and hasattr(result, "artifacts")
+                ):
+                    result.metadata.setdefault("matrix_harness", {}).update(
+                        row_publication.metadata
+                    )
+                    known_artifact_ids = {artifact.artifact_id for artifact in result.artifacts}
+                    result.artifacts.extend(
+                        artifact
+                        for artifact in row_publication.artifacts
+                        if artifact.artifact_id not in known_artifact_ids
+                    )
+                    manifest_path = write_manifest(
+                        result, root=row_root, index=not self.shared_store
+                    )
             materialized.append(
                 MaterializedRow(
                     row_id=row_id,
@@ -995,12 +1284,10 @@ def main(
         EvaluationBatchTimingEvidence,
         EvaluationLifecycleEvidence,
         EvaluationLifecycleRowOutcome,
-        EvaluationMatrixBatchPlan,
         EvaluationReplayIdentity,
         EvaluationWorkerProcessEvidence,
         EvaluationWorkerTopologyEvidence,
     )
-    from feedbax.contracts.migrations import migrate_structured_spec_payload
     from feedbax.orchestration.bundle import RunBundle
     from feedbax.orchestration.input_materialization import (
         staged_execution_bindings_for_bundle,
@@ -1109,21 +1396,17 @@ def main(
                 "orchestration lifecycle bindings cannot be combined with caller-supplied "
                 "staged execution options"
             )
-        bundle = strict_model_validate_json(
-            RunBundle, Path(args.orchestration_bundle).read_text(encoding="utf-8")
-        )
+        bundle_bytes = Path(args.orchestration_bundle).read_bytes()
+        bundle = strict_model_validate_json(RunBundle, bundle_bytes)
         if bundle.execution_family != "evaluation-matrix":
             parser.error("orchestration bundle is not an evaluation-matrix family bundle")
         matching_rows = [row for row in bundle.rows if row.row_id == args.orchestration_row_id]
         if len(matching_rows) != 1:
             parser.error("orchestration row id is absent or ambiguous in the bundle")
         try:
-            batch_plan_payload = migrate_structured_spec_payload(
-                "EvaluationMatrixBatchPlan",
-                matching_rows[0].launch.metadata.get("batch_plan"),
-                path="launch.metadata.batch_plan",
-            ).payload
-            orchestration_batch_plan = EvaluationMatrixBatchPlan.model_validate(batch_plan_payload)
+            orchestration_batch_plan = _evaluation_batch_plan(
+                matching_rows[0].launch.metadata.get("batch_plan")
+            )
         except ValueError as exc:
             parser.error(f"orchestration evaluation row lacks an authenticated batch plan: {exc}")
         orchestration_worker_count = min(
@@ -1148,7 +1431,7 @@ def main(
     from feedbax.orchestration.events import RunEventEmitter
 
     emitter = RunEventEmitter.from_env(heartbeat_seconds=60.0)
-    with emitter if emitter is not None else nullcontext():
+    with emitter if emitter is not None else nullcontext(), ExitStack() as publication_locks:
         if emitter is not None:
             emitter.emit("ready", {"executor_family": "evaluation-matrix"})
         try:
@@ -1158,26 +1441,18 @@ def main(
                 and orchestration_batch_plan is not None
                 and orchestration_worker_count is not None
             ):
-                indexed_batches = [
-                    {
-                        "batch_id": batch.batch_id,
-                        "batch_index": index,
-                        "ordered_row_ids": list(batch.ordered_row_ids),
-                    }
-                    for index, batch in enumerate(orchestration_batch_plan.batches)
-                ]
                 compaction_root = Path(args.lifecycle_result).with_name(
                     "evaluation-batch-compaction"
                 )
                 common_task = {
                     "bundle_path": args.orchestration_bundle,
+                    "bundle_sha256": sha256_bytes(bundle_bytes),
+                    "orchestration_row_id": args.orchestration_row_id,
                     "inputs_root": args.orchestration_inputs_root,
                     "payload_path": args.spec,
                     "manifest_root": args.manifest_root,
                     "repo_root": args.repo_root,
-                    "matrix_intent_hash": orchestration_batch_plan.matrix_intent_hash,
                     "compaction_root": str(compaction_root),
-                    "retention_policy": orchestration_batch_plan.retention.model_dump(mode="json"),
                 }
                 from feedbax.analysis.evaluation_compaction import (
                     apply_evaluation_payload_retention,
@@ -1196,30 +1471,9 @@ def main(
                     {
                         **common_task,
                         "timing_origin_ns": timing_origin_ns,
-                        "batch": {
-                            "batch_id": item["batch_id"],
-                            "ordered_row_ids": item["ordered_row_ids"],
-                            "required_leaf_ids": (
-                                orchestration_batch_plan.batches[
-                                    item["batch_index"]
-                                ].required_leaf_ids
-                                or ()
-                            ),
-                        },
-                        "batch_index": item["batch_index"],
-                        "consumers": [
-                            declaration.model_dump(mode="json")
-                            for declaration in orchestration_batch_plan.consumers
-                            if declaration.leaf_id
-                            in (
-                                orchestration_batch_plan.batches[
-                                    item["batch_index"]
-                                ].required_leaf_ids
-                                or ()
-                            )
-                        ],
+                        "batch_index": index,
                     }
-                    for item in indexed_batches
+                    for index in range(len(orchestration_batch_plan.batches))
                 ]
                 with ProcessPoolExecutor(
                     max_workers=orchestration_worker_count,
@@ -1241,6 +1495,7 @@ def main(
                     completed_batches.extend(
                         completed for future in futures for completed in future.result()
                     )
+                publication_locks.enter_context(manifest_publication_lock(compaction_root))
                 completed_batches.sort(key=lambda item: item["batch_index"])
                 for batch, completed_batch in zip(
                     orchestration_batch_plan.batches, completed_batches, strict=True
@@ -1279,21 +1534,23 @@ def main(
                         acknowledgements.append(acknowledgement)
                         all_acknowledgements.append(acknowledgement)
                     if orchestration_batch_plan.consumers:
-                        reclamations.append(
-                            reclaim_evaluation_batch_caches(
-                                batch,
-                                registry=bootstrap_state.bundle.evaluation_batch_consumers,
-                                matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
-                                batch_index=completed_batch["batch_index"],
-                                outcomes=outcomes_for_batch,
-                                acknowledgements=acknowledgements,
-                                required_declarations=applicable_declarations,
-                                custody_root=compaction_root,
-                                execution_context=resolved_context,
-                                retention_policy=orchestration_batch_plan.retention,
-                                evaluation_custody_root=Path(args.manifest_root),
+                        batch_root = Path(args.manifest_root) / batch.batch_id
+                        with manifest_publication_lock(batch_root):
+                            reclamations.append(
+                                reclaim_evaluation_batch_caches(
+                                    batch,
+                                    registry=bootstrap_state.bundle.evaluation_batch_consumers,
+                                    matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
+                                    batch_index=completed_batch["batch_index"],
+                                    outcomes=outcomes_for_batch,
+                                    acknowledgements=acknowledgements,
+                                    required_declarations=applicable_declarations,
+                                    custody_root=compaction_root,
+                                    execution_context=resolved_context,
+                                    retention_policy=orchestration_batch_plan.retention,
+                                    evaluation_custody_root=batch_root,
+                                )
                             )
-                        )
                 outcomes = tuple(
                     EvaluationLifecycleRowOutcome.model_validate(outcome)
                     for batch in completed_batches
@@ -1306,7 +1563,7 @@ def main(
                 )
                 topology = EvaluationWorkerTopologyEvidence(
                     requested_worker_count=orchestration_worker_count,
-                    batch_count=len(indexed_batches),
+                    batch_count=len(tasks),
                     processes=tuple(
                         EvaluationWorkerProcessEvidence(
                             pid=pid,
@@ -1352,30 +1609,8 @@ def main(
                         policy=orchestration_batch_plan.retention,
                         replay=orchestration_replay,
                         custody_root=compaction_root,
+                        reclamations=reclamations,
                     )
-                    evaluation_records = tuple(
-                        record_id
-                        for reclamation in reclamations
-                        for record_id in reclamation.retention_record_ids
-                    )
-                    if orchestration_batch_plan.retention.retain_intermediates:
-                        retention = retention.model_copy(
-                            update={
-                                "retained_intermediate_ids": (
-                                    *retention.retained_intermediate_ids,
-                                    *(f"evaluation/{record_id}" for record_id in evaluation_records),
-                                )
-                            }
-                        )
-                    else:
-                        retention = retention.model_copy(
-                            update={
-                                "temporary_lease_ids": (
-                                    *retention.temporary_lease_ids,
-                                    *(f"evaluation/{record_id}" for record_id in evaluation_records),
-                                )
-                            }
-                        )
                 compaction = EvaluationBatchCompactionEvidence(
                     matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
                     ordered_batch_ids=tuple(
@@ -1413,7 +1648,7 @@ def main(
                     )
 
                     launch_evaluation_payload_recovery(
-                        retention,
+                        compaction,
                         compaction_root=compaction_root,
                         evaluation_root=Path(args.manifest_root),
                         ready_path=Path(args.lifecycle_result).with_name(

@@ -1,4 +1,4 @@
-import type { TrainingRun } from '@/types/runs';
+import type { TrainingRun, TrainingRunInfo } from '@/types/runs';
 import type { StudioManifestRef, StudioStageSpec } from '@/types/workspace';
 import { trainingRunMetricValue, type TrainingRunSummary } from '@/utils/pipelineCollections';
 
@@ -9,7 +9,8 @@ export interface TrainingRunSortState {
 
 export interface ProgressLike {
   job_id?: string | null;
-  batch: number;
+  batch?: number | null;
+  program_step?: number | null;
   total_batches: number;
 }
 
@@ -63,7 +64,12 @@ export function progressBindingsForRuns(
   const byGroupId = new Map<string, string>();
   const jobId = progress?.job_id ?? activeJobId ?? null;
   if (!progress || !jobId) return { byRunId, byGroupId };
-  const label = `${progress.batch}/${progress.total_batches}`;
+  const label = progress.batch != null
+    ? `${progress.batch}/${progress.total_batches}`
+    : progress.program_step != null
+      ? `Program step ${progress.program_step}`
+      : null;
+  if (label === null) return { byRunId, byGroupId };
   const matches = rows.filter((row) => row.id === jobId || row.jobId === jobId);
   if (matches.length === 1) {
     byRunId.set(matches[0].id, label);
@@ -111,5 +117,43 @@ export function stageWithTrainingRunLifecyclePatch(
       action === 'remove'
         ? stage.manifest_refs.filter(keep)
         : stage.manifest_refs.map(patch),
+  };
+}
+
+export function stageWithNativeTrainingRunProgress(
+  stage: StudioStageSpec,
+  run: TrainingRunInfo,
+  generation: string
+): StudioStageSpec {
+  const patch = (ref: StudioManifestRef): StudioManifestRef => {
+    if (ref.id !== run.id || ref.metadata.staging_generation !== generation) return ref;
+    const metadata = run.staging_generation !== generation ? {
+      ...ref.metadata,
+      staleness_reason: 'staging receipt changed',
+    } : {
+      ...ref.metadata,
+      status: run.status,
+      checkpoint_available: run.checkpoint_available,
+      metrics: run.metrics,
+      result_manifest_id: run.result_manifest_id ?? null,
+      result_manifest_uri: run.result_manifest_uri ?? null,
+      status_reason: run.execution_error ?? null,
+      teardown_pending: run.teardown_pending === true,
+    };
+    return JSON.stringify(metadata) === JSON.stringify(ref.metadata) ? ref : { ...ref, metadata };
+  };
+  const outputCollections = stage.output_collections.map((collection) => {
+    const refs = collection.item_refs.map(patch);
+    return refs.some((ref, index) => ref !== collection.item_refs[index])
+      ? { ...collection, item_refs: refs }
+      : collection;
+  });
+  if (outputCollections.every((collection, index) => collection === stage.output_collections[index])) {
+    return stage;
+  }
+  return {
+    ...stage,
+    output_collections: outputCollections,
+    manifest_refs: stage.manifest_refs.map(patch),
   };
 }

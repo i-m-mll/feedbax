@@ -1,18 +1,20 @@
 from __future__ import annotations
 
-from functools import partial
 from typing import Any, Callable, Mapping
 
-import equinox as eqx
-import diffrax as dfx
-import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from feedbax.models.feedback import FeedbackChannels
-from feedbax.runtime.channel import Channel, ChannelSpec
+from feedbax._delayed_reaches import (
+    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
+    DEFAULT_DELAYED_MOVE_EPOCHS,
+    apply_delayed_reaches_preset,
+    delayed_reaches_n_steps_from_params,
+)
+from feedbax.compiler.solver_config import DEFAULT_PLANAR_SOLVER, resolve_acausal_solver
+from feedbax.runtime.channel import Channel
 from feedbax.runtime.graph import Component
-from feedbax.intervene.intervene import (
+from feedbax.mechanics.force_fields import (
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,
 )
@@ -30,122 +32,15 @@ from feedbax.mechanics.muscle_config import (
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.models.networks import (
-    LeakyRNNCell,
-    SimpleStagedNetwork,
-    population_structure_from_spec,
-)
-from feedbax.models.support import identity_func
 from feedbax.runtime.noise import Multiplicative, Normal
 from feedbax.components.penzai import (
     PENZAI_AVAILABLE,
+    UnsupportedPenzaiStateError,
     build_penzai_subgraph,
-    get_penzai_builder,
-    penzai_state_variable_paths,
 )
+from feedbax.contracts.acausal_interface import MUSCLE_EXCITATION_PAYLOAD
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
-from feedbax.tasks.presets import apply_delayed_reaches_preset
-
-
-_HIDDEN_TYPES: dict[str, Callable[..., eqx.Module]] = {
-    "GRUCell": eqx.nn.GRUCell,
-    "LSTMCell": eqx.nn.LSTMCell,
-    "Linear": eqx.nn.Linear,
-    "GRU": eqx.nn.GRUCell,
-    "LSTM": eqx.nn.LSTMCell,
-    "VanillaRNN": LeakyRNNCell,
-    "VanillaRNNCell": LeakyRNNCell,
-    "RNN": LeakyRNNCell,
-    "RNNCell": LeakyRNNCell,
-    "LeakyRNNCell": LeakyRNNCell,
-}
-_NONLINEARITIES: dict[str, Callable[[jax.Array], jax.Array]] = {
-    "tanh": jnp.tanh,
-    "relu": jax.nn.relu,
-    "sigmoid": jax.nn.sigmoid,
-    "softmax": jax.nn.softmax,
-    "identity": identity_func,
-}
-
-
-def resolve_nonlinearity(name: str | None) -> Callable[[jax.Array], jax.Array]:
-    if not name:
-        return _NONLINEARITIES["identity"]
-    if name not in _NONLINEARITIES:
-        raise ValueError(f"Unknown nonlinearity: {name!r}. Valid options: {list(_NONLINEARITIES)}")
-    return _NONLINEARITIES[name]
-
-
-def nonlinearity_name(fn: Callable[[jax.Array], jax.Array]) -> str:
-    for name, func in _NONLINEARITIES.items():
-        if fn is func:
-            return name
-    name = getattr(fn, "__name__", "")
-    return name if name in _NONLINEARITIES else "identity"
-
-
-def _hidden_type_vocabulary() -> str:
-    return ", ".join(_HIDDEN_TYPES)
-
-
-def _resolve_hidden_type(name: object, *, path: str) -> Callable[..., eqx.Module]:
-    hidden_type_name = str(name)
-    try:
-        return _HIDDEN_TYPES[hidden_type_name]
-    except KeyError as exc:
-        raise ValueError(
-            f"Unknown hidden_type at {path}: {hidden_type_name!r}. "
-            f"Supported values: {_hidden_type_vocabulary()}"
-        ) from exc
-
-
-def _compat_dtype(params: Mapping[str, Any]) -> object:
-    if "dtype" in params:
-        return params["dtype"]
-    return jnp.asarray(0.0).dtype
-
-
-def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
-    hidden_type = _resolve_hidden_type(
-        params.get("hidden_type", "GRUCell"),
-        path="Network.params.hidden_type",
-    )
-    hidden_nonlinearity = resolve_nonlinearity(str(params.get("hidden_nonlinearity", "tanh")))
-    out_nonlinearity = resolve_nonlinearity(str(params.get("out_nonlinearity", "tanh")))
-    if hidden_type is LeakyRNNCell:
-        hidden_type = partial(LeakyRNNCell, nonlinearity=hidden_nonlinearity)
-        hidden_nonlinearity = identity_func
-    encoding_size = int(params.get("encoding_size", 0) or 0)
-    encoding_size = encoding_size if encoding_size > 0 else None
-    out_size = params.get("out_size", params.get("output_size"))
-    out_size = int(out_size) if out_size not in (None, "") else None
-    if out_size is not None and out_size <= 0:
-        out_size = None
-    hidden_noise_std = params.get("hidden_noise_std", 0.0)
-    if hidden_noise_std in (None, 0, 0.0):
-        hidden_noise_std = None
-    population_structure = None
-    raw_population_structure = params.get("population_structure")
-    if isinstance(raw_population_structure, Mapping):
-        population_structure = population_structure_from_spec(
-            int(params.get("hidden_size", 0)),
-            raw_population_structure,
-        )
-    return SimpleStagedNetwork(
-        input_size=int(params.get("input_size", 0)),
-        hidden_size=int(params.get("hidden_size", 0)),
-        out_size=out_size,
-        encoding_size=encoding_size,
-        hidden_type=hidden_type,
-        hidden_nonlinearity=hidden_nonlinearity,
-        out_nonlinearity=out_nonlinearity,
-        hidden_noise_std=hidden_noise_std,
-        population_structure=population_structure,
-        population_mask_mode=str(params.get("population_mask_mode", "legacy_masked")),
-        dtype=_compat_dtype(params),
-        key=jr.PRNGKey(0),
-    )
 
 
 def _build_mechanics(params: Mapping[str, Any]) -> Mechanics:
@@ -169,7 +64,11 @@ class _ExcitationMechanics(Mechanics):
 
     def __call__(self, inputs, state, *, key):
         excitation = inputs.get("excitation", inputs.get("force"))
-        return super().__call__({"force": excitation}, state, key=key)
+        if excitation is None:
+            raise ValueError("Missing required acausal source input 'excitation'")
+        value = jnp.asarray(excitation)
+        MUSCLE_EXCITATION_PAYLOAD.validate_shape("excitation", value.shape)
+        return super().__call__({"force": value}, state, key=key)
 
 
 def _default_analytical_body_preset(params: Mapping[str, Any]) -> BodyPreset:
@@ -201,9 +100,13 @@ def _default_analytical_body_preset(params: Mapping[str, Any]) -> BodyPreset:
 
 def _build_analytical_musculoskeletal_plant(params: Mapping[str, Any]) -> Mechanics:
     dt = float(params.get("dt", 0.01))
+    solver = resolve_acausal_solver(
+        params.get("solver_type", DEFAULT_PLANAR_SOLVER), dt, physical_domain="planar_multibody"
+    )
     n_steps = int(params.get("n_steps", 1))
     if n_steps < 1:
         raise ValueError("AnalyticalMusculoskeletalPlant n_steps must be >= 1")
+    backend = DiffraxBackend(control_dt=dt, sub_dt=dt / n_steps, solver=solver)
     chain_config = ChainConfig(
         n_joints=2,
         muscle_topology=default_6muscle_2link_topology(),
@@ -214,10 +117,8 @@ def _build_analytical_musculoskeletal_plant(params: Mapping[str, Any]) -> Mechan
         clip_states=bool(params.get("clip_states", True)),
         key=jr.PRNGKey(0),
     )
-    backend = DiffraxBackend(control_dt=dt, sub_dt=dt / n_steps, solver=dfx.Euler())
     return _ExcitationMechanics(
         plant=plant,
-        dt=dt,
         backend=backend,
         key=jr.PRNGKey(0),
     )
@@ -251,6 +152,7 @@ def _noise_params(params: Mapping[str, Any]) -> dict[str, Any]:
         "model": model,
         "add_noise": add_noise,
         "additive_std": float(additive_std or 0.0),
+        "include_zero_terms": bool(params.get("include_zero_noise_terms", False)),
         "signal_dependent_std": float(signal_dependent_std or 0.0),
         "role": params.get("noise_role"),
         "timing": params.get("noise_timing"),
@@ -259,7 +161,6 @@ def _noise_params(params: Mapping[str, Any]) -> dict[str, Any]:
 
 def _build_noise_func(noise: Mapping[str, Any]):
     model = str(noise["model"])
-    add_noise = bool(noise["add_noise"])
     additive_std = float(noise["additive_std"])
     signal_dependent_std = float(noise["signal_dependent_std"])
     supported = {
@@ -274,28 +175,19 @@ def _build_noise_func(noise: Mapping[str, Any]):
             "'none', 'additive_gaussian', 'signal_dependent_gaussian', or "
             "'signal_dependent_plus_additive'"
         )
-    if model == "none" or not add_noise:
+    if model == "none":
         return None
+    include_zero = noise["include_zero_terms"]
     if model == "additive_gaussian":
-        return Normal(std=additive_std) if additive_std != 0.0 else None
+        return Normal(std=additive_std) if additive_std or include_zero else None
     if model == "signal_dependent_gaussian":
-        return (
-            Multiplicative(Normal(std=signal_dependent_std))
-            if signal_dependent_std != 0.0
-            else None
-        )
+        return Multiplicative(Normal(std=signal_dependent_std)) if signal_dependent_std or include_zero else None
     if model == "signal_dependent_plus_additive":
-        terms = []
-        if signal_dependent_std != 0.0:
-            terms.append(Multiplicative(Normal(std=signal_dependent_std)))
-        if additive_std != 0.0:
-            terms.append(Normal(std=additive_std))
-        if not terms:
-            return None
-        noise_func = terms[0]
-        for term in terms[1:]:
-            noise_func = noise_func + term
-        return noise_func
+        signal = Multiplicative(Normal(std=signal_dependent_std)) if signal_dependent_std or include_zero else None
+        additive = Normal(std=additive_std) if additive_std or include_zero else None
+        if signal is not None and additive is not None:
+            return signal + additive
+        return signal if signal is not None else additive
     raise AssertionError(f"Unhandled Channel noise_model {model!r}")
 
 
@@ -305,7 +197,9 @@ def _build_channel(params: Mapping[str, Any]) -> Channel:
     noise_func = _build_noise_func(noise)
     from feedbax.component_registry.prototypes import array_prototype
 
-    input_proto = array_prototype(params)
+    input_proto = params.get("resolved_input_proto")
+    if input_proto is None:
+        input_proto = array_prototype(params)
     return Channel(
         delay=delay,
         noise_func=noise_func,
@@ -316,90 +210,6 @@ def _build_channel(params: Mapping[str, Any]) -> Channel:
         noise_role=None if noise["role"] is None else str(noise["role"]),
         noise_timing=None if noise["timing"] is None else str(noise["timing"]),
     )
-
-
-def _path_selector(paths: tuple[str, ...]):
-    def _select(mechanics_state):
-        values = []
-        for path in paths:
-            value = mechanics_state
-            for part in path.split("."):
-                if not hasattr(value, part):
-                    raise AttributeError(
-                        f"Mechanics feedback selector path {path!r} has no {part!r}"
-                    )
-                value = getattr(value, part)
-            values.append(value)
-        return values[0] if len(values) == 1 else tuple(values)
-
-    _select._feedbax_feedback_selector = "paths"  # type: ignore[attr-defined]
-    _select._feedbax_feedback_paths = paths  # type: ignore[attr-defined]
-    return _select
-
-
-def _feedback_selector(params: Mapping[str, Any]):
-    selector = str(params.get("selector", "point_mass_pos_vel"))
-    raw_paths = params.get("paths")
-    if raw_paths is not None and selector == "paths":
-        if not isinstance(raw_paths, (list, tuple)) or not raw_paths:
-            raise ValueError("FeedbackChannels 'paths' must be a non-empty list of attribute paths")
-        return "paths", tuple(str(path) for path in raw_paths)
-
-    if selector in {
-        "point_mass_pos_vel",
-        "point_mass_state",
-        "mechanics.plant.skeleton.pos_vel",
-    }:
-        return "point_mass_pos_vel", ("plant.skeleton.pos", "plant.skeleton.vel")
-    if selector in {"effector_pos_vel", "mechanics.effector.pos_vel"}:
-        return "effector_pos_vel", ("effector.pos", "effector.vel")
-    if selector in {"plant_skeleton", "mechanics.plant.skeleton"}:
-        return "plant_skeleton", ("plant.skeleton",)
-    raise ValueError(
-        f"Unsupported FeedbackChannels selector {selector!r}; expected point_mass_pos_vel, "
-        "effector_pos_vel, plant_skeleton, or explicit paths"
-    )
-
-
-def _proto_from_shape_spec(shape: Any):
-    if not isinstance(shape, (list, tuple)):
-        return None
-    if shape and all(isinstance(item, (list, tuple)) for item in shape):
-        return tuple(jnp.zeros(tuple(int(dim) for dim in item)) for item in shape)
-    return jnp.zeros(tuple(int(dim) for dim in shape))
-
-
-def _feedback_input_proto(params: Mapping[str, Any], paths: tuple[str, ...]):
-    proto = _proto_from_shape_spec(params.get("input_shape"))
-    if proto is not None:
-        return proto
-    if paths == ("plant.skeleton.pos", "plant.skeleton.vel") or paths == (
-        "effector.pos",
-        "effector.vel",
-    ):
-        return (jnp.zeros(2), jnp.zeros(2))
-    return jnp.zeros(1)
-
-
-def _build_feedback_channels(params: Mapping[str, Any]) -> FeedbackChannels:
-    delay = int(params.get("delay", 0))
-    selector, paths = _feedback_selector(params)
-    noise = _noise_params(params)
-    noise_func = _build_noise_func(noise)
-    where = _path_selector(paths)
-    where._feedbax_feedback_selector = selector  # type: ignore[attr-defined]
-    channel = Channel(
-        delay=delay,
-        noise_func=noise_func,
-        add_noise=bool(noise["add_noise"]),
-        input_proto=_feedback_input_proto(params, paths),
-        init_value=float(params.get("init_value", 0.0)),
-        noise_model=str(noise["model"]),
-        noise_role=None if noise["role"] is None else str(noise["role"]),
-        noise_timing=None if noise["timing"] is None else str(noise["timing"]),
-    )
-    spec = ChannelSpec(where=where, delay=delay, noise_func=noise_func)
-    return FeedbackChannels(channel, spec)
 
 
 def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComponent:
@@ -414,26 +224,18 @@ def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComp
             eval_grid_n=int(params.get("eval_grid_n", 1)),
         )
     elif task_type == "DelayedReaches":
-        n_steps = (
-            int(params["n_control_stages"]) + 1
-            if params.get("n_control_stages") is not None
-            else int(params["n_steps"])
-        )
         task = DelayedReaches(
             loss_func=loss_func,
-            n_steps=n_steps,
+            n_steps=delayed_reaches_n_steps_from_params(params),
             workspace=jnp.asarray(params.get("workspace", [[-1.0, -1.0], [1.0, 1.0]])),
             preset=params.get("preset", None),
             train_endpoint_mode=str(params.get("train_endpoint_mode", "workspace")),
-            epoch_len_ranges=tuple(
-                tuple(int(value) for value in item)
-                for item in params.get("epoch_len_ranges", [[5, 15], [10, 20]])
-            ),
+            epoch_len_ranges=params.get("epoch_len_ranges", DEFAULT_DELAYED_EPOCH_LEN_RANGES),
             epoch_names=tuple(str(value) for value in params.get("epoch_names", []))
             or ("hold", "target_on", "movement"),
             target_on_epochs=tuple(int(value) for value in params.get("target_on_epochs", [1, 2])),
             hold_epochs=tuple(int(value) for value in params.get("hold_epochs", [0, 1])),
-            move_epochs=tuple(int(value) for value in params.get("move_epochs", [2])),
+            move_epochs=params.get("move_epochs", DEFAULT_DELAYED_MOVE_EPOCHS),
             p_catch_trial=float(params.get("p_catch_trial", 0.5)),
             target_visible_from_start=bool(params.get("target_visible_from_start", False)),
             go_cue_event_name=params.get("go_cue_event_name", None),
@@ -455,7 +257,7 @@ def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComp
     if mode != "open_loop":
         raise ValueError("Only open_loop TaskComponent is supported from GraphSpec")
 
-    trial_spec = task.get_train_trial_with_intervenor_params(key=jr.PRNGKey(0))
+    trial_spec = task.sample_trial(key=jr.PRNGKey(0))
     return TaskComponent(task=task, trial_spec=trial_spec, mode="open_loop")
 
 
@@ -472,23 +274,18 @@ def _build_penzai_adapter(params: Mapping[str, Any]) -> Component:
         for key, value in params.items()
         if key not in ("builder_name", "input_port", "output_port")
     }
-    builder_info = get_penzai_builder(builder_name)
-    if builder_info is None:
-        raise ValueError(f"Unknown Penzai builder {builder_name!r}")
-    builder_fn, default_params = builder_info
-    pz_model = builder_fn({**default_params, **builder_params})
-    state_paths = penzai_state_variable_paths(pz_model)
-    if state_paths:
+    try:
+        return build_penzai_subgraph(
+            builder_name=builder_name,
+            params=builder_params,
+            input_port=str(params.get("input_port", "input")),
+            output_port=str(params.get("output_port", "output")),
+        )
+    except UnsupportedPenzaiStateError as exc:
         raise ValueError(
             "penzai.stateful_unsupported: PenzaiAdapter node uses unsupported "
-            f"StateVariable leaves at {', '.join(state_paths)}"
-        )
-    return build_penzai_subgraph(
-        builder_name=builder_name,
-        params=builder_params,
-        input_port=str(params.get("input_port", "input")),
-        output_port=str(params.get("output_port", "output")),
-    )
+            f"StateVariable leaves at {', '.join(exc.paths)}"
+        ) from exc
 
 
 def _build_threshold_latched_force(params: Mapping[str, Any]) -> ThresholdLatchedForce:
@@ -504,7 +301,6 @@ def _build_threshold_latched_force(params: Mapping[str, Any]) -> ThresholdLatche
             lateral_force=float(params.get("lateral_force", 0.0)),
             ramp_duration=float(params.get("ramp_duration", 0.0)),
         ),
-        label=str(params.get("label", "threshold_latched_force")),
     )
 
 
@@ -525,7 +321,6 @@ def _build_structural_linear_state_space(
         vel_slice=tuple(params.get("vel_slice", (2, 4))),
         scale=float(params.get("scale", 1.0)),
         active=bool(params.get("active", False)),
-        label=str(params.get("label", "structural_linear_dynamics")),
     )
 
 

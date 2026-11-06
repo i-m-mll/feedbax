@@ -6,14 +6,15 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from equinox import field
-from equinox.nn import State, StateIndex
+from equinox.nn import State
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
 
 
-AFFINE_VALUE_COMPOSER_SCHEMA_VERSION = "feedbax.component.affine_value_composer.v1"
+AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1 = "feedbax.component.affine_value_composer.v1"
+AFFINE_VALUE_COMPOSER_SCHEMA_VERSION = "feedbax.component.affine_value_composer.v2"
 AFFINE_VALUE_COMPOSER_FEATURE_RULES = frozenset(
     {"identity", "target_relative_difference"}
 )
@@ -253,11 +254,8 @@ class AffineValueComposer(Component):
     output_block_size: int = field(static=True)
     feature_rules: tuple[dict[str, Any], ...] = field(static=True)
     use_bias: bool = field(static=True)
-    label: str = field(static=True)
     gain: Array
     bias: Array
-    gain_override_index: StateIndex
-    bias_override_index: StateIndex
 
     def __init__(
         self,
@@ -267,7 +265,6 @@ class AffineValueComposer(Component):
         gain_init: PyTree | None = None,
         bias_init: PyTree | None = None,
         use_bias: bool = True,
-        label: str = "affine_value_composer",
     ) -> None:
         output_block_size = int(output_block_size)
         if output_block_size <= 0:
@@ -283,15 +280,8 @@ class AffineValueComposer(Component):
         self.output_block_size = output_block_size
         self.feature_rules = feature_rules
         self.use_bias = bool(use_bias)
-        self.label = str(label)
         self.gain = _as_array_param(gain_init, gain_shape, "gain_init")
         self.bias = _as_array_param(bias_init, bias_shape, "bias_init")
-        self.gain_override_index = StateIndex(
-            jnp.full(gain_shape, jnp.nan, dtype=self.gain.dtype)
-        )
-        self.bias_override_index = StateIndex(
-            jnp.full(bias_shape, jnp.nan, dtype=self.bias.dtype)
-        )
 
     @property
     def feature_dim(self) -> int:
@@ -321,15 +311,13 @@ class AffineValueComposer(Component):
         features = _extract_features(state_value, target_value, self.feature_rules)
         gain = inputs.get("gain")
         if gain is None:
-            gain_override = state.get(self.gain_override_index)
-            gain = jnp.where(jnp.all(jnp.isnan(gain_override)), self.gain, gain_override)
+            gain = self.gain
         delta = _affine_delta(features, jnp.asarray(gain), output_block_size=self.output_block_size)
         value = base + delta.astype(base.dtype)
         if self.use_bias:
             bias = inputs.get("bias")
             if bias is None:
-                bias_override = state.get(self.bias_override_index)
-                bias = jnp.where(jnp.all(jnp.isnan(bias_override)), self.bias, bias_override)
+                bias = self.bias
             try:
                 jnp.broadcast_shapes(value.shape, jnp.asarray(bias).shape)
             except ValueError as exc:
@@ -339,9 +327,3 @@ class AffineValueComposer(Component):
                 ) from exc
             value = value + jnp.asarray(bias, dtype=value.dtype)
         return {"value": value}, state
-
-    def task_parameter_state_indices(self) -> dict[str, StateIndex]:
-        labels = {f"{self.label}.gain": self.gain_override_index}
-        if self.use_bias:
-            labels[f"{self.label}.bias"] = self.bias_override_index
-        return labels

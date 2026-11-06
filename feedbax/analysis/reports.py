@@ -67,12 +67,16 @@ from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     FigureManifest,
     ManifestStatus,
+    RegenerationSpecBuilder,
     ReportManifest,
     ReportSpec,
     SpecPayload,
     report_manifest_id,
     spec_payload,
-    write_manifest,
+)
+from feedbax.persistence.terminal_publication import (
+    RenderPublicationCapture,
+    publish_render_manifest,
 )
 
 REPORT_RENDER_ROLE = "report_render"
@@ -424,12 +428,15 @@ class ReportRecipeRegistry:
 
 
 class ReportRecipeExecutionError(RuntimeError):
-    """Raised after a registered report recipe fails and a failed manifest is written."""
+    """A failed report attempt, with a path if its manifest was published."""
 
-    def __init__(self, manifest: ReportManifest, path: Path, cause: BaseException):
-        super().__init__(
-            f"Report recipe for {manifest.id!r} failed; failed manifest written to {path}"
+    def __init__(self, manifest: ReportManifest, path: Path | None, cause: BaseException):
+        outcome = (
+            f"failed manifest written to {path}"
+            if path is not None
+            else "completed manifest retained"
         )
+        super().__init__(f"Report recipe for {manifest.id!r} failed; {outcome}")
         self.manifest = manifest
         self.path = path
         self.__cause__ = cause
@@ -638,6 +645,8 @@ def execute_report_spec(
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     manifest_root_bindings: Sequence[StagedManifestRootBinding] = (),
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+    build_regeneration_spec: RegenerationSpecBuilder | None = None,
+    capture: RenderPublicationCapture | None = None,
 ) -> tuple[ReportManifest, Path]:
     """Execute a serialized report spec and write a truthful manifest."""
     report_spec = coerce_report_spec(spec)
@@ -689,20 +698,24 @@ def execute_report_spec(
     try:
         result = recipe(report_spec, root_path, resolved_inputs)
         _validate_report_result(report_spec.report_type, result)
+        completed_regeneration_specs = [*regeneration_specs, *result.regeneration_specs]
+        if build_regeneration_spec is not None:
+            stage_regeneration_spec = build_regeneration_spec(tuple(result.artifacts))
+            if stage_regeneration_spec not in completed_regeneration_specs:
+                completed_regeneration_specs.append(stage_regeneration_spec)
         manifest = _build_report_manifest(
             manifest_id=manifest_id,
             report_spec=report_spec,
             status="completed",
             provenance=prov,
             artifacts=result.artifacts,
-            regeneration_specs=[*regeneration_specs, *result.regeneration_specs],
+            regeneration_specs=completed_regeneration_specs,
             metadata={
                 **manifest_metadata,
                 **result.metadata,
                 "summary": result.summary,
             },
         )
-        return manifest, write_manifest(manifest, root=root_path)
     except Exception as exc:
         manifest = _build_report_manifest(
             manifest_id=manifest_id,
@@ -719,8 +732,11 @@ def execute_report_spec(
                 },
             },
         )
-        path = write_manifest(manifest, root=root_path)
+        path = publish_render_manifest(manifest, root=root_path)
         raise ReportRecipeExecutionError(manifest, path, exc) from exc
+    path = publish_render_manifest(manifest, root=root_path, capture=capture)
+    assert path is not None
+    return manifest, path
 
 
 def execute_authored_report_spec(

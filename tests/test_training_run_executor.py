@@ -6,10 +6,12 @@ import pickle
 import shutil
 import subprocess
 import sys
+from contextlib import closing
 from copy import copy, deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from weakref import ref
 
 import equinox as eqx
 import jax
@@ -24,6 +26,7 @@ import feedbax.training.executor as training_executor
 import feedbax.training.phase_executor as phase_executor
 import feedbax.orchestration.events as orchestration_events
 import feedbax.__main__ as feedbax_main
+from feedbax import _atomic
 from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     resolve_staged_execution_context,
@@ -114,6 +117,7 @@ from feedbax.contracts.worker import (
     MappingLevelSpec,
     MaterializedSlotAxisBinding,
     MetricGuardSpec,
+    PhaseProgramSpec,
     PhaseTransitionSpec,
     ProgressCoordinate,
     StateSlotSpec,
@@ -140,22 +144,26 @@ from feedbax.orchestration.drivers.native_execution import (
 from feedbax.training.checkpoint_custody import (
     CheckpointForkPlanBindings,
     CheckpointCompatibilityError,
+    authenticate_published_checkpoint_custody,
     concatenate_checkpoint_histories,
     fork_checkpoint_transaction,
     derive_checkpoint_fork_compatibility_projection,
     load_latest_checkpoint,
+    resolve_checkpoint_custody_ref,
     structural_abi_fingerprint,
     write_checkpoint_transaction,
 )
+from feedbax.training.diagnostic_publication import _TraceRecords
+from feedbax.training.diagnostics import load_method_training_trace
 from feedbax.training.executor import (
     DiagnosticsEmissionConflictError,
     ManifestEmissionConflictError,
     TrainingRunExecutorError,
+    _LearningRateTrace,
+    _MethodTraceRecorder,
     _feedbax_owned_training_manifest_metadata,
-    _method_training_trace,
     _same_row_resume_start_batch,
     _preflight_manifest_emission,
-    _realized_lr_trace,
     _synchronized_optimizer_step,
     execute_training_run_spec,
 )
@@ -190,7 +198,7 @@ from feedbax.training.manifest_preflight import (
     build_training_run_manifest_spec_payloads,
     preflight_training_run_manifest_payloads,
 )
-from feedbax.training.interruption import CancellationDecision
+from feedbax.training.interruption import CancellationAction, CancellationDecision
 from feedbax.training.diagnostics import (
     LearningRateDiagnostic,
     NativeExecutionProducerContext,
@@ -1479,6 +1487,8 @@ def test_native_mapped_resume_retains_prepared_runtime_slots_and_checkpoint_auth
         ]
     )
     phase = contract.phase_program.phases[0]
+    phase.max_steps = 2
+    spec.checkpoint_progress.checkpoint_interval = 1
     phase.reads.extend(["adaptive_state", "runtime_trace"])
     phase.writes.extend(["adaptive_state", "runtime_trace"])
     step = contract.phase_program.update_steps[0]
@@ -1791,12 +1801,11 @@ def test_mapped_execution_retains_metrics_and_checkpoint_axes_without_coordinate
     ("initial_batch", "expected_batches", "expected_steps"),
     [
         pytest.param(0, [3, 4], [3, 4], id="fresh"),
-        pytest.param(10, [12, 14], [2, 4], id="continuation"),
+        pytest.param(10, [12, 14], [2, 4], id="fresh-offset"),
     ],
 )
 def test_method_diagnostics_progress_observes_completed_batch_without_custody_leak(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     initial_batch: int,
     expected_batches: list[int],
     expected_steps: list[int],
@@ -1807,20 +1816,6 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
     spec.checkpoint_progress.checkpoint_interval = 3
     spec.checkpoint_progress.progress_interval = 3
     callback_events: list[dict[str, object]] = []
-    method_observations: list[dict[str, object]] = []
-    observation_origins: list[int] = []
-    build_diagnostics = training_executor._build_training_diagnostics
-
-    def capture_method_observations(**kwargs):
-        method_observations.extend(kwargs["method_observations"])
-        observation_origins.append(kwargs["method_observation_origin_batch"])
-        return build_diagnostics(**kwargs)
-
-    monkeypatch.setattr(
-        training_executor,
-        "_build_training_diagnostics",
-        capture_method_observations,
-    )
 
     result = execute_training_run_spec(
         spec,
@@ -1841,16 +1836,22 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
     assert [
         event["coordinate"]["program_step"] for event in result.history_events
     ] == expected_steps
-    assert [event["coordinate"]["completed_batches"] for event in method_observations] == list(
-        range(initial_batch + 1, initial_batch + 5)
+    assert result.diagnostics.segment_completed_batches == 4
+    cadence = check_checkpoint_cadence(
+        ConformanceRowArtifacts(
+            row_id="mapped-diagnostics-observation",
+            bundle_row_spec=result.manifest.training_spec.inline,
+            training_diagnostics=json.loads(result.diagnostics_path.read_bytes()),
+        )
     )
-    assert [event["coordinate"]["program_step"] for event in method_observations] == [
-        1,
-        2,
-        3,
-        4,
+    assert cadence.status == "pass", cadence
+    trace = result.diagnostics.method_trace
+    assert trace is not None
+    assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
+        (batch, replica)
+        for batch in range(initial_batch + 1, initial_batch + 5)
+        for replica in range(5)
     ]
-    assert observation_origins == [initial_batch]
     assert all(
         write.manifest.completed_coordinate.completed_batches is None
         for write in result.checkpoint_writes
@@ -1865,7 +1866,7 @@ def test_method_observation_buffer_batches_host_materialization_and_preserves_re
     bindings = _valid_materialized_preparation(spec).slot_axis_bindings
     observations: list[dict[str, object]] = []
     buffer = training_executor._MethodObservationBuffer(
-        observations,
+        observations.append,
         bindings,
         capacity=3,
     )
@@ -1914,59 +1915,13 @@ def test_method_observation_buffer_batches_host_materialization_and_preserves_re
 
     for coordinate in coordinates:
         buffer.append(coordinate)
+        assert buffer.buffered_updates < 3
     buffer.flush()
-    buffer.assert_empty()
-
-    assert buffer.flush_sizes == [3, 3, 1]
-    assert buffer.peak_buffered_updates == 3
+    assert buffer.buffered_updates == 0
     assert transfer_calls == 3
     assert materialized_leaves == 3 * 3
     assert jax_backed_asarray_calls == 0
     assert observations == expected
-
-
-@pytest.mark.parametrize(
-    ("checkpoint_interval", "progress_interval", "expected_chunks"),
-    [
-        pytest.param(None, None, [1, 1, 1, 1, 1], id="absent-intervals"),
-        pytest.param(100, 100, [2, 2, 1], id="oversized-intervals"),
-    ],
-)
-def test_method_observation_buffer_hard_cap_with_absent_or_oversized_intervals(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    checkpoint_interval: int | None,
-    progress_interval: int | None,
-    expected_chunks: list[int],
-) -> None:
-    spec = _mapped_diagnostics_run_spec()
-    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 5
-    spec.training_config.n_batches = 5
-    spec.checkpoint_progress.checkpoint_interval = checkpoint_interval
-    spec.checkpoint_progress.progress_interval = progress_interval
-    buffers: list[training_executor._MethodObservationBuffer] = []
-    buffer_type = training_executor._MethodObservationBuffer
-
-    def bounded_buffer(observations, bindings):
-        buffer = buffer_type(observations, bindings, capacity=2)
-        buffers.append(buffer)
-        return buffer
-
-    monkeypatch.setattr(training_executor, "_MethodObservationBuffer", bounded_buffer)
-    result = execute_training_run_spec(
-        spec,
-        preparation=_valid_materialized_preparation(spec),
-        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
-        manifest_root=tmp_path / "manifest",
-        checkpoint_root=tmp_path / "checkpoint",
-        run_id="bounded-observations",
-    )
-
-    assert len(buffers) == 1
-    assert buffers[0].peak_buffered_updates <= 2
-    assert buffers[0].flush_sizes == expected_chunks
-    assert result.diagnostics.method_trace is not None
-    assert len(result.diagnostics.method_trace.records) == 5 * 5
 
 
 @pytest.mark.parametrize("invalid_kind", ["malformed", "nonfinite", "wrong-size"])
@@ -2042,14 +1997,20 @@ def test_buffered_method_observations_include_terminating_or_saved_barrier_updat
     spec.training_config.n_batches = 7
     spec.checkpoint_progress.checkpoint_interval = 3
     spec.checkpoint_progress.progress_interval = 3
+    progress_batches: list[int] = []
+    observed_cancellations: list[tuple[int, tuple[int, ...]]] = []
     kwargs: dict[str, object] = {}
     if stop_mode == "stop_after_barrier":
         kwargs["stop_after_barrier"] = "after_train_batch"
     else:
         decision = CancellationDecision(stop_mode, "test", 123.0)
-        kwargs["cancellation_probe"] = (
-            lambda coordinate: decision if coordinate.completed_batches == 3 else None
-        )
+        def cancel_at_boundary(coordinate):
+            observed_cancellations.append(
+                (coordinate.completed_batches, tuple(progress_batches))
+            )
+            return decision if coordinate.completed_batches == 3 else None
+
+        kwargs["cancellation_probe"] = cancel_at_boundary
 
     result = execute_training_run_spec(
         spec,
@@ -2058,17 +2019,27 @@ def test_buffered_method_observations_include_terminating_or_saved_barrier_updat
         manifest_root=tmp_path / "manifest",
         checkpoint_root=tmp_path / "checkpoint",
         run_id=f"buffered-{stop_mode}",
+        retain_history=False,
+        progress_callback=lambda event: progress_batches.append(
+            event["coordinate"]["completed_batches"]
+        ),
         **kwargs,
     )
 
-    trace = result.diagnostics.method_trace
+    diagnostics = TrainingDiagnostics.model_validate_json(result.diagnostics_path.read_bytes())
+    trace = diagnostics.method_trace
     assert trace is not None
     assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
         (batch, replica) for batch in range(1, 4) for replica in range(5)
     ]
     assert result.final_coordinate.program_step == 3
+    assert progress_batches == [3]
+    history_ref = next(ref for ref in result.manifest.artifacts if ref.role == "training_history")
+    history = json.loads(Path(history_ref.uri).read_bytes())
+    assert [event["coordinate"]["completed_batches"] for event in history] == [3]
     assert len(result.checkpoint_writes) == (0 if stop_mode == "terminate" else 1)
     if stop_mode in {"terminate", "stop"}:
+        assert observed_cancellations == [(3, (3,))]
         assert result.status == "cancelled"
         assert result.manifest.provenance.metadata["cancellation"]["action"] == stop_mode
 
@@ -2084,16 +2055,16 @@ def test_buffered_method_observations_resume_from_partial_checkpoint(
     checkpoint_root = tmp_path / "checkpoint"
     partial = execute_training_run_spec(
         spec,
-        preparation=_valid_materialized_preparation(spec),
+        preparation=_valid_materialized_preparation(spec, initial_batch=10),
         registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
         manifest_root=tmp_path / "partial-manifest",
         checkpoint_root=checkpoint_root,
         run_id="buffered-partial",
-        stop_after_barrier="after_train_batch",
+        update_budget=1,
     )
     resumed = execute_training_run_spec(
         spec,
-        preparation=_valid_materialized_preparation(spec),
+        preparation=_valid_materialized_preparation(spec, initial_batch=10),
         registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
         manifest_root=tmp_path / "resumed-manifest",
         checkpoint_root=checkpoint_root,
@@ -2105,246 +2076,257 @@ def test_buffered_method_observations_resume_from_partial_checkpoint(
     resumed_trace = resumed.diagnostics.method_trace
     assert partial_trace is not None
     assert resumed_trace is not None
-    assert {row.completed_batch for row in partial_trace.records} == {1, 2, 3}
-    assert {row.completed_batch for row in resumed_trace.records} == {4, 5, 6, 7}
-    assert len(resumed_trace.records) == 4 * 5
-    assert [write.manifest.completed_training_batches for write in resumed.checkpoint_writes] == [
-        6,
-        7,
+    assert [(row.completed_batch, row.replica_index) for row in partial_trace.records] == [
+        (11, replica) for replica in range(5)
     ]
+    assert [(row.completed_batch, row.replica_index) for row in resumed_trace.records] == [
+        (batch, replica) for batch in range(12, 18) for replica in range(5)
+    ]
+    assert (resumed.start_completed_batches, resumed.end_completed_batches) == (11, 17)
+    assert resumed.diagnostics.segment_completed_batches == 6
+    assert [write.manifest.completed_training_batches for write in resumed.checkpoint_writes] == [
+        12,
+        15,
+        17,
+    ]
+    cadence = check_checkpoint_cadence(
+        ConformanceRowArtifacts(
+            row_id="buffered-resumed",
+            bundle_row_spec=resumed.manifest.training_spec.inline,
+            training_diagnostics=json.loads(resumed.diagnostics_path.read_bytes()),
+        )
+    )
+    assert cadence.status == "pass", cadence
 
 
-def test_buffered_and_immediate_method_observation_contracts_are_equivalent(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_durable_history_preserves_progress_bytes_and_typed_trace(tmp_path: Path) -> None:
     spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.state_slots.append(
+        StateSlotSpec(
+            name="healthy",
+            role="metric",
+            axis_bindings=[SlotAxisBindingSpec(axis="ensemble", mode="shared")],
+        )
+    )
     spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 4
     spec.training_config.n_batches = 4
-    spec.checkpoint_progress.checkpoint_interval = 3
     spec.checkpoint_progress.progress_interval = 3
-    buffer_type = training_executor._MethodObservationBuffer
+    spec.checkpoint_progress.checkpoint_interval = 3
+    callback_events: list[dict[str, object]] = []
+    rates = [LearningRateDiagnostic(step=step, learning_rate=3e-4) for step in (10, 2, 1)]
+    context = _execution_context(run_spec=spec)
+    context.diagnostics.lr_trace = rates
 
-    def run_with_capacity(capacity: int, root: Path):
-        monkeypatch.setattr(
-            training_executor,
-            "_MethodObservationBuffer",
-            lambda observations, bindings: buffer_type(
-                observations,
-                bindings,
-                capacity=capacity,
-            ),
+    def structured_kernel(slots, coordinate, context):
+        updated = _mapped_scalar_kernel(slots, coordinate, context)
+        score = updated["train_loss"]
+        updated["train_loss"] = {
+            "accepted": score > 2,
+            "nested": {"score": score},
+        }
+        return updated
+
+    def run(root: Path, *, retain_history: bool):
+        template = _valid_materialized_preparation(spec, initial_batch=10)
+        preparation = _build_materialized_execution_preparation(
+            request=ExecutionPreparationRequest(run_spec=spec),
+            provider_identity=template.identity.provider_identity,
+            initial_slots={
+                **template.initial_slots,
+                "healthy": jnp.asarray(True),
+                "train_loss": {
+                    "accepted": jnp.zeros(5, dtype=jnp.bool_),
+                    "nested": {"score": jnp.zeros(5, dtype=jnp.float32)},
+                },
+            },
+            kernel_context={},
+            loss_service=None,
+            resume_slot_transform=None,
+            coordinate_order=template.identity.coordinate_order,
         )
         return execute_training_run_spec(
             spec,
-            preparation=_valid_materialized_preparation(spec),
-            registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
+            preparation=preparation,
+            registry=_mapped_test_registry(spec, structured_kernel),
             manifest_root=root / "manifest",
             checkpoint_root=root / "checkpoint",
-            run_id="observation-equivalence",
+            execution_context=context,
+            retain_history=retain_history,
+            progress_callback=None if retain_history else callback_events.append,
         )
 
-    immediate = run_with_capacity(1, tmp_path / "immediate")
-    buffered = run_with_capacity(500, tmp_path / "buffered")
-    immediate_trace = immediate.diagnostics.method_trace
-    buffered_trace = buffered.diagnostics.method_trace
-    assert immediate_trace is not None
-    assert buffered_trace is not None
-    assert [record.model_dump(mode="json") for record in buffered_trace.records] == [
-        record.model_dump(mode="json") for record in immediate_trace.records
-    ]
-    assert [(event["coordinate"], event["metrics"]) for event in buffered.history_events] == [
-        (event["coordinate"], event["metrics"]) for event in immediate.history_events
-    ]
-    assert buffered.diagnostics.schema_version == immediate.diagnostics.schema_version
-    assert buffered.manifest.schema_version == immediate.manifest.schema_version
-    assert [write.manifest.completed_training_batches for write in buffered.checkpoint_writes] == [
-        write.manifest.completed_training_batches for write in immediate.checkpoint_writes
-    ]
-    assert [
-        [(slot.slot, slot.sha256) for slot in write.manifest.slots]
-        for write in buffered.checkpoint_writes
-    ] == [
-        [(slot.slot, slot.sha256) for slot in write.manifest.slots]
-        for write in immediate.checkpoint_writes
-    ]
+    retained = run(tmp_path / "retained", retain_history=True)
+    durable = run(tmp_path / "durable", retain_history=False)
 
-
-def test_declared_method_trace_is_durable_with_batch_replica_coordinates(tmp_path: Path) -> None:
-    spec = _mapped_diagnostics_run_spec()
-    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 4
-    spec.training_config.n_batches = 4
-    spec.checkpoint_progress.progress_interval = 3
-    result = execute_training_run_spec(
-        spec,
-        preparation=_valid_materialized_preparation(spec, initial_batch=10),
-        registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
-        manifest_root=tmp_path / "manifest",
-        checkpoint_root=tmp_path / "checkpoint",
-        run_id="mapped-trace",
+    assert durable.history_events == ()
+    assert [event["coordinate"]["completed_batches"] for event in callback_events] == [12, 14]
+    history_ref = next(
+        ref for ref in durable.manifest.artifacts if ref.role == "training_history"
     )
+    history_bytes = Path(history_ref.uri).read_bytes()
+    assert all(event["metrics"]["healthy"] is True for event in json.loads(history_bytes))
+    assert history_bytes == json.dumps(callback_events, indent=2, sort_keys=True).encode() + b"\n"
+    assert history_ref.sha256 == sha256_bytes(history_bytes)
+    assert history_ref.size_bytes == len(history_bytes)
+    assert [
+        (event["coordinate"], event["metrics"]) for event in callback_events
+    ] == [
+        (event["coordinate"], event["metrics"]) for event in retained.history_events
+    ]
 
-    assert [event["coordinate"]["completed_batches"] for event in result.history_events] == [12, 14]
-    trace = result.diagnostics.method_trace
-    assert result.diagnostics.schema_version == "feedbax.manifest.training_diagnostics.v3"
+    diagnostics = retained.diagnostics
+    trace = diagnostics.method_trace
     assert trace is not None
+    assert diagnostics.schema_version == "feedbax.manifest.training_diagnostics.v3"
+    assert diagnostics.lr_trace == list(reversed(rates))
     assert trace.method_ref == spec.worker_execution.method_contract.method_ref
     assert trace.trace_schema_id == "feedbax.tests.method_trace"
     assert trace.measurement_basis == "kernel_input"
     assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
         (batch, index) for batch in range(11, 15) for index in range(5)
     ]
-    payload = json.loads(result.diagnostics_path.read_text(encoding="utf-8"))
-    assert payload["method_trace"]["records"] == [
-        record.model_dump(mode="json") for record in trace.records
-    ]
-    diagnostics_ref = next(
-        item for item in result.manifest.artifacts if item.role == "training_diagnostics"
+    assert trace.records[0].value == {"accepted": False, "nested": {"score": 0.0}}
+    assert durable.diagnostics is None
+    loaded_diagnostics = type(diagnostics).model_validate_json(durable.diagnostics_path.read_bytes())
+    assert loaded_diagnostics.model_dump(exclude={"checkpoint_transactions"}) == (
+        diagnostics.model_dump(exclude={"checkpoint_transactions"})
     )
-    assert diagnostics_ref.metadata["schema_version"].endswith(".v3")
+    diagnostics_bytes = durable.diagnostics_path.read_bytes()
+    assert diagnostics_bytes == (
+        loaded_diagnostics.model_dump_json(indent=2, exclude_none=True).encode() + b"\n"
+    )
+    diagnostics_ref = next(
+        ref for ref in durable.manifest.artifacts if ref.role == "training_diagnostics"
+    )
+    provider = ImmutableArtifactBlobProvider(tmp_path / "collected")
+    provider._store_file(
+        durable.diagnostics_path,
+        sha256=diagnostics_ref.sha256,
+        size_bytes=diagnostics_ref.size_bytes,
+    )
+    assert load_method_training_trace(durable.manifest, provider) == trace
+
+    assert (durable.start_completed_batches, durable.end_completed_batches) == (10, 14)
+    assert loaded_diagnostics.segment_completed_batches == 4
+    assert loaded_diagnostics.checkpoint_coordinates == [2, 4]
 
 
-def test_declared_method_trace_uses_cancelled_batch_authority(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("stop_before_update", "expected_end", "expected_batches", "checkpoint_batches"),
+    [
+        pytest.param(True, 10, (), [], id="empty-segment"),
+        pytest.param(False, 14, (11, 12, 13, 14), [12], id="after-checkpoint"),
+    ],
+)
+def test_declared_method_trace_uses_cancelled_batch_authority(
+    tmp_path: Path,
+    stop_before_update: bool,
+    expected_end: int,
+    expected_batches: tuple[int, ...],
+    checkpoint_batches: list[int],
+) -> None:
     spec = _mapped_diagnostics_run_spec()
+    spec.worker_execution.method_contract.phase_program.phases[0].max_steps = 5
+    spec.training_config.n_batches = 5
+    spec.checkpoint_progress.checkpoint_interval = 3
+
+    def cancel_after_checkpoint(coordinate):
+        if coordinate.completed_batches == 14:
+            return CancellationDecision("terminate", "test", 123.0)
+        return None
+
     result = execute_training_run_spec(
         spec,
         preparation=_valid_materialized_preparation(spec, initial_batch=10),
         registry=_mapped_test_registry(spec, _mapped_scalar_kernel),
-        manifest_root=tmp_path,
+        manifest_root=tmp_path / "manifest",
+        checkpoint_root=tmp_path / "checkpoint",
         run_id="cancelled-mapped-trace",
-        cancellation_probe=lambda _coordinate: CancellationDecision("terminate", "test", 123.0),
+        cancellation_probe=cancel_after_checkpoint,
+        stop_before_update=lambda: stop_before_update,
     )
 
     trace = result.diagnostics.method_trace
     assert trace is not None
     assert result.status == result.manifest.status == "cancelled"
-    assert result.diagnostics.cumulative_completed_batches == 11
+    assert (result.start_completed_batches, result.end_completed_batches) == (10, expected_end)
+    assert result.diagnostics.segment_completed_batches == len(expected_batches)
+    assert [write.manifest.completed_training_batches for write in result.checkpoint_writes] == (
+        checkpoint_batches
+    )
+    if stop_before_update:
+        cadence = check_checkpoint_cadence(
+            ConformanceRowArtifacts(
+                row_id="cancelled-mapped-trace",
+                bundle_row_spec=result.manifest.training_spec.inline,
+                training_diagnostics=json.loads(result.diagnostics_path.read_bytes()),
+            )
+        )
+        assert cadence.status == "pass", cadence
     assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
-        (11, index) for index in range(5)
+        (batch, index) for batch in expected_batches for index in range(5)
     ]
 
 
-def test_method_trace_rejects_non_cartesian_history() -> None:
+@pytest.mark.parametrize(
+    ("batches", "completed_batches", "axis_size", "message"),
+    [
+        pytest.param([1, 1], 1, 2, "duplicates completed batch", id="duplicate"),
+        pytest.param([1], 2, 2, "incomplete batch coverage", id="missing-tail"),
+        pytest.param([2], 2, 2, "incomplete batch coverage", id="missing-first"),
+        pytest.param([1, 2], 1, 2, "outside the active segment", id="past-terminal"),
+        pytest.param([1], 1, 3, "does not cover the replica axis", id="axis-size"),
+    ],
+)
+def test_method_trace_rejects_non_cartesian_history(
+    tmp_path: Path,
+    batches: list[int],
+    completed_batches: int,
+    axis_size: int,
+    message: str,
+) -> None:
     declaration = (
         _mapped_diagnostics_run_spec().worker_execution.method_contract.training_diagnostics
     )
     assert declaration is not None
-    axis = {
-        "axis": "ensemble",
-        "role": "replicate",
-        "size": 2,
-        "level": 0,
-        "mode": "mapped",
-        "array_axis": 0,
-        "leaf_policy": "all_array_leaves",
-    }
-
-    def event(batch: int, values: list[float], *, size: int = 2) -> dict[str, object]:
-        return {
-            "coordinate": {"completed_batches": batch},
-            "metrics": {
-                "train_loss": {
-                    "schema_id": "feedbax.manifest.mapped_metric_value",
-                    "schema_version": "feedbax.manifest.mapped_metric_value.v1",
-                    "axes": [{**axis, "size": size}],
-                    "value": values,
+    with _TraceRecords(tmp_path) as records:
+        recorder = _MethodTraceRecorder(
+            declaration=declaration,
+            method_ref="feedbax.tests.method",
+            replica_count=2,
+            origin_batch=0,
+            records=records,
+            retain=False,
+        )
+        for batch in batches:
+            recorder.append(
+                {
+                    "coordinate": {"completed_batches": batch},
+                    "metrics": {
+                        "train_loss": {
+                            "schema_id": "feedbax.manifest.mapped_metric_value",
+                            "schema_version": "feedbax.manifest.mapped_metric_value.v1",
+                            "axes": [
+                                {
+                                    "axis": "ensemble",
+                                    "role": "replicate",
+                                    "size": axis_size,
+                                    "level": 0,
+                                    "mode": "mapped",
+                                    "array_axis": 0,
+                                }
+                            ],
+                            "value": [1.0, 2.0],
+                        }
+                    },
                 }
-            },
-        }
+            )
 
-    with pytest.raises(TrainingRunExecutorError, match="duplicates completed batch"):
-        _method_training_trace(
-            declaration,
-            method_ref="feedbax.tests.method",
-            method_observations=[event(1, [1.0, 2.0]), event(1, [1.0, 2.0])],
-            observation_origin_batch=0,
-            completed_batches=1,
-            replica_count=2,
-        )
-    with pytest.raises(TrainingRunExecutorError, match="incomplete batch coverage"):
-        _method_training_trace(
-            declaration,
-            method_ref="feedbax.tests.method",
-            method_observations=[event(1, [1.0, 2.0])],
-            observation_origin_batch=0,
-            completed_batches=2,
-            replica_count=2,
-        )
-    with pytest.raises(TrainingRunExecutorError, match="outside the active segment"):
-        _method_training_trace(
-            declaration,
-            method_ref="feedbax.tests.method",
-            method_observations=[event(3, [1.0, 2.0])],
-            observation_origin_batch=0,
-            completed_batches=2,
-            replica_count=2,
-        )
-    with pytest.raises(TrainingRunExecutorError, match="does not cover the replica axis"):
-        _method_training_trace(
-            declaration,
-            method_ref="feedbax.tests.method",
-            method_observations=[event(1, [1.0, 2.0], size=3)],
-            observation_origin_batch=0,
-            completed_batches=1,
-            replica_count=2,
-        )
-    with pytest.raises(TrainingRunExecutorError, match="does not cover the replica axis"):
-        _method_training_trace(
-            declaration,
-            method_ref="feedbax.tests.method",
-            method_observations=[event(1, [1.0, 2.0])],
-            observation_origin_batch=0,
-            completed_batches=1,
-            replica_count=5,
-        )
+        with pytest.raises(TrainingRunExecutorError, match=message):
+            recorder.finalize(completed_batches)
 
 
-def test_method_trace_transposes_named_mapped_values_by_replica() -> None:
-    declaration = (
-        _mapped_diagnostics_run_spec().worker_execution.method_contract.training_diagnostics
-    )
-    assert declaration is not None
-    axis = {
-        "axis": "ensemble",
-        "role": "replicate",
-        "size": 2,
-        "level": 0,
-        "mode": "mapped",
-        "array_axis": 0,
-        "leaf_policy": "all_array_leaves",
-    }
-    trace = _method_training_trace(
-        declaration,
-        method_ref="feedbax.tests.method",
-        method_observations=[
-            {
-                "coordinate": {"completed_batches": 1},
-                "metrics": {
-                    "train_loss": {
-                        "schema_id": "feedbax.manifest.structured_mapped_metric_value",
-                        "schema_version": ("feedbax.manifest.structured_mapped_metric_value.v1"),
-                        "axes": [axis],
-                        "value": {
-                            "accepted": [True, False],
-                            "nested": {"score": [[1.5, 2.5], [3.5, 4.5]]},
-                        },
-                    }
-                },
-            }
-        ],
-        observation_origin_batch=0,
-        completed_batches=1,
-        replica_count=2,
-    )
-
-    assert trace is not None
-    assert [record.value for record in trace.records] == [
-        {"accepted": True, "nested": {"score": [1.5, 2.5]}},
-        {"accepted": False, "nested": {"score": [3.5, 4.5]}},
-    ]
-
-
-def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicates() -> None:
+def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicates(tmp_path: Path) -> None:
     axis = {
         "axis": "ensemble",
         "role": "replicate",
@@ -2367,22 +2349,23 @@ def test_mapped_learning_rate_trace_retains_every_instance_and_rejects_duplicate
             }
         },
     }
-    trace = _realized_lr_trace([event], declared=())
-    assert [sample.step for sample in trace] == [3, 3]
-    assert [sample.learning_rate for sample in trace] == [0.1, 0.2]
-    assert [sample.axis_coordinates[0].index for sample in trace] == [0, 1]
-    with pytest.raises(TrainingRunExecutorError, match="duplicate coordinate/step"):
-        _realized_lr_trace([event, event], declared=())
-
-    missing_batch_authority = {
-        **event,
-        "coordinate": {"program_step": 30},
-    }
-    with pytest.raises(
-        TrainingRunExecutorError,
-        match=r"coordinate\.completed_batches training-batch authority",
-    ):
-        _realized_lr_trace([missing_batch_authority], declared=())
+    with closing(_LearningRateTrace(tmp_path, retain=True)) as trace:
+        for step in (10, 2):
+            trace.add_declared(LearningRateDiagnostic(step=step, learning_rate=3e-4))
+        trace.add_declared(LearningRateDiagnostic(step=12, learning_rate=float("inf")))
+        trace.record_progress(event)
+        samples = trace.materialize()
+        assert [(sample.step, sample.learning_rate) for sample in samples] == [
+            (2, 3e-4),
+            (10, 3e-4),
+            (12, float("inf")),
+            (3, 0.1),
+            (3, 0.2),
+        ]
+        assert [sample.axis_coordinates[0].index for sample in samples[3:]] == [0, 1]
+        trace.record_progress(event)
+        with pytest.raises(TrainingRunExecutorError, match="duplicate coordinate/step"):
+            trace.require_valid()
 
 
 def _scalar_lr_kernel(slots, coordinate, context):
@@ -2835,6 +2818,7 @@ def _chunked_registry(
         if fail_on_program_step is not None and coordinate.program_step >= fail_on_program_step:
             raise RuntimeError("simulated preemption after durable checkpoint")
         updates = dict(base_kernel(slots, coordinate, context))
+        updates["prng"] = slots["prng"] + 1
         if barrier_artifact_sink:
             updates["history_chunk"] = bytes([0, 255, coordinate.program_step])
         return updates
@@ -2864,13 +2848,22 @@ def _chunked_registry(
     return registry, program
 
 
-def _interval_registry(*, total_updates: int) -> tuple[TrainingProgramRegistry, object]:
+def _interval_registry(*, total_updates: int) -> tuple[TrainingProgramRegistry, PhaseProgramSpec]:
     """Return one multi-update phase for cadence and mid-phase resume tests."""
     contract = standard_supervised_method_contract()
     program = contract.phase_program.model_copy(deep=True)
     phase = program.phases[0].model_copy(update={"max_steps": total_updates})
     program = program.model_copy(update={"phases": [phase]})
     contract = contract.model_copy(update={"phase_program": program})
+    kernel_ref = "feedbax.training.standard_supervised.gradient_update"
+    base_kernel = synthetic_supervised_update_kernels()[kernel_ref]
+
+    def gradient_update(slots, coordinate, context):
+        return {
+            **base_kernel(slots, coordinate, context),
+            "prng": jax.random.split(slots["prng"])[0],
+        }
+
     registry = TrainingProgramRegistry()
     registry.register(
         TrainingMethodRegistration(
@@ -2879,7 +2872,7 @@ def _interval_registry(*, total_updates: int) -> tuple[TrainingProgramRegistry, 
             payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
             payload_model=StandardSupervisedMethodPayload,
             contract_factory=lambda: contract,
-            update_kernels_factory=lambda _payload: synthetic_supervised_update_kernels(),
+            update_kernels_factory=lambda _payload: {kernel_ref: gradient_update},
             owner="tests.test_training_run_executor",
             package="feedbax",
         )
@@ -3999,6 +3992,34 @@ def test_native_diagnostics_conflict_fails_before_training_or_checkpoint_side_ef
     assert not (tmp_path / "checkpoint-root").exists()
 
 
+def test_native_manifest_waits_for_diagnostics_directory_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection_root = tmp_path / "row"
+    collection_root.mkdir()
+    sync_directory = _atomic._fsync_directory
+
+    def fail_diagnostics_sync(path: Path) -> None:
+        if path == collection_root.resolve():
+            assert (path / "training-diagnostics.json").is_file()
+            raise OSError("diagnostics directory sync failed")
+        sync_directory(path)
+
+    monkeypatch.setattr(_atomic, "_fsync_directory", fail_diagnostics_sync)
+    with pytest.raises(OSError, match="diagnostics directory sync failed"):
+        execute_training_run_spec(
+            _run_spec(),
+            registry=synthetic_training_program_registry(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifest-root",
+            checkpoint_root=tmp_path / "checkpoint-root",
+            execution_context=_execution_context(collection_root=collection_root),
+            retain_history=False,
+        )
+
+    assert not (collection_root / "manifest.json").exists()
+
+
 def test_orchestration_injects_canonical_context_only_for_native_commands() -> None:
     context = _execution_context()
     provenance = context.execution.row_provenance
@@ -4288,9 +4309,78 @@ def test_authored_intervals_drive_multi_update_phase_and_terminal_remainder(
     assert int(result.final_slots["batch_counter"]) == total_updates
 
 
+def test_native_stop_publishes_resumable_mid_phase_checkpoint_without_cadence(
+    tmp_path: Path,
+) -> None:
+    registry, program = _interval_registry(total_updates=3)
+    spec = _run_spec()
+    spec.training_config.n_batches = 3
+    initial_slots = _initial_slots(arrays=True)
+    checkpoint_root = tmp_path / "stopped-checkpoints"
+    stop_requested = False
+
+    def request_stop_after_first_update(event):
+        nonlocal stop_requested
+        if event["coordinate"]["program_step"] == 1:
+            stop_requested = True
+
+    stopped = execute_training_run_spec(
+        spec,
+        run_id="stopped",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "stopped-runs",
+        checkpoint_root=checkpoint_root,
+        registry=registry,
+        progress_callback=request_stop_after_first_update,
+        stop_before_update=lambda: stop_requested,
+    )
+
+    assert stopped.status == "cancelled"
+    assert stopped.final_coordinate.program_step == 1
+    custody = authenticate_published_checkpoint_custody(checkpoint_root)
+    assert [ref.id for ref in stopped.manifest.checkpoint_custody] == [
+        custody.manifest.transaction_id
+    ]
+    assert custody.manifest.completed_coordinate == stopped.final_coordinate
+    assert custody.manifest.completed_training_batches == 1
+    restored = load_latest_checkpoint(
+        checkpoint_root,
+        expected_run_spec=spec,
+        expected_phase_program=program,
+        expected_slots=initial_slots,
+    )
+
+    resumed = execute_training_run_spec(
+        spec,
+        run_id="resumed",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "resumed-runs",
+        checkpoint_root=checkpoint_root,
+        registry=registry,
+        resume=True,
+    )
+    uninterrupted = execute_training_run_spec(
+        spec,
+        run_id="uninterrupted",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "uninterrupted-runs",
+        checkpoint_root=tmp_path / "uninterrupted-checkpoints",
+        registry=registry,
+    )
+
+    assert resumed.status == uninterrupted.status == "completed"
+    assert resumed.start_completed_batches == 1
+    assert resumed.end_completed_batches == uninterrupted.end_completed_batches == 3
+    for actual, expected in (
+        (restored.slots, stopped.final_slots),
+        (resumed.final_slots, uninterrupted.final_slots),
+    ):
+        for slot in ("model", "optimizer", "prng"):
+            assert eqx.tree_equal(actual[slot], expected[slot])
+
+
 def test_authored_cadence_uses_completed_batches_not_program_step(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry, _program = _interval_registry(total_updates=4)
     base_spec = _run_spec()
@@ -4303,29 +4393,6 @@ def test_authored_cadence_uses_completed_batches_not_program_step(
     )
     initial_slots = _initial_slots(arrays=True)
     initial_slots["batch_counter"] = jnp.array(10, dtype=jnp.int32)
-    method_observations: list[dict[str, object]] = []
-    observation_callbacks: list[object] = []
-    build_diagnostics = training_executor._build_training_diagnostics
-    run_phase_program = training_executor.PhaseProgramExecutor.run
-
-    def capture_method_observations(**kwargs):
-        method_observations.extend(kwargs["method_observations"])
-        return build_diagnostics(**kwargs)
-
-    def capture_observation_callback(executor, *args, **kwargs):
-        observation_callbacks.append(kwargs["method_observation_callback"])
-        return run_phase_program(executor, *args, **kwargs)
-
-    monkeypatch.setattr(
-        training_executor,
-        "_build_training_diagnostics",
-        capture_method_observations,
-    )
-    monkeypatch.setattr(
-        training_executor.PhaseProgramExecutor,
-        "run",
-        capture_observation_callback,
-    )
 
     result = execute_training_run_spec(
         spec,
@@ -4344,9 +4411,75 @@ def test_authored_cadence_uses_completed_batches_not_program_step(
         for write in result.checkpoint_writes
     ] == [(12, 2), (14, 4)]
     assert [event["coordinate"]["program_step"] for event in result.history_events] == [2, 4]
-    assert method_observations == []
-    assert observation_callbacks == [None]
+    assert result.diagnostics.method_trace is None
     assert int(result.final_slots["batch_counter"]) == 14
+
+
+@pytest.mark.parametrize(
+    ("action", "stop_batch", "total_updates", "progress_interval", "writes", "missing_write"),
+    [
+        pytest.param("terminate", 14, 5, 1, [2], None, id="immediate-off-cadence"),
+        pytest.param("terminate", 15, 6, 1, [2], 2, id="immediate-before-scheduled-write"),
+        pytest.param("terminate", 15, 5, 4, [2, 5], None, id="immediate-after-scheduled-write"),
+        pytest.param("stop", 14, 4, 1, [2, 4], 4, id="graceful-off-cadence"),
+    ],
+)
+def test_native_cancellation_checkpoint_cadence(
+    tmp_path: Path,
+    action: CancellationAction,
+    stop_batch: int,
+    total_updates: int,
+    progress_interval: int,
+    writes: list[int],
+    missing_write: int | None,
+) -> None:
+    registry, _ = _interval_registry(total_updates=total_updates)
+    spec = _run_spec()
+    spec.training_config.n_batches = total_updates
+    spec.checkpoint_progress.checkpoint_interval = 3
+    spec.checkpoint_progress.progress_interval = progress_interval
+    initial_slots = _initial_slots(arrays=True)
+    initial_slots["batch_counter"] = jnp.array(10, dtype=jnp.int32)
+    decision = CancellationDecision(action, "test", 123.0)
+
+    def cancellation_probe(coordinate: ProgressCoordinate) -> CancellationDecision | None:
+        return decision if coordinate.completed_batches == stop_batch else None
+
+    result = execute_training_run_spec(
+        spec,
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "runs",
+        checkpoint_root=tmp_path / "checkpoints",
+        registry=registry,
+        cancellation_probe=cancellation_probe,
+    )
+    assert result.status == "cancelled"
+    assert result.end_completed_batches == stop_batch
+    diagnostics = json.loads(result.diagnostics_path.read_bytes())
+    assert diagnostics["checkpoint_coordinates"] == writes
+    row = ConformanceRowArtifacts(
+        row_id=result.run_id,
+        bundle_row_spec=spec.model_dump(mode="json"),
+        manifest_path=result.manifest_path,
+        training_diagnostics=diagnostics,
+    )
+    cadence = check_checkpoint_cadence(row)
+    assert cadence.status == "pass", cadence
+
+    if missing_write is not None:
+        incomplete = replace(
+            row,
+            training_diagnostics={
+                **diagnostics,
+                "checkpoint_coordinates": [batch for batch in writes if batch != missing_write],
+                "checkpoint_transactions": [
+                    transaction
+                    for transaction in diagnostics["checkpoint_transactions"]
+                    if transaction["completed_batches"] != missing_write
+                ],
+            },
+        )
+        assert check_checkpoint_cadence(incomplete).status == "fail"
 
 
 def test_interval_resume_preserves_inner_step_and_absolute_batch_cadence(
@@ -4502,6 +4635,66 @@ def test_execute_training_run_spec_emits_run_events_without_changing_manifest(
     assert result.manifest.checkpoint_custody
 
 
+def test_native_numerical_scalar_metrics_round_trip_through_json(tmp_path: Path) -> None:
+    def update(slots, _context):
+        loss = jnp.square(slots["model"] - 1.5)
+        return {
+            "model": slots["model"],
+            "optimizer": slots["optimizer"],
+            "prng": slots["prng"],
+            "train_loss": loss,
+            "healthy": jnp.isfinite(loss),
+            "batch_counter": slots["batch_counter"] + 1,
+        }
+
+    kernel = NumericalUpdateKernel(update, excluded_slots=("objective",))
+    spec = _run_spec()
+    worker = spec.worker_execution
+    contract = worker.method_contract
+    contract.state_slots.append(StateSlotSpec(name="healthy", role="metric"))
+    contract.phase_program.phases[0].writes.append("healthy")
+    contract.phase_program.update_steps[0].writes.append("healthy")
+    worker.effective_phase = validate_worker_contract(
+        contract, update_kernels={"feedbax.training.standard_supervised.gradient_update": kernel}
+    )
+
+    events_path = tmp_path / "events.jsonl"
+    with closing(
+        RunEventEmitter(
+            run_set_id="scalar-metrics", row_id="row", path=events_path, heartbeat_seconds=None
+        )
+    ) as emitter:
+        result = execute_training_run_spec(
+            spec,
+            registry=_mapped_test_registry(spec, kernel),
+            initial_slots={
+                **_initial_slots(arrays=True),
+                "model": jnp.asarray(1.0),
+                "train_loss": jnp.asarray(0.0),
+                "healthy": jnp.asarray(False),
+            },
+            manifest_root=tmp_path / "runs",
+            checkpoint_root=tmp_path / "checkpoints",
+            run_event_emitter=emitter,
+        )
+
+    events = {event.type: event.payload for event in RunEventReader(events_path).read_all()}
+    for event_type in ("ready", "progress", "checkpoint_written", "complete"):
+        metrics = events[event_type]["coordinate"]["metrics"]
+        assert metrics["train_loss"] == 0.25
+        assert metrics["healthy"] is True
+    assert events["progress"]["loss"] == 0.25
+    checkpoint = json.loads(result.checkpoint_writes[0].manifest_path.read_bytes())
+    for metrics in (
+        events["progress"]["metrics"],
+        events["complete"]["metrics"],
+        load_manifest(result.manifest_path).summary_metrics,
+        checkpoint["completed_coordinate"]["metrics"],
+    ):
+        assert metrics["train_loss"] == 0.25
+        assert metrics["healthy"] is True
+
+
 def test_execute_training_run_spec_stops_at_checkpoint_with_cancelled_provenance(
     tmp_path: Path,
 ) -> None:
@@ -4618,11 +4811,11 @@ def test_execute_training_run_spec_propagates_progress_callback_errors(
     assert not list((tmp_path / "manifests" / "training_runs").glob("*.json"))
 
 
-def test_execute_training_run_spec_resumes_through_checkpoint_custody(
+def test_terminal_checkpoint_resume_does_not_repeat_an_update(
     tmp_path: Path,
 ) -> None:
     checkpoint_root = tmp_path / "checkpoint-custody"
-    execute_training_run_spec(
+    source = execute_training_run_spec(
         _run_spec(),
         registry=synthetic_training_program_registry(),
         run_id="interrupted",
@@ -4642,10 +4835,11 @@ def test_execute_training_run_spec_resumes_through_checkpoint_custody(
         resume=True,
     )
 
-    assert resumed.final_slots["model"].tolist() == [3.0]
-    assert resumed.final_slots["optimizer"]["count"].tolist() == [3.0]
-    assert resumed.final_coordinate.program_step == 2
-    assert resumed.checkpoint_writes[0].manifest.parent_lineage
+    assert resumed.status == "completed"
+    assert resumed.final_coordinate.program_step == source.final_coordinate.program_step == 1
+    assert resumed.start_completed_batches == resumed.end_completed_batches == 1
+    assert eqx.tree_equal(resumed.final_slots["model"], source.final_slots["model"])
+    assert not resumed.checkpoint_writes
 
 
 def _checkpoint_initialization_plan(source, *, mode: str, target_slots):
@@ -4970,6 +5164,7 @@ def test_execute_training_run_spec_initialization_plan_rejects_wrong_source(
 def test_same_row_resume_realizes_segment_lineage_and_cadence(
     tmp_path: Path,
 ) -> None:
+    registry, _ = _chunked_registry(stop_after_program_step=2)
     checkpoint_root = tmp_path / "checkpoint-custody"
     source_context = _execution_context(collection_root=tmp_path / "source-row")
     source_context = source_context.model_copy(
@@ -4986,7 +5181,7 @@ def test_same_row_resume_realizes_segment_lineage_and_cadence(
     )
     source = execute_training_run_spec(
         _run_spec(),
-        registry=synthetic_training_program_registry(),
+        registry=registry,
         initial_slots=_initial_slots(arrays=True),
         manifest_root=tmp_path / "source-manifests",
         checkpoint_root=checkpoint_root,
@@ -5001,7 +5196,7 @@ def test_same_row_resume_realizes_segment_lineage_and_cadence(
     )
     resumed = execute_training_run_spec(
         _run_spec(),
-        registry=synthetic_training_program_registry(),
+        registry=registry,
         initial_slots=_initial_slots(arrays=True),
         manifest_root=tmp_path / "resumed-manifests",
         checkpoint_root=checkpoint_root,
@@ -5686,10 +5881,26 @@ def test_nan_manifest_conflict_uses_linked_failure_fallback(
 
 
 def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry, program = _chunked_registry(stop_after_program_step=3)
     checkpoint_root = tmp_path / "checkpoint-custody"
+    saved_models = []
+    phase_runs = []
+    save = training_executor.StreamingCheckpointStore.save
+    run = training_executor.PhaseProgramExecutor.run
+
+    def observe_save(store, checkpoint):
+        saved_models.append(ref(checkpoint.slots["model"]))
+        return save(store, checkpoint)
+
+    def retain_phase_run(executor, *args, **kwargs):
+        phase_result = run(executor, *args, **kwargs)
+        phase_runs.append((executor.checkpoint_store, phase_result))
+        return phase_result
+
+    monkeypatch.setattr(training_executor.StreamingCheckpointStore, "save", observe_save)
+    monkeypatch.setattr(training_executor.PhaseProgramExecutor, "run", retain_phase_run)
 
     result = execute_training_run_spec(
         _run_spec(),
@@ -5710,6 +5921,20 @@ def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
     assert len({write.manifest.transaction_id for write in result.checkpoint_writes}) == 3
     assert len(list((checkpoint_root / "transactions").glob("tx-*"))) == 3
 
+    for step, write in enumerate(result.checkpoint_writes, start=1):
+        custody_ref = ParentRef(
+            kind="TrainingCheckpointTransactionManifest",
+            id=write.manifest.transaction_id,
+            role="training_checkpoint_custody",
+            uri=write.manifest_path.relative_to(checkpoint_root).as_posix(),
+            metadata={"manifest_sha256": write.latest_pointer.manifest_sha256},
+        )
+        resolved = resolve_checkpoint_custody_ref(custody_ref, allowed_root=checkpoint_root)
+        assert resolved.manifest.completed_coordinate.program_step == step
+        assert resolved.slots["model"].tolist() == [step * (step + 1) / 2]
+        assert resolved.slots["optimizer"]["count"].tolist() == [step + 1]
+        assert resolved.slots["prng"].tolist() == [step, step + 1]
+
     loaded = load_latest_checkpoint(
         checkpoint_root,
         expected_run_spec=_run_spec(),
@@ -5719,6 +5944,10 @@ def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
     assert loaded.manifest.transaction_id == result.checkpoint_writes[-1].manifest.transaction_id
     assert loaded.manifest.completed_coordinate.program_step == 3
     assert loaded.slots["model"].tolist() == result.final_slots["model"].tolist()
+
+    assert len(phase_runs) == 1
+    assert len(saved_models) == 3
+    assert all(model_ref() is None for model_ref in saved_models[:-1])
 
 
 def test_repeated_barrier_visits_capture_binary_artifact_sinks(
@@ -5779,50 +6008,123 @@ def test_repeated_barrier_visits_capture_binary_artifact_sinks(
     assert "history_chunk" not in loaded.slots
 
 
-def test_partial_run_resume_matches_uninterrupted_chunked_execution(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("target", "checkpoint_interval"),
+    [
+        pytest.param("guarded", 1, id="guarded-cadence"),
+        pytest.param("default", 1, id="default-cadence"),
+        pytest.param("guarded", 4, id="guarded-stop-before-next-phase"),
+    ],
+)
+def test_durable_resume_preserves_resolved_phase_branch(
+    tmp_path: Path, target: str, checkpoint_interval: int
 ) -> None:
-    full_registry, _program = _chunked_registry(stop_after_program_step=3)
-    full = execute_training_run_spec(
-        _run_spec(),
-        run_id="chunked-full",
-        initial_slots=_initial_slots(arrays=True),
-        manifest_root=tmp_path / "full-runs",
-        checkpoint_root=tmp_path / "full-checkpoints",
-        registry=full_registry,
-    )
+    contract = standard_supervised_method_contract()
+    program = contract.phase_program
+    entry = program.phases[0]
+    barrier = program.checkpoint_barriers[0]
+    entry.legal_next = ["guarded", "default"]
+    for name, steps in (("guarded", 1), ("default", 2)):
+        branch_barrier = f"after_{name}"
+        program.phases.append(entry.model_copy(update={
+            "name": name,
+            "max_steps": steps,
+            "legal_next": [],
+            "checkpoint_barrier": branch_barrier,
+        }))
+        program.checkpoint_barriers.append(barrier.model_copy(update={
+            "name": branch_barrier,
+            "phase": name,
+        }))
+    program.transitions = [
+        PhaseTransitionSpec(
+            source=entry.name,
+            target="guarded",
+            barrier=barrier.name,
+            guard=MetricGuardSpec(
+                predicate_ref="tests.select_guarded_branch",
+                metric_slots=["train_loss"],
+            ),
+        ),
+        PhaseTransitionSpec(source=entry.name, target="default", barrier=barrier.name),
+    ]
 
-    partial_registry, _program = _chunked_registry(stop_after_program_step=3)
-    checkpoint_root = tmp_path / "partial-checkpoints"
-    execute_training_run_spec(
-        _run_spec(),
-        run_id="chunked-partial",
-        initial_slots=_initial_slots(arrays=True),
-        manifest_root=tmp_path / "partial-runs",
-        checkpoint_root=checkpoint_root,
-        registry=partial_registry,
-        stop_after_barrier="after_train_batch",
-    )
+    def select_guarded_branch(slots, coordinate, context):
+        return (
+            slots["train_loss"] == 1.0
+            and coordinate.program_step == 1
+            and context["select_guarded"]
+        )
 
-    resume_registry, _program = _chunked_registry(stop_after_program_step=3)
-    resumed = execute_training_run_spec(
-        _run_spec(),
-        run_id="chunked-resumed",
-        initial_slots=_initial_slots(arrays=True),
-        manifest_root=tmp_path / "resume-runs",
-        checkpoint_root=checkpoint_root,
-        registry=resume_registry,
+    registry = TrainingProgramRegistry()
+    registry.register_program(evolve_training_program(
+        synthetic_supervised_training_program(),
+        contract_compiler=lambda _payload: contract,
+        guard_predicates_factory=lambda _payload: {
+            "tests.select_guarded_branch": select_guarded_branch,
+        },
+    ))
+    spec = _run_spec()
+    spec.worker_execution = WorkerExecutionSpec(
+        method_contract=contract,
+        effective_phase=validate_worker_contract(contract),
+    )
+    spec.checkpoint_progress.checkpoint_interval = checkpoint_interval
+    spec.checkpoint_progress.progress_interval = 1
+    choose_guarded = target == "guarded"
+
+    def execute(name, *, select_guarded, **kwargs):
+        return execute_training_run_spec(
+            spec,
+            run_id=name,
+            initial_slots=_initial_slots(arrays=True),
+            manifest_root=tmp_path / name / "runs",
+            checkpoint_root=tmp_path / name / "checkpoints",
+            registry=registry,
+            kernel_context={"select_guarded": select_guarded},
+            **kwargs,
+        )
+
+    full = execute("full", select_guarded=choose_guarded)
+    if checkpoint_interval == 1:
+        stopped = execute("stopped", select_guarded=choose_guarded, stop_after_barrier=barrier.name)
+    else:
+        stop_requested = False
+
+        def request_stop(_event):
+            nonlocal stop_requested
+            stop_requested = True
+
+        stopped = execute(
+            "stopped",
+            select_guarded=choose_guarded,
+            progress_callback=request_stop,
+            stop_before_update=lambda: stop_requested,
+        )
+    source_root = tmp_path / "stopped" / "checkpoints"
+    custody = authenticate_published_checkpoint_custody(source_root)
+    assert custody.manifest.completed_coordinate.program_step == 1
+    assert "train_loss" not in {slot.slot for slot in custody.manifest.slots}
+
+    resumed = execute(
+        "resumed",
+        select_guarded=not choose_guarded,
         resume=True,
+        checkpoint_source_root=source_root,
     )
 
-    assert resumed.final_slots["model"].tolist() == full.final_slots["model"].tolist()
-    assert resumed.final_slots["optimizer"]["count"].tolist() == (
-        full.final_slots["optimizer"]["count"].tolist()
-    )
-    assert resumed.final_slots["prng"].tolist() == full.final_slots["prng"].tolist()
+    assert resumed.final_coordinate.phase == full.final_coordinate.phase == target
     assert resumed.final_coordinate.program_step == full.final_coordinate.program_step
-    assert resumed.checkpoint_writes[0].manifest.metadata["barrier_visit_ordinal"] == 1
-    assert resumed.checkpoint_writes[0].manifest.parent_lineage
+    assert resumed.end_completed_batches == full.end_completed_batches
+    assert eqx.tree_equal(resumed.final_slots["model"], full.final_slots["model"])
+    assert eqx.tree_equal(resumed.final_slots["optimizer"], full.final_slots["optimizer"])
+    assert [
+        (event["coordinate"]["phase"], event["coordinate"]["program_step"])
+        for event in stopped.history_events + resumed.history_events
+    ] == [
+        (event["coordinate"]["phase"], event["coordinate"]["program_step"])
+        for event in full.history_events
+    ]
 
 
 def test_execute_training_run_spec_rejects_invalid_spec_before_launch_with_path() -> None:
@@ -5874,7 +6176,6 @@ def test_execute_training_run_spec_manifest_root_injection_and_conflict(
 
 def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     spec_path = tmp_path / "training-run-spec.json"
-    slots_path = tmp_path / "initial-slots.json"
     context_path = tmp_path / "execution-context.json"
     row_dir = tmp_path / "row"
     events_dir = tmp_path / "events"
@@ -5883,7 +6184,6 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
     (cache_dir / "preexisting-cache-entry").write_bytes(b"cache")
     spec = _synthetic_cli_run_spec()
     _write_json(spec_path, spec.model_dump(mode="json"))
-    _write_json(slots_path, _initial_slots())
     _write_json(
         context_path,
         _execution_context(
@@ -5902,8 +6202,6 @@ def test_execute_training_run_spec_cli_smoke(tmp_path: Path) -> None:
             str(spec_path),
             "--manifest-root",
             str(tmp_path / "runs"),
-            "--initial-slots",
-            str(slots_path),
             "--run-id",
             "feedbax-training-run:planned-cli",
             "--execution-context",
@@ -5967,10 +6265,8 @@ def test_execute_training_run_spec_cli_returns_nonzero_for_failed_result(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     spec_path = tmp_path / "training-run-spec.json"
-    slots_path = tmp_path / "initial-slots.json"
     manifest_path = tmp_path / "manifest.json"
     _write_json(spec_path, _synthetic_cli_run_spec().model_dump(mode="json"))
-    _write_json(slots_path, _initial_slots())
     manifest = TrainingRunManifest(
         id="feedbax-training-run:cli-failed",
         status="failed",
@@ -5998,8 +6294,6 @@ def test_execute_training_run_spec_cli_returns_nonzero_for_failed_result(
             "execute-training-run-spec",
             "--plugin", "tests.support.training_fixtures",
             str(spec_path),
-            "--initial-slots",
-            str(slots_path),
             "--run-id",
             "cli-failed",
             "--no-progress",
@@ -6017,11 +6311,9 @@ def test_execute_training_run_spec_cli_forwards_authored_checkpoint_plans(
 ) -> None:
     spec = _synthetic_cli_run_spec()
     spec_path = tmp_path / "spec.json"
-    slots_path = tmp_path / "slots.json"
     init_path = tmp_path / "initialization.json"
     fork_path = tmp_path / "fork.json"
     _write_json(spec_path, spec.model_dump(mode="json"))
-    _write_json(slots_path, _initial_slots())
     source_ref = ParentRef(
         kind="TrainingCheckpointTransactionManifest",
         id="tx-source",
@@ -6077,8 +6369,6 @@ def test_execute_training_run_spec_cli_forwards_authored_checkpoint_plans(
         "execute-training-run-spec",
             "--plugin", "tests.support.training_fixtures",
         str(spec_path),
-        "--initial-slots",
-        str(slots_path),
         "--no-progress",
     ]
     assert feedbax_main.main([*common, "--checkpoint-initialization-plan", str(init_path)]) == 0

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
@@ -271,19 +272,6 @@ def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
             ("mass", "act", "Ground"),
         ),
         (
-            "acausal.parallel_across_sources",
-            AcausalGraphSpec(
-                physical_domain="translational",
-                nodes={
-                    "motion_a": ComponentSpec(type="PrescribedMotion"),
-                    "motion_b": ComponentSpec(type="PrescribedMotion"),
-                },
-                connections=[{"a": ("motion_a", "flange"), "b": ("motion_b", "flange")}],
-                solver={"solver_type": "euler", "dt": 0.001},
-            ),
-            ("motion_a", "motion_b", "sources"),
-        ),
-        (
             "acausal.series_through_sources",
             AcausalGraphSpec(
                 physical_domain="translational",
@@ -457,6 +445,15 @@ def test_compile_endpoint_returns_report_and_malformed_body_422(
         payload = response.json()
         assert payload["status"] == "ok"
         assert service.get_graph(record.graph_id).project.compile_reports is not None
+
+        fixture_path = Path(__file__).parent / "fixtures" / "acausal_report_subject.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        authored = client.post(
+            f"/api/graphs/{record.graph_id}/nodes/compile",
+            json={"node_path": ["plant"], "interior": fixture["interior"]},
+        )
+        assert authored.status_code == 200
+        assert authored.json()["interior_content_hash"] == fixture["subject"]
 
         malformed = client.post(
             f"/api/graphs/{record.graph_id}/nodes/compile",

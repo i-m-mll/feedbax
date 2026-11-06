@@ -9,7 +9,7 @@ export interface TrainingRun {
   id: string;
   name: string;
   createdAt: string; // ISO 8601
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stale' | 'stopped';
+  status: 'pending' | 'claimed' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stale' | 'stopped';
   /** Key hyperparameters for at-a-glance differentiation. */
   hyperparams: Record<string, string | number>;
   metrics?: Record<string, unknown>;

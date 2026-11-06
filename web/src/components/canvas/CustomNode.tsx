@@ -23,6 +23,7 @@ import { PortContextMenu } from './PortContextMenu';
 import { FigureOutputPin } from '@/components/analysis/FigureOutputPin';
 import { NodeHeader, NodeShell, PortHandle } from '@/components/ui/NodePrimitives';
 import { portIsConserving } from '@/features/domains/acausal';
+import { hasInspectorInterior } from '@/features/domains/context';
 
 const DEFAULT_WIDTH = 220;
 const HEADER_HEIGHT = 40;
@@ -113,8 +114,10 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
 
   const compositeTypes = useGraphStore((state) => state._compositeTypes);
   const componentRegistry = useGraphStore((state) => state._componentRegistry);
-  const isComposite =
-    compositeTypes.has(spec.type) || hasSubgraph;
+  const canOpenInterior =
+    compositeTypes.has(spec.type) ||
+    hasSubgraph ||
+    hasInspectorInterior(componentRegistry.get(spec.type));
   const muxInputs = useMemo(
     () => visibleMuxInputPorts(graph, label, taskBindingSpec),
     [graph, label, taskBindingSpec]
@@ -357,7 +360,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
         collapsed={collapsedEffective}
         onDoubleClick={(event) => {
           event.stopPropagation();
-          if (isComposite) {
+          if (canOpenInterior) {
             enterSubgraph(label);
           }
         }}
@@ -408,7 +411,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
           >
             <ArrowLeftRight className="w-3.5 h-3.5" />
           </button>
-          {isComposite && (
+          {canOpenInterior && (
             <button
               className="shrink-0 text-slate-400 hover:text-brand-600"
               onClick={(event) => {

@@ -1,10 +1,14 @@
 """Tests for feedbax.mechanics.skeleton.mjx_skeleton and feedbax.mechanics.mjx_plant."""
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
+from feedbax.mechanics.backend import MJXBackend
 from feedbax.mechanics.body import default_3link_bounds, sample_preset
+from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.model_builder import (
     ChainConfig,
     SimConfig,
@@ -82,7 +86,6 @@ class TestMJXSkeletonInit:
         state = skeleton.init(key=key)
         assert state.qpos.shape == (skeleton.nq,)
         assert state.qvel.shape == (skeleton.nv,)
-        assert state.xfrc_applied.shape == (skeleton.nbody, 6)
 
     def test_finite(self, skeleton, key):
         state = skeleton.init(key=key)
@@ -97,7 +100,6 @@ class TestMJXSkeletonVectorField:
         d_state = skeleton.vector_field(0.0, state, ctrl)
         assert d_state.qpos.shape == state.qpos.shape
         assert d_state.qvel.shape == state.qvel.shape
-        assert d_state.xfrc_applied.shape == state.xfrc_applied.shape
 
     def test_finite_derivatives(self, skeleton, key):
         state = skeleton.init(key=key)
@@ -115,12 +117,6 @@ class TestMJXSkeletonEffector:
         assert eff.pos.shape == (2,)
         assert jnp.all(jnp.isfinite(eff.pos))
 
-    def test_effector_velocity(self, skeleton, key):
-        state = skeleton.init(key=key)
-        eff = skeleton.effector(state)
-        assert eff.vel.shape == (2,)
-        assert jnp.all(jnp.isfinite(eff.vel))
-
     def test_effector_plausible(self, skeleton, key):
         state = skeleton.init(key=key)
         eff = skeleton.effector(state)
@@ -128,24 +124,223 @@ class TestMJXSkeletonEffector:
         assert jnp.linalg.norm(eff.pos) < 2.0
 
 
-class TestMJXSkeletonForwardKinematics:
-    def test_returns_cartesian(self, skeleton, key):
-        state = skeleton.init(key=key)
-        fk = skeleton.forward_kinematics(state)
-        assert isinstance(fk, CartesianState)
-        assert fk.pos.shape[1] == 2  # 2D positions
-        assert fk.vel.shape[1] == 2
+def test_body_origin_velocities_match_body_origin_motion():
+    import mujoco
+
+    model = mujoco.MjModel.from_xml_string("""
+        <mujoco>
+            <worldbody>
+                <body name="link">
+                    <joint axis="1 2 3"/>
+                    <inertial pos="0.2 0.1 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                    <body pos="0.8 -0.3 0.4">
+                        <inertial pos="0.1 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                    </body>
+                    <site name="tip" pos="0.7 0.2 0"/>
+                </body>
+                <body pos="-2 1 0">
+                    <joint type="slide" axis="0 1 0"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    """)
+    skeleton = MJXSkeleton(to_mjx(model), get_site_id(model, "tip"), get_body_id(model, "link"))
+    states = MJXSkeletonState(
+        qpos=jnp.array([[0.6, 0.2], [-0.4, -0.1]]),
+        qvel=jnp.array([[1.7, -0.3], [-0.9, 0.4]]),
+        effector_force=jnp.zeros((2, 2)),
+    )
+    project = jax.jit(jax.vmap(skeleton.forward_kinematics))
+    epsilon = 1e-3
+    before = project(eqx.tree_at(lambda s: s.qpos, states, states.qpos - epsilon * states.qvel))
+    after = project(eqx.tree_at(lambda s: s.qpos, states, states.qpos + epsilon * states.qvel))
+
+    projected = project(states)
+    assert projected.pos.shape == (2, model.nbody, 2)
+    np.testing.assert_allclose(projected.vel, (after.pos - before.pos) / (2 * epsilon), atol=1e-4)
 
 
-class TestMJXSkeletonForce:
-    def test_force_stored(self, skeleton, key):
-        state = skeleton.init(key=key)
-        force = jnp.array([1.5, -0.5])
-        new_state = skeleton.update_state_given_effector_force(force, state)
-        expected = jnp.zeros(6).at[:2].set(force)
-        assert jnp.allclose(
-            new_state.xfrc_applied[skeleton.effector_body_id], expected
+@pytest.fixture
+def offset_hinge(key):
+    import mujoco
+
+    model = mujoco.MjModel.from_xml_string("""
+        <mujoco>
+            <option gravity="0 0 0" timestep="0.04" integrator="Euler"/>
+            <worldbody>
+                <body name="link">
+                    <joint name="hinge" axis="0 0 1"/>
+                    <inertial pos="0.2 0.1 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                    <site name="tip" pos="0.8 -0.3 0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    """)
+    skeleton = MJXSkeleton(to_mjx(model), get_site_id(model, "tip"), get_body_id(model, "link"))
+    state = eqx.tree_at(
+        lambda s: (s.qpos, s.qvel),
+        skeleton.init(key=key),
+        (jnp.array([0.6]), jnp.array([1.7])),
+    )
+    return model, skeleton, state
+
+
+def _site_velocity_reference(model, skeleton, state):
+    import mujoco
+
+    data = mujoco.MjData(model)
+    positions = []
+    epsilon = 1e-5
+    for dt in (-epsilon, epsilon):
+        data.qpos[:] = np.asarray(state.qpos) + dt * np.asarray(state.qvel, dtype=float)
+        mujoco.mj_kinematics(model, data)
+        positions.append(data.site_xpos[skeleton.effector_site_id, :2].copy())
+    return (positions[1] - positions[0]) / (2 * epsilon)
+
+
+def test_effector_velocity_matches_site_motion(offset_hinge):
+    model, skeleton, state = offset_hinge
+
+    expected = _site_velocity_reference(model, skeleton, state)
+
+    np.testing.assert_allclose(skeleton.effector(state).vel, expected, atol=1e-6)
+
+
+def test_effector_force_satisfies_virtual_work(offset_hinge):
+    model, skeleton, state = offset_hinge
+    force = jnp.array([1.4, -0.9])
+    application_state = eqx.tree_at(lambda s: s.qpos, state, jnp.array([-0.4]))
+    loaded = skeleton.update_state_given_effector_force(force, application_state)
+    loaded = eqx.tree_at(lambda s: s.qpos, loaded, state.qpos)
+    ctrl = jnp.zeros(skeleton.input_size)
+
+    unloaded_acc = skeleton.vector_field(0.0, state, ctrl).qvel[0]
+    loaded_acc = skeleton.vector_field(0.0, loaded, ctrl).qvel[0]
+    site_power = force @ _site_velocity_reference(model, skeleton, state)
+    # Hinge inertia about its origin follows from the parallel-axis theorem.
+    hinge_inertia = model.body_inertia[1, 2] + model.body_mass[1] * np.sum(model.body_ipos[1] ** 2)
+    joint_power = hinge_inertia * (loaded_acc - unloaded_acc) * state.qvel[0]
+
+    np.testing.assert_allclose(joint_power, site_power, atol=1e-6)
+
+
+def test_native_step_refuses_replaced_model_timestep_under_jit(offset_hinge, key):
+    model, skeleton, _ = offset_hinge
+    plant = MJXPlant(skeleton)
+    backend = MJXBackend(control_dt=model.opt.timestep, sub_dt=model.opt.timestep)
+    state = backend.init_state(plant, key=key)
+    changed_plant = eqx.tree_at(
+        lambda p: p.skeleton.mjx_model.opt.timestep,
+        plant,
+        jnp.asarray(2 * model.opt.timestep),
+    )
+    step = eqx.filter_jit(backend.substep)
+    with pytest.raises(eqx.EquinoxRuntimeError, match=r"model\.opt\.timestep"):
+        step(changed_plant, state, jnp.zeros(plant.input_size)).plant.skeleton.qpos.block_until_ready()
+
+
+def test_native_substeps_apply_held_force_at_moving_site(offset_hinge, key):
+    import mujoco
+
+    model, skeleton, state = offset_hinge
+    force = jnp.array([1.4, -0.9])
+    substeps = 3
+    dt = model.opt.timestep * substeps
+    plant = MJXPlant(skeleton)
+    backend = MJXBackend(control_dt=dt, sub_dt=model.opt.timestep)
+    mechanics = Mechanics(plant, dt, backend=backend, key=key)
+    storage = eqx.nn.State(mechanics)
+    initial = storage.get(mechanics.state_index)
+    initial = eqx.tree_at(
+        lambda s: (s.plant.skeleton, s.effector.force), initial, (state, force),
+    )
+    storage = storage.set(mechanics.state_index, initial)
+
+    inputs = {"force": jnp.zeros(plant.input_size)}
+    outputs, storage = mechanics(inputs, storage, key=key)
+    stepped = outputs["state"].plant.skeleton
+
+    data = mujoco.MjData(model)
+    data.qpos[:] = state.qpos
+    data.qvel[:] = state.qvel
+    for _ in range(substeps):
+        mujoco.mj_kinematics(model, data)
+        mujoco.mj_comPos(model, data)
+        data.qfrc_applied[:] = 0
+        mujoco.mj_applyFT(
+            model, data, np.array([*force, 0.0]), np.zeros(3),
+            data.site_xpos[skeleton.effector_site_id], skeleton.effector_body_id,
+            data.qfrc_applied,
         )
+        mujoco.mj_step(model, data)
+
+    np.testing.assert_allclose(stepped.qpos, data.qpos, atol=1e-6)
+    np.testing.assert_allclose(stepped.qvel, data.qvel, atol=1e-6)
+
+    # With no fresh disturbance, the next control step releases the site force.
+    outputs, _ = mechanics(inputs, storage, key=key)
+    stepped = outputs["state"].plant.skeleton
+    data.qfrc_applied[:] = 0
+    for _ in range(substeps):
+        mujoco.mj_step(model, data)
+
+    np.testing.assert_allclose(stepped.qpos, data.qpos, atol=1e-6)
+    np.testing.assert_allclose(stepped.qvel, data.qvel, atol=1e-6)
+
+
+def test_native_step_projects_only_the_limited_joint(key):
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_string("""
+        <mujoco>
+            <compiler angle="radian"/>
+            <option gravity="0 0 0" timestep="0.04" integrator="Euler"/>
+            <worldbody>
+                <body name="link">
+                    <joint axis="0 0 1" range="-0.25 0.25"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                    <site name="tip" pos="0.8 0 0"/>
+                </body>
+                <body>
+                    <joint axis="0 0 1" limited="false" range="-0.1 0.1"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    """)
+    skeleton = MJXSkeleton(to_mjx(model), get_site_id(model, "tip"), get_body_id(model, "link"))
+    start = MJXSkeletonState(
+        qpos=jnp.array([0.24, 0.4]), qvel=jnp.array([2.0, -1.0]), effector_force=jnp.zeros(2),
+    )
+    dt = model.opt.timestep
+    backend = MJXBackend(control_dt=dt, sub_dt=dt)
+    force = jnp.array([0.0, 0.2])
+
+    def step(clip_states):
+        plant = MJXPlant(skeleton, clip_states=clip_states)
+        mechanics = Mechanics(plant, dt, backend=backend, key=key)
+        state = eqx.nn.State(mechanics)
+        initial = eqx.tree_at(
+            lambda s: (s.plant.skeleton, s.effector.force),
+            state.get(mechanics.state_index),
+            (start, force),
+        )
+        state = state.set(mechanics.state_index, initial)
+        inputs = {"force": jnp.zeros(plant.input_size)}
+        outputs, _ = eqx.filter_jit(mechanics)(inputs, state, key=key)
+        return outputs["state"].plant.skeleton, outputs["effector"]
+
+    projected, effector = step(True)
+    unprojected, _ = step(False)
+
+    assert unprojected.qpos[0] > 0.25
+    assert unprojected.qpos[1] > 0.1
+    np.testing.assert_array_equal(projected.qpos, [0.25, unprojected.qpos[1]])
+    np.testing.assert_array_equal(projected.qvel, unprojected.qvel)
+    np.testing.assert_array_equal(projected.effector_force, force)
+    expected_effector = skeleton.effector(projected)
+    np.testing.assert_allclose(effector.pos, expected_effector.pos)
+    np.testing.assert_allclose(effector.vel, expected_effector.vel)
 
 
 class TestMJXSkeletonIK:

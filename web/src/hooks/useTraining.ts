@@ -138,7 +138,7 @@ export function useTraining() {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const intentionalCloseRef = useRef(false);
-  const lastEventSeqRef = useRef(-1);
+  const lastWorkerSeqRef = useRef(-1);
   const progressBatcherRef = useRef<ReturnType<typeof createTrainingProgressBatcher> | null>(null);
   if (progressBatcherRef.current === null) {
     progressBatcherRef.current = createTrainingProgressBatcher(
@@ -155,7 +155,7 @@ export function useTraining() {
   }, []);
 
   const connect = useCallback(
-    (nextJobId: string) => {
+    (nextJobId: string, resume = false) => {
       const existing = wsRef.current;
       if (
         existing &&
@@ -166,22 +166,24 @@ export function useTraining() {
       }
 
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(`${protocol}://${window.location.host}/ws/training/${nextJobId}`);
+      const path = `${protocol}://${window.location.host}/ws/training/${nextJobId}`;
+      const fromSeq = lastWorkerSeqRef.current + 1;
+      const ws = new WebSocket(resume ? `${path}?from_seq=${fromSeq}` : path);
       wsRef.current = ws;
       wsJobIdRef.current = nextJobId;
 
       ws.onmessage = (event) => {
-        reconnectAttemptRef.current = 0;
+        if (wsRef.current !== ws || intentionalCloseRef.current) return;
         let payload: TrainingWebSocketEvent;
         try {
           payload = parseContract('TrainingWebSocketEvent', JSON.parse(event.data) as unknown);
         } catch (error) {
           const message =
             error instanceof Error ? error.message : 'Invalid training WebSocket payload';
+          progressBatcherRef.current?.cancel();
           setTrainingStreamError(message);
           setTrainingDiagnostics([]);
           appendLog({
-            batch: 0,
             level: 'error',
             message,
             timestamp: Date.now(),
@@ -191,14 +193,17 @@ export function useTraining() {
           ws.close();
           return;
         }
-        if (payload.job_id !== nextJobId || payload.seq <= lastEventSeqRef.current) {
-          return;
+        if (payload.job_id !== nextJobId) return;
+        if (payload.type !== 'training_resync' && payload.worker_seq != null) {
+          if (payload.worker_seq <= lastWorkerSeqRef.current) return;
+          lastWorkerSeqRef.current = payload.worker_seq;
         }
-        lastEventSeqRef.current = payload.seq;
+        reconnectAttemptRef.current = 0;
         setTrainingStreamError(null);
         if (payload.type === 'training_progress') {
           progressBatcherRef.current?.enqueue({
             batch: payload.batch,
+            program_step: payload.program_step,
             total_batches: payload.total_batches,
             loss: payload.loss,
             loss_terms: payload.loss_terms ?? {},
@@ -211,29 +216,36 @@ export function useTraining() {
         if (payload.type === 'training_log') {
           appendLog({
             batch: payload.batch,
+            program_step: payload.program_step,
             level: payload.level ?? 'info',
             message: payload.message,
             timestamp: Date.now(),
           });
         }
         if (payload.type === 'training_trajectory') {
-          const traj = payload.trajectory;
-          if (traj) {
-            setLatestTrajectory(normalizeTrainingTrajectoryPayload(traj, payload.batch));
-          }
+          setLatestTrajectory(
+            normalizeTrainingTrajectoryPayload(payload.trajectory, payload.batch, payload.program_step)
+          );
         }
         if (payload.type === 'training_resync') {
           setTrainingStreamError(payload.reason === 'gap' ? payload.message : null);
           appendLog({
-            batch: useTrainingStore.getState().progress?.batch ?? 0,
             level: payload.reason === 'gap' ? 'warning' : 'info',
             message: payload.message,
             timestamp: Date.now(),
           });
         }
-        if (payload.type === 'training_complete') {
+        if (payload.type === 'training_complete' || payload.type === 'training_stopped') {
           progressBatcherRef.current?.flush();
-          setStatus('completed');
+          const completed = payload.type === 'training_complete';
+          appendLog({
+            batch: payload.batch,
+            program_step: payload.program_step,
+            level: 'info',
+            message: completed ? 'Training completed.' : 'Training stopped.',
+            timestamp: Date.now(),
+          });
+          setStatus(completed ? 'completed' : 'stopped');
           intentionalCloseRef.current = true;
           ws.close();
         }
@@ -243,7 +255,7 @@ export function useTraining() {
           setTrainingDiagnostics(diagnostics);
           setTrainingStreamError(payload.error);
           appendLog({
-            batch: payload.batch ?? 0,
+            batch: payload.batch,
             level: 'error',
             message: payload.error,
             timestamp: Date.now(),
@@ -269,7 +281,6 @@ export function useTraining() {
             const message = 'Training stream disconnected after multiple reconnect attempts.';
             setTrainingStreamError(message);
             appendLog({
-              batch: 0,
               level: 'error',
               message,
               timestamp: Date.now(),
@@ -287,7 +298,6 @@ export function useTraining() {
         )}s (attempt ${attempt + 1}/${TRAINING_WS_MAX_RECONNECT_ATTEMPTS}).`;
         setTrainingStreamError(message);
         appendLog({
-          batch: 0,
           level: 'warning',
           message,
           timestamp: Date.now(),
@@ -295,7 +305,7 @@ export function useTraining() {
         clearReconnectTimer();
         reconnectTimerRef.current = window.setTimeout(() => {
           reconnectTimerRef.current = null;
-          connect(nextJobId);
+          connect(nextJobId, true);
         }, delayMs);
       };
     },
@@ -330,7 +340,7 @@ export function useTraining() {
     try {
       intentionalCloseRef.current = false;
       reconnectAttemptRef.current = 0;
-      lastEventSeqRef.current = -1;
+      lastWorkerSeqRef.current = -1;
       progressBatcherRef.current?.cancel();
       clearReconnectTimer();
       setTrainingStreamError(null);
@@ -393,35 +403,23 @@ export function useTraining() {
   ]);
 
   const stop = useCallback(async () => {
-    if (!jobId) return;
-    intentionalCloseRef.current = true;
-    clearReconnectTimer();
-    progressBatcherRef.current?.flush();
-    const stopped = await withStoreActionFeedback(
+    const isRunningJob = () => {
+      const state = useTrainingStore.getState();
+      return state.jobId === jobId && state.status === 'running';
+    };
+    if (!jobId || !isRunningJob()) return;
+    const acknowledgement = await withStoreActionFeedback(
       () => stopTraining(jobId),
       {
-        errorToast: (error) =>
-          `${actionErrorMessage(error, 'Failed to stop training.')} Marked idle locally.`,
+        errorToast: (error) => actionErrorMessage(error, 'Failed to request training stop.'),
         toastId: 'training-stop-error',
+        onError: isRunningJob,
       },
     );
-    wsRef.current?.close();
-    wsJobIdRef.current = null;
-    setStatus('idle');
-    setJobId(null);
-    setTrainingStreamError(null);
-    setTrainingDiagnostics([]);
-    if (stopped) {
-      toast.success('Training stopped.', { id: 'training-stop-success' });
+    if (acknowledgement && isRunningJob()) {
+      toast.success('Training stop requested.', { id: 'training-stop-requested' });
     }
-  }, [
-    jobId,
-    setJobId,
-    setStatus,
-    clearReconnectTimer,
-    setTrainingStreamError,
-    setTrainingDiagnostics,
-  ]);
+  }, [jobId]);
 
   return {
     status,

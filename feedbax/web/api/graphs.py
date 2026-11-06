@@ -23,6 +23,7 @@ from feedbax.contracts.studio_api import (
     GraphValidationResponse,
     SuccessPayload,
     SuccessResponse,
+    PenzaiInspectorResponse,
     PenzaiNodeRequest,
 )
 from feedbax.web.services.graph_service import GraphSaveConflictError, GraphService
@@ -198,9 +199,12 @@ async def compile_graph_node(
             node_path=payload.node_path,
             interior=payload.interior,
             component_registry=request.app.state.bootstrap_state.bundle.components,
+            authored_interior=(await request.json())["interior"],
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
+    except CanonicalJsonError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/{graph_id}/nodes/penzai/compile", response_model=DomainCompileReport)
@@ -219,6 +223,21 @@ async def compile_penzai_graph_node(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
+
+
+@router.post("/{graph_id}/nodes/penzai/inspect", response_model=PenzaiInspectorResponse)
+async def inspect_penzai_graph_node(
+    graph_id: str,
+    payload: PenzaiNodeRequest,
+) -> PenzaiInspectorResponse:
+    try:
+        return PenzaiInspectorResponse(data=service.inspect_penzai_node(graph_id, payload))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Graph not found") from exc
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class ExportRequest(BaseModel):

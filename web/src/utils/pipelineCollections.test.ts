@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRlrmpModelGraph } from '@/data/rlrmp-model-graph';
-import {
-  createRlrmpMovementRampAnalysis,
-  seedRlrmpMovementRampWorkspace,
-} from '@/data/rlrmp-run-example';
-import { buildWorkspaceSnapshot } from '@/stores/workspaceStore';
-import { defaultTaskSpec, defaultTrainingSpec } from '@/stores/trainingStore';
+import { TRAINING_RUN_ID, pipelineWorkspaceFixture } from '@/test/pipelineWorkspaceFixture';
 import {
   bestTrainingRun,
   buildBillableSpecLock,
@@ -21,53 +15,34 @@ import {
 } from '@/utils/pipelineCollections';
 import { studioDraftHashes } from '@/utils/studioDraftHash';
 
-function seededWorkspace() {
-  const { graph, uiState } = createRlrmpModelGraph('RLRMP movement-ramp runs');
-  const analysisSnapshot = createRlrmpMovementRampAnalysis();
-  return seedRlrmpMovementRampWorkspace(
-    buildWorkspaceSnapshot({
-      workspace: null,
-      graph,
-      uiState,
-      trainingSpec: defaultTrainingSpec,
-      taskSpec: defaultTaskSpec,
-      analysisSnapshot,
-      projectName: 'RLRMP movement-ramp runs',
-    })
-  );
-}
-
 describe('pipeline collection summaries', () => {
   it('summarizes training runs by user-facing variant and metrics', () => {
-    const workspace = seededWorkspace();
+    const workspace = pipelineWorkspaceFixture();
     const trainStage = workspace.stages.find((stage) => stage.kind === 'train');
     const rows = trainingRunSummaries(trainStage);
 
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({
-      label: 'Power 6 ramp, duration 80',
-      finalValidationLoss: 0.1021,
+      label: 'Tuned run',
+      finalValidationLoss: 0.2,
       metrics: expect.objectContaining({
-        final_validation_loss: 0.1021,
-        peak_velocity_m_per_s: 1.157,
+        final_validation_loss: 0.2,
       }),
-      rampDurationSteps: 80,
-      sourceIssue: 'b399efc',
       jobId: null,
-      axisCoordinates: {},
+      axisCoordinates: { learning_rate: 0.002 },
     });
     expect(bestTrainingRun(rows)?.id).toBe(
-      'rlrmp:b399efc:movement_ramp__power6_dur80'
+      TRAINING_RUN_ID
     );
   });
 
   it('summarizes evaluation input selection without exposing collection ids', () => {
-    const workspace = seededWorkspace();
+    const workspace = pipelineWorkspaceFixture();
     const evalStage = workspace.stages.find((stage) => stage.kind === 'eval');
 
-    expect(trainingInputSummaries(evalStage)).toHaveLength(7);
+    expect(trainingInputSummaries(evalStage)).toHaveLength(2);
     expect(selectedIds(evalStage, 'training_run_ids')).toEqual([
-      'rlrmp:b399efc:movement_ramp__power6_dur80',
+      TRAINING_RUN_ID,
     ]);
   });
 
@@ -138,6 +113,36 @@ describe('pipeline collection summaries', () => {
         }),
       ])
     );
+  });
+
+  it('checks native matrix launch against the staging draft instead of the varied row', () => {
+    const stagedDraft = studioDraftHashes({ training_spec: { n_batches: 10 } });
+    const metadata = {
+      status: 'pending',
+      planned: true,
+      native_launch_supported: true,
+      execution_target: 'local',
+      staging_generation: 'generation-a',
+      staging_draft_spec_hashes: stagedDraft,
+      spec_hashes: studioDraftHashes({ training_spec: { n_batches: 2 } }),
+    };
+    const summarize = (patch: Partial<typeof metadata> = {}, currentSpecHashes = stagedDraft) =>
+      trainingRunSummaries({
+        output_collections: [{ item_refs: [{
+          kind: 'TrainingRunManifest',
+          id: 'run:matrix-row',
+          role: 'training_run',
+          metadata: { ...metadata, ...patch },
+        }] }],
+      } as any, { currentSpecHashes })[0];
+
+    expect(summarize().nativeLaunchGeneration).toBe('generation-a');
+    expect(summarize({}, studioDraftHashes({ training_spec: { n_batches: 12 } })))
+      .toMatchObject({ status: 'stale', nativeLaunchGeneration: undefined });
+    expect(summarize({ execution_target: 'runpod' }).nativeLaunchGeneration).toBeUndefined();
+    expect(summarize({ native_launch_supported: false }).nativeLaunchGeneration).toBeUndefined();
+    expect(summarize({ status: 'claimed' }).nativeLaunchGeneration).toBeUndefined();
+    expect(summarize({ staging_generation: '' }).nativeLaunchGeneration).toBeUndefined();
   });
 
   it('marks legacy hashes rehash-required and agrees after current JSON round trips', () => {
@@ -242,14 +247,33 @@ describe('pipeline collection summaries', () => {
   });
 
   it('summarizes completed evaluation protocol details', () => {
-    const workspace = seededWorkspace();
+    const workspace = pipelineWorkspaceFixture();
     const evalStage = workspace.stages.find((stage) => stage.kind === 'eval');
     const [summary] = evaluationRunSummaries(evalStage);
 
-    expect(summary.label).toBe('8-direction validation, SISU 0.5, zero perturbation');
+    expect(summary.label).toBe('Held-out validation');
     expect(evaluationProtocolLabel(summary)).toBe(
-      '8-direction center-out - SISU 0.5 - no perturbation'
+      'Held-out targets - no perturbation'
     );
+  });
+
+  it('prefers the authored condition label and preserves zero in the display', () => {
+    const [summary] = evaluationRunSummaries({
+      output_collections: [{
+        item_refs: [{
+          kind: 'EvaluationRunManifest',
+          id: 'eval:zero-gain',
+          role: 'evaluation_run',
+          metadata: {
+            condition_label: 'Feedback gain=0',
+            condition_axis_coordinates: { gain: 0 },
+            eval_protocol: { targets: 'Held-out targets' },
+          },
+        }],
+      }],
+    } as any);
+
+    expect(evaluationProtocolLabel(summary)).toBe('Feedback gain=0');
   });
 
   it('marks downstream evaluation rows stale when an upstream parent was superseded', () => {
@@ -315,16 +339,19 @@ describe('pipeline collection summaries', () => {
   });
 
   it('projects manifest ParentRefs as run-set grouped lineage edges', () => {
-    const workspace = seededWorkspace();
+    const workspace = pipelineWorkspaceFixture();
     const trainStage = workspace.stages.find((stage) => stage.kind === 'train');
     const evalStage = workspace.stages.find((stage) => stage.kind === 'eval');
     const analysisStage = workspace.stages.find((stage) => stage.kind === 'analysis');
-    if (!trainStage || !evalStage || !analysisStage) throw new Error('seed missing stages');
+    const reportStage = workspace.stages.find((stage) => stage.kind === 'report');
+    if (!trainStage || !evalStage || !analysisStage || !reportStage) {
+      throw new Error('fixture missing pipeline stages');
+    }
     const trainRef = {
       ...trainStage.output_collections[0].item_refs[0],
       metadata: {
         ...trainStage.output_collections[0].item_refs[0].metadata,
-        run_set_id: 'movement-ramp',
+        run_set_id: 'validation',
       },
     };
     const evalRef = {
@@ -393,13 +420,19 @@ describe('pipeline collection summaries', () => {
             manifest_refs: [analysisRef],
           };
         }
+        if (stage.id === reportStage.id) {
+          return {
+            ...stage,
+            input_collections: [{ ...stage.input_collections[0], item_refs: [analysisRef] }],
+          };
+        }
         return stage;
       }),
       manifest_refs: [trainRef, evalRef, analysisRef],
     });
 
-    expect(projection.groups.find((group) => group.id === 'run-set:movement-ramp')).toMatchObject({
-      label: 'Run set movement-ramp',
+    expect(projection.groups.find((group) => group.id === 'run-set:validation')).toMatchObject({
+      label: 'Run set validation',
       nodeIds: [trainRef.id],
     });
     expect(projection.edges).toEqual(
@@ -430,7 +463,7 @@ describe('pipeline collection summaries', () => {
   });
 
   it('projects pending manifests across stages with target assignment and events', () => {
-    const workspace = seededWorkspace();
+    const workspace = pipelineWorkspaceFixture();
     const trainStage = workspace.stages.find((stage) => stage.kind === 'train');
     const evalStage = workspace.stages.find((stage) => stage.kind === 'eval');
     if (!trainStage || !evalStage) throw new Error('seed missing stages');

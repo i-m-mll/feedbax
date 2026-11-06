@@ -1767,8 +1767,8 @@ def test_default_policy_matrix_covers_registered_emitted_families() -> None:
 def test_scientific_compiler_families_are_registered_and_fail_closed() -> None:
     expected = {
         "GraphDocument": ("feedbax.graph_document", "1"),
-        "ResolvedGraph": ("feedbax.resolved_graph", "4"),
-        "CompilationRecord": ("feedbax.graph_compilation_record", "5"),
+        "ResolvedGraph": ("feedbax.resolved_graph", "6"),
+        "CompilationRecord": ("feedbax.graph_compilation_record", "7"),
         "CompilationFailureRecord": ("feedbax.graph_compilation_failure", "1"),
     }
 
@@ -1905,20 +1905,15 @@ def test_default_policy_matrix_covers_provider_schema_exports_and_capability_ref
     from feedbax.integrations.provider import provider_manifest
 
     manifest = provider_manifest()
-    schema_refs = set(manifest.schemas)
-    for capability in manifest.capabilities.values():
-        if capability.input_schema is not None:
-            schema_refs.add(capability.input_schema)
-        if capability.output_schema is not None:
-            schema_refs.add(capability.output_schema)
+    schema_refs = {
+        schema_ref
+        for capability in manifest.capabilities.values()
+        for schema_ref in (capability.input_schema, capability.output_schema)
+        if schema_ref is not None
+    }
 
-    missing = schema_refs - set(default_spec_registry.policy_matrix())
-
-    assert missing == set()
-    assert default_spec_registry.resolve("ComponentRegistrySnapshot").policy is not None
-    assert default_spec_registry.resolve("ComponentRegistrySnapshot").policy.covers == (
-        "RegistrySnapshot"
-    )
+    assert schema_refs - manifest.schemas.keys() == set()
+    assert manifest.schemas.keys() - default_spec_registry.policy_matrix().keys() == set()
 
 
 def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> None:
@@ -2012,7 +2007,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     )
     assert task_binding_policy is not None
     assert task_binding_policy.stance == "migrate"
-    assert task_binding_policy.supported_old_versions == (STUDIO_TASK_BINDING_LEGACY_V1,)
+    assert task_binding_policy.supported_old_versions == (
+        STUDIO_TASK_BINDING_LEGACY_V1,
+        "feedbax.spec.studio.task_bindings.v2",
+    )
     assert task_binding_policy.rejected_old_versions == ("feedbax.studio.task_bindings.v0",)
     representation_policy = default_spec_registry.resolve("RepresentationSpec").policy
     assert representation_policy is not None
@@ -2092,7 +2090,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         {"schema_version": STUDIO_TASK_BINDING_LEGACY_V1},
     )
     assert migrated.migrated
-    assert migrated.target_version == "feedbax.spec.studio.task_bindings.v2"
+    assert migrated.target_version == "feedbax.spec.studio.task_bindings.v3"
 
     with pytest.raises(UnsupportedSpecVersion) as excinfo:
         default_spec_registry.migrate(
@@ -2283,16 +2281,54 @@ def test_studio_task_binding_entrypoint_migrates_v1_payload() -> None:
     )
 
     assert result.source_version == STUDIO_TASK_BINDING_LEGACY_V1
-    assert result.target_version == "feedbax.spec.studio.task_bindings.v2"
-    assert result.payload["schema_version"] == "feedbax.spec.studio.task_bindings.v2"
+    assert result.target_version == "feedbax.spec.studio.task_bindings.v3"
+    assert result.payload["schema_version"] == "feedbax.spec.studio.task_bindings.v3"
     assert result.payload["exposed_data"][0]["id"] == "inputs"
     assert "exposed_outputs" not in result.payload
     assert result.payload["bindings"][0]["source_data_id"] == "inputs"
     assert "source_output_id" not in result.payload["bindings"][0]
     assert [record.migration_id for record in result.migration_records] == [
-        "studio-task-bindings-v1-to-v2"
+        "studio-task-bindings-v1-to-v2",
+        "studio-task-bindings-v2-to-v3",
     ]
     assert result.migration_records[0].metadata["spec_path"] == "task_binding_spec"
+
+
+@pytest.mark.parametrize("binding_role", ["", "component_parameter"])
+@pytest.mark.parametrize("temporality", ["constant", "trajectory"])
+def test_v2_task_binding_migrates_only_direct_input_routes(temporality, binding_role) -> None:
+    payload = {
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "exposed_data": [{
+            "id": "gain",
+            "label": "Gain",
+            "kind": "intervention",
+            "role": "component_parameter",
+            "path": "intervene.visible.gain",
+            "bindable": True,
+            "metadata": {"temporality": temporality},
+        }],
+        "bindings": [{
+            "id": "task:gain->visible:gain",
+            "source_data_id": "gain",
+            "target_node_id": "visible",
+            "target_port": "gain",
+            "role": binding_role,
+            "metadata": {"task_parameter_label": "visible.gain"},
+        }],
+    }
+    if temporality == "constant":
+        with pytest.raises(ValueError, match="original producer"):
+            migrate_studio_task_binding_spec(payload)
+        return
+
+    result = migrate_studio_task_binding_spec(payload)
+    data, = result.payload["exposed_data"]
+    binding, = result.payload["bindings"]
+    assert data["path"] == "inputs.gain"
+    assert binding["role"] == data["role"] == "graph_input"
+    assert (binding["target_node_id"], binding["target_port"]) == ("visible", "gain")
+    assert binding["metadata"] == {}
 
 
 def test_studio_task_binding_entrypoint_rejects_explicit_unsupported_version() -> None:
@@ -2319,6 +2355,29 @@ def test_fresh_studio_scenario_can_opt_into_current_versionless_specs() -> None:
     objective_spec = result.payload["objective_spec"]
     assert objective_spec == payload["objective_spec"]
     assert "schema_version" not in objective_spec
+
+
+def test_studio_scenario_preserves_authored_objective_terms_during_admission() -> None:
+    terms = [
+        {
+            "id": "objective:tracking",
+            "type_id": "TargetState",
+            "label": "Target tracking",
+            "source_selector": {"namespace": "graph_port", "compact": "port:model.output"},
+        }
+    ]
+    result = migrate_studio_scenario_spec(
+        {
+            "id": "scenario:train",
+            "label": "Train",
+            "schema_version": default_spec_registry.resolve("StudioScenarioSpec").current_version,
+            "objective_spec": {"schema_version": "feedbax.studio.objective.v1", "terms": terms},
+        }
+    )
+    objective = result.payload["objective_spec"]
+    assert objective["terms"] == terms
+    assert objective["schema_version"] == "feedbax.spec.studio.objective.v1"
+    assert migrate_studio_scenario_spec(result.payload).payload["objective_spec"] == objective
 
 
 def test_studio_workspace_stamps_versionless_nested_scenario_specs() -> None:

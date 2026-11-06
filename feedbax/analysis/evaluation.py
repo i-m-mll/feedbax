@@ -25,21 +25,37 @@ Producer contract:
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Mapping
-from contextlib import closing
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import closing, contextmanager, ExitStack
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from functools import cached_property
+from hashlib import file_digest
 import json
+import os
 from math import prod
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Sequence
+from typing import Any, BinaryIO, Sequence
 
 import jax.tree_util as jtu
 from pydantic import BaseModel, Field, model_validator
 
+from feedbax.contracts._authoring_inputs import AuthoringTextReader, read_authoring_text
+from feedbax.contracts.artifact_custody import (
+    CONTENT_OBJECT_REF_PREFIX,
+    ContentLeaseRecord,
+    ContentObjectRef,
+    ContentRetentionTarget,
+)
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.persistence import manifest_index
+from feedbax.persistence.terminal_publication import (
+    manifest_publication_lock,
+    publish_terminal_manifest_locked,
+    read_publication_manifest,
+)
 
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
@@ -65,6 +81,7 @@ from feedbax.contracts.manifest import (
     evaluation_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
+    load_manifest_bytes,
     spec_payload,
     write_manifest,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -114,6 +131,7 @@ from feedbax.analysis.manifest_inputs import (
     resolve_manifest_input,
 )
 from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
+from feedbax.analysis.harness import _MatrixRowPublication
 from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
     validate_staged_binding_name,
@@ -353,13 +371,25 @@ def compile_evaluation_run_matrix(
     repo_root: Path | str | None = None,
 ) -> RowMatrixSpec[EvaluationRunSpec]:
     """Compile durable evaluation authoring to the explicit shared row contract."""
-    matrix = _coerce_evaluation_run_matrix_spec(spec, repo_root=repo_root)
+    matrix, _ = resolve_evaluation_matrix_authoring(spec, repo_root=repo_root)
+    compiled = _compile_evaluation_run_matrix(matrix, repo_root=repo_root)
+    if registry.authoring_schema(compiled.base.evaluation_type) is not None:
+        _materialize_evaluation_rows(matrix, compiled, registry=registry, repo_root=repo_root)
+    return compiled
+
+
+def _compile_evaluation_run_matrix(
+    matrix: EvaluationRunMatrixSpec,
+    *,
+    repo_root: Path | str | None,
+    read_text: AuthoringTextReader = read_authoring_text,
+) -> RowMatrixSpec[EvaluationRunSpec]:
     if isinstance(matrix.base, EvaluationRunSpec):
         base = matrix.base
         rows = matrix.rows
     else:
         base = EvaluationRunSpec.model_validate(
-            load_content_pinned_json_base(matrix.base, repo_root=repo_root)
+            load_content_pinned_json_base(matrix.base, repo_root=repo_root, read_text=read_text)
         )
         rows = [
             MatrixRow(
@@ -374,27 +404,26 @@ def compile_evaluation_run_matrix(
             )
             for coordinate in expand_matrix_axes(matrix.axes)
         ]
-    compiled = RowMatrixSpec[EvaluationRunSpec](
+    return RowMatrixSpec[EvaluationRunSpec](
         base=base,
         rows=rows,
         sources=matrix.sources,
         derivations=matrix.derivations,
     )
-    _validate_evaluation_authoring(matrix, compiled, registry=registry, repo_root=repo_root)
-    return compiled
 
 
-def _validate_evaluation_authoring(
+def _materialize_evaluation_rows(
     matrix: EvaluationRunMatrixSpec,
     compiled: RowMatrixSpec[EvaluationRunSpec],
     *,
     registry: EvaluationRecipeRegistry,
     repo_root: Path | str | None,
-) -> None:
+    read_text: AuthoringTextReader = read_authoring_text,
+) -> list[MaterializedMatrixRow[EvaluationRunSpec]]:
     evaluation_type = compiled.base.evaluation_type
     schema = registry.authoring_schema(evaluation_type)
     if schema is None:
-        return
+        return materialize_matrix_rows(compiled, repo_root=repo_root, read_text=read_text)
     actual_axes = {
         axis.id: tuple(value.id for value in axis.resolved_values()) for axis in matrix.axes
     }
@@ -406,7 +435,7 @@ def _validate_evaluation_authoring(
             f"evaluation authoring axes for {evaluation_type!r} do not match "
             f"schema {schema.schema_version!r}"
         )
-    rows = materialize_matrix_rows(compiled, repo_root=repo_root)
+    rows = materialize_matrix_rows(compiled, repo_root=repo_root, read_text=read_text)
     expected_count = prod(len(values) for values in profile.values())
     if len(rows) != expected_count:
         raise ValueError(
@@ -422,11 +451,14 @@ def _validate_evaluation_authoring(
                 f"schema {schema.schema_version!r}: {exc}"
             ) from exc
 
+    return rows
+
 
 def resolve_evaluation_matrix_authoring(
     spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
     *,
     repo_root: Path | str | None = None,
+    read_text: AuthoringTextReader = read_authoring_text,
 ) -> tuple[EvaluationRunMatrixSpec, FlattenedEvaluationMatrix | None]:
     """Resolve either evaluation authoring kind to one strict matrix spec.
 
@@ -448,7 +480,9 @@ def resolve_evaluation_matrix_authoring(
             if isinstance(spec, EvaluationRunMatrixDeltaSpec)
             else EvaluationRunMatrixDeltaSpec.model_validate(spec)
         )
-        flattened = flatten_evaluation_run_matrix_delta(delta, repo_root=repo_root)
+        flattened = flatten_evaluation_run_matrix_delta(
+            delta, repo_root=repo_root, read_text=read_text
+        )
         return EvaluationRunMatrixSpec.model_validate(flattened.payload), flattened
     migrated = migrate_authored_document(
         "EvaluationRunMatrixSpec",
@@ -458,14 +492,6 @@ def resolve_evaluation_matrix_authoring(
     return EvaluationRunMatrixSpec.model_validate(migrated.payload), None
 
 
-def _coerce_evaluation_run_matrix_spec(
-    spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
-    *,
-    repo_root: Path | str | None = None,
-) -> EvaluationRunMatrixSpec:
-    return resolve_evaluation_matrix_authoring(spec, repo_root=repo_root)[0]
-
-
 def materialize_evaluation_run_matrix(
     spec: "EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any]",
     *,
@@ -473,11 +499,117 @@ def materialize_evaluation_run_matrix(
     repo_root: Path | str | None = None,
 ) -> list[MaterializedMatrixRow[EvaluationRunSpec]]:
     """Resolve an evaluation matrix into executable evaluation requests."""
-    matrix = _coerce_evaluation_run_matrix_spec(spec, repo_root=repo_root)
-    compiled = compile_evaluation_run_matrix(matrix, registry=registry, repo_root=repo_root)
-    rows = materialize_matrix_rows(compiled, repo_root=repo_root)
+    return _resolve_evaluation_matrix(spec, registry=registry, repo_root=repo_root).rows
+
+
+@dataclass(frozen=True)
+class _ResolvedEvaluationMatrix:
+    matrix: EvaluationRunMatrixSpec
+    composition: FlattenedEvaluationMatrix | None
+    compiled: RowMatrixSpec[EvaluationRunSpec]
+    rows: list[MaterializedMatrixRow[EvaluationRunSpec]]
+
+    @cached_property
+    def flattened_spec(self) -> dict[str, Any]:
+        return self.matrix.model_dump(mode="json", exclude_none=True)
+
+    @cached_property
+    def ordered_row_ids(self) -> tuple[str, ...]:
+        return tuple(row.row_id for row in self.rows)
+
+    @cached_property
+    def canonical_payload_sha256(self) -> dict[str, str]:
+        return {
+            row.row_id: sha256_bytes(
+                canonical_json_bytes(row.payload.model_dump(mode="json", exclude_none=True))
+            )
+            for row in self.rows
+        }
+
+
+def _resolve_evaluation_matrix(
+    spec: EvaluationRunMatrixSpec | EvaluationRunMatrixDeltaSpec | Mapping[str, Any],
+    *,
+    registry: EvaluationRecipeRegistry,
+    repo_root: Path | str | None,
+    read_text: AuthoringTextReader = read_authoring_text,
+) -> _ResolvedEvaluationMatrix:
+    matrix, composition = resolve_evaluation_matrix_authoring(
+        spec, repo_root=repo_root, read_text=read_text
+    )
+    compiled = _compile_evaluation_run_matrix(matrix, repo_root=repo_root, read_text=read_text)
+    rows = _materialize_evaluation_rows(
+        matrix, compiled, registry=registry, repo_root=repo_root, read_text=read_text
+    )
     _validate_matrix_staged_parent_references(matrix, rows)
-    return rows
+    return _ResolvedEvaluationMatrix(matrix, composition, compiled, rows)
+
+
+@dataclass(frozen=True)
+class _EvaluationRunPlan:
+    """Resolved rows and their replay lineage, separate from live execution custody."""
+
+    rows: dict[str, EvaluationRunSpec]
+    executable_spec: dict[str, Any]
+    metadata: dict[str, Any] = field(default_factory=dict)
+    staged_parents: Mapping[str, StagedEvaluationPrerequisite] | None = None
+
+    def row_payloads(self, row_ids: Sequence[str]) -> list[tuple[str, dict[str, Any]]]:
+        return [(row_id, self.rows[row_id].model_dump(mode="python")) for row_id in row_ids]
+
+
+def _evaluation_matrix_run_plan(resolved: _ResolvedEvaluationMatrix) -> _EvaluationRunPlan:
+    matrix = resolved.matrix
+    composition = resolved.composition
+    flattened_spec = resolved.flattened_spec
+    # Delta-authored runs replay the authored envelope, not its flattened result.
+    executable_spec = flattened_spec if composition is None else composition.authored
+    matrix_metadata: dict[str, Any] = {}
+    if isinstance(matrix.base, ContentPinnedJsonBase):
+        matrix_metadata["axis_expansion"] = {
+            "schema_id": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
+            "schema_version": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
+            "authored_matrix_sha256": sha256_bytes(canonical_json_bytes(flattened_spec)),
+            "pinned_base": matrix.base.model_dump(mode="json", exclude_none=True),
+            "ordered_axes": [
+                {
+                    "axis_id": axis.id,
+                    "value_ids": [value.id for value in axis.resolved_values()],
+                    # Generator-form axes record the declaration that is the
+                    # expansion authority; enumerated axes stay byte-identical.
+                    **(
+                        {"generator": axis.generator.model_dump(mode="json")}
+                        if axis.generator is not None
+                        else {}
+                    ),
+                }
+                for axis in matrix.axes
+            ],
+            "coordinates": [
+                {"row_id": row.row_id, **row.metadata["axis_product"]}
+                for row in resolved.compiled.rows
+            ],
+            "canonical_row_order": list(resolved.ordered_row_ids),
+            "canonical_payload_sha256": resolved.canonical_payload_sha256,
+        }
+    if composition is not None:
+        matrix_metadata["matrix_composition"] = evaluation_matrix_composition_provenance(
+            composition,
+            flattened_matrix=flattened_spec,
+            canonical_row_order=resolved.ordered_row_ids,
+            canonical_payload_sha256=resolved.canonical_payload_sha256,
+        )
+    if matrix.staged_parents:
+        matrix_metadata["staged_parents"] = {
+            name: prerequisite.model_dump(mode="json", exclude_none=True)
+            for name, prerequisite in matrix.staged_parents.items()
+        }
+    return _EvaluationRunPlan(
+        rows={row.row_id: row.payload for row in resolved.rows},
+        executable_spec=executable_spec,
+        metadata=matrix_metadata,
+        staged_parents=matrix.staged_parents,
+    )
 
 
 def execute_evaluation_run_matrix(
@@ -499,18 +631,6 @@ def execute_evaluation_run_matrix(
     matrix_metadata: Mapping[str, Any] | None = None,
 ):
     """Resolve and execute every evaluation condition through the shared harness."""
-    from feedbax.analysis.harness import MatrixMaterializerHarness
-
-    if execution_context is not None and (
-        execution_descriptor is not None
-        or artifact_provider_bindings
-        or checkpoint_custody_bindings
-    ):
-        raise StagedExecutionContextError(
-            "pre-resolved execution_context cannot be combined with raw staged bindings"
-        )
-    matrix_metadata = dict(matrix_metadata or {})
-    staged_parents: dict[str, Any] = {}
     if isinstance(spec, EvaluationRunSpec) or (
         isinstance(spec, Mapping) and "evaluation_type" in spec and "base" not in spec
     ):
@@ -521,84 +641,61 @@ def execute_evaluation_run_matrix(
         run_spec = (
             spec if isinstance(spec, EvaluationRunSpec) else EvaluationRunSpec.model_validate(spec)
         )
-        rows = [("flat", run_spec.model_dump(mode="python"))]
-        executable_spec = run_spec.model_dump(mode="json", exclude_none=True)
-        if execution_context is None:
-            execution_context = resolve_staged_execution_context(
-                execution_descriptor,
-                artifact_provider_bindings=artifact_provider_bindings,
-                checkpoint_custody_bindings=checkpoint_custody_bindings,
-            )
-    else:
-        matrix, composition = resolve_evaluation_matrix_authoring(spec, repo_root=repo_root)
-        flattened_spec = matrix.model_dump(mode="json", exclude_none=True)
-        # Delta-authored runs replay the authored envelope, not its flattened result.
-        executable_spec = flattened_spec if composition is None else composition.authored
-        compiled = compile_evaluation_run_matrix(matrix, registry=registry, repo_root=repo_root)
-        materialized_rows = materialize_matrix_rows(compiled, repo_root=repo_root)
-        _validate_matrix_staged_parent_references(matrix, materialized_rows)
-        rows = [(row.row_id, row.payload.model_dump(mode="python")) for row in materialized_rows]
-        execution_context = _resolve_matrix_staged_parents(
-            matrix,
-            parent_manifest_root=parent_manifest_root,
-            execution_descriptor=execution_descriptor,
-            artifact_provider_bindings=artifact_provider_bindings,
-            checkpoint_custody_bindings=checkpoint_custody_bindings,
-            execution_context=execution_context,
+        plan = _EvaluationRunPlan(
+            rows={"flat": run_spec},
+            executable_spec=run_spec.model_dump(mode="json", exclude_none=True),
         )
-        if isinstance(matrix.base, ContentPinnedJsonBase):
-            matrix_metadata["axis_expansion"] = {
-                "schema_id": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_ID,
-                "schema_version": EVALUATION_AXIS_EXPANSION_PROVENANCE_SCHEMA_VERSION,
-                "authored_matrix_sha256": sha256_bytes(canonical_json_bytes(flattened_spec)),
-                "pinned_base": matrix.base.model_dump(mode="json", exclude_none=True),
-                "ordered_axes": [
-                    {
-                        "axis_id": axis.id,
-                        "value_ids": [value.id for value in axis.resolved_values()],
-                        # Generator-form axes record the declaration that is the
-                        # expansion authority; enumerated axes stay byte-identical.
-                        **(
-                            {"generator": axis.generator.model_dump(mode="json")}
-                            if axis.generator is not None
-                            else {}
-                        ),
-                    }
-                    for axis in matrix.axes
-                ],
-                "coordinates": [
-                    {"row_id": row.row_id, **row.metadata["axis_product"]} for row in compiled.rows
-                ],
-                "canonical_row_order": [row.row_id for row in materialized_rows],
-                "canonical_payload_sha256": {
-                    row.row_id: sha256_bytes(
-                        canonical_json_bytes(row.payload.model_dump(mode="json", exclude_none=True))
-                    )
-                    for row in materialized_rows
-                },
-            }
-        if composition is not None:
-            matrix_metadata["matrix_composition"] = evaluation_matrix_composition_provenance(
-                composition,
-                flattened_matrix=flattened_spec,
-                canonical_row_order=[row.row_id for row in materialized_rows],
-                canonical_payload_sha256={
-                    row.row_id: sha256_bytes(
-                        canonical_json_bytes(row.payload.model_dump(mode="json", exclude_none=True))
-                    )
-                    for row in materialized_rows
-                },
-            )
-        if matrix.staged_parents:
-            matrix_metadata["staged_parents"] = {
-                name: prerequisite.model_dump(mode="json", exclude_none=True)
-                for name, prerequisite in matrix.staged_parents.items()
-            }
-        staged_parents = matrix_metadata.get("staged_parents", {})
+    else:
+        plan = _evaluation_matrix_run_plan(
+            _resolve_evaluation_matrix(spec, registry=registry, repo_root=repo_root)
+        )
+    return _execute_evaluation_run_plan(
+        plan,
+        registry=registry,
+        root=root,
+        repo_root=repo_root,
+        escape_hatch_reason=escape_hatch_reason,
+        parent_manifest_root=parent_manifest_root,
+        execution_descriptor=execution_descriptor,
+        artifact_provider_bindings=artifact_provider_bindings,
+        checkpoint_custody_bindings=checkpoint_custody_bindings,
+        execution_context=execution_context,
+        batch=batch,
+        matrix_metadata=matrix_metadata,
+    )
 
+
+def _execute_evaluation_run_plan(
+    plan: _EvaluationRunPlan,
+    *,
+    registry: EvaluationRecipeRegistry,
+    root: Path | str,
+    repo_root: Path | str | None = None,
+    escape_hatch_reason: str | None = None,
+    parent_manifest_root: Path | str | None = None,
+    execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None = None,
+    artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
+    checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+    execution_context: StagedExecutionContext | None = None,
+    batch: EvaluationBatchExecution | None = None,
+    matrix_metadata: Mapping[str, Any] | None = None,
+    published_states: dict[tuple[str, str], Any] | None = None,
+    recover_published_batch: bool = False,
+):
+    from feedbax.analysis.harness import MatrixMaterializerHarness
+
+    execution_context = _resolve_matrix_staged_parents(
+        plan.staged_parents,
+        parent_manifest_root=parent_manifest_root,
+        execution_descriptor=execution_descriptor,
+        artifact_provider_bindings=artifact_provider_bindings,
+        checkpoint_custody_bindings=checkpoint_custody_bindings,
+        execution_context=execution_context,
+    )
+    matrix_metadata = {**(matrix_metadata or {}), **plan.metadata}
     execution_context = with_staged_repo_root(execution_context, repo_root)
     regeneration_parameters = {
-        "executable_spec": executable_spec,
+        "executable_spec": plan.executable_spec,
         "manifest_root": str(Path(root).resolve()),
         "repo_root": str(Path(repo_root).resolve()) if repo_root is not None else None,
         "parent_manifest_root": (
@@ -617,11 +714,17 @@ def execute_evaluation_run_matrix(
             {"name": name, "root": str(bound_root)}
             for name, bound_root in execution_context.checkpoint_custody_roots.items()
         ],
-        "staged_parents": staged_parents,
+        "staged_parents": (
+            matrix_metadata.get("staged_parents", {}) if plan.staged_parents is not None else {}
+        ),
     }
+    if batch is not None and type(batch) is not EvaluationBatchExecution:
+        raise TypeError("batch must be an EvaluationBatchExecution instance")
+    if (published_states is not None or recover_published_batch) and (
+        batch is None or batch.batch_units is None or len(batch.batch_units) != 1
+    ):
+        raise ValueError("batch state handoff or recovery requires one batch unit")
     if batch is not None:
-        if type(batch) is not EvaluationBatchExecution:
-            raise TypeError("batch must be an EvaluationBatchExecution instance")
         if escape_hatch_reason is not None:
             raise ValueError("batched execution only accepts EvaluationRunMatrixSpec")
         if batch.ordered_row_ids is not None and batch.batch_units is not None:
@@ -629,30 +732,40 @@ def execute_evaluation_run_matrix(
         if batch.batch_units is not None:
             from feedbax.analysis.harness import HarnessResult
 
-            available = {row_id: payload for row_id, payload in rows}
             completed = []
             batch_ids = []
             for batch_id, batch_row_ids in batch.batch_units:
                 if not batch_id or batch_id in batch_ids:
                     raise ValueError("batch_units require unique non-empty batch ids")
-                unknown = [row_id for row_id in batch_row_ids if row_id not in available]
+                unknown = [row_id for row_id in batch_row_ids if row_id not in plan.rows]
                 if not batch_row_ids or len(batch_row_ids) != len(set(batch_row_ids)) or unknown:
                     raise ValueError("batch_units require non-empty unique known ordered row ids")
                 batch_ids.append(batch_id)
+                row_payloads = plan.row_payloads(batch_row_ids)
+                batch_root = Path(root) / batch_id
+                batch_regeneration = {
+                    **regeneration_parameters,
+                    "batch_execution": {
+                        "mode": "governed_ordered_partition",
+                        "batch_id": batch_id,
+                        "ordered_row_ids": batch_row_ids,
+                    },
+                }
+                if recover_published_batch:
+                    return _load_published_evaluation_batch(
+                        row_payloads,
+                        root=batch_root,
+                        matrix_metadata=matrix_metadata,
+                        regeneration_parameters=batch_regeneration,
+                    )
                 result = _execute_evaluation_batch_rows(
-                    [(row_id, available[row_id]) for row_id in batch_row_ids],
+                    row_payloads,
                     registry=registry,
-                    root=Path(root) / batch_id,
+                    root=batch_root,
                     execution_context=execution_context,
                     matrix_metadata=matrix_metadata,
-                    regeneration_parameters={
-                        **regeneration_parameters,
-                        "batch_execution": {
-                            "mode": "governed_ordered_partition",
-                            "batch_id": batch_id,
-                            "ordered_row_ids": batch_row_ids,
-                        },
-                    },
+                    published_states=published_states,
+                    regeneration_parameters=batch_regeneration,
                 )
                 completed.extend(result.rows)
             return HarnessResult(
@@ -661,15 +774,15 @@ def execute_evaluation_run_matrix(
                 metadata={"ordered_batch_ids": batch_ids},
             )
         if batch.ordered_row_ids is not None:
-            available = {row_id: payload for row_id, payload in rows}
             if len(batch.ordered_row_ids) != len(set(batch.ordered_row_ids)):
                 raise ValueError("batch ordered_row_ids must be unique")
-            unknown = [row_id for row_id in batch.ordered_row_ids if row_id not in available]
+            unknown = [row_id for row_id in batch.ordered_row_ids if row_id not in plan.rows]
             if unknown:
                 raise ValueError(f"batch ordered_row_ids contain unknown matrix rows: {unknown!r}")
-            rows = [(row_id, available[row_id]) for row_id in batch.ordered_row_ids]
         return _execute_evaluation_batch_rows(
-            rows,
+            plan.row_payloads(
+                batch.ordered_row_ids if batch.ordered_row_ids is not None else tuple(plan.rows)
+            ),
             registry=registry,
             root=Path(root),
             execution_context=execution_context,
@@ -687,35 +800,37 @@ def execute_evaluation_run_matrix(
             },
         )
 
-    def execute(row_id: str, resolved: Mapping[str, Any], row_root: Path):
-        manifest, path = execute_evaluation_run_spec(
+    def publish_row(
+        resolved: Mapping[str, Any], row_root: Path, publication: _MatrixRowPublication
+    ) -> tuple[EvaluationRunManifest, Path]:
+        return execute_evaluation_run_spec(
             EvaluationRunSpec.model_validate(resolved),
             registry=registry,
             root=row_root,
-            metadata={
-                "matrix_harness": {
-                    "row_id": row_id,
-                    **(
-                        {"escape_hatch_reason": escape_hatch_reason}
-                        if escape_hatch_reason is not None
-                        else {}
-                    ),
-                }
-            },
             execution_context=execution_context,
+            _row_publication=publication,
         )
-        return manifest, path
 
     return MatrixMaterializerHarness(root=root).materialize(
-        rows,
-        execute=execute,
-        command=["python", "-m", "feedbax", "matrix-harness"],
+        plan.row_payloads(tuple(plan.rows)),
+        publish_row=publish_row,
+        command=_MATRIX_HARNESS_COMMAND,
         title="Evaluation run matrix",
-        source="EvaluationRunMatrixSpec",
+        source=_EVALUATION_MATRIX_SOURCE,
         escape_hatch_reason=escape_hatch_reason,
         matrix_metadata=matrix_metadata,
         regeneration_parameters=regeneration_parameters,
     )
+
+
+_MATRIX_HARNESS_COMMAND = ("python", "-m", "feedbax", "matrix-harness")
+_EVALUATION_MATRIX_SOURCE = "EvaluationRunMatrixSpec"
+
+
+def _evaluation_batch_matrix_metadata(
+    metadata: Mapping[str, Any], rows: Sequence[tuple[str, Mapping[str, Any]]]
+) -> dict[str, Any]:
+    return {**metadata, "batch_execution": {"row_ids": [row_id for row_id, _ in rows]}}
 
 
 def _execute_evaluation_batch_rows(
@@ -726,6 +841,7 @@ def _execute_evaluation_batch_rows(
     execution_context: StagedExecutionContext,
     matrix_metadata: Mapping[str, Any],
     regeneration_parameters: Mapping[str, Any],
+    published_states: dict[tuple[str, str], Any] | None = None,
 ):
     from feedbax.analysis.harness import MatrixMaterializerHarness
     from feedbax.persistence.manifest_index import connect_index, index_manifest
@@ -801,10 +917,10 @@ def _execute_evaluation_batch_rows(
             raise TypeError("batch recipe must return one EvaluationRecipeResult per row")
         provenance = collect_git_provenance()
         completed: dict[str, tuple[EvaluationRunManifest, Path]] = {}
-        batch_metadata = {"row_ids": [item.row_id for item in items]}
+        staged_states: dict[tuple[str, str], Any] = {}
         for item, result in zip(items, results, strict=True):
             try:
-                completed[item.row_id] = _store_batched_evaluation_result(
+                manifest, path = _store_batched_evaluation_result(
                     item,
                     result,
                     store_root=staging,
@@ -816,6 +932,10 @@ def _execute_evaluation_batch_rows(
                         }
                     },
                 )
+                completed[item.row_id] = manifest, path
+                if published_states is not None and result.states is not None:
+                    digest = manifest.metadata["cache"]["states_cache_sha256"]
+                    staged_states[manifest.id, digest] = result.states
             except Exception as exc:
                 raise EvaluationBatchRowError(item.row_id, exc) from exc
 
@@ -825,10 +945,10 @@ def _execute_evaluation_batch_rows(
         result = MatrixMaterializerHarness(root=staging, shared_store=True).materialize(
             rows,
             execute=execute,
-            command=["python", "-m", "feedbax", "matrix-harness"],
+            command=_MATRIX_HARNESS_COMMAND,
             title="Evaluation run matrix",
-            source="EvaluationRunMatrixSpec",
-            matrix_metadata={**matrix_metadata, "batch_execution": batch_metadata},
+            source=_EVALUATION_MATRIX_SOURCE,
+            matrix_metadata=_evaluation_batch_matrix_metadata(matrix_metadata, rows),
             regeneration_parameters=regeneration_parameters,
         )
         # Publish into one shared physical store: every row's manifest lands in
@@ -867,33 +987,157 @@ def _execute_evaluation_batch_rows(
             root=staging,
         )
         staging.rename(root)
+        if published_states is not None:
+            published_states.update(staged_states)
         return replace(result, rows=tuple(published_rows))
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
 
-def _register_evaluation_batch_retention_root(
-    manifests: Sequence[EvaluationRunManifest],
+@dataclass(frozen=True)
+class _PublishedEvaluationRow:
+    row_id: str
+    manifest: EvaluationRunManifest
+    path: Path
+    raw: bytes
+    states_cache_path: Path
+
+
+def _load_published_evaluation_batch(
+    rows: Sequence[tuple[str, Mapping[str, Any]]],
     *,
     root: Path,
-) -> None:
-    """Separate retained products from disposable batch evaluation states."""
-    from feedbax.contracts.artifact_custody import (
-        CONTENT_OBJECT_REF_PREFIX,
-        ContentObjectRef,
-        ContentRetentionTarget,
-        ContentRootRecord,
+    matrix_metadata: Mapping[str, Any],
+    regeneration_parameters: Mapping[str, Any],
+) -> tuple[_PublishedEvaluationRow, ...]:
+    """Authenticate existing rows against the active publication and current plan."""
+    from feedbax.analysis.harness import (
+        GOVERNED_BATCH_AUTHORITY,
+        ROW_REGENERATION_ROLE,
+        SHARED_REGENERATION_ROLE,
+        build_row_regeneration_spec,
+        build_shared_regeneration_context,
     )
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.persistence.content_retention import require_active_root
 
     provider = ImmutableArtifactBlobProvider(root.absolute())
+    pending = []
+    manifest_versions: list[tuple[str, str]] = []
+    for row_id, resolved in rows:
+        spec = EvaluationRunSpec.model_validate(resolved)
+        manifest_id = evaluation_run_manifest_id(spec)
+        path = canonical_manifest_path("EvaluationRunManifest", manifest_id, root=root)
+        if not path.is_file():
+            raise ValueError(f"published evaluation row {row_id!r} manifest is unavailable")
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise ValueError(
+                f"published evaluation row {row_id!r} manifest is unavailable"
+            ) from exc
+        pending.append((row_id, resolved, spec, manifest_id, path, raw))
+        manifest_versions.append((manifest_id, sha256_bytes(raw)))
+    if not pending or len({manifest_id for manifest_id, _ in manifest_versions}) != len(pending):
+        raise ValueError("published evaluation batch requires distinct, non-empty row manifests")
+    root_digest = _evaluation_batch_retention_digest(manifest_versions)
+    product_root = require_active_root(provider, f"evaluation-products:{root_digest}")
+    if product_root.root_kind != "logical-ref":
+        raise ValueError("published evaluation batch product root has the wrong authority kind")
+    matrix_metadata = _evaluation_batch_matrix_metadata(matrix_metadata, rows)
+
+    def expected_shared_bytes(metadata: Mapping[str, Any]) -> bytes:
+        regeneration = build_shared_regeneration_context(
+            command=_MATRIX_HARNESS_COMMAND,
+            source=_EVALUATION_MATRIX_SOURCE,
+            custody="content-addressed",
+            escape_hatch_reason=None,
+            matrix_metadata=metadata,
+            regeneration_parameters=regeneration_parameters,
+        )
+        return canonical_json_bytes(regeneration.model_dump(mode="json", exclude_none=True))
+
+    published = []
+    shared_ref = None
+    for row_id, resolved, spec, manifest_id, path, raw in pending:
+        manifest = load_manifest_bytes(raw)
+        if (
+            not isinstance(manifest, EvaluationRunManifest)
+            or manifest.id != manifest_id
+            or manifest.status != "completed"
+            or manifest.evaluation_spec
+            != spec_payload("EvaluationRunSpec", spec.model_dump(mode="json", exclude_none=True))
+            or manifest.input_training_runs != spec.inputs
+            or manifest.metadata.get("matrix_harness")
+            != {
+                "row_id": row_id,
+                "source": _EVALUATION_MATRIX_SOURCE,
+                "custody": "content-addressed",
+            }
+        ):
+            raise ValueError(f"published evaluation row {row_id!r} does not match the expected row")
+        cache_path = evaluation_states_cache_path(manifest_id, root=root)
+        cache = manifest.metadata.get("cache")
+        if (
+            not isinstance(cache, Mapping)
+            or not isinstance(cache.get("states_path"), str)
+            or Path(cache["states_path"]).absolute() != cache_path.absolute()
+            or cache.get("states_cache_key") != manifest_id
+        ):
+            raise ValueError(f"published evaluation row {row_id!r} has a noncanonical state cache")
+        row_refs = [
+            artifact for artifact in manifest.artifacts if artifact.role == ROW_REGENERATION_ROLE
+        ]
+        shared_refs = [
+            artifact for artifact in manifest.artifacts if artifact.role == SHARED_REGENERATION_ROLE
+        ]
+        if len(row_refs) != 1 or len(shared_refs) != 1:
+            raise ValueError(f"published evaluation row {row_id!r} lacks exact regeneration refs")
+        if shared_ref is None:
+            shared_ref = shared_refs[0]
+            shared_raw = provider.get_bytes(shared_ref)
+            if shared_raw != expected_shared_bytes(matrix_metadata):
+                # Older publications authenticate the matrix replay context but omit
+                # the governed compaction declaration. Require those exact old bytes.
+                legacy_metadata = {
+                    key: value
+                    for key, value in matrix_metadata.items()
+                    if key != GOVERNED_BATCH_AUTHORITY
+                }
+                if GOVERNED_BATCH_AUTHORITY not in matrix_metadata or shared_raw != (
+                    expected_shared_bytes(legacy_metadata)
+                ):
+                    raise ValueError("published evaluation batch regeneration context drifted")
+        elif shared_refs[0] != shared_ref:
+            raise ValueError(f"published evaluation row {row_id!r} uses a different shared context")
+        regeneration = build_row_regeneration_spec(
+            command=_MATRIX_HARNESS_COMMAND,
+            row_id=row_id,
+            resolved=resolved,
+            shared_context=shared_ref,
+        )
+        if provider.get_bytes(row_refs[0]) != canonical_json_bytes(
+            regeneration.model_dump(mode="json", exclude_none=True)
+        ):
+            raise ValueError(f"published evaluation row {row_id!r} regeneration does not match")
+        published.append(_PublishedEvaluationRow(row_id, manifest, path, raw, cache_path))
+    product_targets, _ = _evaluation_batch_retention_targets([row.manifest for row in published])
+    if product_root.targets != product_targets:
+        raise ValueError("published evaluation batch product root targets drifted")
+    return tuple(published)
+
+
+def _evaluation_batch_retention_digest(manifest_versions: Sequence[tuple[str, str]]) -> str:
+    return sha256_bytes(canonical_json_bytes(sorted(manifest_versions)))
+
+
+def _evaluation_batch_retention_targets(
+    manifests: Sequence[EvaluationRunManifest],
+) -> tuple[tuple[ContentRetentionTarget, ...], tuple[ContentRetentionTarget, ...]]:
     product_objects: dict[str, ContentObjectRef] = {}
     state_objects: dict[str, ContentObjectRef] = {}
-    manifest_versions: list[tuple[str, str]] = []
     for manifest in manifests:
-        manifest_path = canonical_manifest_path(manifest.kind, manifest.id, root=root)
-        manifest_versions.append((manifest.id, sha256_bytes(manifest_path.read_bytes())))
         for artifact in manifest.artifacts:
             if artifact.sha256 is None or artifact.size_bytes is None:
                 raise ValueError(
@@ -904,33 +1148,51 @@ def _register_evaluation_batch_retention_root(
                 sha256=artifact.sha256,
                 size_bytes=artifact.size_bytes,
             )
-            provider.get_object(object_ref)
             objects = state_objects if artifact.role == "evaluation_states" else product_objects
             previous = objects.get(object_ref.sha256)
             if previous is not None and previous != object_ref:
                 raise ValueError(f"conflicting artifact sizes for SHA-256 {object_ref.sha256}")
             objects[object_ref.sha256] = object_ref
-    root_digest = sha256_bytes(canonical_json_bytes(sorted(manifest_versions)))
-    if product_objects:
+
+    def targets(objects: dict[str, ContentObjectRef]) -> tuple[ContentRetentionTarget, ...]:
+        return tuple(
+            ContentRetentionTarget(ref_kind="object", object=objects[digest])
+            for digest in sorted(objects)
+        )
+
+    return targets(product_objects), targets(state_objects)
+
+
+def _register_evaluation_batch_retention_root(
+    manifests: Sequence[EvaluationRunManifest],
+    *,
+    root: Path,
+) -> None:
+    """Separate retained products from disposable batch evaluation states."""
+    from feedbax.contracts.artifact_custody import ContentRootRecord
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+    provider = ImmutableArtifactBlobProvider(root.absolute())
+    manifest_versions: list[tuple[str, str]] = []
+    for manifest in manifests:
+        manifest_path = canonical_manifest_path(manifest.kind, manifest.id, root=root)
+        manifest_versions.append((manifest.id, sha256_bytes(manifest_path.read_bytes())))
+    products, states = _evaluation_batch_retention_targets(manifests)
+    root_digest = _evaluation_batch_retention_digest(manifest_versions)
+    if products:
         provider.register_root(
             ContentRootRecord(
                 root_id=f"evaluation-products:{root_digest}",
                 root_kind="logical-ref",
-                targets=tuple(
-                    ContentRetentionTarget(ref_kind="object", object=product_objects[digest])
-                    for digest in sorted(product_objects)
-                ),
+                targets=products,
             )
         )
-    if state_objects:
+    if states:
         provider.register_root(
             ContentRootRecord(
                 root_id=f"evaluation-intermediates:{root_digest}",
                 root_kind="run",
-                targets=tuple(
-                    ContentRetentionTarget(ref_kind="object", object=state_objects[digest])
-                    for digest in sorted(state_objects)
-                ),
+                targets=states,
             )
         )
 
@@ -944,13 +1206,8 @@ def finalize_evaluation_batch_retention(
     manifest_sha256s: Sequence[str] | None = None,
 ) -> tuple[str, ...]:
     """Finish restart custody and retain or time-bound durable evaluation states."""
-    from feedbax.contracts.artifact_custody import (
-        CONTENT_OBJECT_REF_PREFIX,
-        ContentLeaseRecord,
-        ContentObjectRef,
-        ContentRetentionTarget,
-    )
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.persistence.content_retention import finalize_run_retention
 
     if manifest_sha256s is None:
         manifest_sha256s = tuple(
@@ -959,46 +1216,47 @@ def finalize_evaluation_batch_retention(
             )
             for manifest in manifests
         )
+    records = _evaluation_batch_retention_records(
+        manifests,
+        manifest_sha256s,
+        retain_intermediates=retain_intermediates,
+        grace_expires_at=grace_expires_at,
+    )
+    if records is None:
+        return ()
+    root_id, targets, lease = records
+    provider = ImmutableArtifactBlobProvider(root.absolute())
+    return (finalize_run_retention(provider, root_id, targets, lease=lease),)
+
+
+def _evaluation_batch_retention_records(
+    manifests: Sequence[EvaluationRunManifest],
+    manifest_sha256s: Sequence[str],
+    *,
+    retain_intermediates: bool,
+    grace_expires_at: datetime,
+) -> tuple[str, tuple[ContentRetentionTarget, ...], ContentLeaseRecord | None] | None:
     if len(manifest_sha256s) != len(manifests):
         raise ValueError("evaluation manifest retention identities are incomplete")
-    manifest_versions = [
-        (manifest.id, digest) for manifest, digest in zip(manifests, manifest_sha256s, strict=True)
-    ]
-    root_digest = sha256_bytes(canonical_json_bytes(sorted(manifest_versions)))
-    root_id = f"evaluation-intermediates:{root_digest}"
-    targets = tuple(
-        ContentRetentionTarget(
-            ref_kind="object",
-            object=ContentObjectRef(
-                object_id=f"{CONTENT_OBJECT_REF_PREFIX}{artifact.sha256}",
-                sha256=artifact.sha256,
-                size_bytes=artifact.size_bytes,
-            ),
-        )
-        for manifest in manifests
-        for artifact in manifest.artifacts
-        if artifact.role == "evaluation_states"
-        and artifact.sha256 is not None
-        and artifact.size_bytes is not None
-    )
+    _, targets = _evaluation_batch_retention_targets(manifests)
     if not targets:
-        return ()
-    provider = ImmutableArtifactBlobProvider(root.absolute())
-    provider.set_run_state(root_id, nonterminal=False, restartable=False)
-    if retain_intermediates:
-        return (root_id,)
-    lease_id = f"evaluation-intermediates-release:{root_digest}"
-    provider.acquire_lease(
-        ContentLeaseRecord(
-            lease_id=lease_id,
+        return None
+    root_digest = _evaluation_batch_retention_digest(
+        [
+            (manifest.id, digest)
+            for manifest, digest in zip(manifests, manifest_sha256s, strict=True)
+        ]
+    )
+    lease = None
+    if not retain_intermediates:
+        lease = ContentLeaseRecord(
+            lease_id=f"evaluation-intermediates-release:{root_digest}",
             owner="evaluation-compaction",
             expires_at=grace_expires_at,
             expiry_disposition="release",
             targets=targets,
         )
-    )
-    provider.release_root(root_id)
-    return (lease_id,)
+    return f"evaluation-intermediates:{root_digest}", targets, lease
 
 
 def _store_batched_evaluation_result(
@@ -1021,15 +1279,9 @@ def _store_batched_evaluation_result(
     """
     manifest_id = evaluation_run_manifest_id(item.spec)
     states_path = evaluation_states_cache_path(manifest_id, root=store_root)
-    states_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_metadata: dict[str, Any] = {
-        "states_path": str(evaluation_states_cache_path(manifest_id, root=published_root)),
-        "states_cache_key": manifest_id,
-        "states_cache_hit": False,
-    }
-    if result.states is not None:
-        write_evaluation_states_cache(states_path, manifest_id=manifest_id, states=result.states)
-        cache_metadata["states_cache_saved"] = True
+    cache_metadata = _evaluation_cache_metadata(
+        manifest_id, evaluation_states_cache_path(manifest_id, root=published_root)
+    )
     if _states_custody_for_spec(item.spec) == "durable":
         result = _with_durable_states_artifact(
             result,
@@ -1048,6 +1300,8 @@ def _store_batched_evaluation_result(
     prov.entrypoint = EntrypointRef(
         kind="feedbax-evaluation-recipe", name=item.spec.evaluation_type
     )
+    if result.states is not None:
+        _save_evaluation_states(states_path, manifest_id, result.states, cache_metadata)
     manifest = _build_evaluation_manifest(
         manifest_id=manifest_id,
         run_spec=item.spec,
@@ -1108,7 +1362,7 @@ def _validate_matrix_staged_parent_references(
 
 
 def _resolve_matrix_staged_parents(
-    matrix: EvaluationRunMatrixSpec,
+    staged_parents: Mapping[str, StagedEvaluationPrerequisite] | None,
     *,
     parent_manifest_root: Path | str | None,
     execution_descriptor: StagedExecutionDescriptor | Mapping[str, Any] | None,
@@ -1130,8 +1384,10 @@ def _resolve_matrix_staged_parents(
         artifact_provider_bindings=artifact_provider_bindings,
         checkpoint_custody_bindings=checkpoint_custody_bindings,
     )
+    if staged_parents is None:
+        return context
     locations: list[StagedParentExecutionLocation] = []
-    for name, prerequisite in matrix.staged_parents.items():
+    for name, prerequisite in staged_parents.items():
         parent = prerequisite.parent
         if prerequisite.artifact_provider is None:
             bound_manifest_root = context.manifest_roots.get(name)
@@ -1191,17 +1447,17 @@ def _resolve_matrix_staged_parents(
             )
         )
     context = with_staged_parent_execution_locations(context, locations)
-    for prerequisite in matrix.staged_parents.values():
+    for prerequisite in staged_parents.values():
         context.resolve_manifest_input(prerequisite.parent)
     return context
 
 
 class EvaluationRecipeExecutionError(RuntimeError):
-    """Raised after a registered recipe fails and a failed manifest is written."""
+    """A failed evaluation attempt and the path to its diagnostic receipt."""
 
     def __init__(self, manifest: EvaluationRunManifest, path: Path, cause: BaseException):
         super().__init__(
-            f"Evaluation recipe for {manifest.id!r} failed; failed manifest written to {path}"
+            f"Evaluation attempt for {manifest.id!r} failed. Diagnostic receipt at {path}"
         )
         self.manifest = manifest
         self.path = path
@@ -1262,12 +1518,45 @@ def _cache_corruption(path: Path, reason: str) -> EvaluationStatesCacheCorruptio
     )
 
 
-def load_evaluation_states_cache(path: Path, *, manifest_id: str) -> Any:
-    """Load a versioned evaluation-states cache payload."""
+def _matches_evaluation_cache(stream: BinaryIO, manifest: EvaluationRunManifest) -> bool:
+    claim = manifest.metadata.get("cache")
+    if manifest.status != "completed" or not isinstance(claim, Mapping):
+        return False
+    digest = claim.get("states_cache_sha256")
+    return (
+        claim.get("states_cache_key") == manifest.id
+        and isinstance(digest, str)
+        and file_digest(stream, "sha256").hexdigest() == digest
+    )
+
+
+def evaluation_states_cache_matches(path: Path, manifest: EvaluationRunManifest) -> bool:
+    """Check whether the cache holds the exact bytes claimed by a completed receipt."""
+    try:
+        with path.open("rb") as stream:
+            return _matches_evaluation_cache(stream, manifest)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise _cache_corruption(path, str(exc)) from exc
+
+
+def load_evaluation_states_cache(path: Path, *, manifest: EvaluationRunManifest) -> Any:
+    """Load states only from bytes claimed by the supplied completed receipt."""
     import dill as pickle
 
     try:
-        with path.open("rb") as stream:
+        stream = path.open("rb")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise _cache_corruption(path, str(exc)) from exc
+    try:
+        # The writer atomically replaces the path. Hash and decode the same inode.
+        with stream:
+            if not _matches_evaluation_cache(stream, manifest):
+                return None
+            stream.seek(0)
             payload = pickle.load(stream)
     except (OSError, EOFError, pickle.UnpicklingError, AttributeError, ImportError) as exc:
         raise _cache_corruption(path, str(exc)) from exc
@@ -1282,29 +1571,56 @@ def load_evaluation_states_cache(path: Path, *, manifest_id: str) -> Any:
             f"expected {EVALUATION_STATES_CACHE_SCHEMA_VERSION!r}",
         )
     cached_manifest_id = payload.get("manifest_id")
-    if cached_manifest_id != manifest_id:
+    if cached_manifest_id != manifest.id:
         raise _cache_corruption(
             path,
-            f"manifest_id={cached_manifest_id!r}, expected {manifest_id!r}",
+            f"manifest_id={cached_manifest_id!r}, expected {manifest.id!r}",
         )
     if "states" not in payload:
         raise _cache_corruption(path, "missing states payload")
     return payload["states"]
 
 
-def write_evaluation_states_cache(path: Path, *, manifest_id: str, states: Any) -> None:
-    """Write a versioned evaluation-states cache payload."""
+def write_evaluation_states_cache(path: Path, *, manifest_id: str, states: Any) -> str:
+    """Atomically replace an ephemeral states cache and return its byte digest."""
     import dill as pickle
 
-    with path.open("wb") as stream:
-        pickle.dump(
-            {
-                "schema_version": EVALUATION_STATES_CACHE_SCHEMA_VERSION,
-                "manifest_id": manifest_id,
-                "states": states,
-            },
-            stream,
-        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, mode="w+b", delete=False) as stream:
+        staged = Path(stream.name)
+        try:
+            pickle.dump(
+                {
+                    "schema_version": EVALUATION_STATES_CACHE_SCHEMA_VERSION,
+                    "manifest_id": manifest_id,
+                    "states": states,
+                },
+                stream,
+            )
+            stream.seek(0)
+            digest = file_digest(stream, "sha256").hexdigest()
+            stream.close()
+            staged.replace(path)
+        finally:
+            staged.unlink(missing_ok=True)
+    return digest
+
+
+def _evaluation_cache_metadata(manifest_id: str, path: Path) -> dict[str, Any]:
+    return {
+        "states_path": str(path),
+        "states_cache_key": manifest_id,
+        "states_cache_hit": False,
+    }
+
+
+def _save_evaluation_states(
+    path: Path, manifest_id: str, states: Any, cache_metadata: dict[str, Any]
+) -> None:
+    cache_metadata["states_cache_sha256"] = write_evaluation_states_cache(
+        path, manifest_id=manifest_id, states=states
+    )
+    cache_metadata["states_cache_saved"] = True
 
 
 def coerce_evaluation_run_spec(
@@ -1341,13 +1657,18 @@ def execute_evaluation_run_spec(
     execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
     use_cache: bool = True,
     force: bool = False,
+    _row_publication: _MatrixRowPublication | None = None,
 ) -> tuple[EvaluationRunManifest, Path]:
     """Execute a serialized evaluation spec and write a truthful manifest.
 
-    The evaluated states cache is ephemeral and lives under
-    ``{FEEDBAX_RUNS_DIR}/cache/states`` keyed by the deterministic evaluation
-    manifest identifier, not by a Studio database hash.
+    The states cache is ephemeral and lives under ``{FEEDBAX_RUNS_DIR}/cache/states``
+    at the deterministic manifest ID. A hit authenticates the receipt and its
+    required outputs. Matrix execution can bind row context to an admitted hit
+    without replacing its states cache. Forced runs bypass reuse and replace a
+    completed receipt only after successful publication.
     """
+    from feedbax.analysis.fulfillment import evaluation_expected_parents
+
     run_spec = coerce_evaluation_run_spec(spec)
     recipe = registry.get(run_spec.evaluation_type)
     root_path = Path(root) if root is not None else default_manifest_root()
@@ -1358,16 +1679,7 @@ def execute_evaluation_run_spec(
     states_path.parent.mkdir(parents=True, exist_ok=True)
 
     prov = provenance.model_copy(deep=True) if provenance is not None else collect_git_provenance()
-    staged_prerequisites = run_spec.params.get("staged_prerequisites")
-    if staged_prerequisites is None:
-        staged_prerequisites = {}
-    elif not isinstance(staged_prerequisites, Mapping):
-        raise TypeError("evaluation params.staged_prerequisites must be a mapping or null")
-    staged_prerequisite_parents = [
-        StagedEvaluationPrerequisite.model_validate(value).parent
-        for value in staged_prerequisites.values()
-    ]
-    expected_parents = [*run_spec.inputs, *staged_prerequisite_parents]
+    expected_parents = evaluation_expected_parents(run_spec)
     if provenance is not None and prov.parents and prov.parents != expected_parents:
         raise ValueError(
             "evaluation provenance parents disagree with inputs and staged prerequisites"
@@ -1382,108 +1694,171 @@ def execute_evaluation_run_spec(
         )
 
     manifest_metadata = dict(metadata or {})
+    if _row_publication is not None:
+        manifest_metadata["matrix_harness"] = _row_publication.metadata
     states_custody = _states_custody_for_spec(run_spec)
-    cache_metadata: dict[str, Any] = {
-        "states_path": str(states_path),
-        "states_cache_key": manifest_id,
-        "states_cache_hit": False,
-    }
-    try:
-        cache_hit = False
-        if use_cache and not force and states_path.exists():
-            states = load_evaluation_states_cache(states_path, manifest_id=manifest_id)
-            previous_manifest = _load_completed_evaluation_manifest(manifest_path, manifest_id)
-            summary_metrics = dict(previous_manifest.summary_metrics) if previous_manifest else {}
-            artifacts = list(previous_manifest.artifacts) if previous_manifest else []
-            result_metadata = dict(previous_manifest.metadata) if previous_manifest else {}
-            result = EvaluationRecipeResult(
-                states=states,
-                summary_metrics=summary_metrics,
-                artifacts=artifacts,
-                metadata=result_metadata,
-            )
-            cache_metadata["states_cache_hit"] = True
-            cache_hit = True
-        else:
-            result = recipe(run_spec, root_path, states_path, execution_context)
-            if use_cache and result.states is not None:
-                write_evaluation_states_cache(
-                    states_path,
-                    manifest_id=manifest_id,
-                    states=result.states,
-                )
-                cache_metadata["states_cache_saved"] = True
-        if states_custody == "durable":
-            result = _with_durable_states_artifact(
-                result,
-                root=root_path,
+    cache_metadata = _evaluation_cache_metadata(manifest_id, states_path)
+    with manifest_publication_lock(manifest_path), ExitStack() as staging:
+        prior = read_publication_manifest(
+            manifest_path, kind="EvaluationRunManifest", manifest_id=manifest_id
+        )
+        assert prior is None or isinstance(prior, EvaluationRunManifest)
+
+        def failed_attempt(
+            cause: Exception, *, publish_failure: bool
+        ) -> EvaluationRecipeExecutionError:
+            failed = _build_evaluation_manifest(
                 manifest_id=manifest_id,
-                allow_existing=cache_hit,
-            )
-
-        summary_metrics = {
-            "input_training_runs": len(run_spec.inputs),
-            **result.summary_metrics,
-        }
-        manifest = _build_evaluation_manifest(
-            manifest_id=manifest_id,
-            run_spec=run_spec,
-            status="completed",
-            provenance=prov,
-            summary_metrics=summary_metrics,
-            artifacts=result.artifacts,
-            metadata={
-                **manifest_metadata,
-                **result.metadata,
-                "cache": cache_metadata,
-            },
-        )
-        return manifest, write_manifest(manifest, root=root_path)
-    except Exception as exc:
-        error: dict[str, Any] = {
-            "type": type(exc).__name__,
-            "message": str(exc),
-        }
-        if isinstance(exc, EvaluationRecipeDiagnosticError):
-            error["diagnostics"] = {
-                **exc.diagnostics.model_dump(mode="json"),
-                "recipe": {
-                    "evaluation_type": run_spec.evaluation_type,
-                    "entrypoint": EntrypointRef(
-                        kind="feedbax-evaluation-recipe",
-                        name=run_spec.evaluation_type,
-                    ).model_dump(mode="json", exclude_none=True),
+                run_spec=run_spec,
+                status="failed",
+                provenance=prov,
+                summary_metrics={"input_training_runs": len(run_spec.inputs)},
+                artifacts=[],
+                metadata={
+                    **manifest_metadata,
+                    "cache": _evaluation_cache_metadata(manifest_id, states_path),
+                    "error": _evaluation_attempt_diagnostics(run_spec, cause),
                 },
-            }
-        manifest = _build_evaluation_manifest(
-            manifest_id=manifest_id,
-            run_spec=run_spec,
-            status="failed",
-            provenance=prov,
-            summary_metrics={"input_training_runs": len(run_spec.inputs)},
-            artifacts=[],
-            metadata={
-                **manifest_metadata,
-                "cache": cache_metadata,
-                "error": error,
+            )
+            path = (
+                publish_terminal_manifest_locked(failed, root=root_path, previous=prior)
+                if publish_failure
+                else None
+            )
+            if path is None:
+                attempts = root_path / ".evaluation-attempts"
+                attempts.mkdir(exist_ok=True)
+                attempt_root = Path(tempfile.mkdtemp(prefix="failed-", dir=attempts))
+                path = write_manifest(failed, root=attempt_root, index=False)
+            return EvaluationRecipeExecutionError(failed, path, cause)
+
+        try:
+            states = None
+            row_publication = _row_publication
+            if prior is not None and prior.status == "completed":
+                if row_publication is None:
+                    row_publication = _MatrixRowPublication.from_manifest(prior)
+                    if row_publication is not None:
+                        row_publication.ensure_row_custody(root_path, matrix_root=root_path.parent)
+                if use_cache and not force:
+                    states = load_evaluation_states_cache(states_path, manifest=prior)
+            reuse_cache = states is not None
+            staged_cache = None
+            if reuse_cache:
+                assert prior is not None
+                manifest = _row_publication.attach(prior) if _row_publication else prior
+                _require_scalar_evaluation_receipt(
+                    manifest, run_spec, root=root_path, states=states
+                )
+                if manifest == prior:
+                    return prior, manifest_path
+            else:
+                tmp = staging.enter_context(
+                    tempfile.TemporaryDirectory(prefix=".evaluation-", dir=states_path.parent)
+                )
+                recipe_cache = Path(tmp) / states_path.name
+                result = recipe(run_spec, root_path, recipe_cache, execution_context)
+                if states_custody == "durable":
+                    result = _with_durable_states_artifact(
+                        result, root=root_path, manifest_id=manifest_id
+                    )
+                if use_cache and result.states is not None:
+                    _save_evaluation_states(
+                        recipe_cache, manifest_id, result.states, cache_metadata
+                    )
+                    staged_cache = recipe_cache
+                manifest = _build_evaluation_manifest(
+                    manifest_id=manifest_id,
+                    run_spec=run_spec,
+                    status="completed",
+                    provenance=prov,
+                    summary_metrics={
+                        "input_training_runs": len(run_spec.inputs),
+                        **result.summary_metrics,
+                    },
+                    artifacts=result.artifacts,
+                    metadata={**manifest_metadata, **result.metadata, "cache": cache_metadata},
+                )
+                if row_publication is not None:
+                    manifest = row_publication.attach(manifest)
+                _require_scalar_evaluation_receipt(
+                    manifest, run_spec, root=root_path, states=result.states
+                )
+        except Exception as exc:
+            raise failed_attempt(exc, publish_failure=True) from exc
+
+        try:
+            index_path = manifest_index.default_index_path(root_path)
+            with closing(manifest_index.connect_index(index_path)) as index:
+                # An index rebuild must wait until the files are committed or restored.
+                index.execute("BEGIN IMMEDIATE")
+                with ExitStack() as rollback:
+                    rollback.enter_context(_restore_evaluation_file_on_error(manifest_path))
+                    if not reuse_cache:
+                        rollback.enter_context(_restore_evaluation_file_on_error(states_path))
+                        if staged_cache is not None:
+                            staged_cache.replace(states_path)
+                        else:
+                            states_path.unlink(missing_ok=True)
+                    path = publish_terminal_manifest_locked(
+                        manifest, root=root_path, previous=prior, index=False
+                    )
+                    assert path is not None
+                    manifest_index.index_manifest(index, load_manifest(path), path=path)
+                    index.commit()
+        except Exception as exc:
+            raise failed_attempt(exc, publish_failure=False) from exc
+        return manifest, path
+
+
+def _evaluation_attempt_diagnostics(spec: EvaluationRunSpec, cause: Exception) -> dict[str, Any]:
+    error: dict[str, Any] = {"type": type(cause).__name__, "message": str(cause)}
+    if isinstance(cause, EvaluationRecipeDiagnosticError):
+        error["diagnostics"] = {
+            **cause.diagnostics.model_dump(mode="json"),
+            "recipe": {
+                "evaluation_type": spec.evaluation_type,
+                "entrypoint": EntrypointRef(
+                    kind="feedbax-evaluation-recipe", name=spec.evaluation_type
+                ).model_dump(mode="json", exclude_none=True),
             },
-        )
-        path = write_manifest(manifest, root=root_path)
-        raise EvaluationRecipeExecutionError(manifest, path, exc) from exc
+        }
+    return error
 
 
-def _load_completed_evaluation_manifest(
-    path: Path,
-    manifest_id: str,
-) -> EvaluationRunManifest | None:
-    if not path.exists():
-        return None
-    manifest = load_manifest(path)
-    if not isinstance(manifest, EvaluationRunManifest):
-        return None
-    if manifest.id != manifest_id or manifest.status != "completed":
-        return None
-    return manifest
+@contextmanager
+def _restore_evaluation_file_on_error(path: Path) -> Iterator[None]:
+    """Keep the previous inode available through replacement and indexing."""
+    with tempfile.TemporaryDirectory(prefix=".previous-", dir=path.parent) as tmp:
+        previous = Path(tmp) / "backup"
+        try:
+            os.link(path, previous)
+        except FileNotFoundError:
+            pass
+        try:
+            yield
+        except BaseException:
+            if previous.exists():
+                previous.replace(path)
+            else:
+                path.unlink(missing_ok=True)
+            raise
+
+
+def _require_scalar_evaluation_receipt(
+    manifest: EvaluationRunManifest, spec: EvaluationRunSpec, *, root: Path, states: Any
+) -> None:
+    from feedbax.analysis.fulfillment import FulfillmentAdmissionError, admit_evaluation_receipt
+
+    durable = _states_custody_for_spec(spec) == "durable"
+    outcome = admit_evaluation_receipt(
+        spec,
+        root=root,
+        manifest=manifest,
+        states_structure=jtu.tree_structure(states) if durable else None,
+    )
+    if not outcome.admitted:
+        raise FulfillmentAdmissionError(outcome)
 
 
 def load_evaluation_states(
@@ -1529,19 +1904,12 @@ def _with_durable_states_artifact(
     *,
     root: Path,
     manifest_id: str,
-    allow_existing: bool = False,
 ) -> EvaluationRecipeResult:
     existing = [
         artifact
         for artifact in result.artifacts
         if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
     ]
-    if existing and allow_existing:
-        if len(existing) > 1:
-            raise ValueError(
-                f"Evaluation manifest {manifest_id!r} has multiple evaluation_states artifacts."
-            )
-        return result
     if existing:
         raise ValueError(
             "Evaluation recipes must not emit evaluation_states artifacts directly; "

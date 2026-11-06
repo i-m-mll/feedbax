@@ -870,11 +870,11 @@ def test_multi_root_runtime_bindings_preserve_authored_figure_identity(
         ],
     )
     authored_path = (
-        Path(__file__).parent / "fixtures" / "figures" / "sisu_m2_pulse_response.figure.v1.json"
+        Path(__file__).parent / "fixtures" / "figures" / "pulse_response.figure.v1.json"
     )
     authored = json.loads(authored_path.read_text(encoding="utf-8"))
     authored_payload = spec_payload("FigureSpec", authored)
-    expected_authored_sha256 = "dc979c6acbbec4aa6a1cc0ab23f63e145517511fa3d6f94f92a134018fa14a4b"
+    expected_authored_sha256 = "3ccb86bc3881711f4b4c130f8d2c1a116bda284eb188d7266c8a43d2177b758a"
     assert authored_payload.sha256 == expected_authored_sha256
     retained_before = {
         name: sorted(path.relative_to(provider.root) for path in provider.root.rglob("*"))
@@ -1283,7 +1283,9 @@ def test_staged_figure_resolves_prior_stage_output_through_executor_context(
     )
     bindings = [StagedArtifactProviderRootBinding("certificates", provider.root)]
     root = tmp_path / "outputs"
-    application_registry_bundle.analysis_recipes.register(_STAGED_PROVIDER_ANALYSIS_TYPE, recipe)
+    application_registry_bundle.analysis_recipes.register(
+        _STAGED_PROVIDER_ANALYSIS_TYPE, recipe, computation_revision="1"
+    )
     first_execution = execute_staged_analysis_bundle(
         AnalysisBundleSpec(
             name="authority-producer",

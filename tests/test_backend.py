@@ -9,6 +9,7 @@ backward compatibility, vmap, and gradient checkpointing.
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from feedbax.runtime.graph import init_state_from_component
@@ -208,10 +209,10 @@ class TestMJXBackendInit:
         backend = MJXBackend(control_dt=0.01, sub_dt=0.002)
         assert backend.n_substeps == 5
 
-    def test_explicit_n_substeps(self, sim_config):
-        """Explicit n_substeps overrides computed value."""
-        backend = MJXBackend(control_dt=0.01, sub_dt=0.002, n_substeps=3)
-        assert backend.n_substeps == 3
+    @pytest.mark.parametrize("count", [3, 0, 5.0, True])
+    def test_explicit_n_substeps_must_agree_with_periods(self, count):
+        with pytest.raises(ValueError, match="n_substeps"):
+            MJXBackend(control_dt=0.01, sub_dt=0.002, n_substeps=count)
 
     def test_protocol(self, mjx_backend):
         """MJXBackend satisfies PhysicsBackend protocol."""
@@ -353,26 +354,50 @@ class TestMJXSkeletonStep:
 # ===========================================================================
 
 class TestMechanicsDiffraxBackend:
-    def test_diffrax_backend_multi_substep(self, pointmass_plant, dt, key):
-        """DiffraxBackend with multiple substeps runs correctly."""
-        backend = DiffraxBackend(control_dt=dt, sub_dt=dt / 5)
-        mech = Mechanics(pointmass_plant, dt, backend=backend, key=key)
+    @pytest.mark.parametrize(
+        ("control_dt", "sub_dt", "expected_pos"),
+        [(0.1, 0.02, 0.004), (np.float32(0.06817), np.float32(0.00401), 0.0021868936)],
+    )
+    def test_diffrax_backend_multi_substep(
+        self, pointmass_plant, control_dt, sub_dt, expected_pos, key,
+    ):
+        """Unit force on a unit mass measures elapsed time through velocity."""
+        backend = DiffraxBackend(control_dt=control_dt, sub_dt=sub_dt)
+        mech = Mechanics(pointmass_plant, backend=backend, key=key)
         state = init_state_from_component(mech)
         force = jnp.array([1.0, 0.0])
+        initial = state.get(mech.state_index).effector
+        out, _ = mech({"force": force}, state, key=key)
+        assert mech.dt == float(control_dt)
+        assert jnp.allclose(out["effector"].vel - initial.vel, jnp.array([control_dt, 0.0]))
+        assert jnp.allclose(out["effector"].pos - initial.pos, jnp.array([expected_pos, 0.0]))
 
-        for i in range(10):
-            step_key = jax.random.fold_in(key, i)
-            out, state = mech({"force": force}, state, key=step_key)
+    @pytest.mark.parametrize("sub_dt", [0.03, 0.2, 0.0, -0.02, float("nan"), float("inf")])
+    def test_refuses_incoherent_diffrax_substep(self, sub_dt):
+        with pytest.raises(ValueError, match="sub_dt"):
+            DiffraxBackend(control_dt=0.1, sub_dt=sub_dt)
 
-        assert jnp.allclose(out["effector"].vel, force * (10 * dt), atol=1e-6)
-        elapsed_substeps = 10 * backend.n_substeps
-        expected_pos = force * backend.sub_dt**2 * elapsed_substeps * (elapsed_substeps - 1) / 2
-        assert jnp.allclose(out["effector"].pos, expected_pos, atol=1e-6)
+    def test_refuses_conflicting_mechanics_dt(self, pointmass_plant):
+        with pytest.raises(ValueError, match=r"Mechanics\.dt.*backend\.control_dt"):
+            Mechanics(pointmass_plant, dt=0.1, backend=DiffraxBackend(0.2))
+
+    @pytest.mark.parametrize("dt", [0.0, -0.1, float("inf"), float("nan")])
+    def test_refuses_invalid_control_period(self, pointmass_plant, dt):
+        with pytest.raises(ValueError, match=r"Mechanics\.dt"):
+            Mechanics(pointmass_plant, dt=dt)
+        with pytest.raises(ValueError, match="control_dt"):
+            DiffraxBackend(control_dt=dt)
 
 
 @requires_mujoco
 @pytest.mark.optional_mjx
 class TestMechanicsMJXBackend:
+    def test_refuses_backend_period_that_disagrees_with_model(self, mjx_plant, sim_config):
+        sub_dt = 2 * sim_config.dt
+        backend = MJXBackend(control_dt=5 * sub_dt, sub_dt=sub_dt)
+        with pytest.raises(ValueError, match=r"model\.opt\.timestep.*backend\.sub_dt"):
+            Mechanics(mjx_plant, backend=backend)
+
     def test_mjx_backend_runs(self, mjx_plant, sim_config, key):
         """Mechanics with MJXBackend runs without error."""
         backend = MJXBackend(

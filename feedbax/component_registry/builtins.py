@@ -1,14 +1,22 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from functools import lru_cache, partial
 from math import prod
 from typing import Any, Protocol
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler
+from pydantic import model_serializer
 
+from feedbax._delayed_reaches import (
+    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
+    DEFAULT_DELAYED_MOVE_EPOCHS,
+    DEFAULT_DELAYED_N_STEPS,
+)
 from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
 from feedbax.compiler.mechanics_templates import point_mass_template_graph
@@ -18,19 +26,39 @@ from feedbax.contracts.array_values import (
     SparseCooArrayValueSpec,
 )
 from feedbax.compiler.penzai_compiler import penzai_builder_options
+from feedbax.compiler.solver_config import (
+    DEFAULT_PLANAR_SOLVER,
+    MIN_PLANAR_DT,
+    PlanarSolverType,
+    planar_solver_name,
+)
 from feedbax.contracts.migrations import ComponentMigration
 from feedbax.contracts.representation import RepresentationSpec
+from feedbax.control import (
+    Derivative,
+    Integrator,
+    IntegratorDiscrete,
+    PID,
+    PIDDiscrete,
+    UnitDelay,
+    ZeroOrderHold,
+)
+from feedbax.control._vector import control_vector_prototype, require_control_vector
 from feedbax.control.affine import AffineFeedbackController, affine_feedback_output_prototype
+from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.muscle_config import (
     default_6muscle_2link_attachment_paths,
     default_6muscle_2link_segment_lengths,
 )
 from feedbax.mechanics.linear_state_space import (
     STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+    STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION_V1,
     LinearStateSpace,
 )
+from feedbax.runtime.feedback import AssembleFeedback, SelectState, StateSelector
 from feedbax.runtime.affine_composer import (
     AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1,
     AffineValueComposer,
     affine_value_composer_output_prototype,
 )
@@ -55,6 +83,7 @@ from feedbax.runtime.components import (
     Noise,
     Pulse,
     Ramp,
+    RateLimiter,
     Ravel,
     Reshape,
     Saturation,
@@ -64,42 +93,53 @@ from feedbax.runtime.components import (
     Spring,
     Subtract,
     Sum,
+    stateful_vector_prototype,
 )
-from feedbax.runtime.filters import FirstOrderFilter, require_real_floating_filter_prototype
-from feedbax.intervene.intervene import (
-    AddNoise,
-    AddNoiseParams,
-    ConstantInput,
-    ConstantInputParams,
+from feedbax.runtime.filters import (
+    BandPassFilter,
+    FirstOrderFilter,
+    HighPassFilter,
+    require_real_floating_filter_prototype,
+)
+from feedbax.mechanics.force_fields import (
     CurlField,
     CurlFieldParams,
     DynamicsMatrixPerturb,
     DynamicsMatrixPerturbParams,
     FixedField,
     FixedFieldParams,
-    NetworkClamp,
-    NetworkConstantInput,
-    NetworkIntervenorParams,
 )
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
-from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
-from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
+from feedbax.mechanics.muscles.thelen_muscle import (
+    RigidTendonHillMuscleThelen,
+    require_thelen_input_shape,
+    thelen_muscle_shape,
+)
+from feedbax.compiler.muscle_templates import (
+    arm_6muscle_rigid_tendon_graph,
+    point_mass_8muscle_relu_graph,
+)
 from feedbax.models.networks import VanillaRNN
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import StateFeedbackSelector, state_feedback_output_prototype
-from feedbax.intervene.intervene import (
+from feedbax.mechanics.force_fields import (
     THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
     THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
+    THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2,
 )
 
 from .acausal_adapters import register_acausal_components
 from .declarations import (
     ComponentConstructorPlan,
     DeclaredComponent,
+    InputPrototypeParameter,
     MissingPrototypeInput,
     ParameterField,
     declare_component,
 )
+from feedbax.runtime.signal_transforms import AddNoise, AddNoiseParams
+from .signal_transforms import register_vector_transforms
+from .muscle_graph import register_muscle_graph_leaves
 from .templates import register_builtin_graph_templates
 from .prototypes import array_prototype, prototype_params, migrate_stateful_v1
 
@@ -108,6 +148,17 @@ class _Registry(Protocol):
     def register(self, meta: DeclaredComponent) -> None: ...
 
     def register_migration(self, migration: ComponentMigration) -> None: ...
+
+
+class _BuiltinDefinitions:
+    def __init__(self) -> None:
+        self.entries: list[DeclaredComponent | ComponentMigration] = []
+
+    def register(self, meta: DeclaredComponent) -> None:
+        self.entries.append(meta)
+
+    def register_migration(self, migration: ComponentMigration) -> None:
+        self.entries.append(migration)
 
 
 _DEFAULT_STRUCTURAL_DELTA_A = SparseCooArrayValueSpec(
@@ -125,14 +176,50 @@ _DEFAULT_STRUCTURAL_DELTA_A = SparseCooArrayValueSpec(
 class _ConstantParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    dtype: str | None = None
+
     value: JsonValue = Field(
         default=0.0,
         json_schema_extra={"feedbax": {"type": "object", "required": True}},
     )
 
 
+class _AnalyticalPlantParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dt: float = Field(
+        default=0.01, ge=MIN_PLANAR_DT, json_schema_extra={"feedbax": {"required": True}}
+    )
+    n_steps: int = Field(default=1, ge=1)
+    solver_type: PlanarSolverType = DEFAULT_PLANAR_SOLVER
+    tau_act: float = Field(default=0.01, ge=0.001)
+    tau_deact: float = Field(default=0.04, ge=0.001)
+    clip_states: bool = True
+
+    @model_serializer(mode="wrap", when_used="json")
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        params = handler(self)
+        if self.solver_type == DEFAULT_PLANAR_SOLVER:
+            params.pop("solver_type", None)
+        return params
+
+
+def _extract_penzai_adapter_params(component: Any, model: Any) -> Any:
+    if component.builder_name is None:
+        raise ValueError("PenzaiAdapter serialization requires a registered builder name")
+    (input_port,) = component.input_ports
+    (output_port,) = component.output_ports
+    return type(model).model_validate(
+        {
+            "builder_name": component.builder_name,
+            "input_port": input_port,
+            "output_port": output_port,
+        }
+    )
+
+
 def _extract_analytical_plant_params(component: Any, model: Any) -> Any:
-    from feedbax.mechanics.backend import DiffraxBackend
+    from feedbax.mechanics.backend import DiffraxBackend, _mechanics_control_dt
 
     backend = component.backend
     if not isinstance(backend, DiffraxBackend):
@@ -140,14 +227,11 @@ def _extract_analytical_plant_params(component: Any, model: Any) -> Any:
             "AnalyticalMusculoskeletalPlant serialization requires DiffraxBackend "
             "to recover the authored substep count"
         )
-    if float(backend.control_dt) != float(component.dt):
-        raise ValueError(
-            "AnalyticalMusculoskeletalPlant backend control_dt must equal Mechanics dt"
-        )
     return type(model).model_validate(
         {
-            "dt": float(component.dt),
+            "dt": _mechanics_control_dt(component.dt, backend),
             "n_steps": int(backend.n_substeps),
+            "solver_type": planar_solver_name(backend.solver),
             **component.plant.to_params(),
         }
     )
@@ -167,7 +251,6 @@ def _extract_structural_linear_state_space_params(component: Any, model: Any) ->
             "delta_A": delta_A,
             "scale": component.initial_scale,
             "active": component.initial_active,
-            "label": component.label,
             "dt": component.dt,
             "initial_state": list(component.initial_state),
             "pos_slice": list(component.pos_slice),
@@ -177,19 +260,50 @@ def _extract_structural_linear_state_space_params(component: Any, model: Any) ->
 
 
 def _channel_noise_values(channel: Any) -> dict[str, Any]:
+    from feedbax._vendor.jax_cookbook import identity
+    from feedbax.runtime.channel import _noise_model
     from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 
     additive_std = 0.0
     signal_dependent_std = 0.0
     noise_func = channel.noise_func
+    actual_model = _noise_model(noise_func)
+    declared_model = channel.noise_model
+    allowed = {
+        "none": {"none"},
+        "additive_gaussian": {"none", "additive_gaussian"},
+        "signal_dependent_gaussian": {"none", "signal_dependent_gaussian"},
+        "signal_dependent_plus_additive": {
+            "none", "signal_dependent_gaussian", "additive_gaussian", "signal_dependent_plus_additive",
+        },
+    }
+    if actual_model not in allowed.get(declared_model, ()):
+        raise ValueError("Channel noise function does not match a portable noise model")
     terms = noise_func.terms if isinstance(noise_func, CompositeNoise) else (noise_func,)
     for term in terms:
-        if isinstance(term, Normal):
+        if term is None:
+            continue
+        if type(term) is Normal and term.mean == 0.0:
             additive_std = float(term.std)
-        elif isinstance(term, Multiplicative) and isinstance(term.noise_func, Normal):
+        elif (
+            type(term) is Multiplicative
+            and type(term.noise_func) is Normal
+            and term.noise_func.mean == 0.0
+            and term.scale_func is identity
+        ):
             signal_dependent_std = float(term.noise_func.std)
+        else:
+            raise ValueError("Channel noise parameters do not represent a portable Gaussian term")
+    include_zero = noise_func is not None and (
+        (actual_model == "additive_gaussian" and not additive_std)
+        or (actual_model == "signal_dependent_gaussian" and not signal_dependent_std)
+        or (actual_model == "signal_dependent_plus_additive" and not (additive_std and signal_dependent_std))
+    )
+    if include_zero and declared_model != actual_model:
+        raise ValueError("Channel noise model cannot recover the declared zero-strength terms")
     return {
-        "noise_model": getattr(channel, "noise_model", "additive_gaussian"),
+        "noise_model": declared_model,
+        "include_zero_noise_terms": include_zero,
         "noise_std": additive_std,
         "additive_noise_std": additive_std,
         "signal_dependent_noise_std": signal_dependent_std,
@@ -199,50 +313,35 @@ def _channel_noise_values(channel: Any) -> dict[str, Any]:
     }
 
 
-def _prototype_shape(prototype: Any) -> list[int] | list[list[int]] | None:
-    leaves = jt.leaves(prototype)
-    if not leaves or not all(hasattr(leaf, "shape") for leaf in leaves):
-        return None
-    shapes = [[int(dim) for dim in leaf.shape] for leaf in leaves]
-    return shapes[0] if len(shapes) == 1 else shapes
-
-
 def _extract_channel_params(component: Any, model: Any) -> Any:
     values = {
         "delay": int(component.delay),
         **_channel_noise_values(component),
-        **prototype_params(component.input_proto),
+        "input_shape": None,
+        "input_dtype": None,
+        "init_value": component.init_value,
+        **(prototype_params(component.input_proto) if hasattr(component.input_proto, "shape") else {}),
     }
     return type(model).model_validate({name: values[name] for name in type(model).model_fields})
 
 
-def _extract_feedback_channel_params(component: Any, model: Any) -> Any:
-    from feedbax.runtime.channel import Channel
+def _extract_state_selector_params(component: SelectState, model: Any) -> Any:
+    if not isinstance(component.where, StateSelector):
+        raise ValueError("Portable SelectState requires a StateSelector with declared attribute paths")
+    return type(model).model_validate({"paths": list(component.where.paths)})
 
-    channels = jt.leaves(component.channels, is_leaf=lambda item: isinstance(item, Channel))
-    specs = jt.leaves(component.specs, is_leaf=lambda item: hasattr(item, "where"))
-    if len(channels) != 1 or len(specs) != 1:
-        raise ValueError("FeedbackChannels parameter extraction requires one declared channel")
-    channel = channels[0]
-    selector = getattr(specs[0].where, "_feedbax_feedback_selector", None)
-    paths = getattr(specs[0].where, "_feedbax_feedback_paths", None)
-    if selector is None:
-        raise ValueError(
-            "FeedbackChannels parameters are not recoverable without a declared selector"
-        )
-    noise = _channel_noise_values(channel)
-    values = {
-        "delay": int(channel.delay),
-        "selector": selector,
-        "paths": list(paths or ()),
-        "noise_model": noise["noise_model"],
-        "noise_std": noise["noise_std"],
-        "add_noise": noise["add_noise"],
-        "noise_role": noise["noise_role"],
-        "noise_timing": noise["noise_timing"],
-        "input_shape": _prototype_shape(channel.input_proto),
-    }
-    return type(model).model_validate(values)
+
+def _extract_feedback_assembly_params(component: AssembleFeedback, model: Any) -> Any:
+    return type(model).model_validate(
+        {"layout": component.to_layout(), "n_inputs": len(component.input_ports)}
+    )
+
+
+def _build_feedback_assembly(params: Mapping[str, Any]) -> AssembleFeedback:
+    assembly = AssembleFeedback.from_layout(params.get("layout"))
+    if len(assembly.input_ports) != params["n_inputs"]:
+        raise ValueError("AssembleFeedback n_inputs must match its layout leaf count")
+    return assembly
 
 
 def _extract_delayed_reaches_params(component: Any, model: Any) -> Any:
@@ -274,8 +373,16 @@ def _extract_declared_to_params(component: Any, model: Any) -> Any:
     return type(model).model_validate(component.to_params())
 
 
+def _drop_transform_label(params: dict[str, Any]) -> dict[str, Any]:
+    return {name: value for name, value in params.items() if name != "label"}
+
+
+def _migrate_affine_value_composer_v1(params: dict[str, Any]) -> dict[str, Any]:
+    return {**_drop_transform_label(params), "schema_version": AFFINE_VALUE_COMPOSER_SCHEMA_VERSION}
+
+
 def _migrate_threshold_latched_force_v1(params: dict[str, Any]) -> dict[str, Any]:
-    migrated = dict(params)
+    migrated = _drop_transform_label(params)
     selector = dict(migrated["state_selector"])
     selector["kind"] = "fixed"
     migrated["state_selector"] = selector
@@ -957,7 +1064,10 @@ def source_value_output_prototype(
 ) -> dict[str, Any]:
     """Return a source prototype from the configured scalar/array value."""
 
-    return {"output": _proto_from_value(params.get("value", 0.0))}
+    value = params.get("value", 0.0)
+    if params.get("dtype") is not None:
+        value = jnp.asarray(value, dtype=params["dtype"])
+    return {"output": _proto_from_value(value)}
 
 
 def step_source_output_prototype(
@@ -1101,7 +1211,7 @@ def linear_output_prototype(
 ) -> dict[str, Any]:
     """Return a dense-layer output prototype from ``output_size``."""
 
-    return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
+    return {"output": jnp.zeros((int(params.get("output_size", 1)),), dtype=params.get("dtype"))}
 
 
 def recurrent_output_prototype(
@@ -1110,7 +1220,7 @@ def recurrent_output_prototype(
 ) -> dict[str, Any]:
     """Return GRU output and hidden prototypes from ``hidden_size``."""
 
-    hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
+    hidden = jnp.zeros((int(params.get("hidden_size", 1)),), dtype=params.get("dtype"))
     return {"output": hidden, "hidden": hidden}
 
 
@@ -1120,7 +1230,7 @@ def lstm_output_prototype(
 ) -> dict[str, Any]:
     """Return LSTM output, hidden, and cell prototypes from ``hidden_size``."""
 
-    hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
+    hidden = jnp.zeros((int(params.get("hidden_size", 1)),), dtype=params.get("dtype"))
     return {"output": hidden, "hidden": hidden, "cell": hidden}
 
 
@@ -1149,7 +1259,7 @@ def mux_output_prototype(
             + ", ".join(repr(port) for port in missing)
         )
     widths = [_ravel_width(inputs[port], component="Mux", port=port) for port in ports]
-    return {"output": jnp.zeros((sum(widths),))}
+    return {"output": jnp.zeros((sum(widths),), dtype=params.get("dtype"))}
 
 
 def demux_output_prototype(
@@ -1213,25 +1323,20 @@ def elementwise_affine_output_prototype(
     return {"output": proto}
 
 
-def feedback_channels_output_prototype(
-    params: Mapping[str, Any],
-    inputs: Mapping[str, Any],
+def state_selector_output_prototype(
+    params: Mapping[str, Any], inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return the configured feedback-channel state prototype."""
+    state = _required_input(inputs, "state", component="SelectState")
+    return {"output": StateSelector(tuple(params["paths"]))(state)}
 
-    input_shape = params.get("input_shape")
-    if (
-        isinstance(input_shape, (list, tuple))
-        and input_shape
-        and all(isinstance(item, (list, tuple)) for item in input_shape)
-    ):
-        return {
-            "feedback": tuple(jnp.zeros(tuple(int(dim) for dim in item)) for item in input_shape)
-        }
-    proto = _array_proto_from_shape(input_shape)
-    if proto is None:
-        proto = (jnp.zeros(2), jnp.zeros(2))
-    return {"feedback": proto}
+
+def feedback_assembly_output_prototype(
+    params: Mapping[str, Any], inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    assembly = _build_feedback_assembly(params)
+    for port in assembly.input_ports:
+        _required_input(inputs, port, component="AssembleFeedback")
+    return {"output": assembly.assemble(inputs)}
 
 
 def spring_output_prototype(
@@ -1253,13 +1358,13 @@ def damper_output_prototype(
 
 
 def mechanics_state_output_prototype(
+    builder: Callable[[Mapping[str, Any]], Mechanics],
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return the default Cartesian state prototype used by mechanics plants."""
-
-    effector = CartesianState()
-    return {"effector": effector, "state": effector}
+    """Publish the same port trees as the initialized mechanics component."""
+    mechanics = builder(params)
+    return mechanics.initial_outputs(mechanics.state_index.init)
 
 
 def linear_state_space_output_prototype(
@@ -1294,6 +1399,18 @@ def scalar_muscle_output_prototype(
     return {"force": proto, "activation": proto}
 
 
+def thelen_muscle_output_prototype(
+    params: Mapping[str, Any], inputs: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Publish all four Thelen port shapes from the declared muscle count."""
+    shape = thelen_muscle_shape(params["n_muscles"])
+    for port in RigidTendonHillMuscleThelen.input_ports:
+        if port in inputs:
+            require_thelen_input_shape(inputs[port], shape, port=port)
+    proto = jnp.zeros(shape)
+    return dict.fromkeys(RigidTendonHillMuscleThelen.output_ports, proto)
+
+
 def input_or_n_dims_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
@@ -1306,28 +1423,117 @@ def input_or_n_dims_output_prototype(
     return {"output": _n_dims_proto(params)}
 
 
-def error_or_n_dims_output_prototype(
-    params: Mapping[str, Any],
-    inputs: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Return the error prototype, or an ``n_dims`` vector when unconnected."""
-
-    proto = inputs.get("error")
+def _control_vector(
+    params: Mapping[str, Any], proto: Any, *, port: str
+) -> jax.ShapeDtypeStruct:
+    dtype = params.get("input_dtype")
+    if dtype is None and proto is not None:
+        dtype = getattr(proto, "dtype", None)
+    expected = control_vector_prototype(params.get("n_dims", 1), dtype)
     if proto is not None:
-        return {"output": proto}
-    return {"output": _n_dims_proto(params)}
+        require_control_vector(proto, expected, port=port)
+    return expected
 
 
-def rate_limiter_output_prototype(
+def _control_input_dtype(params: Mapping[str, Any], proto: Any, *, port: str) -> str:
+    return _control_vector(params, proto, port=port).dtype.name
+
+
+def _control_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    *,
+    port: str,
+) -> dict[str, Any]:
+    proto = _control_vector(params, inputs.get(port), port=port)
+    return {"output": jnp.zeros(proto.shape, dtype=proto.dtype)}
+
+
+_CONTROL_INPUT_PROTOTYPE = InputPrototypeParameter(
+    "input", "input_dtype", partial(_control_input_dtype, port="input")
+)
+_CONTROL_ERROR_PROTOTYPE = InputPrototypeParameter(
+    "error", "input_dtype", partial(_control_input_dtype, port="error")
+)
+_CONTROL_INPUT_DTYPE = ParameterField(
+    name="input_dtype",
+    type="str",
+    default=None,
+    description="Real floating-point dtype. Defaults to the connected signal dtype when known.",
+)
+
+
+class _PIDParams(BaseModel):
+    Kp: float = Field(default=1.0, json_schema_extra={"feedbax": {"required": True}})
+    Ki: float = 0.0
+    Kd: float = 0.0
+    dt: float = Field(default=0.01, ge=0.0, json_schema_extra={"feedbax": {"required": True}})
+    n_dims: int = Field(default=1, ge=1, json_schema_extra={"feedbax": {"required": True}})
+    input_dtype: str | None = Field(default=None, description=_CONTROL_INPUT_DTYPE.description)
+
+
+class _ContinuousPIDParams(_PIDParams):
+    integral_limit: float | None = 1000.0
+
+
+class _DiscretePIDParams(_PIDParams):
+    output_limit: float | None = 1000.0
+
+
+def stateful_vector_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return input-shaped rate limiter output, or ``n_dims`` when unconnected."""
+    """Return the vector prototype shared by state storage and output."""
 
-    return input_or_n_dims_output_prototype(params, inputs)
+    proto = inputs.get("input")
+    if proto is None:
+        proto = array_prototype(params)
+    return {"output": stateful_vector_prototype(int(params.get("n_dims", 1)), proto)}
+
+
+_STATEFUL_VECTOR_CONSTRUCTOR = ComponentConstructorPlan(
+    context_adapters={"input_shape": ("input_proto", "array_prototype")}
+)
+_STATEFUL_VECTOR_PROTOTYPE_FIELDS = (
+    ParameterField(name="input_shape", type="array", default=None, required=False),
+    ParameterField(name="input_dtype", type="str", default=None, required=False),
+)
 
 
 def register_builtin_components(registry: _Registry) -> None:
+    options = tuple(
+        (str(builder["name"]), str(builder["description"]))
+        for builder in penzai_builder_options()
+    )
+    # Some built-in templates materialize JAX arithmetic as authored numbers.
+    jax_defaults = (
+        jax.config.jax_enable_x64,
+        jnp.result_type(0.0).name,
+        jax.default_backend(),
+        jax.config.jax_default_device,
+    )
+    for entry in _builtin_definitions(options, jax_defaults):
+        if isinstance(entry, ComponentMigration):
+            registry.register_migration(entry)
+        else:
+            registry.register(entry)
+
+
+@lru_cache(maxsize=4)
+def _builtin_definitions(
+    penzai_builders: tuple[tuple[str, str], ...],
+    _jax_defaults: tuple[bool, str, str, jax.Device | str | None],
+) -> tuple[DeclaredComponent | ComponentMigration, ...]:
+    definitions = _BuiltinDefinitions()
+    _declare_builtin_components(definitions, penzai_builders)
+    return tuple(definitions.entries)
+
+
+def _declare_builtin_components(
+    registry: _Registry,
+    penzai_builders: tuple[tuple[str, str], ...],
+) -> None:
     from feedbax.compiler import builders as _builders
 
     registry.register(
@@ -1343,22 +1549,21 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     register_builtin_graph_templates(registry)
-    penzai_builders = penzai_builder_options()
     registry.register(
         declare_component(
             name="PenzaiAdapter",
             builder=_builders._build_penzai_adapter,
+            extractor=_extract_penzai_adapter_params,
+            override_reason="Recover the named builder and ports from the wrapped model.",
             category="Structure",
             description="Penzai neural network adapter (leaf). Wraps a trained Penzai model for inference.",
             parameter_fields=[
                 ParameterField(
                     name="builder_name",
                     type="enum",
-                    options=[builder["name"] for builder in penzai_builders],
-                    option_descriptions={
-                        builder["name"]: str(builder["description"]) for builder in penzai_builders
-                    },
-                    default=penzai_builders[0]["name"] if penzai_builders else "",
+                    options=[name for name, _ in penzai_builders],
+                    option_descriptions=dict(penzai_builders),
+                    default=penzai_builders[0][0] if penzai_builders else "",
                     description="Registered Penzai model builder.",
                     required=True,
                 ),
@@ -1369,7 +1574,6 @@ def register_builtin_components(registry: _Registry) -> None:
             output_ports=["output"],
             icon="Hexagon",
             interior_domain=PENZAI_DOMAIN_ID,
-            is_composite=True,
             template_kind="display",
             port_types=PortTypeSpec(
                 inputs={"input": PortType(dtype="any")},
@@ -1515,6 +1719,7 @@ def register_builtin_components(registry: _Registry) -> None:
             description="Multiply input by a scalar or broadcastable scale.",
             parameter_fields=[
                 ParameterField(name="scale", type="float", default=1.0, required=True),
+                ParameterField(name="fixed", type="bool", default=False, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1770,7 +1975,7 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="MLP",
             runtime_type=MLP,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
             attribute_paths={
                 "activation": "activation_name",
@@ -1779,6 +1984,7 @@ def register_builtin_components(registry: _Registry) -> None:
             category="Neural Networks",
             description="Multi-layer perceptron.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="output_size", type="int", default=2, min=1, required=True),
                 ParameterField(name="hidden_sizes", type="array", default=[64], required=False),
@@ -1812,26 +2018,28 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="Linear",
             runtime_type=Linear,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
             attribute_paths={"activation": "activation_name"},
             category="Neural Networks",
             description="Linear layer.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=1, min=1, required=True),
                 ParameterField(name="output_size", type="int", default=1, min=1, required=True),
                 ParameterField(name="use_bias", type="bool", default=True, required=False),
+                ParameterField(name="bias_init", type="float", default=None, required=False),
                 ParameterField(
                     name="initialization",
                     type="enum",
-                    options=["random", "zeros"],
+                    options=["random", "zero_bias", "zeros"],
                     default="random",
                     required=False,
                 ),
                 ParameterField(
                     name="activation",
                     type="enum",
-                    options=["identity", "tanh", "relu", "sigmoid"],
+                    options=["identity", "tanh", "relu", "sigmoid", "softmax"],
                     default="identity",
                     required=False,
                 ),
@@ -1864,13 +2072,17 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="GRU",
             runtime_type=GRU,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+            attribute_paths={"use_bias": "cell.use_bias"},
             category="Neural Networks",
             description="GRU cell.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
+                ParameterField(name="use_bias", type="bool", default=True, required=False),
+                ParameterField(name="stateful", type="bool", default=True, required=False),
             ],
             input_ports=["input", "hidden"],
             output_ports=["output", "hidden"],
@@ -1887,7 +2099,7 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="VanillaRNN",
             runtime_type=VanillaRNN,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(renames={"activation": "activation_name"}),
             attribute_paths={
                 "activation": "activation_name",
@@ -1900,6 +2112,7 @@ def register_builtin_components(registry: _Registry) -> None:
             category="Neural Networks",
             description="Vanilla recurrent cell.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="use_bias", type="bool", default=True, required=False),
@@ -1912,7 +2125,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(
                     name="activation",
                     type="enum",
-                    options=["tanh", "relu", "identity"],
+                    options=["tanh", "relu", "identity", "sigmoid", "softmax"],
                     default="tanh",
                     required=False,
                 ),
@@ -1932,13 +2145,16 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="LSTM",
             runtime_type=LSTM,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+            attribute_paths={"use_bias": "cell.use_bias"},
             category="Neural Networks",
             description="LSTM cell.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
+                ParameterField(name="use_bias", type="bool", default=True, required=False),
             ],
             input_ports=["input", "hidden", "cell"],
             output_ports=["output", "hidden", "cell"],
@@ -2066,7 +2282,9 @@ def register_builtin_components(registry: _Registry) -> None:
                     "state": PortType(dtype="state"),
                 },
             ),
-            output_prototype_fn=mechanics_state_output_prototype,
+            output_prototype_fn=partial(
+                mechanics_state_output_prototype, _builders._build_two_link_arm
+            ),
             representation=_two_link_arm_representation(),
         )
     )
@@ -2096,7 +2314,9 @@ def register_builtin_components(registry: _Registry) -> None:
                     "state": PortType(dtype="state"),
                 },
             ),
-            output_prototype_fn=mechanics_state_output_prototype,
+            output_prototype_fn=partial(
+                mechanics_state_output_prototype, _builders._build_point_mass
+            ),
             representation=_point_mass_representation(),
             template_graph=point_mass_template_graph(),
             template_id="feedbax.templates.mechanics.point_mass",
@@ -2207,12 +2427,6 @@ def register_builtin_components(registry: _Registry) -> None:
                 ),
                 ParameterField(name="scale", type="float", default=1.0, required=False),
                 ParameterField(name="active", type="bool", default=False, required=False),
-                ParameterField(
-                    name="label",
-                    type="str",
-                    default="structural_linear_dynamics",
-                    required=False,
-                ),
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=False),
                 ParameterField(
                     name="initial_state",
@@ -2240,6 +2454,7 @@ def register_builtin_components(registry: _Registry) -> None:
             param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
         )
     )
+    selector_defaults = StateFeedbackSelector().to_params()
     registry.register(
         declare_component(
             name="StateFeedbackSelector",
@@ -2254,19 +2469,13 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(
                     name="state_slices",
                     type="object",
-                    default={
-                        "position": {"start": 0, "stop": 2},
-                        "velocity": {"start": 2, "stop": 4},
-                    },
+                    default=selector_defaults["state_slices"],
                     required=False,
                 ),
                 ParameterField(
                     name="channels",
                     type="array",
-                    default=[
-                        {"slice": "position", "transform": "identity"},
-                        {"slice": "velocity", "transform": "identity"},
-                    ],
+                    default=selector_defaults["channels"],
                     required=False,
                 ),
                 ParameterField(name="expected_state_dim", type="int", default=None, required=False),
@@ -2365,6 +2574,7 @@ def register_builtin_components(registry: _Registry) -> None:
             category="Channels",
             description="Delay and noise for a signal.",
             parameter_fields=[
+                ParameterField(name="init_value", type="float", default=0.0, required=False),
                 ParameterField(name="delay", type="int", default=5, min=0, required=True),
                 ParameterField(
                     name="noise_model",
@@ -2393,6 +2603,9 @@ def register_builtin_components(registry: _Registry) -> None:
                     min=0,
                     required=False,
                 ),
+                ParameterField(
+                    name="include_zero_noise_terms", type="bool", default=False, required=False,
+                ),
                 ParameterField(name="add_noise", type="bool", default=True, required=False),
                 ParameterField(name="noise_role", type="str", default=None, required=False),
                 ParameterField(name="noise_timing", type="str", default=None, required=False),
@@ -2403,10 +2616,11 @@ def register_builtin_components(registry: _Registry) -> None:
             output_ports=["output"],
             icon="Signal",
             port_types=PortTypeSpec(
-                inputs={"input": PortType(dtype="vector")},
-                outputs={"output": PortType(dtype="vector")},
+                inputs={"input": PortType(dtype="any")},
+                outputs={"output": PortType(dtype="any")},
             ),
             output_prototype_fn=stateful_passthrough_output_prototype,
+            build_output_prototypes={"resolved_input_proto": "output"},
         )
     )
     registry.register_migration(
@@ -2424,59 +2638,52 @@ def register_builtin_components(registry: _Registry) -> None:
 
     registry.register(
         declare_component(
-            name="FeedbackChannels",
-            builder=_builders._build_feedback_channels,
-            extractor=_extract_feedback_channel_params,
-            override_reason="selector closure and nested channel state require authored recovery",
+            name="SelectState",
+            runtime_type=SelectState,
+            builder=lambda params: SelectState(StateSelector(tuple(params["paths"]))),
+            extractor=_extract_state_selector_params,
+            override_reason="Recover portable paths from the state selector",
             category="Channels",
-            description="Mechanics feedback selector followed by delay/noise channels.",
+            description="Select state subtrees by attribute path.",
             parameter_fields=[
-                ParameterField(name="delay", type="int", default=0, min=0, required=False),
-                ParameterField(
-                    name="selector",
-                    type="enum",
-                    options=["point_mass_pos_vel", "effector_pos_vel", "plant_skeleton", "paths"],
-                    default="point_mass_pos_vel",
-                    required=False,
-                ),
-                ParameterField(
-                    name="paths",
-                    type="array",
-                    default=["plant.skeleton.pos", "plant.skeleton.vel"],
-                    required=False,
-                ),
-                ParameterField(
-                    name="noise_model",
-                    type="enum",
-                    options=[
-                        "none",
-                        "additive_gaussian",
-                        "signal_dependent_gaussian",
-                        "signal_dependent_plus_additive",
-                    ],
-                    default="additive_gaussian",
-                    required=False,
-                ),
-                ParameterField(name="noise_std", type="float", default=0.0, min=0, required=False),
-                ParameterField(name="add_noise", type="bool", default=False, required=False),
-                ParameterField(
-                    name="noise_role", type="str", default="sensory_feedback", required=False
-                ),
-                ParameterField(
-                    name="noise_timing", type="str", default="pre_controller", required=False
-                ),
-                ParameterField(
-                    name="input_shape", type="array", default=[[2], [2]], required=False
-                ),
+                ParameterField(name="paths", type="array", default=["effector"], required=True),
             ],
-            input_ports=["mechanics"],
-            output_ports=["feedback"],
-            icon="Radio",
+            input_ports=["state"],
+            output_ports=["output"],
             port_types=PortTypeSpec(
-                inputs={"mechanics": PortType(dtype="state")},
-                outputs={"feedback": PortType(dtype="state")},
+                inputs={"state": PortType(dtype="state")},
+                outputs={"output": PortType(dtype="any")},
             ),
-            output_prototype_fn=feedback_channels_output_prototype,
+            output_prototype_fn=state_selector_output_prototype,
+        )
+    )
+    registry.register(
+        declare_component(
+            name="AssembleFeedback",
+            builder=_build_feedback_assembly,
+            extractor=_extract_feedback_assembly_params,
+            override_reason="Recover a portable layout from the feedback tree",
+            category="Channels",
+            description="Assemble channel values into a feedback tree.",
+            parameter_fields=[
+                ParameterField(name="n_inputs", type="int", default=1, min=1, required=True),
+                ParameterField(name="layout", type="object", default=None, required=False),
+            ],
+            input_ports=["in_0"],
+            output_ports=["output"],
+            port_types=PortTypeSpec(
+                inputs={"in_0": PortType(dtype="any")},
+                outputs={"output": PortType(dtype="any")},
+            ),
+            dynamic_port_policy=DynamicPortPolicy(
+                count_param="n_inputs",
+                count_mode="integer",
+                direction="input",
+                fixed_output_ports=("output",),
+                generated_name_template="in_{index}",
+                dynamic_port_type=PortType(dtype="any"),
+            ),
+            output_prototype_fn=feedback_assembly_output_prototype,
         )
     )
     registry.register(
@@ -2525,6 +2732,7 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="CurlField",
+            param_schema_version="2",
             runtime_type=CurlField,
             constructor=ComponentConstructorPlan(
                 groups={"params": (CurlFieldParams, ("scale", "amplitude", "active"))}
@@ -2534,13 +2742,12 @@ def register_builtin_components(registry: _Registry) -> None:
                 "amplitude": "params_index.init.amplitude",
                 "active": "params_index.init.active",
             },
-            category="Interventions",
+            category="Mechanics",
             description="Velocity-dependent curl field.",
             parameter_fields=[
                 ParameterField(name="scale", type="float", default=1.0, required=True),
                 ParameterField(name="amplitude", type="float", default=1.0, required=True),
                 ParameterField(name="active", type="bool", default=False, required=False),
-                ParameterField(name="label", type="str", default="curl_field", required=False),
             ],
             input_ports=["effector", "force", "params_override"],
             output_ports=["force"],
@@ -2559,6 +2766,7 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="FixedField",
+            param_schema_version="2",
             runtime_type=FixedField,
             constructor=ComponentConstructorPlan(
                 groups={
@@ -2575,14 +2783,13 @@ def register_builtin_components(registry: _Registry) -> None:
                 "field": "params_index.init.field",
                 "active": "params_index.init.active",
             },
-            category="Interventions",
+            category="Mechanics",
             description="Fixed force field.",
             parameter_fields=[
                 ParameterField(name="scale", type="float", default=1.0, required=True),
                 ParameterField(name="amplitude", type="float", default=1.0, required=True),
                 ParameterField(name="field", type="array", default=[0.0, 0.0], required=True),
                 ParameterField(name="active", type="bool", default=False, required=False),
-                ParameterField(name="label", type="str", default="fixed_field", required=False),
             ],
             input_ports=["force", "params_override"],
             output_ports=["force"],
@@ -2603,7 +2810,7 @@ def register_builtin_components(registry: _Registry) -> None:
             builder=_builders._build_threshold_latched_force,
             extractor=_extract_declared_to_params,
             override_reason="state selector and intervention parameters are aggregated objects",
-            category="Interventions",
+            category="Mechanics",
             description="Additive force latched by a runtime state-threshold crossing.",
             parameter_fields=[
                 ParameterField(
@@ -2642,12 +2849,6 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(name="scale", type="float", default=1.0, required=True),
                 ParameterField(name="active", type="bool", default=False, required=False),
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(
-                    name="label",
-                    type="str",
-                    default="threshold_latched_force",
-                    required=False,
-                ),
             ],
             param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
             input_ports=["state", "target", "force", "params_override"],
@@ -2672,7 +2873,7 @@ def register_builtin_components(registry: _Registry) -> None:
             owner="feedbax",
             source_param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
             target_param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
-            migration_id="feedbax.component.ThresholdLatchedForce.params.v1-to-v2",
+            migration_id="feedbax.component.ThresholdLatchedForce.params.v1-to-v3",
             migrate_params=_migrate_threshold_latched_force_v1,
             description="Classify legacy state selectors as fixed-coordinate selectors.",
         )
@@ -2680,6 +2881,7 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="DynamicsMatrixPerturb",
+            param_schema_version="2",
             runtime_type=DynamicsMatrixPerturb,
             constructor=ComponentConstructorPlan(
                 groups={
@@ -2695,7 +2897,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 "delta_A": "params_index.init.delta_A",
                 "active": "params_index.init.active",
             },
-            category="Interventions",
+            category="Mechanics",
             description="State-feedback dynamics-matrix perturbation in the force channel.",
             parameter_fields=[
                 ParameterField(name="scale", type="float", default=1.0, required=True),
@@ -2706,12 +2908,6 @@ def register_builtin_components(registry: _Registry) -> None:
                     required=True,
                 ),
                 ParameterField(name="active", type="bool", default=False, required=False),
-                ParameterField(
-                    name="label",
-                    type="str",
-                    default="dynamics_matrix_perturb",
-                    required=False,
-                ),
                 ParameterField(
                     name="mass",
                     type="float",
@@ -2745,7 +2941,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 "gain_init": "gain",
                 "bias_init": "bias",
             },
-            category="Interventions",
+            category="Control",
             description="State/target-conditioned affine value composer.",
             parameter_fields=[
                 ParameterField(
@@ -2769,12 +2965,6 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(name="gain_init", type="array", default=[[0.0]], required=False),
                 ParameterField(name="bias_init", type="array", default=[0.0], required=False),
                 ParameterField(name="use_bias", type="bool", default=True, required=False),
-                ParameterField(
-                    name="label",
-                    type="str",
-                    default="affine_value_composer",
-                    required=False,
-                ),
             ],
             input_ports=["base", "state", "target", "gain", "bias"],
             output_ports=["value"],
@@ -2802,7 +2992,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 groups={"params": (AddNoiseParams, ("scale", "active"))}
             ),
             attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
-            category="Interventions",
+            category="Signal Processing",
             description="Add noise to a signal.",
             parameter_fields=[
                 ParameterField(name="scale", type="float", default=1.0, required=True),
@@ -2818,31 +3008,34 @@ def register_builtin_components(registry: _Registry) -> None:
             output_prototype_fn=input_passthrough_output_prototype,
         )
     )
-    registry.register(
-        declare_component(
-            name="NetworkClamp",
-            runtime_type=NetworkClamp,
-            constructor=ComponentConstructorPlan(
-                groups={"params": (NetworkIntervenorParams, ("scale", "active"))}
-            ),
-            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
-            category="Interventions",
-            description="Clamp network unit activity.",
-            parameter_fields=[
-                ParameterField(name="scale", type="float", default=1.0, required=True),
-                ParameterField(name="active", type="bool", default=False, required=False),
-            ],
-            input_ports=["input"],
-            output_ports=["output"],
-            icon="Pin",
-            port_types=PortTypeSpec(
-                inputs={"input": PortType(dtype="vector")},
-                outputs={"output": PortType(dtype="vector")},
-            ),
-            output_prototype_fn=input_passthrough_output_prototype,
+    for component, source, target, migrate in (
+        ("CurlField", "1", "2", _drop_transform_label),
+        ("FixedField", "1", "2", _drop_transform_label),
+        ("DynamicsMatrixPerturb", "1", "2", _drop_transform_label),
+        ("StructuralLinearStateSpace", STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION_V1,
+         STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION, _drop_transform_label),
+        ("ThresholdLatchedForce", THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2,
+         THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION, _drop_transform_label),
+        ("AffineValueComposer", AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1,
+         AFFINE_VALUE_COMPOSER_SCHEMA_VERSION, _migrate_affine_value_composer_v1),
+    ):
+        registry.register_migration(
+            ComponentMigration(
+                source_type=component,
+                target_type=component,
+                owner="feedbax",
+                source_param_schema_version=source,
+                target_param_schema_version=target,
+                migration_id=f"feedbax.component.{component}.drop-label",
+                migrate_params=migrate,
+                description="Use the graph node identity in place of the legacy parameter label.",
+            )
         )
-    )
+    register_vector_transforms(registry)
+
     # --- Muscles ---
+    arm_muscle_graph = arm_6muscle_rigid_tendon_graph()
+    register_muscle_graph_leaves(registry, arm_muscle_graph.nodes["geometry"].params["paths"])
     registry.register(
         declare_component(
             name="ReluMuscle",
@@ -2862,14 +3055,14 @@ def register_builtin_components(registry: _Registry) -> None:
                     name="tau_activation",
                     type="float",
                     default=0.015,
-                    min=0.001,
+                    min=0.0,
                     required=False,
                 ),
                 ParameterField(
                     name="tau_deactivation",
                     type="float",
                     default=0.05,
-                    min=0.001,
+                    min=0.0,
                     required=False,
                 ),
                 ParameterField(
@@ -2883,7 +3076,7 @@ def register_builtin_components(registry: _Registry) -> None:
                     name="dt",
                     type="float",
                     default=0.01,
-                    min=0.001,
+                    min=0.0,
                     required=True,
                 ),
                 ParameterField(
@@ -2911,17 +3104,19 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="RigidTendonHillMuscleThelen",
             runtime_type=RigidTendonHillMuscleThelen,
-            attribute_paths={"initial_activation": "state_index.init"},
             category="Muscles",
-            description="Hill-type muscle with rigid tendon assumption. Vectorized for multiple muscles.",
+            description=(
+                "Rigid-tendon Hill muscle with scalar signals for one muscle "
+                "and vectors for multiple muscles."
+            ),
             parameter_fields=[
                 ParameterField(name="n_muscles", type="int", default=6, min=1, required=True),
-                ParameterField(name="dt", type="float", default=0.01, min=0.001, required=True),
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
                 ParameterField(
-                    name="tau_activation", type="float", default=0.015, min=0.001, required=False
+                    name="tau_activation", type="float", default=0.015, min=0.0, required=False
                 ),
                 ParameterField(
-                    name="tau_deactivation", type="float", default=0.05, min=0.001, required=False
+                    name="tau_deactivation", type="float", default=0.05, min=0.0, required=False
                 ),
                 ParameterField(
                     name="max_isometric_force", type="float", default=500.0, min=0.0, required=False
@@ -2930,38 +3125,38 @@ def register_builtin_components(registry: _Registry) -> None:
                     name="optimal_muscle_length",
                     type="float",
                     default=0.1,
-                    min=0.001,
+                    min=0.0,
                     required=False,
                 ),
                 ParameterField(
-                    name="tendon_slack_length", type="float", default=0.2, min=0.001, required=False
+                    name="tendon_slack_length", type="float", default=0.2, min=0.0, required=False
                 ),
                 ParameterField(
                     name="initial_activation", type="float", default=0.001, min=0.0, required=False
                 ),
             ],
-            input_ports=["excitation", "musculotendon_length", "musculotendon_velocity"],
-            output_ports=["force", "activation", "fiber_length", "fiber_velocity"],
+            input_ports=RigidTendonHillMuscleThelen.input_ports,
+            output_ports=RigidTendonHillMuscleThelen.output_ports,
             icon="Dumbbell",
             port_types=PortTypeSpec(
                 inputs={
-                    "excitation": PortType(dtype="vector"),
-                    "musculotendon_length": PortType(dtype="vector"),
-                    "musculotendon_velocity": PortType(dtype="vector"),
+                    port: PortType(dtype="any")
+                    for port in RigidTendonHillMuscleThelen.input_ports
                 },
                 outputs={
-                    "force": PortType(dtype="vector"),
-                    "activation": PortType(dtype="vector"),
-                    "fiber_length": PortType(dtype="vector"),
-                    "fiber_velocity": PortType(dtype="vector"),
+                    port: PortType(dtype="any")
+                    for port in RigidTendonHillMuscleThelen.output_ports
                 },
             ),
+            output_prototype_fn=thelen_muscle_output_prototype,
         )
     )
     registry.register(
         declare_component(
             name="Arm6MuscleRigidTendon",
-            runtime_type=Arm6MuscleRigidTendon,
+            template_graph=arm_muscle_graph,
+            template_id="feedbax.templates.mechanics.arm_6muscle_rigid_tendon",
+            template_kind="executable",
             category="Mechanics",
             description="6-muscle arm with Thelen rigid tendon.",
             parameter_fields=[
@@ -3021,7 +3216,9 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="PointMass8MuscleRelu",
-            runtime_type=PointMass8MuscleRelu,
+            template_graph=point_mass_8muscle_relu_graph(),
+            template_id="feedbax.templates.mechanics.point_mass_8muscle_relu",
+            template_kind="executable",
             category="Mechanics",
             description="8-muscle point mass with ReLU actuators.",
             parameter_fields=[
@@ -3065,6 +3262,7 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="AnalyticalMusculoskeletalPlant",
+            param_model=_AnalyticalPlantParams,
             builder=_builders._build_analytical_musculoskeletal_plant,
             extractor=_extract_analytical_plant_params,
             override_reason=(
@@ -3078,42 +3276,6 @@ def register_builtin_components(registry: _Registry) -> None:
                 "differentiable; no MuJoCo dependency. ODE state: 2 joint "
                 "angles + 2 angular velocities + 6 muscle activations."
             ),
-            parameter_fields=[
-                ParameterField(
-                    name="dt",
-                    type="float",
-                    default=0.01,
-                    min=0.0001,
-                    required=True,
-                ),
-                ParameterField(
-                    name="n_steps",
-                    type="int",
-                    default=1,
-                    min=1,
-                    required=False,
-                ),
-                ParameterField(
-                    name="tau_act",
-                    type="float",
-                    default=0.01,
-                    min=0.001,
-                    required=False,
-                ),
-                ParameterField(
-                    name="tau_deact",
-                    type="float",
-                    default=0.04,
-                    min=0.001,
-                    required=False,
-                ),
-                ParameterField(
-                    name="clip_states",
-                    type="bool",
-                    default=True,
-                    required=False,
-                ),
-            ],
             input_ports=["excitation"],
             output_ports=["effector", "state"],
             icon="Activity",
@@ -3138,54 +3300,6 @@ def register_builtin_components(registry: _Registry) -> None:
                     float(value) for value in default_6muscle_2link_segment_lengths()
                 ],
             ),
-        )
-    )
-    registry.register(
-        declare_component(
-            name="NetworkConstantInput",
-            runtime_type=NetworkConstantInput,
-            constructor=ComponentConstructorPlan(
-                groups={"params": (NetworkIntervenorParams, ("scale", "active"))}
-            ),
-            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
-            category="Interventions",
-            description="Add constant input to network units.",
-            parameter_fields=[
-                ParameterField(name="scale", type="float", default=1.0, required=True),
-                ParameterField(name="active", type="bool", default=False, required=False),
-            ],
-            input_ports=["input"],
-            output_ports=["output"],
-            icon="Asterisk",
-            port_types=PortTypeSpec(
-                inputs={"input": PortType(dtype="vector")},
-                outputs={"output": PortType(dtype="vector")},
-            ),
-            output_prototype_fn=input_passthrough_output_prototype,
-        )
-    )
-    registry.register(
-        declare_component(
-            name="ConstantInput",
-            runtime_type=ConstantInput,
-            constructor=ComponentConstructorPlan(
-                groups={"params": (ConstantInputParams, ("scale", "active"))}
-            ),
-            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
-            category="Interventions",
-            description="Add a constant input to a signal.",
-            parameter_fields=[
-                ParameterField(name="scale", type="float", default=1.0, required=True),
-                ParameterField(name="active", type="bool", default=False, required=False),
-            ],
-            input_ports=["input"],
-            output_ports=["output"],
-            icon="Minus",
-            port_types=PortTypeSpec(
-                inputs={"input": PortType(dtype="vector")},
-                outputs={"output": PortType(dtype="vector")},
-            ),
-            output_prototype_fn=input_passthrough_output_prototype,
         )
     )
     registry.register(
@@ -3217,7 +3331,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(name="eval_grid_n", type="int", default=1, min=1, required=False),
             ],
             input_ports=[],
-            output_ports=["inputs", "targets", "inits", "intervene"],
+            output_ports=["inputs", "targets", "inits"],
             icon="Target",
             port_types=PortTypeSpec(
                 inputs={},
@@ -3225,7 +3339,6 @@ def register_builtin_components(registry: _Registry) -> None:
                     "inputs": PortType(dtype="any"),
                     "targets": PortType(dtype="state"),
                     "inits": PortType(dtype="state"),
-                    "intervene": PortType(dtype="any"),
                 },
             ),
             representation=_reach_task_representation(delayed=False),
@@ -3259,7 +3372,13 @@ def register_builtin_components(registry: _Registry) -> None:
             category="Tasks",
             description="Reaches with a delay period before movement.",
             parameter_fields=[
-                ParameterField(name="n_steps", type="int", default=140, min=1, required=False),
+                ParameterField(
+                    name="n_steps",
+                    type="int",
+                    default=DEFAULT_DELAYED_N_STEPS,
+                    min=1,
+                    required=False,
+                ),
                 ParameterField(
                     name="n_control_stages",
                     type="int",
@@ -3290,7 +3409,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(
                     name="epoch_len_ranges",
                     type="array",
-                    default=[[5, 15], [10, 20]],
+                    default=[list(pair) for pair in DEFAULT_DELAYED_EPOCH_LEN_RANGES],
                     required=False,
                 ),
                 ParameterField(
@@ -3303,7 +3422,12 @@ def register_builtin_components(registry: _Registry) -> None:
                     name="target_on_epochs", type="array", default=[1, 2], required=False
                 ),
                 ParameterField(name="hold_epochs", type="array", default=[0, 1], required=False),
-                ParameterField(name="move_epochs", type="array", default=[2], required=False),
+                ParameterField(
+                    name="move_epochs",
+                    type="array",
+                    default=list(DEFAULT_DELAYED_MOVE_EPOCHS),
+                    required=False,
+                ),
                 ParameterField(
                     name="target_visible_from_start",
                     type="bool",
@@ -3333,7 +3457,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(name="eval_grid_n", type="int", default=1, min=1, required=False),
             ],
             input_ports=[],
-            output_ports=["inputs", "targets", "inits", "intervene"],
+            output_ports=["inputs", "targets", "inits"],
             icon="Timer",
             port_types=PortTypeSpec(
                 inputs={},
@@ -3341,7 +3465,6 @@ def register_builtin_components(registry: _Registry) -> None:
                     "inputs": PortType(dtype="any"),
                     "targets": PortType(dtype="state"),
                     "inits": PortType(dtype="state"),
-                    "intervene": PortType(dtype="any"),
                 },
             ),
             representation=_reach_task_representation(delayed=True),
@@ -3351,12 +3474,14 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Integrator",
+            runtime_type=Integrator,
             category="Control",
             description="Continuous-time integrator (Euler).",
             parameter_fields=[
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
                 ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                _CONTROL_INPUT_DTYPE,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3365,18 +3490,21 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="input"),
+            input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
         )
     )
     registry.register(
         declare_component(
             name="Derivative",
+            runtime_type=Derivative,
             category="Control",
             description="Finite-difference derivative.",
             parameter_fields=[
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
                 ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                _CONTROL_INPUT_DTYPE,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3385,7 +3513,8 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="input"),
+            input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
         )
     )
     registry.register(
@@ -3425,16 +3554,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="PID",
+            runtime_type=PID,
             category="Control",
             description="Continuous PID with anti-windup.",
-            parameter_fields=[
-                ParameterField(name="Kp", type="float", default=1.0, required=True),
-                ParameterField(name="Ki", type="float", default=0.0, required=False),
-                ParameterField(name="Kd", type="float", default=0.0, required=False),
-                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(name="integral_limit", type="float", default=1000.0, required=False),
-                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
-            ],
+            param_model=_ContinuousPIDParams,
+            attribute_paths={"integral_limit": "integral_limit_param"},
             input_ports=["error"],
             output_ports=["output"],
             icon="Gauge",
@@ -3442,22 +3566,18 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"error": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=error_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="error"),
+            input_prototype_parameter=_CONTROL_ERROR_PROTOTYPE,
         )
     )
     registry.register(
         declare_component(
             name="PIDDiscrete",
+            runtime_type=PIDDiscrete,
             category="Control",
             description="Discrete PID (velocity form).",
-            parameter_fields=[
-                ParameterField(name="Kp", type="float", default=1.0, required=True),
-                ParameterField(name="Ki", type="float", default=0.0, required=False),
-                ParameterField(name="Kd", type="float", default=0.0, required=False),
-                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(name="output_limit", type="float", default=1000.0, required=False),
-                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
-            ],
+            param_model=_DiscretePIDParams,
+            attribute_paths={"output_limit": "output_limit_param"},
             input_ports=["error"],
             output_ports=["output"],
             icon="Gauge",
@@ -3465,7 +3585,8 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"error": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=error_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="error"),
+            input_prototype_parameter=_CONTROL_ERROR_PROTOTYPE,
         )
     )
     registry.register(
@@ -3498,18 +3619,21 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={"command": PortType(dtype="vector")},
             ),
             output_prototype_fn=affine_feedback_output_prototype,
+            prototype_depends_on_connected_inputs=True,
         )
     )
     # --- Discrete components ---
     registry.register(
         declare_component(
             name="IntegratorDiscrete",
+            runtime_type=IntegratorDiscrete,
             category="Discrete",
             description="Discrete-time accumulator.",
             parameter_fields=[
                 ParameterField(name="dt", type="float", default=1.0, min=0.0, required=True),
                 ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                _CONTROL_INPUT_DTYPE,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3518,17 +3642,20 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="input"),
+            input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
         )
     )
     registry.register(
         declare_component(
             name="UnitDelay",
+            runtime_type=UnitDelay,
             category="Discrete",
             description="Unit delay (z^-1).",
             parameter_fields=[
                 ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                _CONTROL_INPUT_DTYPE,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3537,18 +3664,21 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="input"),
+            input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
         )
     )
     registry.register(
         declare_component(
             name="ZeroOrderHold",
+            runtime_type=ZeroOrderHold,
             category="Discrete",
             description="Sample and hold every N steps.",
             parameter_fields=[
                 ParameterField(name="hold_steps", type="int", default=1, min=1, required=True),
                 ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                _CONTROL_INPUT_DTYPE,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3557,7 +3687,8 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="input"),
+            input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
         )
     )
     # --- Signal processing components ---
@@ -3568,6 +3699,7 @@ def register_builtin_components(registry: _Registry) -> None:
             category="Signal Processing",
             description="Concatenate inputs into single vector.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default=None, required=False),
                 ParameterField(name="n_inputs", type="int", default=2, min=1, required=True),
             ],
             input_ports=["in_0", "in_1"],
@@ -3681,13 +3813,16 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="RateLimiter",
+            runtime_type=RateLimiter,
+            constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
             category="Signal Processing",
             description="Limit rate of change of signal.",
             parameter_fields=[
                 ParameterField(name="max_rate", type="float", default=1.0, min=0.0, required=True),
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3696,18 +3831,21 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=rate_limiter_output_prototype,
+            output_prototype_fn=stateful_vector_output_prototype,
         )
     )
     registry.register(
         declare_component(
             name="HighPassFilter",
+            runtime_type=HighPassFilter,
+            constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
             category="Signal Processing",
             description="High-pass filter (input - lowpass).",
             parameter_fields=[
                 ParameterField(name="tau", type="float", default=0.1, min=0.0, required=True),
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
+                *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3716,19 +3854,22 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=stateful_vector_output_prototype,
         )
     )
     registry.register(
         declare_component(
             name="BandPassFilter",
+            runtime_type=BandPassFilter,
+            constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
             category="Signal Processing",
             description="Band-pass: high-pass then low-pass.",
             parameter_fields=[
                 ParameterField(name="tau_low", type="float", default=0.1, min=0.0, required=True),
                 ParameterField(name="tau_high", type="float", default=0.01, min=0.0, required=True),
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
+                *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3737,7 +3878,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=stateful_vector_output_prototype,
         )
     )
     registry.register(
@@ -3758,7 +3899,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ),
             ],
             input_ports=[],
-            output_ports=["inputs", "targets", "inits", "intervene"],
+            output_ports=["inputs", "targets", "inits"],
             icon="Anchor",
             port_types=PortTypeSpec(
                 inputs={},
@@ -3766,7 +3907,6 @@ def register_builtin_components(registry: _Registry) -> None:
                     "inputs": PortType(dtype="any"),
                     "targets": PortType(dtype="state"),
                     "inits": PortType(dtype="state"),
-                    "intervene": PortType(dtype="any"),
                 },
             ),
         )

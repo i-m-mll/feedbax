@@ -43,7 +43,8 @@ export type TrainingProgress = Omit<
   >;
 
 export interface TrainingLogLine {
-  batch: number;
+  batch?: number | null;
+  program_step?: number | null;
   level: 'info' | 'warning' | 'error';
   message: string;
   timestamp: number;  // Date.now() when received

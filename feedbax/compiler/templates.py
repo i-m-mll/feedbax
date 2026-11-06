@@ -13,12 +13,20 @@ from datetime import datetime
 from collections.abc import Mapping
 from typing import Any, Literal
 
+import jax.numpy as jnp
+
 from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, WireSpec
 from feedbax.models.networks import (
     PopulationStructure,
     lower_population_constraints,
     normalize_recurrent_cell_type,
     population_structure_from_spec,
+)
+from feedbax.runtime.feedback import (
+    FEEDBACK_INPUT,
+    FEEDBACK_OUTPUT,
+    feedback_node_names,
+    feedback_wires,
 )
 
 
@@ -37,7 +45,9 @@ class GraphTemplateMetadata:
     component_type: str | None = None
 
 
-def recurrent_zero_initializer(width: int | None = None, *, state_slot: str) -> dict[str, Any]:
+def recurrent_zero_initializer(
+    width: int | None = None, *, state_slot: str, dtype: str | None = None
+) -> dict[str, Any]:
     """Return the canonical zero initializer for a recurrent edge."""
 
     initializer: dict[str, Any] = {
@@ -48,6 +58,8 @@ def recurrent_zero_initializer(width: int | None = None, *, state_slot: str) -> 
     }
     if width is not None:
         initializer["shape"] = [int(width)]
+    if dtype is not None:
+        initializer["dtype"] = dtype
     return initializer
 
 
@@ -85,9 +97,20 @@ def network_recurrent_wires(
     *,
     hidden_source_node: str = "cell",
     hidden_source_port: str = "hidden",
+    dtype: str | None = None,
 ) -> list[WireSpec]:
     """Return recurrent carry wires for a Network cell subgraph."""
 
+    hidden_initializer = recurrent_zero_initializer(hidden_size, state_slot="hidden", dtype=dtype)
+    if (hidden_source_node, hidden_source_port) != ("cell", "hidden"):
+        hidden_initializer = {
+            "kind": "state_output",
+            "scope": "trial",
+            "source": "state_initializer",
+            "source_node": "cell",
+            "source_port": "hidden",
+            "state_slot": "hidden",
+        }
     wires = [
         WireSpec(
             source_node=hidden_source_node,
@@ -95,10 +118,7 @@ def network_recurrent_wires(
             target_node="cell",
             target_port="hidden",
             temporality="recurrent",
-            recurrent_initializer=recurrent_zero_initializer(
-                hidden_size,
-                state_slot="hidden",
-            ),
+            recurrent_initializer=hidden_initializer,
         )
     ]
     normalized_cell_type = normalize_recurrent_cell_type(
@@ -116,6 +136,7 @@ def network_recurrent_wires(
                 recurrent_initializer=recurrent_zero_initializer(
                     hidden_size,
                     state_slot="cell",
+                    dtype=dtype,
                 ),
             )
         )
@@ -126,12 +147,15 @@ def recurrent_controller_template_graph(
     *,
     input_size: int,
     hidden_size: int,
-    out_size: int,
+    out_size: int | None,
     cell_type: str = "GRU",
     cell_params: Mapping[str, Any] | None = None,
     encoding_size: int | None = None,
     hidden_nonlinearity: str = "identity",
     hidden_noise_std: float | None = None,
+    encoder_use_bias: bool = True,
+    readout_use_bias: bool = True,
+    readout_initialization: str = "random",
     out_nonlinearity: str = "identity",
     dtype: object = "float32",
     population_structure: PopulationStructure | Mapping[str, object] | None = None,
@@ -144,6 +168,7 @@ def recurrent_controller_template_graph(
         cell_type,
         path="Recurrent Controller.params.cell_type",
     )
+    dtype_name = jnp.dtype(dtype).name
     hidden_input_size = int(encoding_size) if encoding_size is not None else int(input_size)
     parameter_constraints = []
     if population_structure is not None:
@@ -152,21 +177,21 @@ def recurrent_controller_template_graph(
                 population_structure,
                 hidden_size=int(hidden_size),
                 input_size=hidden_input_size,
-                out_size=int(out_size),
+                out_size=out_size,
                 cell_type=normalized_cell_type,
             )
         )
     now = datetime.now().isoformat()
     resolved_cell_params = {
+        **dict(cell_params or {}),
         "input_size": hidden_input_size,
         "hidden_size": int(hidden_size),
-        "dtype": dtype,
-        **dict(cell_params or {}),
+        "dtype": dtype_name,
     }
     nodes = {
         "input_mux": ComponentSpec(
             type="Mux",
-            params={"n_inputs": 2},
+            params={"n_inputs": 2, "dtype": dtype_name},
             input_ports=["in_0", "in_1"],
             output_ports=["output"],
         ),
@@ -180,18 +205,6 @@ def recurrent_controller_template_graph(
             if normalized_cell_type == "LSTM"
             else ["output", "hidden"],
         ),
-        "readout": ComponentSpec(
-            type="Linear",
-            params={
-                "input_size": int(hidden_size),
-                "output_size": int(out_size),
-                "use_bias": True,
-                "activation": out_nonlinearity,
-                "dtype": dtype,
-            },
-            input_ports=["input"],
-            output_ports=["output"],
-        ),
     }
     wires = []
     cell_input_node = "input_mux"
@@ -201,9 +214,9 @@ def recurrent_controller_template_graph(
             params={
                 "input_size": int(input_size),
                 "output_size": int(encoding_size),
-                "use_bias": True,
+                "use_bias": encoder_use_bias,
                 "activation": "identity",
-                "dtype": dtype,
+                "dtype": dtype_name,
             },
             input_ports=["input"],
             output_ports=["output"],
@@ -255,6 +268,7 @@ def recurrent_controller_template_graph(
                 "noise_std": float(hidden_noise_std),
                 "add_noise": True,
                 "input_shape": [int(hidden_size)],
+                "input_dtype": dtype_name,
             },
             input_ports=["input"],
             output_ports=["output"],
@@ -269,21 +283,47 @@ def recurrent_controller_template_graph(
         )
         hidden_node = "hidden_noise"
         hidden_port = "output"
-    wires.extend(
-        [
+    output_node, output_port = hidden_node, hidden_port
+    if out_size is not None:
+        output_node, output_port = "readout", "output"
+        nodes[output_node] = ComponentSpec(
+            type="Linear",
+            params={
+                "input_size": int(hidden_size),
+                "output_size": int(out_size),
+                "use_bias": readout_use_bias,
+                "activation": out_nonlinearity,
+                "initialization": readout_initialization,
+                "dtype": dtype_name,
+            },
+            input_ports=["input"],
+            output_ports=["output"],
+        )
+    elif out_nonlinearity != "identity":
+        output_node, output_port = "output_activation", "output"
+        nodes[output_node] = ComponentSpec(
+            type="Activation",
+            params={"activation": out_nonlinearity},
+            input_ports=["input"],
+            output_ports=["output"],
+        )
+    if output_node != hidden_node:
+        wires.append(
             WireSpec(
                 source_node=hidden_node,
                 source_port=hidden_port,
-                target_node="readout",
+                target_node=output_node,
                 target_port="input",
-            ),
-            *network_recurrent_wires(
-                normalized_cell_type,
-                int(hidden_size),
-                hidden_source_node=hidden_node,
-                hidden_source_port=hidden_port,
-            ),
-        ]
+            )
+        )
+    wires.extend(
+        network_recurrent_wires(
+            normalized_cell_type,
+            int(hidden_size),
+            hidden_source_node=hidden_node,
+            hidden_source_port=hidden_port,
+            dtype=dtype_name,
+        )
     )
     return GraphSpec(
         nodes=nodes,
@@ -292,7 +332,7 @@ def recurrent_controller_template_graph(
         output_ports=["output", "hidden"],
         input_bindings=input_bindings,
         output_bindings={
-            "output": ("readout", "output"),
+            "output": (output_node, output_port),
             "hidden": (hidden_node, hidden_port),
         },
         parameter_constraints=parameter_constraints,
@@ -344,87 +384,61 @@ def network_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
 
 
 def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> GraphSpec:
-    """Build the canonical SimpleFeedback graph template.
-
-    The template is executable when the referenced leaf node builders support
-    the chosen mechanics and feedback-channel parameters. Legacy Python
-    constructors may still be used as compatibility factories, but this graph
-    shape is the durable portable representation.
-    """
-
+    """Build the portable SimpleFeedback preset with ordinary graph nodes."""
     params = dict(params or {})
-    network_params = dict(params.get("network", {}))
-    network_params.setdefault("input_size", 8)
-    mechanics_type = str(params.get("mechanics_type", "PointMass"))
+    network_params = {"input_size": 8, **dict(params.get("network", {}))}
+    net = network_template_graph(network_params)
     mechanics_params = dict(params.get("mechanics", {"dt": 0.01}))
-    motor_delay = int(params.get("motor_delay", 0))
-    feedback_delay = int(params.get("feedback_delay", 0))
-    feedback_noise_std = float(params.get("feedback_noise_std", 0.0) or 0.0)
-    motor_noise_std = float(params.get("motor_noise_std", 0.0) or 0.0)
     tau_rise = float(params.get("tau_rise", 0.0) or 0.0)
     tau_decay = float(params.get("tau_decay", 0.0) or 0.0)
+    force_filter = tau_rise != 0.0 or tau_decay != 0.0
+    ((selector, channel),) = feedback_node_names(1)
 
-    network_template = network_template_graph(network_params)
-    nodes: dict[str, ComponentSpec] = {
-        **network_template.nodes,
-        "feedback": ComponentSpec(
+    def channel_spec(prefix: str, role: str, timing: str) -> ComponentSpec:
+        noise_std = float(params.get(f"{prefix}_noise_std", 0.0) or 0.0)
+        return ComponentSpec(
             type="Channel",
             params={
-                "delay": feedback_delay,
-                "noise_std": feedback_noise_std,
-                "add_noise": feedback_noise_std != 0.0,
+                "delay": int(params.get(f"{prefix}_delay", 0)),
+                "noise_model": "additive_gaussian" if noise_std else "none",
+                "noise_std": noise_std,
+                "add_noise": bool(noise_std),
+                "noise_role": role,
+                "noise_timing": timing,
             },
             input_ports=["input"],
             output_ports=["output"],
+        )
+
+    nodes = {
+        selector: ComponentSpec(
+            type="SelectState",
+            params={"paths": list(params.get("feedback_paths", ["effector"]))},
+            input_ports=["state"],
+            output_ports=["output"],
         ),
-        "feedback_ravel": ComponentSpec(
-            type="Ravel",
+        channel: channel_spec("feedback", "sensory_feedback", "pre_controller"),
+        "feedback_values": ComponentSpec(
+            type="AssembleFeedback",
+            params={"n_inputs": 1, "layout": None},
+            input_ports=["in_0"],
+            output_ports=["output"],
+        ),
+        "net": ComponentSpec(
+            type="Subgraph",
             params={},
-            input_ports=["input"],
-            output_ports=["output"],
+            input_ports=net.input_ports,
+            output_ports=net.output_ports,
         ),
-        "efferent": ComponentSpec(
-            type="Channel",
-            params={
-                "delay": motor_delay,
-                "noise_std": motor_noise_std,
-                "add_noise": motor_noise_std != 0.0,
-            },
-            input_ports=["input"],
-            output_ports=["output"],
-        ),
+        "efferent": channel_spec("motor", "motor_command", "post_controller"),
         "mechanics": ComponentSpec(
-            type=mechanics_type,
+            type=str(params.get("mechanics_type", "PointMass")),
             params=mechanics_params,
             input_ports=["force"],
             output_ports=["effector", "state"],
         ),
     }
-    wires = [
-        *network_template.wires,
-        WireSpec(
-            source_node="feedback",
-            source_port="output",
-            target_node=network_template.input_bindings["feedback"][0],
-            target_port=network_template.input_bindings["feedback"][1],
-        ),
-        WireSpec(
-            source_node=network_template.output_bindings["output"][0],
-            source_port=network_template.output_bindings["output"][1],
-            target_node="efferent",
-            target_port="input",
-        ),
-    ]
-    if tau_rise == 0.0 and tau_decay == 0.0:
-        wires.append(
-            WireSpec(
-                source_node="efferent",
-                source_port="output",
-                target_node="mechanics",
-                target_port="force",
-            )
-        )
-    else:
+    if force_filter:
         nodes["force_filter"] = ComponentSpec(
             type="FirstOrderFilter",
             params={
@@ -436,54 +450,25 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
             input_ports=["input"],
             output_ports=["output"],
         )
-        wires.append(
-            WireSpec(
-                source_node="efferent",
-                source_port="output",
-                target_node="force_filter",
-                target_port="input",
-            )
-        )
-        wires.append(
-            WireSpec(
-                source_node="force_filter",
-                source_port="output",
-                target_node="mechanics",
-                target_port="force",
-            )
-        )
-    wires.append(
-        WireSpec(
-            source_node="mechanics",
-            source_port="effector",
-            target_node="feedback_ravel",
-            target_port="input",
-            temporality="recurrent",
-            recurrent_initializer={
-                "kind": "state_output",
-                "scope": "trial",
-                "source": "state_initializer",
-                "state_slot": "effector",
-            },
-        )
-    )
-    wires.append(
-        WireSpec(
-            source_node="feedback_ravel",
-            source_port="output",
-            target_node="feedback",
-            target_port="input",
-        )
-    )
 
     return GraphSpec(
         nodes=nodes,
-        wires=wires,
+        wires=[
+            WireSpec(
+                source_node=wire.source_node,
+                source_port=wire.source_port,
+                target_node=wire.target_node,
+                target_port=wire.target_port,
+                temporality=wire.temporality,
+                recurrent_initializer=wire.recurrent_initializer,
+            )
+            for wire in feedback_wires(1, force_filter=force_filter)
+        ],
         input_ports=["input"],
         output_ports=["effector"],
-        input_bindings={"input": network_template.input_bindings["input"]},
-        output_bindings={"effector": ("mechanics", "effector")},
-        parameter_constraints=network_template.parameter_constraints,
+        input_bindings={"input": FEEDBACK_INPUT},
+        output_bindings={"effector": FEEDBACK_OUTPUT},
+        subgraphs={"net": net},
     )
 
 

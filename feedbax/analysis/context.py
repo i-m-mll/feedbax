@@ -25,6 +25,7 @@ from feedbax.contracts.artifact_store import (
     store_artifact,
 )
 from feedbax.contracts.manifest import (
+    AnalysisComputation,
     AnalysisOutputDescriptor,
     AnalysisDataProduct,
     AnalysisEvaluationStateResolutionDiagnostic,
@@ -34,6 +35,7 @@ from feedbax.contracts.manifest import (
     DataProductParentRef,
     ManifestStatus,
     RegenerationSpec,
+    RegenerationSpecBuilder,
     SpecPayload,
     analysis_results_cache_dir,
     analysis_run_manifest_id,
@@ -82,6 +84,11 @@ class AnalysisRunContext:
 
     ``use_result_cache`` controls result-cache reads and writes throughout the
     computation graph. It does not affect authenticated input resolution.
+    Registered recipe execution supplies its resolved computation identity.
+    Standalone materializers can use the spec-only address when their own spec
+    already binds computation authority.
+    A regeneration builder receives the full artifact list before a completed
+    receipt is published.
     """
 
     spec: AnalysisRunSpec
@@ -94,6 +101,8 @@ class AnalysisRunContext:
     experiment_registry: ExperimentRegistry | None = None
     index_manifest: bool = True
     use_result_cache: bool = True
+    computation: AnalysisComputation | None = None
+    build_regeneration_spec: RegenerationSpecBuilder | None = None
     _artifacts: list[ArtifactRef] = field(default_factory=list, init=False)
     _regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = field(
         default_factory=list,
@@ -116,8 +125,8 @@ class AnalysisRunContext:
 
     @property
     def manifest_id(self) -> str:
-        """Return the deterministic analysis-run manifest identifier."""
-        return analysis_run_manifest_id(self.spec)
+        """Return the resolved analysis-run manifest identifier."""
+        return analysis_run_manifest_id(self.spec, computation=self.computation)
 
     @property
     def root_path(self) -> Path:
@@ -490,6 +499,8 @@ class AnalysisRunContext:
     ) -> tuple[AnalysisRunManifest, Path]:
         """Write the completed analysis manifest and optional SQLite manifest index row."""
         self._validate_produced_data_custody()
+        if status == "completed" and self.build_regeneration_spec is not None:
+            self.record_regeneration_specs([self.build_regeneration_spec(self.artifacts)])
         provenance = self._provenance()
         manifest = AnalysisRunManifest(
             id=self.manifest_id,
@@ -498,6 +509,7 @@ class AnalysisRunContext:
                 "AnalysisRunSpec",
                 self.spec.model_dump(mode="json", exclude_none=True),
             ),
+            computation=self.computation,
             inputs=list(self.spec.inputs),
             evaluation_state_sources=list(self._evaluation_state_sources),
             evaluation_state_resolution_diagnostics=list(

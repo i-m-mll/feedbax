@@ -106,8 +106,8 @@ describe('task data bindings', () => {
 
   });
 
-  it('includes component parameters in graph-bindable roles', () => {
-    expect(GRAPH_BINDABLE_TASK_DATA_ROLES.has('component_parameter')).toBe(true);
+  it('keeps only ordinary graph-facing binding roles', () => {
+    expect(GRAPH_BINDABLE_TASK_DATA_ROLES.has('component_parameter')).toBe(false);
     expect(GRAPH_BINDABLE_TASK_DATA_ROLES.has('intervention')).toBe(false);
   });
 
@@ -120,7 +120,6 @@ describe('task data bindings', () => {
       ['target_on', 'Target shown', true],
       ['movement_target', 'Movement target', false],
       ['inits', 'Initial state', false],
-      ['intervene', 'Intervention', false],
     ]);
     expect(data.find((item) => item.id === 'target_position')).toMatchObject({
       path: 'inputs.effector_target',
@@ -202,7 +201,7 @@ describe('task data bindings', () => {
 
   it('drops legacy generic Inputs bindings when delayed-reach task data is normalized', () => {
     const legacySpec: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.spec.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v3',
       exposed_data: [
         {
           id: 'inputs',
@@ -235,7 +234,7 @@ describe('task data bindings', () => {
 
   it('treats task data occupancy as target-scoped so one datum can fan out', () => {
     const spec: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.spec.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v3',
       exposed_data: [
         {
           id: 'target_on',

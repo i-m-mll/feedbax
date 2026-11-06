@@ -9,7 +9,6 @@ Used by the Studio backend (TrainingService) to:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from dataclasses import replace
 from typing import AsyncIterator, Optional
@@ -22,10 +21,13 @@ from feedbax.web.worker.transport import (
     SSEConsumptionBudget,
     WorkerConsumptionError,
     WorkerEndpoint,
+    WorkerEventCursorExpired,
     WorkerResponseError,
     WorkerTransportError,
     _check_content_length,
     _check_response,
+    check_event_stream_response,
+    decode_worker_event,
     request_json,
 )
 
@@ -239,13 +241,14 @@ async def download_checkpoint(
 async def stream_events(
     endpoint: WorkerEndpoint,
     job_id: str,
+    *,
+    from_seq: int | None = None,
 ) -> AsyncIterator[dict]:
     """Connect to GET /jobs/{job_id}/stream and yield parsed JSON event dicts.
 
-    Automatically reconnects on connection errors up to
-    ``_MAX_RECONNECT_ATTEMPTS`` times, using the ``seq`` field of the last
-    received event to resume from the correct position via the ``from_seq``
-    query parameter.
+    Resume inclusively from ``from_seq`` when supplied. After a connection
+    error, retry from one past the last delivered worker event, up to
+    ``_MAX_RECONNECT_ATTEMPTS`` times.
 
     The generator exits cleanly after a terminal event. Stream failures are
     retried where classified as reconnectable, then surfaced to the caller.
@@ -253,6 +256,7 @@ async def stream_events(
     Args:
         endpoint: Validated worker endpoint and request policy.
         job_id: Worker job identifier.
+        from_seq: Inclusive cursor for the first request.
 
     Yields:
         Parsed event dicts (the ``data:`` payload from each SSE line).
@@ -267,11 +271,10 @@ async def stream_events(
     consumption = SSEConsumptionBudget(endpoint.limits)
 
     while attempt <= _MAX_RECONNECT_ATTEMPTS:
-        params: dict = {}
-        expected_seq: Optional[int] = None
-        if last_seq is not None:
-            expected_seq = last_seq + 1
-            params["from_seq"] = expected_seq
+        expected_seq = from_seq if last_seq is None else last_seq + 1
+        params = {} if expected_seq is None else {"from_seq": expected_seq}
+        # A truncated line from a closed response cannot continue in a new response.
+        consumption.buffered.clear()
 
         try:
             consumption.check_lifetime()
@@ -286,60 +289,43 @@ async def stream_events(
                     params=params,
                     headers=endpoint.authorization_headers(),
                 ) as resp:
-                    _check_response(resp)
-                    resumed_after_disconnect = attempt > 0
-                    reported_resume = False
+                    check_event_stream_response(resp)
+                    if resp.status_code == 204:
+                        return
+                    report_resume = attempt > 0
                     async for chunk in resp.aiter_bytes():
                         for payload_bytes in consumption.feed(chunk):
-                            try:
-                                payload = payload_bytes.decode("utf-8")
-                            except UnicodeDecodeError as exc:
-                                raise WorkerEventStreamError(
-                                    "Training worker event stream failed."
-                                ) from exc
-                            try:
-                                event = json.loads(payload)
-                            except json.JSONDecodeError as exc:
-                                raise WorkerEventStreamError(
-                                    "Training worker event stream failed."
-                                ) from exc
-                            if not isinstance(event, dict) or not event:
+                            event = decode_worker_event(payload_bytes)
+                            event_seq = event.get("seq")
+                            if event_seq is not None and (
+                                type(event_seq) is not int or event_seq < 0
+                            ):
                                 raise WorkerEventStreamError("Training worker event stream failed.")
-                            event_seq: Optional[int] = None
-                            if "seq" in event:
-                                event_seq = int(event["seq"])
-                            if resumed_after_disconnect and not reported_resume:
-                                missed_events = 0
-                                reason = "resumed"
-                                message = "Training stream resumed after reconnect."
-                                if (
-                                    expected_seq is not None
-                                    and event_seq is not None
-                                    and event_seq > expected_seq
-                                ):
-                                    missed_events = event_seq - expected_seq
-                                    reason = "gap"
-                                    message = (
-                                        "Training stream resumed after reconnect with "
-                                        f"{missed_events} missed event(s)."
+                            if expected_seq is not None:
+                                if event_seq is None or event_seq > expected_seq:
+                                    raise WorkerEventStreamError(
+                                        "Training worker event stream has a sequence gap."
                                     )
+                                if event_seq < expected_seq:
+                                    continue
+                            if report_resume:
                                 yield {
                                     "type": "training_resync",
                                     "job_id": job_id,
                                     "expected_worker_seq": expected_seq,
                                     "observed_worker_seq": event_seq,
-                                    "worker_seq": last_seq,
-                                    "missed_events": missed_events,
-                                    "reason": reason,
-                                    "message": message,
+                                    "missed_events": 0,
+                                    "reason": "resumed",
+                                    "message": "Training stream resumed after reconnect.",
                                 }
-                                reported_resume = True
+                                report_resume = False
                             if event_seq is not None:
                                 last_seq = event_seq
+                                expected_seq = event_seq + 1
                             yield event
                             if event.get("type") in RUN_EVENT_TERMINAL_TYPES or event.get(
                                 "type"
-                            ) in ("training_complete", "training_error"):
+                            ) in ("training_complete", "training_stopped", "training_error"):
                                 return
             raise _WorkerEventStreamEnded
         except (
@@ -353,6 +339,8 @@ async def stream_events(
             if attempt > _MAX_RECONNECT_ATTEMPTS:
                 raise WorkerEventStreamError("Training worker event stream failed.") from exc
             await asyncio.sleep(_RECONNECT_DELAY)
+        except (WorkerEventCursorExpired, WorkerEventStreamError):
+            raise
         except Exception as exc:
             # Do not expose upstream response bodies, URLs, or transport details.
             raise WorkerEventStreamError("Training worker event stream failed.") from exc

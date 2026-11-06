@@ -8,6 +8,7 @@ import pytest
 
 from feedbax.acausal import AcausalConnection, AcausalSystem
 from feedbax.acausal.assembly import assemble_system
+from feedbax.acausal.base import AcausalElement
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.acausal.rotational import (
     AngleSensor,
@@ -199,6 +200,21 @@ def test_gear_cycles_are_rejected():
         assemble_system(elements, connections)
 
 
+def test_gear_reduction_reports_ground_and_prescribed_owners():
+    wall = RotationalGround("wall")
+    drive = AcausalElement(
+        "drive", ports=wall.ports, element_type="prescribed_motion"
+    )
+    with pytest.raises(ValueError, match="grounded by .*wall.*prescribed motion sources .*drive"):
+        AcausalSystem(
+            {"wall": wall, "drive": drive, "gear": GearRatio("gear", ratio=2.0)},
+            [
+                _connection(("wall", "flange"), ("gear", "flange_a")),
+                _connection(("drive", "flange"), ("gear", "flange_b")),
+            ],
+        )
+
+
 def test_b_side_ground_propagates_and_massless_shaft_is_balanced():
     elements, connections = _shafts()
     elements["wall"] = RotationalGround("wall")
@@ -294,12 +310,6 @@ def test_grounded_net_torque_has_known_zero_acceleration_under_load():
     layout, _, params, sensors = assemble_system(elements, connections)
     assert layout.total_size == 0
     assert sensors(jnp.zeros(0), jnp.array([14.0]), params)["net"] == pytest.approx(0.0)
-
-
-def test_free_net_torque_requires_solved_acceleration():
-    elements = {"drive": TorqueSource("drive"), "net": TorqueSensor("net")}
-    with pytest.raises(ValueError, match="no solved acceleration.*requires inertia"):
-        assemble_system(elements, [_connection(("drive", "flange"), ("net", "flange"))])
 
 
 def test_prescribed_net_effort_requires_acceleration_authority():

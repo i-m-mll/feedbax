@@ -44,12 +44,11 @@ executed with an input neither bound nor proved inapplicable.
 
 ## The plan is a derived record; the locks are the authority
 
-A plan is durable and travels apart from the locks it came from, so every
-authenticating fact it carries is a copy. :func:`preflight` re-derives each
-node's edges from its own compile lock and refuses on any disagreement
-(:class:`PlanLockDisagreementError`). The node content hash cannot cover this:
-it pins the compiled *document*, while edges come from the *lock*, so an intact
-hash sits happily beside an edge whose byte profile was removed.
+A durable plan travels apart from the compile locks it came from.
+:func:`prepare_workflow` derives each node's operation and edges again from
+its verified compiled output and refuses any disagreement. The content hash
+pins the compiled document, so an intact hash can accompany a changed
+operation or an edge whose byte profile was removed.
 
 ## Missing receipts are refusals, and the lock says which bytes count
 
@@ -130,6 +129,7 @@ from feedbax.workflow.derivation import (
     CompiledOutputIndex,
     ExternalReceiptRecord,
     lock_edge_declarations,
+    lock_operation,
     require_external_record,
 )
 from feedbax.analysis.execution_context import (
@@ -145,6 +145,7 @@ from feedbax.analysis.manifest_inputs import (
     is_staged_manifest_kind,
 )
 from feedbax.workflow.plan import (
+    EdgeDeclaration,
     WorkflowPlan,
     LogicalKey,
     PlanEdge,
@@ -1272,19 +1273,6 @@ class PlanLockDisagreementError(WorkflowExecutionError):
         }
 
 
-def _edge_facts(edge: PlanEdge) -> dict[str, Any]:
-    """Return the authority-bearing facts one edge states, for exact comparison."""
-    return {
-        "role_path": list(edge.role_path),
-        "status": edge.status,
-        "basis": edge.basis,
-        "reason": edge.reason,
-        "rule": edge.rule,
-        "producer": None if edge.producer is None else edge.producer.text,
-        "external": None if edge.external is None else dict(edge.external),
-    }
-
-
 def _duplicate_role_differences(edges: Sequence[PlanEdge], *, stated_by: str) -> list[str]:
     """Return one difference per role path *edges* states more than once.
 
@@ -1304,98 +1292,75 @@ def _duplicate_role_differences(edges: Sequence[PlanEdge], *, stated_by: str) ->
     ]
 
 
-def require_plan_matches_locks(plan: WorkflowPlan, index: CompiledOutputIndex) -> None:
-    """Refuse a plan whose edges are not the edges its locks determine.
-
-    Every node's inputs are re-derived from its own compile lock and compared,
-    field for field, with what the plan document carries. Nothing is repaired and
-    nothing is preferred: a plan that disagrees with a lock is refused, because
-    silently taking either side would make one of the two documents decorative.
-
-    Both sides are proved to state at most one edge per role path *before* they
-    are keyed by role path. The plan kernel already refuses a duplicate and a
-    lock already refuses two references at one role, so this is defense in depth
-    over the one shape that would otherwise be dropped silently by the
-    comparison itself rather than reported by it.
-    """
-    for plan_node in plan.nodes:
-        compiled = index.require(plan_node.source_ref)
-        lock_edges: list[PlanEdge] = []
-        for declaration in lock_edge_declarations(compiled):
-            producer: LogicalKey | None = None
-            if declaration.producer_ref is not None:
-                producer = index.require(declaration.producer_ref).key
-            lock_edges.append(declaration.edge(plan_node.key, producer))
-        plan_edges = plan.input_edges(plan_node.key)
-        duplicates = _duplicate_role_differences(
-            lock_edges, stated_by="the lock"
-        ) + _duplicate_role_differences(plan_edges, stated_by="the plan")
-        if duplicates:
-            raise PlanLockDisagreementError(plan_node.key, plan_node.source_ref, duplicates)
-        expected: dict[tuple[str, ...], PlanEdge] = {edge.role_path: edge for edge in lock_edges}
-        declared = {edge.role_path: edge for edge in plan_edges}
-        differences: list[str] = []
-        for role_path in sorted(set(expected) | set(declared)):
-            lock_edge = expected.get(role_path)
-            plan_edge = declared.get(role_path)
-            if lock_edge is None:
+def _require_plan_edges_match_lock(
+    plan_node: PlanNode,
+    plan_edges: Sequence[PlanEdge],
+    declarations: tuple[EdgeDeclaration, ...],
+    by_ref: Mapping[str, CompiledEnvelope],
+    plan_refs: Mapping[LogicalKey, str],
+) -> None:
+    """Refuse inputs that disagree with their lock, comparing one edge per role."""
+    lock_edges: list[PlanEdge] = []
+    producer_refs = {edge.role_path: edge.producer_ref for edge in declarations}
+    for declaration in declarations:
+        producer: LogicalKey | None = None
+        if declaration.producer_ref is not None:
+            producer = by_ref[declaration.producer_ref].key
+        lock_edges.append(declaration.edge(plan_node.key, producer))
+    duplicates = _duplicate_role_differences(
+        lock_edges, stated_by="the lock"
+    ) + _duplicate_role_differences(plan_edges, stated_by="the plan")
+    if duplicates:
+        raise PlanLockDisagreementError(plan_node.key, plan_node.source_ref, duplicates)
+    expected: dict[tuple[str, ...], PlanEdge] = {edge.role_path: edge for edge in lock_edges}
+    declared = {edge.role_path: edge for edge in plan_edges}
+    differences: list[str] = []
+    for role_path in sorted(set(expected) | set(declared)):
+        lock_edge = expected.get(role_path)
+        plan_edge = declared.get(role_path)
+        if lock_edge is None:
+            differences.append(
+                f"input {list(role_path)} is declared by the plan but the lock states no "
+                "reference at that role"
+            )
+            continue
+        if plan_edge is None:
+            differences.append(
+                f"input {list(role_path)} is stated by the lock but the plan declares no "
+                "edge for it"
+            )
+            continue
+        lock_facts = lock_edge.record()
+        plan_facts = plan_edge.record()
+        lock_facts["producer_source_ref"] = producer_refs[role_path]
+        plan_facts["producer_source_ref"] = (
+            plan_refs.get(plan_edge.producer) if plan_edge.producer is not None else None
+        )
+        for name in sorted(lock_facts):
+            if lock_facts[name] != plan_facts[name]:
                 differences.append(
-                    f"input {list(role_path)} is declared by the plan but the lock states no "
-                    "reference at that role"
+                    f"input {list(role_path)} {name}: the lock states "
+                    f"{lock_facts[name]!r} and the plan declares {plan_facts[name]!r}"
                 )
-                continue
-            if plan_edge is None:
-                differences.append(
-                    f"input {list(role_path)} is stated by the lock but the plan declares no "
-                    "edge for it"
-                )
-                continue
-            lock_facts = _edge_facts(lock_edge)
-            plan_facts = _edge_facts(plan_edge)
-            for name in sorted(lock_facts):
-                if lock_facts[name] != plan_facts[name]:
-                    differences.append(
-                        f"input {list(role_path)} {name}: the lock states "
-                        f"{lock_facts[name]!r} and the plan declares {plan_facts[name]!r}"
-                    )
-        if differences:
-            raise PlanLockDisagreementError(plan_node.key, plan_node.source_ref, differences)
+    if differences:
+        raise PlanLockDisagreementError(plan_node.key, plan_node.source_ref, differences)
 
 
-def _node_facts_from_lock(compiled: CompiledEnvelope) -> dict[str, Any]:
-    """Return the node facts one compiled output determines, for exact comparison."""
-    return {
+def _require_plan_node_matches_lock(
+    plan_node: PlanNode, compiled: CompiledEnvelope, declarations: tuple[EdgeDeclaration, ...]
+) -> None:
+    """Refuse a plan node whose identity or operation differs from its compile lock."""
+    operation = lock_operation(compiled, declarations)
+    expected = {
         "key": compiled.key.text,
-        "compiled_schema_id": compiled.schema_id,
-        "semantic_hash": compiled.content_hash,
-        "content_hash": compiled.content_hash,
         "execution_identity": compiled.execution_identity,
+        **{f"operation.{name}": value for name, value in operation.record().items()},
     }
-
-
-def _node_facts_from_plan(plan_node: PlanNode) -> dict[str, Any]:
-    """Return the same node facts as the plan document carries them."""
-    return {
+    declared = {
         "key": plan_node.key.text,
-        "compiled_schema_id": plan_node.operation.parameters.get("compiled_schema_id"),
-        "semantic_hash": plan_node.operation.parameters.get("semantic_hash"),
-        "content_hash": plan_node.content_hash,
         "execution_identity": plan_node.execution_identity,
+        **{f"operation.{name}": value for name, value in plan_node.operation.record().items()},
     }
-
-
-def require_plan_node_matches_lock(plan_node: PlanNode, compiled: CompiledEnvelope) -> None:
-    """Refuse a plan node whose own facts are not the ones its lock determines.
-
-    This is the node-side counterpart of
-    :func:`require_plan_matches_locks`, which does the same for edges. Both
-    exist for one reason: the plan is a cache of the locks, and every
-    authenticating fact it carries is a copy. ``content_hash`` is compared
-    separately by :func:`preflight`, before this, because a moved document is
-    the coarser fact and explains the differences that follow from it.
-    """
-    expected = _node_facts_from_lock(compiled)
-    declared = _node_facts_from_plan(plan_node)
     differences = [
         f"{name}: the lock determines {expected[name]!r} and the plan declares {declared[name]!r}"
         for name in sorted(expected)
@@ -1408,26 +1373,12 @@ def require_plan_node_matches_lock(plan_node: PlanNode, compiled: CompiledEnvelo
 def prepare_workflow(plan: WorkflowPlan, index: CompiledOutputIndex) -> PreparedWorkflow:
     """Bind one plan's closure and prove every operation locally realizable.
 
-    Nothing executes here and nothing is written. Realizability is proved first,
-    because a workflow this executor cannot run is not made runnable by anything
-    a later check finds.
+    Nothing executes here and nothing is written. Realizability is checked
+    against the reconciled plan so a changed operation cannot bypass it.
 
-    Every node is re-read from *index* and re-hashed. Plan derivation and
-    execution reads the same compiled outputs, so a hash that no longer matches
-    means the outputs moved between them, and the node is named rather than
-    executed under a plan that described something else.
-
-    The node hash proves the compiled *document* is the one the plan described.
-    It says nothing about the rest of what the plan asserts. The node's own
-    facts — its logical key, the schema id it is lowered by, its execution
-    identity and typed operation — are copied out of the compile lock at
-    derivation, so they are reconciled back against it here. Its edges are
-    derived from the lock rather than from the document, so they are reconciled
-    separately: otherwise a plan could carry an intact document hash beside an
-    input the lock never stated, or beside an authenticated reference with its
-    byte profile removed. The document check runs first, because a moved document
-    is the coarser fact and explains the node and edge differences that follow
-    from it.
+    For each node, compare the verified compiled document's hash with the plan
+    pin before reconciling the logical key, execution identity, operation and
+    edges against the compiled output and its lock.
 
     Raises:
         ExternalOperationError: The closure names an operation this executor
@@ -1442,9 +1393,11 @@ def prepare_workflow(plan: WorkflowPlan, index: CompiledOutputIndex) -> Prepared
             lock determines.
         PlanLockDisagreementError: A node's declared inputs are not the ones its
             compile lock determines.
+        CompiledOutputError: A planned input's producer does not match the pins
+            in the consumer's compile lock.
     """
-    require_operations_realizable(plan)
-    require_certified_applicability(plan)
+    by_ref = index.by_envelope_ref()
+    plan_refs = {node.key: node.source_ref for node in plan.nodes}
     nodes: list[PreparedOperation] = []
     for order, plan_node in enumerate(plan.nodes):
         compiled = index.require(plan_node.source_ref)
@@ -1457,13 +1410,18 @@ def prepare_workflow(plan: WorkflowPlan, index: CompiledOutputIndex) -> Prepared
                 plan_node.content_hash,
                 compiled.content_hash,
             )
-        require_plan_node_matches_lock(plan_node, compiled)
+        declarations = lock_edge_declarations(compiled, by_ref)
+        _require_plan_node_matches_lock(plan_node, compiled, declarations)
+        _require_plan_edges_match_lock(
+            plan_node, plan.input_edges(plan_node.key), declarations, by_ref, plan_refs
+        )
         nodes.append(
             PreparedOperation(
                 key=plan_node.key, plan_node=plan_node, compiled=compiled, order=order
             )
         )
-    require_plan_matches_locks(plan, index)
+    require_operations_realizable(plan)
+    require_certified_applicability(plan)
     return PreparedWorkflow(plan=plan, nodes=tuple(nodes))
 
 

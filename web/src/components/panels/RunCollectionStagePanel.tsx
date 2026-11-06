@@ -38,6 +38,7 @@ import { useTrainingStore } from '@/stores/trainingStore';
 import { useRunStore } from '@/stores/runStore';
 import type { FrozenSnapshotProjection } from '@/stores/selectionContextStore';
 import {
+  dispatchStudioNativeTraining,
   prepareStudioTrainingExecution,
   previewStudioEvaluationMatrix,
   runStudioEvaluationLocalExecution,
@@ -48,12 +49,13 @@ import {
   compareTrainingRuns,
   deleteTrainingRun,
   fetchEvalRunManifest,
+  fetchTrainingRun,
   fetchTrainingRunManifest,
   importManifestPacket,
   importRunsDir,
   supersedeTrainingRun,
 } from '@/api/runAPI';
-import { apiErrorMessage } from '@/api/request';
+import { ApiRequestError, apiErrorMessage, isHttpConflict } from '@/api/request';
 import {
   bestTrainingRun,
   buildBillableSpecLock,
@@ -65,6 +67,7 @@ import {
   evaluationRunSummaries,
   formatMetric,
   legacyManifestFallbackHash,
+  nativeTrainingInProgress,
   runParameterSummary,
   selectedIds,
   trainingRunMetricValue,
@@ -121,6 +124,7 @@ import {
 import {
   progressBindingsForRuns,
   sortTrainingRows,
+  stageWithNativeTrainingRunProgress,
   stageWithTrainingRunLifecyclePatch,
   trainingRunGroupId,
   UNGROUPED_RUN_GROUP_ID,
@@ -148,6 +152,13 @@ type SortDirection = 'asc' | 'desc';
 interface SortState {
   key: SortKey;
   direction: SortDirection;
+}
+
+const monitoredNativeRuns = new Set<string>();
+
+function isUncertainNativeRunRequest(error: unknown): boolean {
+  return error instanceof ApiRequestError &&
+    (error.kind === 'network' || (error.status !== null && error.status >= 500));
 }
 
 
@@ -211,6 +222,8 @@ export function TrainCollectionPanel() {
   const [bulkValues, setBulkValues] = useState('0.001, 0.0003');
   const [stageState, setStageState] = useState({ busy: false, error: null as string | null });
   const [runActionState, setRunActionState] = useState({ busy: false, error: null as string | null });
+  const [launchingIds, setLaunchingIds] = useState<ReadonlySet<string>>(new Set());
+  const [launchErrors, setLaunchErrors] = useState<Record<string, string>>({});
   const [showHistory, setShowHistory] = useState(false);
   const [queueLaunchTarget, setQueueLaunchTarget] = useState<ExecutionTargetChoice | null>(null);
   const [queueConfirmed, setQueueConfirmed] = useState(false);
@@ -709,6 +722,106 @@ export function TrainCollectionPanel() {
     [patchLifecycleRun]
   );
 
+  const trackNativeRun = useCallback(async (run: TrainingRunSummary, mode: 'launch' | 'resume') => {
+    const dispatch = mode === 'launch';
+    const generation = dispatch ? run.nativeLaunchGeneration : run.nativeInProgressGeneration;
+    const stageId = trainStage?.id;
+    const workspaceId = useWorkspaceStore.getState().workspace?.id;
+    if (!generation || !stageId || !workspaceId) return;
+    const monitorKey = JSON.stringify([workspaceId, stageId, run.id, generation]);
+    if (monitoredNativeRuns.has(monitorKey)) return;
+
+    const currentStage = () => {
+      const current = useWorkspaceStore.getState().workspace;
+      if (current?.id !== workspaceId) return null;
+      const stage = current?.stages.find((item) => item.id === stageId);
+      const hasRow = stage?.output_collections.some((collection) => collection.item_refs.some(
+        (ref) => ref.id === run.id && ref.metadata.staging_generation === generation
+      ));
+      return current && stage && hasRow ? { current, stage } : null;
+    };
+    const initial = currentStage();
+    if (!initial) return;
+    if (dispatch) {
+      const currentRows = trainingRunSummaries(initial.stage, {
+        currentSpecHashes: currentDraftSpecHashesForScenario(
+          getScenario(initial.current, initial.stage.scenario_id),
+          useGraphStore.getState().capturePersistedGraph().graph
+        ),
+      });
+      if (!currentRows.some((row) => row.id === run.id && row.nativeLaunchGeneration === generation)) return;
+    }
+
+    const setLaunchError = (message: string | null) => setLaunchErrors((current) => {
+      if (current[run.id] === message || (!message && !current[run.id])) return current;
+      const next = { ...current };
+      if (message) next[run.id] = message;
+      else delete next[run.id];
+      return next;
+    });
+
+    monitoredNativeRuns.add(monitorKey);
+    if (dispatch) setLaunchingIds((current) => new Set(current).add(run.id));
+    setLaunchError(null);
+    try {
+      let accepted = false;
+      let dispatchError: string | null = null;
+      if (dispatch) {
+        try {
+          await dispatchStudioNativeTraining({ manifest_id: run.id, generation });
+          accepted = true;
+        } catch (error) {
+          if (!isHttpConflict(error) && !isUncertainNativeRunRequest(error)) throw error;
+          dispatchError = apiErrorMessage(error);
+          setLaunchError(dispatchError);
+        }
+      }
+      while (currentStage()) {
+        try {
+          const projected = await fetchTrainingRun(run.id);
+          const active = currentStage();
+          if (!active) break;
+          if (projected.id !== run.id) throw new Error('Training run refresh returned the wrong row.');
+          const nextStage = stageWithNativeTrainingRunProgress(active.stage, projected, generation);
+          if (nextStage !== active.stage) {
+            useWorkspaceStore.setState({
+              workspace: {
+                ...active.current,
+                stages: active.current.stages.map((stage) => stage === active.stage ? nextStage : stage),
+              },
+            });
+            markDirty();
+          }
+          if (projected.staging_generation !== generation) {
+            throw new Error('The staging receipt changed. Restage the row before launching.');
+          }
+          setLaunchError(projected.status === 'pending' ? dispatchError : null);
+          if (!nativeTrainingInProgress(projected.status) && !projected.teardown_pending &&
+              !(accepted && projected.status === 'pending')) break;
+        } catch (error) {
+          if (!isUncertainNativeRunRequest(error)) throw error;
+          setLaunchError(`Could not refresh ${run.label}. Retrying. ${apiErrorMessage(error)}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    } catch (error) {
+      setLaunchError(apiErrorMessage(error, 'Failed to launch the training run.'));
+    } finally {
+      monitoredNativeRuns.delete(monitorKey);
+      if (dispatch) setLaunchingIds((current) => {
+        const next = new Set(current);
+        next.delete(run.id);
+        return next;
+      });
+    }
+  }, [markDirty, trainStage?.id]);
+
+  useEffect(() => {
+    for (const row of rows) {
+      if (row.nativeInProgressGeneration) void trackNativeRun(row, 'resume');
+    }
+  }, [rows, trackNativeRun]);
+
   const prepareQueueLaunch = useCallback(async () => {
     if (!workspace) return;
     if (queueSpecLock.required && !queueSpecLock.target) {
@@ -922,6 +1035,8 @@ export function TrainCollectionPanel() {
               onViewSnapshot={viewSnapshot}
               onRestageRun={restageRun}
               onLifecycleAction={runLifecycleAction}
+              onLaunch={(run) => void trackNativeRun(run, 'launch')}
+              launchingIds={launchingIds}
             />
 
             {comparison && (
@@ -973,9 +1088,10 @@ export function TrainCollectionPanel() {
               onApply={applyBulkEdit}
             />
 
-            {runActionState.error && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                {runActionState.error}
+            {(runActionState.error || Object.keys(launchErrors).length > 0) && (
+              <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {runActionState.error && <div>{runActionState.error}</div>}
+                {Object.entries(launchErrors).map(([id, error]) => <div key={id}>{error}</div>)}
               </div>
             )}
           </div>
@@ -1125,11 +1241,6 @@ export function EvaluateCollectionPanel() {
       workspace: workspace as StudioWorkspaceSpec,
       stage_id: evalStage?.id ?? null,
       training_run_ids: Array.from(selectedIdsForEval),
-      eval_params: {
-        targets: '8-direction center-out',
-        sisu: 0.5,
-        perturbation: 'none',
-      },
       checkpoint_policy: checkpointPolicy,
       reprocess: reprocessMode,
     };
@@ -1405,11 +1516,17 @@ export function EvaluateCollectionPanel() {
                 <SlidersHorizontal className="h-4 w-4 text-slate-400" />
                 <div className="font-semibold text-slate-800">Validation conditions</div>
               </div>
-              <div className="mt-3 space-y-2">
-                <ProtocolRow label="Targets" value="8-direction center-out" />
-                <ProtocolRow label="SISU" value="0.5" />
-                <ProtocolRow label="Perturbation" value="None" />
-              </div>
+              {evalPreview?.condition_labels?.length ? (
+                <ol className="mt-3 list-decimal space-y-1 pl-5 text-xs text-slate-600">
+                  {evalPreview.condition_labels.map((label, index) => (
+                    <li key={index}>{label}</li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="mt-3 text-xs text-slate-500">
+                  Preview the evaluation matrix to see its configured conditions.
+                </p>
+              )}
               <div className="mt-4 grid gap-3">
                 <label className="grid gap-1 text-xs font-semibold text-slate-600">
                   Checkpoint
@@ -2070,9 +2187,9 @@ function QueueProjectionPanel({
             type="button"
             disabled
             className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 px-2 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
-            title="Cancel uses the per-run lifecycle action when available"
+            title="Withdraw staged runs using the per-run action"
           >
-            Cancel
+            Withdraw
           </button>
         </div>
       </div>
@@ -2186,10 +2303,11 @@ function QueueProjectionPanel({
           type="button"
           disabled={launchDisabled}
           onClick={onPrepareLaunch}
+          title="Prepare a queue request without starting training"
           className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-brand-500 px-3 text-xs font-semibold text-white hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <PlayCircle className="h-3.5 w-3.5" />
-          {busy ? 'Preparing' : 'Prepare launch'}
+          {busy ? 'Preparing' : 'Prepare queue launch'}
         </button>
       </div>
     </section>
@@ -2649,6 +2767,8 @@ function RunTable({
   onViewSnapshot,
   onRestageRun,
   onLifecycleAction,
+  onLaunch,
+  launchingIds,
 }: {
   title: string;
   rows: TrainingRunSummary[];
@@ -2683,6 +2803,8 @@ function RunTable({
   onOpenDetails: (run: TrainingRunSummary) => void;
   onViewSnapshot?: (run: TrainingRunSummary) => void;
   onRestageRun?: (run: TrainingRunSummary) => void;
+  onLaunch?: (run: TrainingRunSummary) => void;
+  launchingIds?: ReadonlySet<string>;
   onLifecycleAction?: (
     action: 'cancel' | 'delete' | 'supersede',
     run: TrainingRunSummary
@@ -2860,6 +2982,8 @@ function RunTable({
                           onViewSnapshot={onViewSnapshot ? () => onViewSnapshot(row) : undefined}
                           onRestageRun={onRestageRun ? () => onRestageRun(row) : undefined}
                           onLifecycleAction={onLifecycleAction}
+                          onLaunch={onLaunch ? () => onLaunch(row) : undefined}
+                          launching={launchingIds?.has(row.id) ?? false}
                         />
                       ))}
                   </div>
@@ -3013,6 +3137,8 @@ function TrainingRunRow({
   onViewSnapshot,
   onRestageRun,
   onLifecycleAction,
+  onLaunch,
+  launching,
 }: {
   row: TrainingRunSummary;
   axisColumns: TrainAxisColumn[];
@@ -3030,21 +3156,24 @@ function TrainingRunRow({
   onOpenDetails: () => void;
   onViewSnapshot?: () => void;
   onRestageRun?: () => void;
+  onLaunch?: () => void;
+  launching: boolean;
   onLifecycleAction?: (
     action: 'cancel' | 'delete' | 'supersede',
     run: TrainingRunSummary
   ) => void;
 }) {
-  const progress = progressLabel ??
-    (row.status === 'stale'
-      ? `Stale${row.staleReason ? ` (${row.staleReason})` : ''}`
-      : row.status === 'running'
-      ? 'Running'
-      : row.warmupBatches !== null
+  const completed = row.metrics.completed_batches;
+  const total = row.metrics.total_batches;
+  const nativeProgress = completed != null && total != null ? `${completed}/${total}` : null;
+  const progress = progressLabel ?? nativeProgress ??
+    (row.status === 'stale' ? `Stale${row.staleReason ? ` (${row.staleReason})` : ''}`
+      : row.status === 'claimed' ? 'Preflight'
+      : row.status === 'running' ? 'Running'
+      : row.status === 'pending' ? (launching ? 'Submitting' : 'Pending')
+      : row.warmupBatches !== null && row.status === 'completed'
         ? `${row.warmupBatches.toLocaleString()}/${row.warmupBatches.toLocaleString()}`
-        : row.status === 'pending'
-          ? 'Pending'
-          : 'Not recorded');
+        : 'Not recorded');
   const checkpoint = row.checkpointAvailable && row.warmupBatches !== null
       ? row.warmupBatches.toLocaleString()
       : row.checkpointAvailable
@@ -3148,15 +3277,21 @@ function TrainingRunRow({
         >
           <Info className="h-4 w-4" />
         </button>
-        <button
-          type="button"
-          disabled
-          className="flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-md text-slate-300"
-          aria-label={`Launch unavailable for ${row.label}`}
-          title="Manifest launch requires queue execution support"
-        >
-          <PlayCircle className="h-4 w-4" />
-        </button>
+        {onLaunch && (
+          <button
+            type="button"
+            disabled={!row.nativeLaunchGeneration || launching}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-brand-600 hover:bg-brand-50 disabled:cursor-not-allowed disabled:text-slate-300"
+            aria-label={`Launch ${row.label}`}
+            title={row.nativeLaunchGeneration ? 'Launch this run locally' : 'Launch requires a current, staged local native run'}
+            onClick={(event) => {
+              event.stopPropagation();
+              onLaunch();
+            }}
+          >
+            <PlayCircle className="h-4 w-4" />
+          </button>
+        )}
         {onViewSnapshot && (
           <button
             type="button"
@@ -3185,7 +3320,7 @@ function TrainingRunRow({
             <RotateCcw className="h-4 w-4" />
           </button>
         )}
-        {onLifecycleAction && row.status === 'pending' && (
+        {onLifecycleAction && row.status === 'pending' && !launching && (
           <>
             <button
               type="button"
@@ -3194,7 +3329,7 @@ function TrainingRunRow({
                 onLifecycleAction('cancel', row);
               }}
               className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-amber-50 hover:text-amber-700"
-              title="Cancel pending run"
+              title="Withdraw staged run"
             >
               <X className="h-4 w-4" />
             </button>
@@ -3279,6 +3414,9 @@ function RunDetailPane({
       </div>
       <div className="mt-4 grid gap-2 text-xs">
         <DetailField label="Manifest" value={run.provenanceId} />
+        {run.resultManifestId && <DetailField label="Result manifest" value={run.resultManifestId} />}
+        {run.resultManifestUri && <DetailField label="Result location" value={run.resultManifestUri} />}
+        {run.statusReason && <DetailField label="Status detail" value={run.statusReason} />}
         <DetailField label="Job" value={run.jobId ?? 'Not recorded'} />
         <DetailField label="Set" value={run.runSetId ?? 'Not grouped'} />
         <DetailField label="Variant" value={run.variant ?? 'Not recorded'} />
@@ -3363,8 +3501,8 @@ function RunDetailPane({
       </div>
       <button
         type="button"
-        disabled={!run.checkpointAvailable || !run.uri}
-        title="Checkpoint"
+        disabled={!run.checkpointAvailable || !run.uri || Boolean(run.resultManifestId)}
+        title={run.resultManifestId ? 'Checkpoint is recorded in the result manifest' : 'Checkpoint'}
         onClick={() => onDownloadCheckpoint(run)}
         className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
       >
@@ -3838,15 +3976,6 @@ function StatusDot({ status }: { status: string }) {
       />
       {status}
     </span>
-  );
-}
-
-function ProtocolRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-md bg-slate-50 px-3 py-2 text-xs">
-      <span className="text-slate-500">{label}</span>
-      <span className="font-medium text-slate-700">{value}</span>
-    </div>
   );
 }
 

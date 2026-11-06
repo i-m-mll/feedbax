@@ -608,6 +608,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "anyio" },
     { name = "dill" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -625,6 +626,7 @@ all = [
     { name = "ruamel-yaml" },
     { name = "scikit-learn" },
     { name = "seaborn" },
+    { name = "starlette" },
     { name = "tensorboardx" },
     { name = "uvicorn" },
 ]
@@ -664,8 +666,10 @@ viz = [
     { name = "seaborn" },
 ]
 web = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "starlette" },
     { name = "uvicorn" },
 ]
 
@@ -682,14 +686,14 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", marker = "extra == 'web'", specifier = ">=4.0.0" },
     { name = "crc32c", specifier = ">=2.7.1" },
     { name = "diffrax", specifier = ">=0.7.0" },
     { name = "dill", marker = "extra == 'all'", specifier = ">=0.3.9" },
     { name = "dill", marker = "extra == 'analysis'", specifier = ">=0.3.9" },
     { name = "equinox", specifier = ">=0.13.1" },
-    { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.110.0" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.110.0" },
-    { name = "httpx", marker = "extra == 'all'", specifier = ">=0.27.0" },
+    { name = "feedbax", extras = ["web"], marker = "extra == 'all'" },
     { name = "httpx", marker = "extra == 'web'", specifier = ">=0.27.0" },
     { name = "ipyfilechooser", marker = "extra == 'all'", specifier = ">=0.6.0" },
     { name = "ipyfilechooser", marker = "extra == 'notebook'", specifier = ">=0.6.0" },
@@ -702,10 +706,10 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'all'", specifier = ">=3.10.1" },
     { name = "matplotlib", marker = "extra == 'persistence'", specifier = ">=3.10.1" },
     { name = "matplotlib", marker = "extra == 'viz'", specifier = ">=3.10.1" },
-    { name = "mujoco", marker = "extra == 'all'", specifier = ">=3.0.0" },
-    { name = "mujoco", marker = "extra == 'mjx'", specifier = ">=3.0.0" },
-    { name = "mujoco-mjx", marker = "extra == 'all'", specifier = ">=0.1.0" },
-    { name = "mujoco-mjx", marker = "extra == 'mjx'", specifier = ">=0.1.0" },
+    { name = "mujoco", marker = "extra == 'all'", specifier = ">=3.2.5" },
+    { name = "mujoco", marker = "extra == 'mjx'", specifier = ">=3.2.5" },
+    { name = "mujoco-mjx", marker = "extra == 'all'", specifier = ">=3.2.5" },
+    { name = "mujoco-mjx", marker = "extra == 'mjx'", specifier = ">=3.2.5" },
     { name = "notebook", marker = "extra == 'all'", specifier = ">=7.4.1" },
     { name = "notebook", marker = "extra == 'notebook'", specifier = ">=7.4.1" },
     { name = "numpy", specifier = ">=2.2.3" },
@@ -735,19 +739,19 @@ requires-dist = [
     { name = "scikit-learn", marker = "extra == 'viz'", specifier = ">=1.6.1" },
     { name = "seaborn", marker = "extra == 'all'", specifier = ">=0.13.2" },
     { name = "seaborn", marker = "extra == 'viz'", specifier = ">=0.13.2" },
+    { name = "starlette", marker = "extra == 'web'", specifier = ">=0.36.3" },
     { name = "tensorboardx", marker = "extra == 'all'", specifier = ">=2.6.2.2" },
     { name = "tensorboardx", marker = "extra == 'training'", specifier = ">=2.6.2.2" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "treescope", specifier = ">=0.1.1" },
-    { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.29.0" },
     { name = "uvicorn", marker = "extra == 'web'", specifier = ">=0.29.0" },
 ]
 provides-extras = ["analysis", "config", "persistence", "training", "viz", "web", "notebook", "mjx", "all"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mujoco", specifier = ">=3.0.0" },
-    { name = "mujoco-mjx", specifier = ">=0.1.0" },
+    { name = "mujoco", specifier = ">=3.2.5" },
+    { name = "mujoco-mjx", specifier = ">=3.2.5" },
     { name = "pyright", specifier = ">=1.1.407" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },

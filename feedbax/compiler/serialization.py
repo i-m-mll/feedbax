@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Literal, Mapping, Sequence, cast
 
+from jaxtyping import PRNGKeyArray
+
+from feedbax.models.feedback import feedback_state_view
+from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime.trial_history import trial_history_plan
 from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
@@ -20,16 +25,18 @@ from feedbax.contracts.array_values import (
     _parse_array_value_payload,
     materialize_array_value,
 )
-from feedbax.component_registry import format_missing_interior_message, required_interior_domain
-from feedbax.runtime.parameter_constraints import (
-    apply_parameter_constraints,
-    normalize_parameter_constraints,
+from feedbax.component_registry import (
+    DeclaredComponent,
+    format_missing_interior_message,
+    required_interior_domain,
 )
+from feedbax.runtime.parameter_constraints import normalize_parameter_constraints
 from feedbax.compiler.builders import (
     _unsupported_component_message,
     build_component,
 )
 from feedbax.compiler.domain_compilers import get_domain_compiler
+from feedbax.compiler.resolution import GraphParameterResolution
 from feedbax.compiler.prototypes import (
     prototypes_from_task_bindings,
 )
@@ -160,6 +167,8 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
                 f"declared inputs={tuple(layout.input_ports)!r}, "
                 f"outputs={tuple(layout.output_ports)!r}"
             )
+        if binding is not None and binding.trainable_override is not None:
+            params = {**params, "trainable": binding.trainable_override}
         nodes[name] = ComponentSpec(
             type=type_id,
             params=params,
@@ -192,27 +201,42 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
     )
 
 
+def _subgraph_leaf_keys(
+    node_name: str, keys: dict[tuple[str, ...], PRNGKeyArray]
+) -> dict[tuple[str, ...], PRNGKeyArray]:
+    if () in keys:
+        raise ValueError(f"Initialization key for composite node {node_name!r} must name a leaf")
+    return keys
+
+
 def _instantiate_graph(
     spec: GraphSpec,
     component_registry: Any,
+    resolution: GraphParameterResolution,
+    *,
+    construction_key: PRNGKeyArray,
+    initialization_keys: Mapping[tuple[str, ...], PRNGKeyArray] | None = None,
 ) -> Graph:
     """Instantiate a resolved graph for the graph compiler."""
+    keys_by_node: dict[str, dict[tuple[str, ...], PRNGKeyArray]] = {}
+    for (node_name, *path), key in (initialization_keys or {}).items():
+        keys_by_node.setdefault(node_name, {})[tuple(path)] = key
     execution_registry = component_registry
     metadata_registry = component_registry
-    component_bindings = {
-        node_name: ComponentBinding(
-            type_id=node.type,
-            param_schema_version=node.param_schema_version,
-        )
-        for node_name, node in spec.nodes.items()
-        if node.param_schema_version is not None
-    }
     spec, authored_array_values = _materialize_graph_component_params(spec)
 
     nodes: dict[str, Component] = {}
+    component_bindings: dict[str, ComponentBinding] = {}
     for node_name, node_spec in spec.nodes.items():
+        node_keys = keys_by_node.pop(node_name, {})
         node_type = node_spec.type
-        node_params, _ = _split_lowering_metadata(node_spec)
+        node_params, lowering_metadata = _split_lowering_metadata(node_spec, metadata_registry)
+        if node_spec.param_schema_version is not None:
+            component_bindings[node_name] = ComponentBinding(
+                type_id=node_type,
+                param_schema_version=node_spec.param_schema_version,
+                trainable_override=lowering_metadata.get("trainable"),
+            )
         required_domain = required_interior_domain(node_type, metadata_registry)
         if required_domain is None and metadata_registry is not execution_registry:
             required_domain = required_interior_domain(node_type, execution_registry)
@@ -259,6 +283,8 @@ def _instantiate_graph(
                 consumer="compile_graph",
             )
             if required_domain != CAUSAL_DOMAIN_ID:
+                if node_keys:
+                    raise ValueError(f"Cannot supply initialization keys to acausal node {node_name!r}")
                 domain = builtin_domain_registry().get(required_domain)
                 if domain is None:
                     raise ValueError(
@@ -288,7 +314,13 @@ def _instantiate_graph(
                 node_type=node_type,
                 consumer="compile_graph",
             )
-            nodes[node_name] = _instantiate_graph(causal_subgraph, metadata_registry)
+            nodes[node_name] = _instantiate_graph(
+                causal_subgraph,
+                metadata_registry,
+                resolution.subgraphs[node_name],
+                construction_key=derive_key(construction_key, "construction", node_name),
+                initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
+            )
             continue
         if spec.subgraphs and node_name in spec.subgraphs:
             causal_subgraph = require_causal_subgraph(
@@ -297,11 +329,38 @@ def _instantiate_graph(
                 node_type=node_type,
                 consumer="compile_graph",
             )
-            nodes[node_name] = _instantiate_graph(causal_subgraph, metadata_registry)
+            nodes[node_name] = _instantiate_graph(
+                causal_subgraph,
+                metadata_registry,
+                resolution.subgraphs[node_name],
+                construction_key=derive_key(construction_key, "construction", node_name),
+                initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
+            )
             continue
+        meta = metadata_registry.get(node_type)
+        if meta is not None and meta.compiler.build_output_prototypes:
+            params = {
+                **params,
+                **{
+                    parameter: resolution.node_outputs[(node_name, port)]
+                    for parameter, port in meta.compiler.build_output_prototypes.items()
+                },
+            }
         delta_A_declaration = authored_array_values.get(node_name, {}).get(("delta_A",))
         if node_type == "StructuralLinearStateSpace" and delta_A_declaration is not None:
             params = {**params, "_authored_delta_A_value_spec": delta_A_declaration}
+        if node_keys:
+            if (
+                node_keys.keys() != {()}
+                or meta is None
+                or "key" not in meta.params.build_context_fields
+            ):
+                raise ValueError(
+                    f"Initialization keys at {node_name!r} must address a leaf accepting a key"
+                )
+            params = {**params, "key": node_keys[()]}
+        elif meta is not None and "key" in meta.params.build_context_fields:
+            params = {**params, "key": derive_key(construction_key, "construction", node_name)}
         component = build_component(
             node_name,
             node_type,
@@ -313,7 +372,6 @@ def _instantiate_graph(
             tuple(component.input_ports) != declared_input_ports
             or tuple(component.output_ports) != declared_output_ports
         ):
-            meta = metadata_registry.get(node_type)
             if meta is not None and meta.dynamic_port_policy is not None:
                 raise DynamicPortPolicyError(
                     f"{node_type} node {node_name!r} runtime ports do not match its "
@@ -323,6 +381,9 @@ def _instantiate_graph(
                     f"spec inputs={declared_input_ports!r}, outputs={declared_output_ports!r}"
                 )
         nodes[node_name] = component
+
+    if keys_by_node:
+        raise ValueError(f"Initialization keys name unknown nodes: {sorted(keys_by_node)}")
 
     wires = tuple(
         Wire(
@@ -343,7 +404,7 @@ def _instantiate_graph(
         name: (binding[0], binding[1]) for name, binding in spec.output_bindings.items()
     }
 
-    graph = Graph(
+    return Graph(
         nodes=nodes,
         wires=wires,
         input_ports=tuple(spec.input_ports),
@@ -352,18 +413,34 @@ def _instantiate_graph(
         output_bindings=output_bindings,
         parameter_constraints=normalize_parameter_constraints(spec.parameter_constraints),
         component_bindings=component_bindings,
+        state_consistency_fn=trial_history_plan(nodes, wires),
+        state_view_fn=feedback_state_view(
+            nodes, wires, input_bindings=input_bindings, output_bindings=output_bindings
+        ),
     )
-    return apply_parameter_constraints(graph)
 
 
 def _split_lowering_metadata(
     node_spec: ComponentSpec,
+    component_registry: Any,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Separate graph-level controls from the component's own parameters."""
     params = dict(node_spec.params)
-    if node_spec.type != "Sum" or "channel_adapter" not in params:
-        return params, {}
-    lowering_metadata = {"channel_adapter": params.pop("channel_adapter")}
+    lowering_metadata = {}
+    if node_spec.type == "Sum" and "channel_adapter" in params:
+        lowering_metadata["channel_adapter"] = params.pop("channel_adapter")
+    if isinstance(params.get("trainable"), bool):
+        declaration = component_registry.get(node_spec.type)
+        if declaration is not None and not _component_owns_trainability(declaration):
+            lowering_metadata["trainable"] = params.pop("trainable")
     return params, lowering_metadata
+
+
+def _component_owns_trainability(declaration: DeclaredComponent) -> bool:
+    contract = declaration.params
+    return (
+        "trainable" in contract.model.model_fields or "trainable" in contract.build_context_fields
+    )
 
 
 def _validate_dynamic_component_ports(

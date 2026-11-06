@@ -169,17 +169,12 @@ from feedbax.contracts.studio_api import (
     GraphValidationResponse,
     SuccessPayload,
     SuccessResponse,
-    TrainingCompleteEvent,
-    TrainingErrorEvent,
-    TrainingLogEvent,
-    TrainingProgressEvent,
-    TrainingResyncEvent,
     TrainingStartPayload,
     TrainingStartResponse,
     TrainingStatusPayload,
     TrainingStatusResponse,
-    TrainingTrajectoryEvent,
     TrainingTrajectoryPayload,
+    TrainingWebSocketEvent,
     WorkerConnectEnvelope,
     WorkerConnectResponse,
     WorkerStatusEnvelope,
@@ -238,6 +233,10 @@ from feedbax.web.api.execution import (
     TaskTrialSampleRequest,
     TaskTrialSampleResponse,
 )
+from feedbax.studio.execution import (
+    StudioNativeTrainingDispatchAccepted,
+    StudioNativeTrainingDispatchRequest,
+)
 from feedbax.web.api.runs import (
     CreateEvalRunRequest,
     EvalRunInfo,
@@ -280,6 +279,9 @@ from feedbax.web.models.trajectory import (
 
 OUTPUT = REPO_ROOT / "web" / "src" / "generated" / "studioContracts.ts"
 NONE_TYPE = type(None)
+
+EVENT_MODELS = get_args(TrainingWebSocketEvent)
+
 
 MODEL_TYPES: list[type[BaseModel]] = [
     SparseCooEntrySpec,
@@ -465,17 +467,14 @@ MODEL_TYPES: list[type[BaseModel]] = [
     GenerateAnalysisResponse,
     AnalysisJobStatusPayload,
     AnalysisJobStatusResponse,
-    TrainingProgressEvent,
-    TrainingLogEvent,
     TrainingTrajectoryPayload,
-    TrainingTrajectoryEvent,
-    TrainingCompleteEvent,
-    TrainingErrorEvent,
-    TrainingResyncEvent,
+    *EVENT_MODELS,
     ProbeResponse,
     ValidationErrorResponse,
     ValidateLossResponse,
     TrainingRunInfo,
+    StudioNativeTrainingDispatchRequest,
+    StudioNativeTrainingDispatchAccepted,
     EvalRunInfo,
     CreateEvalRunRequest,
     TrainingRunCompareRequest,
@@ -506,15 +505,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     InlineTreescopeRequest,
     TreescopeResponse,
     InspectionStatusResponse,
-]
-
-EVENT_MODEL_NAMES = [
-    "TrainingProgressEvent",
-    "TrainingLogEvent",
-    "TrainingTrajectoryEvent",
-    "TrainingCompleteEvent",
-    "TrainingErrorEvent",
-    "TrainingResyncEvent",
 ]
 
 REFINEMENT_HELPERS = """function hasDuplicate(values: readonly unknown[]): boolean {
@@ -618,6 +608,8 @@ CONTRACT_MODEL_NAMES = [
     "GenerateAnalysisResponse",
     "AnalysisJobStatusResponse",
     "TrainingRunInfo",
+    "StudioNativeTrainingDispatchRequest",
+    "StudioNativeTrainingDispatchAccepted",
     "EvalRunInfo",
     "CreateEvalRunRequest",
     "TrainingRunCompareResponse",
@@ -997,11 +989,26 @@ def model_dependencies(model: type[BaseModel]) -> tuple[type[BaseModel], ...]:
 def generate() -> str:
     interfaces = "\n\n".join(emit_interface(model) for model in MODEL_TYPES)
     schemas = "\n\n".join(emit_schema(model) for model in MODEL_TYPES)
-    event_type = " | ".join(EVENT_MODEL_NAMES)
+    acausal_report_defaults = {
+        model.__name__: {
+            name: field.get_default(call_default_factory=True)
+            for name, field in model.model_fields.items()
+            if not field.is_required()
+        }
+        for model in (
+            AcausalGraphSpec,
+            ComponentSpec,
+            GraphMetadata,
+            RootFinderSpec,
+            SolverConfigSpec,
+        )
+    }
+    event_model_names = [model.__name__ for model in EVENT_MODELS]
+    event_type = " | ".join(event_model_names)
     event_schema = (
         f"export type TrainingWebSocketEvent = {event_type};\n\n"
         "export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = "
-        f"z.union([{', '.join(name + 'Schema' for name in EVENT_MODEL_NAMES)}]) "
+        f"z.union([{', '.join(name + 'Schema' for name in event_model_names)}]) "
         "as unknown as z.ZodType<TrainingWebSocketEvent>;"
     )
     contract_entries = "\n".join(f"  {name}: {name}Schema," for name in CONTRACT_MODEL_NAMES)
@@ -1013,6 +1020,7 @@ def generate() -> str:
         "export type JsonPrimitive = string | number | boolean | null;\n"
         "export type ParamValue = JsonPrimitive | unknown[] | Record<string, unknown>;\n\n"
         f"{interfaces}\n\n"
+        f"export const acausalReportDefaults = {json.dumps(acausal_report_defaults, indent=2)};\n\n"
         f"{REFINEMENT_HELPERS}\n"
         f"{schemas}\n\n"
         f"{event_schema}\n\n"

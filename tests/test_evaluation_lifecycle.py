@@ -10,6 +10,7 @@ import pytest
 
 from feedbax.bin import orchestrate
 from feedbax.contracts.evaluation_lifecycle import (
+    EvaluationBatchCompactionEvidence,
     EvaluationLifecycleEvidence,
     EvaluationLifecycleRowOutcome,
 )
@@ -55,6 +56,7 @@ from feedbax.orchestration.revision import resolve_feedbax_revision
 from feedbax.orchestration.stages import StageEngine
 from feedbax.orchestration.state import StageState
 from feedbax.orchestration.state import RowState, RunSetState
+from tests.test_evaluation_orchestration import _assemble, _output_preflight, _request
 
 
 def _execution(tmp_path: Path) -> ExecutionIdentityEnvelope:
@@ -341,6 +343,14 @@ def test_successful_local_evaluation_reclamation_is_terminal_and_idempotent(
     for name in EVALUATION_COLLECTION_OUTPUTS:
         if name != "evaluation-batch-compaction":
             Path(collected_outputs[name]).write_text("{}\n", encoding="utf-8")
+    Path(collected_outputs["evaluation-batch-compaction.json"]).write_text(
+        EvaluationBatchCompactionEvidence(
+            matrix_intent_hash="c" * 64,
+            ordered_batch_ids=("whole-matrix",),
+            declared_leaf_ids=(),
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
 
     class VerifiedAdapter:
         def missing_collection_outputs(self, *_args: object) -> list[str]:
@@ -593,31 +603,15 @@ PLUGIN_REGISTRATION = PluginRegistration(
             },
         ],
     }
-    bundle = _bundle(tmp_path)
-    matrix_path = tmp_path / "matrix.json"
-    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+    request = _request(tmp_path, matrix, output_preflight=_output_preflight(expected_rows=2))
+    bundle = _assemble(request, tmp_path, run_set_id="evaluation-lifecycle")
     row = bundle.rows[0]
-    payload_ref = row.execution.payload.model_copy(
-        update={
-            "schema_id": matrix["schema_id"],
-            "schema_version": matrix["schema_version"],
-            "sha256": hashlib.sha256(matrix_path.read_bytes()).hexdigest(),
-            "uri": str(matrix_path),
-        }
-    )
+    row_id = row.row_id
     row = row.model_copy(
         update={
-            "execution": row.execution.model_copy(update={"payload": payload_ref}),
             "launch": row.launch.model_copy(
                 update={
-                    "command": [
-                        "python",
-                        "-m",
-                        "feedbax",
-                        "matrix-harness",
-                        "--plugin",
-                        "evaluation_lifecycle_plugin",
-                    ],
+                    "command": [*row.launch.command, "--plugin", "evaluation_lifecycle_plugin"],
                     # Simulate a durable bundle authored before raw evaluation
                     # stores were removed from the collection contract.
                     "collect": [*row.launch.collect, "evaluation"],
@@ -635,35 +629,35 @@ PLUGIN_REGISTRATION = PluginRegistration(
     )
     state = engine.run(stop_after_stage="CERTIFY")
 
-    raw_evaluation = bundle.run_set_dir / "rows" / "matrix" / "evaluation"
-    compact_store = bundle.run_set_dir / "rows" / "matrix" / "evaluation-batch-compaction"
+    raw_evaluation = bundle.run_set_dir / "rows" / row_id / "evaluation"
+    compact_store = bundle.run_set_dir / "rows" / row_id / "evaluation-batch-compaction"
     collected_compact_store = (
-        bundle.run_set_dir / "collected" / "matrix" / "evaluation-batch-compaction"
+        bundle.run_set_dir / "collected" / row_id / "evaluation-batch-compaction"
     )
     assert raw_evaluation.is_dir()
     assert compact_store.is_dir()
     assert collected_compact_store.is_dir()
-    assert "evaluation" not in state.rows["matrix"].collected_outputs
-    assert not (bundle.run_set_dir / "collected" / "matrix" / "evaluation").exists()
+    assert "evaluation" not in state.rows[row_id].collected_outputs
+    assert not (bundle.run_set_dir / "collected" / row_id / "evaluation").exists()
 
     external_result = tmp_path / "external-evaluation-matrix-result.json"
     external_result.write_bytes(
-        Path(state.rows["matrix"].collected_outputs["evaluation-matrix-result.json"]).read_bytes()
+        Path(state.rows[row_id].collected_outputs["evaluation-matrix-result.json"]).read_bytes()
     )
     tampered_outputs = {
-        **state.rows["matrix"].collected_outputs,
+        **state.rows[row_id].collected_outputs,
         "evaluation-matrix-result.json": str(external_result),
     }
     tampered_state = state.with_row(
-        "matrix",
-        state.rows["matrix"].model_copy(update={"collected_outputs": tampered_outputs}),
+        row_id,
+        state.rows[row_id].model_copy(update={"collected_outputs": tampered_outputs}),
     ).with_stage(
         "COLLECT",
         state.stage("COLLECT").model_copy(
             update={
                 "outputs": {
                     **state.stage("COLLECT").outputs,
-                    "rows": {"matrix": tampered_outputs},
+                    "rows": {row_id: tampered_outputs},
                 }
             }
         ),
@@ -679,7 +673,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     retained = driver.teardown(bundle, pre_barrier)["successful_evaluation_reclamation"]
     assert retained == [
         {
-            "row_id": "matrix",
+            "row_id": row_id,
             "status": "retained",
             "reclaimed_bytes": 0,
             "reason": "terminal-consumer-barrier-not-complete",
@@ -688,7 +682,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     assert raw_evaluation.is_dir()
 
     reclaimed = driver.teardown(bundle, state)["successful_evaluation_reclamation"]
-    assert reclaimed[0]["row_id"] == "matrix"
+    assert reclaimed[0]["row_id"] == row_id
     assert reclaimed[0]["status"] == "reclaimed"
     assert reclaimed[0]["reclaimed_bytes"] > 0
     assert not raw_evaluation.exists()
@@ -700,21 +694,21 @@ PLUGIN_REGISTRATION = PluginRegistration(
     assert state.stage("CERTIFY").status == "completed"
     assert state.stage("TEARDOWN").status == "completed"
     assert state.stage("REGISTER").status == "pending"
-    assert state.rows["matrix"].status == "completed"
+    assert state.rows[row_id].status == "completed"
     evidence = EvaluationLifecycleEvidence.model_validate_json(
-        Path(state.rows["matrix"].collected_outputs["evaluation-matrix-result.json"]).read_text(
+        Path(state.rows[row_id].collected_outputs["evaluation-matrix-result.json"]).read_text(
             encoding="utf-8"
         )
     )
     assert evidence.ordered_row_ids == ("gain-a", "gain-b")
     certificate = json.loads((bundle.run_set_dir / "conformance.json").read_text())
-    checks = {item["check_id"]: item for item in certificate["rows"]["matrix"]["checks"]}
+    checks = {item["check_id"]: item for item in certificate["rows"][row_id]["checks"]}
     assert checks["evaluation_lifecycle"]["status"] == "pass"
     assert checks["events_terminal"]["status"] == "pass"
     assert certificate["overall"] == "pass"
     assert state.stage("TEARDOWN").outputs["successful_evaluation_reclamation"] == [
         {
-            "row_id": "matrix",
+            "row_id": row_id,
             "status": "already-reclaimed",
             "reclaimed_bytes": 0,
         }

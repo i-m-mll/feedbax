@@ -17,6 +17,9 @@ from jaxtyping import Array, Bool, Float
 
 ObsNormMode = Literal["standardize", "passthrough", "scale", "angle", "phase"]
 
+DEFAULT_OBS_NORM_EPS = 1e-8
+DEFAULT_OBS_NORM_CLIP = 10.0
+
 _MODE_STANDARDIZE = 0
 _MODE_PASSTHROUGH = 1
 _MODE_SCALE = 2
@@ -178,8 +181,8 @@ def maybe_update_obs_norm(
 def normalize_obs(
     state: ObsNormState,
     obs: Float[Array, "... obs_dim"],
-    eps: float = 1e-8,
-    clip: float = 10.0,
+    eps: float = DEFAULT_OBS_NORM_EPS,
+    clip: float = DEFAULT_OBS_NORM_CLIP,
     config: ObsNormConfig | None = None,
 ) -> Array:
     """Normalize observations using running statistics.

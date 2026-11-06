@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useGraphStore } from './graphStore';
+import { GraphUIStateSchema } from '@/generated/studioContracts';
 import {
   isAcausalGraphSpec,
   isCausalGraphSpec,
@@ -413,7 +414,7 @@ describe('graphStore boundary aliases', () => {
         default_params: {},
         domain: CAUSAL_DOMAIN_ID,
         interior_domain: INSPECTOR_DOMAIN_ID,
-        is_composite: true,
+        is_composite: false,
         template_kind: 'display',
       },
     ]);
@@ -777,6 +778,19 @@ describe('graphStore React Flow identity preservation', () => {
     useGraphStore.getState().hydrateGraph(graph, uiState);
   });
 
+  it('persists a display label without editing the executable graph or its occurrence IDs', () => {
+    const before = useGraphStore.getState().capturePersistedGraph();
+    useGraphStore.getState().setNodeLabel('a', 'Sensor gain');
+    const saved = useGraphStore.getState().capturePersistedGraph();
+    expect(saved.graph).toEqual(before.graph);
+
+    const restoredUi = GraphUIStateSchema.parse(JSON.parse(JSON.stringify(saved.uiState)));
+    useGraphStore.getState().hydrateGraph(saved.graph, restoredUi);
+    expect(useGraphStore.getState().nodes.find((node) => node.id === 'a')?.data.label)
+      .toBe('Sensor gain');
+    expect(useGraphStore.getState().edges[0].source).toBe('a');
+  });
+
   it('keeps untouched node and edge references stable for a single-node param edit', () => {
     const before = useGraphStore.getState();
     const previousA = before.nodes.find((node) => node.id === 'a');
@@ -1024,6 +1038,25 @@ describe('graphStore recurrent connections', () => {
         },
       }
     );
+  });
+
+  it('rejects a new wire to an exposed root input', () => {
+    const { uiState } = useGraphStore.getState();
+    const graph = activeCausalGraph();
+    useGraphStore.getState().hydrateGraph(
+      { ...graph, input_ports: ['external'], input_bindings: { external: ['a', 'input'] } },
+      uiState
+    );
+
+    useGraphStore.getState().onConnect({
+      source: 'b',
+      sourceHandle: 'output',
+      target: 'a',
+      targetHandle: 'input',
+    });
+
+    expect(activeCausalGraph().wires).toEqual(graph.wires);
+    expect(activeCausalGraph().input_bindings).toEqual({ external: ['a', 'input'] });
   });
 
   it('marks the newly dropped cycle-closing edge as recurrent', () => {

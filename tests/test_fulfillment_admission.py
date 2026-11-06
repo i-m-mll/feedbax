@@ -31,6 +31,7 @@ from feedbax.contracts.base import (
 )
 from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
+    AnalysisComputation,
     AnalysisRunManifest,
     AnalysisRunSpec,
     EvaluationRunManifest,
@@ -408,8 +409,10 @@ def test_an_unambiguous_digest_prefix_still_resolves(tmp_path: Path) -> None:
 
 def test_analysis_receipt_admits_and_refuses_on_spec_drift(tmp_path: Path) -> None:
     spec = AnalysisRunSpec(analysis_type="testpkg.admission", params={"k": 1})
+    computation = AnalysisComputation(engine_revision="test-engine", recipe_revision="test-recipe")
     manifest = AnalysisRunManifest(
-        id=analysis_run_manifest_id(spec),
+        id=analysis_run_manifest_id(spec, computation=computation),
+        computation=computation,
         status="completed",
         analysis_spec=spec_payload("AnalysisRunSpec", spec.model_dump(mode="json")),
         inputs=list(spec.inputs),
@@ -417,11 +420,12 @@ def test_analysis_receipt_admits_and_refuses_on_spec_drift(tmp_path: Path) -> No
     )
     write_manifest(manifest, root=tmp_path)
 
-    assert admit_analysis_receipt(spec, root=tmp_path).admitted
+    assert admit_analysis_receipt(spec, computation=computation, root=tmp_path).admitted
 
     drifted = AnalysisRunSpec(analysis_type="testpkg.admission", params={"k": 2})
     outcome = admit_analysis_receipt(
         drifted,
+        computation=computation,
         root=tmp_path,
         manifest=manifest,
         path=receipt_path("analysis", manifest.id, root=tmp_path),
@@ -429,6 +433,28 @@ def test_analysis_receipt_admits_and_refuses_on_spec_drift(tmp_path: Path) -> No
     assert not outcome.admitted
     assert "identity_mismatch" in outcome.codes
     assert "spec_mismatch" in outcome.codes
+
+
+def test_analysis_receipt_requires_matching_computation_even_at_the_expected_id(
+    tmp_path: Path,
+) -> None:
+    spec = AnalysisRunSpec(analysis_type="testpkg.admission")
+    computation = AnalysisComputation(engine_revision="test-engine", recipe_revision="test-recipe")
+    manifest = AnalysisRunManifest(
+        id=analysis_run_manifest_id(spec, computation=computation),
+        status="completed",
+        analysis_spec=spec_payload("AnalysisRunSpec", spec.model_dump(mode="json")),
+        computation=AnalysisComputation(engine_revision="test-engine", recipe_revision="old-recipe"),
+    )
+    path = write_manifest(manifest, root=tmp_path)
+
+    mismatched = admit_analysis_receipt(spec, computation=computation, root=tmp_path)
+    assert not mismatched.admitted
+    assert "computation_mismatch" in mismatched.codes
+
+    without_expected = admit_analysis_receipt(spec, root=tmp_path, path=path)
+    assert not without_expected.admitted
+    assert "computation_authority_absent" in without_expected.codes
 
 
 def test_report_receipt_admits_and_refuses_on_parent_drift(tmp_path: Path) -> None:

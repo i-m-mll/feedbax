@@ -1,6 +1,6 @@
 """Shared scan harness for multi-timestep rollouts.
 
-``Graph._call_with_iteration`` and ``iterate_component`` drive the same
+``Graph._scan_rollout`` and ``iterate_component`` drive the same
 three-branch scan — accumulate a streaming loss, stack a filtered state
 history, or just stack outputs. They differ only in how one timestep is
 evaluated and in whether the scan carry threads extra per-step values
@@ -82,7 +82,7 @@ def scan_rollout(
     keys: PRNGKeyArray,  # shape (n_steps, ...)
     n_steps: int,
     *,
-    state_view_fn: Callable[[State], PyTree | None],
+    state_view_fn: Callable[[State, PyTree], PyTree | None],
     init_step_carry: PyTree = None,
     checkpoint: bool = False,
     save_history: bool = True,
@@ -99,8 +99,7 @@ def scan_rollout(
         step_inputs: Per-step inputs, time-major.
         keys: Per-step PRNG keys.
         n_steps: Number of timesteps; a static Python int.
-        state_view_fn: Maps a state to its state view, or ``None`` when the
-            component exposes no view.
+        state_view_fn: Projects state and step carry for history and losses.
         init_step_carry: Initial value of the per-step carry, ``None`` when
             the caller threads no extra values. ``None`` is an empty PyTree
             node, so it adds no leaves to the scan carry.
@@ -120,7 +119,7 @@ def scan_rollout(
     # --- streaming-loss path: accumulate scalar, skip history storage ---
     if streaming_loss_fn is not None:
         streaming_order = getattr(streaming_loss_fn, "streaming_order", 0)
-        init_state_view = state_view_fn(init_state)
+        init_state_view = state_view_fn(init_state, init_step_carry)
         state_window = init_streaming_state_window(init_state_view, streaming_order)
         loss_shape = eqx.filter_eval_shape(streaming_loss_fn, state_window, jnp.asarray(0))
         init_loss = jnp.zeros((), dtype=loss_shape.dtype)
@@ -131,7 +130,7 @@ def scan_rollout(
 
             outputs, state, step_carry = step_fn(step_input, state, step_carry, step_key, t)
 
-            state_view = state_view_fn(state)
+            state_view = state_view_fn(state, step_carry)
             loss_input = state_view
             if streaming_order > 0:
                 state_window = update_streaming_state_window(state_window, state_view)
@@ -152,7 +151,7 @@ def scan_rollout(
     # --- standard paths (history or no-history) ---
     init_state_view = None
     if save_history:
-        init_state_view = state_view_fn(init_state)
+        init_state_view = state_view_fn(init_state, init_step_carry)
         if init_state_view is None:
             save_history = False
 
@@ -163,7 +162,7 @@ def scan_rollout(
         outputs, state, step_carry = step_fn(step_input, state, step_carry, step_key, t)
 
         if save_history:
-            state_view = state_view_fn(state)
+            state_view = state_view_fn(state, step_carry)
             if state_view is None:
                 return (state, step_carry), (outputs, None)
             state_view = eqx.filter(state_view, state_filter)

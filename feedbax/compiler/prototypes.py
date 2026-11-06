@@ -24,7 +24,14 @@ from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.component_registry.prototypes import array_prototype, prototype_params
 
 
-STATEFUL_PROTOTYPE_TYPES = {"Channel", "DelayLine", "FirstOrderFilter"}
+STATEFUL_PROTOTYPE_TYPES = {
+    "BandPassFilter",
+    "Channel",
+    "DelayLine",
+    "FirstOrderFilter",
+    "HighPassFilter",
+    "RateLimiter",
+}
 
 
 class DerivedDimensionError(ValueError):
@@ -48,11 +55,11 @@ class DerivedDimensionConflict(DerivedDimensionError):
     """Raised when a declared builder dimension contradicts the derived value."""
 
 
-def array_proto_from_shape(shape: Any) -> jax.Array | None:
+def array_proto_from_shape(shape: Any, *, dtype: Any = None) -> jax.Array | None:
     if not isinstance(shape, (list, tuple)):
         return None
     try:
-        return jnp.zeros(tuple(int(dim) for dim in shape))
+        return jnp.zeros(tuple(int(dim) for dim in shape), dtype=dtype)
     except (TypeError, ValueError):
         return None
 
@@ -65,6 +72,19 @@ def shape_from_proto(proto: Any) -> list[int] | None:
 
 def proto_from_value(value: Any) -> Any:
     return jt.map(lambda x: jnp.zeros_like(jnp.asarray(x)), value)
+
+
+def subgraph_input_prototypes(
+    node_name: str,
+    subgraph: GraphSpec,
+    parent_inputs: Mapping[tuple[str, str], Any],
+) -> dict[tuple[str, str], Any]:
+    """Map parent node ports to the child's external input prototypes."""
+    return {
+        ("__graph__", port): parent_inputs[(node_name, port)]
+        for port in subgraph.input_ports
+        if (node_name, port) in parent_inputs
+    }
 
 
 def _task_sample_shape(shape: Any) -> list[int] | None:
@@ -122,9 +142,6 @@ def prototypes_from_task_bindings(task_binding_spec: Any) -> dict[tuple[str, str
         item = data_by_id.get(str(source_id))
         if item is None or target_node is None or target_port is None:
             continue
-        role = _field(binding, "role") or _field(item, "role")
-        if role == "component_parameter" and _task_data_temporality(item) == "constant":
-            continue
         expected_shape = (
             getattr(item, "expected_shape", None)
             if not isinstance(item, Mapping)
@@ -134,34 +151,6 @@ def prototypes_from_task_bindings(task_binding_spec: Any) -> dict[tuple[str, str
         if sample_shape is not None:
             prototypes[(str(target_node), str(target_port))] = jnp.zeros(tuple(sample_shape))
     return prototypes
-
-
-def _field(value: Any, name: str, default: Any = None) -> Any:
-    if isinstance(value, Mapping):
-        return value.get(name, default)
-    return getattr(value, name, default)
-
-
-def _metadata(value: Any) -> dict[str, Any]:
-    metadata = _field(value, "metadata", {})
-    return metadata if isinstance(metadata, dict) else {}
-
-
-def _task_data_temporality(data: Any) -> str:
-    metadata = _metadata(data)
-    explicit = metadata.get("temporality") or metadata.get("temporal_support")
-    if isinstance(explicit, str):
-        if explicit in {"trajectory", "materialized_trajectory", "epoch_masked_signal"}:
-            return "time_varying"
-        if explicit in {"constant", "trial_constant", "initial", "per_trial"}:
-            return "constant"
-    shape = _field(data, "expected_shape")
-    value_spec = _field(data, "value_spec")
-    if shape is None:
-        shape = _field(value_spec, "shape")
-    if isinstance(shape, (list, tuple)) and shape and shape[0] == "time":
-        return "time_varying"
-    return "constant"
 
 
 def explicit_proto(
@@ -191,6 +180,12 @@ def validate_or_add_input_shape(
             f"{node_type} node {node_name!r} port 'input' requires an input prototype. "
             "Connect it to a source with a known output shape or provide input_shape."
         )
+    if (
+        node_type == "Channel"
+        and not hasattr(proto, "shape")
+        and all(next_params.get(field) is None for field in ("input_shape", "input_dtype"))
+    ):
+        return next_params
     try:
         inferred = prototype_params(proto)
     except ValueError as exc:
@@ -308,16 +303,11 @@ def output_prototypes_for_node(
             node_type=node_type,
             consumer="output_prototypes_for_node",
         )
-        nested_inputs = {
-            (node, port): input_prototypes[(node_name, graph_port)]
-            for graph_port, (node, port) in subgraph.input_bindings.items()
-            if (node_name, graph_port) in input_prototypes
-        }
         from feedbax.compiler.resolution import resolve_graph_parameters
 
         return resolve_graph_parameters(
             subgraph,
-            nested_inputs,
+            subgraph_input_prototypes(node_name, subgraph, input_prototypes),
             component_registry,
         ).graph_outputs
 

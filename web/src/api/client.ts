@@ -10,6 +10,7 @@ import {
   type PenzaiInspectorPayload,
   type PenzaiNodeRequest,
   type SelectionSpec,
+  type StudioNativeTrainingDispatchRequest,
   type StudioPersistenceDocument,
   type WorkspaceDocument,
 } from "@/generated/studioContracts";
@@ -209,28 +210,16 @@ export async function fetchPenzaiBuilders(): Promise<PenzaiBuilderInfo[]> {
   return response.data.builders;
 }
 
-export async function compilePenzaiNode(
-  graphId: string | null | undefined,
-  payload: PenzaiNodeRequest,
-): Promise<DomainCompileReport> {
-  const path = graphId
-    ? `/api/graphs/${encodeURIComponent(graphId)}/nodes/penzai/compile`
-    : "/api/penzai/compile";
-  return parseContract(
-    "DomainCompileReport",
-    await requestJson(path, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
-  );
-}
-
 export async function inspectPenzaiNode(
+  graphId: string | null,
   payload: PenzaiNodeRequest,
 ): Promise<PenzaiInspectorPayload> {
+  const path = graphId
+    ? `/api/graphs/${encodeURIComponent(graphId)}/nodes/penzai/inspect`
+    : "/api/penzai/inspect";
   const response = parseContract(
     "PenzaiInspectorResponse",
-    await requestJson("/api/penzai/inspect", {
+    await requestJson(path, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -348,6 +337,16 @@ export async function prepareStudioTrainingExecution(payload: {
       body: JSON.stringify(payload),
     },
   );
+}
+
+export async function dispatchStudioNativeTraining(payload: StudioNativeTrainingDispatchRequest) {
+  const path = '/api/provider/studio/training/dispatch';
+  try {
+    const wire = await requestJson(path, { method: 'POST', body: JSON.stringify(payload) });
+    return parseContract('StudioNativeTrainingDispatchAccepted', wire);
+  } catch (error) {
+    throw asApiRequestError(error, path, 'Training dispatch response did not match the Studio contract.');
+  }
 }
 
 export async function previewStudioEvaluationMatrix(payload: {

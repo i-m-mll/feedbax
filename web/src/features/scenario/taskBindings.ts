@@ -1,3 +1,4 @@
+import { findCausalInputDriver } from '@/features/graph/inputDrivers';
 import { isCausalGraphSpec, type GraphSpec, type GraphSubgraphSpec } from '@/types/graph';
 import { StudioTaskBindingSpecSchema } from '@/generated/studioContracts';
 import type { TaskSpec } from '@/types/training';
@@ -11,11 +12,10 @@ import type {
 import { delayedReachTaskDataValueSpec, VALUE_SCHEMA_VERSION } from './taskTimeline';
 
 export const TASK_BINDING_SCHEMA_VERSION: StudioTaskBindingSpec['schema_version'] =
-  'feedbax.spec.studio.task_bindings.v2';
+  'feedbax.spec.studio.task_bindings.v3';
 export const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set([
   'model_input',
   'graph_input',
-  'component_parameter',
 ]);
 
 export const TASK_COMPONENT_TYPES = new Set([
@@ -140,17 +140,7 @@ function genericTaskData(): StudioTaskDataSpec[] {
     value: { dtype: 'float32', shape: ['state'], units: null, frame: null },
     metadata: { temporal_support: 'initial' },
   });
-  const interveneData = taskDataSpec({
-    id: 'intervene',
-    label: 'Intervention',
-    kind: 'intervention',
-    role: 'intervention',
-    path: 'intervene',
-    bindable: false,
-    value: { dtype: 'float32', shape: ['time', 'channels'], units: null, frame: 'task_time' },
-    metadata: { temporal_support: 'trajectory' },
-  });
-  return [inputsData, targetsData, initsData, interveneData];
+  return [inputsData, targetsData, initsData];
 }
 
 function delayedReachTaskData(): StudioTaskDataSpec[] {
@@ -219,7 +209,7 @@ function delayedReachTaskData(): StudioTaskDataSpec[] {
         task_data_surface: 'protocol',
       },
     }),
-    ...genericTaskData().filter((data) => data.id === 'inits' || data.id === 'intervene'),
+    ...genericTaskData().filter((data) => data.id === 'inits'),
   ];
   return data.map((item) => ({
     ...item,
@@ -259,13 +249,6 @@ export function scopedTaskBindingSpec(
 
 export function taskBindingId(dataId: string, nodeId: string, port: string): string {
   return `task:${dataId}->${nodeId}:${port}`;
-}
-
-export function taskBindingTargetKey(
-  targetNodeId: string,
-  targetPort: string
-): string {
-  return `${targetNodeId}.${targetPort}`;
 }
 
 export function taskDataEntityId(
@@ -534,6 +517,20 @@ export function removeTaskBindingsForTargetNodes(
   return bindings.length === spec.bindings.length ? spec : { ...spec, bindings };
 }
 
+export function findTaskBinding(
+  taskBindingSpec: StudioTaskBindingSpec | null | undefined,
+  targetNodeId: string,
+  targetPort: string,
+  ignoredBindingId?: string
+): StudioTaskBinding | undefined {
+  return taskBindingSpec?.bindings.find(
+    (binding) =>
+      binding.id !== ignoredBindingId &&
+      binding.target_node_id === targetNodeId &&
+      binding.target_port === targetPort
+  );
+}
+
 export function targetInputOccupied(
   graph: GraphSpec,
   taskBindingSpec: StudioTaskBindingSpec | null | undefined,
@@ -541,15 +538,8 @@ export function targetInputOccupied(
   targetPort: string,
   ignoredBindingId?: string
 ): boolean {
-  return (
-    graph.wires.some(
-      (wire) => wire.target_node === targetNodeId && wire.target_port === targetPort
-    ) ||
-    (taskBindingSpec?.bindings ?? []).some(
-      (binding) =>
-        binding.id !== ignoredBindingId &&
-        taskBindingTargetKey(binding.target_node_id, binding.target_port) ===
-          taskBindingTargetKey(targetNodeId, targetPort)
-    )
+  return Boolean(
+    findCausalInputDriver(graph, targetNodeId, targetPort, (driver) => driver.kind === 'wire') ||
+    findTaskBinding(taskBindingSpec, targetNodeId, targetPort, ignoredBindingId)
   );
 }

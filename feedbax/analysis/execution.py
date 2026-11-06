@@ -11,7 +11,7 @@ from feedbax._vendor.jax_cookbook.progress import piter
 from jaxtyping import PyTree
 
 from feedbax.analysis._dependencies import compute_dependency_results
-from feedbax.analysis.analysis import AbstractAnalysis, logger
+from feedbax.analysis.analysis import AbstractAnalysis, implements_analysis_method, logger
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.types import AnalysisInputData
 from feedbax.config import PATHS
@@ -99,7 +99,7 @@ def perform_all_analyses(
         inputs: dict[str, Any],
     ) -> tuple[AbstractAnalysis, Any, PyTree[go.Figure] | None]:
         result = inputs.pop("result")
-        if "make_figs" not in analysis.__class__.__dict__:
+        if not implements_analysis_method(analysis, "make_figs"):
             logger.debug(
                 "Skipping figure generation for %s (no make_figs implementation)",
                 analysis_key,

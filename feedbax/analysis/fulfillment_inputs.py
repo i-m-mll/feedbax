@@ -30,6 +30,7 @@ from feedbax.analysis.fulfillment_adapters import (
     node_execution_context,
     report_execution_spec,
 )
+from feedbax.analysis.evaluation import evaluation_states_cache_matches
 from feedbax.analysis.manifest_inputs import (
     ResolvedManifestInput,
     is_authenticated_manifest_ref,
@@ -106,10 +107,14 @@ def stage_node_inputs(
             _stage_root_artifact(artifact, root=root, destination=destination)
         if needs_states and isinstance(manifest, EvaluationRunManifest):
             cache = evaluation_states_cache_path(manifest.id, root=root)
-            if cache.is_file():
+            try:
                 _stage_file(cache, root=root, destination=destination)
-            elif not any(a.role == EVALUATION_STATES_ARTIFACT_ROLE for a in manifest.artifacts):
-                # The analysis executor rederives cache-only states when their cache is absent.
+            except FileNotFoundError:
+                pass
+            if not any(a.role == EVALUATION_STATES_ARTIFACT_ROLE for a in manifest.artifacts) and (
+                not evaluation_states_cache_matches(destination / cache.relative_to(root), manifest)
+            ):
+                # The executor needs the upstream inputs to regenerate an unusable cache.
                 run_spec = EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline)
                 for upstream in evaluation_expected_parents(run_spec):
                     stage_parent(upstream)

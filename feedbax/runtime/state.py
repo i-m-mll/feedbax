@@ -5,7 +5,6 @@
 """
 
 from collections.abc import Callable
-from copy import deepcopy
 
 import logging
 from typing import (
@@ -15,9 +14,7 @@ from typing import (
     TypeVar,
 )
 
-import equinox as eqx
 from equinox import Module, field
-import jax
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import Array, Float, PyTree
@@ -69,7 +66,7 @@ def clip_state(
     bounds: StateBounds[StateT],
     state: StateT,
 ) -> StateT:
-    """Returns a state clipped to the given bounds.
+    """Clip values outside the bounds, preserving dtypes and NaNs.
 
     Arguments:
         bounds: The lower and upper bounds to clip the state to.
@@ -77,32 +74,27 @@ def clip_state(
     """
 
     if bounds.low is not None:
-        state = _clip_state_to_bound(
-            state, bounds.low, bounds.filter_spec.low, jnp.greater
-        )
+        state = _clip_state_to_bound(state, bounds.low, jnp.less)
     if bounds.high is not None:
-        state = _clip_state_to_bound(
-            state, bounds.high, bounds.filter_spec.high, jnp.less
-        )
+        state = _clip_state_to_bound(state, bounds.high, jnp.greater)
     return state
 
 
 def _clip_state_to_bound(
     state: StateT,
     bound: StateT,
-    filter_spec: PyTree[bool],
-    op: Callable,
+    outside: Callable[[Array, Array], Array],
 ) -> StateT:
     """A single (one-sided) clipping operation."""
-    states_to_clip, states_other = eqx.partition(
-        state,
-        filter_spec,
-    )
+    def clip_leaf(limit, value):
+        if limit is None:
+            return value
+        limit = jnp.asarray(limit, dtype=jnp.result_type(value))
+        return jnp.where(outside(value, limit), limit, value)
 
-    states_clipped = jt.map(
-        lambda x, y: jnp.where(op(x, y), x, y),
-        states_to_clip,
+    return jt.map(
+        clip_leaf,
         bound,
+        state,
+        is_leaf=lambda x: x is None,
     )
-
-    return eqx.combine(states_other, states_clipped)

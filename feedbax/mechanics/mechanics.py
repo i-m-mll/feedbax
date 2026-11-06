@@ -14,6 +14,7 @@ Supports two execution paths:
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Optional, Type
 
 import diffrax as dfx  # type: ignore
@@ -24,47 +25,21 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax._ode import ode_init, ode_step, restore_storage_dtypes
+from feedbax._ode import ode_init, restore_storage_dtypes
 from feedbax.mechanics.dynamics import LinearSystem
 from feedbax.runtime.graph import Component
-from feedbax.mechanics.backend import PhysicsBackend, PhysicsState
+from feedbax.mechanics.backend import (
+    PhysicsBackend,
+    PhysicsState,
+    _mechanics_control_dt,
+    _substep_count,
+    step_plant_ode,
+)
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.runtime.state import CartesianState
 
 
 logger = logging.getLogger(__name__)
-
-
-def _warm_up_cached_properties(obj: object) -> None:
-    """Force evaluation of all ``cached_property`` attributes on an object tree.
-
-    Some modules (e.g. ``PointMass``) use ``functools.cached_property`` to
-    lazily compute matrices. When these modules are captured in closures
-    traced by JAX (``lax.scan``, ``lax.fori_loop``, ``eqx.filter_checkpoint``),
-    the first access inside the traced context creates a mutable side effect
-    (setting the cached value on the object), causing an
-    ``UnexpectedTracerError``. Calling this function before entering the
-    traced context materializes all cached values, avoiding the issue.
-    """
-    from functools import cached_property as _cached_property
-
-    cls = type(obj)
-    for name in dir(cls):
-        if isinstance(getattr(cls, name, None), _cached_property):
-            try:
-                getattr(obj, name)
-            except Exception:
-                pass
-
-    # Recurse into Equinox module fields
-    if hasattr(obj, '__dataclass_fields__'):
-        for field_name in obj.__dataclass_fields__:
-            try:
-                child = getattr(obj, field_name)
-            except Exception:
-                continue
-            if isinstance(child, Module):
-                _warm_up_cached_properties(child)
 
 
 class MechanicsState(Module):
@@ -112,7 +87,7 @@ class Mechanics(Component):
     def __init__(
         self,
         plant: AbstractPlant,
-        dt: float,
+        dt: float | None = None,
         solver_type: Type[dfx.AbstractSolver] = dfx.Euler,
         *,
         backend: Optional[PhysicsBackend] = None,
@@ -123,7 +98,9 @@ class Mechanics(Component):
 
         Args:
             plant: The plant model to integrate.
-            dt: Control timestep in seconds.
+            dt: Control timestep in seconds. Required without a backend.
+                With a backend, defaults to its control period and must
+                agree with that period if provided.
             solver_type: Diffrax solver class (legacy path). Ignored when
                 ``backend`` is provided.
             backend: Optional physics backend. When provided, stepping is
@@ -136,7 +113,11 @@ class Mechanics(Component):
         """
         self.plant = plant
         self.solver = solver_type()
-        self.dt = dt
+        if dt is None:
+            if backend is None:
+                raise ValueError("Mechanics.dt is required without a backend")
+            dt = backend.control_dt
+        self.dt = _mechanics_control_dt(dt, backend)
         self.backend = backend
         self.remat_substep = remat_substep
 
@@ -144,6 +125,7 @@ class Mechanics(Component):
             key = jax.random.PRNGKey(0)
 
         if backend is not None:
+            _substep_count(backend.control_dt, backend.sub_dt, backend.n_substeps)
             # Backend path: initialize via backend
             physics_state = backend.init_state(plant, key=key)
             initial_state = MechanicsState(
@@ -169,6 +151,26 @@ class Mechanics(Component):
     def _term(self) -> dfx.AbstractTerm:
         return dfx.ODETerm(self.plant.vector_field)
 
+    def state_consistency_update(self, state: State) -> State:
+        return self.replace_state_value(state, ("effector",), self.state_view(state).effector)
+
+    def replace_state_value(self, state: State, path: tuple[str, ...], value: PyTree) -> State:
+        """Apply an explicit Cartesian pose to both the effector and the plant."""
+        if path not in (("effector",), ("effector", "pos"), ("effector", "vel")):
+            return super().replace_state_value(state, path, value)
+
+        mechanics_state = self.state_view(state)
+        effector = value
+        if len(path) == 2:
+            effector = replace(mechanics_state.effector, **{path[1]: value})
+        effector = restore_storage_dtypes(effector, mechanics_state.effector)
+        skeleton = self.plant.skeleton.inverse_kinematics(effector)
+        skeleton = restore_storage_dtypes(skeleton, mechanics_state.plant.skeleton)
+        plant_state = replace(mechanics_state.plant, skeleton=skeleton)
+        return state.set(
+            self.state_index, replace(mechanics_state, plant=plant_state, effector=effector)
+        )
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -189,6 +191,7 @@ class Mechanics(Component):
         Returns:
             Tuple of (outputs dict, updated State).
         """
+        _mechanics_control_dt(self.dt, self.backend)
         if self.backend is not None:
             return self._call_backend(inputs, state, key=key)
         return self._call_legacy(inputs, state, key=key)
@@ -200,7 +203,7 @@ class Mechanics(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        """Legacy Diffrax stepping path (unchanged from original).
+        """Single-step Diffrax path for Mechanics without an explicit backend.
 
         Args:
             inputs: Dict with ``"force"`` key.
@@ -213,7 +216,7 @@ class Mechanics(Component):
         mechanics_state: MechanicsState = state.get(self.state_index)
         force = inputs["force"]
 
-        # Convert effector force back into configuration forces, if applicable.
+        # Sample the endpoint load for this control step.
         skeleton_state = self.plant.skeleton.update_state_given_effector_force(
             mechanics_state.effector.force,
             mechanics_state.plant.skeleton,
@@ -225,11 +228,9 @@ class Mechanics(Component):
             skeleton_state,
         )
 
-        # Kinematics update (non-ODE ops).
-        plant_state = self.plant.kinematics_update(force, plant_state, key=key)
-
-        plant_state, solver_state = ode_step(
-            self.solver, self._term, self.dt, plant_state, force, mechanics_state.solver,
+        plant_state, solver_state = step_plant_ode(
+            self.plant, self.solver, self.dt, plant_state, force, mechanics_state.solver,
+            key=key,
             storage_like=mechanics_state.plant,
         )
 
@@ -262,10 +263,11 @@ class Mechanics(Component):
             Tuple of (outputs dict, updated State).
         """
         backend = self.backend
+        n_substeps = _substep_count(backend.control_dt, backend.sub_dt, backend.n_substeps)
         mechanics_state: MechanicsState = state.get(self.state_index)
         action = inputs["force"]
 
-        # Convert effector force back into configuration forces, if applicable.
+        # Sample the endpoint load for this control step.
         skeleton_state = self.plant.skeleton.update_state_given_effector_force(
             mechanics_state.effector.force,
             mechanics_state.plant.skeleton,
@@ -284,15 +286,6 @@ class Mechanics(Component):
             aux=mechanics_state.solver,
         )
 
-        # Warm up cached_property attributes on the plant before entering
-        # JAX-traced code (scan/fori_loop/checkpoint). Modules like PointMass
-        # use functools.cached_property for matrices (A, B, etc.), which
-        # creates side effects when first accessed inside a traced context.
-        # Accessing them here (outside the transform) materializes the cache
-        # so traced code finds them already populated.
-        # Bug: 928d494 — prevents UnexpectedTracerError from cached_property
-        _warm_up_cached_properties(self.plant)
-
         plant = self.plant
 
         def do_substep(carry: PhysicsState) -> PhysicsState:
@@ -303,15 +296,14 @@ class Mechanics(Component):
         if self.remat_substep:
             do_substep = eqx.filter_checkpoint(do_substep)
 
-        # Run substeps via fori_loop (compatible with cached_property modules)
-        if backend.n_substeps == 1:
+        if n_substeps == 1:
             physics_state = do_substep(physics_state)
         else:
             def _fori_body(_, carry):
                 return do_substep(carry)
 
             physics_state = jax.lax.fori_loop(
-                0, backend.n_substeps, _fori_body, physics_state,
+                0, n_substeps, _fori_body, physics_state,
             )
 
         # Extract effector via backend

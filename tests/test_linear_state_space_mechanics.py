@@ -258,3 +258,86 @@ def test_state_feedback_selector_graph_spec_round_trips() -> None:
     assert selector.params["state_slices"]["position"]["delay"] == 1
     assert selector.params["channels"][0]["transform"] == "target_minus"
     assert selector.params["output_size"] == 4
+
+
+def test_state_feedback_selector_detaches_configuration_and_graph_exports() -> None:
+    state_slices = {
+        "delayed": {"start": 0, "stop": 2, "delay": 1, "block_size": 4, "offset": 1},
+        "reordered": {"indices": [3, 0, 2]},
+        "compact": [0, 1],
+    }
+    channels = [
+        {"slice": "delayed", "transform": "target_relative", "target_slice": [1, 3]},
+        {"state_slice": "reordered", "transform": "state_minus_target", "target_slice": [4, 0, 2]},
+        {"slice": "compact"},
+    ]
+    selector = StateFeedbackSelector(state_slices=state_slices, channels=channels)
+    graph = Graph(
+        nodes={"selector": selector},
+        input_ports=("state", "target"),
+        output_ports=("feedback",),
+        input_bindings={"state": ("selector", "state"), "target": ("selector", "target")},
+        output_bindings={"feedback": ("selector", "feedback")},
+    )
+    expected_slices = {
+        "delayed": {"start": 0, "stop": 2, "delay": 1, "block_size": 4, "offset": 1},
+        "reordered": {"indices": [3, 0, 2]},
+        "compact": [0, 1],
+    }
+    exported_params = selector.to_params()
+    exported_spec = graph_to_spec(graph)
+
+    state_slices["delayed"]["delay"] = 0
+    state_slices["reordered"]["indices"][0] = 1
+    state_slices["compact"][0] = 1
+    channels[0]["target_slice"][0] = 0
+    exported_params["state_slices"]["delayed"]["offset"] = 0
+    exported_params["channels"][1]["target_slice"][0] = 1
+    exported_spec.nodes["selector"].params["state_slices"]["delayed"]["block_size"] = 2
+    exported_spec.nodes["selector"].params["channels"][0]["target_slice"][1] = 4
+
+    restored = GraphSpec.model_validate_json(graph_to_spec(graph).model_dump_json())
+    params = restored.nodes["selector"].params
+    assert params["state_slices"] == expected_slices
+    assert params["channels"] == [
+        {"slice": "delayed", "transform": "target_relative", "target_slice": [1, 3]},
+        {"state_slice": "reordered", "transform": "state_minus_target", "target_slice": [4, 0, 2]},
+        {"slice": "compact"},
+    ]
+    assert selector.to_params()["channels"] == params["channels"]
+    assert params["output_size"] == 6
+
+    compiled = spec_to_graph(restored, ComponentRegistry(load_user_components=False))
+    inputs = {
+        "state": jnp.array([[1, 2, 3, 4, 10, 20, 30], [2, 4, 6, 8, 20, 40, 60]]),
+        "target": jnp.array([[1, 24, 35, 9, 13], [2, 42, 67, 18, 26]]),
+    }
+    expected_feedback = jnp.array([[4, 5, -9, 0, -32, 1], [2, 7, -18, 0, -61, 2]])
+    for candidate in (graph, compiled):
+        outputs, _, _ = candidate.rollout_with_trace(
+            inputs,
+            init_state_from_component(candidate),
+            key=jax.random.PRNGKey(0),
+            n_steps=2,
+            trace=(),
+        )
+        assert jnp.array_equal(outputs["feedback"], expected_feedback)
+
+
+def test_state_feedback_selector_default_exports_are_detached() -> None:
+    selector = StateFeedbackSelector()
+    exported_slice = selector.to_params()["state_slices"]["position"]
+    original_start = exported_slice["start"]
+    try:
+        exported_slice["start"] = 1
+        another_selector = StateFeedbackSelector()
+        for candidate in (selector, another_selector):
+            assert candidate.to_params()["state_slices"]["position"]["start"] == 0
+            outputs, _ = candidate(
+                {"state": jnp.array([11, 22, 33, 44])},
+                init_state_from_component(candidate),
+                key=jax.random.PRNGKey(0),
+            )
+            assert jnp.array_equal(outputs["feedback"], jnp.array([11, 22, 33, 44]))
+    finally:
+        exported_slice["start"] = original_start

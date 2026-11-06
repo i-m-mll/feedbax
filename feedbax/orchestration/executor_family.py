@@ -97,7 +97,7 @@ class NativeTrainingExecutorAdapter:
         update_budget: int | None = None,
         native_context_injector: Callable[..., list[str]] | None = None,
     ) -> tuple[list[str], RunRowSpec]:
-        del bundle, inputs_root, repo_root
+        del inputs_root, repo_root
         bound, bound_row = bind_native_execution_command(
             command,
             row=row,
@@ -110,6 +110,7 @@ class NativeTrainingExecutorAdapter:
             context_injector(
                 bound,
                 row=bound_row,
+                run_set_id=bundle.run_set_id,
                 environment_fingerprint=environment_fingerprint,
                 collection_root=collection_root,
             ),
@@ -244,13 +245,7 @@ class EvaluationMatrixExecutorAdapter:
             Path(collected["evaluation-worker-topology.json"]).read_text(encoding="utf-8"),
         )
         compaction_path = Path(collected["evaluation-batch-compaction.json"])
-        compaction = EvaluationBatchCompactionEvidence.model_validate(
-            migrate_structured_spec_payload(
-                "EvaluationBatchCompactionEvidence",
-                strict_json_loads(compaction_path.read_text(encoding="utf-8")),
-                path=str(compaction_path),
-            ).payload
-        )
+        compaction = load_evaluation_compaction_evidence(compaction_path)
         plan = EvaluationMatrixBatchPlan.model_validate(
             migrate_structured_spec_payload(
                 "EvaluationMatrixBatchPlan",
@@ -284,6 +279,11 @@ class EvaluationMatrixExecutorAdapter:
             or compaction.declared_leaf_ids != tuple(item.leaf_id for item in plan.consumers)
             or compaction.required_leaf_ids_by_batch
             != {batch.batch_id: tuple(batch.required_leaf_ids or ()) for batch in plan.batches}
+            or (compaction.retention is not None and compaction.retention.policy != plan.retention)
+            or any(
+                reclamation.ordered_row_ids != batch.ordered_row_ids
+                for reclamation, batch in zip(compaction.reclamations, plan.batches)
+            )
         ):
             raise ExecutorFamilyError(
                 "evaluation compaction evidence drifted from the authenticated batch plan"
@@ -291,10 +291,9 @@ class EvaluationMatrixExecutorAdapter:
         provider = ImmutableArtifactBlobProvider(
             compaction_path.parent / "evaluation-batch-compaction"
         )
-        for reclamation in compaction.reclamations:
-            for acknowledgement in reclamation.leaf_acknowledgements:
-                provider.get_bytes(acknowledgement.fragment)
-                provider.get_bytes(acknowledgement.merge_state)
+        from feedbax.analysis.evaluation_compaction import verify_evaluation_compaction_intermediates
+
+        verify_evaluation_compaction_intermediates(provider, compaction)
         for terminal in compaction.terminal_products:
             provider.get_bytes(terminal)
         if evidence.executor_family != self.family:
@@ -376,6 +375,16 @@ def evaluation_matrix_ordered_union(
     )
 
 
+def load_evaluation_compaction_evidence(path: Path) -> EvaluationBatchCompactionEvidence:
+    return EvaluationBatchCompactionEvidence.model_validate(
+        migrate_structured_spec_payload(
+            "EvaluationBatchCompactionEvidence",
+            strict_json_loads(path.read_text(encoding="utf-8")),
+            path=str(path),
+        ).payload
+    )
+
+
 def finalize_evaluation_payload_retention(
     bundle: RunBundle,
     row: RunRowSpec,
@@ -387,33 +396,31 @@ def finalize_evaluation_payload_retention(
     if row.execution_family != "evaluation-matrix":
         return
     compaction_path = Path(collected["evaluation-batch-compaction.json"])
-    compaction = EvaluationBatchCompactionEvidence.model_validate(
-        migrate_structured_spec_payload(
-            "EvaluationBatchCompactionEvidence",
-            strict_json_loads(compaction_path.read_text(encoding="utf-8")),
-            path=str(compaction_path),
-        ).payload
-    )
+    compaction = load_evaluation_compaction_evidence(compaction_path)
     if compaction.retention is None:
         return
     collected_root = compaction_path.parent / "evaluation-batch-compaction"
-    activate_evaluation_payload_collection(
-        compaction.retention,
-        compaction_root=collected_root,
-    )
     source_root = bundle.run_set_dir / "rows" / row.row_id
     source_compaction_root = source_root / "evaluation-batch-compaction"
     if source_compaction_root != collected_root and source_compaction_root.is_dir():
         activate_evaluation_payload_collection(
-            compaction.retention,
+            compaction,
             compaction_root=source_compaction_root,
-            evaluation_root=(source_root / "evaluation"),
+            evaluation_root=(
+                source_root / "evaluation"
+                if any(batch.retention_record_ids for batch in compaction.reclamations)
+                else None
+            ),
             schedule_grace=False,
         )
         (source_root / "evaluation-payload-retention-ready").write_text(
             "certified teardown completed\n",
             encoding="utf-8",
         )
+    activate_evaluation_payload_collection(
+        compaction,
+        compaction_root=collected_root,
+    )
 
 
 __all__ = [

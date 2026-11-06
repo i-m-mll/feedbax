@@ -6,7 +6,6 @@ import jax.numpy as jnp
 from pydantic import BaseModel, ValidationError, field_validator
 
 from feedbax.compiler import (
-    COMPILATION_RECORD_SCHEMA_VERSION,
     CompilationRecord,
     CompilerPhase,
     GraphCompilationError,
@@ -14,6 +13,7 @@ from feedbax.compiler import (
     ResolvedGraph,
     compile_graph,
 )
+from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentMigration, ComponentRegistry
 from feedbax.runtime.components import Constant, Gain
 from feedbax.contracts.graph import (
@@ -30,6 +30,30 @@ from feedbax.contracts.graph import (
     AdditiveGraphChannelTargetSpec,
 )
 from feedbax.runtime.graph import init_state_from_component
+
+
+def test_replacing_a_removed_node_does_not_reuse_its_trainability() -> None:
+    registry = ComponentRegistry(load_user_components=False)
+
+    def compile_linear(**params):
+        spec = GraphSpec(
+            nodes={
+                "linear": ComponentSpec(
+                    type="Linear",
+                    params={"input_size": 1, "output_size": 1, **params},
+                    input_ports=["input"],
+                    output_ports=["output"],
+                )
+            }
+        )
+        return compile_graph(GraphDocument(graph=spec), registry).graph
+
+    frozen = compile_linear(trainable=False)
+    fresh = compile_linear().nodes["linear"]
+    replacement = frozen.remove_node("linear").add_node("linear", fresh)
+
+    assert graph_to_spec(frozen, registry).nodes["linear"].params["trainable"] is False
+    assert "trainable" not in graph_to_spec(replacement, registry).nodes["linear"].params
 
 
 def _document() -> GraphDocument:
@@ -76,25 +100,59 @@ def test_compile_graph_is_deterministic_and_records_runtime_key_order() -> None:
     assert CompilationRecord.model_validate_json(first.record.model_dump_json()) == first.record
 
 
+@pytest.mark.parametrize(
+    ("driver", "competing_owners", "path", "occupied_by"),
+    [
+        ("wire", ("source.output", "second.output"), "/graph/wires/1", "/graph/wires/0"),
+        ("repeated_wire", ("source.output",), "/graph/wires/1", "/graph/wires/0"),
+        (
+            "binding",
+            ("external input 'command'", "source.output"),
+            "/graph/wires/0",
+            "/graph/input_bindings/command",
+        ),
+        (
+            "two_bindings",
+            ("external input 'command'", "external input 'override'"),
+            "/graph/input_bindings/override",
+            "/graph/input_bindings/command",
+        ),
+    ],
+)
+def test_compile_rejects_competing_drivers_before_realization(
+    driver, competing_owners, path, occupied_by
+):
+    graph = _document().graph
+    if driver == "wire":
+        graph.nodes["second"] = graph.nodes["source"].model_copy(update={"params": {"value": 5.0}})
+        graph.wires.append(graph.wires[0].model_copy(update={"source_node": "second"}))
+    elif driver == "repeated_wire":
+        graph.wires.append(graph.wires[0])
+    else:
+        graph.input_ports.append("command")
+        graph.input_bindings["command"] = ("gain", "input")
+        if driver == "two_bindings":
+            graph.wires.clear()
+            graph.input_ports.append("override")
+            graph.input_bindings["override"] = ("gain", "input")
+
+    with pytest.raises(GraphCompilationError) as caught:
+        compile_graph(GraphDocument(graph=graph), ComponentRegistry(load_user_components=False))
+
+    (diagnostic,) = caught.value.record.diagnostics
+    assert diagnostic.phase is CompilerPhase.STRUCTURAL_PARSING
+    assert diagnostic.source_anchor.authored_path == path
+    assert diagnostic.actionable_context["occupied_by"] == occupied_by
+    assert "gain.input" in diagnostic.observed_condition
+    assert all(owner in diagnostic.observed_condition for owner in competing_owners)
+
+
 def test_graph_document_rejects_unknown_version_without_restamping() -> None:
     payload = _document().model_dump(mode="json")
     payload["schema_version"] = "0"
 
     with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
         GraphDocument.model_validate(payload)
-
-
-def test_source_map_anchor_schema_rejects_pre_anchor_compiler_records() -> None:
-    compiled = compile_graph(_document(), ComponentRegistry(load_user_components=False))
-    resolved_payload = compiled.resolved.model_dump(mode="json")
-    resolved_payload["schema_version"] = "1"
-    record_payload = compiled.record.model_dump(mode="json")
-    record_payload["schema_version"] = "1"
-
-    with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
-        ResolvedGraph.model_validate(resolved_payload)
-    with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
-        CompilationRecord.model_validate(record_payload)
 
 
 def test_compile_failure_is_a_stable_source_mapped_phase_diagnostic() -> None:
@@ -139,17 +197,6 @@ def test_compile_failure_is_a_stable_source_mapped_phase_diagnostic() -> None:
     )
 
 
-def test_compilation_record_v2_rejects_after_diagnostics_schema_change() -> None:
-    compiled = compile_graph(_document(), ComponentRegistry(load_user_components=False))
-    payload = compiled.record.model_dump(mode="json")
-    payload["schema_version"] = "2"
-
-    assert COMPILATION_RECORD_SCHEMA_VERSION == "5"
-    assert compiled.record.diagnostics == ()
-    with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
-        CompilationRecord.model_validate(payload)
-
-
 def test_compile_graph_migrates_an_explicit_older_graph_schema() -> None:
     payload = _document().graph.model_dump(mode="json", exclude_none=True)
     payload["schema_version"] = "feedbax.spec.graph.v4"
@@ -190,15 +237,16 @@ def test_compiler_generated_adapter_has_truthful_source_map_origin() -> None:
         ComponentRegistry(load_user_components=False),
     )
 
+    adapter_id, _ = compiled.resolved.graph.input_bindings["disturbance"]
     entry = next(
         item
         for item in compiled.record.source_map.entries
-        if item.resolved_path == "/graph/nodes/disturbance_additive"
+        if item.resolved_path == f"/graph/nodes/{adapter_id}"
     )
     assert entry.origin == "compiler-generated"
     assert entry.authored_path == "/graph"
-    adapter = compiled.resolved.graph.nodes["disturbance_additive"]
-    binding = compiled.graph.component_bindings["disturbance_additive"]
+    adapter = compiled.resolved.graph.nodes[adapter_id]
+    binding = compiled.graph.component_bindings[adapter_id]
     assert adapter.param_schema_version == binding.param_schema_version == "1"
 
 
@@ -392,16 +440,6 @@ def test_unknown_component_version_points_to_nested_authored_node() -> None:
     diagnostic = caught.value.record.diagnostics[0]
     assert diagnostic.source_anchor.authored_path == "/graph/subgraphs/nested/nodes/gain"
     assert "source_param_schema_version='unknown'" in diagnostic.observed_condition
-
-
-@pytest.mark.parametrize("family,version", [(ResolvedGraph, "2"), (CompilationRecord, "3")])
-def test_pre_canonical_evidence_requires_recompilation(family, version: str) -> None:
-    compiled = compile_graph(_document(), ComponentRegistry(load_user_components=False))
-    evidence = compiled.resolved if family is ResolvedGraph else compiled.record
-    payload = evidence.model_dump(mode="json")
-    payload["schema_version"] = version
-    with pytest.raises(ValidationError, match="recompile the authored GraphDocument"):
-        family.model_validate(payload)
 
 
 def test_parameter_normalization_is_applied_once_before_runtime_construction() -> None:

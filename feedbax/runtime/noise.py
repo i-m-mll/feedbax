@@ -14,6 +14,9 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, PRNGKeyArray, Shaped
 
+from feedbax._vendor.jax_cookbook import identity
+
+
 class AbstractNoise(eqx.Module):
 
     @abstractmethod
@@ -59,16 +62,17 @@ class Normal(AbstractNoise):
 
 
 class Multiplicative(AbstractNoise):
-    """Scales the output of another noise term by the magnitude of the input signal.
+    """Scales another noise term using the input signal.
 
     Arguments:
         noise_func: The noise function to multiplicatively scale.
-        scale_func: Applied to the input signal to produce the scaling factor. For example,
+        scale_func: Transforms the input into scaling factors. The default uses each input
+            value directly, preserving its sign. For example,
             if the input is a vector, we may want to scale the noise sample by the vector
             length, in which case we could pass `lambda x: jnp.linalg.norm(x, axis=-1)`.
     """
     noise_func: AbstractNoise | Callable[[PRNGKeyArray, Array], Array]
-    scale_func: Callable[[Array], Array] = lambda x: x
+    scale_func: Callable[[Array], Array] = identity
 
     def __call__(self, key: PRNGKeyArray, x: Array) -> Array:
         return self.scale_func(x) * self.noise_func(key, x)

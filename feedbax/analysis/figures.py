@@ -11,6 +11,7 @@ from itertools import product
 import json
 from pathlib import Path
 import re
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import plotly.graph_objs as go
@@ -94,10 +95,10 @@ from feedbax.contracts.manifest import (
     FigureManifest,
     FigurePieceResolution,
     ManifestStatus,
+    RegenerationSpecBuilder,
     SpecPayload,
     figure_manifest_id,
     spec_payload,
-    write_manifest,
 )
 from feedbax.plot.colors import sample_colorscale_at, sample_colorscale_unique
 from feedbax.plot.constructors import (
@@ -112,6 +113,10 @@ from feedbax.plot.io import save_figure_with_spec
 from feedbax.persistence.artifact_custody import (
     ArtifactBlobIntegrityError,
     ImmutableArtifactBlobProvider,
+)
+from feedbax.persistence.terminal_publication import (
+    RenderPublicationCapture,
+    publish_render_manifest,
 )
 
 FIGURE_RENDER_ROLE = "figure_render"
@@ -206,12 +211,15 @@ class RenderedFigure:
 
 
 class FigureSpecExecutionError(RuntimeError):
-    """Raised after figure execution fails and a failed manifest is written."""
+    """A failed figure attempt, with a path if its manifest was published."""
 
-    def __init__(self, manifest: FigureManifest, path: Path, cause: BaseException):
-        super().__init__(
-            f"Figure spec for {manifest.id!r} failed; failed manifest written to {path}"
+    def __init__(self, manifest: FigureManifest, path: Path | None, cause: BaseException):
+        outcome = (
+            f"failed manifest written to {path}"
+            if path is not None
+            else "completed manifest retained"
         )
+        super().__init__(f"Figure spec for {manifest.id!r} failed; {outcome}")
         self.manifest = manifest
         self.path = path
         self.__cause__ = cause
@@ -942,6 +950,8 @@ def execute_figure_spec(
     registry: FigureRegistry,
     project_figure_policy: ContentPinnedJsonBase | None = None,
     recorded_project_figure_policy: ProjectFigurePolicyProvenance | None = None,
+    build_regeneration_spec: RegenerationSpecBuilder | None = None,
+    capture: RenderPublicationCapture | None = None,
 ) -> tuple[FigureManifest, Path]:
     """Resolve and execute exactly the ordinary FigureSpec exposed by display."""
     plan = plan_figure_execution(
@@ -977,35 +987,18 @@ def execute_figure_spec(
     resolved_inputs = resolve_figure_inputs(
         figure_spec, root=root, execution_context=execution_context
     )
+    manifest_metadata = dict(metadata or {})
     try:
         context = _figure_expression_context(figure_spec, resolved_inputs)
         if figure_spec.run_condition is not None and not evaluate_expr(
             figure_spec.run_condition,
             context,
         ):
-            manifest = _build_figure_manifest(
-                manifest_id=manifest_id,
-                resolved_spec=resolved_spec,
-                execution_spec=figure_spec,
-                authored_payload=resolved_payload,
-                composition_payloads=composition_payloads,
-                runtime_binding_payload=runtime_binding_payload,
-                status="completed",
-                provenance=prov,
-                artifacts=[],
-                resolved_inputs=resolved_inputs,
-                execution_trace=exec_trace,
-                metadata={**dict(metadata or {}), "skipped": "run_condition false"},
-            )
-            return manifest, write_manifest(manifest, root=root_path)
-
-        figures = _build_figures(figure_spec, context, exec_trace, root_path, registry)
-        artifacts = _write_figure_custody(
-            figures,
-            resolved_spec,
-            root=root_path,
-            manifest_id=manifest_id,
-        )
+            artifacts = []
+            manifest_metadata["skipped"] = "run_condition false"
+        else:
+            figures = _build_figures(figure_spec, context, exec_trace, root_path, registry)
+            artifacts = _write_figure_custody(figures, resolved_spec, root=root_path)
         manifest = _build_figure_manifest(
             manifest_id=manifest_id,
             resolved_spec=resolved_spec,
@@ -1018,9 +1011,13 @@ def execute_figure_spec(
             artifacts=artifacts,
             resolved_inputs=resolved_inputs,
             execution_trace=exec_trace,
-            metadata=dict(metadata or {}),
+            metadata=manifest_metadata,
+            regeneration_spec=(
+                build_regeneration_spec(tuple(artifacts))
+                if build_regeneration_spec is not None
+                else None
+            ),
         )
-        return manifest, write_manifest(manifest, root=root_path)
     except Exception as exc:
         manifest = _build_figure_manifest(
             manifest_id=manifest_id,
@@ -1037,8 +1034,11 @@ def execute_figure_spec(
             metadata=dict(metadata or {}),
             failure={"type": _failure_type(exc), "message": str(exc)},
         )
-        path = write_manifest(manifest, root=root_path)
+        path = publish_render_manifest(manifest, root=root_path)
         raise FigureSpecExecutionError(manifest, path, exc) from exc
+    path = publish_render_manifest(manifest, root=root_path, capture=capture)
+    assert path is not None
+    return manifest, path
 
 
 def _figure_runtime_binding_payload(
@@ -1188,16 +1188,15 @@ def _portable_value(value: Any) -> Any:
     return value
 
 
-def _route_assembler_params(
+def _route_panel_params(
     assembler_params: Mapping[str, Any],
     *,
     panel_registration: FigureConstructorRegistration,
-    figure_registration: FigureConstructorRegistration,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Route authored assembler params to their owning strict constructor models."""
+    figure_fields: set[str],
+) -> dict[str, Any]:
+    """Extract panel params and reject fields without a single owner."""
     authored_fields = set(assembler_params)
     panel_fields = set(panel_registration.params_model.model_fields)
-    figure_fields = set(figure_registration.params_model.model_fields)
 
     ambiguous_fields = sorted(authored_fields & panel_fields & figure_fields)
     if ambiguous_fields:
@@ -1213,10 +1212,7 @@ def _route_assembler_params(
             f"parameter model: {unknown_fields}"
         )
 
-    return (
-        {key: value for key, value in assembler_params.items() if key in panel_fields},
-        {key: value for key, value in assembler_params.items() if key in figure_fields},
-    )
+    return {key: value for key, value in assembler_params.items() if key in panel_fields}
 
 
 def _panel_grid_declarations(spec: FigureSpec) -> list[str]:
@@ -1349,11 +1345,35 @@ def _build_figures(
         ]
 
     trace_bindings = resolve_figure_trace_bindings(spec, template, registry=registry)
-    panel_constructor_key = assembler_params.get("panel_constructor", "feedbax.comparison_grid")
+    figure_registration = get_figure_constructor(assembler_key, registry=registry, tier="figure")
+    exec_trace.constructor_versions[figure_registration.key] = figure_registration.version
+    figure_fields = set(figure_registration.params_model.model_fields)
+    figure_values = {key: value for key, value in assembler_params.items() if key in figure_fields}
+    colorbar = resolve_figure_colorbar(spec)
+    if colorbar is not None:
+        if "colorbar" not in figure_fields:
+            raise ValueError(
+                "FigureSpec declares a colorbar, which requires a figure assembler that "
+                f"renders one; {assembler_key!r} declares no colorbar parameter"
+            )
+        figure_values["colorbar"] = colorbar
+    if spec.semantic_range_policy is not None:
+        if "semantic_range_policy" not in figure_fields:
+            raise ValueError(
+                "FigureSpec declares semantic_range_policy, which requires a figure "
+                f"assembler that lowers it; {assembler_key!r} declares no such parameter"
+            )
+        figure_values["semantic_range_policy"] = spec.semantic_range_policy
+    figure_params = figure_registration.params(figure_values)
+
+    if "panel_constructor" in figure_fields:
+        panel_constructor_key = getattr(figure_params, "panel_constructor")
+    else:
+        panel_constructor_key = assembler_params.get("panel_constructor", "feedbax.comparison_grid")
     panel_registration = get_figure_constructor(
         panel_constructor_key, registry=registry, tier="panel"
     )
-    exec_trace.constructor_versions[panel_constructor_key] = panel_registration.version
+    exec_trace.constructor_versions[panel_registration.key] = panel_registration.version
     if (
         any(panel.equal_data_aspect is not None for panel in spec.panels)
         and panel_registration.key != "feedbax.comparison_grid"
@@ -1368,8 +1388,6 @@ def _build_figures(
             f"FigureSpec declares {declared}, but panel assembler "
             f"{panel_registration.key!r} does not support it"
         )
-    figure_registration = get_figure_constructor(assembler_key, registry=registry, tier="figure")
-    exec_trace.constructor_versions[assembler_key] = figure_registration.version
     if _declares_data_derived_axis_range(spec) and (
         panel_registration.key != "feedbax.comparison_grid"
         or figure_registration.key != "feedbax.grid_figure"
@@ -1379,40 +1397,21 @@ def _build_figures(
             "feedbax.comparison_grid/feedbax.grid_figure assembler pair; got "
             f"{panel_registration.key!r}/{figure_registration.key!r}"
         )
-    panel_values, figure_values = _route_assembler_params(
+    panel_values = _route_panel_params(
         assembler_params,
         panel_registration=panel_registration,
-        figure_registration=figure_registration,
+        figure_fields=figure_fields,
     )
-    colorbar = resolve_figure_colorbar(spec)
-    if colorbar is not None:
-        if "colorbar" not in figure_registration.params_model.model_fields:
-            raise ValueError(
-                "FigureSpec declares a colorbar, which requires a figure assembler that "
-                f"renders one; {assembler_key!r} declares no colorbar parameter"
-            )
-        if colorbar.placement is not None and (
-            figure_registration.key != "feedbax.grid_figure"
-            or panel_registration.key != "feedbax.comparison_grid"
-        ):
-            raise ValueError(
-                "FigureSpec colorbar panel placement requires the "
-                "feedbax.comparison_grid/feedbax.grid_figure assembler pair; got "
-                f"{panel_registration.key!r}/{figure_registration.key!r}"
-            )
-        figure_values = {**figure_values, "colorbar": colorbar}
-    if spec.semantic_range_policy is not None:
-        if "semantic_range_policy" not in figure_registration.params_model.model_fields:
-            raise ValueError(
-                "FigureSpec declares semantic_range_policy, which requires a figure "
-                f"assembler that lowers it; {assembler_key!r} declares no such parameter"
-            )
-        figure_values = {
-            **figure_values,
-            "semantic_range_policy": spec.semantic_range_policy,
-        }
+    if colorbar is not None and colorbar.placement is not None and (
+        figure_registration.key != "feedbax.grid_figure"
+        or panel_registration.key != "feedbax.comparison_grid"
+    ):
+        raise ValueError(
+            "FigureSpec colorbar panel placement requires the "
+            "feedbax.comparison_grid/feedbax.grid_figure assembler pair; got "
+            f"{panel_registration.key!r}/{figure_registration.key!r}"
+        )
     panel_params = panel_registration.params(panel_values)
-    figure_params = figure_registration.params(figure_values)
 
     if facet_combinations and template.facet_target == "panels":
         panel_contents = _facet_panel_contents(
@@ -2276,68 +2275,69 @@ def _write_figure_custody(
     spec: FigureSpec,
     *,
     root: Path,
-    manifest_id: str,
 ) -> list[ArtifactRef]:
-    output_dir = root / "figures" / manifest_id.replace(":", "_")
-    output_dir.mkdir(parents=True, exist_ok=True)
     render_format = str(spec.figure_routing.get("render_format", "json"))
     artifacts: list[ArtifactRef] = []
-    for index, rendered in enumerate(figures):
-        suffix = "" if len(figures) == 1 else f"-{_safe_figure_name(rendered.name, index)}"
-        output_name = f"figure{suffix}"
-        spec_path, render_path = save_figure_with_spec(
-            rendered.figure,
-            {
-                "kind": "FigureSpec",
-                "figure_spec": spec.model_dump(mode="json", exclude_none=True),
-                "facet": rendered.name if len(figures) > 1 else None,
-            },
-            output_dir,
-            name=output_name,
-            render_format=render_format,
-        )
-        artifacts.append(
-            store_artifact(
-                spec_path,
-                root=root,
-                role=FIGURE_SPEC_ROLE,
-                logical_name=f"{spec.name}{suffix}-spec.json",
-                media_type="application/json",
-                metadata={
-                    "figure": spec.name,
+    with TemporaryDirectory(prefix="feedbax-figure-") as staging:
+        for index, rendered in enumerate(figures):
+            suffix = "" if len(figures) == 1 else f"-{_safe_figure_name(rendered.name, index)}"
+            output_name = f"figure{suffix}"
+            spec_path, render_path = save_figure_with_spec(
+                rendered.figure,
+                {
+                    "kind": "FigureSpec",
+                    "figure_spec": spec.model_dump(mode="json", exclude_none=True),
                     "facet": rendered.name if len(figures) > 1 else None,
                 },
+                Path(staging),
+                name=output_name,
+                render_format=render_format,
             )
-        )
-        if render_path is not None:
-            media_type = media_type_for_extension(render_path.suffix)
             artifacts.append(
                 store_artifact(
-                    render_path,
+                    spec_path,
                     root=root,
-                    role=FIGURE_RENDER_ROLE,
-                    logical_name=render_path.name,
-                    media_type=media_type,
+                    role=FIGURE_SPEC_ROLE,
+                    logical_name=f"{spec.name}{suffix}-spec.json",
+                    media_type="application/json",
                     metadata={
                         "figure": spec.name,
                         "facet": rendered.name if len(figures) > 1 else None,
-                        "format": render_format,
                     },
                 )
             )
-        artifacts.append(
-            store_json_artifact(
-                rendered.figure.to_plotly_json(),
-                root=root,
-                role=FIGURE_RENDER_ROLE,
-                logical_name=f"{spec.name}{suffix}.plotly.json",
-                metadata={
-                    "figure": spec.name,
-                    "facet": rendered.name if len(figures) > 1 else None,
-                    "format": "plotly-json",
-                },
+            if render_path is not None:
+                media_type = media_type_for_extension(render_path.suffix)
+                artifacts.append(
+                    store_artifact(
+                        render_path,
+                        root=root,
+                        role=FIGURE_RENDER_ROLE,
+                        logical_name=render_path.name,
+                        media_type=media_type,
+                        metadata={
+                            "figure": spec.name,
+                            "facet": rendered.name if len(figures) > 1 else None,
+                            "format": render_format,
+                        },
+                    )
+                )
+            artifacts.append(
+                store_json_artifact(
+                    rendered.figure.to_plotly_json(),
+                    root=root,
+                    role=FIGURE_RENDER_ROLE,
+                    logical_name=f"{spec.name}{suffix}.plotly.json",
+                    metadata={
+                        "figure": spec.name,
+                        "facet": rendered.name if len(figures) > 1 else None,
+                        "format": "plotly-json",
+                    },
+                )
             )
-        )
+    # Receipts should only refer to the durable copies.
+    for artifact in artifacts:
+        artifact.metadata.pop("original_uri", None)
     return artifacts
 
 
@@ -2361,6 +2361,7 @@ def _build_figure_manifest(
     execution_trace: FigureExecutionTrace,
     metadata: dict[str, Any],
     failure: dict[str, Any] | None = None,
+    regeneration_spec: SpecPayload | None = None,
 ) -> FigureManifest:
     binding_payload = [
         record.model_dump(mode="json", exclude_none=True)
@@ -2387,6 +2388,7 @@ def _build_figure_manifest(
             *composition_payloads,
             *([runtime_binding_payload] if runtime_binding_payload is not None else []),
             *(artifact for resolved in resolved_inputs for artifact in resolved.artifact_refs),
+            *([regeneration_spec] if regeneration_spec is not None else []),
         ],
         failure=failure,
         metadata=metadata,

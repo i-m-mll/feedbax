@@ -212,15 +212,20 @@ def _clean_env(**extra: str) -> dict[str, str]:
 def _run(
     args: Sequence[str | Path], *, cwd: Path, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [str(arg) for arg in args],
-        cwd=cwd,
-        check=check,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        env=_clean_env(),
-    )
+    try:
+        return subprocess.run(
+            [str(arg) for arg in args],
+            cwd=cwd,
+            check=check,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=_clean_env(),
+        )
+    except subprocess.CalledProcessError as error:
+        if error.stderr:
+            error.add_note(error.stderr)
+        raise
 
 
 def _git(args: Sequence[str | Path], *, cwd: Path) -> subprocess.CompletedProcess[str]:

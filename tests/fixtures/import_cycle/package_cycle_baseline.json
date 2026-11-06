@@ -2,13 +2,13 @@
   "schema": "feedbax.import_cycle_baseline.v1",
   "description": "Upper bound on import-cycle edges between top-level subpackages, root modules, and the root facade. This set may shrink, never grow. Regenerate deliberately with: uv run --no-sync python scripts/import_cycle_baseline.py --write",
   "summary": {
-    "classified_import_edges": 1842,
-    "cross_package_import_edges": 1040,
-    "packages": 37,
-    "package_edges": 160,
-    "packages_in_largest_cycle": 21,
+    "classified_import_edges": 2017,
+    "cross_package_import_edges": 1165,
+    "packages": 41,
+    "package_edges": 165,
+    "packages_in_largest_cycle": 20,
     "mutually_dependent_package_pairs": 9,
-    "cycle_package_edges": 77,
+    "cycle_package_edges": 70,
     "largest_cycle_packages": [
       "acausal",
       "analysis",
@@ -19,7 +19,6 @@
       "contracts",
       "control",
       "execution",
-      "intervene",
       "mechanics",
       "models",
       "objectives",
@@ -45,10 +44,6 @@
     [
       "analysis",
       "contracts"
-    ],
-    [
-      "analysis",
-      "intervene"
     ],
     [
       "analysis",
@@ -96,10 +91,6 @@
     ],
     [
       "compiler",
-      "intervene"
-    ],
-    [
-      "compiler",
       "mechanics"
     ],
     [
@@ -136,10 +127,6 @@
     ],
     [
       "component_registry",
-      "intervene"
-    ],
-    [
-      "component_registry",
       "mechanics"
     ],
     [
@@ -153,10 +140,6 @@
     [
       "components",
       "runtime"
-    ],
-    [
-      "config",
-      "intervene"
     ],
     [
       "config",
@@ -185,14 +168,6 @@
     [
       "execution",
       "workflow"
-    ],
-    [
-      "intervene",
-      "mechanics"
-    ],
-    [
-      "intervene",
-      "runtime"
     ],
     [
       "mechanics",
@@ -289,10 +264,6 @@
     [
       "runtime",
       "contracts"
-    ],
-    [
-      "tasks",
-      "intervene"
     ],
     [
       "tasks",

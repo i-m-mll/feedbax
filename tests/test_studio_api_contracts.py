@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import get_args, get_origin
 
+import plotly.graph_objects as go
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, ValidationError, model_validator
 
+from feedbax.analysis.analysis import AbstractAnalysis
+from feedbax.analysis.context import AnalysisRunContext
+from feedbax.analysis.execution import run_analyses_with_context
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.contracts.array_values import (
@@ -18,6 +22,7 @@ from feedbax.contracts.array_values import (
     SparseCooEntrySpec,
 )
 from feedbax.contracts.studio_api import (
+    AnalysisPackagesResponse,
     ComponentListResponse,
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
@@ -27,12 +32,14 @@ from feedbax.contracts.studio_api import (
     TrainingResyncEvent,
     TrainingStartPayload,
 )
+from feedbax.contracts.manifest import AnalysisRunSpec, load_manifest
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 from feedbax.web.app import create_app
 from feedbax.web.api import components as components_api
 from feedbax.web.api import figures as figures_api
 from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.contracts.training import LrScheduleSpec, OptimizerSpec
 from scripts.generate_studio_contracts import (
     CONTRACT_MODEL_NAMES,
@@ -43,6 +50,7 @@ from scripts.generate_studio_contracts import (
     emit_schema,
     model_dependencies,
 )
+from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
 GENERATED_STUDIO_PREFIXES = (
@@ -79,6 +87,73 @@ def test_studio_api_openapi_uses_plural_analysis_jobs_route() -> None:
     assert "/api/analyses/jobs" in paths
     assert "/api/analyses/jobs/status/{request_id}" in paths
     assert "/api/analysis/generate" not in paths
+
+
+def test_analysis_packages_advertise_effective_output_ports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FEEDBAX_WEB_DATA", raising=False)
+
+    class InheritedAnalysis(ToyAnalysis):
+        pass
+
+    class ComputeOnlyAnalysis(ToyAnalysis):
+        make_figs = AbstractAnalysis.make_figs
+
+    class FigureOnlyAnalysis(ComputeOnlyAnalysis):
+        compute = AbstractAnalysis.compute
+        _params_to_save = AbstractAnalysis._params_to_save
+
+        def make_figs(self, data, *, result, **kwargs):
+            return {"main": go.Figure(go.Scatter(y=[data.states["value"]]))}
+
+    class GenericAnalysis(FigureOnlyAnalysis):
+        make_figs = AbstractAnalysis.make_figs
+
+    analyses = {
+        "direct": ToyAnalysis(variant="toy"),
+        "inherited": InheritedAnalysis(variant="toy"),
+        "figure_only": FigureOnlyAnalysis(variant="toy"),
+        "compute_only": ComputeOnlyAnalysis(variant="toy"),
+        "generic": GenericAnalysis(variant="toy"),
+    }
+    context = AnalysisRunContext(
+        spec=AnalysisRunSpec(analysis_type="toy_analysis", params={"outputs": list(analyses)}),
+        root=tmp_path,
+    )
+    run_analyses_with_context(
+        analyses, build_toy_analysis_data(), context, fig_dump_formats=["json"]
+    )
+    manifest = load_manifest(context.manifest_path)
+    published_figures = {
+        artifact.metadata["analysis_label"]
+        for artifact in manifest.artifacts
+        if artifact.role == "figure" and Path(artifact.uri).is_file()
+    }
+    assert published_figures == {"direct", "inherited", "figure_only"}
+
+    registry = ExperimentRegistry()
+    registry.register_package("test", ModuleType("test"), ["toy"], "analysis", "training", "config")
+    module = SimpleNamespace(ANALYSES=analyses)
+    monkeypatch.setattr(registry, "get_analysis_module", lambda _part: module)
+
+    app = create_app()
+    with TestClient(app) as client:
+        current = app.state.bootstrap_state
+        app.state.bootstrap_state = BootstrapState(
+            replace(current.bundle, experiment_packages=registry), current.provenance
+        )
+        response = client.get("/api/analyses/packages")
+
+    assert response.status_code == 200
+    (package,) = AnalysisPackagesResponse.model_validate(response.json()).data.packages
+    assert {item.name: item.outputPorts for item in package.analyses} == {
+        "ToyAnalysis": ["data", "figure"],
+        "InheritedAnalysis": ["data", "figure"],
+        "FigureOnlyAnalysis": ["figure"],
+        "ComputeOnlyAnalysis": ["data"],
+        "GenericAnalysis": ["data"],
+    }
 
 
 def test_figure_registry_api_lists_bootstrapped_constructors() -> None:
@@ -396,6 +471,25 @@ def test_graph_validate_endpoint_returns_domain_diagnostics() -> None:
     assert data[0]["code"] == "graph.missing_input"
     assert data[0]["node_ids"] == ["network"]
     assert "valid" not in data[0]
+
+
+def test_graph_validate_endpoint_names_competing_external_inputs() -> None:
+    client = TestClient(create_app())
+    graph = GraphSpec(
+        nodes={"gain": ComponentSpec(type="Gain", input_ports=["input"])},
+        input_ports=["command", "override"],
+        input_bindings={"command": ("gain", "input"), "override": ("gain", "input")},
+    )
+
+    response = client.post("/api/graphs/graph-1/validate", json=graph.model_dump(mode="json"))
+
+    assert response.status_code == 200
+    (conflict,) = response.json()["data"]
+    assert conflict["severity"] == "error"
+    assert conflict["code"] == "graph.input_occupied"
+    assert conflict["ports"] == [["gain", "input"]]
+    assert "external input 'command'" in conflict["message"]
+    assert "external input 'override'" in conflict["message"]
 
 
 def test_generated_studio_contracts_cover_route_response_models() -> None:

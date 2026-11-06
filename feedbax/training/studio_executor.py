@@ -147,7 +147,6 @@ def studio_training_registry(
     compiled: Any,
     optimizer: optax.GradientTransformationExtraArgs,
     total_batches: int,
-    stop_event: Any,
     rollout_fn: Callable[[Any, Any, Any], dict[str, Any]],
     evaluate_loss_fn: Callable[[Any, dict[str, Any]], tuple[jax.Array, dict[str, jax.Array]]],
     observe_model: Callable[[Any], None] | None = None,
@@ -189,8 +188,8 @@ def studio_training_registry(
         coordinate: Any,
         context: Mapping[str, Any],
     ) -> bool:
-        del slots, context
-        return coordinate.program_step < total_batches and not stop_event.is_set()
+        del coordinate, context
+        return int(slots["batch_counter"]) < total_batches
 
     registry = TrainingProgramRegistry()
     registry.register(

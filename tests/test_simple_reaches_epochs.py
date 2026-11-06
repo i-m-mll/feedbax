@@ -9,7 +9,9 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from feedbax.analysis.rollout import stack_trials
 from feedbax.objectives.loss import CompositeLoss, EpochMaskedLoss, StateDerivativeLoss
+from feedbax.runtime.batch import BatchInfo
 from feedbax.tasks import SimpleReaches, TaskTrialSpec
 from feedbax.tasks.timeline_masks import build_task_timeline_mask
 
@@ -41,7 +43,7 @@ _DEFAULT_GOLDEN = {
         "timeline_epoch_names": [],
         "timeline_event_names": [],
         "timeline_event_steps": None,
-        "timeline_n_steps": 5,
+        "timeline_n_steps": 4,
     },
     "validation": {
         "init_force": [[0.0, 0.0], [0.0, 0.0]],
@@ -75,7 +77,7 @@ _DEFAULT_GOLDEN = {
         "timeline_epoch_names": [],
         "timeline_event_names": [],
         "timeline_event_steps": None,
-        "timeline_n_steps": 5,
+        "timeline_n_steps": 4,
     },
 }
 
@@ -208,8 +210,7 @@ def _assert_snapshot_equal(actual: Mapping[str, Any], expected: Mapping[str, Any
             assert actual_value == expected_value
 
 
-def test_simple_reaches_defaults_match_prechange_golden() -> None:
-    """Default train and validation specs preserve the pre-change output."""
+def test_simple_reaches_default_trial_specs() -> None:
     task = _make_default_task()
 
     train = task.get_train_trial(jax.random.PRNGKey(17))
@@ -223,7 +224,7 @@ def test_simple_reaches_epoch_name_populates_target_length_bounds() -> None:
     task = _make_epoch_task()
 
     train = task.get_train_trial(jax.random.PRNGKey(17))
-    validation = task.get_validation_trials(jax.random.PRNGKey(23))
+    validation = task.validation_trials
     train_target = _first_value(train.targets)
     validation_target = _first_value(validation.targets)
 
@@ -234,15 +235,29 @@ def test_simple_reaches_epoch_name_populates_target_length_bounds() -> None:
 
     assert validation.timeline.epoch_names == ("movement",)
     assert validation.timeline.n_steps == task.n_steps - 1
-    assert jnp.array_equal(
-        validation.timeline.epoch_bounds,
-        jnp.asarray([[0, 4], [0, 4]], dtype=jnp.int32),
-    )
-    assert validation_target.discount.shape == (2, 4)
-    assert jnp.array_equal(
-        validation_target.discount,
-        jnp.broadcast_to(train_target.discount, (2, 4)),
-    )
+    assert jnp.array_equal(validation_target.discount, train_target.discount)
+
+    steps = jnp.arange(task.n_steps - 1)
+
+    def movement_queries(timeline):
+        return (
+            *timeline.epoch_bounds_by_name("movement"),
+            timeline.epoch_idx_at(steps),
+            timeline.epoch_mask("movement"),
+        )
+
+    timeline = validation.timeline
+    assert timeline.events_at(0) == []
+    actual = movement_queries(timeline)
+    mapped = jax.vmap(movement_queries)(timeline)
+    for result, reference in zip(actual, mapped, strict=True):
+        assert jnp.array_equal(result, reference)
+
+    starts, ends, indices, mask = actual
+    assert jnp.array_equal(starts, jnp.array([0, 0]))
+    assert jnp.array_equal(ends, jnp.array([4, 4]))
+    assert jnp.array_equal(indices, jnp.zeros((2, 4), dtype=jnp.int32))
+    assert jnp.array_equal(mask, jnp.ones((2, 4), dtype=bool))
 
 
 def test_simple_reaches_epoch_consumers_accept_target_length_epoch() -> None:
@@ -302,9 +317,27 @@ def test_simple_reaches_fixed_endpoints_drive_train_and_single_validation_trial(
         validation_target.value,
         jnp.broadcast_to(fixed_endpoints[None, 1], (1, task.n_steps - 1, 2)),
     )
-    assert validation_target.discount.shape == (1, task.n_steps - 1)
     assert validation.timeline.n_steps == task.n_steps - 1
     assert jnp.array_equal(
         validation.timeline.epoch_bounds,
         jnp.asarray([[0, task.n_steps - 1]], dtype=jnp.int32),
     )
+
+
+
+def test_stack_trials_from_separate_sampling_traces() -> None:
+    task = _make_default_task()
+    first = task.sample_trial(jax.random.key(0))
+    second = task.sample_trial(jax.random.key(1), BatchInfo(size=1, current=0, total=1))
+
+    stacked = stack_trials([first, second])
+
+    for index, trial in enumerate((first, second)):
+        assert jnp.array_equal(
+            stacked.inits["mechanics.effector"].pos[index],
+            trial.inits["mechanics.effector"].pos,
+        )
+        assert jnp.array_equal(
+            stacked.targets[lambda state: state.mechanics.effector.pos].value[index],
+            trial.targets["mechanics.effector.pos"].value,
+        )

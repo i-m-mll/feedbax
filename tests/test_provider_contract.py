@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import sqlite3
-import queue
 import threading
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.compiler import (
+    CompilationFailureRecord,
+    CompilationRecord,
+    GraphDocument,
+    ResolvedGraph,
+)
 from feedbax.contracts.artifact_custody import (
     ImmutableArtifactBlobProviderConfig,
     ImmutableArtifactBlobProviderSpec,
@@ -185,7 +190,7 @@ def _task_input_binding(
     if expected_shape is not None:
         data["expected_shape"] = expected_shape
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [data],
         "bindings": [
             {
@@ -257,7 +262,7 @@ def _schema_workspace():
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -460,6 +465,10 @@ def test_provider_manifest_exports_neutral_contract_schema_names() -> None:
     contract_models = {
         "AnalysisInputRequirement": AnalysisInputRequirement,
         "GraphSpec": GraphSpec,
+        "GraphDocument": GraphDocument,
+        "ResolvedGraph": ResolvedGraph,
+        "CompilationRecord": CompilationRecord,
+        "CompilationFailureRecord": CompilationFailureRecord,
         "LossTermSpec": LossTermSpec,
         "LrScheduleSpec": LrScheduleSpec,
         "TaskSpec": TaskSpec,
@@ -858,6 +867,48 @@ def test_component_registry_snapshot_wraps_existing_registry(application_registr
     assert gain.migrations == []
 
 
+def test_studio_and_provider_expose_intervention_payloads(provider_client) -> None:
+    provider = provider_client.get("/api/provider/registries/components")
+    assert provider.status_code == 200
+    entries = {item["component_type_id"]: item for item in provider.json()["entries"]}
+    for name, payload, fields in (
+        ("NetworkClamp", "unit_spec", {"active", "unit_spec"}),
+        ("NetworkConstantInput", "unit_spec", {"active", "scale", "unit_spec"}),
+        ("ConstantInput", "arrays", {"active", "scale", "arrays"}),
+    ):
+        studio = provider_client.get(f"/api/components/{name}")
+        assert studio.status_code == 200
+        studio_fields = {item["name"]: item for item in studio.json()["data"]["param_schema"]}
+        provider_fields = {item["name"]: item for item in entries[name]["parameter_schema"]}
+        assert set(studio_fields) == set(provider_fields) == fields | {"payload_dtype"}
+        assert studio_fields[payload]["type"] == provider_fields[payload]["type"] == "array"
+        assert studio_fields[payload]["default"] is provider_fields[payload].get("default") is None
+        assert (
+            studio_fields["payload_dtype"]["default"]
+            == provider_fields["payload_dtype"]["default"]
+            == "float32"
+        )
+
+
+def test_provider_rejects_an_intervention_vector_outside_its_declared_dtype(provider_client) -> None:
+    graph = _minimal_graph_spec()
+    graph["input_ports"] = ["input"]
+    graph["input_bindings"] = {"input": ("gain", "input")}
+    clamp = graph["nodes"]["gain"]
+    clamp["type"] = "NetworkClamp"
+    clamp["params"] = {"active": True, "unit_spec": [8.0, None]}
+    response = provider_client.post("/api/provider/validate/graph", json={"spec": graph})
+    assert response.status_code == 200
+    assert response.json()["valid"]
+
+    clamp["params"]["unit_spec"] = [1e100, None]
+    response = provider_client.post("/api/provider/validate/graph", json={"spec": graph})
+    assert response.status_code == 200
+    result = response.json()
+    assert not result["valid"]
+    assert any("float32" in error["message"] for error in result["errors"])
+
+
 def test_analysis_registry_snapshot_lists_only_registered_recipes() -> None:
     snapshot = analysis_registry_snapshot({"tests.registered.analysis": object()})
 
@@ -1022,6 +1073,34 @@ def test_delayed_center_out_preset_task_spec_validates_and_infers_control_stages
     assert infer_task_n_steps(payload) == 140
 
 
+@pytest.mark.parametrize(
+    ("params", "expected_error"),
+    [
+        ({"n_control_stages": 15}, None),
+        ({"n_control_stages": 8}, "invalid_epoch_budget"),
+        ({"n_control_stages": 8, "epoch_len_ranges": [[8, 8]]}, "invalid_epoch_budget"),
+        ({"n_steps": 9, "epoch_len_ranges": [[3, 9]]}, "invalid_epoch_budget"),
+        ({"n_steps": 9, "epoch_len_ranges": [[3, 8]]}, None),
+        ({"preset": "default", "n_steps": 31}, "invalid_epoch_budget"),
+        (
+            {"n_control_stages": 100, "epoch_len_ranges": [[0, 2]], "move_epochs": [0]},
+            "invalid_epoch_budget",
+        ),
+    ],
+)
+def test_delayed_reaches_validates_budget_for_every_possible_draw(params, expected_error):
+    result = validate_task_spec(
+        {"type": "DelayedReaches", "params": {"preset": "delayed_center_out", **params}}
+    )
+
+    if expected_error is None:
+        assert result.valid
+    else:
+        assert [(error.type, error.location) for error in result.errors] == [
+            (expected_error, {"path": "/params/epoch_len_ranges"})
+        ]
+
+
 def test_delayed_center_out_validation_rejects_inconsistent_control_stages() -> None:
     result = validate_task_spec(
         {
@@ -1046,6 +1125,7 @@ def test_delayed_reaches_validation_rejects_invalid_metadata_policy() -> None:
                 "epoch_names": ["prep", "movement"],
                 "epoch_len_ranges": [[20, 60]],
                 "target_on_epochs": [0, 1],
+                "move_epochs": [1],
                 "catch_metadata_policy": "trial_type",
             },
         }
@@ -1305,7 +1385,7 @@ def test_training_manifest_writes_artifacts_and_rebuildable_index(tmp_path: Path
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
         task_binding_spec={
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [],
             "bindings": [],
             "metadata": {},
@@ -1458,7 +1538,7 @@ def test_studio_schema_enumeration_does_not_wrap_runtime_network_ports(
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -1598,7 +1678,7 @@ def test_runtime_wrapper_normalization_does_not_mark_feedback_cut_recurrent() ->
                 "output_ports": ["effector"],
             },
             "feedback": {
-                "type": "FeedbackChannels",
+                "type": "Channel",
                 "params": {},
                 "input_ports": ["input"],
                 "output_ports": ["output"],
@@ -1715,7 +1795,7 @@ def test_studio_schema_enumeration_reports_dynamic_mux_input_mismatch(
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "target_on",
@@ -1898,7 +1978,7 @@ def test_studio_schema_task_data_trajectory_bindings_use_sample_view(
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "target_position",
@@ -1965,7 +2045,7 @@ def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes(
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "target_position",
@@ -2064,7 +2144,7 @@ def test_studio_schema_reports_derived_dimension_conflict(application_registry_b
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "position",
@@ -2179,7 +2259,7 @@ def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports(
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "target_position",
@@ -2443,7 +2523,6 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
                     "amplitude": 1.0,
                     "field": [0.0, 0.0],
                     "active": False,
-                    "label": "perturb",
                 },
                 "input_ports": ["force", "params_override"],
                 "output_ports": ["force"],
@@ -2456,14 +2535,14 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
     )
     task_binding = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "perturb",
                     "label": "Perturbation params",
-                    "kind": "intervention",
-                    "role": "component_parameter",
-                    "path": "intervene.perturb",
+                    "kind": "signal",
+                    "role": "graph_input",
+                    "path": "inputs.perturb",
                     "bindable": True,
                     "dtype": "object",
                     "value_spec": {
@@ -2479,8 +2558,7 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
                     "source_data_id": "perturb",
                     "target_node_id": "field",
                     "target_port": "params_override",
-                    "role": "component_parameter",
-                    "metadata": {"task_parameter_label": "perturb"},
+                    "role": "graph_input",
                 }
             ],
             "metadata": {},
@@ -2494,15 +2572,6 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
         component_registry=application_registry_bundle.components,
     )
     assert not [issue for issue in issues if issue.severity == "error"]
-
-    task_binding.bindings[0].metadata["task_parameter_label"] = "missing"
-    issues = validate_task_binding_schema(
-        task_binding,
-        graph,
-        "/task_binding_spec",
-        component_registry=application_registry_bundle.components,
-    )
-    assert {issue.type for issue in issues} >= {"component_parameter_label_unknown"}
 
     occupied_payload = graph.model_dump(mode="json", exclude_none=True)
     occupied_payload.update(
@@ -2527,7 +2596,6 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
         }
     )
     occupied_graph = GraphSpec.model_validate(occupied_payload)
-    task_binding.bindings[0].metadata["task_parameter_label"] = "perturb"
     issues = validate_task_binding_schema(
         task_binding,
         occupied_graph,
@@ -2607,17 +2675,15 @@ def test_worker_emits_durable_training_manifest(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "worker-runs"))
-    event_queue: queue.Queue = queue.Queue()
     job = _Job(
         job_id="stub-job",
         run_set_id="stub-run-set",
         total_batches=1,
-        event_queue=event_queue,
         stop_event=threading.Event(),
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
         task_binding_spec={
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [],
             "bindings": [],
             "metadata": {},
@@ -2639,9 +2705,7 @@ def test_worker_emits_durable_training_manifest(
     assert job.manifest_payload["run_set_id"] == "stub-run-set"
     assert job.manifest_payload["artifacts"][0]["role"] == "training_history"
 
-    events = []
-    while not event_queue.empty():
-        events.append(event_queue.get())
+    events = list(job.event_log)
     log = next(event for event in events if event["type"] == "log")
     assert log["run_set_id"] == "stub-run-set"
     assert log["row_id"] == "stub-job"
@@ -2658,7 +2722,6 @@ def _worker_contract_job(
         job_id="worker-contract",
         run_set_id="worker-contract-set",
         total_batches=1,
-        event_queue=queue.Queue(),
         stop_event=threading.Event(),
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
@@ -2674,7 +2737,7 @@ def test_worker_spec_contract_accepts_scenario_owned_task_binding_v2(
     _require_worker_specs(
         _worker_contract_job(
             task_binding_spec={
-                "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v3",
                 "exposed_data": [
                     {
                         "id": "inputs",
@@ -2732,7 +2795,7 @@ def test_worker_spec_contract_migrates_legacy_task_binding_v1(application_regist
 
     _require_worker_specs(job, bootstrap_state=BootstrapState(application_registry_bundle, ()))
 
-    assert job.task_binding_spec["schema_version"] == "feedbax.spec.studio.task_bindings.v2"
+    assert job.task_binding_spec["schema_version"] == "feedbax.spec.studio.task_bindings.v3"
     assert job.task_binding_spec["exposed_data"][0]["id"] == "inputs"
     assert "exposed_outputs" not in job.task_binding_spec
     assert job.task_binding_spec["bindings"][0]["source_data_id"] == "inputs"
@@ -2743,7 +2806,7 @@ def test_worker_spec_contract_rejects_runtime_network_payloads(application_regis
     job = _worker_contract_job(
         graph_spec=_runtime_network_graph_spec(),
         task_binding_spec={
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -2779,7 +2842,7 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings(
         _require_worker_specs(
             _worker_contract_job(
                 task_binding_spec={
-                    "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                    "schema_version": "feedbax.spec.studio.task_bindings.v3",
                     "exposed_data": [
                         {
                             "id": "inputs",
@@ -2816,7 +2879,7 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings(
         ),
         (
             {
-                "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v3",
                 "exposed_outputs": [],
                 "bindings": [],
                 "metadata": {},
@@ -2825,7 +2888,7 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings(
         ),
         (
             {
-                "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v3",
                 "exposed_data": [],
                 "bindings": [
                     {
@@ -2901,12 +2964,10 @@ def test_worker_training_cfg_parses_grad_clip_absent_null_and_float() -> None:
 def test_worker_training_errors_instead_of_stub_on_missing_task_binding(
     application_registry_bundle,
 ) -> None:
-    event_queue: queue.Queue = queue.Queue()
     job = _Job(
         job_id="invalid-job",
         run_set_id="invalid-run-set",
         total_batches=1,
-        event_queue=event_queue,
         stop_event=threading.Event(),
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
@@ -2918,9 +2979,7 @@ def test_worker_training_errors_instead_of_stub_on_missing_task_binding(
     _run_training(job, bootstrap_state=BootstrapState(application_registry_bundle, ()))
 
     assert job.status == WorkerStatus.ERROR
-    events = []
-    while not event_queue.empty():
-        events.append(event_queue.get())
+    events = list(job.event_log)
     assert events[0]["type"] == "failed"
     assert events[0]["run_set_id"] == "invalid-run-set"
     assert events[0]["row_id"] == "invalid-job"
@@ -2928,4 +2987,4 @@ def test_worker_training_errors_instead_of_stub_on_missing_task_binding(
     assert "task_binding_spec" in events[0]["payload"]["error"]
     assert events[0]["payload"]["diagnostics"][0]["code"] == "worker.missing_task_binding_spec"
     assert events[0]["payload"]["diagnostics"][0]["location"] == {"path": "/task_binding_spec"}
-    assert all(event is None or event.get("type") != "progress" for event in events)
+    assert all(event["type"] != "progress" for event in events)

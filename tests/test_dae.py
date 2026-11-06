@@ -8,6 +8,8 @@ Tests energy conservation, solver agreement, and gradient flow for:
 :license: Apache 2.0. See LICENSE for details.
 """
 
+import diffrax as dfx
+import equinox as eqx
 import pytest
 import jax
 import jax.numpy as jnp
@@ -18,9 +20,39 @@ from feedbax.mechanics.skeleton.arm_dae import TwoLinkArmDAE
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.graph import init_state_from_component
+from feedbax.runtime.iteration import iterate_component
 
 
 pytestmark = pytest.mark.usefixtures("enable_jax_x64")
+
+
+class _IterationLimitedImplicitEuler(dfx.ImplicitEuler):
+    root_find_max_steps: int = 1
+
+
+def test_compiled_dae_rollout_rejects_finite_unconverged_step():
+    model = PointMassDAE(dt=0.1, damping=1.0, solver_type=_IterationLimitedImplicitEuler).prepare()
+    key = jr.PRNGKey(0)
+    state = model.init_state(key=key)
+    initial = model.state_view(state)
+    force = jnp.array([1.0, -2.0])
+    candidate, _, _, _, result = model.solver.step(
+        dfx.ODETerm(model.vector_field),
+        0.0,
+        model.dt,
+        initial.system,
+        force,
+        initial.solver,
+        made_jump=True,
+    )
+    assert result == dfx.RESULTS.nonlinear_max_steps_reached
+    assert all(jnp.all(jnp.isfinite(leaf)) for leaf in jax.tree.leaves(candidate))
+
+    with pytest.raises(RuntimeError, match=r"maximum number of steps.*nonlinear solver"):
+        outputs, _, _ = eqx.filter_jit(iterate_component)(
+            model, {"force": jnp.stack((force, -force))}, state, 2, key
+        )
+        jax.block_until_ready(outputs)
 
 
 class TestPointMassDAE:
@@ -238,7 +270,7 @@ class TestTwoLinkArmDAE:
         angles = jnp.array([0.5, 0.8])
         state = TwoLinkArmState(
             angle=angles,
-            d_angle=jnp.zeros(2),
+            d_angle=jnp.array([0.7, -1.2]),
             torque=jnp.zeros(2),
         )
 
@@ -249,6 +281,7 @@ class TestTwoLinkArmDAE:
         recovered_state = arm_dae.inverse_kinematics(effector)
 
         assert jnp.allclose(recovered_state.angle, angles, atol=1e-4)
+        assert jnp.allclose(recovered_state.d_angle, state.d_angle, atol=1e-4)
 
     def test_energy_methods(self, arm_dae):
         """Test energy computation methods."""

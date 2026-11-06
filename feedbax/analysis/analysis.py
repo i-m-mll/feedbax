@@ -1,11 +1,12 @@
 import dataclasses
+import hashlib
 import logging
 import pprint
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from functools import cached_property, partial, wraps
 from itertools import chain
-from pathlib import Path
-from types import EllipsisType, MappingProxyType
+from pathlib import Path, PurePath
+from types import EllipsisType, FunctionType, MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -31,7 +32,6 @@ from feedbax._vendor.jax_cookbook import (
     LDictConstructor,
     MaskedArray,
     anyf,
-    is_module,
     is_none,
     is_type,
     vmap_multi,
@@ -51,12 +51,8 @@ from feedbax.analysis.support import (
     get_origin_type,
     is_json_serializable,
 )
-from feedbax.persistence.support import get_md5_hexdigest
 from feedbax.config.tree import (
-    DoNotHashTree,
     _align_trees_to_structure,
-    _hash_pytree,
-    hash_callable_leaves,
     ldict_label_only_fn,
     move_ldict_level_above,
     subdict,
@@ -99,11 +95,15 @@ from feedbax.analysis.result_cache import (
     ANALYSIS_RESULT_CACHE_SCHEMA_VERSION,
     RESULTS_CACHE_SUBDIR,
     AnalysisResultCacheCorruption,
+    _UnsupportedCacheInput,
     _CACHE_LOAD_ERRORS,
     _CACHE_SAVE_ERRORS,
+    _fingerprint_cache_inputs,
+    _fingerprint_semantic_values,
     _load_analysis_result_cache,
     _write_analysis_result_cache,
 )
+from feedbax.contracts.computation_revision import validate_computation_revision
 
 if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar
@@ -341,10 +341,20 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
     Class attributes:
         Ports: The structure and defaults for the input ports of the analysis subclass.
+        computation_revision: Revision of the raw computation, including its implementation
+            dependencies. Declare it as a ClassVar on each cacheable concrete class and change it when
+            the computation changes. Subclasses must declare their own revision.
 
     Fields:
         inputs: The port->input mapping for the analysis instance.
         variant: Label of the evaluation variant this analysis uses (primarily).
+        cache_result: Reuse raw computation results for a declared computation revision
+            and supported prepared values. Cached computations must treat their inputs
+            as read-only values. Opaque inputs such as Python functions run without
+            result-cache reads or writes.
+
+    Treat node parameters as read-only once used in an analysis graph.
+    Registering a caller-supplied operation callback separately creates a distinct live node.
     """
 
     _exclude_fields = (
@@ -359,6 +369,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     )
 
     Ports: ClassVar[type[PortsType]] = NoPorts  # type: ignore
+    computation_revision: ClassVar[str | None] = None
     inputs: PortsType = field(default_factory=NoPorts, converter=NoPorts.converter)
 
     variant: Optional[str] = (
@@ -386,6 +397,10 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     _map_make_figs_spec: Optional[tuple[Callable[[Any], bool], Optional[str | Sequence[str]]]] = (
         field(default=None)
     )
+
+    def __check_init__(self) -> None:
+        if any(member.name == "computation_revision" for member in dataclasses.fields(self)):
+            raise TypeError("computation_revision must be declared as a ClassVar")
 
     def __post_init__(self):
         """Validate inputs instance and check for unresolved required inputs."""
@@ -482,14 +497,10 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             def _compute_core(data_for_compute, kwargs_for_compute):
                 if self._vmap_spec is not None:
                     # Extract vmapped dependencies
-                    compute_fn = _extract_vmapped_kwargs_to_args(
-                        self.compute, self._vmap_spec.vmapped_dep_names
-                    )
+                    vmapped_names = self._vmap_spec.vmapped_dep_names
+                    compute_fn = _extract_vmapped_kwargs_to_args(self.compute, vmapped_names)
                     try:
-                        vmapped_deps = [
-                            kwargs_for_compute.pop(name)
-                            for name in self._vmap_spec.vmapped_dep_names
-                        ]
+                        vmapped_deps = [kwargs_for_compute[name] for name in vmapped_names]
                     except KeyError as e:
                         raise KeyError(
                             f"Unknown dependency '{e.args[0]}' for analysis {self.name} "
@@ -500,7 +511,10 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                             self, self._vmap_spec, data_for_compute, vmapped_deps
                         )
                     )
-                    compute_fn = partial(compute_fn, **kwargs_for_compute)
+                    compute_fn = partial(
+                        compute_fn,
+                        **{k: v for k, v in kwargs_for_compute.items() if k not in vmapped_names},
+                    )
                     return vmap_multi(
                         compute_fn, in_axes_sequence=self._vmap_spec.in_axes_sequence
                     )(
@@ -562,67 +576,63 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 result = _compute_core(prepped_data, prepped_kwargs)
                 return result
 
-        def _try_load_result_from_cache() -> tuple[Optional[Path], Optional[Any]]:
-            """Attempt to load the result from cache."""
+        def _compute_cached(computation_revision: str):
+            # Declared default functions are part of the stable analysis implementation.
+            config = {
+                name: value
+                for name, value in self._field_params.items()
+                if name != "_map_make_figs_spec"
+                and not (
+                    isinstance(value, FunctionType)
+                    and value is self.__dataclass_fields__[name].default
+                )
+            }
+            try:
+                inputs_hash = _fingerprint_cache_inputs(
+                    type(self), computation_revision, config, prepped_data, prepped_kwargs
+                )
+            except _UnsupportedCacheInput as exc:
+                logger.debug("Skipping result cache for %s: %s", self.name, exc)
+                return _run_compute()
+
             cache_root = (
                 analysis_context.results_cache_dir
                 if analysis_context is not None
                 else PATHS.cache / RESULTS_CACHE_SUBDIR
             )
-            cache_root.mkdir(parents=True, exist_ok=True)
-
+            cache_path = cache_root / f"{ANALYSIS_RESULT_CACHE_SCHEMA_VERSION}_{inputs_hash}.pkl"
             try:
-                inputs_hash = _hash_pytree((prepped_data, prepped_kwargs))
-            except TypeError as e:
-                logger.error(
-                    f"Failed to hash inputs for caching of {self.name}: {e}", exc_info=True
+                result = _load_analysis_result_cache(cache_path, inputs_hash=inputs_hash)
+            except FileNotFoundError:
+                pass
+            except AnalysisResultCacheCorruption as exc:
+                logger.warning(
+                    "Ignoring invalid cached result for %s at %s (will recompute): %s",
+                    self.name,
+                    cache_path,
+                    exc,
                 )
-                # Fallback: disable caching for this invocation
-                return None, None
+            else:
+                logger.info("Loaded cached result for %s from %s", self.name, cache_path)
+                return result
 
-            analysis_id = self.md5_str
-            cache_fname = f"{self.name}_{analysis_id}_{inputs_hash}.pkl"
-            cache_path = cache_root / cache_fname
-
-            if cache_path.exists():
-                try:
-                    logger.info(f"Loading cached result for {self.name}")
-                    return None, _load_analysis_result_cache(
-                        cache_path,
-                        analysis_id=analysis_id,
-                        inputs_hash=inputs_hash,
-                    )
-                except AnalysisResultCacheCorruption as e:
-                    logger.warning(
-                        f"Ignoring invalid cached result for {self.name} at "
-                        f"{cache_path} (will recompute): {e}"
-                    )
-
-            return cache_path, None
-
-        result = None
-        cache_path = None
+            result = _run_compute()
+            try:
+                _write_analysis_result_cache(cache_path, inputs_hash=inputs_hash, result=result)
+                logger.info("Saved cache for %s to %s", self.name, cache_path)
+            except _CACHE_SAVE_ERRORS as exc:
+                logger.warning("Could not save cache for %s: %s", self.name, exc)
+            return result
 
         use_result_cache = self.cache_result and (
             analysis_context is None or analysis_context.use_result_cache
         )
-        if use_result_cache:
-            cache_path, result = _try_load_result_from_cache()
-
-        if result is None:
-            result = _run_compute()
-
-        if use_result_cache and cache_path is not None:
-            try:
-                _write_analysis_result_cache(
-                    cache_path,
-                    analysis_id=self.md5_str,
-                    inputs_hash=_hash_pytree((prepped_data, prepped_kwargs)),
-                    result=result,
-                )
-                logger.info(f"Saved cache for {self.name} to {cache_path}")
-            except _CACHE_SAVE_ERRORS as e:
-                logger.warning(f"Could not save cache for {self.name}: {e}")
+        computation_revision = (
+            validate_computation_revision(vars(type(self)).get("computation_revision"))
+            if use_result_cache
+            else None
+        )
+        result = _compute_cached(computation_revision) if computation_revision else _run_compute()
 
         result = _apply_final_ops(self, "results", result, data=prepped_data, **prepped_kwargs)
         if analysis_context is not None:
@@ -812,10 +822,20 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 }
             }
         if isinstance(value, Mapping):
-            return {
-                str(key): self._hashable_input_value(item)
-                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-            }
+            children, treedef = eqx.tree_flatten_one_level(value)
+            node = treedef.node_data()
+            if node is None:
+                raise TypeError(f"Unregistered analysis input mapping: {type(value).__qualname__}")
+            cls, metadata = node
+            # Match the tree used at execution: dict keys are sorted by JAX,
+            # while ordered or custom mappings carry their own order and metadata.
+            return (
+                b"feedbax.analysis.input-mapping.v2",
+                cls.__module__,
+                cls.__qualname__,
+                metadata,
+                tuple(self._hashable_input_value(child) for child in children),
+            )
         if isinstance(value, tuple):
             return tuple(self._hashable_input_value(item) for item in value)
         if isinstance(value, list):
@@ -1123,8 +1143,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             name="after_indexing",
             dep_name=dependency_name,
             fn=index_fn,
-            params=dict(axis=axis, idxs=idxs),
+            params=dict(axis=axis) if callable(idxs) else dict(axis=axis, idxs=idxs),
             metadata=final_metadata,
+            uses_callback=callable(idxs),
         )
 
     def after_map(
@@ -1152,6 +1173,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             dep_name=dependency_name,
             fn=map_fn,
             metadata=final_metadata,
+            uses_callback=True,
         )
 
     def after_transform_states(
@@ -1238,6 +1260,27 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             metadata: Optional metadata containing descriptions and labels.
         """
 
+        return self._after_transform(
+            fn,
+            level,
+            dependency_names,
+            metadata,
+            name="after_transform",
+            params={},
+            uses_callback=True,
+        )
+
+    def _after_transform(
+        self,
+        fn: Callable[..., Any],
+        level: str | Sequence[str] | None,
+        dependency_names: str | Sequence[str] | None,
+        metadata: dict[str, Any] | None,
+        *,
+        name: str,
+        params: dict[str, Any],
+        uses_callback: bool = False,
+    ) -> Self:
         dep_str = f"{dependency_names}" if dependency_names else "dependencies"
 
         if level is None:
@@ -1273,11 +1316,12 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
 
         return self._add_prep_op(
-            name="after_transform",
+            name=name,
             dep_name=dependency_names,
             fn=transform_fn,
-            params=dict(level=level),
+            params=dict(level=level, **params),
             metadata=final_metadata,
+            uses_callback=uses_callback,
         )
 
     def after_unstacking(
@@ -1354,6 +1398,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             fn=unpack_axis,
             params=dict(axis=axis, level_label=level_label, above_level=above_level, keys=keys),
             metadata=final_metadata,
+            uses_callback=False,
         )
 
     def after_stacking(
@@ -1415,6 +1460,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             fn=stack_dependency,
             params=dict(level=level),
             metadata=final_metadata,
+            uses_callback=False,
         )
 
     def after_rearrange_levels(
@@ -1453,8 +1499,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             name="after_rearrange_levels",
             dep_name=dependency_name,
             fn=transpose_dependency,
-            params=dict(spec=spec, is_leaf=is_leaf_),
+            params=dict(spec=spec),
             metadata=final_metadata,
+            uses_callback=is_leaf is not None,
         )
 
     def after_level_to_top(
@@ -1545,11 +1592,13 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         # Build metadata with our description
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
 
-        return self.after_transform(
-            fn=select_fn,
-            level=level,
-            dependency_names=dependency_name,
-            metadata=final_metadata,
+        return self._after_transform(
+            select_fn,
+            level,
+            dependency_name,
+            final_metadata,
+            name="after_subdict_at_level",
+            params=dict(keys=keys, idxs=idxs),
         )
 
     def after_getitem_at_level(
@@ -1580,11 +1629,13 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         # Build metadata with our description
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
 
-        return self.after_transform(
-            fn=getitem,
-            level=level,
-            dependency_names=dependency_name,
-            metadata=final_metadata,
+        return self._after_transform(
+            getitem,
+            level,
+            dependency_name,
+            final_metadata,
+            name="after_getitem_at_level",
+            params=dict(key=key),
         )
 
     def vmap(self, in_axes: Mapping[str, AxisSpec]) -> Self:
@@ -1947,6 +1998,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 params=dict(level=level_to_tuple_arg),
                 is_leaf=lambda _: True,
                 metadata=final_metadata,
+                uses_callback=True,
             )
 
         if level_to_tuple_arg is not None:
@@ -1985,6 +2037,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 params=dict(level=level_to_tuple_arg),
                 is_leaf=LDict.is_of(level_to_tuple_arg),
                 metadata=final_metadata,
+                uses_callback=True,
             )
         else:
             final_metadata = _merge_metadata(
@@ -1996,6 +2049,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 fn=fn,
                 is_leaf=is_leaf,
                 metadata=final_metadata,
+                uses_callback=True,
             )
 
     def _add_prep_op(
@@ -2005,6 +2059,8 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         fn: Callable,
         params: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        uses_callback: bool,
     ) -> Self:
         # If the transform consumes extra dependencies, ensure the analysis
         # instance knows about them so the graph builder evaluates them.
@@ -2037,6 +2093,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                     fn=fn,
                     params=params or {},
                     metadata=metadata or {},
+                    callback_token=object() if uses_callback else None,
                 ),
             ),
         )
@@ -2055,7 +2112,12 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             wrapped_fig_params_fn = wrap_to_accept_var_kwargs(fig_params_fn)
         else:
             wrapped_fig_params_fn = None
-        new_op = _FigOp(metadata=metadata or {}, fig_params_fn=wrapped_fig_params_fn, **kwargs)
+        new_op = _FigOp(
+            metadata=metadata or {},
+            fig_params_fn=wrapped_fig_params_fn,
+            callback_token=object() if fig_params_fn is not None else None,
+            **kwargs,
+        )
         return eqx.tree_at(lambda a: a._fig_ops, self, self._fig_ops + (new_op,))
 
     def _add_final_op(
@@ -2066,6 +2128,8 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         params: Optional[Dict[str, Any]] = None,
         is_leaf: Optional[Callable[[Any], bool]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        uses_callback: bool,
     ) -> Self:
         # Log the most specific description if available
         if metadata and "descriptions" in metadata and metadata["descriptions"]:
@@ -2081,6 +2145,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             params=params or {},
             is_leaf=is_leaf,
             metadata=metadata or {},
+            callback_token=object() if uses_callback else None,
         )
         updated_ops_for_type = current_ops + (new_op,)
 
@@ -2143,30 +2208,50 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         return result
 
     @cached_property
-    def md5_str(self):
-        """An md5 hash string that identifies this analysis.
+    def _logical_identity(self) -> tuple[str, tuple[Any, ...]]:
+        opaque_leaves: list[Any] = []
 
-        The hash is computed from the analysis parameter values and not the instance itself.
-        Any callable leaves are first replaced with their whitespace-stripped source strings,
-        which should generally capture when the implementation is identical, and should not
-        result in any
-        """
-        # ? TODO: De-duplicate computations *prior* to ops (i.e. some analyses get repeated with
-        # ? different ops)
-        ops_params = self._extract_ops_info()
+        def project_leaf(value: Any) -> Any:
+            if isinstance(value, PurePath):
+                return value.parts
+            if dataclasses.is_dataclass(value) and not isinstance(value, type):
+                return tuple(
+                    (field.name, getattr(value, field.name))
+                    for field in dataclasses.fields(value)
+                )
+            # Keep opaque PyTree metadata alive along with its identity.
+            opaque_leaves.append(value)
+            return id(value)
 
-        params = (
-            dict(cls_name=self.__class__.__name__, inputs=self._hashable_inputs())
-            | ops_params
-            | self._field_params
+        # A caller callback is opaque. Only copies of the same registration
+        # share its live identity, even if two registrations use the same callable.
+        prep_params = tuple(
+            (op.name, op.dep_name, op.params, op.callback_token) for op in self._prep_ops
         )
-
-        params = hash_callable_leaves(
-            params,
-            is_leaf=is_type(DoNotHashTree),
-            ignore=(LDict, is_module, DoNotHashTree),
+        fig_params = tuple(
+            (op.name, op.dep_name, op.params, op.callback_token) for op in self._fig_ops
         )
-        return get_md5_hexdigest(params)
+        final_params = {
+            kind: tuple((op.name, op.params, op.callback_token) for op in ops)
+            for kind, ops in self._final_ops_by_type.items()
+        }
+        cls = type(self)
+        fingerprint = _fingerprint_semantic_values(
+            self._hashable_inputs(),
+            self._field_params,
+            prep_params,
+            fig_params,
+            final_params,
+            header=("feedbax.analysis.logical-node", cls.__module__, cls.__qualname__),
+            project_leaf=project_leaf,
+        )
+        node_id = hashlib.md5(bytes.fromhex(fingerprint), usedforsecurity=False).hexdigest()
+        return node_id, tuple(opaque_leaves)
+
+    @property
+    def md5_str(self) -> str:
+        """Identify a logical node within a live analysis graph."""
+        return self._logical_identity[0]
 
     def _params_to_save(self, hps: PyTree[TreeNamespace], **kwargs):
         """Additional parameters to save.
@@ -2393,6 +2478,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 fn=align_fn,
                 params=dict(output_spec=output_spec, map_type=map_type),
                 metadata=dict(descriptions=[description]),
+                uses_callback=False,
             )
 
         return modified
@@ -2457,8 +2543,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 name="align_with_ellipsis",
                 dep_name=dep_name,
                 fn=align_fn,
-                params=dict(output_spec=output_spec, is_leaf=is_leaf, map_type=map_type),
+                params=dict(output_spec=output_spec, map_type=map_type),
                 metadata=dict(descriptions=[description]),
+                uses_callback=True,
             )
 
         return modified
@@ -2517,8 +2604,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 name="infer_and_align",
                 dep_name=dep_name,
                 fn=align_fn,
-                params=dict(is_leaf=is_leaf, map_type=map_type),
+                params=dict(map_type=map_type),
                 metadata=dict(descriptions=[description]),
+                uses_callback=True,
             )
 
         return modified
@@ -2534,6 +2622,13 @@ InputType: TypeAlias = PyTree[
     | Transformed
     | LiteralInput
 ]
+
+
+def implements_analysis_method(
+    analysis: AbstractAnalysis, method: Literal["compute", "make_figs"]
+) -> bool:
+    """Check whether the resolved class method replaces the default stub."""
+    return getattr(type(analysis), method) is not getattr(AbstractAnalysis, method)
 
 
 class IdentityNode(AbstractAnalysis[SinglePort[Any]]):

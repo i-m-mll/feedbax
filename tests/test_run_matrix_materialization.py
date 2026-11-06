@@ -14,6 +14,7 @@ from feedbax.contracts.matrix_core import apply_override_patches as matrix_core_
 from feedbax.contracts.spec_storage import training_spec_sha256
 from feedbax.contracts.checkpoints import CheckpointSegmentLineage
 from feedbax.contracts.run_matrix import (
+    AuthoredTrainingRow,
     RUN_MATRIX_MATERIALIZATION_SCHEMA_VERSION,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
     TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -44,6 +45,7 @@ from feedbax.contracts.training import (
 )
 from feedbax.training.run_matrix import (
     RunMatrixError,
+    materialize_adapted_run_matrix,
     materialize_run_matrix,
     render_spec_lock_table,
     write_materialized_matrix,
@@ -99,7 +101,6 @@ def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:
             "rows": [
                 {
                     "row_id": "lr_hi",
-                    "seed": 11,
                     "overrides": [
                         {"path": "training_config.learning_rate", "op": "replace", "value": 0.02},
                         {"path": "metadata.row", "op": "add", "value": "hi"},
@@ -107,7 +108,6 @@ def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:
                 },
                 {
                     "row_id": "lr_lo",
-                    "seed": 12,
                     "overrides": [
                         {"path": "training_config.learning_rate", "op": "replace", "value": 0.002}
                     ],
@@ -500,7 +500,11 @@ def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(
                 "path": "training_config.learning_rate",
                 "variation": {"kind": "explicit", "values": [0.1, 0.01]},
             },
-            {"id": "seed", "path": "seed", "variation": {"kind": "explicit", "values": [1, 2]}},
+            {
+                "id": "batch_size",
+                "path": "training_config.batch_size",
+                "variation": {"kind": "explicit", "values": [1, 2]},
+            },
         ],
         "combination": {"mode": "zip"},
     }
@@ -520,8 +524,55 @@ def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(
         0.1,
         0.01,
     ]
-    assert [row.seed for row in materialized.rows] == [1, 2]
-    assert materialized.run_set_manifest.axes.runs[1].values == {"lr": 0.01, "seed": 2}
+    assert [row.payload["training_config"]["batch_size"] for row in materialized.rows] == [1, 2]
+    assert materialized.run_set_manifest.axes.runs[1].values == {"lr": 0.01, "batch_size": 2}
+
+
+def test_sweep_patches_owned_rows_in_axis_order_and_isolates_callbacks(tmp_path: Path) -> None:
+    matrix = TrainingRunMatrixSpec.model_validate(
+        {
+            "schema_id": TRAINING_RUN_MATRIX_SPEC_SCHEMA_ID,
+            "schema_version": TRAINING_RUN_MATRIX_SPEC_SCHEMA_VERSION,
+            "name": "overlapping-sweep",
+            "base": {"kind": "inline", "inline": {"training_spec": {"seed": 0}}},
+            "axes": [
+                {
+                    "id": "z_parent",
+                    "path": "training_spec",
+                    "variation": {"values": [{"seed": 100}]},
+                },
+                {"id": "a_seed", "path": "seed", "variation": {"values": [1, 2]}},
+            ],
+        }
+    )
+
+    def lower(row: AuthoredTrainingRow, _context: object) -> None:
+        row.payload["training_spec"]["seed"] = -1
+        row.axis_coordinates["z_parent"]["seed"] = -2
+        row.overrides[0]["value"]["seed"] = -3
+
+    def validate(payload: dict, _row_id: str) -> None:
+        payload["training_spec"]["seed"] = -4
+
+    result = materialize_adapted_run_matrix(
+        matrix,
+        repo_root=tmp_path,
+        row_lowerer=lower,
+        row_validator=validate,
+    )
+
+    assert [row.authored_payload["training_spec"]["seed"] for row in result.rows] == [1, 2]
+    assert [row.payload["training_spec"]["seed"] for row in result.rows] == [1, 2]
+    assert [row.provenance.axis_coordinates["values"]["z_parent"] for row in result.rows] == [
+        {"seed": 100},
+        {"seed": 100},
+    ]
+    assert [row.provenance.overrides[0]["value"] for row in result.rows] == [
+        {"seed": 100},
+        {"seed": 100},
+    ]
+    assert matrix.axes[0].variation.values == [{"seed": 100}]
+    assert matrix.base.inline == {"training_spec": {"seed": 0}}
 
 
 def test_derivations_and_base_ref_sha_pin_are_fail_closed(

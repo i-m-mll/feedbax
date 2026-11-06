@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from feedbax._atomic import sync_parent_directories
 from feedbax.execution.records import (
     Invocation,
     InvocationExecutionPolicy,
@@ -27,6 +28,14 @@ from feedbax.orchestration.realization import (
     OrchestrationBackend,
 )
 from feedbax.orchestration.gcp_backend import GCP_CONTROLLER_CAPABILITIES
+from feedbax.orchestration.staged_training import (
+    has_attempt_evidence,
+    load_staged_training_receipt,
+    require_unclaimed_training_receipt,
+    staged_training_display_status,
+    staging_generation,
+    training_receipt_lock,
+)
 from feedbax.workflow.plan import LogicalKey, Operation, PlanNode, build_workflow_plan
 from feedbax.analysis.evaluation import (
     EvaluationRecipeExecutionError,
@@ -43,6 +52,7 @@ from feedbax.contracts.base import (
     default_manifest_root,
     utc_now,
 )
+from feedbax.persistence.terminal_publication import manifest_publication_lock
 from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     EvaluationRunSpec,
@@ -55,9 +65,9 @@ from feedbax.contracts.manifest import (
     CheckpointSelectionSpec,
     ReportSpec,
     TrainingRunManifest,
+    canonical_manifest_path,
     checkpoint_selection_manifest_id,
     evaluation_run_manifest_id,
-    evaluation_states_cache_path,
     load_manifest,
     planned_training_run_manifest_id,
     spec_payload,
@@ -87,6 +97,8 @@ from feedbax.studio.sweep_matrix import (
     _variation_values,
 )
 from feedbax.training.run_matrix import MaterializedMatrixRow
+from feedbax.studio.native_training import STAGED_NATIVE_ROW_KEY
+from feedbax.contracts.run_matrix import TrainingRowProvenance
 from feedbax.studio.schema import SchemaValidationIssue, validate_task_binding_schema
 from feedbax.studio.draft_hash import StudioDraftHashes, studio_draft_hashes
 from feedbax.contracts.graph import (
@@ -147,6 +159,20 @@ class StudioTrainingExecutionPreparation(StudioExecutionModel):
     backend_plan: BackendPlan
 
 
+class StudioNativeTrainingDispatchRequest(StudioExecutionModel):
+    """Launch exactly the staging generation the caller selected."""
+
+    manifest_id: str = Field(min_length=1)
+    generation: str = Field(min_length=1)
+
+
+class StudioNativeTrainingDispatchAccepted(StudioExecutionModel):
+    """Identity of the admitted attempt. Its result is collected separately."""
+
+    run_set_id: str
+    row_id: str
+
+
 EvalCheckpointPolicyMode = Literal["last", "best-by-metric", "every-k"]
 EvalReprocessMode = Literal["missing", "missing_failed", "all", "stale"]
 
@@ -195,6 +221,7 @@ class StudioEvaluationMatrixPreview(StudioExecutionModel):
     stage_id: str
     selected_training_run_count: int
     condition_count: int
+    condition_labels: list[str]
     checkpoint_policy_count: int
     total_eval_count: int
     materialized_count: int
@@ -364,6 +391,7 @@ def prepare_studio_training_execution(
             stage=stage,
             request=request,
             execution_target=execution_target,
+            job_id=job_id,
         )
     else:
         staged_training_refs, staged_run_set_ref, staged_summary = (
@@ -475,12 +503,16 @@ def stage_studio_evaluation_matrix(
         }
         checkpoint_refs.append(checkpoint_ref)
 
-        manifest, path = _write_pending_evaluation_manifest(
-            item,
-            checkpoint_ref=checkpoint_ref,
-            request=request,
-            root=root_path,
+        receipt_path = canonical_manifest_path(
+            "EvaluationRunManifest", item["evaluation_id"], root=root_path
         )
+        with manifest_publication_lock(receipt_path):
+            manifest, path = _write_pending_evaluation_manifest(
+                item,
+                checkpoint_ref=checkpoint_ref,
+                request=request,
+                root=root_path,
+            )
         manifest_ref = _pending_evaluation_manifest_ref(
             manifest,
             path,
@@ -603,10 +635,13 @@ def run_studio_evaluation_local_execution(
         except EvaluationRecipeExecutionError as exc:
             failed += 1
             errors.append(str(exc.__cause__ or exc))
+            # The diagnostic can be detached when an earlier completion owns this address.
+            receipt = load_manifest(ref.uri)
+            assert isinstance(receipt, EvaluationRunManifest)
             updated_refs.append(
                 _pending_evaluation_manifest_ref(
-                    exc.manifest,
-                    exc.path,
+                    receipt,
+                    Path(ref.uri),
                     stage=eval_stage,
                     job_id=request.job_id or ref.metadata.get("job_id") or "studio-eval",
                 )
@@ -1105,17 +1140,37 @@ def _reuse_pending_training_manifest(
         return None
     existing, path = match
     assert isinstance(existing, TrainingRunManifest)
-    if existing.status != "cancelled":
+    if (
+        existing.status == "pending"
+        and existing.metadata.get("planned") is True
+        and not has_attempt_evidence(existing)
+    ):
+        canonical_path = canonical_manifest_path("TrainingRunManifest", manifest_id, root=root)
+        if path.resolve() != canonical_path.resolve():
+            canonical = existing.model_copy(
+                update={"metadata": {**existing.metadata, "staging_generation": uuid.uuid4().hex}}
+            )
+            return canonical, write_manifest(canonical, root=root)
+        sync_parent_directories(path)
         return existing, path
+    if (
+        existing.status != "cancelled"
+        or existing.metadata.get("planned") is not True
+        or has_attempt_evidence(existing)
+    ):
+        return existing, path
+    metadata = _restaged_metadata(
+        existing.metadata,
+        manifest_id=manifest_id,
+        restaged_from_status="cancelled",
+    )
+    metadata.pop("cancelled_at", None)
+    metadata["staging_generation"] = uuid.uuid4().hex
     restaged = existing.model_copy(
         update={
             "status": "pending",
             "completed_at": None,
-            "metadata": _restaged_metadata(
-                existing.metadata,
-                manifest_id=manifest_id,
-                restaged_from_status="cancelled",
-            ),
+            "metadata": metadata,
         }
     )
     return restaged, write_manifest(restaged, root=root)
@@ -1142,6 +1197,7 @@ def _build_pending_training_manifest(
     run_set_id: str | None = None,
     overrides: list[Any] | None = None,
     total_batches: Any | None = None,
+    native_row: TrainingRowProvenance | None = None,
 ) -> tuple[TrainingRunManifest, Path]:
     """Write the single durable pending `TrainingRunManifest` document.
 
@@ -1172,8 +1228,11 @@ def _build_pending_training_manifest(
     metadata["studio"] = studio_metadata
     metadata["planned"] = True
     metadata["staged_at"] = now.isoformat()
+    metadata["staging_generation"] = uuid.uuid4().hex
     metadata["execution_target"] = execution_target
     metadata["execution_backend"] = request.backend
+    if native_row is not None:
+        metadata[STAGED_NATIVE_ROW_KEY] = native_row.model_dump(mode="json", exclude_none=True)
     metadata["spec_hashes"] = _ui_spec_hashes(
         {
             "graph_spec": graph_spec,
@@ -1237,28 +1296,29 @@ def _write_pending_training_manifest(
     )
 
     root_path = default_manifest_root()
-    reused = _reuse_pending_training_manifest(manifest_id, root_path)
-    if reused is not None:
-        return reused
+    with training_receipt_lock(root_path, manifest_id):
+        reused = _reuse_pending_training_manifest(manifest_id, root_path)
+        if reused is not None:
+            return reused
 
-    return _build_pending_training_manifest(
-        manifest_id=manifest_id,
-        root=root_path,
-        workspace=workspace,
-        stage=stage,
-        scenario_id=scenario_id,
-        graph_spec=graph_spec,
-        training_spec=training_spec,
-        task_spec=task_spec,
-        task_binding_spec=task_binding_spec,
-        training_spec_kind="TrainingSpec",
-        request=request,
-        execution_target=execution_target,
-        axis_coordinates=axis_coordinates,
-        studio_run_identity={"seed": seed},
-        entrypoint_metadata={"job_id": request.job_id},
-        total_batches=training_spec.get("n_batches"),
-    )
+        return _build_pending_training_manifest(
+            manifest_id=manifest_id,
+            root=root_path,
+            workspace=workspace,
+            stage=stage,
+            scenario_id=scenario_id,
+            graph_spec=graph_spec,
+            training_spec=training_spec,
+            task_spec=task_spec,
+            task_binding_spec=task_binding_spec,
+            training_spec_kind="TrainingSpec",
+            request=request,
+            execution_target=execution_target,
+            axis_coordinates=axis_coordinates,
+            studio_run_identity={"seed": seed},
+            entrypoint_metadata={"job_id": request.job_id},
+            total_batches=training_spec.get("n_batches"),
+        )
 
 
 def _stage_pending_training_manifests(
@@ -1374,6 +1434,14 @@ def _stage_pending_training_manifests(
         }
     )
     run_set_path = write_manifest(run_set, root=root_path)
+    staging_draft_spec_hashes = _ui_spec_hashes(
+        {
+            "graph_spec": graph_spec,
+            "training_spec": training_spec,
+            "task_spec": task_spec,
+            "task_binding_spec": task_binding_spec,
+        }
+    )
     run_refs: list[StudioManifestRef] = []
     run_paths: dict[str, str] = {}
     for row in materialized.rows:
@@ -1387,14 +1455,9 @@ def _stage_pending_training_manifests(
             root=root_path,
             execution_target=execution_target,
         )
-        run_refs.append(
-            _pending_training_manifest_ref(
-                manifest,
-                path,
-                stage=stage,
-                job_id=job_id,
-            )
-        )
+        run_ref = _pending_training_manifest_ref(manifest, path, stage=stage, job_id=job_id)
+        run_ref.metadata["staging_draft_spec_hashes"] = staging_draft_spec_hashes
+        run_refs.append(run_ref)
         run_paths[manifest.id] = str(path)
 
     run_set_ref = _studio_manifest_ref(
@@ -1442,47 +1505,72 @@ def _write_pending_training_manifest_for_matrix_row(
     root: Path,
     execution_target: str,
 ) -> tuple[TrainingRunManifest, Path]:
-    reused = _reuse_pending_training_manifest(row.planned_run_id, root)
-    if reused is not None:
-        return reused
+    native_row = row.provenance if row.spec is not None else None
+    with training_receipt_lock(root, row.planned_run_id):
+        reused = _reuse_pending_training_manifest(row.planned_run_id, root)
+        if reused is not None:
+            existing, path = reused
+            if (
+                native_row is not None
+                and existing.status == "pending"
+                and not has_attempt_evidence(existing)
+                and STAGED_NATIVE_ROW_KEY not in existing.metadata
+                and existing.training_spec is not None
+                and existing.training_spec.kind == "TrainingRunSpec"
+                and existing.training_spec.inline == row.payload
+            ):
+                existing = existing.model_copy(
+                    update={
+                        "metadata": {
+                            **existing.metadata,
+                            STAGED_NATIVE_ROW_KEY: native_row.model_dump(
+                                mode="json", exclude_none=True
+                            ),
+                        },
+                    }
+                )
+                path = write_manifest(existing, root=root)
+            return existing, path
 
-    graph_spec, training_spec, task_spec, task_binding_spec, training_kind = (
-        _materialized_row_specs(row)
-    )
-    coordinate = row.coordinate
-    axis_coordinates = (
-        coordinate.values
-        if coordinate is not None
-        else {
-            "row_id": row.row_id,
-            "overrides": [
-                override.model_dump(mode="json", exclude_none=True) for override in row.overrides
-            ],
-        }
-    )
-    coordinate_label = coordinate.label if coordinate is not None else row.row_id
-    value_indices = coordinate.value_indices if coordinate is not None else {}
-    return _build_pending_training_manifest(
-        manifest_id=row.planned_run_id,
-        root=root,
-        workspace=workspace,
-        stage=stage,
-        scenario_id=scenario_id,
-        graph_spec=graph_spec,
-        training_spec=training_spec,
-        task_spec=task_spec,
-        task_binding_spec=task_binding_spec,
-        training_spec_kind=training_kind,
-        request=request,
-        execution_target=execution_target,
-        axis_coordinates=axis_coordinates,
-        studio_run_identity={"axis_value_indices": value_indices, "run_set_id": run_set_id},
-        entrypoint_metadata={"job_id": request.job_id, "run_set_id": run_set_id},
-        label=coordinate_label,
-        run_set_id=run_set_id,
-        overrides=row.overrides,
-        total_batches=_matrix_row_n_batches(row),
-    )
+        graph_spec, training_spec, task_spec, task_binding_spec, training_kind = (
+            _materialized_row_specs(row)
+        )
+        coordinate = row.coordinate
+        axis_coordinates = (
+            coordinate.values
+            if coordinate is not None
+            else {
+                "row_id": row.row_id,
+                "overrides": [
+                    override.model_dump(mode="json", exclude_none=True)
+                    for override in row.overrides
+                ],
+            }
+        )
+        coordinate_label = coordinate.label if coordinate is not None else row.row_id
+        value_indices = coordinate.value_indices if coordinate is not None else {}
+        return _build_pending_training_manifest(
+            manifest_id=row.planned_run_id,
+            root=root,
+            workspace=workspace,
+            stage=stage,
+            scenario_id=scenario_id,
+            graph_spec=graph_spec,
+            training_spec=training_spec,
+            task_spec=task_spec,
+            task_binding_spec=task_binding_spec,
+            training_spec_kind=training_kind,
+            request=request,
+            execution_target=execution_target,
+            axis_coordinates=axis_coordinates,
+            studio_run_identity={"axis_value_indices": value_indices, "run_set_id": run_set_id},
+            entrypoint_metadata={"job_id": request.job_id, "run_set_id": run_set_id},
+            label=coordinate_label,
+            run_set_id=run_set_id,
+            overrides=row.overrides,
+            total_batches=_matrix_row_n_batches(row),
+            native_row=native_row,
+        )
 
 
 def _validate_materialized_training_row(
@@ -1572,14 +1660,29 @@ def _pending_training_manifest_ref(
         pending_path,
         job_id,
     )
+    training_spec = pending_manifest.training_spec
+    checkpoint_progress = (
+        training_spec.inline.get("checkpoint_progress") if training_spec is not None else None
+    )
     pending_ref.metadata = {
         **pending_ref.metadata,
-        "status": pending_manifest.status,
         "stage_id": stage.id,
         "scenario_id": stage.scenario_id,
         "planned": True,
         "spec_hashes": _manifest_spec_hashes(pending_manifest),
         **pending_manifest.metadata,
+        "native_launch_supported": (
+            training_spec is not None
+            and training_spec.kind == "TrainingRunSpec"
+            and STAGED_NATIVE_ROW_KEY in pending_manifest.metadata
+            and (
+                not isinstance(checkpoint_progress, Mapping)
+                or checkpoint_progress.get("continuation") is None
+            )
+        ),
+        "status": staged_training_display_status(
+            pending_manifest.status, pending_manifest.metadata
+        ),
     }
     return pending_ref
 
@@ -1627,28 +1730,51 @@ def _queue_training_manifest_subset(
     stage: StudioStageSpec,
     request: StudioTrainingExecutionRequest,
     execution_target: ExecutionTarget,
+    job_id: str,
 ) -> tuple[list[StudioManifestRef], None, dict[str, Any]]:
     selected_ids = list(dict.fromkeys(request.queue_manifest_ids))
-    refs_by_id = _stage_manifest_refs_by_id(stage)
-    missing_ids = [manifest_id for manifest_id in selected_ids if manifest_id not in refs_by_id]
+    stage_refs = {ref.id: ref for ref in stage.manifest_refs}
+    stage_refs.update(
+        (ref.id, ref) for collection in stage.output_collections for ref in collection.item_refs
+    )
+    missing_ids = [manifest_id for manifest_id in selected_ids if manifest_id not in stage_refs]
     if missing_ids:
         raise StudioExecutionPreparationError(
             "Queue launch references manifest IDs that are not present on the selected train "
             f"stage: {', '.join(missing_ids)}"
         )
 
-    selected_refs = [refs_by_id[manifest_id] for manifest_id in selected_ids]
-    for ref in selected_refs:
-        if not _is_training_manifest_ref(ref):
+    root = default_manifest_root()
+    selected_refs = []
+    for manifest_id in selected_ids:
+        try:
+            manifest, path = load_staged_training_receipt(root, manifest_id)
+            require_unclaimed_training_receipt(manifest)
+        except FileNotFoundError as error:
             raise StudioExecutionPreparationError(
-                f"Queue launch manifest {ref.id!r} is not a training run"
-            )
-        ref_target = _manifest_ref_execution_target(ref, stage)
-        if ref_target != execution_target:
+                f"Queue launch training manifest {manifest_id!r} was not found"
+            ) from error
+        except ValueError as error:
+            raise StudioExecutionPreparationError(str(error)) from error
+        manifest_target = manifest.metadata.get("execution_target")
+        if manifest_target != execution_target:
             raise StudioExecutionPreparationError(
-                f"Queue launch manifest {ref.id!r} targets {ref_target!r}, "
+                f"Queue launch manifest {manifest_id!r} targets {manifest_target!r}, "
                 f"not selected target {execution_target!r}"
             )
+        generation = staging_generation(manifest.metadata)
+        if generation is None or generation != staging_generation(stage_refs[manifest_id].metadata):
+            raise StudioExecutionPreparationError(
+                f"Queue launch training manifest {manifest_id!r} has a different staging "
+                "generation. Refresh the queue before launching."
+            )
+        selected_ref = _pending_training_manifest_ref(manifest, path, stage=stage, job_id=job_id)
+        staging_draft_spec_hashes = stage_refs[manifest_id].metadata.get(
+            "staging_draft_spec_hashes"
+        )
+        if staging_draft_spec_hashes is not None:
+            selected_ref.metadata["staging_draft_spec_hashes"] = staging_draft_spec_hashes
+        selected_refs.append(selected_ref)
 
     now = utc_now().isoformat()
     return (
@@ -1658,49 +1784,11 @@ def _queue_training_manifest_subset(
             "manifest_ids": selected_ids,
             "status": "pending",
             "prepared_at": now,
-            "run_count": sum(_manifest_ref_run_count(ref) for ref in selected_refs),
+            "run_count": len(selected_refs),
             "execution_target": execution_target,
             "source": "queue_manifest_subset",
         },
     )
-
-
-def _stage_manifest_refs_by_id(stage: StudioStageSpec) -> dict[str, StudioManifestRef]:
-    refs_by_id: dict[str, StudioManifestRef] = {}
-    for ref in stage.manifest_refs:
-        refs_by_id[ref.id] = ref
-    for collection in stage.output_collections:
-        for ref in collection.item_refs:
-            refs_by_id[ref.id] = ref
-    return refs_by_id
-
-
-def _is_training_manifest_ref(ref: StudioManifestRef) -> bool:
-    return ref.role == "training_run" or ref.kind in {"TrainingRun", "TrainingRunManifest"}
-
-
-def _manifest_ref_execution_target(
-    ref: StudioManifestRef,
-    stage: StudioStageSpec,
-) -> ExecutionTarget:
-    for key in ("execution_target", "compute_target", "target"):
-        value = ref.metadata.get(key)
-        if not isinstance(value, str):
-            continue
-        if value == "managed":
-            return "gcp"
-        if value in {"local", "gcp", "runpod", "manual"}:
-            return value
-    return _stage_execution_target(stage, "local")
-
-
-def _manifest_ref_run_count(ref: StudioManifestRef) -> int:
-    value = ref.metadata.get("run_count")
-    if isinstance(value, int) and value > 0:
-        return value
-    if isinstance(value, float) and value > 0 and value.is_integer():
-        return int(value)
-    return 1
 
 
 def _stage_execution_target(stage: StudioStageSpec, backend: str) -> ExecutionTarget:
@@ -1806,7 +1894,7 @@ def _evaluation_preview_from_plan(plan: dict[str, Any]) -> StudioEvaluationMatri
         )
         manifest = existing[0] if existing is not None else None
         status = manifest.status if isinstance(manifest, EvaluationRunManifest) else None
-        if status == "completed" or evaluation_states_cache_path(eval_id, root=root).exists():
+        if status == "completed":
             materialized += 1
         elif status in {"pending", "running"}:
             pending += 1
@@ -1828,6 +1916,7 @@ def _evaluation_preview_from_plan(plan: dict[str, Any]) -> StudioEvaluationMatri
         stage_id=plan["stage"].id,
         selected_training_run_count=selected_count,
         condition_count=condition_count,
+        condition_labels=[condition["label"] for condition in plan["conditions"]],
         checkpoint_policy_count=1,
         total_eval_count=total,
         materialized_count=materialized,
@@ -2221,7 +2310,7 @@ def _write_pending_evaluation_manifest(
             "staged_at": utc_now().isoformat(),
             "selected_training_run_id": training_ref.id,
             "training_run_ids": [training_ref.id],
-            "eval_protocol": _eval_protocol_metadata(condition),
+            "condition_label": condition["label"],
             "checkpoint_policy": item["checkpoint_policy"],
             "checkpoint_selection_manifest_id": checkpoint_ref.id,
             "condition_axis_coordinates": condition["axis_coordinates"],
@@ -2277,15 +2366,6 @@ def _evaluation_condition_label(training_ref: ParentRef, condition: dict[str, An
     return f"{label} on {training_ref.id}" if label != "default" else f"Eval {training_ref.id}"
 
 
-def _eval_protocol_metadata(condition: dict[str, Any]) -> dict[str, Any]:
-    params = condition["params"]
-    return {
-        "targets": params.get("targets") or params.get("target_set") or "default",
-        "sisu": params.get("sisu") or params.get("sisu_value"),
-        "perturbation": params.get("perturbation") or params.get("perturbation_type"),
-    }
-
-
 def _should_launch_status(status: str | None, reprocess: EvalReprocessMode) -> bool:
     if reprocess == "stale":
         return status == "stale"
@@ -2303,7 +2383,7 @@ def _should_launch_status(status: str | None, reprocess: EvalReprocessMode) -> b
 
 
 def _should_restaging_overwrite(status: str | None, reprocess: EvalReprocessMode) -> bool:
-    return status in {"failed", "cancelled", "completed", "stale"} and _should_launch_status(
+    return status in {"failed", "cancelled", "stale"} and _should_launch_status(
         status,
         reprocess,
     )

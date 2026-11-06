@@ -121,7 +121,7 @@ const graph: GraphSpec = {
 
 function taskBindingSpec(sourceDataId = 'inputs'): StudioTaskBindingSpec {
   return {
-    schema_version: 'feedbax.spec.studio.task_bindings.v2',
+    schema_version: 'feedbax.spec.studio.task_bindings.v3',
     exposed_data: [
       {
         id: 'inputs',
@@ -207,6 +207,36 @@ describe('projectStudioSchema', () => {
     expect(issueTypes).toContain('graph_wire_dtype_mismatch');
     expect(issueTypes).toContain('wrong_source_port_direction');
     expect(issueTypes).toContain('graph_input_occupied');
+  });
+
+  it('names conflicting external inputs and recurrent wires at their exact target', () => {
+    const registry = projectStudioSchema(
+      {
+        ...graph,
+        input_ports: ['command', 'override'],
+        input_bindings: {
+          command: ['sink', 'excitation'],
+          override: ['sink', 'excitation'],
+        },
+        wires: [{
+          source_node: 'source',
+          source_port: 'output',
+          target_node: 'sink',
+          target_port: 'excitation',
+          temporality: 'recurrent',
+          recurrent_initializer: { kind: 'zeros' },
+        }],
+      },
+      components
+    );
+    const conflicts = registry.issues.filter((issue) => issue.type === 'graph_input_occupied');
+
+    expect(conflicts).toHaveLength(2);
+    expect(conflicts[0].message).toContain('sink.excitation');
+    expect(conflicts[0].message).toContain("external input 'command'");
+    expect(conflicts[0].message).toContain("external input 'override'");
+    expect(conflicts[1].message).toContain("external input 'command'");
+    expect(conflicts[1].message).toContain('recurrent wire source.output');
   });
 
   it('validates task-data binding conflicts against projected schemas', () => {
@@ -421,7 +451,7 @@ describe('projectStudioSchema', () => {
 
   it('projects dynamic mux input ports with the mux input schema', () => {
     const muxTaskBindings: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.spec.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v3',
       exposed_data: [
         {
           id: 'target_on',
@@ -473,7 +503,7 @@ describe('projectStudioSchema', () => {
 
   it('infers mux output width from bound task-data sample shapes', () => {
     const muxTaskBindings: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.spec.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v3',
       exposed_data: [
         {
           id: 'target_position',
@@ -541,7 +571,7 @@ describe('projectStudioSchema', () => {
 
   it('derives network size constraints from task muxes and mechanics consumers', () => {
     const spec: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.spec.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v3',
       exposed_data: [
         {
           id: 'target_position',
@@ -642,7 +672,7 @@ describe('projectStudioSchema', () => {
 
   it('uses subgraph boundary schemas for parent port compatibility', () => {
     const spec: StudioTaskBindingSpec = {
-      schema_version: 'feedbax.spec.studio.task_bindings.v2',
+      schema_version: 'feedbax.spec.studio.task_bindings.v3',
       exposed_data: [
         {
           id: 'target_position',

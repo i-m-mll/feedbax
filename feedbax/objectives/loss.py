@@ -45,9 +45,10 @@ import jax.numpy as jnp
 import jax.tree as jt
 import jax.tree_util as jtu
 from equinox import AbstractVar, Module
-from feedbax._vendor.jax_cookbook.misc import moving_avg, softmin
+from feedbax._vendor.jax_cookbook.misc import softmin
 from jaxtyping import Array, ArrayLike, Float, PyTree
 
+from feedbax._numerics import sqrt_with_zero_grad
 from feedbax.runtime.graph import Component
 from feedbax.runtime.mapping import WhereDict
 from feedbax.runtime.naming import get_unique_label
@@ -496,8 +497,9 @@ class CompositeLoss(AbstractTermedLoss):
 
         Arguments:
             terms: The sequence or mapping of loss terms to be included.
-            weights: A float PyTree of the same structure as `terms`, giving
-                the scalar term weights. By default, all terms have equal weight.
+            weights: Scalar term weights. A sequence matches the term order.
+                A mapping must contain exactly the input term keys, or the unique
+                term labels when `terms` is a sequence. Defaults to 1.0 per term.
             label: The label for the composite loss.
             user_labels: If `True`, the keys in `terms`---if it is a mapping---
                 are used as term labels, instead of the `label` field of each term.
@@ -508,82 +510,55 @@ class CompositeLoss(AbstractTermedLoss):
         self.label = label
 
         if isinstance(terms, Mapping):
-            if user_labels:
-                labels, terms = list(zip(*terms.items()))
-            else:
-                labels = [term.label for term in terms.values()]
-                terms = list(terms.values())
+            weight_keys = tuple(terms)
+            loss_terms = tuple(terms[key] for key in weight_keys)
+            labels = weight_keys if user_labels else tuple(term.label for term in loss_terms)
         elif isinstance(terms, Sequence):
-            # TODO: if `terms` is a dict, this fails!
-            labels = [term.label for term in terms]
+            loss_terms = tuple(terms)
+            labels = weight_keys = tuple(term.label for term in loss_terms)
         else:
             raise ValueError("terms must be a mapping or sequence of AbstractLoss")
 
         if isinstance(weights, Mapping):
-            weight_values = tuple(weights.values())
+            expected = set(weight_keys)
+            if len(expected) != len(weight_keys):
+                raise ValueError("Mapping weights for a sequence of loss terms require unique labels")
+            provided = set(weights)
+            missing = expected - provided
+            unknown = provided - expected
+            if missing or unknown:
+                raise ValueError(
+                    f"Loss weight keys must match term keys. "
+                    f"Missing: {sorted(missing, key=repr)}. Unknown: {sorted(unknown, key=repr)}."
+                )
+            weight_values = (weights[key] for key in weight_keys)
         elif isinstance(weights, Sequence):
-            weight_values = tuple(weights)
+            if len(weights) != len(loss_terms):
+                raise ValueError("Mismatch between number of loss terms and number of term weights")
+            weight_values = iter(weights)
         elif weights is None:
-            weight_values = tuple(1.0 for _ in terms)
-
-        if not len(terms) == len(weight_values):
-            raise ValueError("Mismatch between number of loss terms and number of term weights")
-
-        # Split into lists of data for simple and composite terms.
-        term_tuples_split: Tuple[
-            Sequence[Tuple[str, AbstractLoss, float]],
-            Sequence[Tuple[str, AbstractLoss, float]],
-        ]
-        term_tuples_split = eqx.partition(
-            list(zip(labels, terms, weight_values)),
-            lambda x: not isinstance(x[1], CompositeLoss),
-            is_leaf=lambda x: isinstance(x, tuple),
-        )
-
-        # Removes the `None` values from the lists.
-        term_tuples_leaves = jt.map(
-            lambda x: jtu.tree_leaves(x, is_leaf=lambda x: isinstance(x, tuple)),
-            term_tuples_split,
-            is_leaf=lambda x: isinstance(x, list),
-        )
-
-        # Start with the simple terms, if there are any.
-        if term_tuples_leaves[0] == []:
-            all_labels, all_terms, all_weights = (), (), ()
+            weight_values = (1.0 for _ in loss_terms)
         else:
-            all_labels, all_terms, all_weights = zip(*term_tuples_leaves[0])
+            raise ValueError("weights must be a mapping or sequence of scalar weights")
 
-        # Make sure the simple term labels are unique.
-        for i, label in enumerate(all_labels):
-            label = get_unique_label(label, all_labels[:i])
-            all_labels = all_labels[:i] + (label,) + all_labels[i + 1 :]
+        self.terms = {}
+        self.weights = {}
+        composites = []
+        for term_label, term, weight in zip(labels, loss_terms, weight_values, strict=True):
+            if isinstance(term, CompositeLoss):
+                composites.append((term_label, term, weight))
+            else:
+                name = get_unique_label(term_label, self.terms.keys())
+                self.terms[name] = term
+                self.weights[name] = weight
 
-        # Flatten the composite terms, assuming they have the usual dict
-        # attributes. We only need to flatten one level, because this `__init__`
-        # (and the immutability of `eqx.Module`) ensures no deeper nestings
-        # are ever constructed except through extreme hacks.
-        for group_label, composite_term, group_weight in term_tuples_leaves[1]:
-            labels = composite_term.terms.keys()
-
-            # If a unique label for the composite term is available, use it to
-            # format the labels of the flattened terms.
-            if group_label != "":
-                labels = [f"{group_label}_{label}" for label in labels]
-            elif composite_term.label != "":
-                labels = [f"{composite_term.label}_{label}" for label in labels]
-
-            # Make sure the labels are unique.
-            for label in labels:
-                label = get_unique_label(label, all_labels)
-                all_labels += (label,)
-
-            all_terms += tuple(composite_term.terms.values())
-            all_weights += tuple(
-                [group_weight * weight for weight in composite_term.weights.values()]
-            )
-
-        self.terms = dict(zip(all_labels, all_terms))
-        self.weights = dict(zip(all_labels, all_weights))
+        for group_label, composite, group_weight in composites:
+            group_label = group_label or composite.label
+            for child_name, child in composite.terms.items():
+                label = f"{group_label}_{child_name}" if group_label else child_name
+                name = get_unique_label(label, self.terms.keys())
+                self.terms[name] = child
+                self.weights[name] = group_weight * composite.weights[child_name]
 
     def __or__(self, other: "CompositeLoss") -> "CompositeLoss":
         """Merge two composite losses, overriding terms with the same label."""
@@ -609,8 +584,7 @@ class CompositeLoss(AbstractTermedLoss):
         children = {}
         for name, loss in self.terms.items():
             node = loss(states, trial_specs, model)
-            w = self.weights.get(name, 1.0)
-            children[name] = node.with_weight(w)
+            children[name] = node.with_weight(self.weights[name])
         return TermTree.branch(self.label, children, originator=self)
 
     def without(self, *keys: str, label: Optional[str] = None) -> "CompositeLoss":
@@ -621,32 +595,15 @@ class CompositeLoss(AbstractTermedLoss):
             label=self.label if label is None else label,
         )
 
-    def with_weights(self, new_weights: dict[str, float]) -> "CompositeLoss":
-        """Return a new `CompositeLoss` with updated weights, preserving structure.
+    def with_weights(self, new_weights: Mapping[str, float]) -> "CompositeLoss":
+        """Return a new loss with selected weights updated by term name.
 
-        Arguments:
-            new_weights: Dictionary mapping term names to new weight values.
-                Only the weights for keys present in this dict will be updated;
-                other weights remain unchanged.
-
-        Returns:
-            A new `CompositeLoss` instance with the updated weights but the same
-            term structure. This operation does not trigger JIT recompilation
-            since the PyTree structure is preserved.
+        Keys must name existing terms. Omitted weights retain their values.
         """
-        return eqx.tree_at(
-            lambda loss: loss.weights,
-            self,
-            new_weights
-        )
-
-    # def skeleton(self, batch_dims: tuple[int, ...]) -> TermTree:
-    #     children: dict[str, TermTree] = {}
-    #     for name, loss in self.terms.items():
-    #         child = loss.skeleton(batch_dims)
-    #         child = child.with_weight(self.weights.get(name, 1.0))
-    #         children[name] = child
-    #     return TermTree.branch(self.label, children, originator=self)
+        unknown = set(new_weights).difference(self.terms)
+        if unknown:
+            raise ValueError(f"Unknown loss weight keys: {sorted(unknown, key=repr)}")
+        return eqx.tree_at(lambda loss: loss.weights, self, {**self.weights, **new_weights})
 
 
 # Maybe rename TargetValueSpec; I feel like a "`TargetSpec`" would include a `where` field
@@ -687,17 +644,8 @@ class TargetSpec(Module):
 
     @property
     def batch_axes(self) -> PyTree[None | int]:
-        # Assume that only the target value will vary between trials.
-        # TODO: (Low priority.) It's probably better to give control over this to
-        # `AbstractTask`, since in some cases we might want to vary these parameters
-        # over trials and not just across batches. And if we don't want to vary them
-        # at all, then why are time_mask and discount not just fields of
-        # `TargetStateLoss`?
-        return TargetSpec(
-            value=0,
-            time_mask=None,
-            discount=None,
-        )
+        """Target values map over trials. Time selectors are shared or callable."""
+        return TargetSpec(value=0 if self.value is not None else None)
 
 
 """Useful partial target specs"""
@@ -756,7 +704,8 @@ class TargetStateLoss(AbstractLoss):
             "TargetStateLoss requires trial_specs, but trial_specs is None"
         )
 
-        density, selectors = _retained_target_density(self, states, trial_specs)
+        state, target, selectors = _retained_target_inputs(self, states, trial_specs)
+        density = _target_density(self, state, target)
         return _sum_target_density(density, selectors, trial_specs)
 
 
@@ -806,37 +755,74 @@ def _target_weight_selectors(target: TargetSpec, n_steps: int) -> tuple["Weights
     return tuple(weight for weight in (mask, target.discount) if weight is not None)
 
 
-def _target_density(loss: TargetStateLoss, state: Array, target: Array) -> Array:
+def _norm_on_support(
+    norm: Callable,
+    residual: Array,
+    support: Array | None,
+    *,
+    time_axis: int,
+    density_time_axis: int,
+) -> Array:
+    if support is None:
+        return norm(residual)
+
+    def mask_along_time(ndim: int, axis: int) -> Array:
+        shape = [1] * ndim
+        shape[0] = support.shape[0]
+        shape[axis] = support.shape[1]
+        return support.reshape(shape)
+
+    # A nonzero residual keeps Euclidean norm derivatives defined at inactive steps.
+    residual = jnp.where(mask_along_time(residual.ndim, time_axis), residual, 1)
+    density = norm(residual)
+    return jnp.where(mask_along_time(density.ndim, density_time_axis), density, 0)
+
+
+def _target_density(
+    loss: TargetStateLoss, state: Array, target: Array, *, support: Array | None = None
+) -> Array:
     if jnp.broadcast_shapes(state.shape, jnp.shape(target)) != state.shape:
         raise ValueError(
             f"TargetStateLoss '{loss.label}' target shape {jnp.shape(target)} "
             f"cannot broadcast to selected state shape {state.shape}."
         )
-    return loss.norm(state - target)
+    return _norm_on_support(loss.norm, state - target, support, time_axis=1, density_time_axis=-1)
 
 
-_TARGET_FIRST_STEP = 1
+_LEGACY_TARGET_START_STEP = 1
 
 
-def _retained_target_density(
+def _target_start_step(trial_specs: "TaskTrialSpec") -> int:
+    timeline = getattr(trial_specs, "timeline", None)
+    return getattr(timeline, "target_start_step", _LEGACY_TARGET_START_STEP)
+
+
+def _retained_target_inputs(
     loss: TargetStateLoss, states: PyTree, trial_specs: "TaskTrialSpec"
-) -> tuple[Array, tuple["WeightsSpec", ...]]:
-    state = loss.where(states)[:, _TARGET_FIRST_STEP:]
+) -> tuple[Array, Array, tuple["WeightsSpec", ...]]:
+    state = loss.where(states)[:, _target_start_step(trial_specs):]
     target, trial_axis = _resolve_target_spec(loss, trial_specs)
-    value = jnp.asarray(target.value)
+    value = _align_retained_target_value(jnp.asarray(target.value), trial_axis, state.shape[1:])
+    return state, value, _target_weight_selectors(target, state.shape[1])
+
+
+def _align_retained_target_value(
+    value: Array, trial_axis: int | None, trial_state_shape: tuple[int, ...]
+) -> Array:
     if trial_axis is not None and value.ndim:
         value = jnp.moveaxis(value, trial_axis, 0)
-        value = value.reshape(
-            (value.shape[0], *_align_target_shape(value.shape[1:], state.shape[1:]))
+        return value.reshape(
+            (value.shape[0], *_align_target_shape(value.shape[1:], trial_state_shape))
         )
-    else:
-        value = value.reshape(_align_target_shape(value.shape, state.shape[1:]))
-    density = _target_density(loss, state, value)
-    return density, _target_weight_selectors(target, state.shape[1])
+    return value.reshape(_align_target_shape(value.shape, trial_state_shape))
 
 
 def _sum_target_density(
-    density: Array, selectors: Sequence["WeightsSpec"], trial_specs: "TaskTrialSpec"
+    density: Array,
+    selectors: Sequence["WeightsSpec"],
+    trial_specs: "TaskTrialSpec",
+    *,
+    support: Array | None = None,
 ) -> Array:
     if not selectors:
         return density.sum(axis=-1)
@@ -847,6 +833,7 @@ def _sum_target_density(
         trial_axis=0,
         trial_axis_specs=0,
         masks=selectors,
+        support=support,
     )
 
 
@@ -925,11 +912,15 @@ def reduce_over_time_with_weights(
     trial_axis: int,  # where trial axis lives in `arr`
     trial_axis_specs: int,  # where trial axis lives in `trial_specs` leaves
     masks: Sequence[WeightsSpec],  # any number of scalar/(T,) or callable(spec_i)->scalar/(T,)
+    support: Array | None = None,  # Boolean (trial, time) support of the input density.
 ) -> Array:
     """
     1) Transpose so: (trial, ..., time).
     2) Build combined per-trial weights W (N, T) by multiplying all masks.
     3) Weighted sum over time, restore trial axis, drop time axis.
+
+    If provided, support zeros each weight before multiplication. The caller
+    supplies an input density that is already zero outside that support.
     """
     # Put trial at 0 and time at -1 in one explicit transpose
     perm = _trial_time_perm(arr.ndim, trial_axis, time_axis)
@@ -942,10 +933,10 @@ def reduce_over_time_with_weights(
 
     N = arr_rt.shape[0]
     if masks:
-        weights = _multiply_time_weights(
-            [_per_trial_weights(selector, specs_T0, N, T) for selector in masks],
-            dtype,
-        )
+        prepared = [_per_trial_weights(selector, specs_T0, N, T) for selector in masks]
+        if support is not None:
+            prepared = [jnp.where(support, weight, 0) for weight in prepared]
+        weights = _multiply_time_weights(prepared, dtype)
         weight_shape = (N,) + (1,) * (arr_rt.ndim - 2) + (T,)
         arr_rt = arr_rt * weights.reshape(weight_shape)
     reduced = arr_rt.sum(axis=-1)
@@ -981,12 +972,15 @@ effector_vel_loss = TargetStateLoss(
 class StopAtGoalLoss(AbstractLoss):
     """Encourages the effector to stop at the goal at least once.
 
-    This is different from the typical "be at goal by the end of trial" loss.
+    Each trial scores complete windows of ``window_len`` consecutive steps starting at
+    or after the timeline's target start step. The mean cost of each window combines
+    squared position error and squared velocity. ``softmin`` approximates the lowest
+    window cost. ``soft-or`` penalizes a low probability that any window succeeds,
+    with ``eps`` in ``(0, 1]`` setting a probability floor.
 
-    Two methods are provided: "softmin" and "soft-or". Soft-or is based only on the existence of
-    a time window where the effector is at the goal, and so may be preferred if we do not want time
-    pressure (aside from what is implied by `window_len` versus episode length). Softmin may or may
-    not add some time pressure, depending on the other parameters.
+    The position target may be a shared feature vector, a per-trial feature vector,
+    or a per-trial trajectory defined on the scored steps. The returned ``TermTree``
+    contains one loss per trial and takes their mean in its total.
     """
 
     label: str = "effector_stop_at_goal"
@@ -994,11 +988,15 @@ class StopAtGoalLoss(AbstractLoss):
     std_dist: float = 0.025  # how close to goal is "at goal"
     std_vel: float = 0.05
     vel_weight: float = 1.0
-    window_len: int = 5  # min no. steps required to be "at goal"
+    window_len: int = eqx.field(default=5, static=True)
     # softmin: how soft the min is (small -> credit focused on a single window)
     # soft-or: how close to the goal we need to be to register as a success
     tau: float = 0.2
-    eps: float = 1e-6  # to avoid log(0)
+    eps: float = 1e-6  # probability floor for soft-or
+
+    def __check_init__(self):
+        if self.window_len < 1:
+            raise ValueError("StopAtGoalLoss window_len must be >= 1")
 
     def term(
         self,
@@ -1008,25 +1006,35 @@ class StopAtGoalLoss(AbstractLoss):
     ) -> Array:
         assert states is not None, "StopAtGoalLoss requires states"
         assert trial_specs is not None, "StopAtGoalLoss requires trial_specs"
-        # assert trial_specs is not None, "StopAtGoalLoss requires trial_specs"
+        effector = states.mechanics.effector
+        start = _target_start_step(trial_specs)
+        pos = effector.pos[:, start:]
+        vel = effector.vel[:, start:]
+        if self.window_len > pos.shape[1]:
+            raise ValueError(
+                f"StopAtGoalLoss window_len ({self.window_len}) exceeds the number "
+                f"of scored steps ({pos.shape[1]})."
+            )
 
-        pos = states.mechanics.effector.pos[:, 1:]
-        vel = states.mechanics.effector.vel[:, 1:]
-        goal = trial_specs.targets["mechanics.effector.pos"].value  # [B, 2]
-
-        dist_sq = jnp.sum((pos - goal) ** 2, axis=-1)
-        vel_sq = jnp.sum(vel**2, axis=-1)
-        c = dist_sq / (self.std_dist**2) + self.vel_weight * vel_sq / (self.std_vel**2)  # [T+1]
-        c_avgs = moving_avg(c, self.window_len)  # [T+1-K]
+        goal = trial_specs.targets["mechanics.effector.pos"]
+        value = jnp.asarray(goal.value)
+        trial_axis = None if value.ndim == 1 else goal.batch_axes.value
+        target = _align_retained_target_value(value, trial_axis, pos.shape[1:])
+        target = jnp.broadcast_to(target, pos.shape)
+        dtype = jnp.result_type(pos, vel, target, jnp.float32)
+        dist_sq = jnp.sum((pos.astype(dtype) - target.astype(dtype)) ** 2, axis=-1)
+        vel_sq = jnp.sum(vel.astype(dtype) ** 2, axis=-1)
+        cost = dist_sq / self.std_dist**2 + self.vel_weight * vel_sq / self.std_vel**2
+        window_cost = jax.lax.reduce_window(
+            cost, 0.0, jax.lax.add, (1, self.window_len), (1, 1), "VALID"
+        ) / self.window_len
 
         if self.method == "softmin":
-            return softmin(c_avgs, self.tau)  # scalar
+            return softmin(window_cost, self.tau)
         elif self.method == "soft-or":
-            s = jnp.clip(jax.nn.sigmoid(-c_avgs / self.tau), 1e-12, 1.0 - 1e-12)
-            log1m_s = jnp.log1p(-(s - self.eps))
-            log_prod = jnp.sum(log1m_s)
-            p_exist = 1.0 - jnp.exp(log_prod)
-            return -jnp.log(p_exist + self.eps)
+            log_no_success = jax.nn.log_sigmoid(window_cost / self.tau).sum(axis=-1)
+            p_exist = -jnp.expm1(log_no_success)
+            return -jnp.log(self.eps + (1 - self.eps) * p_exist)
         else:
             raise ValueError("method must be 'softmin' or 'soft-or'")
 
@@ -1056,6 +1064,11 @@ class CrossTimestepLoss(AbstractLoss):
     norm: AbstractVar[Callable]
 
 
+def _squared_difference_norm(delta: Array, *, time_axis: int = 1) -> Array:
+    feature_axes = tuple(axis for axis in range(1, delta.ndim) if axis != time_axis)
+    return jnp.sum(delta**2, axis=feature_axes)
+
+
 class NthDifferenceLoss(CrossTimestepLoss):
     """Penalize the squared N-th finite difference of a state variable.
 
@@ -1065,6 +1078,10 @@ class NthDifferenceLoss(CrossTimestepLoss):
     leaf is differenced and squared-summed over its non-time/non-trial axes,
     then the contributions are summed across leaves.
 
+    Trial is axis 0 unless time is on axis 0, which represents an unbatched
+    trajectory. An explicit ``norm`` receives the differenced array in its
+    original layout and must preserve the position of the time axis.
+
     ``order=1`` reproduces :class:`StateDerivativeLoss`; ``order=2`` reproduces
     :class:`OutputJerkLoss` when applied to effector velocity.
     """
@@ -1073,7 +1090,7 @@ class NthDifferenceLoss(CrossTimestepLoss):
     order: int = eqx.field(default=1, static=True)
     where: Callable = lambda state: state
     time_axis: int = 1
-    norm: Callable = lambda x: jnp.sum(x**2, axis=-1)
+    norm: Callable = _squared_difference_norm
 
     def __check_init__(self):
         if self.order < 1:
@@ -1086,9 +1103,24 @@ class NthDifferenceLoss(CrossTimestepLoss):
                 f"{self.order} timesteps, got {n_steps}."
             )
 
-    def _difference_density(self, state: Array, time_axis: int) -> Array:
+    def _resolve_time_axis(self, state: Array) -> int:
+        return range(state.ndim)[self.time_axis]
+
+    def _difference_density(
+        self, state: Array, time_axis: int, *, support: Array | None = None
+    ) -> tuple[Array, int]:
+        """Return the per-step density and the position of its time axis."""
         self._validate_length(state.shape[time_axis])
-        return self.norm(jnp.diff(state, n=self.order, axis=time_axis))
+        difference = jnp.diff(state, n=self.order, axis=time_axis)
+        norm = self.norm
+        density_time_axis = time_axis
+        if norm is _squared_difference_norm:
+            norm = ft.partial(_squared_difference_norm, time_axis=time_axis)
+            density_time_axis = min(time_axis, 1)
+        density = _norm_on_support(
+            norm, difference, support, time_axis=time_axis, density_time_axis=density_time_axis
+        )
+        return density, density_time_axis
 
     def term(
         self,
@@ -1101,9 +1133,8 @@ class NthDifferenceLoss(CrossTimestepLoss):
         substate = self.where(states)
 
         def _per_leaf(arr: Array) -> Array:
-            time_axis = self.time_axis if self.time_axis >= 0 else arr.ndim + self.time_axis
-            d_norm = self._difference_density(arr, time_axis)
-            return jnp.mean(d_norm, axis=time_axis)
+            density, axis = self._difference_density(arr, self._resolve_time_axis(arr))
+            return jnp.mean(density, axis=axis)
 
         per_leaf = jt.map(_per_leaf, substate)
         leaves = jt.leaves(per_leaf)
@@ -1177,12 +1208,11 @@ class OutputJerkLoss(NthDifferenceLoss):
 class EpochMaskedLoss(AbstractLoss):
     """Compositional time-mask wrapper that restricts a base loss to specified epochs.
 
-    Wraps an existing :class:`AbstractLoss` so its per-(trial, time) contribution
-    is multiplied by a per-trial mask of shape ``(n_trials, n_steps)`` *before*
-    the time-axis aggregation. Outside the mask, the contribution is exactly
-    zero. The mask is constructed from ``trial_specs.timeline.epoch_bounds``
-    and the configured ``epoch_indices`` — the mask is true at timestep ``t``
-    iff ``t`` falls within one of the listed epochs.
+    The mask selects per-(trial, time) contributions from
+    ``trial_specs.timeline.epoch_bounds`` and the configured ``epoch_indices``.
+    Inactive contributions are zero. The wrapped norm acts independently on
+    each trial and timestep and should have a finite value and derivative on
+    the all-ones residual used at inactive steps.
 
     For example, to penalise pre-go controller output on a `DelayedReaches`
     task with ``epoch_names=("hold", "target_on", "movement")``, wrap a
@@ -1290,13 +1320,10 @@ class EpochMaskedLoss(AbstractLoss):
         trial_specs: "TaskTrialSpec",
         model: Component,
     ) -> TermTree["AbstractLoss"]:
-        # Support nested wrapping: unwrap to the innermost concrete loss.
-        # (Composing two EpochMaskedLoss layers is not a typical use case, but
-        # this guards against confusing failures.)
         base = self.base_loss
 
         if isinstance(base, TargetStateLoss):
-            value = self._call_target_state(base, states, trial_specs, model)
+            value = self._call_target_state(base, states, trial_specs)
         elif isinstance(base, NthDifferenceLoss):
             value = self._call_cross_timestep(base, states, trial_specs)
         else:
@@ -1318,27 +1345,16 @@ class EpochMaskedLoss(AbstractLoss):
         base: "TargetStateLoss",
         states: PyTree,
         trial_specs: "TaskTrialSpec",
-        model: Component,
     ) -> Array:
-        """Reuse `TargetStateLoss.term` machinery, but inject our epoch mask
-        into the list of weight selectors used by `reduce_over_time_with_weights`.
-        """
         assert states is not None
         assert trial_specs is not None
 
-        loss_over_time, selectors = _retained_target_density(base, states, trial_specs)
-        T = loss_over_time.shape[-1]
-        n_steps = self._mask_n_steps(trial_specs, T + 1)
-        epoch_mask = self._build_mask(trial_specs, n_steps)
-        epoch_mask_inner = self._align_mask_to_loss_time_axis(epoch_mask, T).astype(
-            loss_over_time.dtype
-        )
-
-        m_view_shape = [1] * loss_over_time.ndim
-        m_view_shape[0] = epoch_mask_inner.shape[0]
-        m_view_shape[-1] = epoch_mask_inner.shape[1]
-        loss_over_time = loss_over_time * epoch_mask_inner.reshape(m_view_shape)
-        return _sum_target_density(loss_over_time, selectors, trial_specs)
+        state, target, selectors = _retained_target_inputs(base, states, trial_specs)
+        T = state.shape[1]
+        n_steps = self._mask_n_steps(trial_specs, T + _target_start_step(trial_specs))
+        support = self._align_mask_to_loss_time_axis(self._build_mask(trial_specs, n_steps), T)
+        density = _target_density(base, state, target, support=support)
+        return _sum_target_density(density, selectors, trial_specs, support=support)
 
     # --- cross-timestep base losses ------------------------------------------
 
@@ -1356,50 +1372,28 @@ class EpochMaskedLoss(AbstractLoss):
         assert states is not None
         assert trial_specs is not None
 
-        substate = base.where(states)
-        time_axis = base.time_axis
-
-        leaves = jt.leaves(substate)
+        leaves = jt.leaves(base.where(states))
         if not leaves:
             raise ValueError(
                 f"EpochMaskedLoss('{self.label}'): wrapped {type(base).__name__} "
                 "selected no array leaves to penalise."
             )
-        if time_axis < 0:
-            time_axis += leaves[0].ndim
-        T_full = leaves[0].shape[time_axis]
+        T_full = leaves[0].shape[base._resolve_time_axis(leaves[0])]
         base._validate_length(T_full)
         T_diff = T_full - base.order
         n_steps = self._mask_n_steps(trial_specs, T_full)
         epoch_mask = self._build_mask(trial_specs, n_steps)
         # Full-rollout timelines drop the consumed initial samples; target-length
         # timelines already share the right edge with first-difference densities.
-        mask_aligned = self._align_mask_to_loss_time_axis(epoch_mask, T_diff).astype(
-            leaves[0].dtype
-        )
+        support = self._align_mask_to_loss_time_axis(epoch_mask, T_diff)
 
         def _per_leaf(arr: Array) -> Array:
-            d_norm = base._difference_density(arr, time_axis)
-            # Broadcast mask to match d_norm, masking trailing axes if any.
-            # d_norm should have time at `time_axis` after `norm` reduces
-            # the trailing feature axes.
-            # We need to multiply (N, T_full-order) by mask_aligned along
-            # the appropriate axes. After `norm`, `time_axis` is preserved.
-            # Build a broadcast view of the mask.
-            mask_view_shape = [1] * d_norm.ndim
-            # Trial axis 0 (per feedbax convention).
-            mask_view_shape[0] = mask_aligned.shape[0]
-            # Time axis at base.time_axis (after norm collapses trailing dims,
-            # time_axis index in d_norm is the same as in arr because we only
-            # reduce trailing feature axes).
-            mask_view_shape[time_axis] = mask_aligned.shape[1]
-            m = mask_aligned.reshape(mask_view_shape)
-            masked = d_norm * m
-            return jnp.mean(masked, axis=time_axis)
+            density, axis = base._difference_density(
+                arr, base._resolve_time_axis(arr), support=support
+            )
+            return jnp.mean(density, axis=axis)
 
-        per_leaf = jt.map(_per_leaf, substate)
-        leaves_out = jt.leaves(per_leaf)
-        return ft.reduce(jnp.add, leaves_out)
+        return ft.reduce(jnp.add, map(_per_leaf, leaves))
 
 
 class EffectorStraightPathLoss(AbstractLoss):
@@ -1407,14 +1401,19 @@ class EffectorStraightPathLoss(AbstractLoss):
     and final position.
 
     !!! Info ""
-        Calculates the length of the paths followed, and normalizes by the
-        Euclidean (straight-line) distance between the initial and final state.
+        Divides the path length by the straight-line distance from the initial
+        position to the selected endpoint. Differentiation uses a zero gradient
+        for zero-length segments. With a zero reference distance, a stationary
+        path scores zero and a moving path scores positive infinity, which can
+        make the batch mean infinite. Both zero-reference cases use a zero
+        gradient by convention.
 
     Attributes:
         label: The label for the loss term.
         normalize_by: Controls whether to normalize by the distance between the
             initial position & actual final position, or the initial position
-            & task-specified goal position.
+            & task-specified goal position. For position target trajectories,
+            the goal is the last target position.
     """
 
     label: str = "effector_path_straightness"
@@ -1430,21 +1429,34 @@ class EffectorStraightPathLoss(AbstractLoss):
         assert trial_specs is not None, "EffectorStraightPathLoss requires trial_specs"
 
         effector_pos = states.mechanics.effector.pos
+        initial_pos = effector_pos[:, 0]
         pos_diff = jnp.diff(effector_pos, axis=1)
-        piecewise_lengths = jnp.linalg.norm(pos_diff, axis=-1)
+        piecewise_lengths = sqrt_with_zero_grad(jnp.sum(jnp.square(pos_diff), axis=-1))
         path_length = jnp.sum(piecewise_lengths, axis=1)
         if self.normalize_by == "actual":
             final_pos = effector_pos[:, -1]
         elif self.normalize_by == "goal":
-            final_pos = trial_specs.targets["mechanics.effector"].value.pos
+            target = trial_specs.targets["mechanics.effector.pos"]
+            final_pos = jnp.asarray(target.value)
+            trial_axis = target.batch_axes.value
+            time_axis = 0
+            if trial_axis is not None and final_pos.ndim >= initial_pos.ndim:
+                final_pos = jnp.moveaxis(final_pos, trial_axis, 0)
+                time_axis = 1
+            if final_pos.ndim == initial_pos.ndim + time_axis:
+                if final_pos.shape[time_axis] == 0:
+                    raise ValueError("EffectorStraightPathLoss requires a nonempty goal trajectory")
+                final_pos = jnp.moveaxis(final_pos, time_axis, 0)[-1]
+            final_pos = jnp.broadcast_to(final_pos, initial_pos.shape)
         else:
             raise ValueError("normalize_by must be 'actual' or 'goal'")
-        init_final_diff = final_pos - effector_pos[:, 0]
-        straight_length = jnp.linalg.norm(init_final_diff, axis=-1)
+        init_final_diff = final_pos - initial_pos
+        straight_length = sqrt_with_zero_grad(jnp.sum(jnp.square(init_final_diff), axis=-1))
 
-        loss = path_length / straight_length
-
-        return loss
+        zero_reference = straight_length == 0
+        # Keep the division's derivative finite at a zero reference distance.
+        ratio = path_length / jnp.where(zero_reference, 1, straight_length)
+        return jnp.where(zero_reference & (path_length > 0), jnp.inf, ratio)
 
 
 def power_discount(n_steps: int, discount_exp: int = 6) -> Array:

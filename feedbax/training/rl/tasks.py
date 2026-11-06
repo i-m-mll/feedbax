@@ -146,13 +146,13 @@ class TaskParams(NamedTuple):
         task_type: Integer task type (0=reach, 1=hold, 2=track, 3=swing).
         start_pos: Starting position, shape ``(2,)``.
         end_pos: Target endpoint, shape ``(2,)``.
-        perturb_time_idx: Timestep index for perturbation onset.
+        perturb_time_idx: Task sample index for perturbation onset.
         perturb_force: Perturbation force vector, shape ``(2,)``.
         control_points: Catmull-Rom control points, shape ``(6, 2)``.
-        t0: Start time.
-        tf: End time.
-        dt: Timestep.
-        n_steps: Total number of timesteps.
+        t0: First sample time in seconds.
+        tf: Last sample time in seconds.
+        dt: Seconds between task samples (control steps in PPO).
+        n_steps: Total number of task samples.
     """
 
     task_type: int
@@ -419,11 +419,12 @@ def sample_task_params_jax(
 ) -> TaskParams:
     """Sample compact task parameters in a fully JAX-traceable way.
 
-    When ``use_fk`` is True, targets are sampled in joint space and mapped to
-    Cartesian space via forward kinematics. This guarantees all targets are
-    physically reachable by the arm. When ``use_fk`` is False, falls back to
-    uniform Cartesian sampling within ``reach_radius`` (legacy behavior, no
-    reachability guarantee).
+    With ``use_fk=True``, reach and hold positions and track control points are
+    sampled in joint space and mapped through forward kinematics. With
+    ``use_fk=False``, reach and hold sample uniformly within Cartesian coordinate
+    bounds and track samples angles and radii independently. The Cartesian reach
+    positions and track angles use independent PRNG streams and differ for the
+    same seed from versions that shared keys with forward kinematics.
 
     When ``use_curriculum`` is True, the REACH target's distance from the
     start position is clamped to ``max_target_distance``. This supports
@@ -434,8 +435,8 @@ def sample_task_params_jax(
         key: PRNG key.
         task_type: Fixed task type (0-3) used when ``single_task`` is True.
             May be a traced integer (safe inside vmap).
-        n_steps: Number of timesteps per episode.
-        dt: Physics timestep in seconds.
+        n_steps: Number of task samples per episode.
+        dt: Seconds between task samples.
         segment_lengths: Segment lengths for FK-based reachable sampling.
             Shape ``(n_joints,)``.
         use_fk: Whether to use FK-based reachable sampling.
@@ -453,7 +454,10 @@ def sample_task_params_jax(
     use_curriculum = jnp.asarray(use_curriculum)
     single_task = jnp.asarray(single_task)
 
-    key, type_key, k1, k2, k3 = jax.random.split(key, 5)
+    hold_key, type_key, reach_fk_key, cartesian_key, track_key = jax.random.split(key, 5)
+    reach_start_cartesian_key, reach_end_cartesian_key, track_angle_key = jax.random.split(
+        cartesian_key, 3
+    )
     sampled_task_type = jax.random.randint(type_key, (), 0, 4)
     fixed_task_type = jnp.asarray(task_type)
     task_type = jnp.where(single_task, fixed_task_type, sampled_task_type)
@@ -463,17 +467,17 @@ def sample_task_params_jax(
     dt_arr = jnp.asarray(dt)
 
     # --- Reach ---
-    rk1, rk2 = jax.random.split(k1)
-    reach_start_fk = _sample_reachable_pos(rk1, segment_lengths)
-    reach_end_fk = _sample_reachable_pos(rk2, segment_lengths)
+    reach_start_fk_key, reach_end_fk_key = jax.random.split(reach_fk_key)
+    reach_start_fk = _sample_reachable_pos(reach_start_fk_key, segment_lengths)
+    reach_end_fk = _sample_reachable_pos(reach_end_fk_key, segment_lengths)
     reach_start_raw = jax.random.uniform(
-        rk1,
+        reach_start_cartesian_key,
         (2,),
         minval=-reach_radius * 0.5,
         maxval=reach_radius * 0.5,
     )
     reach_end_raw = jax.random.uniform(
-        rk2,
+        reach_end_cartesian_key,
         (2,),
         minval=-reach_radius,
         maxval=reach_radius,
@@ -496,7 +500,7 @@ def sample_task_params_jax(
 
     # --- Hold ---
     # Bug: 67e2e5e -- Randomize perturbation direction, magnitude, and timing
-    key, hold_fk_key, hold_raw_key, hk1, hk2, hk3 = jax.random.split(key, 6)
+    _, hold_fk_key, hold_raw_key, hk1, hk2, hk3 = jax.random.split(hold_key, 6)
     hold_fk = _sample_reachable_pos(hold_fk_key, segment_lengths)
     hold_raw = jax.random.uniform(
         hold_raw_key,
@@ -527,15 +531,15 @@ def sample_task_params_jax(
 
     # --- Track ---
     n_pts = 6
-    k3a, k3b = jax.random.split(k3)
+    track_fk_key, track_radius_key = jax.random.split(track_key)
     # Sample each control point as a reachable position via FK
-    cp_keys = jax.random.split(k3a, n_pts)
+    cp_keys = jax.random.split(track_fk_key, n_pts)
     track_cp_fk = jax.vmap(_sample_reachable_pos, in_axes=(0, None))(
         cp_keys,
         segment_lengths,
     )
-    angles = jax.random.uniform(k3a, (n_pts,), minval=0.0, maxval=2 * jnp.pi)
-    radii = track_radius * (0.6 + 0.4 * jax.random.uniform(k3b, (n_pts,)))
+    angles = jax.random.uniform(track_angle_key, (n_pts,), minval=0.0, maxval=2 * jnp.pi)
+    radii = track_radius * (0.6 + 0.4 * jax.random.uniform(track_radius_key, (n_pts,)))
     track_cp_raw = jnp.stack(
         [radii * jnp.cos(angles), radii * jnp.sin(angles)],
         axis=-1,

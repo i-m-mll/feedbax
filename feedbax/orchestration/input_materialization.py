@@ -7,13 +7,15 @@ import json
 import os
 import stat
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
+from feedbax._secure_fs import rename_no_replace
 from feedbax.contracts.artifact_custody import (
+    ArtifactBlobCustodyError,
     ContentBinding,
     ContentLeaseRecord,
     ContentObjectRef,
@@ -23,7 +25,6 @@ from feedbax.contracts.artifact_custody import (
     ImmutableArtifactBlobProviderSpec,
 )
 from feedbax.contracts.base import ArtifactRef
-from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.staged_execution import (
     STAGED_CHECKPOINT_CUSTODY_BACKEND,
@@ -45,7 +46,10 @@ from feedbax.orchestration.staged_root_custody import (
 )
 from feedbax.persistence.artifact_custody import (
     ImmutableArtifactBlobProvider,
+    copy_content_file,
     open_immutable_artifact_blob_provider,
+    read_content_tree_descriptor,
+    verify_content_file,
 )
 from feedbax.training.checkpoint_custody import (
     CHECKPOINT_SET_NAME,
@@ -236,8 +240,9 @@ def compile_content_input_projection(
     if len(keys) != len(set(keys)):
         raise InputMaterializationError("content bindings contain duplicate typed roles")
 
-    trees: dict[str, tuple[ContentTreeRef, ContentTree]] = {}
-    objects: dict[str, ContentObjectRef] = {}
+    tree_claims = _content_tree_claims(ordered)
+    objects = {ref.descriptor.sha256: ref.descriptor for ref in tree_claims.values()}
+    descriptor_digests = set(objects)
     for binding in ordered:
         validate_staged_binding_name(binding.root_kind)
         validate_staged_binding_name(binding.binding_name)
@@ -249,25 +254,68 @@ def compile_content_input_projection(
             raise InputMaterializationError(
                 f"unsupported content binding root_kind: {binding.root_kind!r}"
             )
-        current = trees.get(binding.tree.tree_id)
-        tree = provider.get_tree(binding.tree) if current is None else current[1]
-        if current is None:
-            trees[binding.tree.tree_id] = (binding.tree, tree)
-        objects[binding.tree.descriptor.sha256] = binding.tree.descriptor
+    trees = tuple((ref, provider.get_tree(ref)) for ref in tree_claims.values())
+    for _, tree in trees:
         for member in tree.files:
-            previous = objects.get(member.object.sha256)
-            if previous is not None and previous != member.object:
-                raise InputMaterializationError(
-                    f"content object metadata conflicts for digest {member.object.sha256}"
-                )
-            if previous is None:
-                provider.get_object(member.object)
-                objects[member.object.sha256] = member.object
+            _register_object_claim(objects, member.object)
+    for digest in sorted(objects.keys() - descriptor_digests):
+        provider.verify_object(objects[digest])
     return ContentInputProjection(
         bindings=ordered,
-        trees=tuple(trees[key] for key in sorted(trees)),
+        trees=trees,
         objects=tuple(objects[key] for key in sorted(objects)),
     )
+
+
+def _register_object_claim(claims: dict[str, ContentObjectRef], ref: ContentObjectRef) -> None:
+    if claims.setdefault(ref.sha256, ref) != ref:
+        raise InputMaterializationError(
+            f"content object metadata conflicts for digest {ref.sha256}"
+        )
+
+
+def _content_tree_claims(bindings: Sequence[ContentBinding]) -> dict[str, ContentTreeRef]:
+    trees: dict[str, ContentTreeRef] = {}
+    for binding in bindings:
+        ref = binding.tree
+        if trees.setdefault(ref.tree_id, ref) != ref:
+            raise InputMaterializationError(f"content tree metadata conflicts for {ref.tree_id}")
+    return dict(sorted(trees.items()))
+
+
+def publish_content_file(
+    source: Path,
+    destination: Path,
+    object_ref: ContentObjectRef,
+    *,
+    verify_source_on_reuse: bool = False,
+) -> None:
+    """Publish one independent file or authenticate the existing winner."""
+    if os.path.lexists(destination):
+        if verify_source_on_reuse:
+            verify_content_file(source, object_ref)
+        verify_content_file(destination, object_ref)
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".content-object-", dir=destination.parent) as staging:
+        staged = Path(staging) / "object"
+        copy_content_file(source, staged, object_ref)
+        parent_descriptor = os.open(
+            destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+        try:
+            rename_no_replace(
+                staged.relative_to(destination.parent).as_posix(),
+                destination.name,
+                source_dir_fd=parent_descriptor,
+                destination_dir_fd=parent_descriptor,
+                error_factory=InputMaterializationError,
+                context="content file publication",
+            )
+        except FileExistsError:
+            verify_content_file(destination, object_ref)
+        finally:
+            os.close(parent_descriptor)
 
 
 def materialize_content_input_projection(
@@ -275,104 +323,12 @@ def materialize_content_input_projection(
     provider: ImmutableArtifactBlobProvider,
     *,
     destination_root: Path | str,
-    object_root: Path | str | None = None,
 ) -> tuple[StagedInput, ...]:
-    """Materialize each unique tree once and point every typed role at that view."""
+    """Publish independent execution files from canonical content objects."""
     root = Path(destination_root).expanduser().resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    objects_root = (
-        Path(object_root).expanduser().resolve()
-        if object_root is not None
-        else root.parent / "objects" / "sha256"
+    materialized = materialize_content_tree_views(
+        projection.trees, destination_root=root, source_for=provider.object_path
     )
-    local_objects: dict[str, Path] = {}
-    for object_ref in projection.objects:
-        destination = objects_root / object_ref.sha256[:2] / object_ref.sha256
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        data = provider.get_object(object_ref)
-        if os.path.lexists(destination):
-            if _read_regular_no_follow(destination) != data:
-                raise InputMaterializationError(
-                    f"conflicting local content object: {object_ref.sha256}"
-                )
-        else:
-            handle, temporary_name = tempfile.mkstemp(
-                prefix=".content-object-", dir=destination.parent
-            )
-            try:
-                with os.fdopen(handle, "wb") as stream:
-                    stream.write(data)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                try:
-                    os.link(temporary_name, destination, follow_symlinks=False)
-                except FileExistsError:
-                    pass
-            finally:
-                Path(temporary_name).unlink(missing_ok=True)
-            if _read_regular_no_follow(destination) != provider.get_object(object_ref):
-                raise InputMaterializationError(
-                    f"published local content object differs: {object_ref.sha256}"
-                )
-        local_objects[object_ref.sha256] = destination
-    descriptors_root = root.parent / "descriptors"
-    descriptors_root.mkdir(parents=True, exist_ok=True)
-    for tree_ref, _tree in projection.trees:
-        descriptor = descriptors_root / tree_ref.descriptor.sha256
-        if not os.path.lexists(descriptor):
-            try:
-                os.link(
-                    local_objects[tree_ref.descriptor.sha256],
-                    descriptor,
-                    follow_symlinks=False,
-                )
-            except FileExistsError:
-                pass
-        if _read_regular_no_follow(descriptor) != provider.get_object(tree_ref.descriptor):
-            raise InputMaterializationError(
-                f"materialized content-tree descriptor differs: {tree_ref.tree_id}"
-            )
-    materialized: dict[str, tuple[Path, tuple[StagedInputFile, ...]]] = {}
-    for tree_ref, tree in projection.trees:
-        destination = root / tree_ref.descriptor.sha256
-        if os.path.lexists(destination):
-            files = _verify_content_tree_view(provider, tree, destination, root)
-        else:
-            build = Path(tempfile.mkdtemp(prefix=".content-tree-", dir=root))
-            try:
-                for directory in tree.directories:
-                    (build / directory).mkdir(parents=True, exist_ok=True)
-                for member in tree.files:
-                    target = build / member.relative_path
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    os.link(local_objects[member.object.sha256], target, follow_symlinks=False)
-                files = _verify_content_tree_view(provider, tree, build, root)
-                try:
-                    parent_descriptor = os.open(
-                        root,
-                        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW,
-                    )
-                    try:
-                        publish_directory_no_replace(
-                            parent_descriptor,
-                            build.name,
-                            destination.name,
-                            expected_identity=os.stat(
-                                build.name,
-                                dir_fd=parent_descriptor,
-                                follow_symlinks=False,
-                            ),
-                        )
-                    finally:
-                        os.close(parent_descriptor)
-                except FileExistsError:
-                    _remove_materialization_tree(build)
-                    files = _verify_content_tree_view(provider, tree, destination, root)
-            except Exception:
-                if build.exists():
-                    _remove_materialization_tree(build)
-                raise
-        materialized[tree_ref.tree_id] = (destination, files)
     return tuple(
         StagedInput(
             target_role=f"content/{binding.root_kind}/{binding.binding_name}",
@@ -383,69 +339,95 @@ def materialize_content_input_projection(
     )
 
 
-def _read_regular_no_follow(path: Path) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise InputMaterializationError(f"content projection member is not regular: {path}")
-        chunks: list[bytes] = []
-        while chunk := os.read(descriptor, 1024 * 1024):
-            chunks.append(chunk)
-        after = os.fstat(descriptor)
-        current = path.lstat()
-        if (before.st_dev, before.st_ino, before.st_size) != (
-            after.st_dev,
-            after.st_ino,
-            after.st_size,
-        ) or (after.st_dev, after.st_ino) != (current.st_dev, current.st_ino):
-            raise InputMaterializationError(
-                f"content projection member changed during read: {path}"
+def materialize_content_tree_views(
+    trees: Sequence[tuple[ContentTreeRef, ContentTree]],
+    *,
+    destination_root: Path,
+    source_for: Callable[[ContentObjectRef], Path],
+    tree_root_mode: int = 0o700,
+) -> dict[str, tuple[Path, tuple[StagedInputFile, ...]]]:
+    """Publish each unique tree with independent writable files and descriptors."""
+    destination_root.mkdir(parents=True, exist_ok=True)
+    descriptors_root = destination_root.parent / "descriptors"
+    materialized: dict[str, tuple[Path, tuple[StagedInputFile, ...]]] = {}
+    for tree_ref, tree in trees:
+        descriptor = tree_ref.descriptor
+        publish_content_file(
+            source_for(descriptor),
+            descriptors_root / descriptor.sha256,
+            descriptor,
+        )
+        destination = destination_root / descriptor.sha256
+        if os.path.lexists(destination):
+            _verify_content_tree_view(tree, destination)
+        else:
+            build = Path(tempfile.mkdtemp(prefix=".content-tree-", dir=destination_root))
+            try:
+                for directory in tree.directories:
+                    (build / directory).mkdir()
+                for member in tree.files:
+                    copy_content_file(
+                        source_for(member.object),
+                        build / member.relative_path,
+                        member.object,
+                    )
+                if tree_root_mode != 0o700:
+                    build.chmod(tree_root_mode)
+                parent_descriptor = os.open(
+                    destination_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                )
+                try:
+                    publish_directory_no_replace(
+                        parent_descriptor,
+                        build.name,
+                        destination.name,
+                        expected_identity=build.lstat(),
+                    )
+                finally:
+                    os.close(parent_descriptor)
+            except FileExistsError:
+                _verify_content_tree_view(tree, destination)
+            finally:
+                if build.exists():
+                    _remove_materialization_tree(build)
+        files = tuple(
+            StagedInputFile(
+                relative_path=(destination / member.relative_path)
+                .relative_to(destination_root)
+                .as_posix(),
+                sha256=member.object.sha256,
+                size_bytes=member.object.size_bytes,
             )
-        return b"".join(chunks)
-    finally:
-        os.close(descriptor)
+            for member in tree.files
+        )
+        materialized[tree_ref.tree_id] = destination, files
+    return materialized
 
 
-def _verify_content_tree_view(
-    provider: ImmutableArtifactBlobProvider | None,
-    tree: ContentTree,
-    destination: Path,
-    root: Path,
-) -> tuple[StagedInputFile, ...]:
-    mode = destination.lstat().st_mode
-    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+def _verify_content_tree_view(tree: ContentTree, destination: Path) -> None:
+    if not stat.S_ISDIR(destination.lstat().st_mode):
         raise InputMaterializationError("materialized content tree is not a regular directory")
     expected = {item.relative_path: item.object for item in tree.files}
     observed: dict[str, Path] = {}
     observed_directories: set[str] = set()
-    for path in sorted(destination.rglob("*")):
+    for path in destination.rglob("*"):
         mode = path.lstat().st_mode
-        if stat.S_ISLNK(mode) or (not stat.S_ISDIR(mode) and not stat.S_ISREG(mode)):
-            raise InputMaterializationError(f"unsupported content projection member: {path}")
+        relative_path = path.relative_to(destination).as_posix()
         if stat.S_ISREG(mode):
-            observed[path.relative_to(destination).as_posix()] = path
+            observed[relative_path] = path
         elif stat.S_ISDIR(mode):
-            observed_directories.add(path.relative_to(destination).as_posix())
+            observed_directories.add(relative_path)
+        else:
+            raise InputMaterializationError(f"unsupported content projection member: {path}")
     if set(observed) != set(expected) or observed_directories != set(tree.directories):
         raise InputMaterializationError("materialized content tree member set differs")
-    records: list[StagedInputFile] = []
     for relative_path, object_ref in expected.items():
-        data = observed[relative_path].read_bytes()
-        if (
-            len(data) != object_ref.size_bytes
-            or hashlib.sha256(data).hexdigest() != object_ref.sha256
-            or (provider is not None and data != provider.get_object(object_ref))
-        ):
-            raise InputMaterializationError(f"materialized content object differs: {relative_path}")
-        records.append(
-            StagedInputFile(
-                relative_path=observed[relative_path].relative_to(root).as_posix(),
-                sha256=object_ref.sha256,
-                size_bytes=object_ref.size_bytes,
-            )
-        )
-    return tuple(records)
+        try:
+            verify_content_file(observed[relative_path], object_ref)
+        except ArtifactBlobCustodyError as exc:
+            raise InputMaterializationError(
+                f"materialized content object differs: {relative_path}: {exc}"
+            ) from exc
 
 
 def materialize_bundle_inputs(
@@ -454,16 +436,12 @@ def materialize_bundle_inputs(
     destination_root: Path | str,
     provider_bindings: Sequence[InputProviderRootBinding] = (),
     staged_root_bindings: Sequence[StagedRootSnapshotBinding] = (),
-    content_store_root: Path | str | None = None,
 ) -> tuple[StagedInput, ...]:
-    failures, _ = preflight_bundle_input_bindings(
-        bundle,
-        provider_bindings=provider_bindings,
-        staged_root_bindings=staged_root_bindings,
-        content_store_root=content_store_root,
-    )
-    if failures:
-        raise InputMaterializationError("; ".join(failures))
+    """Materialize resolved checkpoint inputs separately from content projections."""
+    resolved_failures, _ = preflight_resolved_inputs(bundle)
+    staged_failures, _ = preflight_staged_root_bindings(bundle, staged_root_bindings)
+    if resolved_failures or staged_failures:
+        raise InputMaterializationError("; ".join([*resolved_failures, *staged_failures]))
     providers = _bound_providers(bundle.resolved_inputs, provider_bindings)
     root = Path(destination_root).expanduser().resolve()
     (root / "inputs").mkdir(parents=True, exist_ok=True)
@@ -494,10 +472,6 @@ def materialize_bundle_inputs(
                 f"input {source.target_role!r} materialization failed: {exc}"
             ) from exc
         staged.append(StagedInput(source.target_role, destination, files))
-    if staged_root_bindings:
-        raise InputMaterializationError(
-            "legacy staged roots require explicit offline content-store migration"
-        )
     return tuple(staged)
 
 
@@ -527,29 +501,20 @@ def _content_execution_bindings(
     manifest_bindings: list[StagedManifestRootBinding] = []
     checkpoint_bindings: list[StagedCheckpointCustodyRootBinding] = []
     resolved_views: dict[str, Path] = {}
+    for tree_id, ref in _content_tree_claims(bindings).items():
+        digest = ref.descriptor.sha256
+        descriptor_path = inputs_root / "content" / "descriptors" / digest
+        try:
+            tree = read_content_tree_descriptor(descriptor_path, ref)
+        except ArtifactBlobCustodyError as exc:
+            raise InputMaterializationError(
+                f"materialized content descriptor differs: {tree_id}: {exc}"
+            ) from exc
+        view = inputs_root / "content" / "trees" / digest
+        _verify_content_tree_view(tree, view)
+        resolved_views[tree_id] = view
     for binding in bindings:
-        view = resolved_views.get(binding.tree.tree_id)
-        if view is None:
-            digest = binding.tree.descriptor.sha256
-            descriptor_path = inputs_root / "content" / "descriptors" / digest
-            raw = descriptor_path.read_bytes()
-            if (
-                len(raw) != binding.tree.descriptor.size_bytes
-                or hashlib.sha256(raw).hexdigest() != digest
-            ):
-                raise InputMaterializationError(
-                    f"content-tree descriptor identity mismatch: {binding.tree.tree_id}"
-                )
-            tree = ContentTree.model_validate(
-                strict_json_loads(raw.decode("utf-8"), ref=binding.tree.tree_id)
-            )
-            if raw != canonical_json_v1_bytes(tree.model_dump(mode="json")):
-                raise InputMaterializationError(
-                    f"content-tree descriptor is not canonical: {binding.tree.tree_id}"
-                )
-            view = inputs_root / "content" / "trees" / digest
-            _verify_content_tree_view(None, tree, view, inputs_root)
-            resolved_views[binding.tree.tree_id] = view
+        view = resolved_views[binding.tree.tree_id]
         if binding.root_kind == "artifact-provider":
             artifact_specs[binding.binding_name] = ImmutableArtifactBlobProviderSpec()
             artifact_bindings.append(StagedArtifactProviderRootBinding(binding.binding_name, view))

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
-import queue
 from types import SimpleNamespace
 import threading
 
@@ -10,32 +9,48 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
+import optax
 import pytest
+from pydantic import TypeAdapter
 
 import feedbax.web.worker.execution as worker_execution
 import feedbax.web.worker.checkpoint as worker_checkpoint
+from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.component_registry import ComponentRegistry, register_cde_templates
 from feedbax.contracts.acausal import AcausalGraphSpec
-from feedbax.compiler.templates import network_template_graph
+from feedbax.compiler.templates import network_template_graph, recurrent_node_output_initializer
 from feedbax.compiler.normalization import normalize_task_binding_spec_for_studio_authoring
+from feedbax.compiler.serialization import graph_to_spec, prototypes_from_task_bindings
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
     ParameterConstraintSpec,
+    STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
     StudioTaskBindingSpec,
+    WireSpec,
 )
+from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime.graph import init_state_from_component
 from feedbax.web.worker.execution import (
     _build_optimizer,
-    _derive_trainable_nodes,
     compile_training_run,
     rollout_graph,
     run_training_graph,
 )
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.training.checkpoint_custody import (
+    authenticate_checkpoint_custody_ref,
+    structural_abi_fingerprint,
+)
 from feedbax.web.worker.app import _Job, _require_worker_specs
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
 from feedbax.web.worker.diagnostics import GraphCompilationError
+from feedbax.contracts.studio_api import TrainingWebSocketEvent
+from feedbax.contracts.training import TaskSpec
+from feedbax.orchestration.events import run_event_from_legacy_worker_event
+from feedbax.web.services.training_service import TrainingService
 
 
 def _linear_graph_spec(component_type: str = "Linear", output_size: int = 1) -> dict:
@@ -111,7 +126,7 @@ def _acausal_task_binding_spec() -> dict:
 
 def _task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "model_input",
@@ -146,7 +161,7 @@ def _task_binding_spec() -> dict:
 
 def _network_task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "model_input",
@@ -246,7 +261,7 @@ def _cde_task_binding_spec() -> dict:
             }
         )
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": exposed_data,
         "bindings": bindings,
         "metadata": {},
@@ -270,7 +285,7 @@ def _mux_graph_spec() -> dict:
 
 def _mux_task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "position",
@@ -421,59 +436,6 @@ def test_compile_training_run_uses_array_leaf_trainability_for_network_template(
     )
 
 
-def test_trainable_nodes_come_from_registry_metadata_and_explicit_overrides() -> None:
-    graph_spec = GraphSpec(
-        nodes={
-            "default_readout": ComponentSpec(
-                type="Linear",
-                params={"input_size": 1, "output_size": 1},
-                input_ports=["input"],
-                output_ports=["output"],
-            ),
-            "disabled_readout": ComponentSpec(
-                type="Linear",
-                params={"input_size": 1, "output_size": 1, "trainable": False},
-                input_ports=["input"],
-                output_ports=["output"],
-            ),
-            "explicit_gain": ComponentSpec(
-                type="Gain",
-                params={"gain": 1.0, "trainable": True},
-                input_ports=["input"],
-                output_ports=["output"],
-            ),
-        }
-    )
-
-    assert _derive_trainable_nodes(graph_spec, ComponentRegistry(load_user_components=False)) == (
-        "default_readout",
-        "explicit_gain",
-    )
-
-
-def test_default_trainable_nodes_include_neural_and_executable_template_components() -> None:
-    graph_spec = GraphSpec(
-        nodes={
-            "linear": ComponentSpec(type="Linear", params={}),
-            "mlp": ComponentSpec(type="MLP", params={}),
-            "gru": ComponentSpec(type="GRU", params={}),
-            "lstm": ComponentSpec(type="LSTM", params={}),
-            "recurrent_controller": ComponentSpec(type="Recurrent Controller", params={}),
-            "simple_feedback_loop": ComponentSpec(type="Simple Feedback Loop", params={}),
-            "gain": ComponentSpec(type="Gain", params={}),
-        }
-    )
-
-    assert _derive_trainable_nodes(graph_spec, ComponentRegistry(load_user_components=False)) == (
-        "linear",
-        "mlp",
-        "gru",
-        "lstm",
-        "recurrent_controller",
-        "simple_feedback_loop",
-    )
-
-
 def test_rollout_graph_threads_network_template_recurrence() -> None:
     graph_spec = network_template_graph(
         {"input_size": 2, "hidden_size": 3, "out_size": 1}
@@ -492,6 +454,118 @@ def test_rollout_graph_threads_network_template_recurrence() -> None:
 
     assert output.shape == (5, 1)
     assert not jnp.allclose(output[0], output[-1])
+
+
+def test_worker_rollout_matches_runtime_for_task_seeded_noisy_cycle() -> None:
+    # A noisy encoder seeds the accumulator once. A noisy delay reads its
+    # output on every frame and gives the rollout nontrivial state to retain.
+    graph_spec = GraphSpec(
+        nodes={
+            "encoder": ComponentSpec(
+                type="Channel",
+                params={"delay": 0, "noise_std": 0.25},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "total": ComponentSpec(
+                type="Sum",
+                input_ports=["a", "b"],
+                output_ports=["output"],
+            ),
+            "delay": ComponentSpec(
+                type="Channel",
+                params={"delay": 1, "noise_std": 0.25},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="total",
+                source_port="output",
+                target_node="total",
+                target_port="a",
+                temporality="recurrent",
+                recurrent_initializer=recurrent_node_output_initializer(
+                    "encoder", "output", state_slot="a"
+                ),
+            ),
+            WireSpec(
+                source_node="total",
+                source_port="output",
+                target_node="delay",
+                target_port="input",
+            ),
+        ],
+        input_ports=["seed", "drive"],
+        input_bindings={"seed": ("encoder", "input"), "drive": ("total", "b")},
+        output_ports=["output"],
+        output_bindings={"output": ("delay", "output")},
+        retained_observables=[
+            {"selector": "recurrent_carry:total.output->total.a"},
+            {"selector": "state_path:delay.output"},
+        ],
+    )
+    task_binding_spec = _task_binding_spec()
+    seed = [7.0]
+    drive = [[1.0], [3.0], [-2.0], [4.0]]
+    task_binding_spec["exposed_data"][0]["value_spec"]["value"] = drive
+    task_binding_spec["bindings"][0].update(
+        id="task:model_input->total:b", target_node_id="total", target_port="b"
+    )
+    task_binding_spec["exposed_data"].append(
+        {
+            "id": "seed",
+            "label": "Seed",
+            "kind": "signal",
+            "role": "model_input",
+            "path": "inputs.seed",
+            "bindable": True,
+            "expected_shape": [1],
+            "value_spec": {"mode": "constant", "value": seed, "shape": [1]},
+        }
+    )
+    task_binding_spec["bindings"].append(
+        {
+            "id": "task:seed->encoder:input",
+            "source_data_id": "seed",
+            "target_node_id": "encoder",
+            "target_port": "input",
+            "role": "model_input",
+        }
+    )
+    compiled = compile_training_run(
+        component_registry=ComponentRegistry(load_user_components=False),
+        graph_spec=graph_spec,
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=task_binding_spec,
+        cfg=_cfg(n_reach_steps=len(drive)),
+    )
+    graph = compiled.graph
+    key = jax.random.PRNGKey(17)
+    rollout = rollout_graph(graph, compiled, key=key)
+    graph_key = derive_key(key, "studio-trial", "graph")
+    outputs, final_state, history = graph(
+        {"seed": jnp.array(seed), "drive": jnp.array(drive)},
+        init_state_from_component(graph),
+        key=graph_key,
+        n_steps=len(drive),
+        return_state_history=True,
+    )
+
+    assert jnp.array_equal(rollout["task_data"]["model_input"], jnp.array(drive))
+    assert jnp.array_equal(rollout["outputs"]["output"], outputs["output"])
+    assert eqx.tree_equal(rollout["final_state"], final_state)
+    assert jnp.array_equal(graph.state_view(final_state).encoder.output, jnp.zeros(1))
+    assert jnp.array_equal(rollout["trace"]["state_path:delay.output"], history.delay.output[1:])
+    carry_selector = "recurrent_carry:total.output->total.a"
+    assert jnp.array_equal(rollout["trace"][carry_selector], history.delay.queue[0][1:])
+
+    other_rollout = rollout_graph(graph, compiled, key=jax.random.PRNGKey(18))
+    assert not jnp.array_equal(
+        rollout["trace"][carry_selector][0], other_rollout["trace"][carry_selector][0]
+    )
 
 
 def test_compile_training_run_dry_runs_cde_templates() -> None:
@@ -782,10 +856,12 @@ def test_post_serialization_cleanup_failure_reports_residual_path(
         "_retained_observables_payload",
         lambda _rollout: (_ for _ in ()).throw(RuntimeError("post-serialization failed")),
     )
+
+    def deny_checkpoint_cleanup(_path: Path) -> None:
+        raise PermissionError("cleanup denied")
+
     monkeypatch.setattr(
-        worker_checkpoint.shutil,
-        "rmtree",
-        lambda _path: (_ for _ in ()).throw(PermissionError("cleanup denied")),
+        worker_checkpoint, "shutil", SimpleNamespace(rmtree=deny_checkpoint_cleanup)
     )
 
     with pytest.raises(CheckpointCleanupError, match="cleanup denied") as caught:
@@ -806,17 +882,17 @@ def test_post_serialization_cleanup_failure_reports_residual_path(
 @pytest.mark.parametrize(
     "fixture, expected_losses, expected_output",
     [
-        ("linear", [0.0904710814, 0.0101577155, 0.0054140552], [0.1759796143] * 4),
-        ("constrained", [0.9710375071, 0.7839561701, 0.6168751121], [-0.6854143143] * 4),
+        ("linear", [0.4799930155, 0.2428681999, 0.0857427195], [-0.0948367119] * 4),
+        ("constrained", [0.0715106800, 0.0280279387, 0.0050593941], [-0.0155360159] * 4),
         (
             "recurrent",
-            [0.8857897520, 0.3174341917, 0.1139833331],
-            [-0.2304591388, -0.2057695985, -0.1899056733, -0.1794523597],
+            [0.0006390046, 0.1656780392, 0.0214153193],
+            [-0.0984299108, -0.1582289338, -0.1803956926, -0.1881809831],
         ),
     ],
 )
-def test_studio_update_preserves_seeded_training(fixture, expected_losses, expected_output):
-    """Preserve seeded updates with reset templates excluded from optimizer ownership."""
+def test_studio_update_reproduces_v4_seeded_training(fixture, expected_losses, expected_output):
+    """Pin v4 seeded updates with reset templates excluded from optimizer ownership."""
     from feedbax.training.studio_executor import StudioUpdateKernel
 
     graph_spec = _linear_graph_spec()
@@ -865,6 +941,15 @@ def test_studio_update_preserves_seeded_training(fixture, expected_losses, expec
         kernel({**slots, "batch_counter": jnp.zeros((2,), dtype=jnp.int32)})
 
 
+def _checkpoint_steps(manifest_payload: dict, root: Path) -> list[int]:
+    return [
+        authenticate_checkpoint_custody_ref(
+            ParentRef.model_validate(receipt), allowed_root=root
+        ).manifest.completed_coordinate.program_step
+        for receipt in manifest_payload["checkpoint_custody"]
+    ]
+
+
 def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     compiled = compile_training_run(
@@ -897,7 +982,26 @@ def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, m
     assert progress_steps == [1, 2, 3, 4, 5]
     assert log_steps == [1, 2, 3, 4, 5]
     assert trajectory_steps == [3, 5]
-    assert all("batch" not in event for event in events)
+    assert result.manifest_payload is not None
+    assert _checkpoint_steps(
+        result.manifest_payload, tmp_path / "runs" / "checkpoints" / "test-job"
+    ) == [3, 5]
+    service = TrainingService()
+    validator = TypeAdapter(TrainingWebSocketEvent)
+    for seq, event in enumerate(events):
+        worker_event = run_event_from_legacy_worker_event(
+            event, run_set_id="test-run", row_id="test-job", seq=seq
+        )
+        payload = service._normalize_training_event(
+            "test-job", worker_event.model_dump(mode="json")
+        )
+        studio_event = validator.validate_python(payload)
+        assert studio_event.worker_seq == seq
+        assert studio_event.batch == event["batch"]
+    assert [event["batch"] for event in events if event["type"] == "training_progress"] == [
+        1, 2, 3, 4, 5
+    ]
+    assert result.final_batch == 5
 
     assert compiled.graph is result.graph
     final_snapshot = next(
@@ -950,19 +1054,18 @@ def test_run_training_graph_emits_selector_keyed_live_trajectory_tracks(
     assert all(len(sample) == 2 for sample in track["samples"])
 
 
-def test_run_training_graph_stopped_run_returns_latest_batch_loss(
+@pytest.mark.parametrize(
+    ("stop_at", "terminal_batch", "outcome"),
+    [(0, 0, "cancelled"), (3, 3, "cancelled"), (5, 5, "completed")],
+)
+def test_run_training_graph_stop_preserves_committed_checkpoint(
     tmp_path: Path,
     monkeypatch,
+    stop_at: int,
+    terminal_batch: int,
+    outcome: str,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
-
-    class StopAfterTwoChecks:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def is_set(self) -> bool:
-            self.calls += 1
-            return self.calls > 2
 
     compiled = compile_training_run(
         component_registry=ComponentRegistry(load_user_components=False),
@@ -972,21 +1075,38 @@ def test_run_training_graph_stopped_run_returns_latest_batch_loss(
         task_binding_spec=_task_binding_spec(),
         cfg=_cfg(),
     )
-    events: list[dict] = []
+    progress: list[dict] = []
+    stop_event = threading.Event()
+    if stop_at == 0:
+        stop_event.set()
+
+    def emit(event: dict) -> None:
+        if event["type"] == "training_progress":
+            progress.append(event)
+            if event["batch"] == stop_at:
+                stop_event.set()
 
     result = run_training_graph(
         compiled,
         job_id="test-job",
         total_batches=5,
         cfg=_cfg(snapshot_interval=5),
-        stop_event=StopAfterTwoChecks(),
-        emit=events.append,
+        stop_event=stop_event,
+        emit=emit,
     )
 
-    progress_losses = [event["loss"] for event in events if event["type"] == "training_progress"]
-    assert progress_losses
-    assert result.final_loss == pytest.approx(progress_losses[-1])
-    assert result.final_batch == len(progress_losses)
+    assert [event["batch"] for event in progress] == list(range(1, terminal_batch + 1))
+    assert result.final_batch == result.final_program_step == terminal_batch
+    if progress:
+        assert result.final_loss == pytest.approx(progress[-1]["loss"])
+    manifest = result.manifest_payload
+    assert manifest is not None
+    assert manifest["status"] == manifest["terminal_certification"]["termination_reason"] == outcome
+    assert manifest["stopped"] is (outcome == "cancelled")
+    assert manifest["completed_batches"] == terminal_batch
+    assert _checkpoint_steps(manifest, tmp_path / "runs" / "checkpoints" / "test-job") == (
+        [terminal_batch] if terminal_batch else []
+    )
 
 
 def test_run_training_graph_projects_parameter_constraints_after_update(
@@ -1019,6 +1139,177 @@ def test_run_training_graph_projects_parameter_constraints_after_update(
     )
 
     assert compiled.graph.nodes["readout"].layer.weight[0, 0] == 0.0
+
+
+@pytest.mark.parametrize(
+    ("wrapper_type", "freeze_wrapper", "freeze_child"),
+    [
+        pytest.param("Subgraph", False, False, id="generic-wrapper"),
+        pytest.param("Subgraph", True, False, id="frozen-wrapper"),
+        pytest.param("Recurrent Controller", False, True, id="named-wrapper"),
+    ],
+)
+def test_nested_trainability_matches_flat_training(
+    wrapper_type: str, freeze_wrapper: bool, freeze_child: bool, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
+    # Use SGD to make the one-step updates analytically checkable.
+    monkeypatch.setattr(
+        worker_execution,
+        "_build_optimizer",
+        lambda learning_rate, _grad_clip: optax.sgd(learning_rate),
+    )
+
+    def linear(**params) -> ComponentSpec:
+        return ComponentSpec(
+            type="Linear",
+            params={"input_size": 1, "output_size": 1, "use_bias": False, **params},
+            input_ports=["input"],
+            output_ports=["output"],
+        )
+
+    def wire(source: str, target: str) -> WireSpec:
+        return WireSpec(
+            source_node=source, source_port="output", target_node=target, target_port="input"
+        )
+
+    first = linear(trainable=False) if freeze_child else linear()
+    second = linear(trainable=True) if freeze_wrapper else linear()
+    flat_spec = GraphSpec(
+        nodes={
+            "first": linear(trainable=False) if freeze_wrapper else first,
+            "second": linear(trainable=False) if freeze_wrapper else second,
+            "readout": linear(),
+        },
+        wires=[wire("first", "second"), wire("second", "readout")],
+        output_ports=["output"],
+        output_bindings={"output": ("readout", "output")},
+    )
+    nested_spec = GraphSpec(
+        nodes={
+            "readout": linear(),
+            "wrapper": ComponentSpec(
+                type=wrapper_type,
+                params={"trainable": False} if freeze_wrapper else {},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[wire("wrapper", "readout")],
+        output_ports=flat_spec.output_ports,
+        output_bindings=flat_spec.output_bindings,
+        subgraphs={
+            "wrapper": GraphSpec(
+                nodes={"first": first, "second": second},
+                wires=[wire("first", "second")],
+                input_ports=["input"],
+                input_bindings={"input": ("first", "input")},
+                output_ports=["output"],
+                output_bindings={"output": ("second", "output")},
+            )
+        },
+    )
+
+    def task_bindings(target: str) -> dict:
+        bindings = _task_binding_spec()
+        bindings["bindings"][0].update(
+            id=f"task:model_input->{target}:input",
+            target_node_id=target,
+        )
+        return bindings
+
+    registry = ComponentRegistry(load_user_components=False)
+    nested_bindings = task_bindings("wrapper")
+    authored = compile_graph(
+        GraphDocument(graph=nested_spec),
+        registry,
+        input_prototypes=prototypes_from_task_bindings(nested_bindings),
+    )
+    serialized = graph_to_spec(authored.graph, registry)
+    cfg = _cfg(grad_clip=None, snapshot_interval=1)
+    nested_fingerprints = []
+    for variant, spec, bindings in (
+        ("flat", flat_spec, task_bindings("first")),
+        ("nested", nested_spec, nested_bindings),
+        ("serialized", serialized, nested_bindings),
+    ):
+        nested = variant != "flat"
+        compiled = compile_training_run(
+            component_registry=registry,
+            graph_spec=spec,
+            training_spec=_training_spec(
+                optimizer={"type": "sgd", "params": {"learning_rate": cfg.learning_rate}},
+                n_batches=1,
+            ),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=bindings,
+            cfg=cfg,
+        )
+
+        prefix = "wrapper." if nested else ""
+        expected_paths = {"readout"}
+        if not freeze_wrapper:
+            expected_paths.add(f"{prefix}second")
+            if not freeze_child:
+                expected_paths.add(f"{prefix}first")
+        if nested:
+            nested_fingerprints.append(
+                structural_abi_fingerprint(compiled.graph).fingerprint_sha256
+            )
+
+        def weights(graph):
+            interior = graph.nodes["wrapper"] if nested else graph
+            return (
+                interior.nodes["first"].layer.weight,
+                interior.nodes["second"].layer.weight,
+                graph.nodes["readout"].layer.weight,
+            )
+
+        key = jax.random.PRNGKey(0)
+        # Match starting weights across depths and give each leaf a distinct update.
+        compiled.graph = eqx.tree_at(
+            weights, compiled.graph, tuple(jnp.array([[weight]]) for weight in (1.0, 2.0, 0.5))
+        )
+        initial = rollout_graph(compiled.graph, compiled, key=key)["outputs"]["output"]
+        assert jnp.all(initial == 1.0)
+
+        result = run_training_graph(
+            compiled,
+            job_id=f"trainability-{variant}",
+            total_batches=1,
+            cfg=cfg,
+            stop_event=threading.Event(),
+            emit=lambda event: None,
+        )
+        expected_weights = (
+            1.0 if freeze_wrapper or freeze_child else 0.8,
+            2.0 if freeze_wrapper else 1.9,
+            0.1,
+        )
+        assert tuple(weight.item() for weight in weights(result.graph)) == pytest.approx(
+            expected_weights
+        )
+        final = rollout_graph(result.graph, compiled, key=key)["outputs"]["output"]
+        assert jnp.allclose(final, expected_weights[0] * expected_weights[1] * expected_weights[2])
+
+        assert set(result.execution_metadata["trainable_nodes"]) == expected_paths
+
+    authored_fingerprint, restored_fingerprint = nested_fingerprints
+    assert restored_fingerprint == authored_fingerprint
+
+    for original, restored in (
+        (nested_spec.nodes, serialized.nodes),
+        (nested_spec.subgraphs["wrapper"].nodes, serialized.subgraphs["wrapper"].nodes),
+    ):
+        assert {
+            name: node.params["trainable"]
+            for name, node in restored.items()
+            if "trainable" in node.params
+        } == {
+            name: node.params["trainable"]
+            for name, node in original.items()
+            if "trainable" in node.params
+        }
 
 
 def test_compile_training_run_fails_unsupported_display_only_component() -> None:
@@ -1126,7 +1417,7 @@ def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
         output_bindings={"output": ("delay", "output")},
     ).model_dump(mode="json", exclude_none=True)
     task_binding_spec = {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "model_input",
@@ -1203,7 +1494,6 @@ def test_worker_request_materializes_omitted_dynamic_ports_from_bootstrap_regist
         job_id="dynamic-ports",
         run_set_id="run-set",
         total_batches=1,
-        event_queue=queue.Queue(),
         stop_event=threading.Event(),
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},
@@ -1328,55 +1618,161 @@ def test_compile_training_run_rejects_unsupported_task_data_function() -> None:
         )
 
 
-def test_compile_training_run_lowers_segment_aggregation_with_task_timeline() -> None:
-    training = _training_spec(
-        loss={
-            "type": "TargetStateLoss",
-            "label": "movement_segment",
-            "selector": "graph_output:output",
-            "target_value": [0.0],
-            "time_agg": {"mode": "segment", "segment_name": "movement"},
-        }
+def test_worker_trains_on_named_timeline_segment(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
+    cfg = _cfg(n_reach_steps=3, grad_clip=None)
+    graph_spec = _linear_graph_spec()
+    graph_spec["nodes"]["readout"]["params"].update(input_size=3, use_bias=False)
+    binding = _task_binding_spec()
+    model_input = binding["exposed_data"][0]
+    model_input["expected_shape"] = ["time", 3]
+    # Each epoch reads one weight, giving a squared error of 1, 4, or 9.
+    model_input["value_spec"].update(
+        value=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        shape=["time", 3],
     )
-    task = {
-        "type": "DelayedReaches",
-        "params": {"n_steps": 4},
-        "timeline": {
-            "schema_version": "feedbax.spec.studio.task_timeline.v1",
-            "epochs": [
-                {
-                    "id": "epoch:0",
-                    "label": "hold",
-                    "index": 0,
-                    "length": {"mode": "constant", "value": {"steps": 1}, "metadata": {}},
-                    "metadata": {},
-                },
-                {
-                    "id": "epoch:1",
-                    "label": "movement",
-                    "index": 1,
-                    "length": {
-                        "mode": "constant",
-                        "value": None,
-                        "metadata": {"inferred_from_remaining_steps": True},
-                    },
-                    "metadata": {},
-                },
-            ],
-            "metadata": {"n_steps": 4},
-        },
-    }
-
     compiled = compile_training_run(
         component_registry=ComponentRegistry(load_user_components=False),
-        graph_spec=_linear_graph_spec(),
-        training_spec=training,
-        task_spec=task,
-        task_binding_spec=_task_binding_spec(),
-        cfg=_cfg(n_reach_steps=4),
+        graph_spec=graph_spec,
+        training_spec=_training_spec(
+            n_batches=1,
+            loss={
+                **_training_spec()["loss"],
+                "time_agg": {"mode": "segment", "segment_name": "movement"},
+            },
+        ),
+        task_spec={
+            "type": "DelayedReaches",
+            "params": {"n_steps": 3},
+            "timeline": {
+                "epochs": [
+                    {
+                        "id": epoch,
+                        "label": epoch,
+                        "index": index,
+                        "length": {"mode": "constant", "value": length},
+                    }
+                    for index, (epoch, length) in enumerate(
+                        (("hold", {"steps": 1}), ("reach", {"steps": 1}), ("settle", None))
+                    )
+                ],
+                "segments": [
+                    {"id": "movement", "label": "Movement", "epoch_ids": ["reach"]},
+                ],
+            },
+        },
+        task_binding_spec=binding,
+        cfg=cfg,
+    )
+    compiled.graph = eqx.tree_at(
+        lambda graph: graph.nodes["readout"].layer.weight,
+        compiled.graph,
+        jnp.array([[1.0, 2.0, 3.0]]),
+    )
+    events: list[dict] = []
+    result = run_training_graph(
+        compiled,
+        job_id="segment-loss",
+        total_batches=1,
+        cfg=cfg,
+        stop_event=threading.Event(),
+        emit=events.append,
     )
 
-    assert compiled.loss_terms[0].metadata["time_mask"]["epoch_ids"] == ["epoch:1"]
+    (progress,) = [event for event in events if event["type"] == "training_progress"]
+    assert progress["loss"] == pytest.approx(4.0)
+    assert progress["grad_norm"] == pytest.approx(4.0)
+    weights = result.graph.nodes["readout"].layer.weight[0]
+    assert weights[0] == 1.0
+    assert weights[1] == pytest.approx(1.9)
+    assert weights[2] == 3.0
+
+
+def test_studio_sampling_follows_task_data_and_epoch_ids() -> None:
+    key = jax.random.key(40)
+    data = _task_binding_spec()["exposed_data"][0]
+    other_data = {**data, "id": "other_input", "path": "inputs.other"}
+    sampled_length = {
+        "mode": "distribution",
+        "distribution": {"family": "uniform", "parameters": {"min": 2, "max": 5}},
+    }
+    sampled_value = {
+        "mode": "distribution",
+        "distribution": {"family": "normal", "parameters": {"mean": 0, "std": 1}},
+    }
+    final_epoch = {"id": "finish", "label": "Finish", "length": {"mode": "constant"}}
+    sample_epoch = {"id": "sample", "label": "Sample", "length": sampled_length}
+    unrelated_epoch = {"id": "prefix", "label": "Prefix", "length": sampled_length}
+    value_entry = {
+        "target_id": data["id"],
+        "epoch_id": "sample",
+        "value_spec": sampled_value,
+    }
+
+    def sample(epochs, entries, exposed):
+        epoch_order = {epoch["id"]: i for i, epoch in enumerate(epochs)}
+        task = TaskSpec.model_validate(
+            {
+                "type": "Generic",
+                "timeline": {
+                    "schema_version": STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
+                    "epochs": [{**epoch, "index": i} for i, epoch in enumerate(epochs)],
+                    "signals": [
+                        {key: item[key] for key in ("id", "label", "kind", "path")}
+                        for item in exposed
+                    ],
+                    "epoch_value_specs": sorted(
+                        entries,
+                        key=lambda entry: (entry["target_id"], epoch_order[entry["epoch_id"]]),
+                    ),
+                },
+            }
+        )
+        binding = StudioTaskBindingSpec(exposed_data=exposed)
+        values = worker_execution._materialize_task_data(binding, task, 12, key=key)
+        bounds = worker_execution._timeline_epoch_bounds(task.timeline, 12, key)
+        return values, bounds
+
+    before, original_bounds = sample(
+        [sample_epoch, final_epoch],
+        [value_entry],
+        [data],
+    )
+    after, edited_bounds = sample(
+        [unrelated_epoch, {**sample_epoch, "label": "Relabeled"}, final_epoch],
+        [
+            {**value_entry, "epoch_id": "prefix"},
+            {**value_entry, "target_id": other_data["id"]},
+            value_entry,
+        ],
+        [other_data, {**data, "label": "Relabeled input"}],
+    )
+
+    start, end = edited_bounds[1:3]
+    assert end - start == original_bounds[1]
+    kept = after[data["id"]][start:end]
+    assert jnp.array_equal(before[data["id"]][: original_bounds[1]], kept)
+    assert not jnp.array_equal(after[other_data["id"]][start:end], kept)
+
+
+def test_compile_training_run_rejects_a_path_that_shadows_task_data_identity() -> None:
+    binding = _task_binding_spec()
+    original = binding["exposed_data"][0]
+    binding["exposed_data"].append({**original, "id": "alias", "path": original["id"]})
+
+    with pytest.raises(GraphCompilationError) as caught:
+        compile_training_run(
+            component_registry=ComponentRegistry(load_user_components=False),
+            graph_spec=_linear_graph_spec(),
+            training_spec=_training_spec(),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=binding,
+            cfg=_cfg(),
+        )
+
+    (diagnostic,) = caught.value.diagnostics
+    assert diagnostic.code == "worker.ambiguous_task_data_path"
+    assert diagnostic.location == {"path": "/task_binding_spec/exposed_data/1/path"}
 
 
 def test_compile_training_run_rejects_bound_task_data_without_value_spec() -> None:

@@ -8,18 +8,12 @@ from abc import abstractmethod
 from collections import OrderedDict
 from collections.abc import Callable, MutableMapping
 
-import dis
-import logging
 from typing import Any, Generic, TypeVar, overload
 
 import jax.tree_util as jtu
-import jax.tree as jt
 from jaxtyping import PyTree
 
-from feedbax.runtime.where_selectors import where_func_to_attr_str_tree
-
-
-logger = logging.getLogger(__name__)
+from feedbax.runtime.where_selectors import WherePath, where_path
 
 T = TypeVar("T")
 KT1 = TypeVar("KT1")
@@ -91,60 +85,29 @@ class AbstractTransformedOrderedDict(MutableMapping[KT2, VT], Generic[KT1, KT2, 
         return cls(zip(keys, values))
 
 
-class _QuotelessStr(str):
-    """String that renders without quotation marks."""
-    def __repr__(self):
-        return self
+WhereCallable = Callable[[PyTree], Any]
+WhereKey = str | WhereCallable | tuple[WhereCallable, str]
+_CanonicalKey = str | WherePath | tuple[WherePath, str]
 
 
-class _WhereRepr:
-
-    def __init__(self, where: Callable):
-        bound_vars = dis.Bytecode(where).codeobj.co_varnames
-        if len(bound_vars) != 1:
-            raise ValueError("`WhereDict` keys must be functions of a single argument")
-
-        self.bound_var = bound_vars[0]
-        self.term_strs = where_func_to_attr_str_tree(where)
-
-    def __repr__(self):
-        terms = jt.map(
-            lambda leaf: ".".join([self.bound_var, leaf]) if leaf else self.bound_var,
-            self.term_strs,
-        )
-        # Wrap in parentheses so that the dict colon `:` is easier to distinguish from
-        # the lambda colon.
-        return f"lambda {self.bound_var}: {terms}"
+def _canonical_key(key: WhereKey) -> _CanonicalKey:
+    if isinstance(key, str):
+        return key
+    if callable(key):
+        return where_path(key)
+    if isinstance(key, tuple) and len(key) == 2 and callable(key[0]) and isinstance(key[1], str):
+        return where_path(key[0]), key[1]
+    raise ValueError("Each WhereDict key must be a string, a callable, or a (callable, string) pair")
 
 
-T = TypeVar('T')
-
-
-def _where_to_str(where: Callable) -> str:
-    """Return a single string representing a `where` function."""
-    terms = where_func_to_attr_str_tree(where)
-    if isinstance(terms, str):
-        where_str = terms
-    else:
-        where_str = ", ".join(jtu.tree_leaves(terms))
-    return where_str
-
-
-def _wheredict_key_repr(where_key: Callable | tuple[Callable, str]):
-    """Return a string representation of a `WhereDict` key, which may be a function or a tuple."""
-    if isinstance(where_key, Callable):
-        where_repr = f"({_WhereRepr(where_key)})"
-    elif isinstance(where_key, tuple):
-        where_repr = f"(({_WhereRepr(where_key[0])}), \"{where_key[1]}\")"
-    return _QuotelessStr(where_repr)
-
-
-@jtu.register_pytree_node_class
-class WhereDict(AbstractTransformedOrderedDict[str, Callable[[PyTree], Any], T]):
+@jtu.register_pytree_with_keys_class
+class WhereDict(AbstractTransformedOrderedDict[str, WhereKey, T]):
     """An `OrderedDict` that allows use of where-functions as keys.
 
-    In particular, keys can be functions/lambdas that take a single argument,
-    and return a single (nested) attribute accessed from that argument.
+    Selector functions take one argument and return that argument or a path
+    of attributes and literal string or integer indices on it. PyTree
+    transformations reconstruct executable keys from those paths. Keys
+    supplied as strings are retained as strings.
 
     Functions are parsed to equivalent strings, which can be used
     interchangeably as keys. For example, the following are equivalent when
@@ -169,40 +132,44 @@ class WhereDict(AbstractTransformedOrderedDict[str, Callable[[PyTree], Any], T])
     ```
 
     Note that the hash symbol `#` is used to concatenate the usual string representation
-    for the callable, with the paired string.
-
-    ??? Note "Performance"
-        For typical initialization mappings (1-10 items) construction is on the order
-        of 50x slower than `OrderedDict`. Access is about 2-20x slower, depending
-        whether indexed by string or by callable.
-
-        However, we only need to do a single construction and a single access of
-        `init_spec` per batch/evaluation, so performance shouldn't matter too much in
-        practice: the added overhead is <50 us/batch, and a batch normally takes
-        at least 20,000 us to train.
+    for the callable with the paired string. Literal indices use Python repr
+    spelling, with `#` in indices escaped as `\\x23`.
     """
 
-    def _key_transform(self, key: str | Callable | tuple[Callable, str]) -> str:
+    def _key_transform(self, key: WhereKey) -> str:
         return self.key_transform(key)
 
     @staticmethod
-    def key_transform(key: str | Callable | tuple[Callable, str]) -> str:
+    def key_transform(key: WhereKey) -> str:
+        canonical = _canonical_key(key)
+        if isinstance(canonical, str):
+            return canonical
+        if isinstance(canonical, WherePath):
+            return canonical.address
+        path, tag = canonical
+        return f"{path.address}#{tag}"
 
-        if isinstance(key, str):
-            pass
-        elif isinstance(key, Callable):
-            where_str = _where_to_str(key)
-            return where_str
-        elif isinstance(key, tuple):
-            if not isinstance(key[0], Callable) or not isinstance(key[1], str):
-                raise ValueError("Each `WhereDict` key should be supplied as a string, "
-                                 "a callable, or a tuple of a callable and a string")
-            where_str = _where_to_str(key[0])
-            return '#'.join([where_str, key[1]])
-        else:
-            raise ValueError("Each `WhereDict` key should be supplied as a string, "
-                             "a callable, or a tuple of a callable and a string")
-        return key
+    def tree_flatten(self):
+        keys = tuple(_canonical_key(key) for key, _ in self.store.values())
+        values = tuple(value for _, value in self.store.values())
+        return values, keys
+
+    def tree_flatten_with_keys(self):
+        values, auxiliary = self.tree_flatten()
+        return tuple(
+            (jtu.DictKey(address), value) for address, value in zip(self.store, values, strict=True)
+        ), auxiliary
+
+    def __setstate__(self, state):
+        """Restore mappings whose persisted addresses predate escaped indices."""
+        restored = OrderedDict()
+        for key, value in state["store"].values():
+            address = self.key_transform(key)
+            if address in restored:
+                raise ValueError(f"Persisted WhereDict contains conflicting keys for {address!r}")
+            restored[address] = (key, value)
+        self.__dict__.update(state)
+        self.store = restored
 
     def _repr_with_indent(self, level: int) -> str:
         cls_name       = self.__class__.__name__
@@ -214,9 +181,8 @@ class WhereDict(AbstractTransformedOrderedDict[str, Callable[[PyTree], Any], T])
             return f"{cls_name}({{}})"
 
         item_strings = []
-        for key, value in self.items():
-            # turn your callable/tuple into a clean key repr (no extra quotes)
-            key_repr = repr(_wheredict_key_repr(key))
+        for key, value in self.store.values():
+            key_repr = repr(_canonical_key(key))
 
             # capture repr(value) and split into lines
             raw_lines = repr(value).splitlines() or [""]

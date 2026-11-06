@@ -7,10 +7,14 @@ from dataclasses import dataclass, field
 from typing import Any, Type
 
 import diffrax as dfx
-import optimistix as optx
 
 from feedbax.acausal.base import AcausalConnection, AcausalElement
-from feedbax.acausal.analysis import GearConstraintError, StructuralAnalysis, analyze_system
+from feedbax.acausal.analysis import (
+    CoordinateOwnershipError,
+    GearConstraintError,
+    StructuralAnalysis,
+    analyze_system,
+)
 from feedbax.acausal.rotational import (
     AngleSensor,
     AngularVelocitySensor,
@@ -46,8 +50,6 @@ from feedbax.acausal.translational import (
 from feedbax.contracts.acausal import (
     ACAUSAL_GRAPH_SCHEMA_ID,
     AcausalGraphSpec,
-    RootFinderSpec,
-    SolverConfigSpec,
     acausal_interior_content_hash,
 )
 from feedbax.contracts.acausal_interface import (
@@ -55,6 +57,11 @@ from feedbax.contracts.acausal_interface import (
     BOUNDARY_PORT_TYPE,
     SENSOR_OUTPUT_TYPE,
     ACAUSAL_SYSTEM_TYPE,
+    FORCE_PAYLOAD,
+    PRESCRIBED_MOTION_PAYLOAD,
+    TORQUE_PAYLOAD,
+    SourcePayload,
+    actuation_source_payload,
     derive_acausal_interface,
     signal_port_type,
 )
@@ -66,6 +73,7 @@ from feedbax.contracts.domain import (
 )
 from feedbax.contracts.graph import ComponentSpec
 from feedbax.compiler.builders import build_component
+from feedbax.compiler.solver_config import resolve_acausal_solver
 
 
 _ELEMENT_BUILDERS: dict[str, Type[AcausalElement]] = {
@@ -111,10 +119,10 @@ _ELEMENT_BUILDERS.update(
     }
 )
 
-_SOURCE_KIND_BUILDERS: dict[str, Type[AcausalElement]] = {
-    "force": ForceSource,
-    "torque": TorqueSource,
-    "prescribed_motion": PrescribedMotion,
+_SOURCE_BUILDERS: dict[SourcePayload, Type[AcausalElement]] = {
+    FORCE_PAYLOAD: ForceSource,
+    TORQUE_PAYLOAD: TorqueSource,
+    PRESCRIBED_MOTION_PAYLOAD: PrescribedMotion,
 }
 
 _SENSOR_QUANTITY_BUILDERS: dict[str, Type[AcausalElement]] = {
@@ -125,14 +133,6 @@ _SENSOR_QUANTITY_BUILDERS: dict[str, Type[AcausalElement]] = {
     "angular_velocity": AngularVelocitySensor,
     "torque": TorqueSensor,
 }
-
-_SOLVER_TYPES: dict[str, Type[dfx.AbstractSolver]] = {
-    "euler": dfx.Euler,
-    "implicit_euler": dfx.ImplicitEuler,
-    "kvaerno5": dfx.Kvaerno5,
-    "tsit5": dfx.Tsit5,
-}
-
 
 Endpoint = tuple[str, str]
 
@@ -170,6 +170,7 @@ def compile_acausal_graph(
             component_registry=component_registry,
         )
 
+    solver = _solver_runtime(interior_spec)
     interface = derive_acausal_interface(interior_spec)
     flattened = _flatten_acausal_graph(
         interior_spec,
@@ -185,22 +186,20 @@ def compile_acausal_graph(
                 f"Acausal compiler internal error for node {node_name!r}: flattened "
                 f"{kind} bindings {tuple(bindings)!r} do not match derived interface {ports!r}"
             )
-    solver_type, root_finder = _solver_runtime(interior_spec.solver)
     system = AcausalSystem(
         elements=flattened.elements,
         connections=flattened.connections,
         dt=interior_spec.solver.dt,
-        solver_type=solver_type,
-        root_finder=root_finder,
+        solver_type=solver,
         input_bindings={name: flattened.input_bindings[name] for name in interface.input_ports},
         output_bindings={name: flattened.output_bindings[name] for name in interface.output_ports},
     )
 
-    if system.input_ports != interface.input_ports:
+    if system.input_payloads != interface.input_payloads:
         raise ValueError(
             f"Acausal compiler internal error for node {node_name!r}: compiled "
-            f"input ports {system.input_ports!r} do not match derived interface "
-            f"{interface.input_ports!r}"
+            f"input payloads {system.input_payloads!r} do not match derived interface "
+            f"{interface.input_payloads!r}"
         )
     if system.output_ports != interface.output_ports:
         raise ValueError(
@@ -216,10 +215,11 @@ def compile_acausal_authoring_report(
     *,
     node_path: list[str],
     component_registry: Any,
+    authored_interior: dict[str, Any] | None = None,
 ) -> DomainCompileReport:
     """Return a structural authoring compile report without constructing JAX closures."""
 
-    content_hash = acausal_interior_content_hash(interior_spec)
+    content_hash = acausal_interior_content_hash(interior_spec, authored=authored_interior)
     diagnostics = _diagnose_acausal_spec(
         interior_spec,
         component_registry=component_registry,
@@ -234,8 +234,8 @@ def compile_acausal_authoring_report(
             interface = derive_acausal_interface(interior_spec)
             derived_interface = {
                 "inputs": {
-                    name: signal_port_type().model_dump(mode="json")
-                    for name in interface.input_ports
+                    name: payload.port_type().model_dump(mode="json")
+                    for name, payload in interface.input_payloads.items()
                 },
                 "outputs": {
                     name: signal_port_type().model_dump(mode="json")
@@ -256,8 +256,8 @@ def compile_acausal_authoring_report(
             interface = derive_acausal_interface(interior_spec)
             derived_interface = {
                 "inputs": {
-                    name: signal_port_type().model_dump(mode="json")
-                    for name in interface.input_ports
+                    name: payload.port_type().model_dump(mode="json")
+                    for name, payload in interface.input_payloads.items()
                 },
                 "outputs": {
                     name: signal_port_type().model_dump(mode="json")
@@ -302,6 +302,18 @@ def _diagnose_acausal_spec(
     nested: bool = False,
 ) -> list[DomainDiagnostic]:
     diagnostics: list[DomainDiagnostic] = []
+    if not nested:
+        try:
+            _solver_runtime(graph)
+        except ValueError as exc:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.invalid_solver",
+                    message=f"Invalid solver for acausal interior {path!r}: {exc}",
+                    node_ids=[path],
+                )
+            )
     if not graph.nodes:
         diagnostics.append(
             DomainDiagnostic(
@@ -349,6 +361,21 @@ def _diagnose_acausal_spec(
                         flattened.connections,
                     ))
                 )
+        except CoordinateOwnershipError as exc:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code=(
+                        "acausal.grounded_prescribed_coordinate"
+                        if exc.grounds
+                        else "acausal.parallel_across_sources"
+                    ),
+                    message=str(exc),
+                    node_ids=[*exc.grounds, *exc.sources],
+                    variables=[exc.coordinate],
+                    counts={"n_sources": len(exc.sources)},
+                )
+            )
         except GearConstraintError as exc:
             diagnostics.append(
                 DomainDiagnostic(
@@ -551,7 +578,7 @@ def _compile_planar_multibody_graph(
     return build_component(
         node_name,
         "AnalyticalMusculoskeletalPlant",
-        {"dt": graph.solver.dt, "n_steps": 1},
+        {"dt": graph.solver.dt, "n_steps": 1, "solver_type": graph.solver.solver_type},
         component_registry=component_registry,
     )
 
@@ -723,7 +750,7 @@ def _diagnose_structural_analysis(analysis: StructuralAnalysis) -> list[DomainDi
     diagnostics: list[DomainDiagnostic] = []
     for network in analysis.networks:
         counts = network.counts
-        if counts["equations"] != counts["unknowns"]:
+        if network.massless_variables:
             diagnostics.append(
                 DomainDiagnostic(
                     severity="error",
@@ -732,37 +759,24 @@ def _diagnose_structural_analysis(analysis: StructuralAnalysis) -> list[DomainDi
                         "Acausal network is structurally unbalanced: "
                         f"elements={list(network.elements)!r}, "
                         f"equations={counts['equations']}, unknowns={counts['unknowns']}, "
-                        f"variables={list(network.differential_variables)!r}."
+                        f"free coordinates require inertia: {list(network.massless_variables)!r}."
                     ),
                     node_ids=list(network.elements),
-                    variables=list(network.differential_variables),
+                    variables=list(network.massless_variables),
                     counts=counts,
                 )
             )
-        if not network.has_ground:
+        if not network.has_coordinate_reference:
             diagnostics.append(
                 DomainDiagnostic(
                     severity="error",
                     code="acausal.ungrounded_network",
                     message=(
-                        "Acausal network has no Ground or RotationalGround: "
+                        "Acausal network has no Ground, RotationalGround, or prescribed motion: "
                         f"elements={list(network.elements)!r}."
                     ),
                     node_ids=list(network.elements),
                     counts={"n_elements": len(network.elements)},
-                )
-            )
-        if len(network.across_source_elements) > 1:
-            diagnostics.append(
-                DomainDiagnostic(
-                    severity="error",
-                    code="acausal.parallel_across_sources",
-                    message=(
-                        "Acausal network has multiple prescribed across-variable sources: "
-                        f"elements={list(network.across_source_elements)!r}."
-                    ),
-                    node_ids=list(network.across_source_elements),
-                    counts={"n_sources": len(network.across_source_elements)},
                 )
             )
         if len(network.source_elements) > 1:
@@ -957,12 +971,9 @@ def _instantiate_node(
     _validate_acausal_component_meta(node_type, component_registry, node_path)
 
     if node_type == ACTUATION_INPUT_TYPE:
-        source_kind = str(params.get("source_kind", "force"))
-        builder = _SOURCE_KIND_BUILDERS.get(source_kind)
+        builder = _SOURCE_BUILDERS.get(actuation_source_payload(node_spec))
         if builder is None:
-            raise ValueError(
-                f"Unknown ActuationInput source_kind {source_kind!r} at {node_path!r}"
-            )
+            raise ValueError(f"Unsupported acausal source at {node_path!r}")
         port_name = _string_param(node_spec, "port_name", default="u", node_path=node_path)
         flattened.input_bindings[port_name] = node_id
         return builder(node_id)
@@ -1029,21 +1040,12 @@ def _resolve_endpoint(
     return [(f"{namespace}{node_id}", port_name)]
 
 
-def _solver_runtime(
-    solver: SolverConfigSpec,
-) -> tuple[Type[dfx.AbstractSolver], optx.AbstractRootFinder | None]:
-    solver_type = _SOLVER_TYPES[solver.solver_type]
-    if not issubclass(solver_type, dfx.AbstractImplicitSolver):
-        return solver_type, None
-    root_spec = solver.root_finder or RootFinderSpec()
-    if root_spec.method != "newton":
-        raise ValueError(f"Unsupported root finder method {root_spec.method!r}")
-    return (
-        solver_type,
-        optx.Newton(
-            rtol=root_spec.rtol,
-            atol=root_spec.atol,
-        ),
+def _solver_runtime(graph: AcausalGraphSpec) -> dfx.AbstractSolver:
+    return resolve_acausal_solver(
+        graph.solver.solver_type,
+        graph.solver.dt,
+        physical_domain=graph.physical_domain,
+        root_finder=graph.solver.root_finder,
     )
 
 

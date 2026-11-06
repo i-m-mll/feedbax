@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from feedbax.contracts.base import ParentRef
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.strict_json import (
     StrictJsonError,
@@ -61,12 +60,14 @@ from feedbax.orchestration.bundle import (
     RunRowSpec,
     canonical_run_bundle_sha256,
     default_orchestration_root,
+    execution_identity_projection,
     mint_run_set_id,
     orchestration_run_set_dir,
 )
 from feedbax.orchestration.conformance import (
     CheckRegistry,
     ConformanceRowArtifacts,
+    NativeBatchFrame,
     RowConformanceRuntimeInputs,
     RunConformanceCertificate,
     assert_certificate_allows_completed_registration,
@@ -96,7 +97,9 @@ from feedbax.orchestration.drivers.capabilities import (
 )
 from feedbax.orchestration.drivers.native_execution import (
     NATIVE_TRAINING_COLLECTION_OUTPUTS,
+    NativeExecutionContextError,
     missing_native_training_collection_outputs,
+    native_resume_checkpoint_source,
     uses_registered_native_execution,
 )
 from feedbax.orchestration.executor_family import (
@@ -106,7 +109,7 @@ from feedbax.orchestration.executor_family import (
     executor_family_adapter,
 )
 from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleEvidence
-from feedbax.orchestration.events import RunEventReader
+from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES, RunEventReader
 from feedbax.orchestration.input_materialization import preflight_resolved_inputs
 from feedbax.orchestration.revision import (
     FeedbaxRevisionError,
@@ -115,6 +118,11 @@ from feedbax.orchestration.revision import (
     resolve_science_repo_import_revisions,
 )
 from feedbax.orchestration import schedule_eval
+from feedbax.orchestration.staged_training import (
+    StagedTrainingConflict,
+    claim_staged_training,
+    require_staged_training_owner,
+)
 from feedbax.orchestration.state import (
     AcquisitionIntent,
     EmergencyProviderIdentity,
@@ -133,7 +141,9 @@ from feedbax.orchestration.state import (
 )
 from feedbax.orchestration.transition_authority import TransitionAuthority
 from feedbax.training.checkpoint_custody import (
+    AuthenticatedCheckpointTransaction,
     authenticate_published_checkpoint_custody,
+    validate_checkpoint_run_contract,
 )
 from feedbax.training.diagnostics import (
     TRAINING_DIAGNOSTICS_SCHEMA_ID,
@@ -143,7 +153,11 @@ from feedbax.training.diagnostics import (
     TrainingDiagnostics,
 )
 from feedbax.training.interruption import CancellationDecision
-from feedbax.training.manifest_preflight import preflight_training_run_manifest_payloads
+from feedbax.training.manifest_preflight import (
+    preflight_training_run_manifest_payloads,
+    validate_training_run_spec,
+)
+from feedbax.training.phase_executor import PhaseBoundaryDecision, PhaseProgramExecutor
 
 
 STAGE_ASSEMBLE = "ASSEMBLE"
@@ -277,6 +291,10 @@ class BudgetExceeded(OrchestrationStageError):
 
 class CustodyPreservationRequired(OrchestrationStageError):
     """Destructive teardown is blocked until remote custody is durable."""
+
+
+class _TeardownFailed(OrchestrationStageError):
+    """Teardown already persisted its failure and can be resumed."""
 
 
 class EmergencyStatePersistenceError(OrchestrationStageError):
@@ -480,6 +498,7 @@ class StageEngine:
         break_stale_lock: bool = False,
         stop_after_stage: str | None = None,
         retry_failed_certification: bool = False,
+        certify_and_register: bool = True,
     ) -> RunSetState:
         """Run or resume the bundle through all stages.
 
@@ -490,7 +509,17 @@ class StageEngine:
         intent is the only automatic coverage for SIGKILL before an acquired
         pod's SSH endpoint becomes available; a later local process or operator
         must reconcile it.
+
+        A bound local Studio attempt can collect and tear down without issuing
+        a run-set conformance certificate or registration.
         """
+        if not certify_and_register and (
+            self.bundle is None
+            or self.bundle.staged_training is None
+            or self.bundle.deployment_policy.driver != "local"
+            or self.bundle.execution_family != "native-training"
+        ):
+            raise ValueError("Collection without certification requires a bound staged bundle")
         if self.request is not None:
             # The stale-install gate. ASSEMBLE runs it too, but running it here
             # means a request whose revision authority the imported package
@@ -524,6 +553,8 @@ class StageEngine:
                     state = retry_state
                 try:
                     for stage_id in STAGE_ORDER:
+                        if not certify_and_register and stage_id in (STAGE_CERTIFY, STAGE_REGISTER):
+                            continue
                         if state.stage(stage_id).status == "completed":
                             continue
                         if stage_id == STAGE_TEARDOWN:
@@ -541,7 +572,7 @@ class StageEngine:
                         raise
                     if isinstance(
                         exc,
-                        (CustodyPreservationRequired, EmergencyStatePersistenceError),
+                        (CustodyPreservationRequired, EmergencyStatePersistenceError, _TeardownFailed),
                     ):
                         raise
                     if (
@@ -894,12 +925,17 @@ class StageEngine:
                     self.driver.realized_capabilities.facts.retry is RetrySemantics.DRIVER_GOVERNED
                 )
                 if (
-                    isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded))
+                    isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded, StagedTrainingConflict))
                     or governed_provision
                     or attempts >= limit
                 ):
                     raise
                 continue
+            if stage_id == STAGE_TEARDOWN:
+                teardown = state.stage(stage_id)
+                if teardown.status == "failed":
+                    raise _TeardownFailed(teardown.error or "teardown failed")
+                return state
             completed = state.stage(stage_id).model_copy(
                 update={
                     "status": "completed",
@@ -1532,6 +1568,7 @@ class StageEngine:
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         """Provision RunPod through one durable, budget-governed retry authority."""
         self._assert_provisioning_open(state)
+        claim_staged_training(self.bundle)
         if self.driver.realized_capabilities.facts.retry is not RetrySemantics.DRIVER_GOVERNED:
             outputs = dict(self.driver.provision(self.bundle, state))
             state = state.model_copy(update={"provision_record": outputs, "updated_at": utc_now()})
@@ -1929,15 +1966,10 @@ class StageEngine:
     def _stage_collect(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         collected, checkpoint_custody = self._group_collection_maps(state)
         collection_recovery: dict[str, Mapping[str, Any]] = {}
-        executor_failures = [
-            {
-                "row_id": row.row_id,
-                "error": state.rows[row.row_id].error or "executor reported failure without detail",
-            }
-            for row in self.bundle.rows
-            if state.rows[row.row_id].status == "failed"
-        ]
-        preserve_executor_failure = bool(executor_failures)
+        preserve_executor_failure = any(
+            state.rows[row.row_id].status == "failed" for row in self.bundle.rows
+        )
+        deferred_collection_failure: Exception | None = None
         secondary_evidence: list[dict[str, Any]] = []
         for row in self.bundle.rows:
             row_state = state.rows[row.row_id]
@@ -1950,6 +1982,7 @@ class StageEngine:
             except Exception as exc:
                 if not preserve_executor_failure:
                     raise
+                deferred_collection_failure = deferred_collection_failure or exc
                 outputs = {}
                 secondary_evidence.append(
                     {
@@ -1958,6 +1991,7 @@ class StageEngine:
                         "detail": str(exc),
                     }
                 )
+            row_state = row_state.model_copy(update={"collected_outputs": outputs})
             missing_outputs = executor_family_adapter(
                 row.execution_family
             ).missing_collection_outputs(self.bundle, row, outputs)
@@ -1967,21 +2001,30 @@ class StageEngine:
                     "row_id": row.row_id,
                     "missing_outputs": missing_outputs,
                 }
+                failure = OrchestrationStageError(
+                    f"declared collection outputs are absent for row "
+                    f"{row.row_id!r}: {missing_outputs!r}"
+                )
                 if not preserve_executor_failure:
-                    raise OrchestrationStageError(
-                        f"declared collection outputs are absent for row "
-                        f"{row.row_id!r}: {missing_outputs!r}"
-                    )
+                    raise failure
+                deferred_collection_failure = deferred_collection_failure or failure
                 secondary_evidence.append(evidence)
             elif uses_registered_native_execution(row):
                 try:
-                    checkpoint_custody[row.row_id] = _verify_collected_native_checkpoint_custody(
-                        row, outputs
+                    checkpoint_custody[row.row_id] = _publish_verified_native_collection(
+                        self.bundle, row, outputs
                     )
-                    _publish_collected_native_manifest_and_artifacts(row, outputs)
+                    row_state = _reconcile_collected_checkpoint_stop(
+                        self.bundle,
+                        state,
+                        row,
+                        row_state,
+                        checkpoint_custody[row.row_id],
+                    )
                 except Exception as exc:
                     if not preserve_executor_failure:
                         raise
+                    deferred_collection_failure = deferred_collection_failure or exc
                     secondary_evidence.append(
                         {
                             "kind": "checkpoint_custody_verification_after_executor_failure",
@@ -1998,9 +2041,18 @@ class StageEngine:
                 row_recovery = recovery_evidence(row.row_id)
                 if row_recovery is not None:
                     collection_recovery[row.row_id] = dict(row_recovery)
-            row_state = row_state.model_copy(update={"collected_outputs": outputs})
             state = state.with_row(row.row_id, row_state)
             self.store.save(state)
+        executor_failures = [
+            {
+                "row_id": row.row_id,
+                "error": state.rows[row.row_id].error or "executor reported failure without detail",
+            }
+            for row in self.bundle.rows
+            if state.rows[row.row_id].status == "failed"
+        ]
+        if not executor_failures and deferred_collection_failure is not None:
+            raise deferred_collection_failure
         stage_outputs: dict[str, Any] = {"rows": collected}
         if self.bundle.execution_family == "evaluation-matrix" and not executor_failures:
             lifecycles = [
@@ -2165,9 +2217,35 @@ class StageEngine:
     ) -> ConformanceRowArtifacts:
         """Assemble all check inputs from one row's collected bundle outputs."""
         observed_at = observed_at or utc_now()
-        outputs = state.rows[row.row_id].collected_outputs
-        discovered = _discover_conformance_artifacts(outputs)
+        row_state = state.rows[row.row_id]
+        outputs = row_state.collected_outputs
+        runtime_inputs = self.row_conformance_inputs.get(row.row_id)
+        cancellation = state.budget_counters.get("cancellation")
+        if (
+            state.abort_reason == "operator-stop-after-checkpoint"
+            and isinstance(cancellation, Mapping)
+            and cancellation.get("action") == "stop"
+        ):
+            runtime_inputs = (runtime_inputs or RowConformanceRuntimeInputs()).model_copy(
+                update={"operator_checkpoint_stop": True}
+            )
         run_spec = _row_payload(row)
+        collect = state.stage(STAGE_COLLECT)
+        custody = collect.outputs.get("checkpoint_custody", {}).get(row.row_id)
+        if uses_registered_native_execution(row):
+            if (
+                collect.status != "completed"
+                or not isinstance(custody, Mapping)
+                or collect.outputs.get("rows", {}).get(row.row_id) != outputs
+            ):
+                raise OrchestrationStageError(
+                    f"CERTIFY requires completed COLLECT custody and outputs for row {row.row_id!r}"
+                )
+            discovered = _load_collected_native_artifacts(
+                self.bundle, row, row_state, custody, run_spec
+            )
+        else:
+            discovered = _discover_conformance_artifacts(outputs)
         preflight_payload = None
         if run_spec is not None:
             try:
@@ -2200,7 +2278,7 @@ class StageEngine:
                 self.assembly_context.repo_root if self.assembly_context is not None else None
             ),
             event_log=self.bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl",
-            row_status=state.rows[row.row_id].status,
+            row_status=row_state.status,
             bundle_row_spec=run_spec,
             recorded_environment_fingerprint=state.environment_fingerprint,
             manifest_path=discovered.get("manifest_path"),
@@ -2208,9 +2286,11 @@ class StageEngine:
             training_diagnostics=discovered.get("training_diagnostics"),
             preflight_resume_context=_preflight_resume_context(state, row.row_id),
             checkpoint_custody_root=discovered.get("checkpoint_custody_root"),
+            collected_checkpoint_custody=custody,
+            native_batch_frame=discovered.get("native_batch_frame"),
             preflight_normalized_payload=preflight_payload,
-            row_state=state.rows.get(row.row_id),
-            runtime_inputs=self.row_conformance_inputs.get(row.row_id),
+            row_state=row_state,
+            runtime_inputs=runtime_inputs,
             deployment_policy=self.bundle.deployment_policy.model_dump(mode="json"),
             realized_deployment_evidence=self._realized_deployment_evidence(
                 row, state, observed_at=observed_at
@@ -2432,7 +2512,10 @@ class StageEngine:
         row_status_set = set(row_statuses.values())
         if certificate.overall == "fail":
             status = "failed"
-        elif state.abort_reason:
+        elif state.abort_reason and (
+            state.abort_reason != "operator-stop-after-checkpoint"
+            or "stopped" not in row_status_set
+        ):
             status = "aborted"
         elif row_status_set == {"completed"}:
             status = "completed"
@@ -2828,8 +2911,18 @@ class StageEngine:
                 "skip_reason": "keep_alive",
                 **({"ownership": ownership} if ownership else {}),
             }
-            status = "completed"
-            error = None
+            release_content = self._driver_hook(
+                DriverHook.RELEASE_RUN_CONTENT,
+                "release_run_content",
+            )
+            try:
+                if release_content is not None:
+                    outputs["content_lease"] = release_content(self.bundle)
+                status = "completed"
+                error = None
+            except Exception as exc:
+                status = "failed"
+                error = str(exc)
         else:
             collect_failure_logs = (
                 self._driver_hook(
@@ -2978,10 +3071,9 @@ class StageEngine:
                     f"{row.row_id!r}: {missing_outputs!r}"
                 )
             if uses_registered_native_execution(row):
-                checkpoint_custody[row.row_id] = _verify_collected_native_checkpoint_custody(
-                    row, outputs
+                checkpoint_custody[row.row_id] = _publish_verified_native_collection(
+                    self.bundle, row, outputs
                 )
-                _publish_collected_native_manifest_and_artifacts(row, outputs)
             collected[row.row_id] = outputs
             collect_stage = state.stage(STAGE_COLLECT)
             collect_outputs = dict(collect_stage.outputs)
@@ -3042,6 +3134,7 @@ class StageEngine:
             assert_feedbax_revision_exact(self.bundle.feedbax_revision)
         except FeedbaxRevisionError as exc:
             raise OrchestrationStageError(str(exc)) from exc
+        require_staged_training_owner(self.bundle, row)
         row_state = state.rows[row.row_id].model_copy(
             update={"started_at": state.rows[row.row_id].started_at or utc_now()}
         )
@@ -3258,46 +3351,44 @@ def _missing_declared_collection_outputs(
 
 
 def _verify_collected_native_checkpoint_custody(
+    bundle: RunBundle,
     row: RunRowSpec,
     collected: Mapping[str, str],
+    *,
+    manifest_bytes: bytes | None = None,
 ) -> Mapping[str, Any]:
     """Authenticate the published native checkpoint transaction before teardown."""
 
-    checkpoint_root = Path(collected["checkpoints"])
-    authenticated = authenticate_published_checkpoint_custody(checkpoint_root)
-    manifest = authenticated.manifest
-    manifest_sha256 = authenticated.manifest_sha256
-    transaction_root_sha256 = manifest.content_integrity_digest.transaction_root_sha256
-    manifest_relative_path = authenticated.parent_ref.uri
-
-    training_manifest = load_manifest_bytes(
-        _read_collected_regular_file(
+    if manifest_bytes is None:
+        manifest_bytes = _read_collected_regular_file(
             collected["manifest.json"],
             context=f"collected training manifest for row {row.row_id!r}",
         )
-    )
+    training_manifest = load_manifest_bytes(manifest_bytes)
     if not isinstance(training_manifest, TrainingRunManifest):
         raise OrchestrationStageError(
             f"collected native manifest is not a TrainingRunManifest for row {row.row_id!r}"
         )
-    if not training_manifest.checkpoint_custody:
+    terminal_ref = training_manifest.terminal_checkpoint
+    if terminal_ref is None:
         raise OrchestrationStageError(
             f"collected training manifest has no terminal checkpoint for row {row.row_id!r}"
         )
-    terminal_ref = training_manifest.checkpoint_custody[-1]
-    if not isinstance(terminal_ref, ParentRef):
-        raise OrchestrationStageError(
-            f"collected training manifest terminal checkpoint is not a ParentRef "
-            f"for row {row.row_id!r}"
-        )
-    expected_terminal_ref = ParentRef(
-        kind="TrainingCheckpointTransactionManifest",
-        id=manifest.transaction_id,
-        role="training_checkpoint_custody",
-        uri=manifest_relative_path,
-        metadata={"manifest_sha256": manifest_sha256},
+    inherited = training_manifest.inherited_terminal_checkpoint is not None
+    authenticated = authenticate_published_checkpoint_custody(
+        collected["checkpoints"], require_single_transaction=inherited
     )
-    if terminal_ref != expected_terminal_ref:
+    manifest = authenticated.manifest
+    transaction_root_sha256 = manifest.content_integrity_digest.transaction_root_sha256
+    if inherited:
+        _verify_inherited_native_terminal_checkpoint(
+            bundle, row, collected, training_manifest, authenticated
+        )
+    elif manifest.run_id != training_manifest.job_id:
+        raise OrchestrationStageError(
+            f"collected checkpoint and training run identities disagree for row {row.row_id!r}"
+        )
+    if terminal_ref != authenticated.parent_ref:
         raise OrchestrationStageError(
             f"collected checkpoint custody is not the terminal training manifest authority "
             f"for row {row.row_id!r}"
@@ -3306,20 +3397,148 @@ def _verify_collected_native_checkpoint_custody(
     return {
         "transaction_id": authenticated.manifest.transaction_id,
         "manifest_sha256": authenticated.manifest_sha256,
+        "training_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "completed_training_batches": manifest.completed_training_batches,
         "transaction_root_sha256": transaction_root_sha256,
         "slot_names": sorted(authenticated.slot_names),
+        **({"checkpoint_disposition": "inherited_terminal"} if inherited else {}),
     }
+
+
+def _verify_inherited_native_terminal_checkpoint(
+    bundle: RunBundle,
+    row: RunRowSpec,
+    collected: Mapping[str, str],
+    manifest: TrainingRunManifest,
+    authenticated: AuthenticatedCheckpointTransaction,
+) -> None:
+    checkpoint = authenticated.manifest
+    _require_bound_native_training_result(row, manifest)
+    _require_inherited_resume_source(
+        bundle, row, manifest, checkpoint.content_integrity_digest.transaction_root_sha256
+    )
+    payload = _row_payload(row)
+    if payload is None:
+        raise OrchestrationStageError(f"native resume row {row.row_id!r} has no execution payload")
+    spec = validate_training_run_spec(payload)
+    program = spec.worker_execution.effective_phase.phase_program
+    validate_checkpoint_run_contract(checkpoint, spec, program)
+    resume_phase, _ = PhaseProgramExecutor(program, {}).resume_position(
+        checkpoint.barrier,
+        checkpoint.completed_coordinate,
+        PhaseBoundaryDecision.from_checkpoint_metadata(checkpoint.metadata),
+    )
+    if spec.checkpoint_progress.continuation is not None or resume_phase is not None:
+        raise OrchestrationStageError(
+            f"inherited terminal checkpoint requires a terminal resume without an authored "
+            f"continuation for row {row.row_id!r}"
+        )
+
+    refs = [ref for ref in manifest.artifacts if ref.role == "training_diagnostics"]
+    diagnostics_bytes = _read_collected_regular_file(
+        collected["training-diagnostics.json"],
+        context=f"inherited terminal training diagnostics for row {row.row_id!r}",
+    )
+    if (
+        len(refs) != 1
+        or refs[0].size_bytes != len(diagnostics_bytes)
+        or refs[0].sha256 != hashlib.sha256(diagnostics_bytes).hexdigest()
+    ):
+        raise OrchestrationStageError(
+            f"inherited terminal checkpoint has no pinned diagnostics for row {row.row_id!r}"
+        )
+    diagnostics = _bound_native_diagnostics(row, manifest, diagnostics_bytes)
+    _require_inherited_terminal_batch_evidence(
+        row, diagnostics, spec.training_config.n_batches, checkpoint.completed_training_batches
+    )
+
+
+def _require_inherited_resume_source(
+    bundle: RunBundle,
+    row: RunRowSpec,
+    manifest: TrainingRunManifest,
+    transaction_root_sha256: object,
+) -> None:
+    require_staged_training_owner(bundle, row)
+    provenance = row.execution.row_provenance
+    assert provenance is not None
+    identity = execution_identity_projection(row.execution)
+    if (
+        manifest.run_set_id != bundle.run_set_id
+        or manifest.metadata.get("training_row_provenance")
+        != provenance.model_dump(mode="json", exclude_none=True)
+        or any(getattr(manifest, key) != value for key, value in identity.items())
+    ):
+        raise OrchestrationStageError(
+            f"inherited terminal checkpoint does not certify the current attempt "
+            f"for row {row.row_id!r}"
+        )
+
+    source = native_resume_checkpoint_source(bundle, row)
+    materializer = source.custody.materializer if source is not None else None
+    if (
+        materializer is None
+        or materializer.kind != "checkpoint-custody-archive"
+        or manifest.terminal_checkpoint != materializer.expected_parent_ref
+        or transaction_root_sha256 != materializer.expected_transaction_root_sha256
+    ):
+        raise OrchestrationStageError(
+            f"inherited terminal checkpoint does not match the bundle resume source "
+            f"for row {row.row_id!r}"
+        )
+
+
+def _require_inherited_terminal_batch_evidence(
+    row: RunRowSpec,
+    diagnostics: TrainingDiagnostics,
+    authored_batches: int,
+    checkpoint_batches: object,
+) -> None:
+    if (
+        diagnostics.terminal_status != "completed"
+        or diagnostics.segment_completed_batches != 0
+        or diagnostics.checkpoint_transactions
+        or diagnostics.lr_trace
+        or type(checkpoint_batches) is not int
+        or not diagnostics.completed_batches == checkpoint_batches == authored_batches
+    ):
+        raise OrchestrationStageError(
+            f"inherited terminal checkpoint requires unchanged progress at the authored horizon "
+            f"with zero checkpoint writes or learning-rate samples for row {row.row_id!r}"
+        )
+
+
+def _publish_verified_native_collection(
+    bundle: RunBundle,
+    row: RunRowSpec,
+    collected: Mapping[str, str],
+) -> Mapping[str, Any]:
+    """Authenticate and publish the same bytes before recording collection success."""
+    manifest_bytes = _read_collected_regular_file(
+        collected["manifest.json"],
+        context=f"collected training manifest for row {row.row_id!r}",
+    )
+    evidence = _verify_collected_native_checkpoint_custody(
+        bundle, row, collected, manifest_bytes=manifest_bytes
+    )
+    _publish_collected_native_manifest_and_artifacts(
+        row, collected, manifest_bytes=manifest_bytes
+    )
+    return evidence
 
 
 def _publish_collected_native_manifest_and_artifacts(
     row: RunRowSpec,
     collected: Mapping[str, str],
+    *,
+    manifest_bytes: bytes | None = None,
 ) -> None:
-    """Make one collected native row resolvable before recording collection success."""
-    manifest_bytes = _read_collected_regular_file(
-        collected["manifest.json"],
-        context=f"collected training manifest for row {row.row_id!r}",
-    )
+    """Make the collected native manifest and referenced artifacts resolvable."""
+    if manifest_bytes is None:
+        manifest_bytes = _read_collected_regular_file(
+            collected["manifest.json"],
+            context=f"collected training manifest for row {row.row_id!r}",
+        )
     manifest = load_manifest_bytes(manifest_bytes)
     if not isinstance(manifest, TrainingRunManifest):
         raise OrchestrationStageError(
@@ -3394,6 +3613,49 @@ def _publish_collected_native_manifest_and_artifacts(
                 )
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def load_collected_native_training_result(
+    row: RunRowSpec,
+    path: Path,
+    *,
+    sha256: str,
+) -> TrainingRunManifest:
+    """Resolve the exact terminal manifest authenticated by native collection."""
+    manifest, _ = _read_collected_native_training_result(row, path, sha256=sha256)
+    return manifest
+
+
+def _read_collected_native_training_result(
+    row: RunRowSpec, path: Path, *, sha256: str
+) -> tuple[TrainingRunManifest, bytes]:
+    data = _read_collected_regular_file(path, context=f"collected result for row {row.row_id!r}")
+    if hashlib.sha256(data).hexdigest() != sha256:
+        raise OrchestrationStageError(f"Collected result digest changed for row {row.row_id!r}")
+    manifest = load_manifest_bytes(data)
+    if not isinstance(manifest, TrainingRunManifest):
+        raise OrchestrationStageError(
+            f"Collected result is not a training manifest for row {row.row_id!r}"
+        )
+    _require_bound_native_training_result(row, manifest)
+    return manifest, data
+
+
+def _require_bound_native_training_result(
+    row: RunRowSpec, manifest: TrainingRunManifest
+) -> None:
+    provenance = row.execution.row_provenance
+    if (
+        provenance is None
+        or manifest.id != provenance.planned_run_id
+        or manifest.job_id != provenance.planned_run_id
+        or manifest.execution_hash != row.execution.execution_capsule.execution_hash
+        or manifest.terminal_certification is None
+        or manifest.terminal_checkpoint not in manifest.terminal_certification.certified_artifacts
+    ):
+        raise OrchestrationStageError(
+            f"Collected result does not certify the bound execution for row {row.row_id!r}"
+        )
 
 
 def _read_collected_regular_file(path: str | Path, *, context: str) -> bytes:
@@ -3727,10 +3989,26 @@ def _preflight_conformance_trace_cardinality(
             continue
 
         continuation = run_spec.checkpoint_progress.continuation
-        segment_batches = run_spec.training_config.n_batches
-        start_completed_batches = (
-            continuation.source_completed_batches if continuation is not None else 0
-        )
+        if continuation is None:
+            try:
+                source = native_resume_checkpoint_source(bundle, row)
+            except NativeExecutionContextError as exc:
+                failures.append(f"{row.row_id}: {exc}")
+                continue
+            if source is not None:
+                observed[row.row_id] = [
+                    {
+                        "assertion": "lr_trace",
+                        "outcome": "deferred-to-collected-resume-progress",
+                        "source_transaction_id": source.custody.materializer.expected_parent_ref.id,
+                    }
+                ]
+                continue
+            segment_batches = run_spec.training_config.n_batches
+            start_completed_batches = 0
+        else:
+            segment_batches = continuation.additional_batches
+            start_completed_batches = continuation.source_completed_batches
         terminal_completed_batches = start_completed_batches + segment_batches
         progress_interval = run_spec.checkpoint_progress.progress_interval
         if progress_interval is None:
@@ -4073,6 +4351,7 @@ def _schedule_run_end_step(
 ) -> int | None:
     """Return the segment post-completion coordinate when the run depth is declared."""
     for n_batches in (
+        _path(run_spec, "checkpoint_progress", "continuation", "additional_batches"),
         _path(run_spec, "training_config", "n_batches"),
         _path(run_spec, "training", "n_batches"),
         _path(run_spec, "n_batches"),
@@ -4097,6 +4376,172 @@ def _optimizer_payloads(run_spec: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         if isinstance(value, Mapping):
             payloads.append(value)
     return payloads
+
+
+def _reconcile_collected_checkpoint_stop(
+    bundle: RunBundle,
+    state: RunSetState,
+    row: RunRowSpec,
+    row_state: RowState,
+    custody: Mapping[str, Any],
+) -> RowState:
+    """Resolve a RunPod terminal probe using authenticated checkpoint-stop evidence."""
+    cancellation = state.budget_counters.get("cancellation")
+    if (
+        bundle.deployment_policy.driver != "runpod"
+        or state.abort_reason != "operator-stop-after-checkpoint"
+        or not isinstance(cancellation, Mapping)
+        or cancellation.get("action") != "stop"
+        or row_state.status not in {"completed", "failed"}
+        or row_state.error is not None
+    ):
+        return row_state
+    event_name = f"{row.row_id}.events.jsonl"
+    event_path = bundle.run_set_dir / "events" / event_name
+    if row_state.collected_outputs.get(event_name) != str(event_path):
+        return row_state
+    events = RunEventReader(event_path).read_all()
+    terminal = [event for event in events if event.type in RUN_EVENT_TERMINAL_TYPES]
+    if len(terminal) != 1:
+        return row_state
+    (event,) = terminal
+    provenance = row.execution.row_provenance
+    if (
+        event is not events[-1]
+        or event.type != "complete"
+        or event.run_set_id != bundle.run_set_id
+        or event.row_id != row.row_id
+        or provenance is None
+        or event.payload.get("run_id") != provenance.planned_run_id
+        or event.payload.get("status") != "cancelled"
+    ):
+        return row_state
+
+    artifacts = _load_collected_native_artifacts(bundle, row, row_state, custody, _row_payload(row))
+    manifest = artifacts["manifest_payload"]
+    diagnostics = artifacts["training_diagnostics"]
+    frame = artifacts["native_batch_frame"]
+    worker_cancellation = manifest.get("provenance", {}).get("metadata", {}).get("cancellation")
+    if (
+        manifest["status"] != "cancelled"
+        or diagnostics.get("terminal_status") != "cancelled"
+        or not isinstance(worker_cancellation, Mapping)
+        or worker_cancellation.get("action") != "stop"
+        or frame.segment <= 0
+        or manifest.get("completed_batches") != frame.cumulative
+        or custody.get("completed_training_batches") != frame.cumulative
+    ):
+        return row_state
+    return row_state.model_copy(
+        update={
+            "status": "stopped",
+            "error": state.abort_reason,
+            "event_seq_high_water_mark": event.seq,
+            "last_event_type": event.type,
+        }
+    )
+
+
+def _load_collected_native_artifacts(
+    bundle: RunBundle,
+    row: RunRowSpec,
+    row_state: RowState,
+    custody: Mapping[str, Any],
+    run_spec: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Resolve the exact COLLECT-pinned native batch and checkpoint evidence."""
+    outputs = row_state.collected_outputs
+    path = Path(outputs["manifest.json"])
+    manifest_sha256 = custody.get("training_manifest_sha256")
+    if not isinstance(manifest_sha256, str):
+        raise OrchestrationStageError(f"Missing COLLECT manifest digest for row {row.row_id!r}")
+    manifest, manifest_bytes = _read_collected_native_training_result(
+        row, path, sha256=manifest_sha256
+    )
+    inherited = manifest.inherited_terminal_checkpoint is not None
+    expected_disposition = "inherited_terminal" if inherited else None
+    if custody.get("checkpoint_disposition") != expected_disposition:
+        raise OrchestrationStageError(
+            f"COLLECT checkpoint disposition disagrees with the manifest for row {row.row_id!r}"
+        )
+    terminal = manifest.terminal_checkpoint
+    checkpoint_batches = custody.get("completed_training_batches")
+    if (
+        terminal is None
+        or custody.get("transaction_id") != terminal.id
+        or custody.get("manifest_sha256") != terminal.metadata.get("manifest_sha256")
+        or type(checkpoint_batches) is not int
+        or checkpoint_batches < 0
+        or (row_state.status == "completed" and checkpoint_batches != manifest.completed_batches)
+    ):
+        raise OrchestrationStageError(
+            f"COLLECT checkpoint receipt disagrees with the manifest for row {row.row_id!r}"
+        )
+
+    refs = [ref for ref in manifest.artifacts if ref.role == "training_diagnostics"]
+    if len(refs) != 1 or refs[0].sha256 is None or refs[0].size_bytes is None:
+        raise OrchestrationStageError(f"Missing pinned training diagnostics for row {row.row_id!r}")
+    ref = refs[0]
+    provider = ImmutableArtifactBlobProvider(Path(outputs["manifests"]).absolute())
+    data = provider.get_bytes(f"artifact://sha256/{ref.sha256}", size_bytes=ref.size_bytes)
+    diagnostics = _bound_native_diagnostics(row, manifest, data)
+    if run_spec is None:
+        raise OrchestrationStageError(f"Native row {row.row_id!r} has no execution payload")
+    spec = TrainingRunSpec.model_validate(run_spec)
+    continuation = spec.checkpoint_progress.continuation
+    expected_segment = spec.training_config.n_batches
+    expected_origin = None
+    if inherited:
+        _require_inherited_resume_source(
+            bundle, row, manifest, custody.get("transaction_root_sha256")
+        )
+        if continuation is not None or row_state.status != "completed":
+            raise OrchestrationStageError(
+                f"Inherited terminal custody requires a completed row without continuation "
+                f"for row {row.row_id!r}"
+            )
+        expected_origin = expected_segment
+        expected_segment = 0
+        _require_inherited_terminal_batch_evidence(
+            row, diagnostics, expected_origin, checkpoint_batches
+        )
+    elif continuation is not None:
+        expected_segment = continuation.additional_batches
+        expected_origin = continuation.source_completed_batches
+
+    frame = NativeBatchFrame(
+        segment=diagnostics.segment_completed_batches,
+        cumulative=diagnostics.cumulative_completed_batches,
+        expected_segment=expected_segment,
+        expected_origin=expected_origin,
+        inherited_checkpoint_id=terminal.id if inherited else None,
+    )
+    if expected_origin is not None and frame.origin != expected_origin:
+        raise OrchestrationStageError(
+            f"Native batch origin disagrees with the authored checkpoint for row {row.row_id!r}"
+        )
+    return {
+        "manifest_path": path,
+        "manifest_payload": strict_json_loads(manifest_bytes),
+        "training_diagnostics": diagnostics.model_dump(mode="json", exclude_none=True),
+        "checkpoint_custody_root": Path(outputs["checkpoints"]),
+        "native_batch_frame": frame,
+    }
+
+
+def _bound_native_diagnostics(
+    row: RunRowSpec, manifest: TrainingRunManifest, data: bytes
+) -> TrainingDiagnostics:
+    diagnostics = strict_model_validate_json(TrainingDiagnostics, data)
+    if (
+        diagnostics.manifest_id != manifest.id
+        or diagnostics.run_id != manifest.job_id
+        or diagnostics.completed_batches != manifest.completed_batches
+    ):
+        raise OrchestrationStageError(
+            f"Pinned training diagnostics disagree with the manifest for row {row.row_id!r}"
+        )
+    return diagnostics
 
 
 def _discover_conformance_artifacts(outputs: Mapping[str, str]) -> dict[str, Any]:

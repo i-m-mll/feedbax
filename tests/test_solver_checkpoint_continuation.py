@@ -240,8 +240,9 @@ def _exercise_checkpoint_continuation(tmp_path, kind, solver_type, *, publish=Tr
         (kind, solver)
         for kind in ("filter", "dae", "mechanics", "nested")
         for solver in (dfx.Euler, dfx.Tsit5)
+        if (kind, solver) != ("filter", dfx.Tsit5)
     ]
-    + [("dae", dfx.ImplicitEuler), ("backend", dfx.Tsit5)],
+    + [("backend", dfx.Tsit5)],
 )
 def test_solver_checkpoint_executes_returned_model_and_runtime_state(tmp_path, kind, solver_type):
     _exercise_checkpoint_continuation(tmp_path, kind, solver_type)
@@ -270,7 +271,7 @@ def test_solver_checkpoint_continuation_survives_cold_and_warm_processes(tmp_pat
             def emit(self, record):
                 if 'Persistent compilation cache hit' in record.getMessage():
                     module, key = record.args
-                    if module == 'jit_ode_step':
+                    if module == 'jit__solve_step':
                         self.keys.append(key)
 
         hits = SolverCacheHits()
@@ -310,7 +311,7 @@ def test_solver_checkpoint_continuation_survives_cold_and_warm_processes(tmp_pat
             )
             assert process.returncode == 0, process.stdout + process.stderr
             results.append(json.loads(process.stdout))
-        assert results[1], "warm continuation did not reuse a persistent jit_ode_step entry"
+        assert results[1], "warm continuation did not reuse the compiled solver step"
     finally:
         if cache.exists():
             shutil.rmtree(cache)

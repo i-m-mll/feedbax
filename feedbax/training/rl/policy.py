@@ -9,12 +9,23 @@ structured exploration in latent space rather than action space.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from pathlib import Path
 from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
+
+from feedbax._vendor.jax_cookbook import load, save
+from feedbax.training.rl.obs_norm import (
+    DEFAULT_OBS_NORM_CLIP,
+    DEFAULT_OBS_NORM_EPS,
+    ObsNormState,
+    init_obs_norm,
+    normalize_obs,
+)
 
 
 class BetaParams(NamedTuple):
@@ -37,14 +48,33 @@ class BetaParams(NamedTuple):
         Returns:
             Per-dimension log probabilities.
         """
-        x = jnp.clip(x, 1e-6, 1.0 - 1e-6)
+        # Keep finite scores if the floating-point sampler rounds to an endpoint.
+        limits = jnp.finfo(x.dtype)
+        x = jnp.clip(x, limits.tiny, 1.0 - limits.epsneg)
+        return self._log_density(jnp.log(x), jnp.log1p(-x))
+
+    def _log_density(
+        self,
+        log_x: Float[Array, "... action_dim"],
+        log_one_minus_x: Float[Array, "... action_dim"],
+    ) -> Float[Array, "... action_dim"]:
         return (
-            (self.alpha - 1.0) * jnp.log(x)
-            + (self.beta - 1.0) * jnp.log(1.0 - x)
-            + jax.lax.lgamma(self.alpha + self.beta)
-            - jax.lax.lgamma(self.alpha)
-            - jax.lax.lgamma(self.beta)
+            (self.alpha - 1.0) * log_x
+            + (self.beta - 1.0) * log_one_minus_x
+            - jax.scipy.special.betaln(self.alpha, self.beta)
         )
+
+    def joint_log_prob(self, x: Float[Array, "... action_dim"]) -> Float[Array, "..."]:
+        """Log density of the full action under independent Beta coordinates."""
+        return jnp.sum(self.log_prob(x), axis=-1)
+
+    def joint_log_prob_from_logits(
+        self, logits: Float[Array, "... action_dim"]
+    ) -> Float[Array, "..."]:
+        """Beta log density at the draw represented by logits, in action coordinates."""
+        log_x = jax.nn.log_sigmoid(logits)
+        log_one_minus_x = jax.nn.log_sigmoid(-logits)
+        return jnp.sum(self._log_density(log_x, log_one_minus_x), axis=-1)
 
     def entropy(self) -> Float[Array, "... action_dim"]:
         """Differential entropy of the Beta distribution.
@@ -69,9 +99,27 @@ class BetaParams(NamedTuple):
             key: PRNG key.
 
         Returns:
-            Samples in (0, 1), shape ``(..., action_dim)``.
+            Samples in [0, 1], shape ``(..., action_dim)``, with endpoints possible
+            from floating-point rounding.
         """
-        return jax.random.beta(key, self.alpha, self.beta)
+        return _beta_sample_from_logits(self.sample_logits(key))
+
+    def sample_logits(self, key: PRNGKeyArray) -> Float[Array, "... action_dim"]:
+        """Sample a Beta draw in logit coordinates to retain both tails."""
+        key_a, key_b = jax.random.split(key)
+        shape = jnp.broadcast_shapes(self.alpha.shape, self.beta.shape)
+        return jax.random.loggamma(key_a, self.alpha, shape) - jax.random.loggamma(
+            key_b, self.beta, shape,
+        )
+
+
+def _beta_sample_from_logits(
+    logits: Float[Array, "... action_dim"],
+) -> Float[Array, "... action_dim"]:
+    # Match jax.random.beta's scaled gamma ratio for the same keys and dtype.
+    gamma_a = jnp.exp(jnp.minimum(logits, 0.0))
+    gamma_b = jnp.exp(jnp.minimum(-logits, 0.0))
+    return gamma_a / (gamma_a + gamma_b)
 
 
 class LatticeNoiseState(eqx.Module):
@@ -164,12 +212,18 @@ class ActorCritic(eqx.Module):
         critic: MLP mapping observations to scalar value estimate.
         obs_dim: Observation dimension (static).
         action_dim: Action dimension (static).
+        obs_norm: Optional frozen observation statistics for raw-input inference.
+        obs_norm_eps: Stability constant for observation standardization.
+        obs_norm_clip: Symmetric clipping bound for standardized observations.
     """
 
     actor: eqx.nn.MLP
     critic: eqx.nn.MLP
     obs_dim: int = eqx.field(static=True)
     action_dim: int = eqx.field(static=True)
+    obs_norm: ObsNormState | None
+    obs_norm_eps: float = eqx.field(static=True)
+    obs_norm_clip: float = eqx.field(static=True)
 
     def __init__(
         self,
@@ -179,10 +233,16 @@ class ActorCritic(eqx.Module):
         hidden_layers: int,
         *,
         key: PRNGKeyArray,
+        obs_norm: ObsNormState | None = None,
+        obs_norm_eps: float = DEFAULT_OBS_NORM_EPS,
+        obs_norm_clip: float = DEFAULT_OBS_NORM_CLIP,
     ) -> None:
         key_actor, key_critic = jax.random.split(key)
         self.obs_dim = obs_dim
         self.action_dim = action_dim
+        self.obs_norm = obs_norm
+        self.obs_norm_eps = obs_norm_eps
+        self.obs_norm_clip = obs_norm_clip
         self.actor = eqx.nn.MLP(
             obs_dim,
             2 * action_dim,
@@ -213,32 +273,42 @@ class ActorCritic(eqx.Module):
         Float[Array, "... action_dim"],
         Float[Array, "..."],
     ]:
-        """Compute raw Beta parameters and value estimate.
+        """Compute Beta parameters and value estimate from raw observations.
 
         Args:
-            obs: Observation array.
+            obs: Raw observation array.
 
         Returns:
             Tuple of (alpha, beta, value).
         """
-        params = self._apply_mlp(self.actor, obs)
+        dist, value = self.dist_and_value(obs)
+        return dist.alpha, dist.beta, value
+
+    def dist_and_value(
+        self,
+        obs: Float[Array, "... obs_dim"],
+        latent_noise: Float[Array, "... latent_dim"] | None = None,
+    ) -> tuple[BetaParams, Float[Array, "..."]]:
+        """Return the Beta law and value for raw observations.
+
+        A single noise vector may be shared across a batch. Noise enters at the
+        input to the actor output layer, leaving the critic unchanged.
+        """
+        if self.obs_norm is not None:
+            obs = normalize_obs(self.obs_norm, obs, eps=self.obs_norm_eps, clip=self.obs_norm_clip)
+        if latent_noise is None:
+            params = self._apply_mlp(self.actor, obs)
+        else:
+            flat_obs = obs.reshape(-1, obs.shape[-1])
+            flat_noise = jnp.broadcast_to(
+                latent_noise, obs.shape[:-1] + (latent_noise.shape[-1],),
+            ).reshape(-1, latent_noise.shape[-1])
+            params = jax.vmap(self._actor_with_noise)(flat_obs, flat_noise)
+            params = params.reshape(obs.shape[:-1] + (params.shape[-1],))
+
         alpha = jax.nn.softplus(params[..., : self.action_dim]) + 1.0
         beta = jax.nn.softplus(params[..., self.action_dim :]) + 1.0
         value = self._apply_mlp(self.critic, obs).squeeze(-1)
-        return alpha, beta, value
-
-    def dist_and_value(
-        self, obs: Float[Array, "... obs_dim"]
-    ) -> tuple[BetaParams, Float[Array, "..."]]:
-        """Get action distribution parameters and value estimate.
-
-        Args:
-            obs: Observation array.
-
-        Returns:
-            Tuple of (BetaParams, value).
-        """
-        alpha, beta, value = self.forward(obs)
         return BetaParams(alpha, beta), value
 
     def sample_action(
@@ -247,46 +317,95 @@ class ActorCritic(eqx.Module):
         """Sample an action from the policy.
 
         Args:
-            obs: Single observation, shape ``(obs_dim,)``.
+            obs: Single raw observation, shape ``(obs_dim,)``.
             key: PRNG key.
 
         Returns:
-            Tuple of (action, log_prob, value).
+            Tuple of (clipped action, log density at that action, value).
         """
-        dist, value = self.dist_and_value(obs)
-        action = dist.sample(key)
-        action = jnp.clip(action, 1e-4, 1.0 - 1e-4)
-        log_prob = jnp.sum(dist.log_prob(action), axis=-1)
-        return action, log_prob, value
+        return self._sample_clipped_action(obs, key, None)
 
-    def _actor_hidden(self, obs: Float[Array, " obs_dim"]) -> Float[Array, " hidden_dim"]:
-        """Run obs through all actor layers except the last, returning hidden repr.
+    def _sample_clipped_action(
+        self,
+        obs: Float[Array, " obs_dim"],
+        key: PRNGKeyArray,
+        latent_noise: Float[Array, " latent_dim"] | None,
+    ) -> tuple[Float[Array, " action_dim"], Float[Array, ""], Float[Array, ""]]:
+        dist, value = self.dist_and_value(obs, latent_noise)
+        action = _clip_action(dist.sample(key))
+        return action, dist.joint_log_prob(action), value
 
-        Applies activation after each hidden layer, matching ``eqx.nn.MLP`` semantics.
+    def _draw_action_logits(
+        self,
+        obs: Float[Array, " obs_dim"],
+        key: PRNGKeyArray,
+        latent_noise: Float[Array, " latent_dim"] | None,
+    ) -> tuple[Float[Array, " action_dim"], Float[Array, ""], Float[Array, ""]]:
+        dist, value = self.dist_and_value(obs, latent_noise)
+        logits = jax.lax.stop_gradient(dist.sample_logits(key))
+        return logits, dist.joint_log_prob_from_logits(logits), value
 
-        Args:
-            obs: Single observation, shape ``(obs_dim,)``.
-
-        Returns:
-            Hidden representation before the final linear layer.
-        """
-        h = obs
-        for layer in self.actor.layers[:-1]:
-            h = self.actor.activation(layer(h))
-        return h
-
-    def _actor_output_from_hidden(
-        self, hidden: Float[Array, " hidden_dim"]
+    def _actor_with_noise(
+        self, obs: Float[Array, " obs_dim"], latent_noise: Float[Array, " latent_dim"],
     ) -> Float[Array, " two_action_dim"]:
-        """Apply the actor's final linear layer to a hidden representation.
+        """Inject noise at the input to the actor output layer."""
+        hidden = obs
+        for layer in self.actor.layers[:-1]:
+            hidden = self.actor.activation(layer(hidden))
+        return self.actor.layers[-1](hidden + latent_noise)
 
-        Args:
-            hidden: Hidden representation, shape ``(hidden_dim,)``.
 
-        Returns:
-            Raw output params, shape ``(2 * action_dim,)``.
-        """
-        return self.actor.layers[-1](hidden)
+def _clip_action(action: Float[Array, "... action_dim"]) -> Float[Array, "... action_dim"]:
+    return jnp.clip(action, 1e-4, 1.0 - 1e-4)
+
+
+def save_policy(path: str | Path, policy: ActorCritic) -> None:
+    """Save a single policy or body batch with the metadata needed to load it."""
+    save(
+        path,
+        policy,
+        hyperparameters={
+            "obs_dim": policy.obs_dim,
+            "action_dim": policy.action_dim,
+            "hidden_dim": policy.actor.width_size,
+            "hidden_layers": policy.actor.depth,
+            "batch_shape": policy.actor.layers[0].weight.shape[:-2],
+            "normalize_observations": policy.obs_norm is not None,
+            "obs_norm_eps": policy.obs_norm_eps,
+            "obs_norm_clip": policy.obs_norm_clip,
+        },
+    )
+
+
+def _policy_template(
+    obs_dim: int,
+    action_dim: int,
+    hidden_dim: int,
+    hidden_layers: int,
+    *,
+    key: PRNGKeyArray,
+    batch_shape: Sequence[int],
+    normalize_observations: bool,
+    obs_norm_eps: float,
+    obs_norm_clip: float,
+) -> ActorCritic:
+    policy = ActorCritic(
+        obs_dim, action_dim, hidden_dim, hidden_layers,
+        key=key,
+        obs_norm=init_obs_norm(obs_dim) if normalize_observations else None,
+        obs_norm_eps=obs_norm_eps,
+        obs_norm_clip=obs_norm_clip,
+    )
+    return jax.tree.map(
+        lambda leaf: jnp.broadcast_to(leaf, (*batch_shape, *leaf.shape))
+        if eqx.is_array(leaf) else leaf,
+        policy,
+    )
+
+
+def load_policy(path: str | Path) -> ActorCritic:
+    """Restore an executable policy or body batch saved by :func:`save_policy`."""
+    return load(path, _policy_template)
 
 
 def forward_with_latent_noise(
@@ -311,17 +430,7 @@ def forward_with_latent_noise(
     Returns:
         Tuple of (BetaParams, value).
     """
-    # Actor: inject noise into hidden representation
-    hidden = policy._actor_hidden(obs)
-    hidden_noisy = jnp.where(jnp.asarray(use_lattice), hidden + latent_noise, hidden)
-    params = policy._actor_output_from_hidden(hidden_noisy)
-    alpha = jax.nn.softplus(params[..., : policy.action_dim]) + 1.0
-    beta = jax.nn.softplus(params[..., policy.action_dim :]) + 1.0
-
-    # Critic: no noise
-    value = policy.critic(obs).squeeze(-1)
-
-    return BetaParams(alpha, beta), value
+    return policy.dist_and_value(obs, jnp.where(use_lattice, latent_noise, 0.0))
 
 
 def sample_action_with_noise(
@@ -333,9 +442,7 @@ def sample_action_with_noise(
 ) -> tuple[Float[Array, " action_dim"], Float[Array, ""], Float[Array, ""]]:
     """Sample an action from the policy with LATTICE latent-space noise.
 
-    Wrapper around ``forward_with_latent_noise`` that samples from the
-    resulting Beta distribution, matching the signature of
-    ``ActorCritic.sample_action``.
+    Returns a clipped action, matching ``ActorCritic.sample_action``.
 
     Args:
         policy: Actor-critic policy.
@@ -345,10 +452,7 @@ def sample_action_with_noise(
         use_lattice: Whether to apply latent noise.
 
     Returns:
-        Tuple of (action, log_prob, value).
+        Tuple of (clipped action, log density at that action, value).
     """
-    dist, value = forward_with_latent_noise(policy, obs, latent_noise, use_lattice)
-    action = dist.sample(key)
-    action = jnp.clip(action, 1e-4, 1.0 - 1e-4)
-    log_prob = jnp.sum(dist.log_prob(action), axis=-1)
-    return action, log_prob, value
+    noise = jnp.where(use_lattice, latent_noise, 0.0)
+    return policy._sample_clipped_action(obs, key, noise)

@@ -5,6 +5,7 @@ import time
 from io import StringIO
 from pathlib import Path
 
+import jax.numpy as jnp
 import pytest
 import numpy as np
 from pydantic import ValidationError
@@ -98,21 +99,7 @@ def test_run_event_registry_declares_reject_policy() -> None:
         default_spec_registry.migrate("RunEvent", {"schema_version": "feedbax.run_event.v1"})
 
 
-def test_metric_normalization_preserves_scalar_bytes_and_envelopes_mapped_values() -> None:
-    coordinate = ProgressCoordinate(
-        run_id="row",
-        phase="train",
-        program_step=3,
-        metrics={"train_loss": 1.0},
-    )
-    scalar_coordinate, scalar_metrics = normalize_serialized_metrics(
-        coordinate,
-        coordinate.metrics,
-        {},
-    )
-    assert scalar_coordinate == coordinate.model_dump(mode="json", exclude_none=True)
-    assert scalar_metrics == dict(coordinate.metrics)
-
+def test_metric_normalization_preserves_shared_json_and_envelopes_mapped_values() -> None:
     axes = (
         MaterializedSlotAxisBinding(
             axis="ensemble",
@@ -123,15 +110,37 @@ def test_metric_normalization_preserves_scalar_bytes_and_envelopes_mapped_values
             array_axis=0,
         ),
     )
-    mapped_runtime = coordinate.model_copy(
-        update={"metrics": {"train_loss": np.array([1.0, 2.0])}}
+    shared_metrics = {
+        "accepted": np.bool_(True),
+        "details": {"label": "train", "samples": (None, np.int32(3))},
+    }
+    train_loss = np.array([1.0, 2.0])
+    coordinate = ProgressCoordinate(
+        run_id="row",
+        phase="train",
+        program_step=3,
+        metrics={
+            "train_loss": train_loss,
+            **shared_metrics,
+            "coordinate_only": 1,
+        },
     )
     mapped_coordinate, mapped_metrics = normalize_serialized_metrics(
-        mapped_runtime,
-        mapped_runtime.metrics,
+        coordinate,
+        {
+            "train_loss": train_loss,
+            **shared_metrics,
+            "offset": jnp.asarray(0.25, dtype=jnp.bfloat16),
+        },
         {"train_loss": axes},
     )
-    assert "train_loss" not in mapped_coordinate["metrics"]
+    shared = {"accepted": True, "details": {"label": "train", "samples": [None, 3]}}
+    assert mapped_coordinate["metrics"] == {**shared, "coordinate_only": 1}
+    assert {key: value for key, value in mapped_metrics.items() if key != "train_loss"} == {
+        **shared,
+        "offset": 0.25,
+    }
+    assert mapped_metrics["accepted"] is True
     assert mapped_metrics["train_loss"] == {
         "schema_id": "feedbax.manifest.mapped_metric_value",
         "schema_version": "feedbax.manifest.mapped_metric_value.v1",
@@ -140,6 +149,17 @@ def test_metric_normalization_preserves_scalar_bytes_and_envelopes_mapped_values
         "dtype": "float64",
         "axes": [axes[0].model_dump(mode="json")],
     }
+
+
+@pytest.mark.parametrize(
+    "value",
+    [np.array([1.0]), np.complex64(1 + 2j), {"samples": [np.float32(np.inf)]}],
+)
+def test_metric_normalization_rejects_unmapped_values_without_finite_json(value) -> None:
+    coordinate = ProgressCoordinate(run_id="row", phase="train", program_step=1)
+
+    with pytest.raises(RunEventProtocolError, match="metric 'observation'"):
+        normalize_serialized_metrics(coordinate, {"observation": value}, {})
 
 
 def test_metric_normalization_preserves_named_mapped_leaf_types() -> None:

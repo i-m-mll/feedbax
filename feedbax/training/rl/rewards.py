@@ -4,10 +4,9 @@ Provides unified effector-space reward computation with proximity-gated
 velocity matching, fully compatible with JAX JIT compilation.
 
 Design (Bug: 67e2e5e):
-    The velocity penalty uses ``||v_effector - v_target||`` for ALL task
-    types.  For REACH/HOLD ``v_target = 0``, so this reduces to
-    ``||v_effector||``.  For TRACK/SWING ``v_target`` is the target
-    velocity, so the agent matches the desired speed profile.
+    The velocity penalty uses ``||v_effector - v_target||`` for every task.
+    A stationary target such as HOLD has zero velocity, so the penalty
+    reduces to the effector speed.
 
     The penalty is gated by two signals:
     - **Proximity gate** (Gaussian): penalty grows as the effector
@@ -60,13 +59,15 @@ def compute_reward(
     velocity_weight: float,
     hold_bonus: float,
     hold_threshold: float,
+    distance_weight: float | Float[Array, ""] = 1.0,
     step: Float[Array, ""] | None = None,
     n_steps: int | None = None,
 ) -> Float[Array, ""]:
     """Unified proximity-gated velocity-matching reward.
 
     Computes a scalar reward from three terms:
-    ``-distance - effort_weight * effort - velocity_weight * vel_gate * vel_error``
+    ``-distance_weight * distance - effort_weight * effort
+    - velocity_weight * vel_gate * vel_error``
     plus a proximity bonus when the effector is within ``hold_threshold``.
 
     The velocity error is ``||v_effector - v_target||`` regardless of
@@ -85,6 +86,7 @@ def compute_reward(
         velocity_weight: Velocity error penalty weight.
         hold_bonus: Bonus for being within ``hold_threshold`` of target.
         hold_threshold: Distance threshold for proximity bonus.
+        distance_weight: Weight on the additive distance penalty.
         step: Current timestep index (scalar int32 array).  Optional for
             backward compatibility; when ``None`` the temporal gate is 1.0.
         n_steps: Total timesteps per episode.  Required when ``step`` is
@@ -96,8 +98,6 @@ def compute_reward(
     distance = jnp.linalg.norm(effector_pos - target_pos)
     effort = jnp.mean(muscle_excitations**2)
 
-    # Bug: 67e2e5e — Unified velocity matching: ||v_eff - v_target|| for ALL
-    # task types.  REACH/HOLD have v_target=0, TRACK/SWING match target speed.
     vel_error = jnp.linalg.norm(effector_vel - target_vel)
 
     # Proximity gate: Gaussian centered on target, width = 2 * hold_threshold.
@@ -116,7 +116,7 @@ def compute_reward(
 
     # Base reward: distance + effort + proximity-gated velocity matching.
     reward = (
-        -distance
+        -jnp.asarray(distance_weight, dtype=distance.dtype) * distance
         - effort_weight * effort
         - velocity_weight * vel_gate * vel_error
     )

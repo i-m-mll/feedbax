@@ -6,9 +6,9 @@ transport shapes. The frontend derives runtime validators from these models.
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.domain import (
@@ -25,6 +25,7 @@ from feedbax.contracts.graph import (
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import EvaluationStatesConsumptionPolicy
 from feedbax.contracts.selection import SelectionPreview, SelectionSpec
+from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.workspace_replay import WorkspaceReplaySampleAxis, WorkspaceReplayTrack
 
 
@@ -411,15 +412,33 @@ class AnalysisJobStatusResponse(StudioApiModel):
     data: AnalysisJobStatusPayload
 
 
-class TrainingProgressEvent(StudioApiModel):
-    """Training progress event sent over the Studio WebSocket."""
-
-    type: Literal["training_progress"]
+class _TrainingEvent(StudioApiModel):
     job_id: str
     seq: int
     emitted_at_ms: int
     worker_seq: Optional[int] = None
-    batch: int
+
+
+class _TrainingPositionEvent(_TrainingEvent):
+    """Live event with at least one known coordinate."""
+
+    batch: Optional[int] = Field(
+        default=None, ge=0, strict=True, description="Completed training batches."
+    )
+    program_step: Optional[int] = Field(
+        default=None, ge=0, strict=True, description="Phase-program step."
+    )
+
+    @model_validator(mode="after")
+    def require_position(self) -> Self:
+        validate_cross_field_refinements(type(self).__name__, self)
+        return self
+
+
+class TrainingProgressEvent(_TrainingPositionEvent):
+    """Training progress event sent over the Studio WebSocket."""
+
+    type: Literal["training_progress"]
     total_batches: int
     loss: float
     loss_terms: dict[str, float] = Field(default_factory=dict)
@@ -430,15 +449,10 @@ class TrainingProgressEvent(StudioApiModel):
     execution: Optional[str] = None
 
 
-class TrainingLogEvent(StudioApiModel):
+class TrainingLogEvent(_TrainingPositionEvent):
     """Training log event sent over the Studio WebSocket."""
 
     type: Literal["training_log"]
-    job_id: str
-    seq: int
-    emitted_at_ms: int
-    worker_seq: Optional[int] = None
-    batch: int
     level: Literal["info", "warning", "error"] = "info"
     message: str
     manifest_path: Optional[str] = None
@@ -463,57 +477,63 @@ class TrainingTrajectoryPayload(StudioApiModel):
     t: Optional[list[Any]] = None
 
 
-class TrainingTrajectoryEvent(StudioApiModel):
+class TrainingTrajectoryEvent(_TrainingPositionEvent):
     """Training trajectory event sent over the Studio WebSocket."""
 
     type: Literal["training_trajectory"]
-    job_id: str
-    seq: int
-    emitted_at_ms: int
-    worker_seq: Optional[int] = None
-    batch: int
     trajectory: TrainingTrajectoryPayload
     execution: Optional[str] = None
 
 
-class TrainingCompleteEvent(StudioApiModel):
-    """Training completion event sent over the Studio WebSocket."""
-
-    type: Literal["training_complete"]
-    job_id: str
-    seq: int
-    emitted_at_ms: int
-    worker_seq: Optional[int] = None
-    batch: int
+class _TrainingTerminalEvent(_TrainingEvent):
+    batch: int = Field(ge=0, strict=True, description="Completed training batches.")
+    program_step: Optional[int] = Field(
+        default=None, ge=0, strict=True, description="Phase-program step."
+    )
     loss: Optional[float] = None
     manifest_path: Optional[str] = None
     manifest_id: Optional[str] = None
     execution: Optional[str] = None
 
 
-class TrainingErrorEvent(StudioApiModel):
+class TrainingCompleteEvent(_TrainingTerminalEvent):
+    """Training completion event sent over the Studio WebSocket."""
+
+    type: Literal["training_complete"]
+
+
+class TrainingStoppedEvent(_TrainingTerminalEvent):
+    """Training stop event sent over the Studio WebSocket."""
+
+    type: Literal["training_stopped"]
+
+
+class TrainingErrorEvent(_TrainingEvent):
     """Training error event sent over the Studio WebSocket."""
 
     type: Literal["training_error"]
-    job_id: str
-    seq: int
-    emitted_at_ms: int
-    worker_seq: Optional[int] = None
-    batch: Optional[int] = None
+    batch: Optional[int] = Field(default=None, ge=0, strict=True)
     error: str
     diagnostics: list[DomainDiagnostic] = Field(default_factory=list)
 
 
-class TrainingResyncEvent(StudioApiModel):
+class TrainingResyncEvent(_TrainingEvent):
     """Training stream reconnect/resync marker sent over the Studio WebSocket."""
 
     type: Literal["training_resync"]
-    job_id: str
-    seq: int
-    emitted_at_ms: int
-    worker_seq: Optional[int] = None
     expected_worker_seq: Optional[int] = None
     observed_worker_seq: Optional[int] = None
     missed_events: int = 0
     reason: Literal["resumed", "gap"]
     message: str
+
+
+TrainingWebSocketEvent = (
+    TrainingProgressEvent
+    | TrainingLogEvent
+    | TrainingTrajectoryEvent
+    | TrainingCompleteEvent
+    | TrainingStoppedEvent
+    | TrainingErrorEvent
+    | TrainingResyncEvent
+)

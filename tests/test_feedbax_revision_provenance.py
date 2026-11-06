@@ -14,6 +14,7 @@ identity.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import warnings
 from pathlib import Path
@@ -66,9 +67,24 @@ def _init_clean_repo(tmp_path: Path) -> tuple[Path, str]:
     return package_root, head
 
 
+@pytest.fixture(scope="module")
+def clean_repo_seed(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, str]:
+    return _init_clean_repo(tmp_path_factory.mktemp("clean-provenance-seed"))
+
+
+def _copy_checkout(package_root: Path, tmp_path: Path) -> Path:
+    root = shutil.copytree(package_root.parent, tmp_path / "checkout")
+    return root / package_root.name
+
+
 @pytest.fixture
-def clean_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str]:
-    package_root, head = _init_clean_repo(tmp_path)
+def clean_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clean_repo_seed: tuple[Path, str],
+) -> tuple[Path, str]:
+    seed, head = clean_repo_seed
+    package_root = _copy_checkout(seed, tmp_path)
     monkeypatch.setattr(revision.feedbax, "__file__", str(package_root / "__init__.py"))
     return package_root, head
 
@@ -308,13 +324,21 @@ def _init_history_repo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     return package_root, {"base": base, "abandoned": abandoned, "head": head}
 
 
+@pytest.fixture(scope="module")
+def history_repo_seed(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, dict[str, str]]:
+    return _init_history_repo(tmp_path_factory.mktemp("history-provenance-seed"))
+
+
 @pytest.fixture
 def history_checkout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    history_repo_seed: tuple[Path, dict[str, str]],
 ) -> tuple[Path, dict[str, str]]:
-    package_root, revisions = _init_history_repo(tmp_path)
+    seed, revisions = history_repo_seed
+    package_root = _copy_checkout(seed, tmp_path)
     monkeypatch.setattr(revision.feedbax, "__file__", str(package_root / "__init__.py"))
-    return package_root, revisions
+    return package_root, revisions.copy()
 
 
 def test_authoring_pin_accepts_an_ancestor_of_the_installed_revision(
@@ -392,9 +416,11 @@ def test_authoring_pin_warns_when_the_install_has_no_git_history(
 
 
 def test_authoring_pin_warns_when_a_shallow_checkout_lacks_the_object(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    history_checkout: tuple[Path, dict[str, str]],
 ) -> None:
-    package_root, revisions = _init_history_repo(tmp_path)
+    package_root, revisions = history_checkout
     shallow_root = tmp_path / "shallow"
     _git(
         tmp_path,

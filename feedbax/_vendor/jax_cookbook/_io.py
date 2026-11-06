@@ -153,6 +153,12 @@ def load_with_hyperparameters(
             )
         tree = setup_func(**hyperparameters, key=jr.PRNGKey(0))
         tree = eqx.tree_deserialise_leaves(f, tree, **kwargs)
+        if f.read(1):
+            raise ValueError(
+                f"{path} contains unread data after loading the requested PyTree leaf layout. "
+                "Use the same layout as the writer or load and export it with the producer "
+                "version of Feedbax."
+            )
 
     return tree, hyperparameters
 

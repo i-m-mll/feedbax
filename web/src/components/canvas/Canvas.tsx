@@ -44,11 +44,10 @@ import {
 } from '@/features/scenario/entities';
 import {
   ensureTaskBindingSpec,
-  removeTaskBindingsForTargetNodes,
   scopedTaskBindingSpec,
   canAuthorTaskBindings,
   ROOT_TASK_BINDING_MESSAGE,
-  targetInputOccupied,
+  findTaskBinding,
 } from '@/features/scenario/taskBindings';
 import {
   projectStudioSchema,
@@ -61,6 +60,7 @@ import {
   deriveSubgraphBoundaryOverrides,
 } from '@/features/schema/dimensions';
 import { expandMuxForPort, isNextMuxInputPort, normalizeDynamicPorts } from '@/features/graph/dynamicPorts';
+import { findCausalInputDriver, findWireConnectionDriver, inputDriverConflict } from '@/features/graph/inputDrivers';
 import { CustomNode } from './CustomNode';
 import { SubgraphNode } from './SubgraphNode';
 import { RoutedEdge } from './RoutedEdge';
@@ -83,14 +83,20 @@ import type {
 } from '@/types/workspace';
 import { ChevronsDown, ChevronsUp, Info, ListTree, Map as MapIcon, MoveDiagonal } from 'lucide-react';
 import {
-  compileStatusForReport,
   evaluateAcausalConnection,
   graphPathKey,
   rollupCompileStatus,
-  stableGraphHash,
 } from '@/features/domains/acausal';
 import type { AssemblyViewMode } from '@/features/domains/mechanicsAssembly';
-import { useCompileStatusStore } from '@/stores/compileStatusStore';
+import {
+  compileActiveLayer,
+  compileLayerStatus,
+  compileTarget,
+  reportForLayer,
+  shouldAutoCompile,
+  useDocumentCompileLayers,
+} from '@/stores/compileStatusStore';
+import { useProjectsStore } from '@/stores/projectsStore';
 
 interface TaskSourceNodeData extends Record<string, unknown> {
   label: string;
@@ -705,9 +711,15 @@ export function Canvas() {
   const toggleMinimap = useSettingsStore((state) => state.toggleMinimap);
   const showDomainLegend = useSettingsStore((state) => state.showDomainLegend);
   const setShowDomainLegend = useSettingsStore((state) => state.setShowDomainLegend);
-  const reports = useCompileStatusStore((state) => state.reports);
-  const compilingPaths = useCompileStatusStore((state) => state.compilingPaths);
-  const compileNode = useCompileStatusStore((state) => state.compileNode);
+  const documentId = useProjectsStore((state) => state.activeTabId);
+  const compileLayers = useDocumentCompileLayers(documentId);
+  const target = useMemo(
+    () => compileTarget(documentId, { graphId, graph, graphStack }),
+    [documentId, graphId, graph, graphStack],
+  );
+  const automaticCompileKey = target?.kind === 'ready' && shouldAutoCompile(compileLayers.get(target.pathKey), target.hash)
+    ? target.key
+    : null;
   const {
     selectTopPaneEntity,
     hoverTopPaneEntity,
@@ -755,7 +767,10 @@ export function Canvas() {
     isAcausalLayer && isAcausalGraphSpec(graph) && graph.physical_domain === 'planar_multibody';
   const showAssemblyView = canShowAssemblyView && assemblyViewMode !== 'graph';
   const hideGraphCanvas = canShowAssemblyView && assemblyViewMode === 'assembly';
-  const assemblyDiagnostics = reports[graphPathKey(currentGraphPath)]?.diagnostics ?? [];
+  const assemblyDiagnostics = reportForLayer(
+    compileLayers.get(graphPathKey(currentGraphPath)),
+    target?.kind === 'ready' ? target.hash : undefined,
+  )?.diagnostics ?? [];
   const assemblyPanelWidth = `${Math.round(
     Math.max(0.28, Math.min(0.72, uiState.assembly_view?.split_ratio ?? 0.42)) * 100
   )}%`;
@@ -1123,15 +1138,14 @@ export function Canvas() {
             status: rollupCompileStatus({
               graph: childGraph,
               path: [...currentGraphPath, node.id],
-              reports,
-              compilingPaths,
+              statusForLayer: (path, hash) => compileLayerStatus(compileLayers.get(graphPathKey(path)), hash),
             }),
           },
         };
       }),
       ...taskSourceNodes,
     ],
-    [compilingPaths, currentGraphPath, graph.subgraphs, nodes, reports, taskSourceNodes]
+    [compileLayers, currentGraphPath, graph.subgraphs, nodes, taskSourceNodes]
   );
   const baseDisplayEdges = useMemo(
     () => [...edges, ...taskBindingEdges],
@@ -1167,22 +1181,12 @@ export function Canvas() {
   }, [reactFlow]);
 
   useEffect(() => {
-    if (!graphId || !isAcausalLayer || !isAcausalGraphSpec(graph)) return undefined;
-    const path = currentGraphPath;
-    const key = graphPathKey(path);
-    const status = compileStatusForReport(
-      reports[key],
-      stableGraphHash(graph),
-      compilingPaths.has(key)
-    );
-    if (status !== 'never_compiled' && status !== 'stale') return undefined;
+    if (!automaticCompileKey) return;
     const timeout = window.setTimeout(() => {
-      compileNode(graphId, path, graph).catch((error) => {
-        console.error('Failed to compile acausal interior', error);
-      });
+      void compileActiveLayer(automaticCompileKey, 'automatic');
     }, 500);
     return () => window.clearTimeout(timeout);
-  }, [compileNode, compilingPaths, currentGraphPath, graph, graphId, isAcausalLayer, reports]);
+  }, [automaticCompileKey]);
 
   const schemaRegistry = useMemo(
     () =>
@@ -1390,10 +1394,17 @@ export function Canvas() {
             signature,
           };
         }
-        if (targetInputOccupied(graph, taskBindingSpec, connection.target, connection.targetHandle)) {
+        const driver = findCausalInputDriver(
+          graph, connection.target, connection.targetHandle, (owner) => owner.kind === 'wire'
+        );
+        const taskBinding = findTaskBinding(taskBindingSpec, connection.target, connection.targetHandle);
+        const owner = driver?.owner ?? (taskBinding && `Task Data '${taskBinding.source_data_id}'`);
+        if (owner) {
           return {
             status: 'blocked',
-            message: `${connection.target}.${connection.targetHandle} is already occupied`,
+            message: inputDriverConflict(
+              connection.target, connection.targetHandle, owner, `Task Data '${taskDataId}'`
+            ),
             signature,
           };
         }
@@ -1430,10 +1441,18 @@ export function Canvas() {
           signature,
         };
       }
-      if (targetInputOccupied(graph, taskBindingSpec, connection.target, connection.targetHandle)) {
+      const driver = findWireConnectionDriver(
+        graph, connection.target, connection.targetHandle, graphStack.at(-1)
+      );
+      const taskBinding = findTaskBinding(taskBindingSpec, connection.target, connection.targetHandle);
+      const owner = driver?.owner ?? (taskBinding && `Task Data '${taskBinding.source_data_id}'`);
+      if (owner) {
         return {
           status: 'blocked',
-          message: `${connection.target}.${connection.targetHandle} is already occupied`,
+          message: inputDriverConflict(
+            connection.target, connection.targetHandle, owner,
+            `wire ${connection.source}.${connection.sourceHandle}`
+          ),
           signature,
         };
       }
@@ -1455,7 +1474,7 @@ export function Canvas() {
         : issues;
       return feedbackFromIssues(filteredIssues, 'Ports are compatible', signature);
     },
-    [componentRegistry, graph, schemaRegistry, taskBindingSpec]
+    [componentRegistry, graph, graphStack, schemaRegistry, taskBindingSpec]
   );
 
   const hasBlockingCanvasConnectionIssue = useCallback(
@@ -1482,14 +1501,6 @@ export function Canvas() {
         if (!connection.target || !connection.targetHandle) return;
         if (isStateHandle(connection.targetHandle)) return;
         upsertTaskBinding(taskDataId, connection.target, connection.targetHandle);
-        return;
-      }
-      if (
-        !isAcausalLayer &&
-        connection.target &&
-        connection.targetHandle &&
-        targetInputOccupied(graph, taskBindingSpec, connection.target, connection.targetHandle)
-      ) {
         return;
       }
       if (
@@ -1531,35 +1542,9 @@ export function Canvas() {
       const graphChanges = changes.filter(
         (change) => !('id' in change) || !taskDataIdFromSourceNodeId(change.id)
       );
-      const removedNodeIds = graphChanges
-        .filter((change) => change.type === 'remove' && 'id' in change)
-        .map((change) => (change as { id: string }).id);
-      const nextTaskBindingSpec = removeTaskBindingsForTargetNodes(
-        allTaskBindingSpec,
-        removedNodeIds,
-        currentGraphPath
-      );
-      if (nextTaskBindingSpec !== allTaskBindingSpec) {
-        updateTaskBindingSpec(nextTaskBindingSpec);
-        markDirty();
-        if (
-          selectedTaskBindingId &&
-          !nextTaskBindingSpec.bindings.some((binding) => binding.id === selectedTaskBindingId)
-        ) {
-          selectTopPaneEntity(null);
-        }
-      }
       if (graphChanges.length > 0) onNodesChange(graphChanges);
     },
-    [
-      allTaskBindingSpec,
-      currentGraphPath,
-      markDirty,
-      onNodesChange,
-      selectTopPaneEntity,
-      selectedTaskBindingId,
-      updateTaskBindingSpec,
-    ]
+    [onNodesChange]
   );
 
   const removeTaskBindings = useCallback(
@@ -1659,9 +1644,7 @@ export function Canvas() {
       <div className="relative h-full w-full overflow-hidden bg-slate-50">
         <PenzaiInspector
           graphId={graphId}
-          nodePath={graphStack
-            .map((layer) => layer.childNodeId)
-            .filter((id): id is string => Boolean(id))}
+          nodePath={currentGraphPath}
           nodeSpec={inspectorNodeSpec}
         />
         <div className="absolute left-4 top-4 z-20 flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1 text-xs text-slate-500 shadow-soft">
@@ -1725,6 +1708,7 @@ export function Canvas() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={handleNodesChange}
+        deleteKeyCode={null}
         onEdgesChange={handleEdgesChange}
         onConnect={handleConnect}
         isValidConnection={isValidConnection}

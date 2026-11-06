@@ -12,6 +12,7 @@ from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
+import numpy as np
 
 from feedbax.runtime.graph import Component
 
@@ -24,11 +25,29 @@ def identity_activation(x: Any) -> Any:
     return x
 
 
+# Keep wrapped JAX functions out of persisted models. Checkpoint custody
+# resolves these module-level functions by name in a fresh process.
+def relu(x: Array) -> Array:
+    return jax.nn.relu(x)
+
+
+def tanh(x: Array) -> Array:
+    return jax.nn.tanh(x)
+
+
+def sigmoid(x: Array) -> Array:
+    return jax.nn.sigmoid(x)
+
+
+def softmax(x: Array) -> Array:
+    return jax.nn.softmax(x)
+
+
 NAMED_ACTIVATIONS: dict[str, Callable] = {
-    "relu": jax.nn.relu,
-    "tanh": jax.nn.tanh,
-    "sigmoid": jax.nn.sigmoid,
-    "softmax": jax.nn.softmax,
+    "relu": relu,
+    "tanh": tanh,
+    "sigmoid": sigmoid,
+    "softmax": softmax,
     "identity": identity_activation,
 }
 
@@ -49,6 +68,16 @@ def resolve_activation(activation: str | Callable) -> tuple[str, Callable]:
     if callable(activation):
         return _callable_name(activation), activation
     raise TypeError("activation must be a string name or callable")
+
+
+def named_activation(activation: str | Callable) -> str:
+    """Resolve a portable activation name from a built-in name or callable."""
+    if isinstance(activation, str):
+        return resolve_activation(activation)[0]
+    for name, function in NAMED_ACTIVATIONS.items():
+        if activation is function or activation is getattr(jax.nn, name, function):
+            return name
+    raise ValueError(f"Expected a built-in activation, got {activation!r}")
 
 
 class Gain(Component):
@@ -156,9 +185,11 @@ class Scale(Component):
     output_ports = ("output",)
 
     scale: PyTree
+    fixed: bool = field(static=True)
 
-    def __init__(self, scale: PyTree = 1.0):
-        self.scale = jnp.asarray(scale)
+    def __init__(self, scale: PyTree = 1.0, fixed: bool = False):
+        self.fixed = fixed
+        self.scale = float(scale) if fixed else jnp.asarray(scale)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         scale = jnp.asarray(self.scale)
@@ -292,9 +323,13 @@ class Constant(Component):
 
     output_ports = ("output",)
 
-    value: PyTree = field(static=True)
+    value: PyTree
+    dtype: str | None = field(static=True)
 
-    def __init__(self, value: PyTree = 0.0):
+    def __init__(self, value: PyTree = 0.0, dtype: str | None = None):
+        self.dtype = dtype
+        if dtype is not None:
+            value = jnp.asarray(value, dtype=dtype)
         self.value = jt.map(jnp.asarray, value)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -307,9 +342,13 @@ class Ravel(Component):
     input_ports = ("input",)
     output_ports = ("output",)
 
+    @staticmethod
+    def flatten(value: PyTree) -> Array:
+        output, _ = ravel_pytree(value)
+        return output
+
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        output, _ = ravel_pytree(inputs["input"])
-        return {"output": output}, state
+        return {"output": self.flatten(inputs["input"])}, state
 
 
 class _StepSource(Component):
@@ -323,10 +362,9 @@ class _StepSource(Component):
         initial_state = 0
         self.step_index = StateIndex(initial_state)
 
-    def _step_time(self, state: State) -> tuple[float, State]:
+    def _take_step(self, state: State) -> tuple[Array, State]:
         step = state.get(self.step_index)
-        next_state = state.set(self.step_index, step + 1)
-        return float(step) * self.dt, next_state
+        return step, state.set(self.step_index, step + 1)
 
 
 class Ramp(_StepSource):
@@ -334,8 +372,8 @@ class Ramp(_StepSource):
 
     output_ports = ("output",)
 
-    slope: PyTree = field(static=True)
-    intercept: PyTree = field(static=True)
+    slope: PyTree
+    intercept: PyTree
 
     def __init__(self, slope: PyTree = 1.0, intercept: PyTree = 0.0, dt: float = 0.01):
         super().__init__(dt=dt)
@@ -343,7 +381,8 @@ class Ramp(_StepSource):
         self.intercept = jt.map(jnp.asarray, intercept)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        t, state = self._step_time(state)
+        step, state = self._take_step(state)
+        t = step * self.dt
         output = jt.map(lambda s, b: b + s * t, self.slope, self.intercept)
         return {"output": output}, state
 
@@ -353,10 +392,10 @@ class Sine(_StepSource):
 
     output_ports = ("output",)
 
-    amplitude: PyTree = field(static=True)
+    amplitude: PyTree
     frequency: float
     phase: float
-    offset: PyTree = field(static=True)
+    offset: PyTree
 
     def __init__(
         self,
@@ -373,7 +412,8 @@ class Sine(_StepSource):
         self.offset = jt.map(jnp.asarray, offset)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        t, state = self._step_time(state)
+        step, state = self._take_step(state)
+        t = step * self.dt
         omega = 2 * jnp.pi * self.frequency
         output = jt.map(
             lambda a, b: b + a * jnp.sin(omega * t + self.phase),
@@ -388,10 +428,10 @@ class Pulse(_StepSource):
 
     output_ports = ("output",)
 
-    amplitude: PyTree = field(static=True)
+    amplitude: PyTree
     period: float
     duty_cycle: float
-    offset: PyTree = field(static=True)
+    offset: PyTree
 
     def __init__(
         self,
@@ -408,8 +448,12 @@ class Pulse(_StepSource):
         self.offset = jt.map(jnp.asarray, offset)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        t, state = self._step_time(state)
-        phase = (t / self.period) % 1.0 if self.period > 0 else 0.0
+        step, state = self._take_step(state)
+        phase = 0.0
+        if self.period > 0 and self.dt != 0:
+            # Wrap in step units to avoid rounding elapsed time before finding the phase.
+            steps_per_period = self.period / self.dt
+            phase = (step % steps_per_period) / steps_per_period
         gate = jnp.where(phase < self.duty_cycle, 1.0, 0.0)
         output = jt.map(lambda a, b: b + a * gate, self.amplitude, self.offset)
         return {"output": output}, state
@@ -512,8 +556,9 @@ class Linear(Component):
     input_size: int = field(static=True)
     output_size: int = field(static=True)
     use_bias: bool = field(static=True)
-    initialization: Literal["random", "zeros"] = field(static=True)
+    initialization: Literal["random", "zero_bias", "zeros"] = field(static=True)
     dtype: Any = field(static=True)
+    bias_init: float | None = field(static=True)
 
     def __init__(
         self,
@@ -521,21 +566,22 @@ class Linear(Component):
         output_size: int,
         use_bias: bool = True,
         activation: str | Callable = "identity",
-        initialization: Literal["random", "zeros"] = "random",
+        initialization: Literal["random", "zero_bias", "zeros"] = "random",
         dtype: Any = jnp.float32,
+        bias_init: float | None = None,
         *,
         key: PRNGKeyArray,
     ):
         self.input_size = int(input_size)
         self.output_size = int(output_size)
         self.use_bias = bool(use_bias)
-        if initialization not in ("random", "zeros"):
+        if initialization not in ("random", "zero_bias", "zeros"):
             raise ValueError(
-                "Linear initialization must be 'random' or 'zeros'; "
+                "Linear initialization must be 'random', 'zero_bias', or 'zeros'; "
                 f"got {initialization!r}"
             )
         self.initialization = initialization
-        self.dtype = dtype
+        self.dtype = jnp.dtype(dtype).name
         self.activation_name, self.activation = resolve_activation(activation)
         layer = eqx.nn.Linear(
             self.input_size,
@@ -546,8 +592,12 @@ class Linear(Component):
         )
         if self.initialization == "zeros":
             layer = eqx.tree_at(lambda item: item.weight, layer, jnp.zeros_like(layer.weight))
-            if layer.bias is not None:
-                layer = eqx.tree_at(lambda item: item.bias, layer, jnp.zeros_like(layer.bias))
+        self.bias_init = bias_init
+        if bias_init is not None and layer.bias is None:
+            raise ValueError("Linear bias_init requires use_bias=True")
+        if layer.bias is not None and (bias_init is not None or initialization != "random"):
+            bias = jnp.full_like(layer.bias, 0.0 if bias_init is None else bias_init)
+            layer = eqx.tree_at(lambda item: item.bias, layer, bias)
         self.layer = layer
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -585,7 +635,7 @@ class MLP(Component):
         self.input_size = int(input_size)
         self.output_size = int(output_size)
         self.hidden_sizes = tuple(int(x) for x in hidden_sizes)
-        self.dtype = dtype
+        self.dtype = jnp.dtype(dtype).name
         self.activation_name, self.activation = resolve_activation(activation)
         self.final_activation_name, self.final_activation = resolve_activation(final_activation)
         sizes = [self.input_size, *self.hidden_sizes, self.output_size]
@@ -594,6 +644,7 @@ class MLP(Component):
             eqx.nn.Linear(sizes[i], sizes[i + 1], dtype=dtype, key=keys[i])
             for i in range(len(sizes) - 1)
         )
+
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         x = inputs["input"]
         for idx, layer in enumerate(self.linears):
@@ -622,29 +673,43 @@ class GRU(Component):
     input_size: int = field(static=True)
     hidden_size: int = field(static=True)
     dtype: Any = field(static=True)
-    state_index: StateIndex
+    state_index: StateIndex | None
 
     def __init__(
         self,
         input_size: int,
         hidden_size: int,
         dtype: Any = jnp.float32,
+        stateful: bool = True,
         *,
+        use_bias: bool = True,
         key: PRNGKeyArray,
     ):
         self.input_size = int(input_size)
         self.hidden_size = int(hidden_size)
-        self.dtype = dtype
-        self.cell = eqx.nn.GRUCell(self.input_size, self.hidden_size, dtype=dtype, key=key)
-        hidden = jnp.zeros(self.hidden_size, dtype=dtype)
-        initial_state = GRUState(hidden=hidden, output=hidden)
-        self.state_index = StateIndex(initial_state)
+        self.dtype = jnp.dtype(dtype).name
+        self.cell = eqx.nn.GRUCell(
+            self.input_size, self.hidden_size, use_bias=use_bias, dtype=dtype, key=key
+        )
+        if stateful:
+            hidden = jnp.zeros(self.hidden_size, dtype=dtype)
+            self.state_index = StateIndex(GRUState(hidden=hidden, output=hidden))
+        else:
+            self.state_index = None
+
+    @property
+    def stateful(self) -> bool:
+        return self.state_index is not None
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        current_state: GRUState = state.get(self.state_index)
-        hidden = inputs.get("hidden", current_state.hidden)
+        hidden = inputs.get("hidden")
+        if hidden is None:
+            if self.state_index is None:
+                raise ValueError("A stateless GRU requires an explicit hidden input")
+            hidden = state.get(self.state_index).hidden
         new_hidden = self.cell(inputs["input"], hidden)
-        state = state.set(self.state_index, GRUState(hidden=new_hidden, output=new_hidden))
+        if self.state_index is not None:
+            state = state.set(self.state_index, GRUState(hidden=new_hidden, output=new_hidden))
         return {"output": new_hidden, "hidden": new_hidden}, state
 
 
@@ -674,12 +739,15 @@ class LSTM(Component):
         hidden_size: int,
         dtype: Any = jnp.float32,
         *,
+        use_bias: bool = True,
         key: PRNGKeyArray,
     ):
         self.input_size = int(input_size)
         self.hidden_size = int(hidden_size)
-        self.dtype = dtype
-        self.cell = eqx.nn.LSTMCell(self.input_size, self.hidden_size, dtype=dtype, key=key)
+        self.dtype = jnp.dtype(dtype).name
+        self.cell = eqx.nn.LSTMCell(
+            self.input_size, self.hidden_size, use_bias=use_bias, dtype=dtype, key=key
+        )
         hidden = jnp.zeros(self.hidden_size, dtype=dtype)
         cell = jnp.zeros(self.hidden_size, dtype=dtype)
         initial_state = LSTMState(hidden=hidden, cell=cell, output=hidden)
@@ -711,8 +779,10 @@ class Mux(Component):
 
     n_inputs: int = field(static=True)
     input_ports: tuple[str, ...]
+    dtype: Any = field(static=True)
 
-    def __init__(self, n_inputs: int = 2):
+    def __init__(self, n_inputs: int = 2, *, dtype: Any = None):
+        self.dtype = jnp.dtype(dtype).name if dtype is not None else None
         self.n_inputs = int(n_inputs)
         self.input_ports = tuple(f"in_{i}" for i in range(self.n_inputs))
 
@@ -726,10 +796,10 @@ class Mux(Component):
         parts = []
         for i in range(self.n_inputs):
             port = f"in_{i}"
-            if port not in inputs:
+            if inputs.get(port) is None:
                 continue
             flat, _ = ravel_pytree(inputs[port])
-            parts.append(jnp.atleast_1d(flat))
+            parts.append(jnp.asarray(flat, dtype=self.dtype))
         if not parts:
             raise ValueError("Mux requires at least one connected input")
         output = jnp.concatenate(parts, axis=-1)
@@ -847,6 +917,17 @@ class DeadZone(Component):
         return {"output": output}, state
 
 
+def stateful_vector_prototype(n_dims: int, input_proto: Array | None = None) -> Array:
+    """Use a resolved floating vector, or allocate one from the declared dimension."""
+    if input_proto is None:
+        return jnp.zeros(n_dims)
+    if getattr(input_proto, "ndim", None) != 1 or not jnp.issubdtype(
+        input_proto.dtype, jnp.floating
+    ):
+        raise ValueError("Stateful signal blocks require a real floating vector input")
+    return input_proto
+
+
 class RateLimiter(Component):
     """Limit the rate of change of a signal.
 
@@ -855,8 +936,9 @@ class RateLimiter(Component):
     Args:
         max_rate: Maximum allowed rate of change (units per second).
         dt: Time step.
-        n_dims: Dimensionality of the signal.
+        n_dims: Dimensionality used when no input prototype is supplied.
         initial_value: Initial previous-output value.
+        input_proto: Shape and dtype of the signal.
     """
 
     input_ports = ("input",)
@@ -865,6 +947,7 @@ class RateLimiter(Component):
     max_rate: float
     dt: float
     n_dims: int = field(static=True)
+    _initial_value_bits: Array
     state_index: StateIndex
 
     def __init__(
@@ -873,12 +956,27 @@ class RateLimiter(Component):
         dt: float = 0.01,
         n_dims: int = 1,
         initial_value: float = 0.0,
+        *,
+        input_proto: Array | None = None,
     ):
         self.max_rate = float(max_rate)
         self.dt = float(dt)
         self.n_dims = n_dims
-        initial_state = jnp.zeros(n_dims) + initial_value
+        # Keep the authored precision in a dynamic, nontrainable leaf even without JAX x64.
+        self._initial_value_bits = jnp.asarray(
+            np.array([initial_value], dtype="<f8").view(np.uint8)
+        )
+        prototype = stateful_vector_prototype(n_dims, input_proto)
+        initial_state = jnp.full_like(prototype, initial_value)
         self.state_index = StateIndex(initial_state)
+
+    @property
+    def initial_value(self) -> float:
+        return np.asarray(self._initial_value_bits).view("<f8").item()
+
+    @property
+    def input_proto(self) -> Array:
+        return self.state_index.init
 
     def __call__(
         self,

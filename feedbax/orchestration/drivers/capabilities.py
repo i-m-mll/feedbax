@@ -57,6 +57,7 @@ class DriverHook(StrEnum):
     COLLECTION_RECOVERY_EVIDENCE = "collection_recovery_evidence"
     COLLECT_FAILURE_LOGS = "collect_failure_logs"
     TEARDOWN_OWNERSHIP = "teardown_ownership"
+    RELEASE_RUN_CONTENT = "release_run_content"
     BATCH_PROBE = "batch_probe"
     CHECKPOINT_STOP = "checkpoint_stop"
     GLOBAL_RESOURCE_INVENTORY = "global_resource_inventory"
@@ -567,6 +568,7 @@ _HOOK_MEMBERS: Mapping[DriverHook, tuple[str, ...]] = MappingProxyType(
         DriverHook.COLLECTION_RECOVERY_EVIDENCE: ("collection_recovery_evidence",),
         DriverHook.COLLECT_FAILURE_LOGS: ("collect_failure_logs",),
         DriverHook.TEARDOWN_OWNERSHIP: ("teardown_ownership",),
+        DriverHook.RELEASE_RUN_CONTENT: ("release_run_content",),
         DriverHook.BATCH_PROBE: ("probe_rows",),
         DriverHook.CHECKPOINT_STOP: ("request_stop_at_checkpoint",),
         DriverHook.GLOBAL_RESOURCE_INVENTORY: ("observe_global_resource_inventory",),

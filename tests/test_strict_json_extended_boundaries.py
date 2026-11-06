@@ -13,6 +13,7 @@ from feedbax.contracts.strict_json import (
     DuplicateJsonKeyError,
     strict_model_validate_json,
 )
+from feedbax.orchestration.content_staging import main as stage_content
 from feedbax.orchestration.events import RunEventProtocolError, RunEventReader
 from feedbax.training.run_matrix import RunMatrixError, _load_pinned_canonical_document
 
@@ -75,3 +76,25 @@ def test_event_reader_keeps_its_protocol_error_for_duplicate_json(tmp_path: Path
     path.write_text('{"seq":1,"seq":2}\n', encoding="utf-8")
     with pytest.raises(RunEventProtocolError, match="Invalid RunEvent JSONL"):
         RunEventReader(path).read_all()
+
+
+@pytest.mark.parametrize("operation", ("inspect", "publish", "project"))
+def test_content_staging_refuses_ambiguous_command_references(
+    operation: str, tmp_path: Path
+) -> None:
+    digest = "a" * 64
+    object_ref = (
+        f'{{"object_id":"content-object://sha256/{digest}","sha256":"{digest}",'
+        '"size_bytes":1,"size_bytes":2}'
+    )
+    refs = f"[{object_ref}]"
+    path = r"\$\[0\]\.size_bytes"
+    args = [operation, str(tmp_path / "cache")]
+    if operation != "inspect":
+        args.append(str(tmp_path / "transfer"))
+    if operation == "project":
+        refs = f'[{{"tree_id":"content-tree://sha256/{digest}","descriptor":{object_ref}}}]'
+        path = r"\$\[0\]\.descriptor\.size_bytes"
+
+    with pytest.raises(DuplicateJsonKeyError, match=path):
+        stage_content([*args, refs])

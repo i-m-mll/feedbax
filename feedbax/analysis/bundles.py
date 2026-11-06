@@ -9,7 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 from urllib.parse import unquote, urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -99,7 +99,6 @@ from feedbax.contracts.manifest import (
     canonical_manifest_path,
     evaluation_run_manifest_id,
     spec_payload,
-    write_manifest,
     load_manifest_bytes,
 )
 from feedbax.contracts.material_dependencies import (
@@ -122,6 +121,7 @@ from feedbax.contracts.selection import (
     select_parent_refs,
 )
 from feedbax.persistence.manifest_discovery import DuplicateManifestError, iter_manifests_by_kind
+from feedbax.persistence.terminal_publication import RenderPublicationCapture
 from feedbax.plugins.registry import ExperimentRegistry
 
 ANALYSIS_BUNDLE_SCHEMA_ID = "feedbax.spec.analysis_bundle"
@@ -190,9 +190,6 @@ AnalysisBundleMode = Literal["per-run", "grouped"]
 BundleStageKind = Literal["evaluation", "analysis", "materialization", "figure", "report"]
 BundleOutputStatus = Literal["materialized", "skipped", "missing", "not_applicable"]
 BundleDryRunStageStatus = Literal["would_run", "would_skip", "missing", "not_applicable"]
-
-_StageSpecT = TypeVar("_StageSpecT")
-
 
 class AnalysisSpecTemplate(StrictModel):
     """Template expanded into executable ``AnalysisRunSpec`` instances."""
@@ -1076,21 +1073,6 @@ def _stage_regeneration_payload(
         "RegenerationSpec",
         regeneration.model_dump(mode="json", exclude_none=True),
     )
-
-
-def _with_regeneration_spec(
-    manifest: AnalysisRunManifest | FigureManifest | ReportManifest,
-    regeneration_payload: SpecPayload,
-    *,
-    root: Path,
-) -> tuple[AnalysisRunManifest | FigureManifest | ReportManifest, Path]:
-    if regeneration_payload in manifest.regeneration_specs:
-        return manifest, canonical_manifest_path(manifest.kind, manifest.id, root=root)
-    updated = manifest.model_copy(
-        update={"regeneration_specs": [*manifest.regeneration_specs, regeneration_payload]}
-    )
-    path = write_manifest(updated, root=root)
-    return updated, path
 
 
 def _artifact_parent_ref(artifact: ArtifactRef, *, role: str) -> ParentRef:
@@ -2145,14 +2127,16 @@ def _execute_analysis_stage(
             },
             fig_dump_path=fig_dump_path,
             fig_dump_formats=fig_dump_formats,
+            build_regeneration_spec=lambda artifacts: _stage_regeneration_payload(
+                stage, inputs=inputs, outputs=artifacts, issues=issues
+            ),
         )
 
-    return _execute_stage_common(
+    return _execute_analysis_stage_groups(
         stage,
         input_groups,
         root=root,
         issues=issues,
-        manifest_role="analysis_run",
         build_spec=build_spec,
         execute_spec=execute_spec,
     )
@@ -2230,14 +2214,16 @@ def _execute_materialization_stage(
             ),
             fig_dump_path=fig_dump_path,
             fig_dump_formats=fig_dump_formats,
+            build_regeneration_spec=lambda artifacts: _stage_regeneration_payload(
+                stage, inputs=inputs, outputs=artifacts, issues=issues
+            ),
         )
 
-    return _execute_stage_common(
+    return _execute_analysis_stage_groups(
         stage,
         input_groups,
         root=root,
         issues=issues,
-        manifest_role="analysis_run",
         build_spec=build_spec,
         execute_spec=execute_spec,
     )
@@ -2313,6 +2299,7 @@ def _execute_figure_stage(
             execution_context,
             provider_bindings,
         )
+        capture = RenderPublicationCapture()
         manifest, path = execute_figure_spec(
             resolution,
             registry=registries.figures,
@@ -2335,26 +2322,14 @@ def _execute_figure_stage(
                 }
             },
             execution_context=figure_execution_context,
-        )
-        regeneration_payload = _stage_regeneration_payload(
-            stage,
-            inputs=inputs,
-            # A manifest cannot embed an authentication hash of its own final bytes.
-            # Its external StageMaterialization ref is created after this rewrite.
-            outputs=list(manifest.artifacts),
-            issues=issues,
-        )
-        updated_manifest, updated_path = _with_regeneration_spec(
-            manifest,
-            regeneration_payload,
-            root=root,
+            build_regeneration_spec=lambda artifacts: _stage_regeneration_payload(
+                stage, inputs=inputs, outputs=artifacts, issues=issues
+            ),
+            capture=capture,
         )
         products.append(
-            StageMaterialization(
-                manifest_ref=_manifest_ref(updated_manifest, updated_path, "figure"),
-                artifacts=tuple(updated_manifest.artifacts),
-                manifest_path=updated_path,
-                regeneration_spec=regeneration_payload,
+            _stage_materialization(
+                stage, inputs, issues, manifest, path, "figure", raw=capture.require_bytes()
             )
         )
     return products
@@ -2370,7 +2345,9 @@ def _execute_report_stage(
     execution_context: StagedExecutionContext,
     registries: ApplicationRegistryBundle,
 ) -> list[StageMaterialization]:
-    def build_spec(inputs: Sequence[ParentRef], index: int) -> ReportSpec:
+    products: list[StageMaterialization] = []
+    report_type = str(stage.report_type or BUNDLE_SUMMARY_REPORT_TYPE)
+    for index, inputs in enumerate(input_groups):
         stage_params = _params_for_stage(stage, bundle.params_base)
         bundle_metadata = {
             "name": bundle.name,
@@ -2379,7 +2356,6 @@ def _execute_report_stage(
             "schema_id": bundle.schema_id,
             "schema_version": bundle.schema_version,
         }
-        report_type = str(stage.report_type or BUNDLE_SUMMARY_REPORT_TYPE)
         params = (
             {
                 "stage_params": stage_params,
@@ -2388,19 +2364,15 @@ def _execute_report_stage(
             if report_type == BUNDLE_SUMMARY_REPORT_TYPE
             else stage_params
         )
-        return ReportSpec(
+        spec = ReportSpec(
             report_type=report_type,
             inputs=list(inputs),
             params=params,
             narrative=stage_params.get("narrative"),
         )
 
-    def execute_spec(
-        spec: ReportSpec,
-        inputs: Sequence[ParentRef],
-        _index: int,
-    ) -> tuple[ReportManifest, Path]:
-        return execute_report_spec(
+        capture = RenderPublicationCapture()
+        manifest, path = execute_report_spec(
             spec,
             registry=registries.report_recipes,
             root=root,
@@ -2418,58 +2390,61 @@ def _execute_report_stage(
                 }
             },
             execution_context=execution_context,
+            build_regeneration_spec=lambda artifacts: _stage_regeneration_payload(
+                stage, inputs=inputs, outputs=artifacts, issues=issues
+            ),
+            capture=capture,
         )
+        products.append(
+            _stage_materialization(
+                stage, inputs, issues, manifest, path, "report", raw=capture.require_bytes()
+            )
+        )
+    return products
 
-    return _execute_stage_common(
-        stage,
-        input_groups,
-        root=root,
-        issues=issues,
-        manifest_role="report",
-        build_spec=build_spec,
-        execute_spec=execute_spec,
+
+def _stage_materialization(
+    stage: BundleStageSpec,
+    inputs: Sequence[ParentRef],
+    issues: Sequence[str],
+    manifest: AnalysisRunManifest | FigureManifest | ReportManifest,
+    path: Path,
+    role: str,
+    *,
+    raw: bytes | None = None,
+) -> StageMaterialization:
+    # A reused analysis receipt may have been published by another stage.
+    return StageMaterialization(
+        manifest_ref=_manifest_ref(manifest, path, role, raw),
+        artifacts=tuple(manifest.artifacts),
+        manifest_path=path,
+        regeneration_spec=_stage_regeneration_payload(
+            stage, inputs=inputs, outputs=manifest.artifacts, issues=issues
+        ),
     )
 
 
-def _execute_stage_common(
+def _execute_analysis_stage_groups(
     stage: BundleStageSpec,
     input_groups: Sequence[Sequence[ParentRef]],
     *,
     root: Path,
     issues: Sequence[str],
-    manifest_role: Literal["analysis_run", "report"],
-    build_spec: Callable[[Sequence[ParentRef], int], _StageSpecT],
+    build_spec: Callable[[Sequence[ParentRef], int], AnalysisRunSpec],
     execute_spec: Callable[
-        [_StageSpecT, Sequence[ParentRef], int],
-        tuple[AnyManifest, Path],
+        [AnalysisRunSpec, Sequence[ParentRef], int],
+        tuple[AnalysisRunManifest, Path],
     ],
 ) -> list[StageMaterialization]:
-    """Execute and record one spec-emitting stage for each resolved input group."""
+    """Execute and record one analysis spec for each resolved input group."""
 
     products: list[StageMaterialization] = []
     for index, input_group in enumerate(input_groups):
         inputs = tuple(input_group)
         spec = build_spec(inputs, index)
         manifest, path = execute_spec(spec, inputs, index)
-        regeneration_payload = _stage_regeneration_payload(
-            stage,
-            inputs=inputs,
-            # Self-authentication is carried by the external stage record only.
-            outputs=list(manifest.artifacts),
-            issues=issues,
-        )
-        updated_manifest, updated_path = _with_regeneration_spec(
-            manifest,
-            regeneration_payload,
-            root=root,
-        )
         products.append(
-            StageMaterialization(
-                manifest_ref=_manifest_ref(updated_manifest, updated_path, manifest_role),
-                artifacts=tuple(updated_manifest.artifacts),
-                manifest_path=updated_path,
-                regeneration_spec=regeneration_payload,
-            )
+            _stage_materialization(stage, inputs, issues, manifest, path, "analysis_run")
         )
     return products
 

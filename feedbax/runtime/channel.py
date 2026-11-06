@@ -17,7 +17,7 @@ import feedbax._vendor.jax_cookbook.tree as jtree
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
-from feedbax.runtime.noise import Normal
+from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,8 @@ class ChannelState(Module):
     Attributes:
         output: The current output of the channel.
         queue: A tuple of previous inputs to the channel, with most recent last.
-        noise: The noise added to the current output, if any.
+        noise: The noise added to the current output, zero when disabled.
+            None if the state has no noise slot.
     """
 
     output: PyTree[Array, "T"]
@@ -39,6 +40,7 @@ class ChannelState(Module):
 
 StateT = TypeVar("StateT")
 T = TypeVar("T")
+ModelT = TypeVar("ModelT")
 
 
 class ChannelSpec(Module, Generic[StateT]):
@@ -53,6 +55,19 @@ class ChannelSpec(Module, Generic[StateT]):
     where: Callable[[StateT], PyTree[Array]]
     delay: int = 0
     noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]] = None
+
+
+def _noise_model(noise_func: Callable | None) -> str:
+    if noise_func is None:
+        return "none"
+    if isinstance(noise_func, Normal):
+        return "additive_gaussian"
+    if isinstance(noise_func, Multiplicative):
+        return "signal_dependent_gaussian"
+    if isinstance(noise_func, CompositeNoise):
+        if len(noise_func.terms) == 2 and isinstance(noise_func.terms[0], Multiplicative) and isinstance(noise_func.terms[1], Normal):
+            return "signal_dependent_plus_additive"
+    return "custom"
 
 
 class Channel(Component):
@@ -78,7 +93,7 @@ class Channel(Component):
         add_noise: bool = True,
         input_proto: Optional[PyTree[Array]] = None,
         init_value: float = 0.0,
-        noise_model: str = "additive_gaussian",
+        noise_model: str | None = None,
         noise_role: Optional[str] = None,
         noise_timing: Optional[str] = None,
     ):
@@ -91,7 +106,7 @@ class Channel(Component):
             input_proto = jnp.zeros(1)
         self.input_proto = input_proto
         self.init_value = init_value
-        self.noise_model = noise_model
+        self.noise_model = noise_model if noise_model is not None else _noise_model(noise_func)
         self.noise_role = noise_role
         self.noise_timing = noise_timing
 
@@ -100,12 +115,17 @@ class Channel(Component):
 
     def _initial_state_value(self, input_proto: PyTree[Array]) -> ChannelState:
         input_init = jt.map(lambda x: jnp.full_like(x, self.init_value), input_proto)
-        if not self.add_noise or self.noise_func is None:
-            noise_init = None
-        else:
-            noise_init = input_init
-        queue = self.delay * (input_init,)
-        return ChannelState(output=input_init, queue=queue, noise=noise_init)
+        noise_init = jt.map(jnp.zeros_like, input_init) if self.noise_func is not None else None
+        return self._state_with_history(input_init, noise_init)
+
+    def _state_with_history(self, value: PyTree, noise: PyTree | None) -> ChannelState:
+        return ChannelState(output=value, queue=self.delay * (value,), noise=noise)
+
+    def fill_history(self, state: State, value: PyTree) -> State:
+        """Use one sample for the channel output and every slot of its history."""
+        return state.set(
+            self.state_index, self._state_with_history(value, state.get(self.state_index).noise)
+        )
 
     def __call__(
         self,
@@ -124,7 +144,6 @@ class Channel(Component):
             output = input_value
             new_queue = channel_state.queue
 
-        noise = None
         if self.add_noise and self.noise_func is not None:
             noise = jt.map(
                 self.noise_func,
@@ -132,8 +151,15 @@ class Channel(Component):
                 output,
             )
             output = jt.map(lambda x, y: x + y, output, noise)
+        else:
+            noise = jt.map(jnp.zeros_like, channel_state.noise)
 
-        new_state = ChannelState(output=output, queue=new_queue, noise=noise)
+        new_state = ChannelState(
+            output=output,
+            queue=new_queue,
+            # Older disabled carries have no slot to record a sample.
+            noise=noise if channel_state.noise is not None else None,
+        )
         state = state.set(self.state_index, new_state)
         return {"output": output}, state
 
@@ -151,18 +177,16 @@ class Channel(Component):
         )
 
 
-def toggle_channel_noise(tree, enabled: Optional[bool] = None):
-    """Disable/enable noise in all Channel leaves of a PyTree."""
-    if enabled is None:
-        def replace_fn(x):
-            return not x
-    else:
-        def replace_fn(_):
-            return enabled
+def toggle_channel_noise(tree: ModelT, enabled: Optional[bool] = None) -> ModelT:
+    """Set the noise flag on every Channel in a PyTree, or invert each flag.
 
-    return eqx.tree_at(
-        lambda channel: channel.add_noise,
-        tree,
-        replace_fn,
-        is_leaf=lambda x: isinstance(x, Channel),
-    )
+    The returned tree can use the same carry as the original.
+    """
+
+    def replace_channel(leaf):
+        if not isinstance(leaf, Channel):
+            return leaf
+        add_noise = not leaf.add_noise if enabled is None else enabled
+        return eqx.tree_at(lambda channel: channel.add_noise, leaf, replace=add_noise)
+
+    return jt.map(replace_channel, tree, is_leaf=lambda leaf: isinstance(leaf, Channel))

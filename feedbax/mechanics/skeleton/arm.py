@@ -5,20 +5,24 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
-from functools import cached_property
 from typing import Optional
 
 import equinox as eqx
 from equinox import field
 import jax
 import jax.numpy as jnp
-import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 import numpy as np
 
+from feedbax.mechanics.geometry import corners_2d
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
+from feedbax.mechanics.skeleton._planar import (
+    distal_state,
+    effector_jacobian,
+    link_kinematics,
+    two_link_angular_acceleration,
+)
 from feedbax.runtime.state import CartesianState, StateBounds
-from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS, corners_2d
 
 
 
@@ -29,12 +33,14 @@ class TwoLinkArmState(AbstractSkeletonState):
     Attributes:
         angle: The joint angles.
         d_angle: The angular velocities.
-        torque: The torques on the joints.
+        torque: Joint torque held independently of the controller input.
+        effector_force: World-space force held at the distal endpoint.
     """
 
     angle: Float[Array, "... links=2"] = field(default_factory=lambda: jnp.zeros(2))
     d_angle: Float[Array, "... links=2"] = field(default_factory=lambda: jnp.zeros(2))
     torque: Float[Array, "... links=2"] = field(default_factory=lambda: jnp.zeros(2))
+    effector_force: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
 
 
 class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
@@ -73,10 +79,6 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         self.B = B
         self.inertia_gain = 1.0
 
-        #! initialize cached properties used by JAX operations
-        # otherwise their initialization is a side effect
-        self._a
-
     def to_params(self) -> dict[str, list[float]]:
         """Return the authored GraphSpec parameters represented by this arm."""
         return {"link_lengths": [float(value) for value in self.l]}
@@ -96,33 +98,18 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
             input: The torques on the joints.
         """
         angle, d_angle = state.angle, state.d_angle
-
-        # centripetal and coriolis torques
-        c_vec = (
-            jnp.array((-d_angle[1] * (2 * d_angle[0] + d_angle[1]), d_angle[0] ** 2))
-            * self._a[1]
-            * jnp.sin(angle[1])
+        load_torque = self.effector_force_to_torques(angle, state.effector_force)
+        dd_angle = two_link_angular_acceleration(
+            self.l, self.m, self.I, self.s, self.B,
+            angle, d_angle, state.torque + input + load_torque,
         )
 
-        # inertia matrix that maps torques -> angular accelerations
-        cs1 = jnp.cos(angle[1])
-        tmp = self._a[2] + self._a[1] * cs1
-        inertia_mat = jnp.array(
-            (
-                (self._a[0] + 2 * self._a[1] * cs1, tmp),
-                (tmp, self._a[2] * jnp.ones_like(cs1)),
-            )
+        return TwoLinkArmState(
+            angle=d_angle,
+            d_angle=dd_angle,
+            torque=jnp.zeros_like(state.torque),
+            effector_force=jnp.zeros_like(state.effector_force),
         )
-
-        # Normally, `state.torque` only contains the torque induced by
-        # linear force on the effector, as determined by inverse kinematics
-        # during the "convert_effector_force" stage of `Mechanics`,
-        # whereas `input` is the torque from the controller/muscles.
-        net_torque = state.torque + input - c_vec.T - jnp.matmul(d_angle, self.B.T)
-
-        dd_angle = jnp.linalg.inv(inertia_mat) @ net_torque
-
-        return TwoLinkArmState(d_angle, dd_angle)
 
     def init(
         self,
@@ -131,23 +118,6 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
     ) -> TwoLinkArmState:
         """Return a default state for the arm."""
         return TwoLinkArmState()
-
-    @cached_property
-    def _a(self):
-        # this is a cached_property to avoid polluting the module's fields with private attributes
-        return (
-            # + m[1]*s[1]**2 + m[0]*s[0]**2
-            self.I[0] + self.I[1] + self.m[1] * self.l[0] ** 2,
-            #
-            self.m[1] * self.l[0] * self.s[1],
-            # + m[1] * s[1] ** 2
-            self.I[1],
-        )
-
-    @cached_property
-    def _lsqpm(self):
-        lsq = self.l**2
-        return (lsq[0] - lsq[1], lsq[0] + lsq[1])
 
     @property
     def input_size(self) -> int:
@@ -178,16 +148,17 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
             effector_state: The state of the end effector.
         """
         pos = effector_state.pos
-        l, lsqpm = self.l, self._lsqpm
+        l = self.l
+        lsq = l**2
         dsq = jnp.sum(pos**2)
         # No solution exists if `dsq` is outside of:
         #   `(l[0] - l[1], l[0] + l[1])`
 
-        alpha = jnp.arccos((lsqpm[0] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
+        alpha = jnp.arccos((lsq[0] - lsq[1] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
         gamma = jnp.arctan2(pos[1], pos[0])
         theta0 = gamma - alpha
 
-        beta = jnp.arccos((lsqpm[1] - dsq) / (2 * l[0] * l[1]))
+        beta = jnp.arccos((lsq[0] + lsq[1] - dsq) / (2 * l[0] * l[1]))
         theta1 = np.pi - beta
         # The "elbow up" or "lefty" solution is given by:
         #   `theta0 = gamma + alpha`
@@ -195,16 +166,14 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
 
         angle = jnp.stack([theta0, theta1], axis=-1)
 
-        # TODO: Don't calculate Jacobian twice, for `d_angle` and `torque`.
-        # See https://robotics.stackexchange.com/a/6393
         d_angle = jnp.linalg.inv(self.effector_jac(angle)) @ effector_state.vel
-
-        if effector_state.force is not None:
-            torque = self.effector_force_to_torques(angle, effector_state.force)
-        else:
-            torque = None
-
-        return TwoLinkArmState(angle=angle, d_angle=d_angle, torque=torque)
+        force = effector_state.force
+        return TwoLinkArmState(
+            angle=angle,
+            d_angle=d_angle,
+            torque=jnp.zeros_like(angle),
+            effector_force=jnp.zeros_like(angle) if force is None else force,
+        )
 
     def update_state_given_effector_force(
         self,
@@ -213,22 +182,9 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         *,
         key: Optional[PRNGKeyArray] = None,
     ) -> TwoLinkArmState:
-        """Adds torques implied by a force on the end effector, to a
-        configuration state of the arm.
-
-        Arguments:
-            effector_force: The force on the end effector.
-            state: The configuration state of the arm to which to add
-                the inferred torques.
-            key: Unused. To satisfy the signature expected by
-                `AbstractSkeleton`.
-        """
-        torque = self.effector_force_to_torques(
-            state.angle,
-            effector_force,
-        )
-
-        return eqx.tree_at(lambda state: state.torque, state, torque + state.torque)
+        """Replace the held world-space endpoint force. Pass zero to clear it."""
+        force = jnp.asarray(effector_force, dtype=state.effector_force.dtype)
+        return eqx.tree_at(lambda state: state.effector_force, state, force)
 
     def effector_force_to_torques(
         self,
@@ -253,17 +209,7 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         Arguments:
             angle: The joint angles.
         """
-        jac, _ = jax.jacfwd(self._forward_pos, has_aux=True)(angle)
-        return jac[-1]
-
-    def _forward_pos(self, angle):
-        """Separated from `forward_kinematics` for use in `effector_jac`."""
-        angle_sum = jnp.cumsum(angle)  # links
-        length_components = self.l * jnp.array(
-            [jnp.cos(angle_sum), jnp.sin(angle_sum)]
-        )  # xy, links
-        xy_pos = jnp.cumsum(length_components, axis=1)  # xy, links
-        return xy_pos.T, length_components
+        return effector_jacobian(self.l, angle)
 
     @jax.named_scope("fbx.TwoLinkArm.forward_kinematics")
     def forward_kinematics(self, state: TwoLinkArmState) -> CartesianState:
@@ -273,19 +219,9 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         Arguments:
             state: The configuration state of the arm.
         """
-        xy_pos, length_components = self._forward_pos(state.angle)
+        xy_pos, xy_vel = link_kinematics(self.l, state.angle, state.d_angle)
 
-        ang_vel_sum = jnp.cumsum(state.d_angle)  # links
-        xy_vel = jnp.cumsum(
-            SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] * ang_vel_sum, axis=1
-        ).T  # xy, links
-
-        # TODO: add force conversion?
-        # It might be very important NOT to convert force here.
-        # Otherwise we could get positive feedback where the effector force
-        # is passed to the next time step and converted to torques, then
-        # converted to effector forces and added back to the torques, etc.
-
+        # The observed Cartesian state leaves the force channel free for the next step.
         return CartesianState(
             pos=xy_pos,
             vel=xy_vel,
@@ -298,10 +234,7 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         Arguments:
             state: The configuration state of the arm.
         """
-        return jt.map(
-            lambda x: x[-1],  # last link
-            self.forward_kinematics(state),
-        )
+        return distal_state(self.forward_kinematics(state))
 
     @property
     def bounds(self) -> StateBounds[TwoLinkArmState]:
@@ -315,11 +248,13 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
                 angle=jnp.array([0.0, 0.0]),
                 d_angle=None,
                 torque=None,
+                effector_force=None,
             ),
             high=TwoLinkArmState(
                 angle=jnp.deg2rad(jnp.array([140.0, 160.0])),
                 d_angle=None,
                 torque=None,
+                effector_force=None,
             ),
         )
 

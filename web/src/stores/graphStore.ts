@@ -37,6 +37,7 @@ import {
   normalizeDynamicPorts,
   normalizeMuxSpec,
 } from '@/features/graph/dynamicPorts';
+import { findWireConnectionDriver } from '@/features/graph/inputDrivers';
 import { normalizeGraphForStudioAuthoring } from '@/features/graph/normalization';
 import {
   acausalConnectionsFromEdges,
@@ -44,6 +45,7 @@ import {
   connectionFromReactFlow,
   portIsConserving,
 } from '@/features/domains/acausal';
+import { hasInspectorInterior } from '@/features/domains/context';
 
 const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
@@ -56,7 +58,12 @@ const TAP_WIDTH = 28;
 const TAP_HEIGHT = 18;
 
 type EditableGraphSpec = GraphSubgraphSpec;
-type GraphHistoryEntry = { graph: EditableGraphSpec; uiState: GraphUIState };
+export type GraphHistoryEdit = { undo: () => void; redo: () => void };
+type GraphHistoryEntry = {
+  graph: EditableGraphSpec;
+  uiState: GraphUIState;
+  edit?: GraphHistoryEdit;
+};
 type LayerHistory = { past: GraphHistoryEntry[]; future: GraphHistoryEntry[] };
 
 function requireCausalGraph(
@@ -162,12 +169,21 @@ function closesInstantCycle(
   return false;
 }
 
-function buildStateMergeRequest(graph: GraphSpec, sourceNode: string, targetNode: string): StateMergeRequest | null {
+function buildStateMergeRequest(
+  graph: GraphSpec,
+  sourceNode: string,
+  targetNode: string,
+  parent?: GraphLayer
+): StateMergeRequest | null {
   const sourceSpec = graph.nodes[sourceNode];
   const targetSpec = graph.nodes[targetNode];
   if (!sourceSpec || !targetSpec) return null;
+  const targetInputs = targetSpec.input_ports.filter(
+    (port) => findWireConnectionDriver(graph, targetNode, port, parent)?.kind !== 'external'
+  );
+  if (targetInputs.length === 0) return null;
   const currentSources: Record<string, WireSpec | null> = {};
-  for (const input of targetSpec.input_ports) {
+  for (const input of targetInputs) {
     const existing =
       graph.wires.find(
         (wire) => wire.target_node === targetNode && wire.target_port === input
@@ -175,7 +191,7 @@ function buildStateMergeRequest(graph: GraphSpec, sourceNode: string, targetNode
     currentSources[input] = existing;
   }
   const suggested: Record<string, string | null> = {};
-  for (const input of targetSpec.input_ports) {
+  for (const input of targetInputs) {
     suggested[input] = sourceSpec.output_ports.includes(input) ? input : null;
   }
   const hasExistingConnections = Object.values(currentSources).some(Boolean);
@@ -183,7 +199,7 @@ function buildStateMergeRequest(graph: GraphSpec, sourceNode: string, targetNode
     sourceNode,
     targetNode,
     sourceOutputs: [...sourceSpec.output_ports],
-    targetInputs: [...targetSpec.input_ports],
+    targetInputs,
     currentSources,
     suggested,
     hasExistingConnections,
@@ -901,7 +917,7 @@ function buildComponentNodes(graph: EditableGraphSpec, uiState: GraphUIState): N
       position: ui.position,
       style: size ? { width: size.width, height: size.height } : undefined,
       data: {
-        label: id,
+        label: ui.label ?? id,
         spec,
         current_domain: isAcausalGraphSpec(graph) ? 'feedbax.domain.acausal' : undefined,
         collapsed: ui.collapsed,
@@ -1436,13 +1452,13 @@ function importTemplateGraphIntoGraph(
   };
 }
 
-function cloneSnapshot(graph: EditableGraphSpec, uiState: GraphUIState) {
-  if (typeof structuredClone === 'function') {
-    return structuredClone({ graph, uiState });
-  }
-  return JSON.parse(JSON.stringify({ graph, uiState })) as {
-    graph: EditableGraphSpec; uiState: GraphUIState;
-  };
+function cloneSnapshot(
+  graph: EditableGraphSpec,
+  uiState: GraphUIState,
+  edit?: GraphHistoryEdit,
+): GraphHistoryEntry {
+  const snapshot = cloneGraphSpec({ graph, uiState });
+  return edit ? { ...snapshot, edit } : snapshot;
 }
 
 function applyNodeParamUpdatesToGraph<T extends EditableGraphSpec>(
@@ -1551,6 +1567,7 @@ export interface GraphSnapshot {
   edgeStyle: 'bezier' | 'elbow';
   past: GraphHistoryEntry[];
   future: GraphHistoryEntry[];
+  graphHistory: Record<string, LayerHistory>;
   selectedTapId: string | null;
   selectedEdgeId: string | null;
   pendingStateMerge: StateMergeRequest | null;
@@ -1609,7 +1626,7 @@ interface GraphStoreState {
   resetGraph: () => void;
   undo: () => void;
   redo: () => void;
-  deleteSelected: () => void;
+  deleteSelected: (edit?: GraphHistoryEdit) => void;
   duplicateSelected: () => void;
   setEdgeStyle: (style: 'bezier' | 'elbow') => void;
   addEdgePoint: (edgeId: string, point: { x: number; y: number }) => void;
@@ -1619,6 +1636,7 @@ interface GraphStoreState {
   enterSubgraph: (nodeId: string) => void;
   wrapInParentGraph: () => void;
   exitToBreadcrumb: (index: number) => void;
+  setNodeLabel: (nodeId: string, label: string) => void;
   renameNode: (nodeId: string, nextId: string) => void;
   renameSubgraphBoundaryPort: (
     nodeId: string,
@@ -2017,6 +2035,7 @@ export function createGraphSnapshotFromPersistedGraph({
     edgeStyle,
     past: [],
     future: [],
+    graphHistory: {},
     selectedTapId: null,
     selectedEdgeId: null,
     pendingStateMerge: null,
@@ -2039,6 +2058,29 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       }
       return patch;
     }, replace as false);
+  };
+
+  const replayHistory = (direction: 'undo' | 'redo') => {
+    const { past, future } = get();
+    const entry = direction === 'undo' ? past.at(-1) : future[0];
+    if (!entry) return;
+    set((state) => {
+      const { graph } = entry;
+      const snapshot = cloneSnapshot(state.graph, state.uiState, entry.edit);
+      const uiState = normalizeUiState(graph, entry.uiState, state.edgeStyle);
+      return {
+        graph,
+        uiState,
+        nodes: reconcileNodes(state.nodes, graph, uiState),
+        edges: reconcileEdges(state.edges, graph, uiState, state.edgeStyle),
+        past: direction === 'undo' ? past.slice(0, -1) : [...past, snapshot].slice(-MAX_HISTORY),
+        future: direction === 'undo' ? [snapshot, ...future] : future.slice(1),
+        isDirty: true,
+        selectedTapId: null,
+        selectedEdgeId: null,
+      };
+    });
+    entry.edit?.[direction]();
   };
 
   return {
@@ -2106,8 +2148,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
   capturePersistedGraph: () => capturePersistedGraphFromState(get()),
   captureGraphStackPath: () => captureGraphStackPathFromState(get()),
   restoreSnapshot: (snapshot) => {
-    const { edgeStyle } = snapshot;
-    const graph = normalizeGraphForStudioAuthoring(snapshot.graph);
+    const { edgeStyle, graph } = snapshot;
     const normalized = normalizeUiState(graph, snapshot.uiState, edgeStyle);
     baseSet({
       graphId: snapshot.graphId,
@@ -2128,7 +2169,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       lastSubgraphError: null,
       past: snapshot.past,
       future: snapshot.future,
-      graphHistory: {},
+      graphHistory: snapshot.graphHistory,
       selectedTapId: snapshot.selectedTapId,
       selectedEdgeId: snapshot.selectedEdgeId,
       pendingStateMerge: snapshot.pendingStateMerge,
@@ -2185,54 +2226,8 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       pendingStateMerge: null,
     });
   },
-  undo: () => {
-    set((state) => {
-      if (state.past.length === 0) return state;
-      const previous = state.past[state.past.length - 1];
-      const graph = isAcausalGraphSpec(previous.graph)
-        ? previous.graph
-        : normalizeDynamicPorts(previous.graph);
-      const past = state.past.slice(0, -1);
-      const future = [cloneSnapshot(state.graph, state.uiState), ...state.future];
-      const normalized = normalizeUiState(graph, previous.uiState, state.edgeStyle);
-      return {
-        ...state,
-        graph,
-        uiState: normalized,
-        nodes: reconcileNodes(state.nodes, graph, normalized),
-        edges: reconcileEdges(state.edges, graph, normalized, state.edgeStyle),
-        past,
-        future,
-        isDirty: true,
-        selectedTapId: null,
-        selectedEdgeId: null,
-      };
-    });
-  },
-  redo: () => {
-    set((state) => {
-      if (state.future.length === 0) return state;
-      const next = state.future[0];
-      const graph = isAcausalGraphSpec(next.graph)
-        ? next.graph
-        : normalizeDynamicPorts(next.graph);
-      const future = state.future.slice(1);
-      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
-      const normalized = normalizeUiState(graph, next.uiState, state.edgeStyle);
-      return {
-        ...state,
-        graph,
-        uiState: normalized,
-        nodes: reconcileNodes(state.nodes, graph, normalized),
-        edges: reconcileEdges(state.edges, graph, normalized, state.edgeStyle),
-        past,
-        future,
-        isDirty: true,
-        selectedTapId: null,
-        selectedEdgeId: null,
-      };
-    });
-  },
+  undo: () => replayHistory('undo'),
+  redo: () => replayHistory('redo'),
   setEdgeStyle: (style) => {
     set((state) => {
       const edge_states = buildEdgeStates(state.graph, state.uiState, style);
@@ -2366,11 +2361,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       const hasSubgraph = Boolean(state.graph.subgraphs?.[nodeId]);
       const componentDef = nodeSpec ? get()._componentRegistry.get(nodeSpec.type) : undefined;
       const isComposite = Boolean(componentDef?.is_composite);
-      const isReadOnlyInspector =
-        Boolean(componentDef?.interior_domain) &&
-        componentDef?.template_kind === 'display' &&
-        !componentDef?.template_graph &&
-        !hasSubgraph;
+      const isReadOnlyInspector = hasInspectorInterior(componentDef) && !hasSubgraph;
       if (!nodeSpec || (!isComposite && !hasSubgraph && !isReadOnlyInspector)) {
         return state;
       }
@@ -2660,18 +2651,17 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       };
     });
   },
-  deleteSelected: () => {
+  deleteSelected: (edit) => {
+    const { nodes: currentNodes, edges: currentEdges } = get();
+    const selectedNodeIds = currentNodes.filter((node) => node.selected).map((node) => node.id);
+    const selectedEdgeIds = currentEdges.filter((edge) => edge.selected).map((edge) => edge.id);
+    if (selectedNodeIds.length === 0 && selectedEdgeIds.length === 0) return;
     set((state) => {
-      const selectedNodeIds = state.nodes.filter((node) => node.selected).map((node) => node.id);
-      const selectedEdgeIds = state.edges.filter((edge) => edge.selected).map((edge) => edge.id);
-      if (selectedNodeIds.length === 0 && selectedEdgeIds.length === 0) {
-        return state;
-      }
       const selectedTapIds = selectedNodeIds
         .filter(isTapNodeId)
         .map((id) => id.replace(/^tap:/, ''));
       const selectedComponentIds = selectedNodeIds.filter((id) => !isTapNodeId(id));
-      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState, edit)].slice(-MAX_HISTORY);
       if (isAcausalGraphSpec(state.graph)) {
         const selectedNodeSet = new Set(selectedComponentIds);
         const remainingConnections = (state.graph.connections ?? []).filter((connection) => {
@@ -2808,6 +2798,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
             : state.selectedEdgeId,
       };
     });
+    edit?.redo();
   },
   duplicateSelected: () => {
     set((state) => {
@@ -2975,6 +2966,30 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
         selectedTapId: null,
         selectedEdgeId: null,
         pendingStateMerge: null,
+      };
+    });
+  },
+  setNodeLabel: (nodeId, label) => {
+    set((state) => {
+      const nodeState = state.uiState.node_states[nodeId];
+      const trimmed = label.trim();
+      const nextLabel = trimmed && trimmed !== nodeId ? trimmed : undefined;
+      if (!nodeState || (nodeState.label ?? undefined) === nextLabel) return state;
+
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const uiState: GraphUIState = {
+        ...state.uiState,
+        node_states: {
+          ...state.uiState.node_states,
+          [nodeId]: { ...nodeState, label: nextLabel },
+        },
+      };
+      return {
+        uiState,
+        nodes: reconcileNodes(state.nodes, state.graph, uiState),
+        past,
+        future: [],
+        isDirty: true,
       };
     });
   },
@@ -3157,7 +3172,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
         (change) =>
           change.type === 'remove' ||
           change.type === 'add' ||
-          change.type === 'dimensions' ||
+          (change.type === 'dimensions' && change.resizing !== undefined) ||
           (change.type === 'position' && (change as { dragging?: boolean }).dragging === false)
       );
       const past = shouldRecord
@@ -3445,7 +3460,9 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       }
       set((state) => {
         requireCausalGraph(state.graph, 'Merging causal state flows');
-        const request = buildStateMergeRequest(state.graph, connection.source!, connection.target!);
+        const request = buildStateMergeRequest(
+          state.graph, connection.source!, connection.target!, state.graphStack.at(-1)
+        );
         if (!request) return state;
         const autoMappings = Object.entries(request.suggested).filter(([, value]) => value);
         if (!request.hasExistingConnections && autoMappings.length > 0) {
@@ -3478,15 +3495,12 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       });
       return;
     }
-    const alreadyUsed = get().edges.some(
-      (edge) =>
-        edge.target === connection.target &&
-        edge.targetHandle === connection.targetHandle
-    );
-    if (alreadyUsed) return;
-    const edgeStyle = styleOverride ?? get().edgeStyle;
-    const causalGraph = get().graph;
+    const { graph: causalGraph, graphStack, edgeStyle: currentEdgeStyle } = get();
     requireCausalGraph(causalGraph, 'Connecting causal signal ports');
+    if (findWireConnectionDriver(
+      causalGraph, connection.target, connection.targetHandle, graphStack.at(-1)
+    )) return;
+    const edgeStyle = styleOverride ?? currentEdgeStyle;
     const temporality =
       wireOptions?.temporality ??
       (closesInstantCycle(causalGraph, connection.source, connection.target)
@@ -4235,6 +4249,10 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       requireCausalGraph(state.graph, 'Merging causal state flows');
       if (!state.pendingStateMerge) return state;
       const { sourceNode, targetNode } = state.pendingStateMerge;
+      const request = buildStateMergeRequest(state.graph, sourceNode, targetNode, state.graphStack.at(-1));
+      if (!request || Object.keys(mapping).some((port) => !request.targetInputs.includes(port))) {
+        return { pendingStateMerge: null };
+      }
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       let graph = applyStateMerge(state.graph, sourceNode, targetNode, mapping);
       if (state.graphStack.length > 0) {

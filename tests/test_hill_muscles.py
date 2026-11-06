@@ -7,6 +7,9 @@ and musculoskeletal arm integration.
 :license: Apache 2.0. See LICENSE for details.
 """
 
+from dataclasses import replace
+import math
+
 import pytest
 import diffrax as dfx
 import equinox as eqx
@@ -32,7 +35,7 @@ from feedbax.mechanics.musculoskeletal import (
     RigidTendonMusculoskeletalArm,
     CompliantTendonMusculoskeletalArm,
 )
-from feedbax.mechanics.units import DEFAULT_MUSCLE_VMAX
+from feedbax.mechanics.units import DEFAULT_MUSCLE_VMAX, ECCENTRIC_VELOCITY_LIMIT_FRACTION
 from feedbax.runtime.graph import init_state_from_component
 
 
@@ -116,36 +119,29 @@ class TestForceVelocityCurve:
     def fv_curve(self):
         return ForceVelocityCurve()
 
-    def test_isometric_force(self, fv_curve):
-        """At zero velocity, force multiplier should be 1.0."""
-        force = fv_curve(jnp.array(0.0))
-        assert jnp.isclose(force, 1.0, atol=0.01)
+    def test_bounded_monotone_curve(self, fv_curve):
+        velocities = jnp.linspace(-1.0, 0.1, 221)
+        forces = jax.vmap(fv_curve)(velocities)
 
-    def test_shortening_reduces_force(self, fv_curve):
-        """Shortening (negative velocity) should reduce force."""
-        shortening_force = fv_curve(jnp.array(-0.5))
-        isometric_force = fv_curve(jnp.array(0.0))
-        assert shortening_force < isometric_force
+        assert fv_curve(jnp.array(-1.0)) == 0.0
+        assert fv_curve(jnp.array(0.0)) == 1.0
+        assert jnp.all((forces >= 0.0) & (forces <= 1.4))
+        assert jnp.all(jnp.diff(forces) > 0.0)
+        saturated_velocities = jnp.array([-2.0, 0.1, 0.25, 1.0])
+        assert jnp.array_equal(fv_curve(saturated_velocities), jnp.array([0.0, 1.4, 1.4, 1.4]))
 
-    def test_lengthening_increases_force(self, fv_curve):
-        """Lengthening (positive velocity) should increase force."""
-        lengthening_force = fv_curve(jnp.array(0.2))
-        isometric_force = fv_curve(jnp.array(0.0))
-        assert lengthening_force >= isometric_force
+    def test_finite_reverse_gradients_at_branch_boundaries_and_former_poles(self, fv_curve):
+        velocities = jnp.array([-1.0, -0.25, -1e-6, 0.0, 1e-6, 0.1, 0.25])
+        gradients = jax.jit(jax.vmap(jax.grad(lambda v: fv_curve(v))))(velocities)
 
-    def test_max_shortening_zero_force(self, fv_curve):
-        """At max shortening velocity, force should approach zero."""
-        # Normalized velocity = -1 at max shortening
-        force = fv_curve(jnp.array(-1.0))
-        assert force < 0.1  # Close to zero
+        assert jnp.all(jnp.isfinite(gradients))
 
-    def test_eccentric_plateau(self, fv_curve):
-        """Eccentric force should eventually plateau."""
-        # At high lengthening velocities, force should be bounded
-        high_lengthening_force = fv_curve(jnp.array(0.5))
-        # Force should be greater than isometric but bounded
-        assert high_lengthening_force >= 1.0
-        assert high_lengthening_force < 2.0  # Reasonable upper bound
+    def test_inverse_recovers_velocity_and_saturates(self, fv_curve):
+        forces = jnp.array([-0.1, 0.0, 1.0, 1.4, 1.5])
+        assert jnp.array_equal(fv_curve.inverse(forces), jnp.array([-1.0, -1.0, 0.0, 0.1, 0.1]))
+
+        velocities = jnp.array([-0.9, -0.5, -0.01, 0.01, 0.05, 0.09])
+        assert jnp.allclose(fv_curve.inverse(fv_curve(velocities)), velocities)
 
 
 class TestTendonForceLengthCurve:
@@ -274,6 +270,19 @@ class TestCompliantTendonMuscle:
         assert muscle.muscle_params.max_isometric_force == 500.0
         assert muscle.dt == 0.001
 
+    def test_pennation_tracks_replaced_parameter(self, muscle_params):
+        original = CompliantTendonHillMuscle(replace(muscle_params, pennation_angle=0.1))
+        fresh = CompliantTendonHillMuscle(replace(muscle_params, pennation_angle=0.3))
+        optimal_length = jnp.asarray(muscle_params.optimal_fiber_length)
+
+        def pennation(angle):
+            updated = eqx.tree_at(lambda model: model.muscle_params.pennation_angle, original, angle)
+            return updated.compute_pennation_angle(optimal_length)
+
+        value, derivative = jax.jit(jax.value_and_grad(pennation))(jnp.asarray(0.3))
+        assert float(value) == pytest.approx(float(fresh.compute_pennation_angle(optimal_length)))
+        assert float(derivative) == pytest.approx(1.0)
+
     def test_single_step(self, muscle):
         """Test single integration step works."""
         state = init_state_from_component(muscle)
@@ -311,33 +320,38 @@ class TestCompliantTendonMuscle:
 
         assert outputs["force"] > 0.0
 
-    def test_constraint_residual_small(self, muscle):
-        """Test that integration runs without errors."""
-        state = init_state_from_component(muscle)
-        key = jr.PRNGKey(2)
+    @pytest.mark.parametrize(
+        "activation, expected_velocity", [(0.6, -0.5), (1e-7, -0.5), (0.0, 0.0)],
+    )
+    def test_fiber_velocity_balances_fiber_and_tendon_force(
+        self, muscle_params, activation, expected_velocity,
+    ):
+        params = replace(muscle_params, pennation_angle=0.3)
+        muscle = CompliantTendonHillMuscle(params)
+        projection = math.cos(params.pennation_angle)
+        activation = jnp.asarray(activation)
+        state = eqx.tree_at(
+            lambda s: s.activation,
+            muscle.init_system_state(key=jr.PRNGKey(2)),
+            activation,
+        )
+        normalized_tendon_force = activation * projection / 6.0
+        tendon_length = params.tendon_slack_length * muscle.tendon_force_length.inverse(
+            normalized_tendon_force
+        )
+        if activation == 0.0:
+            tendon_length -= 0.001  # A slack tendon remains unloaded after rounding.
+        mt_length = state.fiber_length * projection + tendon_length
 
-        mt_length = jnp.array(0.25)
-        inputs = {
-            "excitation": jnp.array(0.8),
-            "musculotendon_length": mt_length,
-            "musculotendon_velocity": jnp.array(0.0),
-        }
+        derivative = muscle.vector_field(0.0, state, (activation, mt_length, jnp.array(0.0)))
+        fiber_velocity = derivative.fiber_length
+        fiber_force = muscle.compute_fiber_force(activation, state.fiber_length, fiber_velocity)
+        tendon_force = muscle.compute_tendon_force(tendon_length)
 
-        # Run a few steps to settle
-        for _ in range(10):
-            key, subkey = jr.split(key)
-            outputs, state = muscle(inputs, state, key=subkey)
-
-        # Check constraint residual is finite
-        # Note: For explicit integration, the residual may not be small
-        # since we're not enforcing force equilibrium implicitly.
-        # This is a limitation of using Euler solver instead of implicit.
-        dae_state = state.get(muscle.state_index)
-        residual = muscle.compute_constraint_residual(dae_state.system, mt_length)
-
-        assert jnp.isfinite(residual), "Constraint residual should be finite"
-        # The force output should still be reasonable
-        assert jnp.isfinite(outputs["force"]), "Force should be finite"
+        assert jnp.isclose(
+            fiber_velocity, expected_velocity * params.vmax * params.optimal_fiber_length,
+        )
+        assert jnp.isclose(fiber_force * projection, tendon_force, rtol=1e-6, atol=0.0)
 
 
 class TestMuscleGeometry:
@@ -583,6 +597,77 @@ class TestCompliantTendonMusculoskeletalArm:
         assert "effector" in outputs
         assert "forces" in outputs
         assert jnp.all(jnp.isfinite(outputs["forces"]))
+
+    @pytest.mark.parametrize(
+        ("lengthening_force_multiplier", "lengthening_velocity"),
+        [(1.0 + 7.0 / 30.0, 0.05), (2.0, ECCENTRIC_VELOCITY_LIMIT_FRACTION)],
+        ids=["equilibrium", "velocity-cap"],
+    )
+    def test_tendon_load_drives_motion_and_outputs(
+        self, lengthening_force_multiplier, lengthening_velocity
+    ):
+        params = HillMuscleParams(
+            max_isometric_force=500.0,
+            optimal_fiber_length=0.08,
+            tendon_slack_length=0.12,
+            pennation_angle=0.3,
+        )
+        activation = jnp.array([0.6, 0.6])
+        projection = math.cos(params.pennation_angle)
+        normalized_tendon_force = activation * projection * jnp.array([
+            1.0 / 6.0, lengthening_force_multiplier,
+        ])
+        tendon_lengths = params.tendon_slack_length * TendonForceLengthCurve().inverse(
+            normalized_tendon_force
+        )
+        geometry = TwoLinkArmMuscleGeometry(
+            geometries=tuple(
+                ConstantMomentArmGeometry(
+                    moment_arms=jnp.array([moment_arm, 0.0]),
+                    reference_length=params.optimal_fiber_length * projection + float(tendon_length),
+                )
+                for moment_arm, tendon_length in zip((0.04, -0.04), tendon_lengths, strict=True)
+            )
+        )
+        key = jr.PRNGKey(0)
+        arm = CompliantTendonMusculoskeletalArm(
+            muscle_params=(params, params),
+            geometry=geometry,
+            arm_l=(0.30, 0.33),
+            arm_m=(1.4, 1.0),
+            arm_I=(0.025, 0.045),
+            arm_s=(0.11, 0.16),
+            arm_B=((0.0, 0.0), (0.0, 0.0)),
+            dt=1e-5,
+            key=key,
+        )
+        state = init_state_from_component(arm)
+        dae_state = state.get(arm.state_index)
+        dae_state = eqx.tree_at(lambda s: s.system.activations, dae_state, activation)
+        state = state.set(arm.state_index, dae_state)
+
+        outputs, stepped_state = arm({"excitations": activation}, state, key=key)
+        stepped_system = stepped_state.get(arm.state_index).system
+        normalized_velocities = (stepped_system.fiber_lengths - params.optimal_fiber_length) / (
+            arm.dt * params.vmax * params.optimal_fiber_length
+        )
+        assert jnp.allclose(normalized_velocities, jnp.array([-0.5, lengthening_velocity]))
+
+        # Euler leaves both joint angles at zero on the first step from rest.
+        # The inertia there is fixed by the parameters above, and sin(0) makes
+        # the Coriolis torque zero even after the step.
+        inertia = jnp.array([[0.256, 0.093], [0.093, 0.045]])
+        start_torque = 0.04 * params.max_isometric_force * (
+            normalized_tendon_force[0] - normalized_tendon_force[1]
+        )
+        assert jnp.allclose(
+            inertia @ (stepped_system.arm.d_angle / arm.dt), jnp.array([start_torque, 0.0])
+        )
+
+        post_acceleration = arm.vector_field(arm.dt, stepped_system, activation).arm.d_angle
+        post_force_torque = 0.04 * (outputs["forces"][0] - outputs["forces"][1])
+        assert jnp.allclose(outputs["torques"], jnp.array([post_force_torque, 0.0]))
+        assert jnp.allclose(inertia @ post_acceleration, outputs["torques"])
 
     def test_gradient_flow_compliant(self, arm):
         """Test gradients through compliant tendon model."""

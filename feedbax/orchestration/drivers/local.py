@@ -70,7 +70,10 @@ from feedbax.orchestration.drivers.native_execution import (
     seed_authenticated_checkpoint,
     uses_registered_native_execution,
 )
-from feedbax.orchestration.executor_family import executor_family_adapter
+from feedbax.orchestration.executor_family import (
+    executor_family_adapter,
+    load_evaluation_compaction_evidence,
+)
 from feedbax.orchestration.input_materialization import (
     InputMaterializationError,
     InputProviderRootBinding,
@@ -353,7 +356,6 @@ class LocalOrchestrationDriver:
                 destination_root=attempt_root,
                 provider_bindings=self.input_provider_bindings,
                 staged_root_bindings=self.staged_root_bindings,
-                content_store_root=self.content_store_root,
             )
             if content_projection is not None:
                 staged_inputs = (
@@ -362,7 +364,6 @@ class LocalOrchestrationDriver:
                         content_projection,
                         content_provider,
                         destination_root=attempt_root / "inputs" / "content" / "trees",
-                        object_root=bundle.run_set_dir / ".content-cache" / "objects" / "sha256",
                     ),
                 )
         except InputMaterializationError as exc:
@@ -864,7 +865,29 @@ def _reclaim_successful_evaluation_stores(
             for row in completed_rows
         ]
     _verify_successful_evaluation_terminal_custody(bundle, state)
-    return [_reclaim_successful_evaluation_store(bundle, row) for row in completed_rows]
+    from feedbax.analysis.evaluation_compaction import verify_evaluation_batch_retention
+
+    reclamations = []
+    for row in completed_rows:
+        compaction = load_evaluation_compaction_evidence(
+            Path(state.rows[row.row_id].collected_outputs["evaluation-batch-compaction.json"])
+        )
+        evaluation_root = bundle.run_set_dir / "rows" / row.row_id / "evaluation"
+        has_durable_records = any(batch.retention_record_ids for batch in compaction.reclamations)
+        if has_durable_records or os.path.lexists(evaluation_root):
+            verify_evaluation_batch_retention(compaction, evaluation_root)
+        if has_durable_records:
+            reclamations.append(
+                {
+                    "row_id": row.row_id,
+                    "status": "retained",
+                    "reclaimed_bytes": 0,
+                    "reason": "durable-batch-retention",
+                }
+            )
+        else:
+            reclamations.append(_reclaim_successful_evaluation_store(bundle, row))
+    return reclamations
 
 
 def _verify_successful_evaluation_terminal_custody(
