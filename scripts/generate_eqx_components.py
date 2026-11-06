@@ -361,6 +361,83 @@ def default_for_param(spec: ComponentSpec, name: str, default) -> str:
         ) from exc
 
 
+def generate_component_owner(
+    spec: ComponentSpec, params: list[tuple[str, inspect.Parameter]], has_key: bool
+) -> tuple[str, str]:
+    # Live callable/array properties cannot recover the original constructor seed.
+    # BatchNorm requires named vmap axes that the graph prototype context does not supply.
+    if spec.layer_properties or spec.call_kind == "batch_norm":
+        return "", ""
+
+    config_fields = []
+    needs_config = False
+    has_dtype = False
+    spatial_settings = []
+    for name, param in params:
+        annotation = format_type_annotation(param.annotation)
+        if name == "dtype":
+            annotation = "str | None"
+            has_dtype = True
+            needs_config = True
+        elif "Sequence[" in annotation:
+            spatial_settings.append(name)
+            annotation = annotation.replace("Sequence[tuple[int, int]]", "_PaddingPairs").replace(
+                "Sequence[int]", "_SpatialDimensions"
+            )
+            needs_config = True
+        elif annotation == "Union[int, Literal['scalar']]":
+            needs_config = True
+        elif annotation not in {"bool", "float", "int", "str", "Optional[bool]", "Optional[int]"}:
+            raise ValueError(f"No graph setting encoding for {spec.eqx_class_name}.{name}")
+        default = (
+            repr(list(param.default))
+            if name in spatial_settings and isinstance(param.default, tuple)
+            else default_for_param(spec, name, param.default)
+        )
+        config_fields.append(f"    {name}: {annotation}" + (f" = {default}" if default else ""))
+
+    name = spec.eqx_class_name
+    config = (
+        f"class _{name}Params(BaseModel):\n" + "\n".join(config_fields) + "\n\n"
+        if needs_config
+        else ""
+    )
+    options = [
+        f'"feedbax.equinox.{name}"',
+        'category="Equinox"',
+        "configure=_owner_options",
+        "sources=(_GENERATOR_SOURCE,)",
+    ]
+    if needs_config:
+        options.append(f"param_model=_{name}Params")
+    configure_options = []
+    if spatial_settings:
+        configure_options.append(f"spatial_settings={tuple(spatial_settings)!r}")
+    if has_key:
+        configure_options.append("has_key=True")
+        options.append('build_context_fields=("key",)')
+    if configure_options:
+        options[2] = f"configure=partial(_owner_options, {', '.join(configure_options)})"
+    if has_dtype:
+        options.append('attribute_paths={"dtype": "_graph_dtype"}')
+    if spec.category not in {"pool", "other"} and name not in {
+        "Identity",
+        "RotaryPositionalEmbedding",
+    }:
+        options.append("trainable_by_default=True")
+    decorator = "@component(\n    " + ",\n    ".join(options) + ",\n)"
+    dtype_property = (
+        """
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+"""
+        if has_dtype
+        else ""
+    )
+    return config + decorator, dtype_property
+
+
 def generate_component_class(spec: ComponentSpec) -> str:
     """Generate the Component wrapper class for a given spec."""
     eqx_class = getattr(nn, spec.eqx_class_name)
@@ -460,6 +537,10 @@ def generate_component_class(spec: ComponentSpec) -> str:
             f"        _restore_wrapper_state(self, state, {tuple(spec.layer_properties)!r})\n"
         )
 
+    owner, dtype_property = generate_component_owner(
+        spec, positional_params + keyword_params, has_key_param
+    )
+
     # Build the class
     docstring = spec.docstring or f"Component wrapper for eqx.nn.{spec.eqx_class_name}."
     input_ports_str = repr(spec.input_ports)
@@ -473,7 +554,7 @@ def generate_component_class(spec: ComponentSpec) -> str:
     )
 
     class_code = f'''
-class {spec.eqx_class_name}(Component):
+{owner + chr(10) if owner else ""}class {spec.eqx_class_name}(Component):
     """{docstring}"""
 
     input_ports = {input_ports_str}
@@ -486,7 +567,7 @@ class {spec.eqx_class_name}(Component):
 {chr(10).join(attr_declarations) if attr_declarations else ""}
     def __init__({", ".join(init_params)}):
 {"".join(init_body_assignments)}        self.layer = eqx.nn.{spec.eqx_class_name}({layer_call_args})
-{properties}
+{properties}{dtype_property}
 
     def __call__(
         self,
@@ -520,14 +601,21 @@ To regenerate:
 
 from __future__ import annotations
 
-from collections.abc import Hashable
-from typing import Any, Callable, Literal, Optional, Sequence, Union
+from collections.abc import Hashable, Mapping
+from functools import partial
+from pathlib import Path
+from typing import Annotated, Any, Callable, Literal, Optional, Sequence, Union
 
 import equinox as eqx
+import jax
+import jax.numpy as jnp
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from pydantic import BaseModel, Field
 
 from feedbax._checkpoint_errors import _LegacyWrapperLayoutError
+from feedbax.component_registry import component
+from feedbax.component_registry.declarations import MissingPrototypeInput
 from feedbax.runtime.components import identity_activation, relu
 from feedbax.runtime.graph import Component
 
@@ -535,6 +623,7 @@ from feedbax.runtime.graph import Component
 EQUINOX_WRAPPER_SCHEMA_VERSION = "feedbax.equinox_wrappers.v3"
 EQUINOX_WRAPPER_GENERATOR = "scripts/generate_eqx_components.py"
 EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
+_GENERATOR_SOURCE = Path(__file__).resolve().parents[2] / EQUINOX_WRAPPER_GENERATOR
 
 
 '''
@@ -568,7 +657,53 @@ EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
         + "}\n"
     )
 
-    helpers = '''
+    helpers = """
+
+_SpatialDimensions = list[int]
+_PaddingPair = Annotated[list[int], Field(min_length=2, max_length=2)]
+_PaddingPairs = list[_PaddingPair]
+
+
+def _spatial_tuple(value: Any) -> Any:
+    return tuple(map(_spatial_tuple, value)) if isinstance(value, list) else value
+
+
+def _owner_options(
+    cls: type[Component],
+    *,
+    has_key: bool = False,
+    spatial_settings: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    def build(params: Mapping[str, Any]) -> Component:
+        settings = dict(params)
+        for name in spatial_settings:
+            if name in settings:
+                settings[name] = _spatial_tuple(settings[name])
+        return cls(**settings)
+
+    def output_prototype(params: Mapping[str, Any], inputs: Mapping[str, Any]) -> dict[str, Any]:
+        missing = set(cls.input_ports) - inputs.keys()
+        if missing:
+            raise MissingPrototypeInput(f"Missing input prototypes for {sorted(missing)}")
+        settings = {name: value for name, value in params.items() if name != "trainable"}
+        key = jax.random.key(0)
+        if has_key:
+            settings["key"] = key
+
+        def forward(values):
+            layer, state = eqx.nn.make_with_state(build)(settings)
+            return layer(values, state, key=key)[0]
+
+        return jax.eval_shape(forward, dict(inputs))
+
+    options = {
+        "output_prototype_fn": output_prototype,
+        "prototype_depends_on_connected_inputs": True,
+    }
+    if spatial_settings:
+        options.update(builder=build, override_reason="Convert JSON dimensions to Equinox tuples")
+    return options
+
 
 _PickleState = dict[str, Any] | tuple[dict[str, Any] | None, dict[str, Any]]
 
@@ -662,7 +797,7 @@ def _call_multihead_attention_layer(
         key=key,
     )
     return {"output": output}, state
-'''
+"""
 
     # Generate classes grouped by category
     body_parts = []

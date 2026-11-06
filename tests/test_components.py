@@ -26,6 +26,76 @@ from feedbax.models.networks import LeakyRNNCell, recurrent_controller
 from feedbax.models.feedback import SimpleFeedback
 
 
+def test_generated_convolution_restores_checkpoint_from_exported_graph(tmp_path):
+    from pathlib import Path
+
+    from feedbax.compiler import GraphDocument, compile_graph
+    from feedbax.compiler.serialization import graph_to_spec
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
+
+    registry = ComponentRegistry(load_user_components=False)
+    registry.ingest(registry.discover_modules(graph_eqx), provenance="feedbax")
+    type_id = "feedbax.equinox.Conv2d"
+    repo_root = Path(__file__).resolve().parents[1]
+    assert registry.component_source_paths(repo_root)[type_id] == (
+        "feedbax/components/equinox.py",
+        "scripts/generate_eqx_components.py",
+    )
+    authored = GraphSpec(
+        nodes={
+            "conv": ComponentSpec(
+                type=type_id,
+                params={
+                    "in_channels": 1,
+                    "out_channels": 1,
+                    "kernel_size": [2, 2],
+                    "padding": [[1, 0], [0, 1]],
+                    "use_bias": False,
+                },
+            ),
+            "gain": ComponentSpec(type="Gain", params={"gain": 2.0}),
+        },
+        wires=[
+            WireSpec(
+                source_node="conv", source_port="output", target_node="gain", target_port="input"
+            )
+        ],
+        input_ports=["image"],
+        output_ports=["result"],
+        input_bindings={"image": ("conv", "input")},
+        output_bindings={"result": ("gain", "output")},
+    )
+    image = jnp.ones((1, 2, 2))
+
+    def build(spec):
+        return compile_graph(
+            GraphDocument(graph=spec),
+            registry,
+            input_prototypes={("conv", "input"): image},
+        ).graph
+
+    graph = build(authored)
+    trained = eqx.tree_at(
+        lambda model: model.nodes["conv"].layer.weight,
+        graph,
+        jnp.ones((1, 1, 2, 2)),
+    )
+    exported = graph_to_spec(trained, registry)
+    assert exported.nodes["conv"].type == type_id
+    assert exported.nodes["conv"].params["padding"] == [[1, 0], [0, 1]]
+    assert "weight" not in exported.nodes["conv"].params
+    checkpoint = tmp_path / "learned.eqx"
+    eqx.tree_serialise_leaves(checkpoint, trained)
+    restored = eqx.tree_deserialise_leaves(
+        checkpoint, build(GraphSpec.model_validate_json(exported.model_dump_json()))
+    )
+    outputs, _ = restored(
+        {"image": image}, init_state_from_component(restored), key=jax.random.key(0)
+    )
+    assert jnp.array_equal(outputs["result"], jnp.asarray([[[4.0, 2.0], [8.0, 4.0]]]))
+
+
 def test_generated_equinox_components_default_trainable_leaves_to_float32():
     layer = graph_eqx.Linear(2, 3, key=jax.random.PRNGKey(0))
     gru = graph_eqx.GRUCell(2, 3, key=jax.random.PRNGKey(1))
