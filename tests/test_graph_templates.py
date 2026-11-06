@@ -158,6 +158,32 @@ def test_vanilla_rnn_network_subgraph_runs_and_serializes_roundtrip() -> None:
     assert runtime_roundtrip.nodes["cell"].params["activation"] == "tanh"
 
 
+def test_noisy_vanilla_rnn_rollout_preserves_float32_under_x64(enable_jax_x64) -> None:
+    spec = recurrent_controller_template_graph(
+        input_size=3,
+        hidden_size=4,
+        out_size=2,
+        cell_type="VanillaRNN",
+        cell_params={"use_noise": True, "noise_strength": 0.2, "dt": 0.25, "tau": 0.5},
+        dtype="float32",
+    )
+    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    state = init_state_from_component(graph)
+    inputs = {
+        "input": jnp.ones((3, 2), dtype=jnp.float32),
+        "feedback": jnp.zeros((3, 1), dtype=jnp.float32),
+    }
+    rollout = eqx.filter_jit(graph)
+    key = jax.random.key(0)
+    outputs, _ = rollout(inputs, state, key=key, n_steps=3)
+    repeated, _ = rollout(inputs, state, key=key, n_steps=3)
+    independent, _ = rollout(inputs, state, key=jax.random.key(1), n_steps=3)
+
+    assert outputs["hidden"].dtype == jnp.float32
+    assert jnp.array_equal(outputs["hidden"], repeated["hidden"])
+    assert not jnp.array_equal(outputs["hidden"], independent["hidden"])
+
+
 @pytest.mark.parametrize(
     ("cell_use_bias", "readout_use_bias"),
     [(False, False), (True, True)],

@@ -1106,6 +1106,10 @@ class SimpleStagedNetwork(Component):
 class LeakyRNNCell(Module):
     """Custom `RNNCell` with persistent, leaky state.
 
+    Timing values must be finite. The time constant `tau` must be positive.
+    The timestep `dt` may be zero for deterministic updates and must be
+    positive when noise is enabled.
+
     Based on `eqx.nn.GRUCell` and the leaky RNN from
 
         [1] G. R. Yang, M. R. Joglekar, H. F. Song, W. T. Newsome,
@@ -1142,6 +1146,14 @@ class LeakyRNNCell(Module):
         key: PRNGKeyArray,
         **kwargs,
     ):
+        dt, tau = float(dt), float(tau)
+        if not math.isfinite(tau) or tau <= 0:
+            raise ValueError("LeakyRNNCell requires a finite tau > 0")
+        if not math.isfinite(dt) or dt < 0:
+            raise ValueError("LeakyRNNCell requires a finite dt >= 0")
+        if use_noise and dt == 0:
+            raise ValueError("LeakyRNNCell requires dt > 0 when use_noise=True")
+
         dtype = dtype or jnp.float32
         ihkey, hhkey, bkey = jr.split(key, 3)
         lim = math.sqrt(1 / hidden_size)
@@ -1195,7 +1207,8 @@ class LeakyRNNCell(Module):
         if self.use_noise:
             if key is None:
                 raise ValueError("LeakyRNNCell requires an RNG key when use_noise=True")
-            noise = self.noise_std * jr.normal(key, state.shape)
+            noise_std = jnp.asarray(self.noise_std, dtype=state.dtype)
+            noise = noise_std * jr.normal(key, state.shape, dtype=state.dtype)
         else:
             noise = 0
 
