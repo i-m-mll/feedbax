@@ -42,6 +42,7 @@ from feedbax.contracts.evaluation_states import (
     store_evaluation_states_artifact,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.content_retention import collect_release_leases
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.manifest import (
     EVALUATION_STATES_CONTAINER_SCHEMA_VERSION,
@@ -383,6 +384,12 @@ def test_consumed_durable_batch_states_become_bounded_gc_candidates(
 
     assert len(record_ids) == 1
     assert record_ids[0].startswith("evaluation-intermediates-release:")
+    assert finalize_evaluation_batch_retention(
+        [row.result for row in batch.rows],
+        root=root,
+        retain_intermediates=False,
+        grace_expires_at=now + timedelta(minutes=10),
+    ) == record_ids
     provider = ImmutableArtifactBlobProvider(root)
     before = provider.collect_garbage(now=now)
     assert before.stage == "reported"
@@ -398,6 +405,14 @@ def test_consumed_durable_batch_states_become_bounded_gc_candidates(
     assert {
         decision.sha256 for decision in after.decisions if decision.decision == "candidate"
     } == state_digests
+    assert collect_release_leases(provider, record_ids, now=now + timedelta(minutes=6)) is not None
+    assert finalize_evaluation_batch_retention(
+        [row.result for row in batch.rows],
+        root=root,
+        retain_intermediates=False,
+        grace_expires_at=now + timedelta(minutes=10),
+    ) == record_ids
+    assert collect_release_leases(provider, record_ids, now=now + timedelta(minutes=10)) is None
 
 
 def test_batched_typed_v3_outputs_accept_normalized_staged_v2_parent(

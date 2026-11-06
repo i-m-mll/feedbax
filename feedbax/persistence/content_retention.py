@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -321,6 +322,117 @@ def release_root(provider: ImmutableArtifactBlobProvider, root_id: str) -> Conte
         if updated != index:
             _write_index(provider, updated)
         return released
+
+
+def finalize_run_retention(
+    provider: ImmutableArtifactBlobProvider,
+    root_id: str,
+    targets: tuple[ContentRetentionTarget, ...],
+    *,
+    lease: ContentLeaseRecord | None,
+) -> str:
+    """Atomically keep a terminal run root or transfer its objects to a release lease."""
+    with provider._exclusive_lock():
+        index = _read_index(provider)
+        root, existing_lease = _match_run_retention(index, root_id, targets, lease)
+        if _run_retention_is_final(root, lease, existing_lease):
+            return root_id if lease is None else lease.lease_id
+        if index.pending_gc is not None:
+            raise ContentRetentionError("recover the pending GC generation before finalizing roots")
+        if root.released or (existing_lease is not None and existing_lease.released):
+            raise ContentRetentionError(f"released run root lacks its terminal lease: {root_id}")
+        _validate_targets(provider, targets)
+        terminal = root.model_copy(
+            update={"nonterminal": False, "restartable": False, "released": lease is not None}
+        )
+        updated = _replace_record(index, "roots", terminal, "root_id")
+        if lease is not None and existing_lease is None:
+            updated = _replace_record(updated, "leases", lease, "lease_id")
+        _write_index(provider, updated)
+        return root_id if lease is None else lease.lease_id
+
+
+def verify_finalized_run_retention(
+    provider: ImmutableArtifactBlobProvider,
+    root_id: str,
+    targets: tuple[ContentRetentionTarget, ...],
+    *,
+    lease: ContentLeaseRecord | None,
+) -> None:
+    """Authenticate an existing terminal run record, even after its lease was collected."""
+    with provider._exclusive_lock():
+        root, existing_lease = _match_run_retention(_read_index(provider), root_id, targets, lease)
+        if not _run_retention_is_final(root, lease, existing_lease):
+            raise ContentRetentionError(f"run retention is not finalized: {root_id}")
+
+
+def require_released_leases(
+    provider: ImmutableArtifactBlobProvider,
+    leases: Mapping[str, tuple[ContentRetentionTarget, ...]],
+    *,
+    owner: str,
+) -> None:
+    """Verify that each named lease previously authorized disposal of its exact objects."""
+    with provider._exclusive_lock():
+        by_id = {item.lease_id: item for item in _read_index(provider).leases}
+        for lease_id, targets in leases.items():
+            lease = by_id.get(lease_id)
+            if (
+                lease is None
+                or not lease.released
+                or lease.domain != "canonical"
+                or lease.owner != owner
+                or lease.expiry_disposition != "release"
+                or lease.targets != targets
+            ):
+                raise ContentRetentionError(
+                    f"exact released retention lease is unavailable: {lease_id}"
+                )
+
+
+def _match_run_retention(
+    index: ContentRetentionIndex,
+    root_id: str,
+    targets: tuple[ContentRetentionTarget, ...],
+    lease: ContentLeaseRecord | None,
+) -> tuple[ContentRootRecord, ContentLeaseRecord | None]:
+    root = next((item for item in index.roots if item.root_id == root_id), None)
+    if (
+        root is None
+        or root.root_kind != "run"
+        or root.domain != "canonical"
+        or _target_identities(root.targets) != _target_identities(targets)
+    ):
+        raise ContentRetentionError(f"exact run retention root is unavailable: {root_id}")
+    existing = None
+    if lease is not None:
+        if lease.released or lease.expiry_disposition != "release" or lease.targets != targets:
+            raise ContentRetentionError("terminal run lease must release the exact run targets")
+        existing = next((item for item in index.leases if item.lease_id == lease.lease_id), None)
+        if existing is not None and (
+            existing.owner != lease.owner
+            or existing.domain != lease.domain
+            or existing.expiry_disposition != lease.expiry_disposition
+            or _target_identities(existing.targets) != _target_identities(targets)
+        ):
+            raise ContentRetentionError(f"terminal run lease identity drifted: {lease.lease_id}")
+    return root, existing
+
+
+def _target_identities(targets: tuple[ContentRetentionTarget, ...]) -> set[bytes]:
+    return {canonical_json_v1_bytes(target.model_dump(mode="json")) for target in targets}
+
+
+def _run_retention_is_final(
+    root: ContentRootRecord,
+    lease: ContentLeaseRecord | None,
+    existing_lease: ContentLeaseRecord | None,
+) -> bool:
+    if root.nonterminal or root.restartable:
+        return False
+    if lease is None:
+        return not root.released
+    return root.released and existing_lease is not None
 
 
 def place_hold(

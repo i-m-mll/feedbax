@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,6 +16,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from feedbax.analysis.evaluation_compaction import activate_evaluation_payload_collection
 from feedbax.analysis.evaluation_orchestration import (
     EVALUATION_MATRIX_EXECUTION_CAPSULE_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_COMPILER_ID,
@@ -22,20 +24,28 @@ from feedbax.analysis.evaluation_orchestration import (
     EvaluationMatrixExecutionCapsule,
     evaluation_matrix_intent_hash,
 )
-from feedbax.contracts.artifact_custody import ContentBinding, ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.artifact_custody import (
+    ContentBinding,
+    ContentObjectRef,
+    ImmutableArtifactBlobProviderSpec,
+)
 from feedbax.contracts.evaluation_lifecycle import (
+    EvaluationBatchCompactionEvidence,
     EvaluationBatchConsumerDeclaration,
     EvaluationMatrixBatchPlan,
     EvaluationMatrixBatchUnit,
+    EvaluationPayloadRetentionPolicy,
 )
 from feedbax.contracts.evaluation_preflight import EvaluationOutputPreflightPolicy
 from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
     AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
+    ArtifactRef,
     canonical_json_bytes,
     sha256_bytes,
 )
 from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_DELTA_SPEC_SCHEMA_VERSION,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -58,11 +68,16 @@ from feedbax.orchestration import (
 from feedbax.orchestration.assembly import _prepare_run_assembly
 from feedbax.orchestration.bundle import RunBundle
 from feedbax.orchestration.drivers.capabilities import DriverConstructionContext
+from feedbax.orchestration.executor_family import (
+    EVALUATION_COLLECTION_OUTPUTS,
+    executor_family_adapter,
+)
 from feedbax.orchestration.staged_root_custody import (
     StagedRootSourceBinding,
     migrate_staged_root_v1,
     seal_staged_root,
 )
+from feedbax.persistence import content_retention
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.application import ApplicationRegistryBundle, new_application_registry_bundle
 from feedbax.orchestration.revision import resolve_feedbax_revision
@@ -1122,6 +1137,9 @@ import os
 from pathlib import Path
 
 from feedbax.analysis.evaluation import EvaluationRecipeResult
+from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRootRecord
+from feedbax.contracts.base import ArtifactRef
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.analysis import (
     EvaluationBatchFragment,
     EvaluationBatchFinalizeInput,
@@ -1175,6 +1193,27 @@ def _compact(value):
         parent.metadata["ref_schema_version"] == "feedbax.ref.authenticated_manifest.v1"
         for parent in value.parent_authorities
     )
+    if value.parameters.get("durable_probe") and leaf == "trajectory":
+        (state,) = value.states
+        (row_id,) = value.batch.ordered_row_ids
+        assert state["gain"] == float(row_id.removeprefix("gain-"))
+        (manifest,) = value.manifests
+        (artifact,) = (
+            ArtifactRef.model_validate(item) for item in manifest["artifacts"]
+            if item["role"] == "evaluation_states"
+        )
+        batch_root = Path(value.outcomes[0].manifest_path).parents[2]
+        provider = ImmutableArtifactBlobProvider(batch_root)
+        state_bytes = provider.get_bytes(artifact.artifact_id, size_bytes=artifact.size_bytes)
+        if row_id == "gain-00":
+            target = ContentRetentionTarget(ref_kind="object", object=provider.store_object(state_bytes))
+            provider.register_root(
+                ContentRootRecord(root_id="test:scientific-pin", root_kind="logical-ref", targets=(target,))
+            )
+        if row_id == "gain-07":
+            # Both copies deliberately have the same digest as a disposable state.
+            ImmutableArtifactBlobProvider(batch_root.parent).store_object(state_bytes)
+            ImmutableArtifactBlobProvider(batch_root.with_name("0003")).store_object(state_bytes)
     return EvaluationBatchFragment(
         payload={"leaf": leaf, "rows": list(value.batch.ordered_row_ids)},
         schema_id=f"tests.{leaf}.product",
@@ -1351,9 +1390,12 @@ def test_governed_harness_retries_compaction_after_row_publication(
     ) == {"leaf": leaf, "rows": list(rows)}
 
 
+@pytest.mark.parametrize("disposition", ["immediate", "grace"])
 def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
     tmp_path: Path,
     subprocess_dirty_tolerance,
+    disposition: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_evaluation_plugin(tmp_path)
     dist_info = tmp_path / "evaluation_plugin-0.0.dist-info"
@@ -1408,7 +1450,7 @@ def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
     ]
     content_pinned_base = {
         "evaluation_type": "tests.evaluation_orchestration",
-        "params": {"gain": 0.0},
+        "params": {"gain": 0.0, "states_custody": "durable"},
     }
     base_path = tmp_path / "content-pinned-base.json"
     base_path.write_text(json.dumps(content_pinned_base), encoding="utf-8")
@@ -1438,7 +1480,7 @@ def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
             consumer_id="tests.projector",
             consumer_version="v1",
             terminal_analysis_type=f"tests.{leaf}.analysis",
-            parameters={"leaf": leaf},
+            parameters={"leaf": leaf, "durable_probe": True},
             accepted_evaluation_state_schema_ids=("tests.diagnostic.evaluation.v1",),
             compact_product_schema_id=f"tests.{leaf}.product",
             compact_product_schema_version=f"tests.{leaf}.product.v1",
@@ -1475,6 +1517,10 @@ def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
                     for index in range(8)
                 ),
                 consumers=consumers,
+                retention=EvaluationPayloadRetentionPolicy(
+                    intermediate_disposition=disposition,
+                    intermediate_grace_seconds=60 if disposition == "grace" else None,
+                ),
             ),
             "launch_policy": LaunchPolicy(max_parallel_rows=4),
         }
@@ -1568,28 +1614,158 @@ def test_provider_free_cli_shadow_reaches_terminal_collection_in_fresh_process(
     assert compaction["retention"]["retained_output_ids"] == ["trajectory", "velocity"]
     assert compaction["retention"]["disposable_output_ids"] == []
     assert compaction["retention"]["temporary_lease_ids"]
-    evaluation_leases = []
-    for index_path in run_root.rglob("retention/index.json"):
-        index = json.loads(index_path.read_text(encoding="utf-8"))
-        provider_root = index_path.parents[1]
-        for lease in index["leases"]:
-            if lease["owner"] not in {
-                "feedbax.evaluation.compaction",
-                "evaluation-compaction",
-            }:
-                continue
-            evaluation_leases.append(lease)
-            assert lease["released"] is True
+    row_id = evidence["lifecycles"][0]["orchestration_row_id"]
+    source_root = run_root / "rows" / row_id
+    evaluation_root = source_root / "evaluation"
+    collected_store = run_root / "collected" / row_id / "evaluation-batch-compaction"
+    terminal = EvaluationBatchCompactionEvidence.model_validate(compaction)
+    outcomes = evidence["lifecycles"][0]["outcomes"]
+
+    def read_release_lease(batch):
+        provider_root = evaluation_root / batch.batch_id
+        (lease_id,) = batch.retention_record_ids
+        index = json.loads((provider_root / "retention" / "index.json").read_bytes())
+        return next(lease for lease in index["leases"] if lease["lease_id"] == lease_id)
+
+    if disposition == "grace":
+        ready_path = source_root / "evaluation-payload-retention-ready"
+        assert ready_path.is_file()
+        for batch in terminal.reclamations:
+            provider_root = evaluation_root / batch.batch_id
+            (job_path,) = (provider_root / "retention" / "automatic-collections").glob("*.json")
+            job = json.loads(job_path.read_bytes())
+            assert job["root"] == str(provider_root)
+            assert job["lease_ids"] == list(batch.retention_record_ids)
+            assert job["ready_path"] == str(ready_path)
+            lease = read_release_lease(batch)
+            assert not lease["released"]
+            (target,) = lease["targets"]
+            assert ImmutableArtifactBlobProvider(provider_root).get_object(
+                ContentObjectRef.model_validate(target["object"])
+            )
+
+        after_grace = datetime.now(timezone.utc) + timedelta(minutes=2)
+
+        class PostGraceClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return after_grace.astimezone(tz)
+
+        with monkeypatch.context() as clock:
+            clock.setattr(content_retention, "datetime", PostGraceClock)
+            for job_path in run_root.glob("**/retention/automatic-collections/*.json"):
+                job = json.loads(job_path.read_bytes())
+                content_retention.run_scheduled_lease_collection(
+                    Path(job["root"]),
+                    tuple(job["lease_ids"]),
+                    ready_path=Path(job["ready_path"]) if job["ready_path"] else None,
+                    fallback_at=(
+                        datetime.fromisoformat(job["fallback_at"]) if job["fallback_at"] else None
+                    ),
+                )
+
+    if disposition == "immediate":
+        source_store = source_root / "evaluation-batch-compaction"
+        wrong_provider = tmp_path / "wrong-provider"
+        shutil.copytree(evaluation_root / "0000", wrong_provider / "0000")
+        with pytest.raises(ValueError, match="different batch provider"):
+            activate_evaluation_payload_collection(
+                terminal,
+                compaction_root=source_store,
+                evaluation_root=wrong_provider,
+            )
+
+        first, second, *others = terminal.reclamations
+        (first_lease,) = first.retention_record_ids
+        (second_lease,) = second.retention_record_ids
+        swapped_ids = {
+            f"evaluation/{first_lease}": f"evaluation/{second_lease}",
+            f"evaluation/{second_lease}": f"evaluation/{first_lease}",
+        }
+        assert terminal.retention is not None
+        swapped = terminal.model_copy(
+            update={
+                "reclamations": (
+                    first.model_copy(update={"retention_record_ids": second.retention_record_ids}),
+                    second.model_copy(update={"retention_record_ids": first.retention_record_ids}),
+                    *others,
+                ),
+                "retention": terminal.retention.model_copy(
+                    update={
+                        "temporary_lease_ids": tuple(
+                            swapped_ids.get(lease_id, lease_id)
+                            for lease_id in terminal.retention.temporary_lease_ids
+                        )
+                    }
+                ),
+            }
+        )
+        with pytest.raises(ValueError, match="does not belong to its batch provider"):
+            activate_evaluation_payload_collection(
+                swapped,
+                compaction_root=source_store,
+                evaluation_root=evaluation_root,
+            )
+
+    artifacts = []
+    for batch, outcome in zip(terminal.reclamations, outcomes, strict=True):
+        lease = read_release_lease(batch)
+        assert lease["released"]
+        manifest = json.loads(Path(outcome["manifest_path"]).read_bytes())
+        (artifact,) = (
+            ArtifactRef.model_validate(item)
+            for item in manifest["artifacts"]
+            if item["role"] == "evaluation_states"
+        )
+        assert [target["object"]["sha256"] for target in lease["targets"]] == [artifact.sha256]
+        provider = ImmutableArtifactBlobProvider(evaluation_root / batch.batch_id)
+        if batch.batch_id == "0000":
+            assert provider.get_bytes(artifact.artifact_id, size_bytes=artifact.size_bytes)
+        else:
+            with pytest.raises(FileNotFoundError, match="artifact blob is missing"):
+                provider.get_bytes(artifact.artifact_id, size_bytes=artifact.size_bytes)
+        artifacts.append(artifact)
+
+    copied = artifacts[-1]
+    for root in (evaluation_root, evaluation_root / "0003"):
+        assert ImmutableArtifactBlobProvider(root).get_bytes(
+            copied.artifact_id, size_bytes=copied.size_bytes
+        )
+    if disposition == "immediate":
+        index = json.loads((collected_store / "retention" / "index.json").read_bytes())
+        compact_leases = [
+            lease for lease in index["leases"] if lease["owner"] == "feedbax.evaluation.compaction"
+        ]
+        assert compact_leases
+        for lease in compact_leases:
+            assert lease["released"]
             for target in lease["targets"]:
                 digest = target["object"]["sha256"]
-                assert not (
-                    provider_root / "artifacts" / "sha256" / digest[:2] / digest
-                ).exists()
-    assert evaluation_leases
+                assert not (collected_store / "artifacts" / "sha256" / digest[:2] / digest).exists()
+
+    for manifest_ref in terminal.terminal_products:
+        manifest = AnalysisRunManifest.model_validate_json(
+            ImmutableArtifactBlobProvider(collected_store).get_bytes(manifest_ref)
+        )
+        (product,) = manifest.produced_data
+        (product_artifact,) = product.artifacts
+        assert json.loads(
+            ImmutableArtifactBlobProvider(collected_store / "analysis").get_bytes(product_artifact)
+        ) == {"leaf": product.logical_name, "rows": [outcome["row_id"] for outcome in outcomes]}
+        assert [parent.manifest_hash for parent in product.parent_manifests] == [
+            sha256_bytes(Path(outcome["manifest_path"]).read_bytes()) for outcome in outcomes
+        ]
+
     replay = compaction["retention"]["replay"]
     assert replay["canonical_executor"] == "python -m feedbax matrix-harness"
     run_bundle = json.loads((run_root / "bundle.json").read_text(encoding="utf-8"))
     assert replay["execution_envelope"] == run_bundle["rows"][0]["execution"]
+    bundle = RunBundle.model_validate(run_bundle)
+    assert executor_family_adapter("evaluation-matrix").missing_collection_outputs(
+        bundle,
+        bundle.rows[0],
+        {name: str(collected_store.with_name(name)) for name in EVALUATION_COLLECTION_OUTPUTS},
+    ) == []
 
 
 def test_runpod_dry_run_keeps_the_same_public_matrix_executor(

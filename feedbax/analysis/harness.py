@@ -1466,8 +1466,8 @@ def main(
                         acknowledgements.append(acknowledgement)
                         all_acknowledgements.append(acknowledgement)
                     if orchestration_batch_plan.consumers:
-                        evaluation_root = Path(args.manifest_root)
-                        with manifest_publication_lock(evaluation_root / batch.batch_id):
+                        batch_root = Path(args.manifest_root) / batch.batch_id
+                        with manifest_publication_lock(batch_root):
                             reclamations.append(
                                 reclaim_evaluation_batch_caches(
                                     batch,
@@ -1480,7 +1480,7 @@ def main(
                                     custody_root=compaction_root,
                                     execution_context=resolved_context,
                                     retention_policy=orchestration_batch_plan.retention,
-                                    evaluation_custody_root=evaluation_root,
+                                    evaluation_custody_root=batch_root,
                                 )
                             )
                 outcomes = tuple(
@@ -1541,30 +1541,8 @@ def main(
                         policy=orchestration_batch_plan.retention,
                         replay=orchestration_replay,
                         custody_root=compaction_root,
+                        reclamations=reclamations,
                     )
-                    evaluation_records = tuple(
-                        record_id
-                        for reclamation in reclamations
-                        for record_id in reclamation.retention_record_ids
-                    )
-                    if orchestration_batch_plan.retention.retain_intermediates:
-                        retention = retention.model_copy(
-                            update={
-                                "retained_intermediate_ids": (
-                                    *retention.retained_intermediate_ids,
-                                    *(f"evaluation/{record_id}" for record_id in evaluation_records),
-                                )
-                            }
-                        )
-                    else:
-                        retention = retention.model_copy(
-                            update={
-                                "temporary_lease_ids": (
-                                    *retention.temporary_lease_ids,
-                                    *(f"evaluation/{record_id}" for record_id in evaluation_records),
-                                )
-                            }
-                        )
                 compaction = EvaluationBatchCompactionEvidence(
                     matrix_intent_hash=orchestration_batch_plan.matrix_intent_hash,
                     ordered_batch_ids=tuple(
@@ -1602,7 +1580,7 @@ def main(
                     )
 
                     launch_evaluation_payload_recovery(
-                        retention,
+                        compaction,
                         compaction_root=compaction_root,
                         evaluation_root=Path(args.manifest_root),
                         ready_path=Path(args.lifecycle_result).with_name(
