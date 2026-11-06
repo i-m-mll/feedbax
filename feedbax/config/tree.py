@@ -1,8 +1,4 @@
-import hashlib
-import json
 import logging
-import re
-import types
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, KeysView, Mapping, Sequence
 from functools import partial
@@ -679,59 +675,6 @@ def at_path(path):
         return obj
 
     return at_fn
-
-
-def _hash_pytree(tree) -> str:
-    """Return a deterministic MD5 digest of a PyTree **content**.
-
-    Strategy
-    --------
-    • Stream stable byte-representations of every leaf into a single ``hashlib.md5``
-      object – no use of Python's salted ``hash``.
-    • Arrays → ``arr.tobytes(order='C')``.
-    • Primitive JSON scalars → their UTF-8 string.
-    • Callables → qualified name ``<module>.<qualname>``.
-    • Everything else → ``repr()`` with memory addresses (``0x…``) masked out
-      so it stays identical across interpreter sessions.
-    """
-
-    md5 = hashlib.md5()
-
-    # Pre-compiled regex to erase memory addresses like 0x7ffde82aaf80
-    _ADDR_RE = re.compile(r"0x[0-9a-fA-F]+")
-
-    def _bytes_from_leaf(leaf):
-        """Convert *leaf* into a stable sequence of bytes."""
-        # Arrays (JAX DeviceArray, numpy.ndarray, etc.)
-        if eqx.is_array(leaf):
-            return leaf.tobytes(order="C")
-
-        # JSON primitives – cheap & deterministic
-        if isinstance(leaf, (int, float, bool, str)) or leaf is None:
-            return json.dumps(leaf, sort_keys=True).encode()
-
-        # Bytes object – already bytes
-        if isinstance(leaf, (bytes, bytearray)):
-            return bytes(leaf)
-
-        # Callables / functions
-        if isinstance(leaf, types.FunctionType):
-            qname = f"{leaf.__module__}.{leaf.__qualname__}"
-            return qname.encode()
-
-        # Equinox Module or arbitrary object – fall back to repr w/o memory addr
-        rep = _ADDR_RE.sub("0x", repr(leaf))
-        return rep.encode()
-
-    try:
-        leaves = jt.leaves(tree)
-    except Exception as e:
-        raise TypeError(f"Failed to flatten PyTree for hashing: {e}") from e
-
-    for leaf in leaves:
-        md5.update(_bytes_from_leaf(leaf))
-
-    return md5.hexdigest()
 
 
 def lohi(x: Iterable, **kwargs):
