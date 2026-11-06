@@ -45,7 +45,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 import jax.tree_util as jtu
 from equinox import AbstractVar, Module
-from feedbax._vendor.jax_cookbook.misc import moving_avg, softmin
+from feedbax._vendor.jax_cookbook.misc import softmin
 from jaxtyping import Array, ArrayLike, Float, PyTree
 
 from feedbax.runtime.graph import Component
@@ -845,15 +845,19 @@ def _retained_target_inputs(
 ) -> tuple[Array, Array, tuple["WeightsSpec", ...]]:
     state = loss.where(states)[:, _target_start_step(trial_specs):]
     target, trial_axis = _resolve_target_spec(loss, trial_specs)
-    value = jnp.asarray(target.value)
+    value = _align_retained_target_value(jnp.asarray(target.value), trial_axis, state.shape[1:])
+    return state, value, _target_weight_selectors(target, state.shape[1])
+
+
+def _align_retained_target_value(
+    value: Array, trial_axis: int | None, trial_state_shape: tuple[int, ...]
+) -> Array:
     if trial_axis is not None and value.ndim:
         value = jnp.moveaxis(value, trial_axis, 0)
-        value = value.reshape(
-            (value.shape[0], *_align_target_shape(value.shape[1:], state.shape[1:]))
+        return value.reshape(
+            (value.shape[0], *_align_target_shape(value.shape[1:], trial_state_shape))
         )
-    else:
-        value = value.reshape(_align_target_shape(value.shape, state.shape[1:]))
-    return state, value, _target_weight_selectors(target, state.shape[1])
+    return value.reshape(_align_target_shape(value.shape, trial_state_shape))
 
 
 def _sum_target_density(
@@ -1011,12 +1015,15 @@ effector_vel_loss = TargetStateLoss(
 class StopAtGoalLoss(AbstractLoss):
     """Encourages the effector to stop at the goal at least once.
 
-    This is different from the typical "be at goal by the end of trial" loss.
+    Each trial scores complete windows of ``window_len`` consecutive steps starting at
+    or after the timeline's target start step. The mean cost of each window combines
+    squared position error and squared velocity. ``softmin`` approximates the lowest
+    window cost. ``soft-or`` penalizes a low probability that any window succeeds,
+    with ``eps`` in ``(0, 1]`` setting a probability floor.
 
-    Two methods are provided: "softmin" and "soft-or". Soft-or is based only on the existence of
-    a time window where the effector is at the goal, and so may be preferred if we do not want time
-    pressure (aside from what is implied by `window_len` versus episode length). Softmin may or may
-    not add some time pressure, depending on the other parameters.
+    The position target may be a shared feature vector, a per-trial feature vector,
+    or a per-trial trajectory defined on the scored steps. The returned ``TermTree``
+    contains one loss per trial and takes their mean in its total.
     """
 
     label: str = "effector_stop_at_goal"
@@ -1024,11 +1031,15 @@ class StopAtGoalLoss(AbstractLoss):
     std_dist: float = 0.025  # how close to goal is "at goal"
     std_vel: float = 0.05
     vel_weight: float = 1.0
-    window_len: int = 5  # min no. steps required to be "at goal"
+    window_len: int = eqx.field(default=5, static=True)
     # softmin: how soft the min is (small -> credit focused on a single window)
     # soft-or: how close to the goal we need to be to register as a success
     tau: float = 0.2
-    eps: float = 1e-6  # to avoid log(0)
+    eps: float = 1e-6  # probability floor for soft-or
+
+    def __check_init__(self):
+        if self.window_len < 1:
+            raise ValueError("StopAtGoalLoss window_len must be >= 1")
 
     def term(
         self,
@@ -1038,25 +1049,35 @@ class StopAtGoalLoss(AbstractLoss):
     ) -> Array:
         assert states is not None, "StopAtGoalLoss requires states"
         assert trial_specs is not None, "StopAtGoalLoss requires trial_specs"
-        # assert trial_specs is not None, "StopAtGoalLoss requires trial_specs"
+        effector = states.mechanics.effector
+        start = _target_start_step(trial_specs)
+        pos = effector.pos[:, start:]
+        vel = effector.vel[:, start:]
+        if self.window_len > pos.shape[1]:
+            raise ValueError(
+                f"StopAtGoalLoss window_len ({self.window_len}) exceeds the number "
+                f"of scored steps ({pos.shape[1]})."
+            )
 
-        pos = states.mechanics.effector.pos[:, 1:]
-        vel = states.mechanics.effector.vel[:, 1:]
-        goal = trial_specs.targets["mechanics.effector.pos"].value  # [B, 2]
-
-        dist_sq = jnp.sum((pos - goal) ** 2, axis=-1)
-        vel_sq = jnp.sum(vel**2, axis=-1)
-        c = dist_sq / (self.std_dist**2) + self.vel_weight * vel_sq / (self.std_vel**2)  # [T+1]
-        c_avgs = moving_avg(c, self.window_len)  # [T+1-K]
+        goal = trial_specs.targets["mechanics.effector.pos"]
+        value = jnp.asarray(goal.value)
+        trial_axis = None if value.ndim == 1 else goal.batch_axes.value
+        target = _align_retained_target_value(value, trial_axis, pos.shape[1:])
+        target = jnp.broadcast_to(target, pos.shape)
+        dtype = jnp.result_type(pos, vel, target, jnp.float32)
+        dist_sq = jnp.sum((pos.astype(dtype) - target.astype(dtype)) ** 2, axis=-1)
+        vel_sq = jnp.sum(vel.astype(dtype) ** 2, axis=-1)
+        cost = dist_sq / self.std_dist**2 + self.vel_weight * vel_sq / self.std_vel**2
+        window_cost = jax.lax.reduce_window(
+            cost, 0.0, jax.lax.add, (1, self.window_len), (1, 1), "VALID"
+        ) / self.window_len
 
         if self.method == "softmin":
-            return softmin(c_avgs, self.tau)  # scalar
+            return softmin(window_cost, self.tau)
         elif self.method == "soft-or":
-            s = jnp.clip(jax.nn.sigmoid(-c_avgs / self.tau), 1e-12, 1.0 - 1e-12)
-            log1m_s = jnp.log1p(-(s - self.eps))
-            log_prod = jnp.sum(log1m_s)
-            p_exist = 1.0 - jnp.exp(log_prod)
-            return -jnp.log(p_exist + self.eps)
+            log_no_success = jax.nn.log_sigmoid(window_cost / self.tau).sum(axis=-1)
+            p_exist = -jnp.expm1(log_no_success)
+            return -jnp.log(self.eps + (1 - self.eps) * p_exist)
         else:
             raise ValueError("method must be 'softmin' or 'soft-or'")
 
