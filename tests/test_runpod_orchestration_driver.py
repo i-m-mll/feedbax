@@ -2826,8 +2826,18 @@ def test_stage_inputs_ignores_checkpoint_shaped_payload_keys(tmp_path: Path) -> 
     assert not any("checkpoint_100" in command for command in transport.ssh_commands)
 
 
-def test_stage_inputs_heartbeats_while_blocking_transfer(tmp_path: Path) -> None:
+@pytest.mark.parametrize("heartbeat_fails", [False, True])
+def test_stage_inputs_heartbeats_while_blocking_transfer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, heartbeat_fails: bool
+) -> None:
     class BlockingTransferTransport(FakeRunPodTransport):
+        def ssh(self, command: str) -> CommandResult:
+            repeated = command in self.ssh_commands
+            result = super().ssh(command)
+            if heartbeat_fails and repeated and "/.host-active" in command:
+                return CommandResult(1, stderr="host heartbeat lost")
+            return result
+
         def rsync(
             self,
             source: str,
@@ -2867,7 +2877,17 @@ def test_stage_inputs_heartbeats_while_blocking_transfer(tmp_path: Path) -> None
         transport=transport,
     )
 
-    driver.stage_inputs(bundle, _state(bundle))
+    if heartbeat_fails:
+        def unexpected_publication(*args: str) -> str:
+            pytest.fail("staging tried to publish after losing its host heartbeat")
+
+        monkeypatch.setattr(
+            runpod_module, "build_atomic_directory_publish_command", unexpected_publication
+        )
+        with pytest.raises(RunPodDriverError, match="stage-inputs host heartbeat failed"):
+            driver.stage_inputs(bundle, _state(bundle))
+    else:
+        driver.stage_inputs(bundle, _state(bundle))
 
     heartbeats = [
         command

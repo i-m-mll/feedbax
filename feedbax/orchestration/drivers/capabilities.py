@@ -57,6 +57,7 @@ class DriverHook(StrEnum):
     COLLECTION_RECOVERY_EVIDENCE = "collection_recovery_evidence"
     COLLECT_FAILURE_LOGS = "collect_failure_logs"
     TEARDOWN_OWNERSHIP = "teardown_ownership"
+    RELEASE_RUN_CONTENT = "release_run_content"
     BATCH_PROBE = "batch_probe"
     CHECKPOINT_STOP = "checkpoint_stop"
     GLOBAL_RESOURCE_INVENTORY = "global_resource_inventory"

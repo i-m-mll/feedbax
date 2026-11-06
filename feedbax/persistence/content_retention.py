@@ -435,7 +435,14 @@ def release_lease(provider: ImmutableArtifactBlobProvider, lease_id: str) -> Con
     return _release_record(provider, "leases", "lease_id", lease_id)
 
 
-def _release_record(provider, field: str, key: str, record_id: str):
+def release_owned_lease(
+    provider: ImmutableArtifactBlobProvider, lease_id: str, *, owner: str
+) -> ContentLeaseRecord | None:
+    """Release only a lease belonging to the given owner, if one exists."""
+    return _release_record(provider, "leases", "lease_id", lease_id, owner=owner)
+
+
+def _release_record(provider, field: str, key: str, record_id: str, *, owner: str | None = None):
     with provider._exclusive_lock():
         index = _read_index(provider)
         if index.pending_gc is not None:
@@ -446,7 +453,11 @@ def _release_record(provider, field: str, key: str, record_id: str):
             (item for item in getattr(index, field) if getattr(item, key) == record_id), None
         )
         if current is None:
+            if owner is not None:
+                return None
             raise ContentRetentionError(f"retention record is unavailable: {record_id}")
+        if owner is not None and current.owner != owner:
+            raise ContentRetentionError(f"lease has a different owner: {record_id}")
         released = current.model_copy(update={"released": True})
         updated = _replace_record(index, field, released, key)
         if updated != index:
@@ -1071,6 +1082,7 @@ __all__ = [
     "register_root",
     "release_hold",
     "release_lease",
+    "release_owned_lease",
     "release_root",
     "renew_lease",
     "run_scheduled_lease_collection",
