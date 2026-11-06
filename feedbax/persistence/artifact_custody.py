@@ -666,6 +666,22 @@ class ImmutableArtifactBlobProvider:
         size_bytes: int | None = None,
     ) -> bytes:
         """Read one pinned role-free object and verify its exact identity."""
+        digest, expected_size = self._object_identity(object_ref, size_bytes=size_bytes)
+        data = self._read_canonical_blob(self._canonical_path(digest), expected_size)
+        if hashlib.sha256(data).hexdigest() != digest:
+            raise ArtifactBlobIntegrityError(f"content object SHA-256 mismatch: expected {digest}")
+        return data
+
+    def _verify_object(self, object_ref: ContentObjectRef) -> None:
+        digest, size_bytes = self._object_identity(object_ref)
+        self._verify_blob(self._canonical_path(digest), sha256=digest, size_bytes=size_bytes)
+
+    @staticmethod
+    def _object_identity(
+        object_ref: ContentObjectRef | str,
+        *,
+        size_bytes: int | None = None,
+    ) -> tuple[str, int]:
         if isinstance(object_ref, str):
             digest = _parse_content_object_id(object_ref)
             if size_bytes is None:
@@ -688,10 +704,7 @@ class ImmutableArtifactBlobProvider:
             raise ArtifactBlobReferenceError(
                 "object_ref must be a ContentObjectRef or content object id"
             )
-        data = self._read_canonical_blob(self._canonical_path(digest), expected_size)
-        if hashlib.sha256(data).hexdigest() != digest:
-            raise ArtifactBlobIntegrityError(f"content object SHA-256 mismatch: expected {digest}")
-        return data
+        return digest, expected_size
 
     def ingest_tree(self, source_root: Path | str) -> ContentTreeRef:
         """Ingest a canonical regular-file tree with identity independent of its role."""
@@ -939,6 +952,10 @@ class ImmutableArtifactBlobProvider:
         manifest_id: str,
     ) -> tuple[ContentManifestRef, bytes]:
         """Resolve one logical manifest only through its exact pinned store reference."""
+        ref = self._resolve_manifest_ref(kind, manifest_id)
+        return ref, self.get_object(ref.object)
+
+    def _resolve_manifest_ref(self, kind: str, manifest_id: str) -> ContentManifestRef:
         key = _manifest_reference_key(kind, manifest_id)
         raw_ref = self._read_manifest_reference(key, required=True)
         assert raw_ref is not None
@@ -958,7 +975,7 @@ class ImmutableArtifactBlobProvider:
             raise ArtifactBlobIntegrityError(
                 f"manifest reference key resolves a different logical identity: {ref.ref}"
             )
-        return ref, self.get_object(ref.object)
+        return ref
 
     def _manifest_reference_path(self, key: str) -> Path:
         return self.root / "references" / "manifests" / "sha256" / key[:2] / key
@@ -1340,6 +1357,28 @@ class ImmutableArtifactBlobProvider:
             ) from exc
 
     def _read_canonical_blob(self, target: Path, expected_size: int) -> bytes:
+        with self._open_blob_for_read(target, expected_size) as descriptor:
+            data = _read_file_descriptor(descriptor)
+        if len(data) != expected_size:
+            raise ArtifactBlobIntegrityError(
+                f"artifact read size mismatch: expected {expected_size}, found {len(data)}"
+            )
+        return data
+
+    def _verify_blob(self, target: Path, *, sha256: str, size_bytes: int) -> None:
+        with self._open_blob_for_read(target, size_bytes) as descriptor:
+            actual_digest, actual_size = _stream_file_descriptor(descriptor)
+        if actual_size != size_bytes:
+            raise ArtifactBlobIntegrityError(
+                f"artifact read size mismatch: expected {size_bytes}, found {actual_size}"
+            )
+        if actual_digest != sha256:
+            raise ArtifactBlobIntegrityError(
+                f"artifact SHA-256 mismatch: expected {sha256}, found {actual_digest}"
+            )
+
+    @contextmanager
+    def _open_blob_for_read(self, target: Path, expected_size: int) -> Iterator[int]:
         self._validate_lexical_containment(target)
         try:
             records = _open_directory_chain(target.parent, create=False)
@@ -1379,7 +1418,7 @@ class ImmutableArtifactBlobProvider:
                     "artifact size mismatch: "
                     f"expected {expected_size}, found {file_stat_before.st_size}"
                 )
-            data = _read_file_descriptor(file_descriptor)
+            yield file_descriptor
             file_stat_after = os.fstat(file_descriptor)
             if _file_state(file_stat_before) != _file_state(file_stat_after):
                 raise ArtifactBlobIntegrityError(
@@ -1403,11 +1442,6 @@ class ImmutableArtifactBlobProvider:
                 raise ArtifactBlobContainmentError(
                     f"canonical artifact path mapping changed during read: {target}"
                 )
-            if len(data) != expected_size:
-                raise ArtifactBlobIntegrityError(
-                    f"artifact read size mismatch: expected {expected_size}, found {len(data)}"
-                )
-            return data
         except OSError as exc:
             if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
                 raise ArtifactBlobContainmentError(
