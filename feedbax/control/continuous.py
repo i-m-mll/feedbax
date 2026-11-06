@@ -9,18 +9,46 @@ functions that operate using Euler discretization per call.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Sequence
 
+import jax.numpy as jnp
 from equinox import field
 from equinox.nn import State, StateIndex
-import jax.numpy as jnp
 from jax.typing import DTypeLike
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.control._vector import initial_control_vector, require_control_vector
+from feedbax.component_registry import component
+from feedbax.component_registry.declarations import ParameterField
+from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.control._vector import (
+    _CONTROL_INPUT_DTYPE,
+    _CONTROL_INPUT_PROTOTYPE,
+    _control_output_prototype,
+    initial_control_vector,
+    require_control_vector,
+)
 from feedbax.runtime.graph import Component
 
 
+@component(
+    "Integrator",
+    category="Control",
+    description="Continuous-time integrator (Euler).",
+    parameter_fields=[
+        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+        ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+        ParameterField(name="initial_value", type="float", default=0.0, required=False),
+        _CONTROL_INPUT_DTYPE,
+    ],
+    icon="Integral",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=partial(_control_output_prototype, port="input"),
+    input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
+)
 class Integrator(Component):
     """Continuous-time integrator using Euler integration.
 
@@ -71,6 +99,24 @@ class Integrator(Component):
         return {"output": y_new}, state
 
 
+@component(
+    "Derivative",
+    category="Control",
+    description="Finite-difference derivative.",
+    parameter_fields=[
+        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+        ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+        ParameterField(name="initial_value", type="float", default=0.0, required=False),
+        _CONTROL_INPUT_DTYPE,
+    ],
+    icon="TrendingUp",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=partial(_control_output_prototype, port="input"),
+    input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
+)
 class Derivative(Component):
     """Finite-difference derivative approximation.
 
@@ -121,6 +167,20 @@ class Derivative(Component):
         return {"output": deriv}, state
 
 
+@component(
+    "StateSpace",
+    runtime_type=None,
+    category="Control",
+    description="Continuous LTI state-space (Euler).",
+    parameter_fields=[
+        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+    ],
+    icon="Grid3x3",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+)
 class StateSpace(Component):
     """Continuous-time linear state-space model with Euler discretization.
 
@@ -182,6 +242,20 @@ class StateSpace(Component):
         return {"output": y}, state
 
 
+@component(
+    "TransferFunction",
+    runtime_type=None,
+    category="Control",
+    description="Transfer function H(s)=num/den.",
+    parameter_fields=[
+        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+    ],
+    icon="FunctionSquare",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+)
 class TransferFunction(Component):
     """Transfer function H(s) = num(s) / den(s) in controllable canonical form.
 
@@ -240,7 +314,7 @@ class TransferFunction(Component):
         # A is companion matrix
         A = jnp.zeros((n, n))
         if n > 1:
-            A = A.at[:n - 1, 1:].set(jnp.eye(n - 1))
+            A = A.at[: n - 1, 1:].set(jnp.eye(n - 1))
         # Last row: -a_0, -a_1, ..., -a_{n-1} (reversed den[1:])
         A = A.at[n - 1, :].set(jnp.array([-den[n - i] for i in range(n)]))
 

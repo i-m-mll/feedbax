@@ -1,5 +1,7 @@
 """Selection, assembly, and wiring for explicit feedback paths."""
 
+from __future__ import annotations
+
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from operator import attrgetter
@@ -9,6 +11,10 @@ import equinox as eqx
 import jax.tree as jt
 from jaxtyping import PyTree
 
+from feedbax.component_registry import component
+from feedbax.component_registry.declarations import ParameterField
+from feedbax.component_registry.prototypes import _required_input
+from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
 from feedbax.runtime.graph import Component, Wire
 
 
@@ -45,6 +51,65 @@ class StateSelector:
         return values[0] if len(values) == 1 else tuple(values)
 
 
+def _extract_state_selector_params(component: SelectState, model: Any) -> Any:
+    if not isinstance(component.where, StateSelector):
+        raise ValueError(
+            "Portable SelectState requires a StateSelector with declared attribute paths"
+        )
+    return type(model).model_validate({"paths": list(component.where.paths)})
+
+
+def _extract_feedback_assembly_params(component: AssembleFeedback, model: Any) -> Any:
+    return type(model).model_validate(
+        {"layout": component.to_layout(), "n_inputs": len(component.input_ports)}
+    )
+
+
+def _build_feedback_assembly(params: Mapping[str, Any]) -> AssembleFeedback:
+    assembly = AssembleFeedback.from_layout(params.get("layout"))
+    if len(assembly.input_ports) != params["n_inputs"]:
+        raise ValueError("AssembleFeedback n_inputs must match its layout leaf count")
+    return assembly
+
+
+def state_selector_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    state = _required_input(inputs, "state", component="SelectState")
+    return {"output": StateSelector(tuple(params["paths"]))(state)}
+
+
+def feedback_assembly_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    assembly = _build_feedback_assembly(params)
+    for port in assembly.input_ports:
+        _required_input(inputs, port, component="AssembleFeedback")
+    return {"output": assembly.assemble(inputs)}
+
+
+def _build_select_state(params: Mapping[str, Any]) -> SelectState:
+    return SelectState(StateSelector(tuple(params["paths"])))
+
+
+@component(
+    "SelectState",
+    builder=_build_select_state,
+    extractor=_extract_state_selector_params,
+    override_reason="Recover portable paths from the state selector",
+    category="Channels",
+    description="Select state subtrees by attribute path.",
+    parameter_fields=[
+        ParameterField(name="paths", type="array", default=["effector"], required=True),
+    ],
+    port_types=PortTypeSpec(
+        inputs={"state": PortType(dtype="state")},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=state_selector_output_prototype,
+)
 class SelectState(Component):
     """Expose a state selector as a stateless graph node."""
 
@@ -56,6 +121,32 @@ class SelectState(Component):
         return {"output": self.where(inputs["state"])}, state
 
 
+@component(
+    "AssembleFeedback",
+    builder=_build_feedback_assembly,
+    extractor=_extract_feedback_assembly_params,
+    override_reason="Recover a portable layout from the feedback tree",
+    category="Channels",
+    description="Assemble channel values into a feedback tree.",
+    parameter_fields=[
+        ParameterField(name="n_inputs", type="int", default=1, min=1, required=True),
+        ParameterField(name="layout", type="object", default=None, required=False),
+    ],
+    input_ports=["in_0"],
+    port_types=PortTypeSpec(
+        inputs={"in_0": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    dynamic_port_policy=DynamicPortPolicy(
+        count_param="n_inputs",
+        count_mode="integer",
+        direction="input",
+        fixed_output_ports=("output",),
+        generated_name_template="in_{index}",
+        dynamic_port_type=PortType(dtype="any"),
+    ),
+    output_prototype_fn=feedback_assembly_output_prototype,
+)
 class AssembleFeedback(Component):
     """Reassemble independent channel values in the controller's feedback tree."""
 
