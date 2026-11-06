@@ -24,10 +24,24 @@ def identity_activation(x: Any) -> Any:
     return x
 
 
+# Keep wrapped JAX functions out of persisted models. Checkpoint custody
+# resolves these module-level functions by name in a fresh process.
+def relu(x: Array) -> Array:
+    return jax.nn.relu(x)
+
+
+def tanh(x: Array) -> Array:
+    return jax.nn.tanh(x)
+
+
+def sigmoid(x: Array) -> Array:
+    return jax.nn.sigmoid(x)
+
+
 NAMED_ACTIVATIONS: dict[str, Callable] = {
-    "relu": jax.nn.relu,
-    "tanh": jax.nn.tanh,
-    "sigmoid": jax.nn.sigmoid,
+    "relu": relu,
+    "tanh": tanh,
+    "sigmoid": sigmoid,
     "softmax": jax.nn.softmax,
     "identity": identity_activation,
 }

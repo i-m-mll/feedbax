@@ -41,6 +41,7 @@ from equinox.nn import State, StateIndex
 from jax.flatten_util import ravel_pytree
 from jaxtyping import Array, Bool, Float, PRNGKeyArray, PyTree
 
+from feedbax.runtime.components import relu, tanh
 from feedbax.runtime.graph import Component
 
 logger = logging.getLogger(__name__)
@@ -194,7 +195,8 @@ class CDENetwork(Component):
             out_size=hidden_dim * obs_dim,
             width_size=vf_width,
             depth=vf_depth,
-            final_activation=jax.nn.tanh,
+            activation=relu,
+            final_activation=tanh,
             dtype=dtype,
             key=key_vf,
         )
