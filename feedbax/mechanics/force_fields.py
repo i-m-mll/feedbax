@@ -7,12 +7,20 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
 import equinox as eqx
-from equinox import field
-from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
+from equinox import field
+from equinox.nn import State, StateIndex
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax.component_registry.declarations import (
+    ComponentConstructorPlan,
+    MissingPrototypeInput,
+    ParameterField,
+)
+from feedbax.component_registry.discovery import component
+from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.migrations import ComponentMigration
 from feedbax.mechanics.units import require_positive_finite
 from feedbax.runtime.graph import Component
 from feedbax.runtime.signal_transforms import (
@@ -23,7 +31,6 @@ from feedbax.runtime.signal_transforms import (
     _merge_params_override,
     _strong_typed,
 )
-
 
 THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1 = "feedbax.component.threshold_latched_force.v1"
 THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2 = "feedbax.component.threshold_latched_force.v2"
@@ -233,6 +240,70 @@ class DynamicsMatrixPerturbParams(TransformParams):
     delta_A: Array = field(default_factory=lambda: jnp.zeros((2, 4), dtype=jnp.float32))
 
 
+def force_passthrough_output_prototype(
+    _params: Mapping[str, Any], inputs: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return the incoming force prototype for force-passthrough interventions."""
+    if "force" not in inputs:
+        raise MissingPrototypeInput(
+            "force passthrough output prototype requires input prototype 'force'"
+        )
+    return {"force": inputs["force"]}
+
+
+def _has_legacy_label(params: Mapping[str, Any]) -> bool:
+    return "label" in params
+
+
+def _drop_transform_label(params: dict[str, Any]) -> dict[str, Any]:
+    return {name: value for name, value in params.items() if name != "label"}
+
+
+def _drop_label_migration(component_id: str) -> tuple[ComponentMigration, ...]:
+    return (
+        ComponentMigration(
+            source_type=component_id,
+            target_type=component_id,
+            owner="feedbax",
+            source_param_schema_version="1",
+            target_param_schema_version="2",
+            migration_id=f"feedbax.component.{component_id}.drop-label",
+            migrate_params=_drop_transform_label,
+            description="Use the graph node identity in place of the legacy parameter label.",
+        ),
+    )
+
+
+@component(
+    "CurlField",
+    param_schema_version="2",
+    migrations=_drop_label_migration("CurlField"),
+    constructor=ComponentConstructorPlan(
+        groups={"params": (CurlFieldParams, ("scale", "amplitude", "active"))}
+    ),
+    attribute_paths={
+        "scale": "params_index.init.scale",
+        "amplitude": "params_index.init.amplitude",
+        "active": "params_index.init.active",
+    },
+    category="Mechanics",
+    description="Velocity-dependent curl field.",
+    parameter_fields=[
+        ParameterField(name="scale", type="float", default=1.0, required=True),
+        ParameterField(name="amplitude", type="float", default=1.0, required=True),
+        ParameterField(name="active", type="bool", default=False, required=False),
+    ],
+    icon="Wind",
+    port_types=PortTypeSpec(
+        inputs={
+            "effector": PortType(dtype="state"),
+            "force": PortType(dtype="vector"),
+            "params_override": PortType(dtype="object"),
+        },
+        outputs={"force": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=force_passthrough_output_prototype,
+)
 class CurlField(Component):
     """Velocity-dependent curl field added to a force signal."""
 
@@ -262,6 +333,43 @@ class CurlField(Component):
         return {"force": new_force}, state
 
 
+@component(
+    "FixedField",
+    param_schema_version="2",
+    migrations=_drop_label_migration("FixedField"),
+    constructor=ComponentConstructorPlan(
+        groups={
+            "params": (
+                FixedFieldParams,
+                ("scale", "amplitude", "field", "active"),
+            )
+        },
+        array_conversions={"field": None},
+    ),
+    attribute_paths={
+        "scale": "params_index.init.scale",
+        "amplitude": "params_index.init.amplitude",
+        "field": "params_index.init.field",
+        "active": "params_index.init.active",
+    },
+    category="Mechanics",
+    description="Fixed force field.",
+    parameter_fields=[
+        ParameterField(name="scale", type="float", default=1.0, required=True),
+        ParameterField(name="amplitude", type="float", default=1.0, required=True),
+        ParameterField(name="field", type="array", default=[0.0, 0.0], required=True),
+        ParameterField(name="active", type="bool", default=False, required=False),
+    ],
+    icon="Flag",
+    port_types=PortTypeSpec(
+        inputs={
+            "force": PortType(dtype="vector"),
+            "params_override": PortType(dtype="object"),
+        },
+        outputs={"force": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=force_passthrough_output_prototype,
+)
 class FixedField(Component):
     """Adds a fixed force vector to a force signal."""
 
@@ -290,6 +398,76 @@ class FixedField(Component):
         return {"force": new_force}, state
 
 
+def _extract_declared_to_params(component: Any, model: Any) -> Any:
+    return type(model).model_validate(component.to_params())
+
+
+@component(
+    "ThresholdLatchedForce",
+    constructor=ComponentConstructorPlan(
+        groups={
+            "params": (
+                ThresholdLatchedForceParams,
+                ("scale", "active", "threshold", "force", "lateral_force", "ramp_duration"),
+            )
+        },
+        array_conversions={"force": None},
+    ),
+    extractor=_extract_declared_to_params,
+    override_reason="state selector and intervention parameters are aggregated objects",
+    category="Mechanics",
+    description="Additive force latched by a runtime state-threshold crossing.",
+    parameter_fields=[
+        ParameterField(
+            name="state_selector",
+            type="object",
+            default={"kind": "fixed", "path": ["pos", 0]},
+            required=True,
+        ),
+        ParameterField(
+            name="direction",
+            type="enum",
+            options=["increasing", "decreasing"],
+            default="increasing",
+            required=True,
+        ),
+        ParameterField(name="threshold", type="float", default=0.0, required=True),
+        ParameterField(
+            name="force",
+            type="array",
+            default=[0.0, 0.0],
+            required=True,
+        ),
+        ParameterField(
+            name="lateral_force",
+            type="float",
+            default=0.0,
+            required=False,
+        ),
+        ParameterField(
+            name="ramp_duration",
+            type="float",
+            default=0.0,
+            min=0.0,
+            required=False,
+        ),
+        ParameterField(name="scale", type="float", default=1.0, required=True),
+        ParameterField(name="active", type="bool", default=False, required=False),
+        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+    ],
+    param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
+    icon="Flag",
+    port_types=PortTypeSpec(
+        inputs={
+            "state": PortType(dtype="state"),
+            "target": PortType(dtype="state"),
+            "force": PortType(dtype="vector"),
+            "params_override": PortType(dtype="object"),
+        },
+        outputs={"force": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=force_passthrough_output_prototype,
+)
 class ThresholdLatchedForce(Component):
     """Add force after a selected runtime state crosses a threshold.
 
@@ -439,6 +617,55 @@ class ThresholdLatchedForce(Component):
         }
 
 
+@component(
+    "DynamicsMatrixPerturb",
+    param_schema_version="2",
+    migrations=_drop_label_migration("DynamicsMatrixPerturb"),
+    constructor=ComponentConstructorPlan(
+        groups={
+            "params": (
+                DynamicsMatrixPerturbParams,
+                ("scale", "delta_A", "active"),
+            )
+        },
+        array_conversions={"delta_A": (2, 4)},
+    ),
+    attribute_paths={
+        "scale": "params_index.init.scale",
+        "delta_A": "params_index.init.delta_A",
+        "active": "params_index.init.active",
+    },
+    category="Mechanics",
+    description="State-feedback dynamics-matrix perturbation in the force channel.",
+    parameter_fields=[
+        ParameterField(name="scale", type="float", default=1.0, required=True),
+        ParameterField(
+            name="delta_A",
+            type="array",
+            default=[[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]],
+            required=True,
+        ),
+        ParameterField(name="active", type="bool", default=False, required=False),
+        ParameterField(
+            name="mass",
+            type="float",
+            default=None,
+            min=0.0,
+            required=True,
+            description="Effector mass in kg; must match the wired plant.",
+        ),
+    ],
+    icon="Activity",
+    port_types=PortTypeSpec(
+        inputs={
+            "effector": PortType(dtype="state"),
+            "force": PortType(dtype="vector"),
+            "params_override": PortType(dtype="object"),
+        },
+        outputs={"force": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=force_passthrough_output_prototype,
+)
 class DynamicsMatrixPerturb(Component):
     """Adds a state-feedback dynamics-matrix perturbation as a force.
 
