@@ -11,7 +11,7 @@ import jax.random as jr
 import pytest
 
 from feedbax.models.feedback import FeedbackChannels
-from feedbax.runtime.channel import Channel
+from feedbax.runtime.channel import Channel, toggle_channel_noise
 from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.affine_composer import AffineValueComposer
 from feedbax.runtime.components import Demux, ElementwiseAffineModulator
@@ -527,6 +527,45 @@ def _point_mass_feedback_spec(**feedback_params: Any) -> GraphSpec:
             "feedback": ("feedback", "feedback"),
         },
     )
+
+
+@pytest.mark.parametrize("noise_model", ["additive_gaussian", "none"])
+def test_disabled_channel_roundtrip_preserves_authored_noise(noise_model: str) -> None:
+    spec = _single_node_spec(
+        "Channel",
+        {"delay": 0, "add_noise": False, "noise_model": noise_model, "noise_std": 0.7},
+        input_ports=["input"],
+        output_ports=["output"],
+    )
+    registry = _components()
+    proto = {("field", "input"): jnp.zeros(1)}
+    graph = spec_to_graph(spec, component_registry=registry, input_prototypes=proto)
+    exported = graph_to_spec(graph)
+    params = exported.nodes["field"].params
+    assert params["noise_model"] == noise_model
+    assert params["add_noise"] is False
+    if noise_model == "additive_gaussian":
+        assert params["noise_std"] == 0.7
+
+    reloaded = spec_to_graph(exported, component_registry=registry, input_prototypes=proto)
+    signal = {"input": jnp.ones((5, 1))}
+    key = jr.key(0)
+
+    @eqx.filter_jit
+    def rollout(model):
+        return model.rollout_with_trace(
+            signal, model.init_state(key=key), key=key, n_steps=5, trace=()
+        )[0]["output"]
+
+    assert jnp.array_equal(rollout(reloaded), signal["input"])
+    enabled = rollout(toggle_channel_noise(reloaded, True))
+    if noise_model == "none":
+        assert jnp.array_equal(enabled, signal["input"])
+    else:
+        spec.nodes["field"].params["add_noise"] = True
+        authored_enabled = spec_to_graph(spec, component_registry=registry, input_prototypes=proto)
+        assert not jnp.array_equal(enabled, signal["input"])
+        assert jnp.array_equal(enabled, rollout(authored_enabled))
 
 
 def test_feedback_channels_materialize_point_mass_selector() -> None:

@@ -266,7 +266,6 @@ def _noise_params(params: Mapping[str, Any]) -> dict[str, Any]:
 
 def _build_noise_func(noise: Mapping[str, Any]):
     model = str(noise["model"])
-    add_noise = bool(noise["add_noise"])
     additive_std = float(noise["additive_std"])
     signal_dependent_std = float(noise["signal_dependent_std"])
     supported = {
@@ -281,7 +280,7 @@ def _build_noise_func(noise: Mapping[str, Any]):
             "'none', 'additive_gaussian', 'signal_dependent_gaussian', or "
             "'signal_dependent_plus_additive'"
         )
-    if model == "none" or not add_noise:
+    if model == "none":
         return None
     if model == "additive_gaussian":
         return Normal(std=additive_std) if additive_std != 0.0 else None
