@@ -131,6 +131,7 @@ from feedbax.analysis.manifest_inputs import (
     resolve_manifest_input,
 )
 from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
+from feedbax.analysis.harness import _MatrixRowPublication
 from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
     validate_staged_binding_name,
@@ -799,31 +800,23 @@ def _execute_evaluation_run_plan(
             },
         )
 
-    def execute(row_id: str, resolved: Mapping[str, Any], row_root: Path):
-        manifest, path = execute_evaluation_run_spec(
+    def publish_row(
+        resolved: Mapping[str, Any], row_root: Path, publication: _MatrixRowPublication
+    ) -> tuple[EvaluationRunManifest, Path]:
+        return execute_evaluation_run_spec(
             EvaluationRunSpec.model_validate(resolved),
             registry=registry,
             root=row_root,
-            metadata={
-                "matrix_harness": {
-                    "row_id": row_id,
-                    **(
-                        {"escape_hatch_reason": escape_hatch_reason}
-                        if escape_hatch_reason is not None
-                        else {}
-                    ),
-                }
-            },
             execution_context=execution_context,
+            _row_publication=publication,
         )
-        return manifest, path
 
     return MatrixMaterializerHarness(root=root).materialize(
         plan.row_payloads(tuple(plan.rows)),
-        execute=execute,
-        command=["python", "-m", "feedbax", "matrix-harness"],
+        publish_row=publish_row,
+        command=_MATRIX_HARNESS_COMMAND,
         title="Evaluation run matrix",
-        source="EvaluationRunMatrixSpec",
+        source=_EVALUATION_MATRIX_SOURCE,
         escape_hatch_reason=escape_hatch_reason,
         matrix_metadata=matrix_metadata,
         regeneration_parameters=regeneration_parameters,
@@ -1249,7 +1242,10 @@ def _evaluation_batch_retention_records(
     if not targets:
         return None
     root_digest = _evaluation_batch_retention_digest(
-        [(manifest.id, digest) for manifest, digest in zip(manifests, manifest_sha256s, strict=True)]
+        [
+            (manifest.id, digest)
+            for manifest, digest in zip(manifests, manifest_sha256s, strict=True)
+        ]
     )
     lease = None
     if not retain_intermediates:
@@ -1661,13 +1657,15 @@ def execute_evaluation_run_spec(
     execution_context: StagedExecutionContext = EMPTY_STAGED_EXECUTION_CONTEXT,
     use_cache: bool = True,
     force: bool = False,
+    _row_publication: _MatrixRowPublication | None = None,
 ) -> tuple[EvaluationRunManifest, Path]:
     """Execute a serialized evaluation spec and write a truthful manifest.
 
     The states cache is ephemeral and lives under ``{FEEDBAX_RUNS_DIR}/cache/states``
     at the deterministic manifest ID. A hit authenticates the receipt and its
-    required outputs and returns that receipt unchanged. Forced runs bypass
-    reuse and replace a completed receipt only after successful publication.
+    required outputs. Matrix execution can bind row context to an admitted hit
+    without replacing its states cache. Forced runs bypass reuse and replace a
+    completed receipt only after successful publication.
     """
     from feedbax.analysis.fulfillment import evaluation_expected_parents
 
@@ -1696,6 +1694,8 @@ def execute_evaluation_run_spec(
         )
 
     manifest_metadata = dict(metadata or {})
+    if _row_publication is not None:
+        manifest_metadata["matrix_harness"] = _row_publication.metadata
     states_custody = _states_custody_for_spec(run_spec)
     cache_metadata = _evaluation_cache_metadata(manifest_id, states_path)
     with manifest_publication_lock(manifest_path), ExitStack() as staging:
@@ -1733,41 +1733,57 @@ def execute_evaluation_run_spec(
             return EvaluationRecipeExecutionError(failed, path, cause)
 
         try:
-            if prior is not None and prior.status == "completed" and use_cache and not force:
-                states = load_evaluation_states_cache(states_path, manifest=prior)
-                if states is not None:
-                    _require_scalar_evaluation_receipt(
-                        prior, run_spec, root=root_path, states=states
-                    )
-                    return prior, manifest_path
-
-            tmp = staging.enter_context(
-                tempfile.TemporaryDirectory(prefix=".evaluation-", dir=states_path.parent)
-            )
-            staged_cache = Path(tmp) / states_path.name
-            result = recipe(run_spec, root_path, staged_cache, execution_context)
-            if states_custody == "durable":
-                result = _with_durable_states_artifact(
-                    result, root=root_path, manifest_id=manifest_id
+            states = None
+            row_publication = _row_publication
+            if prior is not None and prior.status == "completed":
+                if row_publication is None:
+                    row_publication = _MatrixRowPublication.from_manifest(prior)
+                    if row_publication is not None:
+                        row_publication.ensure_row_custody(root_path, matrix_root=root_path.parent)
+                if use_cache and not force:
+                    states = load_evaluation_states_cache(states_path, manifest=prior)
+            reuse_cache = states is not None
+            staged_cache = None
+            if reuse_cache:
+                assert prior is not None
+                manifest = _row_publication.attach(prior) if _row_publication else prior
+                _require_scalar_evaluation_receipt(
+                    manifest, run_spec, root=root_path, states=states
                 )
-            has_cache = use_cache and result.states is not None
-            if has_cache:
-                _save_evaluation_states(staged_cache, manifest_id, result.states, cache_metadata)
-            manifest = _build_evaluation_manifest(
-                manifest_id=manifest_id,
-                run_spec=run_spec,
-                status="completed",
-                provenance=prov,
-                summary_metrics={
-                    "input_training_runs": len(run_spec.inputs),
-                    **result.summary_metrics,
-                },
-                artifacts=result.artifacts,
-                metadata={**manifest_metadata, **result.metadata, "cache": cache_metadata},
-            )
-            _require_scalar_evaluation_receipt(
-                manifest, run_spec, root=root_path, states=result.states
-            )
+                if manifest == prior:
+                    return prior, manifest_path
+            else:
+                tmp = staging.enter_context(
+                    tempfile.TemporaryDirectory(prefix=".evaluation-", dir=states_path.parent)
+                )
+                recipe_cache = Path(tmp) / states_path.name
+                result = recipe(run_spec, root_path, recipe_cache, execution_context)
+                if states_custody == "durable":
+                    result = _with_durable_states_artifact(
+                        result, root=root_path, manifest_id=manifest_id
+                    )
+                if use_cache and result.states is not None:
+                    _save_evaluation_states(
+                        recipe_cache, manifest_id, result.states, cache_metadata
+                    )
+                    staged_cache = recipe_cache
+                manifest = _build_evaluation_manifest(
+                    manifest_id=manifest_id,
+                    run_spec=run_spec,
+                    status="completed",
+                    provenance=prov,
+                    summary_metrics={
+                        "input_training_runs": len(run_spec.inputs),
+                        **result.summary_metrics,
+                    },
+                    artifacts=result.artifacts,
+                    metadata={**manifest_metadata, **result.metadata, "cache": cache_metadata},
+                )
+                if row_publication is not None:
+                    manifest = row_publication.attach(manifest)
+                _require_scalar_evaluation_receipt(
+                    manifest, run_spec, root=root_path, states=result.states
+                )
         except Exception as exc:
             raise failed_attempt(exc, publish_failure=True) from exc
 
@@ -1776,14 +1792,14 @@ def execute_evaluation_run_spec(
             with closing(manifest_index.connect_index(index_path)) as index:
                 # An index rebuild must wait until the files are committed or restored.
                 index.execute("BEGIN IMMEDIATE")
-                with (
-                    _restore_evaluation_file_on_error(manifest_path),
-                    _restore_evaluation_file_on_error(states_path),
-                ):
-                    if has_cache:
-                        staged_cache.replace(states_path)
-                    else:
-                        states_path.unlink(missing_ok=True)
+                with ExitStack() as rollback:
+                    rollback.enter_context(_restore_evaluation_file_on_error(manifest_path))
+                    if not reuse_cache:
+                        rollback.enter_context(_restore_evaluation_file_on_error(states_path))
+                        if staged_cache is not None:
+                            staged_cache.replace(states_path)
+                        else:
+                            states_path.unlink(missing_ok=True)
                     path = publish_terminal_manifest_locked(
                         manifest, root=root_path, previous=prior, index=False
                     )

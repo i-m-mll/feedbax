@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 from feedbax.analysis.rendering import render_markdown_note
 from feedbax.contracts._authoring_inputs import AuthoringInputs
+from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.terminal_publication import manifest_publication_lock
 from feedbax.contracts.base import (
@@ -983,6 +984,55 @@ def diff_regenerated_archived(
     return semantic_diff(archived, regenerated)
 
 
+_ROW_CONTEXT_ROLES = frozenset(
+    ("resolved_row_spec", SHARED_REGENERATION_ROLE, ROW_REGENERATION_ROLE)
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _MatrixRowPublication:
+    """The harness-owned portion of a canonical row receipt."""
+
+    metadata: dict[str, Any]
+    artifacts: tuple[ArtifactRef, ...]
+
+    @classmethod
+    def from_manifest(cls, manifest: EvaluationRunManifest) -> _MatrixRowPublication | None:
+        metadata = manifest.metadata.get("matrix_harness")
+        if not isinstance(metadata, dict) or not {"row_id", "source", "custody"} <= metadata.keys():
+            return None
+        return cls(
+            metadata=metadata,
+            artifacts=tuple(a for a in manifest.artifacts if a.role in _ROW_CONTEXT_ROLES),
+        )
+
+    def ensure_row_custody(self, row_root: Path, *, matrix_root: Path) -> None:
+        """Keep references verifiable from both the matrix and its standalone row."""
+        if not self.artifacts or row_root == matrix_root:
+            return
+        row_store = ImmutableArtifactBlobProvider(row_root.absolute())
+        matrix_store = ImmutableArtifactBlobProvider(matrix_root.absolute())
+        for artifact in self.artifacts:
+            ref = ContentObjectRef(
+                object_id=f"{CONTENT_OBJECT_REF_PREFIX}{artifact.sha256}",
+                sha256=artifact.sha256,
+                size_bytes=artifact.size_bytes,
+            )
+            try:
+                row_store.get_object(ref)
+            except FileNotFoundError:
+                row_store.store_object(matrix_store.get_object(ref))
+
+    def attach(self, manifest: EvaluationRunManifest) -> EvaluationRunManifest:
+        artifacts = [a for a in manifest.artifacts if a.role not in _ROW_CONTEXT_ROLES]
+        return manifest.model_copy(
+            update={
+                "metadata": {**manifest.metadata, "matrix_harness": self.metadata},
+                "artifacts": [*artifacts, *self.artifacts],
+            }
+        )
+
+
 class MatrixMaterializerHarness:
     """Own row expansion, execution, custody, manifests, replay data, and notes."""
 
@@ -1011,7 +1061,11 @@ class MatrixMaterializerHarness:
         self,
         rows: Sequence[tuple[str, Mapping[str, Any]]],
         *,
-        execute: Callable[[str, Mapping[str, Any], Path], tuple[Any, Path | None]],
+        execute: Callable[[str, Mapping[str, Any], Path], tuple[Any, Path | None]] | None = None,
+        publish_row: Callable[
+            [Mapping[str, Any], Path, _MatrixRowPublication], tuple[EvaluationRunManifest, Path]
+        ]
+        | None = None,
         command: Sequence[str],
         title: str,
         source: str,
@@ -1019,7 +1073,13 @@ class MatrixMaterializerHarness:
         matrix_metadata: Mapping[str, Any] | None = None,
         regeneration_parameters: Mapping[str, Any] | None = None,
     ) -> HarnessResult:
-        """Execute resolved rows and emit standard custody and regeneration records."""
+        """Materialize rows through a publisher or decorate a legacy executor's result.
+
+        A row publisher owns the canonical receipt and includes the supplied context
+        in that publication. The harness only writes receipts for legacy executors.
+        """
+        if (execute is None) == (publish_row is None):
+            raise ValueError("materializer requires exactly one row executor or publisher")
         if not rows:
             raise ValueError("materializer requires at least one row or condition")
         if escape_hatch_reason is not None and not escape_hatch_reason.strip():
@@ -1044,11 +1104,8 @@ class MatrixMaterializerHarness:
             else None
         )
         for row_id, resolved in rows:
-            if not row_id:
-                raise ValueError("materializer row_id must be non-empty")
             row_root = self.root if self.shared_store else self.root / row_id
             row_root.mkdir(parents=True, exist_ok=True)
-            result, manifest_path = execute(row_id, resolved, row_root)
             regeneration = RegenerationSpec(
                 command=RegenerationCommand(argv=list(command)),
                 parameters={
@@ -1087,34 +1144,45 @@ class MatrixMaterializerHarness:
                     shared_context=shared_context,
                 )
                 artifacts.extend((shared_context, row_regeneration_ref))
-            if (
-                manifest_path is not None
-                and hasattr(result, "metadata")
-                and hasattr(result, "artifacts")
-            ):
-                harness_metadata = {
-                    "row_id": row_id,
-                    "source": source,
-                    "custody": self.custody,
-                    **(
-                        {"escape_hatch_reason": escape_hatch_reason}
-                        if escape_hatch_reason is not None
-                        else {}
-                    ),
-                }
-                if self.custody == "manifest":
-                    harness_metadata.update(shared_metadata)
-                    harness_metadata["regeneration_spec"] = regeneration.model_dump(
-                        mode="json", exclude_none=True
-                    )
-                result.metadata.setdefault("matrix_harness", {}).update(harness_metadata)
-                known_artifact_ids = {artifact.artifact_id for artifact in result.artifacts}
-                result.artifacts.extend(
-                    artifact
-                    for artifact in artifacts
-                    if artifact.artifact_id not in known_artifact_ids
+            harness_metadata = {
+                "row_id": row_id,
+                "source": source,
+                "custody": self.custody,
+                **(
+                    {"escape_hatch_reason": escape_hatch_reason}
+                    if escape_hatch_reason is not None
+                    else {}
+                ),
+            }
+            if self.custody == "manifest":
+                harness_metadata.update(shared_metadata)
+                harness_metadata["regeneration_spec"] = regeneration.model_dump(
+                    mode="json", exclude_none=True
                 )
-                manifest_path = write_manifest(result, root=row_root, index=not self.shared_store)
+            row_publication = _MatrixRowPublication(harness_metadata, tuple(artifacts))
+            if publish_row is not None:
+                row_publication.ensure_row_custody(row_root, matrix_root=self.root)
+                result, manifest_path = publish_row(resolved, row_root, row_publication)
+            else:
+                assert execute is not None
+                result, manifest_path = execute(row_id, resolved, row_root)
+                if (
+                    manifest_path is not None
+                    and hasattr(result, "metadata")
+                    and hasattr(result, "artifacts")
+                ):
+                    result.metadata.setdefault("matrix_harness", {}).update(
+                        row_publication.metadata
+                    )
+                    known_artifact_ids = {artifact.artifact_id for artifact in result.artifacts}
+                    result.artifacts.extend(
+                        artifact
+                        for artifact in row_publication.artifacts
+                        if artifact.artifact_id not in known_artifact_ids
+                    )
+                    manifest_path = write_manifest(
+                        result, root=row_root, index=not self.shared_store
+                    )
             materialized.append(
                 MaterializedRow(
                     row_id=row_id,
