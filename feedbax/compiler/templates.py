@@ -8,10 +8,9 @@ separate backend-special model type.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 
@@ -30,19 +29,8 @@ from feedbax.runtime.feedback import (
 )
 
 
-TemplateKind = Literal["executable", "display"]
-
-
-@dataclass(frozen=True)
-class GraphTemplateMetadata:
-    """Metadata describing a built-in graph template."""
-
-    id: str
-    name: str
-    category: str
-    kind: TemplateKind
-    description: str
-    component_type: str | None = None
+if TYPE_CHECKING:
+    from feedbax.component_registry.declarations import DeclaredComponent
 
 
 def recurrent_zero_initializer(
@@ -472,29 +460,7 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
     )
 
 
-BUILTIN_GRAPH_TEMPLATES: tuple[GraphTemplateMetadata, ...] = (
-    GraphTemplateMetadata(
-        id="feedbax.templates.recurrent_controller",
-        name="Recurrent Controller",
-        category="Neural Networks",
-        kind="executable",
-        description="Explicit Mux, recurrent cell, and readout controller graph.",
-        component_type="Subgraph",
-    ),
-    GraphTemplateMetadata(
-        id="feedbax.templates.simple_feedback",
-        name="Simple Feedback Loop",
-        category="Sensorimotor",
-        kind="executable",
-        description="Feedback channel, controller, efferent path, and mechanics loop.",
-        component_type="Subgraph",
-    ),
-)
-
-
 __all__ = [
-    "BUILTIN_GRAPH_TEMPLATES",
-    "GraphTemplateMetadata",
     "network_recurrent_wires",
     "network_template_graph",
     "recurrent_controller_template_graph",
@@ -503,3 +469,78 @@ __all__ = [
     "recurrent_zero_initializer",
     "simple_feedback_template_graph",
 ]
+
+
+def recurrent_controller_template_definition() -> DeclaredComponent:
+    from feedbax.component_registry.declarations import _template_ui_state, declare_component
+    from feedbax.contracts.component import PortType, PortTypeSpec
+
+    graph = recurrent_controller_template_graph(
+        input_size=6, hidden_size=100, out_size=2, cell_type="GRU", out_nonlinearity="tanh"
+    )
+    return declare_component(
+        name="Recurrent Controller",
+        category="Neural Networks",
+        description="Explicit Mux, recurrent cell, and readout controller graph.",
+        param_schema=[],
+        input_ports=list(graph.input_ports),
+        output_ports=list(graph.output_ports),
+        icon="CircuitBoard",
+        is_composite=True,
+        port_types=PortTypeSpec(
+            inputs={
+                "input": PortType(dtype="vector"),
+                "feedback": PortType(dtype="vector"),
+            },
+            outputs={
+                "output": PortType(dtype="vector"),
+                "hidden": PortType(dtype="vector"),
+            },
+        ),
+        template_graph=graph,
+        template_ui_state=_template_ui_state(
+            {
+                "input_mux": (80, 160),
+                "cell": (280, 160),
+                "readout": (500, 160),
+            }
+        ),
+        template_id="feedbax.templates.recurrent_controller",
+        template_kind="executable",
+        trainable_by_default=True,
+    )
+
+
+def simple_feedback_template_definition() -> DeclaredComponent:
+    from feedbax.component_registry.declarations import _template_ui_state, declare_component
+    from feedbax.contracts.component import PortType, PortTypeSpec
+
+    graph = simple_feedback_template_graph()
+    return declare_component(
+        name="Simple Feedback Loop",
+        category="Sensorimotor",
+        description="Feedback channel, controller, efferent path, and mechanics loop.",
+        param_schema=[],
+        input_ports=list(graph.input_ports),
+        output_ports=list(graph.output_ports),
+        icon="Radar",
+        is_composite=True,
+        port_types=PortTypeSpec(
+            inputs={"input": PortType(dtype="vector")},
+            outputs={"effector": PortType(dtype="state")},
+        ),
+        template_graph=graph,
+        template_ui_state=_template_ui_state(
+            {
+                "feedback_select": (120, 110),
+                "feedback": (300, 110),
+                "feedback_values": (480, 110),
+                "net": (660, 180),
+                "efferent": (840, 180),
+                "mechanics": (1020, 180),
+            },
+        ),
+        template_id="feedbax.templates.simple_feedback",
+        template_kind="executable",
+        trainable_by_default=True,
+    )

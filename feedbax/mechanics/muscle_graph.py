@@ -9,6 +9,9 @@ from typing import Any
 from equinox import field
 import jax.numpy as jnp
 
+from feedbax.component_registry.declarations import ParameterField
+from feedbax.component_registry.discovery import component
+from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
 from feedbax.mechanics.geometry import (
     ConstantMomentArmGeometry,
     PointMassRadialGeometry,
@@ -19,6 +22,51 @@ from feedbax.mechanics.geometry import (
 from feedbax.runtime.graph import Component
 
 
+def _vector_elements_prototypes(params: Mapping[str, Any], inputs: Mapping[str, Any]):
+    size = params["size"]
+    vector = inputs.get("input")
+    if vector is not None and getattr(vector, "shape", None) != (size,):
+        raise ValueError(
+            f"Expected a vector of shape {(size,)}, got {getattr(vector, 'shape', None)}"
+        )
+    dtype = getattr(vector, "dtype", None)
+    return {f"out_{index}": jnp.zeros((), dtype=dtype) for index in range(size)}
+
+
+def _joint_geometry_prototypes(params: Mapping[str, Any], inputs: Mapping[str, Any]):
+    count = len(params["paths"])
+    dtype = getattr(inputs.get("angles"), "dtype", None)
+    return {
+        "lengths": jnp.zeros(count, dtype=dtype),
+        "velocities": jnp.zeros(count, dtype=dtype),
+        "directions": jnp.zeros((count, 2), dtype=dtype),
+    }
+
+
+def _radial_geometry_prototypes(params: Mapping[str, Any], inputs: Mapping[str, Any]):
+    return {"directions": jnp.zeros((2 * params["n_pairs"], 2))}
+
+
+@component(
+    "VectorElements",
+    category="Signal Processing",
+    description="Route each vector element to a scalar port.",
+    parameter_fields=[ParameterField(name="size", type="int", default=2, min=1)],
+    output_ports=["out_0", "out_1"],
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"out_0": PortType(dtype="scalar"), "out_1": PortType(dtype="scalar")},
+    ),
+    dynamic_port_policy=DynamicPortPolicy(
+        count_param="size",
+        count_mode="integer",
+        direction="output",
+        fixed_input_ports=("input",),
+        generated_name_template="out_{index}",
+        dynamic_port_type=PortType(dtype="scalar"),
+    ),
+    output_prototype_fn=_vector_elements_prototypes,
+)
 class VectorElements(Component):
     """Route each element of a vector to its own scalar output."""
 
@@ -37,6 +85,34 @@ class VectorElements(Component):
         return dict(zip(self.output_ports, vector, strict=True)), state
 
 
+def _joint_geometry_settings(_cls: type) -> dict[str, Any]:
+    return {
+        "parameter_fields": [
+            ParameterField(
+                name="paths",
+                type="array",
+                default=muscle_path_parameters(TwoLinkArmMuscleGeometry.default_six_muscle()),
+                required=True,
+            ),
+        ],
+    }
+
+
+@component(
+    "JointMuscleGeometry",
+    category="Mechanics",
+    description="Compute muscle kinematics and moment arms from joint kinematics.",
+    configure=_joint_geometry_settings,
+    port_types=PortTypeSpec(
+        inputs={"angles": PortType(dtype="vector"), "angular_velocities": PortType(dtype="vector")},
+        outputs={
+            "lengths": PortType(dtype="vector"),
+            "velocities": PortType(dtype="vector"),
+            "directions": PortType(dtype="array"),
+        },
+    ),
+    output_prototype_fn=_joint_geometry_prototypes,
+)
 class JointMuscleGeometry(Component):
     """Produce musculotendon kinematics and moment arms from joint kinematics."""
 
@@ -89,6 +165,14 @@ def muscle_path_parameters(geometry: TwoLinkArmMuscleGeometry) -> list[dict[str,
     return paths
 
 
+@component(
+    "RadialMuscleGeometry",
+    category="Mechanics",
+    description="Generate direction rows for interleaved antagonist pairs.",
+    parameter_fields=[ParameterField(name="n_pairs", type="int", default=4, min=1)],
+    port_types=PortTypeSpec(inputs={}, outputs={"directions": PortType(dtype="array")}),
+    output_prototype_fn=_radial_geometry_prototypes,
+)
 class RadialMuscleGeometry(Component):
     """Produce the interleaved directions of radial antagonist pairs."""
 
