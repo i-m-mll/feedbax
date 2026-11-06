@@ -27,7 +27,13 @@ from jaxtyping import PRNGKeyArray, PyTree
 from feedbax._ode import ode_init, restore_storage_dtypes
 from feedbax.mechanics.dynamics import LinearSystem
 from feedbax.runtime.graph import Component
-from feedbax.mechanics.backend import PhysicsBackend, PhysicsState, step_plant_ode
+from feedbax.mechanics.backend import (
+    PhysicsBackend,
+    PhysicsState,
+    _mechanics_control_dt,
+    _substep_count,
+    step_plant_ode,
+)
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.runtime.state import CartesianState
 
@@ -80,7 +86,7 @@ class Mechanics(Component):
     def __init__(
         self,
         plant: AbstractPlant,
-        dt: float,
+        dt: float | None = None,
         solver_type: Type[dfx.AbstractSolver] = dfx.Euler,
         *,
         backend: Optional[PhysicsBackend] = None,
@@ -91,7 +97,9 @@ class Mechanics(Component):
 
         Args:
             plant: The plant model to integrate.
-            dt: Control timestep in seconds.
+            dt: Control timestep in seconds. Required without a backend.
+                With a backend, defaults to its control period and must
+                agree with that period if provided.
             solver_type: Diffrax solver class (legacy path). Ignored when
                 ``backend`` is provided.
             backend: Optional physics backend. When provided, stepping is
@@ -104,7 +112,11 @@ class Mechanics(Component):
         """
         self.plant = plant
         self.solver = solver_type()
-        self.dt = dt
+        if dt is None:
+            if backend is None:
+                raise ValueError("Mechanics.dt is required without a backend")
+            dt = backend.control_dt
+        self.dt = _mechanics_control_dt(dt, backend)
         self.backend = backend
         self.remat_substep = remat_substep
 
@@ -112,6 +124,7 @@ class Mechanics(Component):
             key = jax.random.PRNGKey(0)
 
         if backend is not None:
+            _substep_count(backend.control_dt, backend.sub_dt, backend.n_substeps)
             # Backend path: initialize via backend
             physics_state = backend.init_state(plant, key=key)
             initial_state = MechanicsState(
@@ -157,6 +170,7 @@ class Mechanics(Component):
         Returns:
             Tuple of (outputs dict, updated State).
         """
+        _mechanics_control_dt(self.dt, self.backend)
         if self.backend is not None:
             return self._call_backend(inputs, state, key=key)
         return self._call_legacy(inputs, state, key=key)
@@ -228,6 +242,7 @@ class Mechanics(Component):
             Tuple of (outputs dict, updated State).
         """
         backend = self.backend
+        n_substeps = _substep_count(backend.control_dt, backend.sub_dt, backend.n_substeps)
         mechanics_state: MechanicsState = state.get(self.state_index)
         action = inputs["force"]
 
@@ -260,14 +275,14 @@ class Mechanics(Component):
         if self.remat_substep:
             do_substep = eqx.filter_checkpoint(do_substep)
 
-        if backend.n_substeps == 1:
+        if n_substeps == 1:
             physics_state = do_substep(physics_state)
         else:
             def _fori_body(_, carry):
                 return do_substep(carry)
 
             physics_state = jax.lax.fori_loop(
-                0, backend.n_substeps, _fori_body, physics_state,
+                0, n_substeps, _fori_body, physics_state,
             )
 
         # Extract effector via backend

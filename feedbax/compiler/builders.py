@@ -212,6 +212,7 @@ def _build_analytical_musculoskeletal_plant(params: Mapping[str, Any]) -> Mechan
     n_steps = int(params.get("n_steps", 1))
     if n_steps < 1:
         raise ValueError("AnalyticalMusculoskeletalPlant n_steps must be >= 1")
+    backend = DiffraxBackend(control_dt=dt, sub_dt=dt / n_steps, solver=solver)
     chain_config = ChainConfig(
         n_joints=2,
         muscle_topology=default_6muscle_2link_topology(),
@@ -222,10 +223,8 @@ def _build_analytical_musculoskeletal_plant(params: Mapping[str, Any]) -> Mechan
         clip_states=bool(params.get("clip_states", True)),
         key=jr.PRNGKey(0),
     )
-    backend = DiffraxBackend(control_dt=dt, sub_dt=dt / n_steps, solver=solver)
     return _ExcitationMechanics(
         plant=plant,
-        dt=dt,
         backend=backend,
         key=jr.PRNGKey(0),
     )
