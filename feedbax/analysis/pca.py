@@ -1,4 +1,4 @@
-"""Principal-component analysis of evaluated model states."""
+"""Principal-component factorization and analysis of evaluated model states."""
 
 from collections.abc import Sequence
 from math import sqrt
@@ -117,10 +117,14 @@ def _all_finite(samples: Array) -> Array:
     return jnp.isfinite(jnp.min(samples)) & jnp.isfinite(jnp.max(samples))
 
 
+def _subtract_mean(samples: Array) -> tuple[Array, Array]:
+    mean = jnp.mean(samples, axis=0)
+    return samples - mean, mean
+
+
 @jax.jit
 def _center_and_scale(samples: Array, scale: Array | None) -> tuple[Array, Array]:
-    mean = jnp.mean(samples, axis=0)
-    centered = samples - mean
+    centered, mean = _subtract_mean(samples)
     # Remove the residual left when the feature mean rounds at a large offset.
     centered = centered - jnp.mean(centered, axis=0)
     return (centered if scale is None else centered / scale), mean
@@ -138,6 +142,32 @@ def _uncentered_variance(samples: Array, scale: Array | None, basis: Array) -> t
     # The complete reduced real basis spans the row space, including after centering.
     total_variance = jnp.sum(jnp.var(centered, axis=0, ddof=1))
     return _projected_variance(centered, basis), total_variance
+
+
+def _fit_pca(
+    samples: Array,
+    *,
+    centering: PCACentering = "mean",
+    scale: Array | None = None,
+    recenter: bool = False,
+    svd_options: dict[str, Any] | None = None,
+) -> tuple[Array, Array, tuple[Array, Array, Array]]:
+    """Preprocess sample rows and fit a reduced SVD."""
+    if recenter and centering == "mean":
+        preprocessed, mean = _center_and_scale(samples, scale)
+    else:
+        if centering == "mean":
+            preprocessed, mean = _subtract_mean(samples)
+        else:
+            mean = jnp.zeros((samples.shape[1],), dtype=samples.dtype)
+            preprocessed = samples if jnp.issubdtype(samples.dtype, jnp.inexact) else samples - mean
+        if scale is not None:
+            preprocessed = preprocessed / scale
+
+    left, singular_values, basis = jnp.linalg.svd(
+        preprocessed, full_matrices=False, **(svd_options or {})
+    )
+    return preprocessed, mean, (left, singular_values, basis)
 
 
 class StatesPCA(AbstractAnalysis[NoPorts]):
@@ -234,21 +264,9 @@ class StatesPCA(AbstractAnalysis[NoPorts]):
                     "normalization='standard_deviation' is undefined for constant features"
                 )
         complex_samples = jnp.iscomplexobj(samples)
-        if self.centering == "mean" and not complex_samples:
-            preprocessed, mean = _center_and_scale(samples, scale)
-        else:
-            if self.centering == "mean":
-                mean = jnp.mean(samples, axis=0)
-                preprocessed = samples - mean
-            else:
-                mean = jnp.zeros((n_features,), dtype=samples.dtype)
-                preprocessed = (
-                    samples if jnp.issubdtype(samples.dtype, jnp.inexact) else samples - mean
-                )
-            if scale is not None:
-                preprocessed = preprocessed / scale
-
-        _, singular_values, basis = jnp.linalg.svd(preprocessed, full_matrices=False)
+        preprocessed, mean, (_, singular_values, basis) = _fit_pca(
+            samples, centering=self.centering, scale=scale, recenter=not complex_samples
+        )
         if complex_samples:
             # The plain transpose used by transform makes complex score
             # variance differ from the singular spectrum.
