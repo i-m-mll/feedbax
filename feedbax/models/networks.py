@@ -763,7 +763,7 @@ class SimpleStagedNetwork(Component):
             Otherwise network inputs are passed directly to the hidden layer.
 
             If an integer is passed for `out_size`, readout is enabled. Otherwise
-            the network's outputs are the outputs of the hidden units.
+            the network emits the hidden units through `out_nonlinearity`.
 
             In principle `hidden_type` can be class defining a multi-layer network,
             as long as it is instantiated as `hidden_type(input_size, hidden_size, use_bias, *,
@@ -795,7 +795,8 @@ class SimpleStagedNetwork(Component):
             use_bias: Whether the hidden layer should have a bias term.
             hidden_nonlinearity: A function to apply unitwise to the hidden layer output. This is
                 typically not used if `hidden_type` is `GRUCell` or `LSTMCell`.
-            out_nonlinearity: A function to apply unitwise to the readout layer output.
+            out_nonlinearity: A function to apply to the readout result, or directly
+                to the hidden units when no readout is configured. Defaults to identity.
             hidden_noise_std: Standard deviation of Gaussian noise to add to the hidden layer output.
             population_structure: Optional population structure defining which hidden units
                 receive inputs and/or contribute to readout. If provided, input and readout
@@ -888,6 +889,7 @@ class SimpleStagedNetwork(Component):
         self.hidden_size = hidden_size
         self.hidden_nonlinearity = hidden_nonlinearity
         self.hidden_noise_std = hidden_noise_std
+        self.out_nonlinearity = out_nonlinearity
 
         # Multiplicative SISU gating: learn per-unit gain modulation alpha
         self.sisu_gating = sisu_gating
@@ -938,7 +940,6 @@ class SimpleStagedNetwork(Component):
                         jnp.zeros_like(bias),
                     )
             self.readout = readout
-            self.out_nonlinearity = out_nonlinearity
             self.out_size = out_size
         else:
             self.out_size = hidden_size
@@ -1049,11 +1050,8 @@ class SimpleStagedNetwork(Component):
         if sisu_value is not None:
             hidden = hidden * (1.0 + self.sisu_alpha * sisu_value)
 
-        if self.readout is not None:
-            output = self.readout(hidden)  # type: ignore
-            output = self.out_nonlinearity(output)
-        else:
-            output = self.out_nonlinearity(hidden)
+        readout_result = hidden if self.readout is None else self.readout(hidden)
+        output = self.out_nonlinearity(readout_result)
 
         new_state = NetworkState(
             input=x,
@@ -1083,17 +1081,23 @@ class SimpleStagedNetwork(Component):
 
     def to_params(self) -> dict[str, object]:
         """Return the authored parameters represented by this staged network."""
+
+        def activation_name(activation: Callable) -> str:
+            if activation is identity_func or activation is NAMED_ACTIVATIONS["identity"]:
+                return "identity"
+            return getattr(activation, "__name__", "identity")
+
         hidden_type = type(self.hidden).__name__
         if isinstance(self.hidden, LeakyRNNCell):
             hidden_type = "LeakyRNNCell"
         params: dict[str, object] = {
             "input_size": int(self.input_size),
             "hidden_size": int(self.hidden_size),
-            "out_size": int(self.out_size),
+            "out_size": int(self.out_size) if self.readout is not None else None,
             "encoding_size": self.encoding_size,
             "hidden_type": hidden_type,
-            "hidden_nonlinearity": getattr(self.hidden_nonlinearity, "__name__", "identity"),
-            "out_nonlinearity": getattr(self.out_nonlinearity, "__name__", "identity"),
+            "hidden_nonlinearity": activation_name(self.hidden_nonlinearity),
+            "out_nonlinearity": activation_name(self.out_nonlinearity),
             "hidden_noise_std": self.hidden_noise_std,
             "population_mask_mode": self.population_mask_mode,
             "sisu_gating": self.sisu_gating,

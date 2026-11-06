@@ -10,6 +10,7 @@ import feedbax.runtime.components as runtime_components
 import feedbax._vendor.jax_cookbook.tree as jtree
 from feedbax._vendor.jax_cookbook import load, save
 from feedbax._vendor.jax_cookbook.tree import filter_spec_leaves
+from feedbax.compiler.builders import _build_network
 from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.components import ElementwiseAffineModulator
 from feedbax.runtime.graph import init_state_from_component
@@ -295,6 +296,50 @@ def test_runtime_linear_accepts_custom_activation_callable():
     assert linear.activation is square
     assert linear.activation_name == "square"
     assert jnp.allclose(outputs["output"], raw * raw)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "output_sign"),
+    [({}, 1), ({"out_nonlinearity": jnp.negative}, -1)],
+    ids=["default", "activated"],
+)
+def test_simplestagednetwork_emits_hidden_units_without_readout(kwargs, output_sign):
+    net = SimpleStagedNetwork(2, 3, key=jax.random.key(0), **kwargs)
+    state = init_state_from_component(net)
+
+    outputs, _ = net({"input": jnp.array([1.0, -2.0])}, state, key=jax.random.key(1))
+
+    assert outputs["output"].shape == (3,)
+    assert jnp.allclose(outputs["output"], output_sign * outputs["hidden"])
+
+
+def test_simplestagednetwork_activates_projected_output():
+    def readout_type(_input_size, out_size, *, key, dtype):
+        return eqx.nn.Lambda(lambda _: jnp.full((out_size,), 2.0, dtype=dtype))
+
+    net = SimpleStagedNetwork(
+        2,
+        3,
+        out_size=1,
+        readout_type=readout_type,
+        out_nonlinearity=jnp.negative,
+        key=jax.random.key(0),
+    )
+    state = init_state_from_component(net)
+
+    outputs, _ = net({"input": jnp.array([1.0, -2.0])}, state, key=jax.random.key(1))
+
+    assert jnp.array_equal(outputs["output"], jnp.array([-2.0]))
+
+
+def test_simplestagednetwork_export_rebuilds_hidden_output():
+    net = SimpleStagedNetwork(2, 3, key=jax.random.key(0))
+    rebuilt = _build_network(net.to_params())
+    inputs = {"input": jnp.array([1.0, -2.0])}
+
+    outputs, _ = rebuilt(inputs, init_state_from_component(rebuilt), key=jax.random.key(1))
+
+    assert jnp.allclose(outputs["output"], outputs["hidden"])
 
 
 def test_simplestagednetwork_defaults_trainable_leaves_to_float32_with_float64_inputs():
