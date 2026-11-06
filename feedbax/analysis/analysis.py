@@ -2624,6 +2624,13 @@ InputType: TypeAlias = PyTree[
 ]
 
 
+def implements_analysis_method(
+    analysis: AbstractAnalysis, method: Literal["compute", "make_figs"]
+) -> bool:
+    """Check whether the resolved class method replaces the default stub."""
+    return getattr(type(analysis), method) is not getattr(AbstractAnalysis, method)
+
+
 class IdentityNode(AbstractAnalysis[SinglePort[Any]]):
     """An analysis that simply returns its input as output.
 

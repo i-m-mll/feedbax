@@ -27,6 +27,7 @@ from feedbax.analysis.analysis import (
     Transformed,
     _DataField,
     _FinalOp,
+    implements_analysis_method,
 )
 from feedbax.analysis.types import AnalysisInputData
 
@@ -402,7 +403,7 @@ def compute_dependency_results(
                 # Cache dependency reconstruction for leaf analyses to avoid redundant work
                 leaf_dependencies[node_id] = reconstructed_deps
 
-            if dep_instance.__class__.compute is AbstractAnalysis.compute:
+            if not implements_analysis_method(dep_instance, "compute"):
                 # Skip this node -- no implementation of compute()
                 logger.debug(f"Skipping analysis node: {node_label} (no compute implementation)")
                 result = None
