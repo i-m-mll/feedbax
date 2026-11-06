@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from feedbax._atomic import sync_parent_directories
 from feedbax.execution.records import (
     Invocation,
     InvocationExecutionPolicy,
@@ -1119,13 +1120,15 @@ def _reuse_pending_training_manifest(
         existing.status == "pending"
         and existing.metadata.get("planned") is True
         and not has_attempt_evidence(existing)
-        and path.resolve()
-        != canonical_manifest_path("TrainingRunManifest", manifest_id, root=root).resolve()
     ):
-        canonical = existing.model_copy(
-            update={"metadata": {**existing.metadata, "staging_generation": uuid.uuid4().hex}}
-        )
-        return canonical, write_manifest(canonical, root=root)
+        canonical_path = canonical_manifest_path("TrainingRunManifest", manifest_id, root=root)
+        if path.resolve() != canonical_path.resolve():
+            canonical = existing.model_copy(
+                update={"metadata": {**existing.metadata, "staging_generation": uuid.uuid4().hex}}
+            )
+            return canonical, write_manifest(canonical, root=root)
+        sync_parent_directories(path)
+        return existing, path
     if (
         existing.status != "cancelled"
         or existing.metadata.get("planned") is not True
