@@ -1,27 +1,22 @@
+import functools
+import inspect
 import json
 import logging
 import os
-import functools
-import inspect
-import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Optional
 
 import jax
 import jax.tree as jt
-import matplotlib.figure as mplf
 import plotly
 import plotly.graph_objects as go
-import pyexiv2
-import pyperclip as clip
+
 from feedbax._vendor.jax_cookbook import is_type
-
 from feedbax.config import STRINGS
-from feedbax.plot.lifecycle import close_figure
+from feedbax.plot.io import safe_html_id
+from feedbax.plot.lifecycle import close_figure, is_matplotlib_figure
 from feedbax.plot.ranges import calculate_array_minmax as calculate_array_minmax
-
-pyexiv2.registerNs("http://example.com/ns/custom/", "custom")
 
 
 def with_caller_logger(func):
@@ -189,6 +184,8 @@ def copy_fig_json(fig):
 
     I use this to embed interactive figures in my Obsidian notes: https://github.com/i-m-mll/obsidian-paste-as-embed
     """
+    import pyperclip as clip
+
     fig = go.Figure(fig)
     fig.update_layout(
         width=700,
@@ -327,12 +324,6 @@ def get_underlay_fig(fig):
 EXTS_WITH_EXIF = ["jpg", "jpeg", "tif", "tiff", "webp"]
 
 
-def _safe_html_id(value: str) -> str:
-    """Return *value* reduced to characters an HTML element id may carry."""
-    normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(value)).strip("-")
-    return normalized or "figure"
-
-
 @with_caller_logger
 def savefig(
     fig,
@@ -348,7 +339,7 @@ def savefig(
     try:
         path = str(fig_dir / f"{label}") + ".{ext}"
 
-        if isinstance(fig, mplf.Figure):
+        if is_matplotlib_figure(fig):
             for ext in image_formats:
                 fig.savefig(
                     path.format(ext=ext),
@@ -372,7 +363,7 @@ def savefig(
                     # and each render is a standalone document. `kwargs` is
                     # shared with the other formats in this loop, so the id goes
                     # into a copy rather than into `kwargs` itself.
-                    fig.write_html(path_i, **{"div_id": _safe_html_id(label), **kwargs})
+                    fig.write_html(path_i, **{"div_id": safe_html_id(label), **kwargs})
                 elif ext == "json":
                     fig.write_json(path_i, engine="auto", **kwargs)
                 else:
@@ -381,15 +372,13 @@ def savefig(
                     fig.write_image(path_i, scale=2, width=width, height=height, **kwargs)
 
                     if metadata is not None and ext in EXTS_WITH_EXIF:
-                        try:
-                            img = pyexiv2.Image(path_i)
-                            metadata_xmp = {f"Xmp.custom.{k}": v for k, v in metadata.items()}
-                            metadata_xmp["Xmp.dc.description"] = json.dumps(metadata, indent=2)
+                        import pyexiv2
+
+                        pyexiv2.registerNs("http://example.com/ns/custom/", "custom")
+                        metadata_xmp = {f"Xmp.custom.{k}": v for k, v in metadata.items()}
+                        metadata_xmp["Xmp.dc.description"] = json.dumps(metadata, indent=2)
+                        with pyexiv2.Image(path_i) as img:
                             img.modify_xmp(metadata_xmp)
-                            img.close()
-                        except Exception as e:
-                            raise (e)
-                            logger.error(f"Failed to save metadata for image at {path_i}: {e}")
     finally:
         if close:
             close_figure(fig)
