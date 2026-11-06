@@ -15,6 +15,7 @@ from scripts.full_suite import (
 configure_native_threads()
 
 import jax
+from jax.experimental.compilation_cache import compilation_cache
 import pytest
 
 import feedbax
@@ -61,18 +62,18 @@ def pytest_configure_node(node) -> None:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
-    """Own default cache bytes until the controller finishes, including collection errors."""
+    """Scope JAX cache configuration and any owned cache bytes to this invocation."""
     if os.environ.get("FEEDBAX_DISABLE_JAX_COMPILATION_CACHE") == "1":
         return
 
+    scope = ExitStack()
+    config.add_cleanup(scope.close)
     worker_input = getattr(config, "workerinput", {})
     worker_root = worker_input.get("feedbax_jax_cache_root")
     explicit = os.environ.get("FEEDBAX_JAX_COMPILATION_CACHE_DIR")
     if worker_root is None and explicit is not None:
         cache_dir = Path(explicit).expanduser()
     else:
-        scope = ExitStack()
-        config.add_cleanup(scope.close)
         if worker_root is not None:
             root = Path(worker_root)
             process_name = worker_input["workerid"]
@@ -95,9 +96,17 @@ def pytest_configure(config: pytest.Config) -> None:
         os.environ.get("FEEDBAX_JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
     )
     min_entry_size = int(os.environ.get("FEEDBAX_JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0"))
-    jax.config.update("jax_compilation_cache_dir", str(cache_dir))
-    jax.config.update("jax_persistent_cache_min_compile_time_secs", min_compile_secs)
-    jax.config.update("jax_persistent_cache_min_entry_size_bytes", min_entry_size)
+    settings = {
+        "jax_compilation_cache_dir": str(cache_dir),
+        "jax_persistent_cache_min_compile_time_secs": min_compile_secs,
+        "jax_persistent_cache_min_entry_size_bytes": min_entry_size,
+    }
+    # The initialized persistent cache retains its path across config updates.
+    scope.callback(compilation_cache.reset_cache)
+    for name, value in settings.items():
+        scope.callback(jax.config.update, name, getattr(jax.config, name))
+        jax.config.update(name, value)
+    compilation_cache.reset_cache()
 
 
 @pytest.fixture(scope="session", autouse=True)
