@@ -201,6 +201,10 @@ class _ConstantInputParams(_VectorTransformParams):
     )
 
 
+def _has_legacy_clamp_scale(params: Mapping[str, Any]) -> bool:
+    return "scale" in params
+
+
 def _without_legacy_clamp_scale(params: Mapping[str, Any]) -> dict[str, Any]:
     """Remove the unused scale field from v1 and unversioned Studio clamp nodes."""
     return {name: value for name, value in params.items() if name != "scale"}
@@ -310,7 +314,6 @@ _VECTOR_PORT_TYPES = PortTypeSpec(
 @component(
     "NetworkClamp",
     param_model=_NetworkClampParams,
-    param_projection=_without_legacy_clamp_scale,
     configure=lambda cls: {
         "builder": partial(
             _build_vector_intervention,
@@ -341,6 +344,7 @@ _VECTOR_PORT_TYPES = PortTypeSpec(
             target_param_schema_version="2",
             migration_id="feedbax.component.NetworkClamp.params.v1-to-v2",
             migrate_params=_without_legacy_clamp_scale,
+            matches_unversioned=_has_legacy_clamp_scale,
             description="Preserve disabled transforms and require a payload when enabled.",
         ),
     ),
