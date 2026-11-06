@@ -8,16 +8,61 @@ Provides continuous and discrete PID controllers with anti-windup.
 
 from __future__ import annotations
 
+from functools import partial
+
+import jax.numpy as jnp
 from equinox import field
 from equinox.nn import State, StateIndex
-import jax.numpy as jnp
 from jax.typing import DTypeLike
 from jaxtyping import PRNGKeyArray, PyTree
+from pydantic import BaseModel
+from pydantic import Field as ConfigField
 
-from feedbax.control._vector import initial_control_vector, require_control_vector
+from feedbax.component_registry import component
+from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.control._vector import (
+    _CONTROL_ERROR_PROTOTYPE,
+    _CONTROL_INPUT_DTYPE,
+    _control_output_prototype,
+    initial_control_vector,
+    require_control_vector,
+)
 from feedbax.runtime.graph import Component
 
 
+class _PIDParams(BaseModel):
+    Kp: float = ConfigField(default=1.0, json_schema_extra={"feedbax": {"required": True}})
+    Ki: float = 0.0
+    Kd: float = 0.0
+    dt: float = ConfigField(default=0.01, ge=0.0, json_schema_extra={"feedbax": {"required": True}})
+    n_dims: int = ConfigField(default=1, ge=1, json_schema_extra={"feedbax": {"required": True}})
+    input_dtype: str | None = ConfigField(
+        default=None, description=_CONTROL_INPUT_DTYPE.description
+    )
+
+
+class _ContinuousPIDParams(_PIDParams):
+    integral_limit: float | None = 1000.0
+
+
+class _DiscretePIDParams(_PIDParams):
+    output_limit: float | None = 1000.0
+
+
+@component(
+    "PID",
+    category="Control",
+    description="Continuous PID with anti-windup.",
+    param_model=_ContinuousPIDParams,
+    attribute_paths={"integral_limit": "integral_limit_param"},
+    icon="Gauge",
+    port_types=PortTypeSpec(
+        inputs={"error": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=partial(_control_output_prototype, port="error"),
+    input_prototype_parameter=_CONTROL_ERROR_PROTOTYPE,
+)
 class PID(Component):
     """Continuous PID controller with anti-windup clamping.
 
@@ -102,6 +147,20 @@ class PID(Component):
         return {"output": output}, state
 
 
+@component(
+    "PIDDiscrete",
+    category="Control",
+    description="Discrete PID (velocity form).",
+    param_model=_DiscretePIDParams,
+    attribute_paths={"output_limit": "output_limit_param"},
+    icon="Gauge",
+    port_types=PortTypeSpec(
+        inputs={"error": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=partial(_control_output_prototype, port="error"),
+    input_prototype_parameter=_CONTROL_ERROR_PROTOTYPE,
+)
 class PIDDiscrete(Component):
     """Discrete PID controller in velocity (incremental) form.
 

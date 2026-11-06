@@ -5,19 +5,33 @@
 """
 
 import math
-from typing import Optional, Type
+from collections.abc import Mapping
+from typing import Any, Optional, Type
 
 import diffrax as dfx
 import equinox as eqx
+import jax
+import jax.numpy as jnp
+import jax.tree as jt
 from equinox import field
 from equinox.nn import State, StateIndex
-import jax
-import jax.tree as jt
-import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 
 from feedbax._ode import ode_init, ode_step
-from feedbax.runtime.components import stateful_vector_prototype
+from feedbax.component_registry import component
+from feedbax.component_registry.declarations import ComponentConstructorPlan, ParameterField
+from feedbax.component_registry.prototypes import (
+    migrate_stateful_v1,
+    stateful_passthrough_output_prototype,
+)
+from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.migrations import ComponentMigration
+from feedbax.runtime.components import (
+    _STATEFUL_VECTOR_CONSTRUCTOR,
+    _STATEFUL_VECTOR_PROTOTYPE_FIELDS,
+    stateful_vector_output_prototype,
+    stateful_vector_prototype,
+)
 from feedbax.runtime.graph import Component
 from feedbax.runtime.state import StateBounds
 
@@ -40,6 +54,51 @@ class FilterState(eqx.Module):
     solver: PyTree
 
 
+def first_order_filter_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the filter signal prototype after checking its numerical domain."""
+    outputs = stateful_passthrough_output_prototype(params, inputs)
+    require_real_floating_filter_prototype(outputs["output"])
+    return outputs
+
+
+@component(
+    "FirstOrderFilter",
+    constructor=ComponentConstructorPlan(
+        context_adapters={"input_shape": ("input_proto", "array_prototype")}
+    ),
+    param_schema_version="2",
+    category="Channels",
+    description="First-order low-pass filter.",
+    parameter_fields=[
+        ParameterField(name="tau_rise", type="float", default=0.05, min=0.0, required=True),
+        ParameterField(name="tau_decay", type="float", default=0.05, min=0.0, required=True),
+        ParameterField(name="dt", type="float", default=0.001, min=0.0, required=True),
+        ParameterField(name="init_value", type="float", default=0.0, required=False),
+        ParameterField(name="input_shape", type="array", default=None, required=False),
+        ParameterField(name="input_dtype", type="str", default=None, required=False),
+    ],
+    icon="Filter",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=first_order_filter_output_prototype,
+    migrations=(
+        ComponentMigration(
+            source_type="FirstOrderFilter",
+            target_type="FirstOrderFilter",
+            owner="feedbax",
+            source_param_schema_version="1",
+            target_param_schema_version="2",
+            migration_id="feedbax.component.FirstOrderFilter.params.v1-to-v2",
+            migrate_params=migrate_stateful_v1,
+            description="Preserve stateful declarations with optional inferred input dtype.",
+        ),
+    ),
+)
 class FirstOrderFilter(Component):
     """Continuous-time first-order low-pass filter."""
 
@@ -114,7 +173,11 @@ class FirstOrderFilter(Component):
         input_value = inputs["input"]
 
         output, solver_state = ode_step(
-            self.solver, self._term, self.dt, filter_state.output, input_value,
+            self.solver,
+            self._term,
+            self.dt,
+            filter_state.output,
+            input_value,
             filter_state.solver,
         )
         output_state = FilterState(output=output, solver=solver_state)
@@ -168,6 +231,24 @@ class _HeldLowPass(eqx.Module):
         return lowpass, residual, state.set(self.state_index, FilterState(lowpass, None))
 
 
+@component(
+    "HighPassFilter",
+    constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
+    category="Signal Processing",
+    description="High-pass filter (input - lowpass).",
+    parameter_fields=[
+        ParameterField(name="tau", type="float", default=0.1, min=0.0, required=True),
+        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+        ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
+        *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
+    ],
+    icon="Filter",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=stateful_vector_output_prototype,
+)
 class HighPassFilter(Component):
     """High-pass filter: output = input - lowpass(input).
 
@@ -219,6 +300,25 @@ class HighPassFilter(Component):
         return {"output": output}, state
 
 
+@component(
+    "BandPassFilter",
+    constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
+    category="Signal Processing",
+    description="Band-pass: high-pass then low-pass.",
+    parameter_fields=[
+        ParameterField(name="tau_low", type="float", default=0.1, min=0.0, required=True),
+        ParameterField(name="tau_high", type="float", default=0.01, min=0.0, required=True),
+        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+        ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
+        *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
+    ],
+    icon="Filter",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=stateful_vector_output_prototype,
+)
 class BandPassFilter(Component):
     """Band-pass filter: cascade of high-pass and low-pass.
 

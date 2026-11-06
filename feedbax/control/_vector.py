@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from functools import partial
 from operator import index
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import jax
 import jax.numpy as jnp
 from jax.typing import DTypeLike
+
+from feedbax.component_registry.declarations import InputPrototypeParameter, ParameterField
 
 _Vector = TypeVar("_Vector")
 _CONTROL_DTYPES = frozenset(
@@ -67,3 +71,45 @@ def require_control_vector(
             f"{port} requires shape {expected.shape} and dtype {expected.dtype}, got {observed}"
         )
     return value
+
+
+def _control_vector(params: Mapping[str, Any], proto: Any, *, port: str) -> jax.ShapeDtypeStruct:
+    dtype = params.get("input_dtype")
+    if dtype is None and proto is not None:
+        dtype = getattr(proto, "dtype", None)
+    expected = control_vector_prototype(params.get("n_dims", 1), dtype)
+    if proto is not None:
+        require_control_vector(proto, expected, port=port)
+    return expected
+
+
+def _control_input_dtype(params: Mapping[str, Any], proto: Any, *, port: str) -> str:
+    return _control_vector(params, proto, port=port).dtype.name
+
+
+def _control_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+    *,
+    port: str,
+) -> dict[str, Any]:
+    proto = _control_vector(params, inputs.get(port), port=port)
+    return {"output": jnp.zeros(proto.shape, dtype=proto.dtype)}
+
+
+_CONTROL_INPUT_PROTOTYPE = InputPrototypeParameter(
+    "input", "input_dtype", partial(_control_input_dtype, port="input")
+)
+
+
+_CONTROL_ERROR_PROTOTYPE = InputPrototypeParameter(
+    "error", "input_dtype", partial(_control_input_dtype, port="error")
+)
+
+
+_CONTROL_INPUT_DTYPE = ParameterField(
+    name="input_dtype",
+    type="str",
+    default=None,
+    description="Real floating-point dtype. Defaults to the connected signal dtype when known.",
+)

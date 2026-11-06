@@ -5,15 +5,46 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 import equinox as eqx
-from equinox import field
-from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
+from equinox import field
+from equinox.nn import State, StateIndex
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax.component_registry import component
+from feedbax.component_registry.declarations import ParameterField
+from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.runtime.graph import Component
 
 
+@component(
+    "AffineFeedbackController",
+    category="Control",
+    description="Time-varying affine feedback controller with optional feedforward.",
+    parameter_fields=[
+        ParameterField(name="gain", type="array", default=[[[1.0]]], required=True),
+        ParameterField(name="bias", type="array", default=None, required=False),
+        ParameterField(name="feedforward", type="array", default=None, required=False),
+        ParameterField(
+            name="schedule_policy",
+            type="enum",
+            options=["hold", "error"],
+            default="hold",
+            required=False,
+        ),
+    ],
+    icon="GitBranch",
+    port_types=PortTypeSpec(
+        inputs={
+            "feedback": PortType(dtype="vector"),
+            "reference": PortType(dtype="vector"),
+            "feedforward": PortType(dtype="vector"),
+        },
+        outputs={"command": PortType(dtype="vector")},
+    ),
+    configure=lambda cls: {"output_prototype_fn": affine_feedback_output_prototype},
+    prototype_depends_on_connected_inputs=True,
+)
 class AffineFeedbackController(Component):
     """Time-varying affine feedback controller.
 

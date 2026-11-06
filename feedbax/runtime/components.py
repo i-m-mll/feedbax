@@ -2,20 +2,39 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Literal, Sequence
+from collections.abc import Mapping
+from math import prod
+from typing import Annotated, Any, Callable, Literal, Sequence
 
 import equinox as eqx
+import jax
+import jax.numpy as jnp
+import jax.random as jr
+import jax.tree as jt
+import numpy as np
 from equinox import Module, field
 from equinox.nn import State, StateIndex
-import jax
 from jax.flatten_util import ravel_pytree
-import jax.numpy as jnp
-import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
-import numpy as np
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
+from feedbax.component_registry import component
+from feedbax.component_registry.declarations import (
+    ComponentConstructorPlan,
+    MissingPrototypeInput,
+    ParameterField,
+)
+from feedbax.component_registry.prototypes import (
+    _missing_input,
+    _required_input,
+    array_prototype,
+    input_passthrough_output_prototype,
+    migrate_stateful_v1,
+    stateful_passthrough_output_prototype,
+)
+from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
+from feedbax.contracts.migrations import ComponentMigration
 from feedbax.runtime.graph import Component
-
 
 LINEAR_PARAM_SCHEMA_VERSION_V1 = "1"
 LINEAR_PARAM_SCHEMA_VERSION = "2"
@@ -80,6 +99,349 @@ def named_activation(activation: str | Callable) -> str:
     raise ValueError(f"Expected a built-in activation, got {activation!r}")
 
 
+_RequiredFloat = Annotated[float, Field(json_schema_extra={"feedbax": {"required": True}})]
+
+
+class _ConstantParams(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dtype: str | None = None
+
+    value: JsonValue = Field(
+        default=0.0,
+        json_schema_extra={"feedbax": {"type": "object", "required": True}},
+    )
+
+
+def _migrate_linear_v1(params: dict[str, Any]) -> dict[str, Any]:
+    return {**params, "initialization": "random"}
+
+
+def _shape_from_single_array(proto: Any, *, component: str, port: str) -> tuple[int, ...]:
+    leaves = jt.leaves(proto)
+    if len(leaves) != 1 or not hasattr(leaves[0], "shape"):
+        raise ValueError(
+            f"{component} output prototype requires {port!r} to be a single array prototype"
+        )
+    return tuple(int(dim) for dim in leaves[0].shape)
+
+
+def _array_proto_from_shape(shape: Any) -> Any | None:
+    if not isinstance(shape, (list, tuple)):
+        return None
+    try:
+        return jnp.zeros(tuple(int(dim) for dim in shape))
+    except (TypeError, ValueError):
+        return None
+
+
+def _proto_from_value(value: Any) -> Any:
+    return jt.map(lambda x: jnp.zeros_like(jnp.asarray(x)), value)
+
+
+def _positive_sizes(params: Mapping[str, Any], *, component: str) -> tuple[int, ...]:
+    sizes = params.get("sizes")
+    if not isinstance(sizes, (list, tuple)):
+        raise ValueError(f"{component} requires 'sizes' as a list of positive integers")
+    parsed = tuple(int(size) for size in sizes)
+    if not parsed:
+        raise ValueError(f"{component} sizes must contain at least one output size")
+    if any(size <= 0 for size in parsed):
+        raise ValueError(f"{component} sizes must be positive integers")
+    return parsed
+
+
+def _ravel_width(proto: Any, *, component: str, port: str) -> int:
+    leaves = jt.leaves(proto)
+    if not leaves or any(not hasattr(leaf, "shape") for leaf in leaves):
+        raise ValueError(f"{component} output prototype requires {port!r} to be array-shaped")
+    return sum(prod(tuple(int(dim) for dim in leaf.shape)) for leaf in leaves)
+
+
+def source_value_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a source prototype from the configured scalar/array value."""
+
+    value = params.get("value", 0.0)
+    if params.get("dtype") is not None:
+        value = jnp.asarray(value, dtype=params["dtype"])
+    return {"output": _proto_from_value(value)}
+
+
+def step_source_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a ramp/sine/pulse prototype from amplitude or slope params."""
+
+    return {"output": _proto_from_value(params.get("amplitude", params.get("slope", 1.0)))}
+
+
+def noise_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a random-noise sample prototype from the configured shape."""
+
+    return {"output": jnp.zeros(tuple(int(dim) for dim in params.get("shape", [1])))}
+
+
+def binary_elementwise_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the first available binary elementwise input prototype."""
+
+    proto = inputs.get("a")
+    if proto is None:
+        proto = inputs.get("b")
+    if proto is None:
+        raise MissingPrototypeInput(
+            "binary elementwise output prototype requires input prototype 'a' or 'b'"
+        )
+    return {"output": proto}
+
+
+def input_node_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return an input-node prototype under its configured output port."""
+
+    output_port = str(params.get("output_port", "output"))
+    return {output_port: _required_input(inputs, "input", component="Input")}
+
+
+def subtract_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the first available subtract input prototype as ``out``."""
+
+    del params
+    proto = inputs.get("a")
+    if proto is None:
+        proto = inputs.get("b")
+    if proto is None:
+        raise MissingPrototypeInput("Subtract output prototype requires input prototype 'a' or 'b'")
+    return {"out": proto}
+
+
+def sum_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the first available sum input prototype as ``output``."""
+
+    del params
+    for port in ("a", "b", "c", "d"):
+        proto = inputs.get(port)
+        if proto is not None:
+            return {"output": proto}
+    raise MissingPrototypeInput("Sum output prototype requires at least one input prototype")
+
+
+def reshape_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a reshaped array prototype."""
+
+    proto = _required_input(inputs, "input", component="Reshape")
+    leaves = jt.leaves(proto)
+    if len(leaves) != 1:
+        raise ValueError("Reshape output prototype requires a single array input")
+    shape = params.get("shape", params.get("output_shape", [1, 1]))
+    if not isinstance(shape, (list, tuple)):
+        raise ValueError("Reshape output prototype requires 'shape' as a list")
+    return {"output": jnp.zeros(tuple(int(dim) for dim in shape), dtype=leaves[0].dtype)}
+
+
+def matmul_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a prototype for ``a @ b``."""
+
+    del params
+    a = _required_input(inputs, "a", component="MatMul")
+    b = _required_input(inputs, "b", component="MatMul")
+    return {"out": jnp.matmul(jnp.zeros_like(a), jnp.zeros_like(b))}
+
+
+def ravel_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a one-dimensional flattened prototype for an arbitrary PyTree input."""
+
+    proto = _required_input(inputs, "input", component="Ravel")
+    return {"output": jnp.zeros((_ravel_width(proto, component="Ravel", port="input"),))}
+
+
+def linear_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a dense-layer output prototype from ``output_size``."""
+
+    return {"output": jnp.zeros((int(params.get("output_size", 1)),), dtype=params.get("dtype"))}
+
+
+def recurrent_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return GRU output and hidden prototypes from ``hidden_size``."""
+
+    hidden = jnp.zeros((int(params.get("hidden_size", 1)),), dtype=params.get("dtype"))
+    return {"output": hidden, "hidden": hidden}
+
+
+def lstm_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return LSTM output, hidden, and cell prototypes from ``hidden_size``."""
+
+    hidden = jnp.zeros((int(params.get("hidden_size", 1)),), dtype=params.get("dtype"))
+    return {"output": hidden, "hidden": hidden, "cell": hidden}
+
+
+def mux_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a concatenated vector prototype for all declared mux inputs."""
+
+    n_inputs = int(params.get("n_inputs", 2))
+    ports = [f"in_{index}" for index in range(n_inputs)]
+    extra_dynamic_ports = [
+        port
+        for port in inputs
+        if port.startswith("in_") and port.removeprefix("in_").isdigit() and port not in ports
+    ]
+    if extra_dynamic_ports:
+        raise ValueError(
+            f"Mux output prototype received ports {extra_dynamic_ports!r} outside "
+            f"declared n_inputs={n_inputs}"
+        )
+    missing = [port for port in ports if port not in inputs]
+    if missing:
+        raise MissingPrototypeInput(
+            "Mux output prototype requires input prototypes for ports "
+            + ", ".join(repr(port) for port in missing)
+        )
+    widths = [_ravel_width(inputs[port], component="Mux", port=port) for port in ports]
+    return {"output": jnp.zeros((sum(widths),), dtype=params.get("dtype"))}
+
+
+def demux_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return per-output prototypes by slicing the input final dimension."""
+
+    proto = _required_input(inputs, "input", component="Demux")
+    shape = _shape_from_single_array(proto, component="Demux", port="input")
+    if not shape:
+        raise ValueError("Demux input prototype must have at least one dimension")
+    sizes = _positive_sizes(params, component="Demux")
+    width = shape[-1]
+    total = sum(sizes)
+    if width != total:
+        raise ValueError(f"Demux input final dimension {width} does not match sum(sizes) {total}")
+    prefix = shape[:-1]
+    return {f"out_{index}": jnp.zeros((*prefix, size)) for index, size in enumerate(sizes)}
+
+
+def switch_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the routed-signal prototype when both switch arms agree."""
+
+    true_proto = _required_input(inputs, "true_input", component="Switch")
+    false_proto = _required_input(inputs, "false_input", component="Switch")
+    true_shape = _shape_from_single_array(true_proto, component="Switch", port="true_input")
+    false_shape = _shape_from_single_array(false_proto, component="Switch", port="false_input")
+    if true_shape != false_shape:
+        raise ValueError(
+            "Switch output prototype requires true_input and false_input "
+            f"to have matching shapes, got {true_shape!r} and {false_shape!r}"
+        )
+    return {"output": true_proto}
+
+
+def elementwise_affine_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the signal prototype for elementwise affine modulation."""
+
+    signal = inputs.get("signal")
+    if signal is not None:
+        return {"output": signal}
+    proto = _array_proto_from_shape(params.get("signal_shape"))
+    if proto is None:
+        raise _missing_input("signal", component="ElementwiseAffineModulator")
+    return {"output": proto}
+
+
+def spring_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return spring force with displacement shape."""
+
+    return {"force": _required_input(inputs, "displacement", component="Spring")}
+
+
+def damper_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return damper force with velocity shape."""
+
+    return {"force": _required_input(inputs, "velocity", component="Damper")}
+
+
+def stateful_vector_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the vector prototype shared by state storage and output."""
+
+    proto = inputs.get("input")
+    if proto is None:
+        proto = array_prototype(params)
+    return {"output": stateful_vector_prototype(int(params.get("n_dims", 1)), proto)}
+
+
+_STATEFUL_VECTOR_CONSTRUCTOR = ComponentConstructorPlan(
+    context_adapters={"input_shape": ("input_proto", "array_prototype")}
+)
+
+
+_STATEFUL_VECTOR_PROTOTYPE_FIELDS = (
+    ParameterField(name="input_shape", type="array", default=None, required=False),
+    ParameterField(name="input_dtype", type="str", default=None, required=False),
+)
+
+
+@component(
+    "Gain",
+    category="Math",
+    description="Multiply input by constant.",
+    icon="SlidersHorizontal",
+    output_prototype_fn=input_passthrough_output_prototype,
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+    ),
+)
 class Gain(Component):
     """Multiply input by a constant gain."""
 
@@ -88,7 +450,7 @@ class Gain(Component):
 
     gain: float
 
-    def __init__(self, gain: float = 1.0):
+    def __init__(self, gain: _RequiredFloat = 1.0):
         self.gain = float(gain)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -96,6 +458,22 @@ class Gain(Component):
         return {"output": output}, state
 
 
+@component(
+    "Input",
+    category="Sources",
+    description="Pass an external graph input through a source-like node.",
+    parameter_fields=[
+        ParameterField(name="output_port", type="str", default="output", required=True),
+    ],
+    input_ports=["input"],
+    output_ports=["output"],
+    icon="LogIn",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=input_node_output_prototype,
+)
 class Input(Component):
     """Pass a graph input through a source-like node."""
 
@@ -112,6 +490,22 @@ class Input(Component):
         return {self.output_port: inputs["input"]}, state
 
 
+@component(
+    "Sum",
+    category="Math",
+    description="Add present inputs.",
+    icon="Sigma",
+    port_types=PortTypeSpec(
+        inputs={
+            "a": PortType(dtype="any"),
+            "b": PortType(dtype="any"),
+            "c": PortType(dtype="any"),
+            "d": PortType(dtype="any"),
+        },
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=sum_output_prototype,
+)
 class Sum(Component):
     """Sum present inputs."""
 
@@ -128,6 +522,17 @@ class Sum(Component):
         return {"output": output}, state
 
 
+@component(
+    "Subtract",
+    category="Math",
+    description="Subtract input b from input a.",
+    icon="Minus",
+    port_types=PortTypeSpec(
+        inputs={"a": PortType(dtype="any"), "b": PortType(dtype="any")},
+        outputs={"out": PortType(dtype="any")},
+    ),
+    output_prototype_fn=subtract_output_prototype,
+)
 class Subtract(Component):
     """Subtract input ``b`` from input ``a``."""
 
@@ -139,6 +544,17 @@ class Subtract(Component):
         return {"out": output}, state
 
 
+@component(
+    "Multiply",
+    category="Math",
+    description="Element-wise product.",
+    icon="X",
+    port_types=PortTypeSpec(
+        inputs={"a": PortType(dtype="any"), "b": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=binary_elementwise_output_prototype,
+)
 class Multiply(Component):
     """Element-wise product of two inputs."""
 
@@ -150,6 +566,20 @@ class Multiply(Component):
         return {"output": output}, state
 
 
+@component(
+    "Reshape",
+    category="Math",
+    description="Reshape an array to a fixed output shape.",
+    parameter_fields=[
+        ParameterField(name="shape", type="array", default=[1, 1], required=True),
+    ],
+    icon="Rows3",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="array")},
+    ),
+    output_prototype_fn=reshape_output_prototype,
+)
 class Reshape(Component):
     """Reshape an array input to a configured shape."""
 
@@ -168,6 +598,17 @@ class Reshape(Component):
         return {"output": jnp.reshape(inputs["input"], self.shape)}, state
 
 
+@component(
+    "MatMul",
+    category="Math",
+    description="Matrix multiply a and b.",
+    icon="Table2",
+    port_types=PortTypeSpec(
+        inputs={"a": PortType(dtype="array"), "b": PortType(dtype="array")},
+        outputs={"out": PortType(dtype="array")},
+    ),
+    output_prototype_fn=matmul_output_prototype,
+)
 class MatMul(Component):
     """Matrix multiply inputs ``a`` and ``b``."""
 
@@ -178,6 +619,21 @@ class MatMul(Component):
         return {"out": jnp.matmul(inputs["a"], inputs["b"])}, state
 
 
+@component(
+    "Scale",
+    category="Math",
+    description="Multiply input by a scalar or broadcastable scale.",
+    parameter_fields=[
+        ParameterField(name="scale", type="float", default=1.0, required=True),
+        ParameterField(name="fixed", type="bool", default=False, required=False),
+    ],
+    icon="Scaling",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=input_passthrough_output_prototype,
+)
 class Scale(Component):
     """Multiply input by a scalar or broadcastable scale."""
 
@@ -197,6 +653,17 @@ class Scale(Component):
         return {"output": output}, state
 
 
+@component(
+    "Sigmoid",
+    category="Math",
+    description="Apply a logistic sigmoid elementwise.",
+    icon="Activity",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=input_passthrough_output_prototype,
+)
 class Sigmoid(Component):
     """Apply a logistic sigmoid elementwise."""
 
@@ -207,6 +674,28 @@ class Sigmoid(Component):
         return {"output": jt.map(jax.nn.sigmoid, inputs["input"])}, state
 
 
+@component(
+    "Activation",
+    constructor=ComponentConstructorPlan(renames={"activation": "activation_name"}),
+    attribute_paths={"activation": "activation_name"},
+    category="Math",
+    description="Apply a named elementwise activation.",
+    parameter_fields=[
+        ParameterField(
+            name="activation",
+            type="enum",
+            options=["identity", "tanh", "relu", "sigmoid", "softmax"],
+            default="identity",
+            required=True,
+        ),
+    ],
+    icon="Activity",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=input_passthrough_output_prototype,
+)
 class Activation(Component):
     """Apply one named activation elementwise without introducing parameters."""
 
@@ -241,6 +730,32 @@ def _affine_param(value: PyTree, shape: tuple[int, ...], name: str) -> PyTree:
     return jnp.broadcast_to(array, shape)
 
 
+@component(
+    "ElementwiseAffineModulator",
+    attribute_paths={"gain_init": "gain", "bias_init": "bias"},
+    category="Math",
+    description=(
+        "Per-element affine modulation: signal * (baseline + gain * modulator) + bias * modulator."
+    ),
+    parameter_fields=[
+        ParameterField(name="signal_shape", type="array", default=[1], required=True),
+        ParameterField(name="baseline", type="array", default=1.0, required=False),
+        ParameterField(name="gain_init", type="array", default=0.0, required=False),
+        ParameterField(name="bias_init", type="array", default=0.0, required=False),
+        ParameterField(name="trainable", type="bool", default=True, required=False),
+    ],
+    icon="SlidersHorizontal",
+    port_types=PortTypeSpec(
+        inputs={
+            "signal": PortType(dtype="vector"),
+            "modulator": PortType(dtype="vector"),
+            "scale": PortType(dtype="vector"),
+            "bias": PortType(dtype="vector"),
+        },
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=elementwise_affine_output_prototype,
+)
 class ElementwiseAffineModulator(Component):
     """Apply per-element affine modulation to a signal.
 
@@ -300,6 +815,17 @@ class ElementwiseAffineModulator(Component):
         return {"output": output}, state
 
 
+@component(
+    "Saturation",
+    category="Signal Processing",
+    description="Clamp to min/max range.",
+    icon="SlidersHorizontal",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=input_passthrough_output_prototype,
+)
 class Saturation(Component):
     """Clamp input to a min/max range."""
 
@@ -309,7 +835,7 @@ class Saturation(Component):
     min_val: float
     max_val: float
 
-    def __init__(self, min_val: float = -1.0, max_val: float = 1.0):
+    def __init__(self, min_val: _RequiredFloat = -1.0, max_val: _RequiredFloat = 1.0):
         self.min_val = float(min_val)
         self.max_val = float(max_val)
 
@@ -318,6 +844,19 @@ class Saturation(Component):
         return {"output": output}, state
 
 
+@component(
+    "Constant",
+    category="Sources",
+    description="Constant value output.",
+    param_model=_ConstantParams,
+    input_ports=[],
+    icon="Circle",
+    port_types=PortTypeSpec(
+        inputs={},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=source_value_output_prototype,
+)
 class Constant(Component):
     """Constant value output."""
 
@@ -336,6 +875,17 @@ class Constant(Component):
         return {"output": self.value}, state
 
 
+@component(
+    "Ravel",
+    category="Signal Processing",
+    description="Flatten a PyTree value into a vector.",
+    icon="Layers",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=ravel_output_prototype,
+)
 class Ravel(Component):
     """Flatten a PyTree input to a vector."""
 
@@ -367,6 +917,23 @@ class _StepSource(Component):
         return step, state.set(self.step_index, step + 1)
 
 
+@component(
+    "Ramp",
+    category="Sources",
+    description="Linear ramp over time.",
+    parameter_fields=[
+        ParameterField(name="slope", type="float", default=1.0, required=True),
+        ParameterField(name="intercept", type="float", default=0.0, required=True),
+        ParameterField(name="dt", type="float", default=0.01, required=True),
+    ],
+    input_ports=[],
+    icon="TrendingUp",
+    port_types=PortTypeSpec(
+        inputs={},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=step_source_output_prototype,
+)
 class Ramp(_StepSource):
     """Linear ramp over time."""
 
@@ -387,6 +954,25 @@ class Ramp(_StepSource):
         return {"output": output}, state
 
 
+@component(
+    "Sine",
+    category="Sources",
+    description="Sinusoidal signal.",
+    parameter_fields=[
+        ParameterField(name="amplitude", type="float", default=1.0, required=True),
+        ParameterField(name="frequency", type="float", default=1.0, required=True),
+        ParameterField(name="phase", type="float", default=0.0, required=False),
+        ParameterField(name="offset", type="float", default=0.0, required=False),
+        ParameterField(name="dt", type="float", default=0.01, required=True),
+    ],
+    input_ports=[],
+    icon="AudioWaveform",
+    port_types=PortTypeSpec(
+        inputs={},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=step_source_output_prototype,
+)
 class Sine(_StepSource):
     """Sinusoidal signal."""
 
@@ -423,6 +1009,25 @@ class Sine(_StepSource):
         return {"output": output}, state
 
 
+@component(
+    "Pulse",
+    category="Sources",
+    description="Pulse/square wave.",
+    parameter_fields=[
+        ParameterField(name="amplitude", type="float", default=1.0, required=True),
+        ParameterField(name="period", type="float", default=1.0, required=True),
+        ParameterField(name="duty_cycle", type="float", default=0.5, required=True),
+        ParameterField(name="offset", type="float", default=0.0, required=False),
+        ParameterField(name="dt", type="float", default=0.01, required=True),
+    ],
+    input_ports=[],
+    icon="Activity",
+    port_types=PortTypeSpec(
+        inputs={},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=step_source_output_prototype,
+)
 class Pulse(_StepSource):
     """Pulse/square wave."""
 
@@ -459,6 +1064,23 @@ class Pulse(_StepSource):
         return {"output": output}, state
 
 
+@component(
+    "Noise",
+    category="Signal Processing",
+    description="Random noise source.",
+    parameter_fields=[
+        ParameterField(name="mean", type="float", default=0.0, required=False),
+        ParameterField(name="std", type="float", default=1.0, required=True),
+        ParameterField(name="shape", type="array", default=[1], required=False),
+    ],
+    input_ports=[],
+    icon="Sparkles",
+    port_types=PortTypeSpec(
+        inputs={},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=noise_output_prototype,
+)
 class Noise(Component):
     """Random noise source."""
 
@@ -478,6 +1100,17 @@ class Noise(Component):
         return {"output": sample}, state
 
 
+@component(
+    "Spring",
+    category="Mechanics",
+    description="Linear spring.",
+    icon="Move",
+    port_types=PortTypeSpec(
+        inputs={"displacement": PortType(dtype="vector")},
+        outputs={"force": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=spring_output_prototype,
+)
 class Spring(Component):
     """Linear spring: F = k * displacement."""
 
@@ -486,7 +1119,7 @@ class Spring(Component):
 
     stiffness: float
 
-    def __init__(self, stiffness: float = 1.0):
+    def __init__(self, stiffness: _RequiredFloat = 1.0):
         self.stiffness = float(stiffness)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -494,6 +1127,17 @@ class Spring(Component):
         return {"force": output}, state
 
 
+@component(
+    "Damper",
+    category="Mechanics",
+    description="Viscous damper.",
+    icon="Move",
+    port_types=PortTypeSpec(
+        inputs={"velocity": PortType(dtype="vector")},
+        outputs={"force": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=damper_output_prototype,
+)
 class Damper(Component):
     """Viscous damper: F = b * velocity."""
 
@@ -502,7 +1146,7 @@ class Damper(Component):
 
     damping: float
 
-    def __init__(self, damping: float = 1.0):
+    def __init__(self, damping: _RequiredFloat = 1.0):
         self.damping = float(damping)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -510,6 +1154,39 @@ class Damper(Component):
         return {"force": output}, state
 
 
+@component(
+    "DelayLine",
+    constructor=ComponentConstructorPlan(
+        context_adapters={"input_shape": ("input_proto", "array_prototype")}
+    ),
+    param_schema_version="2",
+    category="Signal Processing",
+    description="Discrete delay buffer.",
+    parameter_fields=[
+        ParameterField(name="delay", type="int", default=1, min=0, required=True),
+        ParameterField(name="init_value", type="float", default=0.0, required=False),
+        ParameterField(name="input_shape", type="array", default=None, required=False),
+        ParameterField(name="input_dtype", type="str", default=None, required=False),
+    ],
+    icon="Clock",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=stateful_passthrough_output_prototype,
+    migrations=(
+        ComponentMigration(
+            source_type="DelayLine",
+            target_type="DelayLine",
+            owner="feedbax",
+            source_param_schema_version="1",
+            target_param_schema_version="2",
+            migration_id="feedbax.component.DelayLine.params.v1-to-v2",
+            migrate_params=migrate_stateful_v1,
+            description="Preserve stateful declarations with optional inferred input dtype.",
+        ),
+    ),
+)
 class DelayLine(Component):
     """Discrete delay buffer."""
 
@@ -544,6 +1221,55 @@ class DelayLine(Component):
         return {"output": next_output}, state
 
 
+@component(
+    "Linear",
+    build_context_fields=("key",),
+    constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+    attribute_paths={"activation": "activation_name"},
+    category="Neural Networks",
+    description="Linear layer.",
+    parameter_fields=[
+        ParameterField(name="dtype", type="str", default="float32", required=False),
+        ParameterField(name="input_size", type="int", default=1, min=1, required=True),
+        ParameterField(name="output_size", type="int", default=1, min=1, required=True),
+        ParameterField(name="use_bias", type="bool", default=True, required=False),
+        ParameterField(name="bias_init", type="float", default=None, required=False),
+        ParameterField(
+            name="initialization",
+            type="enum",
+            options=["random", "zero_bias", "zeros"],
+            default="random",
+            required=False,
+        ),
+        ParameterField(
+            name="activation",
+            type="enum",
+            options=["identity", "tanh", "relu", "sigmoid", "softmax"],
+            default="identity",
+            required=False,
+        ),
+    ],
+    icon="Minus",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=linear_output_prototype,
+    param_schema_version=LINEAR_PARAM_SCHEMA_VERSION,
+    trainable_by_default=True,
+    migrations=(
+        ComponentMigration(
+            source_type="Linear",
+            target_type="Linear",
+            owner="feedbax",
+            source_param_schema_version=LINEAR_PARAM_SCHEMA_VERSION_V1,
+            target_param_schema_version=LINEAR_PARAM_SCHEMA_VERSION,
+            migration_id="feedbax.component.Linear.params.v1-to-v2",
+            migrate_params=_migrate_linear_v1,
+            description="Make the existing random Linear initialization explicit.",
+        ),
+    ),
+)
 class Linear(Component):
     """Linear layer."""
 
@@ -605,6 +1331,44 @@ class Linear(Component):
         return {"output": output}, state
 
 
+@component(
+    "MLP",
+    build_context_fields=("key",),
+    constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+    attribute_paths={
+        "activation": "activation_name",
+        "final_activation": "final_activation_name",
+    },
+    category="Neural Networks",
+    description="Multi-layer perceptron.",
+    parameter_fields=[
+        ParameterField(name="dtype", type="str", default="float32", required=False),
+        ParameterField(name="input_size", type="int", default=4, min=1, required=True),
+        ParameterField(name="output_size", type="int", default=2, min=1, required=True),
+        ParameterField(name="hidden_sizes", type="array", default=[64], required=False),
+        ParameterField(
+            name="activation",
+            type="enum",
+            options=["relu", "tanh", "identity"],
+            default="relu",
+            required=False,
+        ),
+        ParameterField(
+            name="final_activation",
+            type="enum",
+            options=["identity", "tanh", "relu"],
+            default="identity",
+            required=False,
+        ),
+    ],
+    icon="Brain",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=linear_output_prototype,
+    trainable_by_default=True,
+)
 class MLP(Component):
     """Multi-layer perceptron."""
 
@@ -663,6 +1427,28 @@ class GRUState(Module):
     output: Array
 
 
+@component(
+    "GRU",
+    build_context_fields=("key",),
+    constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+    attribute_paths={"use_bias": "cell.use_bias"},
+    category="Neural Networks",
+    description="GRU cell.",
+    parameter_fields=[
+        ParameterField(name="dtype", type="str", default="float32", required=False),
+        ParameterField(name="input_size", type="int", default=4, min=1, required=True),
+        ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
+        ParameterField(name="use_bias", type="bool", default=True, required=False),
+        ParameterField(name="stateful", type="bool", default=True, required=False),
+    ],
+    icon="BrainCircuit",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=recurrent_output_prototype,
+    trainable_by_default=True,
+)
 class GRU(Component):
     """Standalone GRU cell."""
 
@@ -721,6 +1507,35 @@ class LSTMState(Module):
     output: Array
 
 
+@component(
+    "LSTM",
+    build_context_fields=("key",),
+    constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+    attribute_paths={"use_bias": "cell.use_bias"},
+    category="Neural Networks",
+    description="LSTM cell.",
+    parameter_fields=[
+        ParameterField(name="dtype", type="str", default="float32", required=False),
+        ParameterField(name="input_size", type="int", default=4, min=1, required=True),
+        ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
+        ParameterField(name="use_bias", type="bool", default=True, required=False),
+    ],
+    icon="BrainCircuit",
+    port_types=PortTypeSpec(
+        inputs={
+            "input": PortType(dtype="vector"),
+            "hidden": PortType(dtype="vector"),
+            "cell": PortType(dtype="vector"),
+        },
+        outputs={
+            "output": PortType(dtype="vector"),
+            "hidden": PortType(dtype="vector"),
+            "cell": PortType(dtype="vector"),
+        },
+    ),
+    output_prototype_fn=lstm_output_prototype,
+    trainable_by_default=True,
+)
 class LSTM(Component):
     """Standalone LSTM cell."""
 
@@ -765,6 +1580,33 @@ class LSTM(Component):
         return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state
 
 
+@component(
+    "Mux",
+    category="Signal Processing",
+    description="Concatenate inputs into single vector.",
+    parameter_fields=[
+        ParameterField(name="dtype", type="str", default=None, required=False),
+        ParameterField(name="n_inputs", type="int", default=2, min=1, required=True),
+    ],
+    input_ports=["in_0", "in_1"],
+    icon="GitMerge",
+    port_types=PortTypeSpec(
+        inputs={
+            "in_0": PortType(dtype="vector"),
+            "in_1": PortType(dtype="vector"),
+        },
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    dynamic_port_policy=DynamicPortPolicy(
+        count_param="n_inputs",
+        count_mode="integer",
+        direction="input",
+        fixed_output_ports=("output",),
+        generated_name_template="in_{index}",
+        dynamic_port_type=PortType(dtype="vector"),
+    ),
+    output_prototype_fn=mux_output_prototype,
+)
 class Mux(Component):
     """Concatenate multiple inputs into a single vector.
 
@@ -806,6 +1648,32 @@ class Mux(Component):
         return {"output": output}, state
 
 
+@component(
+    "Demux",
+    category="Signal Processing",
+    description="Split vector into multiple outputs.",
+    parameter_fields=[
+        ParameterField(name="sizes", type="array", default=[1, 1], required=True),
+    ],
+    output_ports=["out_0", "out_1"],
+    icon="GitBranch",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={
+            "out_0": PortType(dtype="vector"),
+            "out_1": PortType(dtype="vector"),
+        },
+    ),
+    dynamic_port_policy=DynamicPortPolicy(
+        count_param="sizes",
+        count_mode="sequence_length",
+        direction="output",
+        fixed_input_ports=("input",),
+        generated_name_template="out_{index}",
+        dynamic_port_type=PortType(dtype="vector"),
+    ),
+    output_prototype_fn=demux_output_prototype,
+)
 class Demux(Component):
     """Split a vector into multiple outputs by size.
 
@@ -849,6 +1717,25 @@ class Demux(Component):
         return outputs, state
 
 
+@component(
+    "Switch",
+    runtime_type=None,
+    category="Signal Processing",
+    description="Route signal by threshold condition.",
+    parameter_fields=[
+        ParameterField(name="threshold", type="float", default=0.0, required=True),
+    ],
+    icon="GitCompare",
+    port_types=PortTypeSpec(
+        inputs={
+            "condition": PortType(dtype="scalar"),
+            "true_input": PortType(dtype="any"),
+            "false_input": PortType(dtype="any"),
+        },
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=switch_output_prototype,
+)
 class Switch(Component):
     """Route signal based on a threshold condition.
 
@@ -883,6 +1770,21 @@ class Switch(Component):
         return {"output": output}, state
 
 
+@component(
+    "DeadZone",
+    runtime_type=None,
+    category="Signal Processing",
+    description="Zero output for small inputs.",
+    parameter_fields=[
+        ParameterField(name="threshold", type="float", default=0.1, min=0.0, required=True),
+    ],
+    icon="MinusSquare",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+    ),
+    output_prototype_fn=input_passthrough_output_prototype,
+)
 class DeadZone(Component):
     """Dead-zone nonlinearity: zero output for small inputs.
 
@@ -928,6 +1830,25 @@ def stateful_vector_prototype(n_dims: int, input_proto: Array | None = None) -> 
     return input_proto
 
 
+@component(
+    "RateLimiter",
+    constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
+    category="Signal Processing",
+    description="Limit rate of change of signal.",
+    parameter_fields=[
+        ParameterField(name="max_rate", type="float", default=1.0, min=0.0, required=True),
+        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+        ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
+        ParameterField(name="initial_value", type="float", default=0.0, required=False),
+        *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
+    ],
+    icon="Gauge",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=stateful_vector_output_prototype,
+)
 class RateLimiter(Component):
     """Limit the rate of change of a signal.
 
