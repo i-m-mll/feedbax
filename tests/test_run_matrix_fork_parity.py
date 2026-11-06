@@ -61,7 +61,6 @@ from tests.support.checkpoint_minimax_plugin import (
     PLUGIN_REGISTRATION,
     checkpoint_minimax_method_program,
 )
-from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 @pytest.fixture
