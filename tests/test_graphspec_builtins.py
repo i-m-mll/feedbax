@@ -1779,6 +1779,64 @@ def test_demux_graphspec_executes_as_internal_node() -> None:
     assert jnp.allclose(outputs["right"], jnp.array([3.0]))
 
 
+@pytest.mark.usefixtures("enable_jax_x64")
+def test_stateful_signal_blocks_compile_and_round_trip_with_float32_carry() -> None:
+    stages = {
+        "limiter": ("RateLimiter", {"max_rate": 2.0, "n_dims": 2, "initial_value": 0.1}),
+        "highpass": ("HighPassFilter", {"tau": 0.2}),
+        "bandpass": ("BandPassFilter", {"tau_low": 0.4, "tau_high": 0.2}),
+    }
+    spec = GraphSpec(
+        nodes={
+            name: ComponentSpec(
+                type=type_name,
+                params={"dt": 0.1, **params},
+                input_ports=["input"],
+                output_ports=["output"],
+            )
+            for name, (type_name, params) in stages.items()
+        },
+        wires=[
+            WireSpec(
+                source_node=source, source_port="output", target_node=target, target_port="input"
+            )
+            for source, target in [("limiter", "highpass"), ("highpass", "bandpass")]
+        ],
+        input_ports=["input"],
+        output_ports=list(stages),
+        input_bindings={"input": ("limiter", "input")},
+        output_bindings={name: (name, "output") for name in stages},
+    )
+    registry = _components()
+    samples = jnp.array([[1.0, -1.0], [1.0, -1.0]], dtype=jnp.float32)
+    graph = spec_to_graph(spec, registry, {("limiter", "input"): samples[0]})
+    roundtrip = GraphSpec.model_validate_json(graph_to_spec(graph, registry).model_dump_json())
+    assert roundtrip.nodes["limiter"].params["initial_value"] == 0.1
+    rebuilt = spec_to_graph(roundtrip, registry)
+    key = jr.key(0)
+
+    # Euler low-pass coefficients are 1/2 for highpass and 1/4 then 1/2 for bandpass.
+    expected = {
+        "limiter": [[0.3, -0.1], [0.5, -0.3]],
+        "highpass": [[0.15, -0.05], [0.175, -0.125]],
+        "bandpass": [[0.05625, -0.01875], [0.0796875, -0.0515625]],
+    }
+    for candidate in (graph, rebuilt):
+
+        def step(state, sample):
+            outputs, next_state = candidate({"input": sample}, state, key=key)
+            return next_state, outputs
+
+        state = candidate.init_state(key=key)
+        assert {leaf.dtype for leaf in jax.tree.leaves(state)} == {jnp.dtype(jnp.float32)}
+        _, outputs = jax.lax.scan(step, state, samples)
+        for name, values in expected.items():
+            output = outputs[name]
+            assert output.shape == samples.shape
+            assert output.dtype == jnp.float32
+            assert jnp.allclose(output, jnp.array(values, dtype=jnp.float32), atol=1e-7)
+
+
 def test_demux_graphspec_rejects_invalid_sizes() -> None:
     with pytest.raises(ValueError, match="Demux sizes must be positive"):
         spec_to_graph(

@@ -24,7 +24,14 @@ from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.component_registry.prototypes import array_prototype, prototype_params
 
 
-STATEFUL_PROTOTYPE_TYPES = {"Channel", "DelayLine", "FirstOrderFilter"}
+STATEFUL_PROTOTYPE_TYPES = {
+    "BandPassFilter",
+    "Channel",
+    "DelayLine",
+    "FirstOrderFilter",
+    "HighPassFilter",
+    "RateLimiter",
+}
 
 
 class DerivedDimensionError(ValueError):

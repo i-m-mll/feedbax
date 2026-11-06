@@ -12,6 +12,7 @@ from jax.flatten_util import ravel_pytree
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
+import numpy as np
 
 from feedbax.runtime.graph import Component
 
@@ -847,6 +848,17 @@ class DeadZone(Component):
         return {"output": output}, state
 
 
+def stateful_vector_prototype(n_dims: int, input_proto: Array | None = None) -> Array:
+    """Use a resolved floating vector, or allocate one from the declared dimension."""
+    if input_proto is None:
+        return jnp.zeros(n_dims)
+    if getattr(input_proto, "ndim", None) != 1 or not jnp.issubdtype(
+        input_proto.dtype, jnp.floating
+    ):
+        raise ValueError("Stateful signal blocks require a real floating vector input")
+    return input_proto
+
+
 class RateLimiter(Component):
     """Limit the rate of change of a signal.
 
@@ -855,8 +867,9 @@ class RateLimiter(Component):
     Args:
         max_rate: Maximum allowed rate of change (units per second).
         dt: Time step.
-        n_dims: Dimensionality of the signal.
+        n_dims: Dimensionality used when no input prototype is supplied.
         initial_value: Initial previous-output value.
+        input_proto: Shape and dtype of the signal.
     """
 
     input_ports = ("input",)
@@ -865,6 +878,7 @@ class RateLimiter(Component):
     max_rate: float
     dt: float
     n_dims: int = field(static=True)
+    _initial_value_bits: Array
     state_index: StateIndex
 
     def __init__(
@@ -873,12 +887,27 @@ class RateLimiter(Component):
         dt: float = 0.01,
         n_dims: int = 1,
         initial_value: float = 0.0,
+        *,
+        input_proto: Array | None = None,
     ):
         self.max_rate = float(max_rate)
         self.dt = float(dt)
         self.n_dims = n_dims
-        initial_state = jnp.zeros(n_dims) + initial_value
+        # Keep the authored precision in a dynamic, nontrainable leaf even without JAX x64.
+        self._initial_value_bits = jnp.asarray(
+            np.array([initial_value], dtype="<f8").view(np.uint8)
+        )
+        prototype = stateful_vector_prototype(n_dims, input_proto)
+        initial_state = jnp.full_like(prototype, initial_value)
         self.state_index = StateIndex(initial_state)
+
+    @property
+    def initial_value(self) -> float:
+        return np.asarray(self._initial_value_bits).view("<f8").item()
+
+    @property
+    def input_proto(self) -> Array:
+        return self.state_index.init
 
     def __call__(
         self,
