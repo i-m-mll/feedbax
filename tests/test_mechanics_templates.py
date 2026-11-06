@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from feedbax.acausal import (
@@ -192,6 +193,48 @@ def test_analytical_musculoskeletal_plant_builds_and_steps_from_graph_spec() -> 
     )
     assert "effector" in outputs
     assert graph_to_spec(graph).nodes["plant"].type == "AnalyticalMusculoskeletalPlant"
+
+
+def test_registered_analytical_plant_projects_integrated_activations() -> None:
+    registry = _registry()
+    key = jax.random.PRNGKey(0)
+
+    def step_from_zero(clip_states, excitation):
+        spec = GraphSpec(
+            nodes={
+                "plant": ComponentSpec(
+                    type="AnalyticalMusculoskeletalPlant",
+                    params={
+                        "dt": 0.02,
+                        "tau_act": 0.01,
+                        "solver_type": "euler",
+                        "clip_states": clip_states,
+                    },
+                    input_ports=["excitation"],
+                    output_ports=["effector", "state"],
+                )
+            },
+            input_ports=["excitation"],
+            output_ports=["state"],
+            input_bindings={"excitation": ("plant", "excitation")},
+            output_bindings={"state": ("plant", "state")},
+        )
+        graph = spec_to_graph(spec, registry)
+        state = graph.init_state(key=key)
+        outputs, _ = graph({"excitation": jnp.full(6, excitation)}, state, key=key)
+        return outputs["state"].plant
+
+    projected = step_from_zero(True, 1.0)
+    unprojected = step_from_zero(False, 1.0)
+    np.testing.assert_allclose(projected.muscles.activations, np.ones(6))
+    np.testing.assert_allclose(unprojected.muscles.activations, np.full(6, 2.0))
+
+    in_range = step_from_zero(True, 0.25)
+    np.testing.assert_allclose(in_range.muscles.activations, np.full(6, 0.5))
+    for actual, expected in zip(
+        jax.tree.leaves(in_range), jax.tree.leaves(step_from_zero(False, 0.25)), strict=True
+    ):
+        np.testing.assert_allclose(actual, expected)
 
 
 def test_mechanics_domain_registry_entries_compile_or_template_build() -> None:

@@ -14,22 +14,43 @@ delegate time integration to either:
 
 from __future__ import annotations
 
-from functools import cached_property
-from typing import Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import diffrax as dfx
 import equinox as eqx
 from equinox import Module, field
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
+from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax._ode import ode_init, ode_step
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.runtime.state import CartesianState
 
 
-
+def step_plant_ode(
+    plant: AbstractPlant,
+    solver: dfx.AbstractSolver,
+    dt: float,
+    state: PlantState,
+    action: PyTree[Array],
+    solver_state: PyTree,
+    *,
+    key: PRNGKeyArray | None = None,
+    storage_like: PlantState | None = None,
+) -> tuple[PlantState, PyTree]:
+    """Prepare actuation once, integrate, and project the accepted plant state."""
+    prepared = plant.kinematics_update(action, state, key=key)
+    next_state, solver_state = ode_step(
+        solver,
+        dfx.ODETerm(plant.vector_field),
+        dt,
+        prepared,
+        action,
+        solver_state,
+        storage_like=state if storage_like is None else storage_like,
+    )
+    return plant.project_state(next_state), solver_state
 
 class PhysicsState(Module):
     """Unified physics state returned by all backends.
@@ -195,8 +216,7 @@ class DiffraxBackend(Module):
     ) -> PhysicsState:
         """One Diffrax solver substep.
 
-        Applies kinematics update (clipping, muscle geometry) then
-        steps the ODE solver, matching the legacy Mechanics path.
+        Prepares kinematics and actuation, then integrates and projects the state.
 
         Args:
             plant: The plant model.
@@ -206,10 +226,8 @@ class DiffraxBackend(Module):
         Returns:
             Updated PhysicsState.
         """
-        plant_state = plant.kinematics_update(action, state.plant)
-        plant_state, solver_state = ode_step(
-            self.solver, self._term(plant), self.sub_dt, plant_state, action, state.aux,
-            storage_like=state.plant,
+        plant_state, solver_state = step_plant_ode(
+            plant, self.solver, self.sub_dt, state.plant, action, state.aux,
         )
         effector = plant.skeleton.effector(plant_state.skeleton)
         return PhysicsState(
@@ -319,7 +337,8 @@ class MJXBackend(Module):
         new_plant = eqx.tree_at(
             lambda s: s.skeleton, state.plant, new_skeleton
         )
-        effector = plant.skeleton.effector(new_skeleton)
+        new_plant = plant.project_state(new_plant)
+        effector = plant.skeleton.effector(new_plant.skeleton)
         return PhysicsState(
             plant=new_plant, effector=effector, aux=None
         )

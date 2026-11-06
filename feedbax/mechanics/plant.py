@@ -78,8 +78,23 @@ class AbstractPlant(AbstractDynamicalSystem[PlantState]):
         *,
         key: Optional[PRNGKeyArray] = None,
     ) -> PlantState:
-        """Apply instantaneous (non-ODE) updates to the plant state."""
-        return state
+        """Prepare the state for integration, including any instantaneous actuation."""
+        return self.project_state(state)
+
+    def project_state(self, state: PlantState) -> PlantState:
+        """Apply enabled state bounds without advancing kinematics or actuation.
+
+        Integrators use this on each accepted step before observing or storing it.
+        The projection preserves unbounded leaves and each leaf's storage dtype.
+        """
+        if not self.clip_states:
+            return state
+        return jt.map(
+            lambda bounds, value: value if bounds is None else clip_state(bounds, value),
+            self.bounds,
+            state,
+            is_leaf=lambda x: x is None or isinstance(x, StateBounds),
+        )
 
     @property
     def bounds(self) -> PyTree[StateBounds]:
@@ -101,9 +116,6 @@ class AbstractPlant(AbstractDynamicalSystem[PlantState]):
     def init(self, *, key: PRNGKeyArray) -> PlantState:
         """Return a default plant state."""
         ...
-
-    def _clip_state(self, bounds: StateBounds, substate):
-        return clip_state(bounds, substate)
 
 
 class AbstractMuscledPlant(AbstractPlant):
@@ -145,21 +157,6 @@ class DirectForceInput(AbstractPlant):
                     where_state=lambda state: state.skeleton,
                 )
             }
-        )
-
-    def kinematics_update(
-        self,
-        input: PyTree[Array],
-        state: PlantState,
-        *,
-        key: Optional[PRNGKeyArray] = None,
-    ) -> PlantState:
-        if not self.clip_states:
-            return state
-        return eqx.tree_at(
-            lambda s: s.skeleton,
-            state,
-            self._clip_state(self.bounds.skeleton, state.skeleton),
         )
 
     @property
@@ -260,7 +257,7 @@ class MuscledArm(AbstractMuscledPlant):
             state = eqx.tree_at(
                 lambda s: s.skeleton,
                 state,
-                self._clip_state(self.bounds.skeleton, state.skeleton),
+                clip_state(self.skeleton.bounds, state.skeleton),
             )
 
         # Muscle geometry
@@ -272,11 +269,11 @@ class MuscledArm(AbstractMuscledPlant):
             (length, velocity),
         )
 
-        # Clip muscle state
+        # Keep the geometry in the muscle force law's domain.
         state = eqx.tree_at(
             lambda s: s.muscles,
             state,
-            self._clip_state(self.bounds.muscles, state.muscles),
+            clip_state(self.muscle_model.bounds, state.muscles),
         )
 
         # Muscle tension

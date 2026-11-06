@@ -62,6 +62,7 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         effector_site_id: int,
         effector_body_id: int,
     ):
+        from mujoco import mjtJoint
         import numpy as np
 
         if not 0 <= effector_site_id < mjx_model.nsite:
@@ -80,18 +81,24 @@ class MJXSkeleton(AbstractSkeleton[MJXSkeletonState]):
         self.nv = int(mjx_model.nv)
         self.nbody = int(mjx_model.nbody)
 
-        # Compute bounds eagerly from concrete model data (not inside JIT)
-        jnt_range = np.asarray(mjx_model.jnt_range)  # (njnt, 2)
-        has_limits = np.any(jnt_range != 0)
-        if has_limits:
+        scalar_joint = np.isin(
+            mjx_model.jnt_type, [mjtJoint.mjJNT_HINGE, mjtJoint.mjJNT_SLIDE]
+        )
+        limited = np.asarray(mjx_model.jnt_limited, dtype=bool) & scalar_joint
+        if np.any(limited):
+            addresses = mjx_model.jnt_qposadr[limited]
+            joint_ranges = np.asarray(mjx_model.jnt_range)[limited]
+            low = np.full(self.nq, -np.inf, dtype=joint_ranges.dtype)
+            high = np.full(self.nq, np.inf, dtype=joint_ranges.dtype)
+            low[addresses], high[addresses] = joint_ranges.T
             self._bounds = StateBounds(
                 low=MJXSkeletonState(
-                    qpos=jnp.array(jnt_range[:self.nq, 0]),
+                    qpos=jnp.asarray(low),
                     qvel=None,
                     effector_force=None,
                 ),
                 high=MJXSkeletonState(
-                    qpos=jnp.array(jnt_range[:self.nq, 1]),
+                    qpos=jnp.asarray(high),
                     qvel=None,
                     effector_force=None,
                 ),

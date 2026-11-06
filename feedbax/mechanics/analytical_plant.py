@@ -23,7 +23,7 @@ from equinox import Module, field
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
+from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 
 from feedbax.mechanics.body import BodyPreset
 from feedbax.mechanics.hill_muscles import (
@@ -430,42 +430,6 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
     def dynamics_spec(self) -> Mapping[str, DynamicsComponent[PlantState]]:
         """Empty -- vector_field is overridden directly (monolithic)."""
         return {}
-
-    def kinematics_update(
-        self,
-        input: PyTree[Array],
-        state: PlantState,
-        *,
-        key: Optional[PRNGKeyArray] = None,
-    ) -> PlantState:
-        """Apply instantaneous updates: clip angles and activations.
-
-        Args:
-            input: Muscle excitations (unused here).
-            state: Current plant state.
-            key: Unused.
-
-        Returns:
-            Plant state with clipped skeleton angles and muscle activations.
-        """
-        if not self.clip_states:
-            return state
-
-        # Clip skeleton state (joint angles to bounds).
-        state = eqx.tree_at(
-            lambda s: s.skeleton,
-            state,
-            self._clip_state(self.bounds.skeleton, state.skeleton),
-        )
-
-        # Clip activations to [0, 1].
-        state = eqx.tree_at(
-            lambda s: s.muscles.activations,
-            state,
-            jnp.clip(state.muscles.activations, 0.0, 1.0),
-        )
-
-        return state
 
     @property
     def bounds(self) -> PlantState:

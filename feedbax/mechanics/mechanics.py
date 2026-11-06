@@ -24,10 +24,10 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax._ode import ode_init, ode_step, restore_storage_dtypes
+from feedbax._ode import ode_init, restore_storage_dtypes
 from feedbax.mechanics.dynamics import LinearSystem
 from feedbax.runtime.graph import Component
-from feedbax.mechanics.backend import PhysicsBackend, PhysicsState
+from feedbax.mechanics.backend import PhysicsBackend, PhysicsState, step_plant_ode
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.runtime.state import CartesianState
 
@@ -200,7 +200,7 @@ class Mechanics(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        """Legacy Diffrax stepping path (unchanged from original).
+        """Single-step Diffrax path for Mechanics without an explicit backend.
 
         Args:
             inputs: Dict with ``"force"`` key.
@@ -225,11 +225,9 @@ class Mechanics(Component):
             skeleton_state,
         )
 
-        # Kinematics update (non-ODE ops).
-        plant_state = self.plant.kinematics_update(force, plant_state, key=key)
-
-        plant_state, solver_state = ode_step(
-            self.solver, self._term, self.dt, plant_state, force, mechanics_state.solver,
+        plant_state, solver_state = step_plant_ode(
+            self.plant, self.solver, self.dt, plant_state, force, mechanics_state.solver,
+            key=key,
             storage_like=mechanics_state.plant,
         )
 

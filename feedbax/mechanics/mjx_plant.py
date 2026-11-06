@@ -19,8 +19,7 @@ import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 
 from feedbax.mechanics.plant import AbstractPlant, DynamicsComponent, PlantState
-from feedbax.mechanics.skeleton.mjx_skeleton import MJXSkeleton, MJXSkeletonState
-from feedbax.runtime.state import StateBounds
+from feedbax.mechanics.skeleton.mjx_skeleton import MJXSkeleton
 
 
 class MJXPlant(AbstractPlant):
@@ -241,32 +240,6 @@ class MJXPlant(AbstractPlant):
     def dynamics_spec(self) -> Mapping[str, DynamicsComponent[PlantState]]:
         """Empty -- MJXPlant overrides ``vector_field`` directly."""
         return {}
-
-    def kinematics_update(
-        self,
-        input: PyTree[Array],
-        state: PlantState,
-        *,
-        key: Optional[PRNGKeyArray] = None,
-    ) -> PlantState:
-        """Apply instantaneous updates (state clipping if enabled).
-
-        Args:
-            input: Muscle activations (unused here, torque conversion is in
-                ``vector_field``).
-            state: Current plant state.
-            key: Unused.
-
-        Returns:
-            Optionally clipped plant state.
-        """
-        if not self.clip_states:
-            return state
-        return eqx.tree_at(
-            lambda s: s.skeleton,
-            state,
-            self._clip_state(self.bounds.skeleton, state.skeleton),
-        )
 
     def init(self, *, key: PRNGKeyArray) -> PlantState:
         """Initialize the plant state.
