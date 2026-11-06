@@ -687,17 +687,8 @@ class TargetSpec(Module):
 
     @property
     def batch_axes(self) -> PyTree[None | int]:
-        # Assume that only the target value will vary between trials.
-        # TODO: (Low priority.) It's probably better to give control over this to
-        # `AbstractTask`, since in some cases we might want to vary these parameters
-        # over trials and not just across batches. And if we don't want to vary them
-        # at all, then why are time_mask and discount not just fields of
-        # `TargetStateLoss`?
-        return TargetSpec(
-            value=0,
-            time_mask=None,
-            discount=None,
-        )
+        """Target values map over trials. Time selectors are shared or callable."""
+        return TargetSpec(value=0 if self.value is not None else None)
 
 
 """Useful partial target specs"""
@@ -815,13 +806,18 @@ def _target_density(loss: TargetStateLoss, state: Array, target: Array) -> Array
     return loss.norm(state - target)
 
 
-_TARGET_FIRST_STEP = 1
+_LEGACY_TARGET_START_STEP = 1
+
+
+def _target_start_step(trial_specs: "TaskTrialSpec") -> int:
+    timeline = getattr(trial_specs, "timeline", None)
+    return getattr(timeline, "target_start_step", _LEGACY_TARGET_START_STEP)
 
 
 def _retained_target_density(
     loss: TargetStateLoss, states: PyTree, trial_specs: "TaskTrialSpec"
 ) -> tuple[Array, tuple["WeightsSpec", ...]]:
-    state = loss.where(states)[:, _TARGET_FIRST_STEP:]
+    state = loss.where(states)[:, _target_start_step(trial_specs):]
     target, trial_axis = _resolve_target_spec(loss, trial_specs)
     value = jnp.asarray(target.value)
     if trial_axis is not None and value.ndim:
@@ -1328,7 +1324,7 @@ class EpochMaskedLoss(AbstractLoss):
 
         loss_over_time, selectors = _retained_target_density(base, states, trial_specs)
         T = loss_over_time.shape[-1]
-        n_steps = self._mask_n_steps(trial_specs, T + 1)
+        n_steps = self._mask_n_steps(trial_specs, T + _target_start_step(trial_specs))
         epoch_mask = self._build_mask(trial_specs, n_steps)
         epoch_mask_inner = self._align_mask_to_loss_time_axis(epoch_mask, T).astype(
             loss_over_time.dtype

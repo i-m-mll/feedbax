@@ -458,13 +458,16 @@ def test_delayed_reaches_accepts_movement_in_sampled_epoch_without_remainder():
         epoch_names=("movement", "after_movement"),
         hold_epochs=(1,),
         target_on_epochs=(0,),
-        move_epochs=(0,),
+        move_epochs=(1, 0),
+        go_cue_event_name="go",
         p_catch_trial=0.0,
     )
 
     trial = task.get_train_trial(jax.random.PRNGKey(0))
 
+    assert trial.timeline.n_steps == 2
     np.testing.assert_array_equal(trial.timeline.epoch_bounds, [0, 2, 2])
+    np.testing.assert_array_equal(trial.timeline.event_steps, [0])
     np.testing.assert_array_equal(
         trial.targets["mechanics.effector.pos"].value, trial.inputs.effector_target.pos
     )

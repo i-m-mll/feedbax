@@ -175,7 +175,9 @@ def grad_wrap_abstract_loss(
             )
             return jt.map(lambda x: x[1:] if x is not None else x, state_history)
 
-        states: StateT = eqx.filter_vmap(_run_trial)(trial_specs, init_states, keys)
+        states: StateT = eqx.filter_vmap(
+            _run_trial, in_axes=(trial_specs.batch_axes, eqx.if_array(0), 0)
+        )(trial_specs, init_states, keys)
         losses = loss_func(states, trial_specs, model)
 
         if loss_reduction_fn is not None:

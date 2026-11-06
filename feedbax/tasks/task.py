@@ -17,6 +17,7 @@ TODO:
 import logging
 from abc import abstractmethod
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import replace
 from functools import cached_property, partial
 from numbers import Integral
 from typing import (
@@ -54,6 +55,7 @@ from feedbax.objectives.loss import (
     AbstractLoss,
     TargetSpec,
     TermTree,
+    _LEGACY_TARGET_START_STEP,
     power_discount,
 )
 from feedbax.runtime.batch import BatchInfo
@@ -385,9 +387,13 @@ class TrialTimeline(Module):
       - If `epoch_bounds` is present with length E+1, `epoch_names` has length E
       - epoch_bounds is nondecreasing; epoch_bounds[0] == 0; epoch_bounds[-1] == n_steps (preferred)
       - event_steps are in [0, n_steps)
+      - target_start_step is the first post-reset control output scored by target losses
     """
 
-    n_steps: Optional[int] = eqx.field(default=None)
+    n_steps: Optional[int] = eqx.field(default=None, static=True)
+    target_start_step: int = eqx.field(
+        default=_LEGACY_TARGET_START_STEP, static=True, kw_only=True
+    )
 
     # Epoch partition
     epoch_bounds: Optional[Array] = None  # shape (E+1,), int
@@ -408,6 +414,8 @@ class TrialTimeline(Module):
         epoch_names: Optional[Iterable[str]] = None,
         event_steps: Optional[Iterable[int]] = None,
         event_names: Optional[Iterable[str]] = None,
+        *,
+        target_start_step: int = _LEGACY_TARGET_START_STEP,
     ) -> "TrialTimeline":
         eb = None if epoch_bounds is None else jnp.asarray(epoch_bounds, dtype=jnp.int32)
         en = tuple(epoch_names or ())
@@ -421,6 +429,7 @@ class TrialTimeline(Module):
 
         return cls(
             n_steps=n_steps,
+            target_start_step=target_start_step,
             epoch_bounds=eb,
             epoch_names=en,
             event_steps=es,
@@ -506,16 +515,10 @@ class TrialTimeline(Module):
 
     @property
     def batch_axes(self):
-        # Mark only array leaves with axis 0; everything else None
-        return TrialTimeline(
-            n_steps=None,
+        return replace(
+            self,
             epoch_bounds=0 if self.epoch_bounds is not None else None,
             event_steps=0 if self.event_steps is not None else None,
-            # the rest are static..
-            epoch_names=self.epoch_names,
-            event_names=self.event_names,
-            _epoch_to_idx=self._epoch_to_idx,
-            _event_to_idx=self._event_to_idx,
         )
 
 
@@ -551,8 +554,9 @@ class TaskTrialSpec(Module):
     extra: Optional[Mapping[str, Array]] = None
 
     @property
-    def batch_axes(self) -> PyTree[int]:
-        return type(self)(
+    def batch_axes(self) -> PyTree[int | None]:
+        """Axes of a trial batch, with shared arrays and static values unmapped."""
+        axes = type(self)(
             inits=0,
             targets=jt.map(
                 lambda x: getattr(x, "batch_axes", 0),
@@ -564,6 +568,18 @@ class TaskTrialSpec(Module):
             timeline=self.timeline.batch_axes,
             extra=0,
         )
+        return jt.map(
+            lambda axis, tree: jt.map(
+                lambda leaf: axis if eqx.is_array(leaf) else None, tree
+            ),
+            axes,
+            self,
+            is_leaf=is_none,
+        )
+
+    def _partition_batch_fields(self) -> tuple[Self, Self]:
+        mapped = jt.map(lambda axis: axis is not None, self.batch_axes, is_leaf=is_none)
+        return eqx.partition(self, mapped)
 
 
 T = TypeVar("T")
@@ -957,7 +973,9 @@ class AbstractTask(Module):
             )
             return state_history
 
-        return eqx.filter_vmap(eval_single)(trial_specs, keys)
+        return eqx.filter_vmap(eval_single, in_axes=(trial_specs.batch_axes, 0))(
+            trial_specs, keys
+        )
 
     def eval_with_loss(
         self,
@@ -1144,12 +1162,14 @@ class AbstractTask(Module):
         keys_batch = jr.split(key_batch, batch_info.size)
         keys_eval = jr.split(key_eval, batch_info.size)
 
-        trial_specs = jax.vmap(
-            partial(
-                self.get_train_trial_with_intervenor_params,
-                batch_info=batch_info,
-            )
+        def sample(key):
+            trial = self.sample_trial(key, batch_info)
+            return trial._partition_batch_fields()
+
+        mapped, shared = eqx.filter_vmap(
+            sample, out_axes=(eqx.if_array(0), None)
         )(keys_batch)
+        trial_specs = eqx.combine(mapped, shared)
 
         states, losses = self.eval_trials_with_loss(
             model,
@@ -1384,10 +1404,10 @@ def _full_trial_timeline(
     epoch_name: Optional[str],
     batch_size: Optional[int] = None,
 ) -> TrialTimeline:
-    if epoch_name is None:
-        return TrialTimeline(n_steps)
-
     n_time = n_steps - 1
+    if epoch_name is None:
+        return TrialTimeline(n_time, target_start_step=0)
+
     epoch_bounds = jnp.asarray([0, n_time], dtype=jnp.int32)
     if batch_size is not None:
         epoch_bounds = jnp.broadcast_to(epoch_bounds, (batch_size, 2))
@@ -1395,6 +1415,7 @@ def _full_trial_timeline(
         n_time,
         epoch_bounds=epoch_bounds,
         epoch_names=(epoch_name,),
+        target_start_step=0,
     )
 
 
@@ -1405,8 +1426,8 @@ class SimpleReaches(AbstractTask):
 
     Epoch-aware consumers such as ``EpochMaskedLoss``, timeline masks, and
     epoch-vline plot helpers require ``epoch_name`` to be set. When set, the
-    full trial is labeled as one epoch with bounds ``[0, n_steps]``; when left
-    as ``None`` the task emits the historical empty timeline.
+    full trial is labeled as one epoch with bounds ``[0, n_steps - 1]``.
+    The timeline covers the control steps after reset, with or without a label.
 
     !!! Note
         This passes a trajectory of target velocities all equal to zero, assuming
@@ -1483,7 +1504,7 @@ class SimpleReaches(AbstractTask):
 
         return self._construct_trial_spec(effector_init_state, effector_target_state)
 
-    @cached_property
+    @property
     def _pos_discount(self):
         return power_discount(self.n_steps - 1, discount_exp=6)
 
@@ -1519,8 +1540,6 @@ class SimpleReaches(AbstractTask):
         pos_discount = self._pos_discount
         batch_size = effector_init_state.pos.shape[0] if batched else None
         timeline = _full_trial_timeline(self.n_steps, self.epoch_name, batch_size)
-        if self.epoch_name is not None and batched:
-            pos_discount = jnp.broadcast_to(pos_discount, effector_target_state.pos.shape[:-1])
 
         return TaskTrialSpec(
             inits=WhereDict({(lambda state: state.mechanics.effector): effector_init_state}),
@@ -1742,13 +1761,7 @@ class DelayedReaches(AbstractTask):
                     ),
                 }
             ),
-            timeline=TrialTimeline.from_epochs_events(
-                self.n_steps,
-                epoch_bounds=epoch_bounds,
-                epoch_names=self.epoch_names,
-                event_steps=self._go_cue_event_steps(epoch_bounds),
-                event_names=self._go_cue_event_names(),
-            ),
+            timeline=self._timeline(epoch_bounds),
             extra=self._trial_extra(is_catch),
         )
 
@@ -1783,26 +1796,29 @@ class DelayedReaches(AbstractTask):
                     ),
                 }
             ),
-            timeline=TrialTimeline.from_epochs_events(
-                self.n_steps,
-                epoch_bounds=epoch_bounds,
-                epoch_names=self.epoch_names,
-                event_steps=self._go_cue_event_steps(epoch_bounds),
-                event_names=self._go_cue_event_names(),
-            ),
+            timeline=self._timeline(epoch_bounds),
             extra=self._trial_extra(is_catch),
         )
 
-    def _go_cue_event_steps(self, epoch_bounds: Array) -> Optional[Array]:
+    def _timeline(self, epoch_bounds: Array) -> TrialTimeline:
+        n_control_steps = self.n_steps - 1
         if self.go_cue_event_name is None:
-            return None
-        go_cue_step = jnp.take(epoch_bounds, self.move_epochs[0], axis=-1)
-        return jnp.expand_dims(go_cue_step, axis=-1).astype(jnp.int32)
-
-    def _go_cue_event_names(self) -> Optional[tuple[str, ...]]:
-        if self.go_cue_event_name is None:
-            return None
-        return (self.go_cue_event_name,)
+            event_names = event_steps = None
+        else:
+            starts = jnp.take(epoch_bounds, self.move_epochs, axis=-1)
+            ends = jnp.take(epoch_bounds, self.move_epochs + 1, axis=-1)
+            event_steps = jnp.min(
+                jnp.where(starts < ends, starts, n_control_steps), axis=-1, keepdims=True
+            )
+            event_names = (self.go_cue_event_name,)
+        return TrialTimeline.from_epochs_events(
+            n_control_steps,
+            epoch_bounds=epoch_bounds,
+            epoch_names=self.epoch_names,
+            event_steps=event_steps,
+            event_names=event_names,
+            target_start_step=0,
+        )
 
     def _trial_extra(self, is_catch: Array) -> Optional[Mapping[str, Array]]:
         if self.catch_metadata_policy == "flag":
@@ -1885,8 +1901,8 @@ class Stabilization(AbstractTask):
     """Postural stabilization task at random points in workspace.
 
     Validation trials cover a regular workspace grid. When ``epoch_name`` is
-    set, the full trial is labeled as one epoch; when it is ``None``, the task
-    emits the historical unnamed timeline.
+    set, the full trial is labeled as one epoch. The timeline covers the
+    control steps after reset, with or without a label.
 
     Attributes:
         n_steps: The number of time steps in each task trial.
