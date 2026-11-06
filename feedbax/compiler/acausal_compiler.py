@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from typing import Any, Type
 
 import diffrax as dfx
-import optimistix as optx
 
 from feedbax.acausal.base import AcausalConnection, AcausalElement
 from feedbax.acausal.analysis import (
@@ -51,8 +50,6 @@ from feedbax.acausal.translational import (
 from feedbax.contracts.acausal import (
     ACAUSAL_GRAPH_SCHEMA_ID,
     AcausalGraphSpec,
-    RootFinderSpec,
-    SolverConfigSpec,
     acausal_interior_content_hash,
 )
 from feedbax.contracts.acausal_interface import (
@@ -76,6 +73,7 @@ from feedbax.contracts.domain import (
 )
 from feedbax.contracts.graph import ComponentSpec
 from feedbax.compiler.builders import build_component
+from feedbax.compiler.solver_config import resolve_acausal_solver
 
 
 _ELEMENT_BUILDERS: dict[str, Type[AcausalElement]] = {
@@ -136,14 +134,6 @@ _SENSOR_QUANTITY_BUILDERS: dict[str, Type[AcausalElement]] = {
     "torque": TorqueSensor,
 }
 
-_SOLVER_TYPES: dict[str, Type[dfx.AbstractSolver]] = {
-    "euler": dfx.Euler,
-    "implicit_euler": dfx.ImplicitEuler,
-    "kvaerno5": dfx.Kvaerno5,
-    "tsit5": dfx.Tsit5,
-}
-
-
 Endpoint = tuple[str, str]
 
 
@@ -180,6 +170,7 @@ def compile_acausal_graph(
             component_registry=component_registry,
         )
 
+    solver = _solver_runtime(interior_spec)
     interface = derive_acausal_interface(interior_spec)
     flattened = _flatten_acausal_graph(
         interior_spec,
@@ -195,13 +186,11 @@ def compile_acausal_graph(
                 f"Acausal compiler internal error for node {node_name!r}: flattened "
                 f"{kind} bindings {tuple(bindings)!r} do not match derived interface {ports!r}"
             )
-    solver_type, root_finder = _solver_runtime(interior_spec.solver)
     system = AcausalSystem(
         elements=flattened.elements,
         connections=flattened.connections,
         dt=interior_spec.solver.dt,
-        solver_type=solver_type,
-        root_finder=root_finder,
+        solver_type=solver,
         input_bindings={name: flattened.input_bindings[name] for name in interface.input_ports},
         output_bindings={name: flattened.output_bindings[name] for name in interface.output_ports},
     )
@@ -312,6 +301,18 @@ def _diagnose_acausal_spec(
     nested: bool = False,
 ) -> list[DomainDiagnostic]:
     diagnostics: list[DomainDiagnostic] = []
+    if not nested:
+        try:
+            _solver_runtime(graph)
+        except ValueError as exc:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code="acausal.invalid_solver",
+                    message=f"Invalid solver for acausal interior {path!r}: {exc}",
+                    node_ids=[path],
+                )
+            )
     if not graph.nodes:
         diagnostics.append(
             DomainDiagnostic(
@@ -576,7 +577,7 @@ def _compile_planar_multibody_graph(
     return build_component(
         node_name,
         "AnalyticalMusculoskeletalPlant",
-        {"dt": graph.solver.dt, "n_steps": 1},
+        {"dt": graph.solver.dt, "n_steps": 1, "solver_type": graph.solver.solver_type},
         component_registry=component_registry,
     )
 
@@ -1038,21 +1039,12 @@ def _resolve_endpoint(
     return [(f"{namespace}{node_id}", port_name)]
 
 
-def _solver_runtime(
-    solver: SolverConfigSpec,
-) -> tuple[Type[dfx.AbstractSolver], optx.AbstractRootFinder | None]:
-    solver_type = _SOLVER_TYPES[solver.solver_type]
-    if not issubclass(solver_type, dfx.AbstractImplicitSolver):
-        return solver_type, None
-    root_spec = solver.root_finder or RootFinderSpec()
-    if root_spec.method != "newton":
-        raise ValueError(f"Unsupported root finder method {root_spec.method!r}")
-    return (
-        solver_type,
-        optx.Newton(
-            rtol=root_spec.rtol,
-            atol=root_spec.atol,
-        ),
+def _solver_runtime(graph: AcausalGraphSpec) -> dfx.AbstractSolver:
+    return resolve_acausal_solver(
+        graph.solver.solver_type,
+        graph.solver.dt,
+        physical_domain=graph.physical_domain,
+        root_finder=graph.solver.root_finder,
     )
 
 

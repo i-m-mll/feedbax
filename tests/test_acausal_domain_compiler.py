@@ -3,7 +3,6 @@ from __future__ import annotations
 import diffrax as dfx
 import jax
 import jax.numpy as jnp
-import optimistix as optx
 import pytest
 
 from feedbax.acausal import (
@@ -18,7 +17,7 @@ from feedbax.acausal import (
     PrescribedMotion,
 )
 from feedbax.component_registry import ComponentRegistry
-from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.acausal import AcausalGraphSpec, SolverConfigSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.acausal_compiler import (
@@ -123,7 +122,7 @@ def test_spring_coupled_prescribed_coordinates_keep_independent_inputs() -> None
     assert outputs["y"] == pytest.approx(-0.2)
 
 
-def _msd_interior(*, solver_type: str = "euler") -> AcausalGraphSpec:
+def _msd_interior() -> AcausalGraphSpec:
     return AcausalGraphSpec(
         physical_domain="translational",
         nodes={
@@ -148,7 +147,7 @@ def _msd_interior(*, solver_type: str = "euler") -> AcausalGraphSpec:
             {"a": ("act", "flange"), "b": ("mass", "flange")},
             {"a": ("sense", "flange"), "b": ("mass", "flange")},
         ],
-        solver={"solver_type": solver_type, "dt": 0.001},
+        solver={"solver_type": "euler", "dt": 0.001},
     )
 
 
@@ -342,12 +341,19 @@ def test_rollout_hook_can_supply_unbound_prescribed_motion() -> None:
     assert jnp.array_equal(outputs["velocity"], jnp.ones(3))
 
 
-@pytest.fixture
-def planar_arm_graph() -> Graph:
-    registry = _registry()
+def _planar_arm_spec(
+    registry: ComponentRegistry,
+    *,
+    solver: SolverConfigSpec | None = None,
+    bind_input: bool = False,
+) -> GraphSpec:
     template = registry.get("TwoLinkArm6Muscle")
     assert template is not None
-    spec = GraphSpec(
+    interior = template.template_graph
+    assert isinstance(interior, AcausalGraphSpec)
+    if solver is not None:
+        interior = interior.model_copy(update={"solver": solver})
+    return GraphSpec(
         nodes={
             "arm": ComponentSpec(
                 type="AcausalSystem",
@@ -355,11 +361,87 @@ def planar_arm_graph() -> Graph:
                 output_ports=["state"],
             ),
         },
+        input_ports=["excitation"] if bind_input else [],
+        input_bindings={"excitation": ("arm", "excitation")} if bind_input else {},
         output_ports=["state"],
         output_bindings={"state": ("arm", "state")},
-        subgraphs={"arm": template.template_graph},
+        subgraphs={"arm": interior},
     )
-    return compile_graph(GraphDocument(graph=spec), registry).graph
+
+
+@pytest.fixture
+def planar_arm_graph() -> Graph:
+    registry = _registry()
+    return spec_to_graph(_planar_arm_spec(registry), registry)
+
+
+def test_planar_tsit5_step_matches_direct_diffrax_after_document_roundtrip() -> None:
+    registry = _registry()
+    dt = 0.01
+    solver = SolverConfigSpec(solver_type="tsit5", dt=dt)
+    spec = _planar_arm_spec(registry, solver=solver, bind_input=True)
+    document = GraphDocument.model_validate_json(GraphDocument(graph=spec).model_dump_json())
+    executable = compile_graph(document, registry)
+    resolved_interior = executable.resolved.graph.subgraphs["arm"]
+    assert resolved_interior.solver == solver
+    assert compile_acausal_authoring_report(
+        resolved_interior, node_path=["arm"], component_registry=registry
+    ).status == "ok"
+
+    graph = executable.graph
+    arm = graph.nodes["arm"]
+    key = jax.random.PRNGKey(0)
+    state = graph.init_state(key=key)
+    initial = state.get(arm.state_index).plant
+    excitation = jnp.array([0.5, 0.0, 0.0, 0.0, 0.0, 0.0])
+    outputs, _, _ = graph.step({"excitation": excitation}, state, key=key)
+    actual = outputs["state"].plant.muscles.activations
+
+    term = dfx.ODETerm(arm.plant.vector_field)
+    tsit5 = dfx.Tsit5()
+    solver_state = tsit5.init(term, 0.0, dt, initial, excitation)
+    expected, _, _, _, result = tsit5.step(
+        term, 0.0, dt, initial, excitation, solver_state, made_jump=True
+    )
+    assert result == dfx.RESULTS.successful
+    assert jnp.allclose(actual, expected.muscles.activations)
+
+
+@pytest.mark.parametrize(
+    ("domain", "solver", "message"),
+    [
+        (
+            "scalar",
+            {"solver_type": "euler", "root_finder": {}},
+            r"euler.*root_finder|root_finder.*euler",
+        ),
+        (
+            "planar",
+            {"solver_type": "implicit_euler"},
+            r"[Pp]lanar.*implicit_euler",
+        ),
+    ],
+)
+def test_unsupported_solver_is_rejected_by_report_and_public_compile(
+    domain: str, solver: dict, message: str
+) -> None:
+    registry = _registry()
+    config = SolverConfigSpec.model_validate({"dt": 0.01, **solver})
+    if domain == "planar":
+        spec = _planar_arm_spec(registry, solver=config)
+        node = "arm"
+    else:
+        interior = _msd_interior().model_copy(update={"solver": config})
+        spec = _acausal_graph_spec(interior)
+        node = "plant"
+
+    report = compile_acausal_authoring_report(
+        spec.subgraphs[node], node_path=[node], component_registry=registry
+    )
+    assert report.status == "error"
+    assert any(diagnostic.code == "acausal.invalid_solver" for diagnostic in report.diagnostics)
+    with pytest.raises(GraphCompilationError, match=message):
+        compile_graph(GraphDocument(graph=spec), registry)
 
 
 @pytest.mark.parametrize("shape", [(), (1, 6)], ids=["scalar", "extra-axis"])
@@ -528,22 +610,40 @@ def test_missing_acausal_interior_raises_domain_named_error() -> None:
 
 
 @pytest.mark.parametrize(
-    ("solver_name", "solver_cls", "implicit"),
+    ("solver_name", "expected_position"),
     [
-        ("euler", dfx.Euler, False),
-        ("implicit_euler", dfx.ImplicitEuler, True),
-        ("kvaerno5", dfx.Kvaerno5, True),
-        ("tsit5", dfx.Tsit5, False),
+        # Backward Euler from rest: x = dt*v and v = dt*(1 - 10*x - 0.5*v).
+        ("implicit_euler", 0.01 / 1.15),
+        # Exact underdamped step response at t=0.1 for m=1, k=10, c=0.5, force=1.
+        ("kvaerno5", 0.00487699),
     ],
 )
-def test_acausal_solver_mapping(solver_name: str, solver_cls: type, implicit: bool) -> None:
-    system = compile_acausal_graph(_msd_interior(solver_type=solver_name), "plant", _registry())
+def test_scalar_implicit_rollout_respects_authored_root_budget(
+    solver_name: str, expected_position: float
+) -> None:
+    key = jax.random.PRNGKey(0)
+    registry = _registry()
+    dt = 0.1
 
-    assert isinstance(system.solver, solver_cls)
-    if implicit:
-        assert isinstance(system.root_finder, optx.Newton)
-    else:
-        assert system.root_finder is None
+    def rollout(max_steps: int) -> jax.Array:
+        solver = SolverConfigSpec.model_validate(
+            {
+                "solver_type": solver_name,
+                "dt": dt,
+                "root_finder": {"rtol": 0, "max_steps": max_steps},
+            }
+        )
+        interior = _msd_interior().model_copy(update={"solver": solver})
+        graph = spec_to_graph(_acausal_graph_spec(interior), registry)
+        outputs, _, _ = graph.rollout_with_trace(
+            {"u": jnp.ones(1)}, graph.init_state(key=key), key=key, n_steps=1, trace=()
+        )
+        return jax.block_until_ready(outputs["pos"])
+
+    with pytest.raises(RuntimeError, match=r"maximum number of steps.*nonlinear solver"):
+        rollout(max_steps=1)
+
+    assert rollout(max_steps=8)[0].item() == pytest.approx(expected_position, abs=1e-7)
 
 
 @pytest.mark.parametrize("nested", [False, True])

@@ -75,7 +75,7 @@ class DAEComponent(Component, Generic[StateT]):
     def __init__(
         self,
         dt: float,
-        solver_type: Type[dfx.AbstractSolver] = dfx.Euler,
+        solver_type: Type[dfx.AbstractSolver] | dfx.AbstractSolver = dfx.Euler,
         root_finder: Optional[optx.AbstractRootFinder] = None,
         *,
         key: Optional[PRNGKeyArray] = None,
@@ -84,17 +84,17 @@ class DAEComponent(Component, Generic[StateT]):
 
         Args:
             dt: Integration timestep.
-            solver_type: Type of solver to use. Can be explicit (Euler, etc.)
-                or implicit (ImplicitEuler, Kvaerno3, etc.).
-            root_finder: Root finder for implicit steps. Only used for implicit solvers.
+            solver_type: Diffrax solver class or preconfigured instance.
+            root_finder: Root finder for an implicit solver class.
             key: PRNG key for initialization.
         """
         self.dt = dt
 
-        # Check if this is an implicit solver that needs a root finder
-        is_implicit = issubclass(solver_type, dfx.AbstractImplicitSolver)
-
-        if is_implicit:
+        if isinstance(solver_type, dfx.AbstractSolver):
+            if root_finder is not None:
+                raise ValueError("A configured solver already determines its root finder")
+            self.solver = solver_type
+        elif issubclass(solver_type, dfx.AbstractImplicitSolver):
             if root_finder is None:
                 root_finder = optx.Newton(rtol=1e-8, atol=1e-8)
             # Type narrowing doesn't work with issubclass, but we've verified it's implicit

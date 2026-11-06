@@ -89,7 +89,7 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         elements: dict[str, AcausalElement],
         connections: list[AcausalConnection],
         dt: float = 0.01,
-        solver_type: Type[dfx.AbstractSolver] = dfx.Euler,
+        solver_type: Type[dfx.AbstractSolver] | dfx.AbstractSolver = dfx.Euler,
         root_finder: Optional[optx.AbstractRootFinder] = None,
         *,
         input_bindings: Mapping[str, str] | None = None,
@@ -102,9 +102,8 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
             elements: Named acausal element descriptors.
             connections: Port-level connections.
             dt: Integration time step.
-            solver_type: ``diffrax`` solver class.
-            root_finder: Optional ``optimistix`` root finder for implicit
-                solvers.
+            solver_type: Diffrax solver class or preconfigured instance.
+            root_finder: Optional Optimistix root finder for an implicit solver class.
             input_bindings: Optional mapping from public causal input port
                 names to source element names in the assembled acausal graph.
             output_bindings: Optional mapping from public causal output port
