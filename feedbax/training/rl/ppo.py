@@ -37,6 +37,7 @@ from feedbax.training.rl.obs_norm import (
 from feedbax.training.rl.policy import (
     ActorCritic,
     LatticeNoiseState,
+    _beta_sample_from_logits,
     _clip_action,
     init_lattice_noise,
     maybe_resample_noise,
@@ -107,9 +108,8 @@ class Rollout(NamedTuple):
 
     Attributes:
         obs: Observations.
-        actions: Actions scored by PPO. Under LATTICE these are the Beta draws
-            before the fixed clipping transform used for environment execution.
-        log_probs: Log probabilities of actions.
+        action_logits: Raw Beta draws in logit coordinates, before execution clipping.
+        log_probs: Log densities of the draws in action coordinates.
         values: Value estimates.
         rewards: Rewards received.
         dones: Episode termination flags.
@@ -118,7 +118,7 @@ class Rollout(NamedTuple):
     """
 
     obs: Float[Array, "T N obs_dim"]
-    actions: Float[Array, "T N action_dim"]
+    action_logits: Float[Array, "T N action_dim"]
     log_probs: Float[Array, "T N"]
     values: Float[Array, "T N"]
     rewards: Float[Array, "T N"]
@@ -201,7 +201,7 @@ def compute_gae_scan(
 def _ppo_loss(
     policy: ActorCritic,
     obs: Float[Array, "B obs_dim"],
-    actions: Float[Array, "B action_dim"],
+    action_logits: Float[Array, "B action_dim"],
     old_logp: Float[Array, " B"],
     advantages: Float[Array, " B"],
     returns: Float[Array, " B"],
@@ -215,7 +215,7 @@ def _ppo_loss(
     Args:
         policy: Actor-critic policy.
         obs: Minibatch observations.
-        actions: Minibatch actions.
+        action_logits: Minibatch Beta draws in logit coordinates.
         old_logp: Old log probabilities.
         advantages: Advantages.
         returns: Target returns.
@@ -230,7 +230,7 @@ def _ppo_loss(
         Tuple of (total_loss, (policy_loss, value_loss, entropy)).
     """
     dist, value = policy.dist_and_value(obs, latent_noise)
-    logp = dist.joint_log_prob(actions)
+    logp = dist.joint_log_prob_from_logits(action_logits)
     ratio = jnp.exp(logp - old_logp)
     unclipped = ratio * advantages
     clipped = jnp.clip(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * advantages
@@ -464,14 +464,13 @@ def _collect_rollout_extended(
 
         act_keys = jax.random.split(act_key, n_envs)
         latent_noise = lat_state.noise if use_lattice else None
-        actions, log_probs, values = jax.vmap(
-            lambda observation, act_key: policy._draw_action(
-                observation, act_key, latent_noise, clip=not use_lattice,
+        action_logits, log_probs, values = jax.vmap(
+            lambda observation, act_key: policy._draw_action_logits(
+                observation, act_key, latent_noise,
             ),
         )(obs, act_keys)
 
-        # The execution transform leaves the original Beta draws available for PPO.
-        env_actions = _clip_action(actions) if use_lattice else actions
+        env_actions = _clip_action(_beta_sample_from_logits(action_logits))
         states, _, rewards, outcome = v_step(states, env_actions)
         completed = outcome.completed
         returns = episodes.returns + rewards
@@ -488,7 +487,7 @@ def _collect_rollout_extended(
         if use_lattice:
             lat_state = maybe_resample_noise(lat_state, noise_key, lattice_resample_interval)
 
-        rollout_step = Rollout(obs, actions, log_probs, values, rewards, completed, latent_noise)
+        rollout_step = Rollout(obs, action_logits, log_probs, values, rewards, completed, latent_noise)
         episode_totals = _EpisodeTotals(
             return_sum=jnp.sum(jnp.where(completed, returns, 0.0)),
             completed=jnp.sum(completed),
@@ -596,7 +595,7 @@ def _update_one(
         gae_lambda,
     )
     flat_obs = rollout.obs.reshape(-1, rollout.obs.shape[-1])
-    flat_actions = rollout.actions.reshape(-1, rollout.actions.shape[-1])
+    flat_action_logits = rollout.action_logits.reshape(-1, rollout.action_logits.shape[-1])
     flat_logp = rollout.log_probs.reshape(-1)
     flat_adv = advantages.reshape(-1)
     flat_ret = returns.reshape(-1)
@@ -626,7 +625,7 @@ def _update_one(
         )(
             policy,
             flat_obs[mb_idx],
-            flat_actions[mb_idx],
+            flat_action_logits[mb_idx],
             flat_logp[mb_idx],
             flat_adv[mb_idx],
             flat_ret[mb_idx],

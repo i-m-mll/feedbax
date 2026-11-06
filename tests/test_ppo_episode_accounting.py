@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import pytest
 from scipy.special import digamma, expit
 from scipy.stats import beta
 
@@ -13,7 +14,7 @@ from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.state import CartesianState
 from feedbax.training.rl.env import RLEnvConfig, rl_env_reset, rl_env_step_with_outcome
 from feedbax.training.rl.obs_norm import init_obs_norm
-from feedbax.training.rl.policy import ActorCritic, init_lattice_noise
+from feedbax.training.rl.policy import ActorCritic, BetaParams, init_lattice_noise
 from feedbax.training.rl.ppo import (
     PPOConfig,
     TrainingEnhancements,
@@ -194,7 +195,12 @@ def test_mixed_lanes_use_distinct_return_and_success_denominators():
     np.testing.assert_allclose(history.per_body_mean_return, [[-5.5]])
 
 
-def test_lattice_update_reuses_the_noise_that_sampled_each_action():
+@pytest.mark.parametrize("use_lattice", [False, True], ids=["ordinary", "lattice"])
+def test_ppo_replays_tail_draws_with_their_sampling_distribution(use_lattice, monkeypatch):
+    # Force both clamp tails without extreme concentrations in the density oracle.
+    tail_logits = jnp.array([-12.0, 22.0])
+    tails = expit(np.asarray(tail_logits, dtype=np.float64))
+    monkeypatch.setattr(BetaParams, "sample_logits", lambda self, key: tail_logits)
     config = eqx.tree_at(lambda cfg: (cfg.tau_act, cfg.tau_deact), _config(), (1.0, 1.0))
     plant = _plant(-3.0)
     key = jax.random.PRNGKey(42)
@@ -220,31 +226,44 @@ def test_lattice_update_reuses_the_noise_that_sampled_each_action():
         return collect(
             plant, config, actor_critic, states, episodes, key, n_steps, n_envs,
             init_obs_norm(13), lattice, init_curriculum(), 1, 0.5,
-            jnp.array(False), True, jnp.array(False), jnp.array(1.0),
+            jnp.array(False), use_lattice, jnp.array(False), jnp.array(1.0),
         )
 
-    _, _, _, after_first_step, _, _ = collect_prefix(policy, 1)
+    after_first, _, _, after_first_lattice, _, _ = collect_prefix(policy, 1)
     _, rollout, last_values, _, _, _ = collect_prefix(policy, 2)
-    expected_noise = jnp.stack([lattice.noise, after_first_step.noise])
-    assert not np.allclose(lattice.noise, after_first_step.noise)
-    np.testing.assert_allclose(rollout.latent_noise, expected_noise)
+    np.testing.assert_array_equal(
+        rollout.action_logits, np.broadcast_to(tail_logits, rollout.action_logits.shape),
+    )
+    np.testing.assert_allclose(
+        after_first.muscle_activations,
+        np.broadcast_to(np.clip(tails, 1e-4, 1.0 - 1e-4), (n_envs, policy.action_dim)),
+    )
+    replay_noise = None
+    expected_noise = None
+    if use_lattice:
+        assert not np.allclose(lattice.noise, after_first_lattice.noise)
+        expected_noise = jnp.stack([lattice.noise, after_first_lattice.noise])
+        np.testing.assert_allclose(rollout.latent_noise, expected_noise)
+        replay_noise = jnp.repeat(rollout.latent_noise, n_envs, axis=0)
+    else:
+        assert rollout.latent_noise is None
 
     obs = rollout.obs.reshape(-1, policy.obs_dim)
-    actions = rollout.actions.reshape(-1, policy.action_dim)
+    action_logits = rollout.action_logits.reshape(-1, policy.action_dim)
+    actions = expit(np.asarray(action_logits, dtype=np.float64))
     old_logp = rollout.log_probs.reshape(-1)
-    replay_noise = jnp.repeat(rollout.latent_noise, n_envs, axis=0)
-    clip_eps = 2.0
+    clip_eps = 4.0
 
     @eqx.filter_jit
     def ratios(actor_critic):
         def ratio(o, a, logp, noise):
             loss, _ = _ppo_loss(
                 actor_critic, o[None], a[None], logp[None], jnp.ones(1), jnp.zeros(1),
-                clip_eps, 0.0, 0.0, latent_noise=noise[None],
+                clip_eps, 0.0, 0.0, latent_noise=None if noise is None else noise[None],
             )
             return -loss
 
-        return jax.vmap(ratio)(obs, actions, old_logp, replay_noise)
+        return jax.vmap(ratio)(obs, action_logits, old_logp, replay_noise)
 
     np.testing.assert_allclose(ratios(policy), 1.0, atol=2e-6)
     changed_policy = eqx.tree_at(
@@ -256,19 +275,20 @@ def test_lattice_update_reuses_the_noise_that_sampled_each_action():
     def beta_parameters(actor_critic):
         hidden, output = actor_critic.actor.layers
         features = np.tanh(np.asarray(obs) @ np.asarray(hidden.weight).T + np.asarray(hidden.bias))
-        noisy_features = features + np.repeat(expected_noise, n_envs, axis=0)
-        logits = noisy_features @ np.asarray(output.weight).T + np.asarray(output.bias)
+        if expected_noise is not None:
+            features += np.repeat(expected_noise, n_envs, axis=0)
+        logits = features @ np.asarray(output.weight).T + np.asarray(output.bias)
         alpha, beta_param = np.split(1.0 + np.logaddexp(0, logits), 2, axis=-1)
-        return alpha, beta_param, logits, noisy_features
+        return alpha, beta_param, logits, features
 
     old_alpha, old_beta, _, _ = beta_parameters(policy)
-    alpha, beta_param, logits, noisy_features = beta_parameters(changed_policy)
+    alpha, beta_param, logits, features = beta_parameters(changed_policy)
     logp = beta.logpdf(actions, alpha, beta_param).sum(axis=-1)
     reference_old_logp = beta.logpdf(actions, old_alpha, old_beta).sum(axis=-1)
-    np.testing.assert_allclose(old_logp, reference_old_logp, atol=2e-6)
+    np.testing.assert_allclose(old_logp, reference_old_logp, atol=1e-5)
     expected_ratio = np.exp(logp - reference_old_logp)
     assert np.all(expected_ratio < 1 + clip_eps)
-    np.testing.assert_allclose(ratios(changed_policy), expected_ratio, atol=5e-6)
+    np.testing.assert_allclose(ratios(changed_policy), expected_ratio, rtol=1e-5)
 
     # With gamma zero, these rewards give each sample a distinct advantage.
     advantages = jnp.array([[-3.0, 1.0, 4.0], [2.0, -1.0, 0.0]])
@@ -292,16 +312,6 @@ def test_lattice_update_reuses_the_noise_that_sampled_each_action():
         np.log1p(-actions) + digamma(alpha + beta_param) - digamma(beta_param),
     ], axis=-1)
     loss_logit_gradient = -(weights * expected_ratio)[:, None] * log_density_gradient * expit(logits)
-    expected_gradient = loss_logit_gradient.T @ noisy_features
-    np.testing.assert_allclose(accumulated, expected_gradient, atol=5e-6)
-
-    # A large beta concentration puts the first coordinate in the lower tail.
-    tail_policy = eqx.tree_at(
-        lambda model: model.actor.layers[-1].bias,
-        policy,
-        policy.actor.layers[-1].bias.at[2].set(40_000.0),
-    )
-    after_tail, tail_rollout, _, _, _, _ = collect_prefix(tail_policy, 1)
-    raw_draws = np.asarray(tail_rollout.actions[0])
-    assert np.any((0.0 < raw_draws) & (raw_draws < 1e-4))
-    np.testing.assert_allclose(after_tail.muscle_activations, np.clip(raw_draws, 1e-4, 1 - 1e-4))
+    expected_gradient = loss_logit_gradient.T @ features
+    # Individual float32 tail scores amplify roundoff before the gradients are summed.
+    np.testing.assert_allclose(accumulated, expected_gradient, atol=3e-4, rtol=2e-5)

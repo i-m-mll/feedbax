@@ -40,17 +40,30 @@ class BetaParams(NamedTuple):
         # Keep finite scores if the floating-point sampler rounds to an endpoint.
         limits = jnp.finfo(x.dtype)
         x = jnp.clip(x, limits.tiny, 1.0 - limits.epsneg)
+        return self._log_density(jnp.log(x), jnp.log1p(-x))
+
+    def _log_density(
+        self,
+        log_x: Float[Array, "... action_dim"],
+        log_one_minus_x: Float[Array, "... action_dim"],
+    ) -> Float[Array, "... action_dim"]:
         return (
-            (self.alpha - 1.0) * jnp.log(x)
-            + (self.beta - 1.0) * jnp.log1p(-x)
-            + jax.lax.lgamma(self.alpha + self.beta)
-            - jax.lax.lgamma(self.alpha)
-            - jax.lax.lgamma(self.beta)
+            (self.alpha - 1.0) * log_x
+            + (self.beta - 1.0) * log_one_minus_x
+            - jax.scipy.special.betaln(self.alpha, self.beta)
         )
 
     def joint_log_prob(self, x: Float[Array, "... action_dim"]) -> Float[Array, "..."]:
         """Log density of the full action under independent Beta coordinates."""
         return jnp.sum(self.log_prob(x), axis=-1)
+
+    def joint_log_prob_from_logits(
+        self, logits: Float[Array, "... action_dim"]
+    ) -> Float[Array, "..."]:
+        """Beta log density at the draw represented by logits, in action coordinates."""
+        log_x = jax.nn.log_sigmoid(logits)
+        log_one_minus_x = jax.nn.log_sigmoid(-logits)
+        return jnp.sum(self._log_density(log_x, log_one_minus_x), axis=-1)
 
     def entropy(self) -> Float[Array, "... action_dim"]:
         """Differential entropy of the Beta distribution.
@@ -75,9 +88,27 @@ class BetaParams(NamedTuple):
             key: PRNG key.
 
         Returns:
-            Samples in (0, 1), shape ``(..., action_dim)``.
+            Samples in [0, 1], shape ``(..., action_dim)``, with endpoints possible
+            from floating-point rounding.
         """
-        return jax.random.beta(key, self.alpha, self.beta)
+        return _beta_sample_from_logits(self.sample_logits(key))
+
+    def sample_logits(self, key: PRNGKeyArray) -> Float[Array, "... action_dim"]:
+        """Sample a Beta draw in logit coordinates to retain both tails."""
+        key_a, key_b = jax.random.split(key)
+        shape = jnp.broadcast_shapes(self.alpha.shape, self.beta.shape)
+        return jax.random.loggamma(key_a, self.alpha, shape) - jax.random.loggamma(
+            key_b, self.beta, shape,
+        )
+
+
+def _beta_sample_from_logits(
+    logits: Float[Array, "... action_dim"],
+) -> Float[Array, "... action_dim"]:
+    # Match jax.random.beta's scaled gamma ratio for the same keys and dtype.
+    gamma_a = jnp.exp(jnp.minimum(logits, 0.0))
+    gamma_b = jnp.exp(jnp.minimum(-logits, 0.0))
+    return gamma_a / (gamma_a + gamma_b)
 
 
 class LatticeNoiseState(eqx.Module):
@@ -265,23 +296,29 @@ class ActorCritic(eqx.Module):
             key: PRNG key.
 
         Returns:
-            Tuple of (action, log_prob, value).
+            Tuple of (clipped action, log density at that action, value).
         """
-        return self._draw_action(obs, key, None, clip=True)
+        return self._sample_clipped_action(obs, key, None)
 
-    def _draw_action(
+    def _sample_clipped_action(
         self,
         obs: Float[Array, " obs_dim"],
         key: PRNGKeyArray,
         latent_noise: Float[Array, " latent_dim"] | None,
-        *,
-        clip: bool,
     ) -> tuple[Float[Array, " action_dim"], Float[Array, ""], Float[Array, ""]]:
         dist, value = self.dist_and_value(obs, latent_noise)
-        action = dist.sample(key)
-        if clip:
-            action = _clip_action(action)
+        action = _clip_action(dist.sample(key))
         return action, dist.joint_log_prob(action), value
+
+    def _draw_action_logits(
+        self,
+        obs: Float[Array, " obs_dim"],
+        key: PRNGKeyArray,
+        latent_noise: Float[Array, " latent_dim"] | None,
+    ) -> tuple[Float[Array, " action_dim"], Float[Array, ""], Float[Array, ""]]:
+        dist, value = self.dist_and_value(obs, latent_noise)
+        logits = jax.lax.stop_gradient(dist.sample_logits(key))
+        return logits, dist.joint_log_prob_from_logits(logits), value
 
     def _actor_with_noise(
         self, obs: Float[Array, " obs_dim"], latent_noise: Float[Array, " latent_dim"],
@@ -341,7 +378,7 @@ def sample_action_with_noise(
         use_lattice: Whether to apply latent noise.
 
     Returns:
-        Tuple of (action, log_prob, value).
+        Tuple of (clipped action, log density at that action, value).
     """
     noise = jnp.where(use_lattice, latent_noise, 0.0)
-    return policy._draw_action(obs, key, noise, clip=True)
+    return policy._sample_clipped_action(obs, key, noise)
