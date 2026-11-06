@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -344,6 +345,9 @@ class SpecPayload(StrictModel):
     source_sha256: Optional[str] = None
     migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+RegenerationSpecBuilder = Callable[[tuple[ArtifactRef, ...]], SpecPayload]
 
 
 class OverridePatch(StrictModel):

@@ -13,7 +13,7 @@ import jax.tree_util as jtu
 from pydantic import ValidationError
 
 from feedbax.analysis.analysis import AbstractAnalysis
-from feedbax.analysis.context import AnalysisRegenerationBuilder, AnalysisRunContext
+from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.declared_versions import migrate_authored_document
 from feedbax.analysis.evaluation import (
     EvaluationStatesArtifactNotFound,
@@ -77,6 +77,7 @@ from feedbax.contracts.manifest import (
     AnyManifest,
     EvaluationRunManifest,
     EvaluationRunSpec,
+    RegenerationSpecBuilder,
     canonical_manifest_path,
     evaluation_states_cache_path,
     load_manifest_bytes,
@@ -1031,7 +1032,7 @@ def execute_analysis_run_spec(
     use_cache: bool = True,
     force: bool = False,
     computation: AnalysisComputation | None = None,
-    build_regeneration_spec: AnalysisRegenerationBuilder | None = None,
+    build_regeneration_spec: RegenerationSpecBuilder | None = None,
 ) -> tuple[AnalysisRunManifest, Path]:
     """Execute a serialized analysis spec and write an ``AnalysisRunManifest``.
 

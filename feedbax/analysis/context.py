@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -35,6 +35,7 @@ from feedbax.contracts.manifest import (
     DataProductParentRef,
     ManifestStatus,
     RegenerationSpec,
+    RegenerationSpecBuilder,
     SpecPayload,
     analysis_results_cache_dir,
     analysis_run_manifest_id,
@@ -54,9 +55,6 @@ from feedbax._vendor.jax_cookbook import arrays_to_lists
 
 if TYPE_CHECKING:
     from feedbax.plugins.registry import ExperimentRegistry
-
-
-AnalysisRegenerationBuilder = Callable[[tuple[ArtifactRef, ...]], SpecPayload]
 
 
 _FIGURE_ROUTING_KEY = "figure_routing"
@@ -104,7 +102,7 @@ class AnalysisRunContext:
     index_manifest: bool = True
     use_result_cache: bool = True
     computation: AnalysisComputation | None = None
-    build_regeneration_spec: AnalysisRegenerationBuilder | None = None
+    build_regeneration_spec: RegenerationSpecBuilder | None = None
     _artifacts: list[ArtifactRef] = field(default_factory=list, init=False)
     _regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = field(
         default_factory=list,

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import importlib
 import json
 import pickle
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import patch
 
 import numpy as np
+import plotly.graph_objects as go
 import pytest
 
 import feedbax.analysis.bundles as bundle_module
@@ -18,6 +22,7 @@ from feedbax.analysis.bundles import (
     AnalysisBundleDeltaSpec,
     AnalysisBundleSpec,
     AnalysisSpecTemplate,
+    BundleStageExecutionRecord,
     BundleStageOutputSpec,
     BundleStageSpec,
     StageArtifactDependency,
@@ -35,7 +40,11 @@ from feedbax.analysis.evaluation import (
     EvaluationRecipeResult,
     execute_evaluation_run_spec,
 )
-from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, REPORT_RENDER_ROLE
+from feedbax.analysis.reports import (
+    BUNDLE_SUMMARY_REPORT_TYPE,
+    REPORT_RENDER_ROLE,
+    ReportRecipeResult,
+)
 from feedbax.analysis.specs import (
     AnalysisRecipeExecutionError,
     AnalysisRecipeResult,
@@ -44,10 +53,12 @@ from feedbax.analysis.specs import (
 )
 from feedbax.analysis.materialization import ContextMaterializer
 from feedbax.analysis.manifest_inputs import authenticated_manifest_ref, resolve_manifest_input
+from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.expressions import Compare
 from feedbax.contracts.figures import FigureSpec
 from feedbax.contracts.base import (
     ParentRef,
+    authenticated_manifest_ref_profile,
     canonical_json_bytes,
     sha256_bytes,
 )
@@ -55,15 +66,19 @@ from feedbax.contracts.manifest import (
     AnalysisRunSpec,
     EvaluationRunManifest,
     EvaluationRunSpec,
+    RegenerationSpec,
     TrainingRunManifest,
     analysis_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
+    load_manifest_bytes,
     spec_payload,
     write_manifest,
 )
 from feedbax.contracts.selection import TopKByMetricPerGroup
+from feedbax.persistence import terminal_publication
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.plot.constructors import register_figure_constructor
 from feedbax.plugins.registry import ExperimentRegistry
 from feedbax.plugins.bootstrap import BootstrapState
 from tests.support.analysis_fixtures import ToyAnalysis, ToyArtifactProducer, build_toy_analysis_data
@@ -1004,11 +1019,11 @@ def test_staged_bundle_lowering_preserves_authored_evaluation_states_policy(
 ) -> None:
     captured_specs: list[AnalysisRunSpec] = []
 
-    def capture_stage_common(_stage, input_groups, **kwargs):
+    def capture_analysis_stage_groups(_stage, input_groups, **kwargs):
         captured_specs.append(kwargs["build_spec"](input_groups[0], 0))
         return []
 
-    monkeypatch.setattr(bundle_module, "_execute_stage_common", capture_stage_common)
+    monkeypatch.setattr(bundle_module, "_execute_analysis_stage_groups", capture_analysis_stage_groups)
     stage = BundleStageSpec(
         name=kind,
         kind=kind,
@@ -1243,6 +1258,116 @@ def test_staged_bundle_authenticates_eval_analysis_figure_report_round_trip(
         assert all(
             output.get("kind") != stage.manifest_refs[0].kind for output in embedded["outputs"]
         )
+
+
+@pytest.mark.parametrize("kind", ["figure", "report"])
+def test_staged_render_publishes_exact_regeneration_before_unlock(
+    kind: Literal["figure", "report"],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    application_registry_bundle,
+) -> None:
+    evaluation = EvaluationRunSpec(evaluation_type=TOY_EVALUATION_TYPE)
+    write_manifest(
+        EvaluationRunManifest(
+            id="feedbax-evaluation-run:staged-publication-parent",
+            status="completed",
+            evaluation_spec=spec_payload("EvaluationRunSpec", evaluation.model_dump(mode="json")),
+        ),
+        root=tmp_path,
+    )
+    render_type = "testpkg.staged_publication"
+    contents = iter(("first render", "second render"))
+    if kind == "figure":
+        register_figure_constructor(
+            render_type,
+            registry=application_registry_bundle.figures,
+            tier="custom_figure",
+            constructor=lambda _items, _params: go.Figure(layout_title_text=next(contents)),
+            description="Render distinct figures for each invocation.",
+        )
+        stage_spec = BundleStageSpec(
+            name="render",
+            kind=kind,
+            figure=FigureSpec(name="staged-publication", assembler=render_type),
+        )
+    else:
+        def recipe(_spec, root, _inputs) -> ReportRecipeResult:
+            return ReportRecipeResult(
+                artifacts=[
+                    store_bytes_artifact(
+                        next(contents).encode(),
+                        root=root,
+                        role=REPORT_RENDER_ROLE,
+                        logical_name="report.md",
+                        media_type="text/markdown",
+                    )
+                ]
+            )
+
+        application_registry_bundle.report_recipes.register(render_type, recipe)
+        stage_spec = BundleStageSpec(name="render", kind=kind, report_type=render_type)
+
+    bundle = AnalysisBundleSpec(
+        name="staged_publication",
+        predicate=ManifestPredicate(manifest_kind="EvaluationRunManifest"),
+        stages=[stage_spec],
+    )
+
+    def execute() -> BundleStageExecutionRecord:
+        return execute_staged_analysis_bundle(
+            bundle,
+            root=tmp_path,
+            repo_root=tmp_path,
+            registries=application_registry_bundle,
+            issues=["282b5b5"],
+        ).stages[0]
+
+    lock = terminal_publication.manifest_publication_lock
+    publications: list[tuple[Path, bytes]] = []
+    newer_stage = None
+
+    @contextmanager
+    def rerender_after_first_unlock(path: Path) -> Iterator[None]:
+        nonlocal newer_stage
+        with lock(path):
+            yield
+        publications.append((path, path.read_bytes()))
+        if len(publications) == 1:
+            newer_stage = execute()
+
+    monkeypatch.setattr(
+        terminal_publication, "manifest_publication_lock", rerender_after_first_unlock
+    )
+    older_stage = execute()
+    assert newer_stage is not None
+    (first_path, first_bytes), (second_path, second_bytes) = publications
+    assert first_path == second_path
+    first_receipt = load_manifest_bytes(first_bytes)
+    second_receipt = load_manifest_bytes(second_bytes)
+    assert first_receipt.id == second_receipt.id
+    assert first_receipt.artifacts != second_receipt.artifacts
+    assert first_path.read_bytes() == second_bytes
+
+    for stage, raw, receipt in (
+        (older_stage, first_bytes, first_receipt),
+        (newer_stage, second_bytes, second_receipt),
+    ):
+        assert receipt.status == "completed"
+        (payload,) = stage.regeneration_specs
+        assert payload in receipt.regeneration_specs
+        regeneration = RegenerationSpec.model_validate(payload.inline)
+        assert regeneration.inputs and regeneration.inputs == stage.inputs
+        assert regeneration.provenance.issues == ["282b5b5"]
+        assert regeneration.outputs == receipt.artifacts
+
+        (ref,) = stage.manifest_refs
+        assert (ref.kind, ref.id) == (receipt.kind, receipt.id)
+        assert authenticated_manifest_ref_profile(ref) == (sha256_bytes(raw), len(raw))
+
+    assert resolve_manifest_input(newer_stage.manifest_refs[0], tmp_path).raw_bytes == second_bytes
+    with pytest.raises(ValueError, match="Authenticated manifest .* mismatch"):
+        resolve_manifest_input(older_stage.manifest_refs[0], tmp_path)
 
 
 def test_staged_bundle_grouped_analysis_can_compose_bundle_and_dependency_inputs(

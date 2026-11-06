@@ -95,6 +95,7 @@ from feedbax.contracts.manifest import (
     FigureManifest,
     FigurePieceResolution,
     ManifestStatus,
+    RegenerationSpecBuilder,
     SpecPayload,
     figure_manifest_id,
     spec_payload,
@@ -113,7 +114,10 @@ from feedbax.persistence.artifact_custody import (
     ArtifactBlobIntegrityError,
     ImmutableArtifactBlobProvider,
 )
-from feedbax.persistence.terminal_publication import publish_render_manifest
+from feedbax.persistence.terminal_publication import (
+    RenderPublicationCapture,
+    publish_render_manifest,
+)
 
 FIGURE_RENDER_ROLE = "figure_render"
 FIGURE_SPEC_ROLE = "figure_spec"
@@ -946,6 +950,8 @@ def execute_figure_spec(
     registry: FigureRegistry,
     project_figure_policy: ContentPinnedJsonBase | None = None,
     recorded_project_figure_policy: ProjectFigurePolicyProvenance | None = None,
+    build_regeneration_spec: RegenerationSpecBuilder | None = None,
+    capture: RenderPublicationCapture | None = None,
 ) -> tuple[FigureManifest, Path]:
     """Resolve and execute exactly the ordinary FigureSpec exposed by display."""
     plan = plan_figure_execution(
@@ -1006,6 +1012,11 @@ def execute_figure_spec(
             resolved_inputs=resolved_inputs,
             execution_trace=exec_trace,
             metadata=manifest_metadata,
+            regeneration_spec=(
+                build_regeneration_spec(tuple(artifacts))
+                if build_regeneration_spec is not None
+                else None
+            ),
         )
     except Exception as exc:
         manifest = _build_figure_manifest(
@@ -1025,7 +1036,7 @@ def execute_figure_spec(
         )
         path = publish_render_manifest(manifest, root=root_path)
         raise FigureSpecExecutionError(manifest, path, exc) from exc
-    path = publish_render_manifest(manifest, root=root_path)
+    path = publish_render_manifest(manifest, root=root_path, capture=capture)
     assert path is not None
     return manifest, path
 
@@ -2351,6 +2362,7 @@ def _build_figure_manifest(
     execution_trace: FigureExecutionTrace,
     metadata: dict[str, Any],
     failure: dict[str, Any] | None = None,
+    regeneration_spec: SpecPayload | None = None,
 ) -> FigureManifest:
     binding_payload = [
         record.model_dump(mode="json", exclude_none=True)
@@ -2377,6 +2389,7 @@ def _build_figure_manifest(
             *composition_payloads,
             *([runtime_binding_payload] if runtime_binding_payload is not None else []),
             *(artifact for resolved in resolved_inputs for artifact in resolved.artifact_refs),
+            *([regeneration_spec] if regeneration_spec is not None else []),
         ],
         failure=failure,
         metadata=metadata,
