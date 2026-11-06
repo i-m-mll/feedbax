@@ -12,12 +12,16 @@ from feedbax.runtime.streaming import init_streaming_state_window, update_stream
 from feedbax.runtime._rollout import scan_rollout
 from feedbax.objectives.loss import (
     CompositeLoss,
+    ModelLoss,
     NthDifferenceLoss,
     StateDerivativeLoss,
     TargetSpec,
     TargetStateLoss,
+    nan_safe_mse,
 )
 from feedbax.objectives.streaming import make_streaming_loss_fn
+from feedbax.runtime.mapping import WhereDict
+from feedbax.tasks import TaskTrialSpec
 
 
 class _FakeState(eqx.Module):
@@ -191,3 +195,136 @@ def test_scan_streaming_loss_dtype_and_gradient_parity(
         assert actual[0][0].dtype == loss_dtype
         for a, b in zip(jt.leaves(actual), jt.leaves(expected)):
             assert jnp.allclose(a, b, rtol=2e-6, atol=1e-7)
+
+
+def test_mixed_streaming_objective_matches_retained_rollout():
+    """A weighted target, model and two window orders share the scan timeline."""
+    n_steps = 4
+    index = StateIndex(jnp.zeros((1,)))
+    inputs = jnp.array([[1.0], [2.0], [4.0], [7.0]])
+    keys = jr.split(jr.PRNGKey(13), n_steps)
+
+    def where(state):
+        return state.x
+
+    loss = CompositeLoss(
+        terms={
+            "tracking": TargetStateLoss(
+                label="tracking",
+                where=where,
+                spec=TargetSpec(
+                    value=jnp.array(-10.0),
+                    time_idxs=jnp.array([-1]),
+                    discount=lambda spec: spec.inputs["discount"],
+                ),
+            ),
+            "model": ModelLoss(label="model", loss_fn=jnp.square),
+            "velocity": NthDifferenceLoss(label="velocity", order=1, where=where),
+            "acceleration": NthDifferenceLoss(label="acceleration", order=2, where=where),
+        },
+        weights={"tracking": 1.0, "model": 2.0, "velocity": 3.0, "acceleration": 0.5},
+    )
+
+    targets = jnp.array([[1.0], [100.0], [4.0]])
+    weight_inputs = {
+        "mask": jnp.array([True, False, True]),
+        "discount": jnp.array([2.0, 3.0, 4.0]),
+    }
+
+    def specs(value, weight_inputs):
+        return TaskTrialSpec(
+            inits=WhereDict(),
+            targets=WhereDict({
+                where: {"tracking": TargetSpec(
+                    value=value, time_mask=lambda spec: spec.inputs["mask"]
+                )},
+            }),
+            inputs=weight_inputs,
+        )
+
+    trial = specs(targets, weight_inputs)
+    batch = specs(targets[None], jt.map(lambda weight: weight[None], weight_inputs))
+
+    def run(scale, *, streaming):
+        def step_fn(step_input, state, carry, key, t):
+            x = scale * step_input
+            return x, state.set(index, x), carry
+
+        step_loss = make_streaming_loss_fn(loss, trial, scale, n_steps) if streaming else None
+        outputs, state, aux = scan_rollout(
+            step_fn,
+            State(index),
+            inputs,
+            keys,
+            n_steps,
+            state_view_fn=lambda s: _FakeState(s.get(index), s.get(index)),
+            streaming_loss_fn=step_loss,
+        )
+        value = aux if streaming else loss(jt.map(lambda x: x[None, 1:], aux), batch, scale).total
+        return value, (outputs, state.get(index))
+
+    retained = jax.jit(jax.value_and_grad(lambda m: run(m, streaming=False), has_aux=True))
+    streamed = jax.jit(jax.value_and_grad(lambda m: run(m, streaming=True), has_aux=True))
+    expected = retained(jnp.array(2.0))
+    actual = streamed(jnp.array(2.0))
+
+    # At scale 2, tracking contributes 418, model 8, velocity 56 and
+    # acceleration 2. Tracking contributes 584 to the derivative.
+    assert expected[0][0] == pytest.approx(484.0)
+    assert expected[1] == pytest.approx(650.0)
+    for got, want in zip(jt.leaves(actual), jt.leaves(expected), strict=True):
+        assert jnp.allclose(got, want)
+
+
+def test_missing_targets_produce_finite_gradients():
+    target = jnp.array([3.0, jnp.nan, jnp.inf])
+    value, gradient = jax.jit(jax.value_and_grad(nan_safe_mse))(
+        jnp.array([1.0, 2.0, jnp.nan]), target
+    )
+
+    assert value == 4.0
+    assert jnp.array_equal(gradient, jnp.array([-4.0, 0.0, 0.0]))
+
+
+def test_retained_and_streaming_reject_short_weights():
+    loss = TargetStateLoss(
+        label="target",
+        where=lambda state: state.x,
+        spec=TargetSpec(value=0.0, discount=jnp.array([1.0, 2.0])),
+    )
+    specs = _TrialSpecs()
+    values = jnp.ones((4, 1))
+
+    with pytest.raises(ValueError, match=r"Time weight must be scalar or shape \(3,\)"):
+        loss(_full_state(values), specs, None)
+    with pytest.raises(ValueError, match=r"Time weight must be scalar or shape \(3,\)"):
+        make_streaming_loss_fn(loss, specs, None, n_steps=4)
+
+
+def test_static_trial_targets_follow_trials_when_batch_size_matches_horizon():
+    def where(state):
+        return state.x
+
+    target = jnp.array([[1.0], [2.0], [3.0]])
+    n_steps = 4
+    loss = TargetStateLoss("tracking", where)
+
+    def specs(value):
+        return _TrialSpecs(targets={loss.key: TargetSpec(value=value)})
+
+    def retained(scale):
+        values = jnp.broadcast_to((scale * target)[:, None, :], (3, n_steps, 1))
+        return loss(_FakeState(values, values), specs(target), None).total
+
+    def streamed(scale):
+        def trial(value):
+            contribution = make_streaming_loss_fn(loss, specs(value), None, n_steps)
+            state = _FakeState(scale * value, scale * value)
+            return jax.vmap(lambda t: contribution(state, t))(jnp.arange(n_steps)).sum()
+
+        return jax.vmap(trial)(target).mean()
+
+    for objective in (retained, streamed):
+        value, gradient = jax.jit(jax.value_and_grad(objective))(1.0)
+        assert value == 0.0
+        assert gradient == 0.0
