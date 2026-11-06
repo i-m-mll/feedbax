@@ -25,7 +25,7 @@ from dataclasses import dataclass, field as dc_field
 from enum import Enum
 from typing import Callable, ClassVar, Optional
 
-from feedbax.contracts.acausal_interface import SourcePayload
+from feedbax._acausal_payload import SourcePayload
 
 
 # ---------------------------------------------------------------------------

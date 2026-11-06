@@ -2,10 +2,11 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { TrainCollectionPanel } from '@/components/panels/RunCollectionStagePanel';
+import { EvaluateCollectionPanel, TrainCollectionPanel } from '@/components/panels/RunCollectionStagePanel';
 import { useGraphStore } from '@/stores/graphStore';
 import { defaultTaskSpec, defaultTrainingSpec } from '@/stores/trainingStore';
 import { buildWorkspaceSnapshot, getScenario, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
+import { pipelineWorkspaceFixture, TRAINING_RUN_ID } from '@/test/pipelineWorkspaceFixture';
 import { currentDraftSpecHashesForScenario } from '@/utils/pipelineCollections';
 
 afterEach(() => {
@@ -104,4 +105,35 @@ it.each([
     { id: 'run:B', metadata: { status: 'completed', result_manifest_id: 'result:B' } },
   ]);
   expect(getStageByKind(current, 'eval')?.selection_spec).toEqual(evaluate.selection_spec);
+});
+
+it('previews the configured evaluation conditions without overriding stage parameters', async () => {
+  const workspace = pipelineWorkspaceFixture();
+  const evaluate = getStageByKind(workspace, 'eval')!;
+  evaluate.selection_spec.condition_matrix = {
+    axes: [{ id: 'gain', label: 'Feedback gain', path: 'eval_params.gain', values: [0, 0.5] }],
+  };
+  useWorkspaceStore.getState().restoreWorkspace(workspace);
+
+  const fetchPreview = vi.fn().mockResolvedValue(Response.json({
+    condition_labels: ['Feedback gain=0', 'Feedback gain=0.5'],
+    pending_count: 0,
+    failed_count: 0,
+    launch_count: 2,
+    summary: '2 evaluations',
+  }));
+  vi.stubGlobal('fetch', fetchPreview);
+
+  render(<EvaluateCollectionPanel />);
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await screen.findByText('Feedback gain=0');
+  expect(screen.getByText('Feedback gain=0.5')).toBeTruthy();
+
+  const [path, options] = fetchPreview.mock.calls[0];
+  const payload = JSON.parse(options.body);
+  expect(path).toBe('/api/provider/studio/evaluation/preview');
+  expect(payload.training_run_ids).toEqual([TRAINING_RUN_ID]);
+  expect(payload).not.toHaveProperty('eval_params');
+  expect(getStageByKind(payload.workspace, 'eval')?.selection_spec.condition_matrix)
+    .toEqual(evaluate.selection_spec.condition_matrix);
 });

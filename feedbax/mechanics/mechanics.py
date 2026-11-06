@@ -151,6 +151,9 @@ class Mechanics(Component):
     def _term(self) -> dfx.AbstractTerm:
         return dfx.ODETerm(self.plant.vector_field)
 
+    def state_consistency_update(self, state: State) -> State:
+        return self.replace_state_value(state, ("effector",), self.state_view(state).effector)
+
     def replace_state_value(self, state: State, path: tuple[str, ...], value: PyTree) -> State:
         """Apply an explicit Cartesian pose to both the effector and the plant."""
         if path not in (("effector",), ("effector", "pos"), ("effector", "vel")):

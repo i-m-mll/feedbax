@@ -129,21 +129,21 @@ def test_two_children_share_one_pinned_params_block(tmp_path: Path) -> None:
             }
         ],
     )
-    sisu = _delta(
+    offset = _delta(
         "base.json",
         base_sha,
         [
             {
-                "layer_id": "sisu_wave1",
+                "layer_id": "offset_shifted",
                 "patches": [
                     {
                         "path": "inputs",
-                        "value": [{"kind": "evaluation_run", "id": "sisu-wave1-eval"}],
+                        "value": [{"kind": "evaluation_run", "id": "offset-shifted-eval"}],
                     },
                     {
-                        "path": "params.expected_grid.conditioning",
+                        "path": "params.expected_grid.response_mode",
                         "op": "add",
-                        "value": "wave1",
+                        "value": "shifted",
                     },
                 ],
             }
@@ -151,24 +151,24 @@ def test_two_children_share_one_pinned_params_block(tmp_path: Path) -> None:
     )
 
     flat_spec, flat_flat = resolve_analysis_run_authoring(flat3e5, repo_root=tmp_path)
-    sisu_spec, sisu_flat = resolve_analysis_run_authoring(sisu, repo_root=tmp_path)
+    offset_spec, offset_flat = resolve_analysis_run_authoring(offset, repo_root=tmp_path)
 
     # Neither child restates the shared aggregation/grid; both inherit it.
     assert flat_spec.params["aggregation"] == "mean"
-    assert sisu_spec.params["aggregation"] == "mean"
+    assert offset_spec.params["aggregation"] == "mean"
     assert flat_spec.params["expected_grid"] == {
         "policy_arms": ["control", "perturbed"],
         "target_indices": [0, 1, 2],
         "replicate_slots": 4,
     }
-    # SISU adds only its conditioning delta on top of the shared grid.
-    assert sisu_spec.params["expected_grid"]["conditioning"] == "wave1"
-    assert "conditioning" not in flat_spec.params["expected_grid"]
+    # The offset wrapper adds only its response_mode delta on top of the shared grid.
+    assert offset_spec.params["expected_grid"]["response_mode"] == "shifted"
+    assert "response_mode" not in flat_spec.params["expected_grid"]
     assert [ref.id for ref in flat_spec.inputs] == ["flat3e5-eval"]
-    assert [ref.id for ref in sisu_spec.inputs] == ["sisu-wave1-eval"]
+    assert [ref.id for ref in offset_spec.inputs] == ["offset-shifted-eval"]
 
     # Composed-vs-standalone equivalence: the flattened doc equals a hand-authored spec.
-    standalone_sisu = _analysis_base(
+    standalone_offset = _analysis_base(
         "example.velocity_profiles",
         {
             "aggregation": "mean",
@@ -176,16 +176,16 @@ def test_two_children_share_one_pinned_params_block(tmp_path: Path) -> None:
                 "policy_arms": ["control", "perturbed"],
                 "target_indices": [0, 1, 2],
                 "replicate_slots": 4,
-                "conditioning": "wave1",
+                "response_mode": "shifted",
             },
         },
     )
-    standalone_sisu["inputs"] = [{"kind": "evaluation_run", "id": "sisu-wave1-eval"}]
-    assert sisu_spec == AnalysisRunSpec.model_validate(standalone_sisu)
-    assert flat_flat is not None and sisu_flat is not None
-    assert sisu_flat.attribution == {
-        "inputs": "sisu_wave1",
-        "params.expected_grid.conditioning": "sisu_wave1",
+    standalone_offset["inputs"] = [{"kind": "evaluation_run", "id": "offset-shifted-eval"}]
+    assert offset_spec == AnalysisRunSpec.model_validate(standalone_offset)
+    assert flat_flat is not None and offset_flat is not None
+    assert offset_flat.attribution == {
+        "inputs": "offset_shifted",
+        "params.expected_grid.response_mode": "offset_shifted",
     }
 
 
@@ -205,9 +205,9 @@ def test_nested_chain_applies_layers_root_to_child_with_attribution(tmp_path: Pa
                 "layer_id": "leaf",
                 "patches": [
                     {
-                        "path": "params.expected_grid.conditioning",
+                        "path": "params.expected_grid.response_mode",
                         "op": "add",
-                        "value": "wave1",
+                        "value": "shifted",
                     },
                     {"path": "analysis_type", "value": "example.velocity_profiles_leaf"},
                 ],
@@ -228,12 +228,12 @@ def test_nested_chain_applies_layers_root_to_child_with_attribution(tmp_path: Pa
     )
     assert flattened.attribution == {
         "params.aggregation": "mid",
-        "params.expected_grid.conditioning": "leaf",
+        "params.expected_grid.response_mode": "leaf",
         "analysis_type": "leaf",
     }
     resolved = AnalysisRunSpec.model_validate(flattened.payload)
     assert resolved.params["aggregation"] == "median"
-    assert resolved.params["expected_grid"]["conditioning"] == "wave1"
+    assert resolved.params["expected_grid"]["response_mode"] == "shifted"
     assert resolved.analysis_type == "example.velocity_profiles_leaf"
 
 
@@ -408,9 +408,9 @@ def test_composition_provenance_record(tmp_path: Path) -> None:
         base_sha,
         [
             {
-                "layer_id": "sisu",
+                "layer_id": "offset",
                 "patches": [
-                    {"path": "params.expected_grid.conditioning", "op": "add", "value": "w"}
+                    {"path": "params.expected_grid.response_mode", "op": "add", "value": "w"}
                 ],
             }
         ],
@@ -429,10 +429,10 @@ def test_composition_provenance_record(tmp_path: Path) -> None:
             "envelope_sha256": flattened.authored_envelope_sha256,
             "parent_ref": "base.json",
             "parent_sha256": base_sha,
-            "layer_ids": ["sisu"],
+            "layer_ids": ["offset"],
         }
     ]
-    assert provenance["attribution"] == {"params.expected_grid.conditioning": "sisu"}
+    assert provenance["attribution"] == {"params.expected_grid.response_mode": "offset"}
     assert provenance["flattened_spec_sha256"] == sha256_bytes(
         canonical_json_bytes(dict(flattened.payload))
     )
@@ -476,9 +476,9 @@ def test_delta_authored_execution_records_composition_provenance(
         base_sha,
         [
             {
-                "layer_id": "sisu",
+                "layer_id": "offset",
                 "patches": [
-                    {"path": "params.expected_grid.conditioning", "op": "add", "value": "w"}
+                    {"path": "params.expected_grid.response_mode", "op": "add", "value": "w"}
                 ],
             }
         ],
@@ -506,8 +506,8 @@ def test_delta_authored_execution_records_composition_provenance(
     assert provenance["authored_envelope_sha256"] == flattened.authored_envelope_sha256
     assert provenance["root_spec"] == {"ref": "base.json", "sha256": base_sha}
     assert provenance["layers"][0]["parent_sha256"] == base_sha
-    assert provenance["layers"][0]["layer_ids"] == ["sisu"]
-    assert provenance["attribution"] == {"params.expected_grid.conditioning": "sisu"}
+    assert provenance["layers"][0]["layer_ids"] == ["offset"]
+    assert provenance["attribution"] == {"params.expected_grid.response_mode": "offset"}
 
 
 def test_direct_spec_execution_metadata_carries_no_composition_key(

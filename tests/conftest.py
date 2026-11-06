@@ -4,18 +4,12 @@ from collections.abc import Iterator
 import os
 from pathlib import Path
 import shutil
-from contextlib import ExitStack
 
-from scripts.full_suite import (
-    auto_worker_count,
-    configure_native_threads,
-    owned_suite_temporary_root,
-)
+from scripts.full_suite import auto_worker_count, configure_native_threads
 
 configure_native_threads()
 
 import jax
-from jax.experimental.compilation_cache import compilation_cache
 import pytest
 
 import feedbax
@@ -27,6 +21,9 @@ from feedbax.plugins.application import (
     ApplicationRegistryBundle,
     new_application_registry_bundle,
 )
+
+
+pytest_plugins = ["scripts.pytest_jax_cache"]
 
 
 @pytest.hookimpl(optionalhook=True)
@@ -48,65 +45,6 @@ def evaluation_registry() -> EvaluationRecipeRegistry:
 @pytest.fixture
 def analysis_registry() -> AnalysisRecipeRegistry:
     return AnalysisRecipeRegistry()
-
-
-_INVOCATION_CACHE_ROOT = pytest.StashKey[Path]()
-
-
-@pytest.hookimpl(optionalhook=True)
-def pytest_configure_node(node) -> None:
-    """Give workers the controller-owned root without ownership of its cleanup."""
-    if root := node.config.stash.get(_INVOCATION_CACHE_ROOT, None):
-        node.workerinput["feedbax_jax_cache_root"] = str(root)
-
-
-@pytest.hookimpl(tryfirst=True)
-def pytest_configure(config: pytest.Config) -> None:
-    """Scope JAX cache configuration and any owned cache bytes to this invocation."""
-    if os.environ.get("FEEDBAX_DISABLE_JAX_COMPILATION_CACHE") == "1":
-        return
-
-    scope = ExitStack()
-    config.add_cleanup(scope.close)
-    worker_input = getattr(config, "workerinput", {})
-    worker_root = worker_input.get("feedbax_jax_cache_root")
-    explicit = os.environ.get("FEEDBAX_JAX_COMPILATION_CACHE_DIR")
-    if worker_root is None and explicit is not None:
-        cache_dir = Path(explicit).expanduser()
-    else:
-        if worker_root is not None:
-            root = Path(worker_root)
-            process_name = worker_input["workerid"]
-        else:
-            root_env = {}
-            if parent := os.environ.get("FEEDBAX_JAX_TEST_CACHE_ROOT"):
-                parent_path = Path(parent).expanduser()
-                parent_path.mkdir(parents=True, exist_ok=True)
-                root_env["TMPDIR"] = str(parent_path)
-            root = scope.enter_context(owned_suite_temporary_root(root_env or None))
-            config.stash[_INVOCATION_CACHE_ROOT] = root
-            process_name = "controller"
-        cache_dir = root / process_name / "jax_compilation"
-        patch = scope.enter_context(pytest.MonkeyPatch.context())
-        # Child processes inherit their launching worker's cache, not the controller's.
-        patch.setenv("FEEDBAX_JAX_COMPILATION_CACHE_DIR", str(cache_dir))
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    min_compile_secs = float(
-        os.environ.get("FEEDBAX_JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
-    )
-    min_entry_size = int(os.environ.get("FEEDBAX_JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0"))
-    settings = {
-        "jax_compilation_cache_dir": str(cache_dir),
-        "jax_persistent_cache_min_compile_time_secs": min_compile_secs,
-        "jax_persistent_cache_min_entry_size_bytes": min_entry_size,
-    }
-    # The initialized persistent cache retains its path across config updates.
-    scope.callback(compilation_cache.reset_cache)
-    for name, value in settings.items():
-        scope.callback(jax.config.update, name, getattr(jax.config, name))
-        jax.config.update(name, value)
-    compilation_cache.reset_cache()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -133,26 +71,14 @@ _WORKING_PACKAGE_ROOT = Path(feedbax.__file__).resolve().parent
 
 
 @pytest.fixture(autouse=True)
-def _fresh_checkout_revision_cache() -> Iterator[None]:
-    """Give every test the memoized revision state of a freshly started process.
-
-    ``revision._resolve_checkout_revision`` memoizes per package directory because
-    the commit that supplied an imported package is fixed once the interpreter has
-    loaded it. A test is not a process: it redirects ``feedbax.__file__`` at a
-    throwaway checkout it just built, and may commit to or rewrite that checkout
-    while it runs. Clearing the cache on both sides of each test keeps that
-    freedom, so no test can observe an answer another test resolved and none can
-    leak one forward.
-
-    This covers test boundaries only. A single test that resolves a checkout and
-    *then* changes what Git would answer about it — initialising a repository over
-    an installed wheel, committing, checking out — must call
-    ``revision._reset_checkout_revision_cache()`` itself between the two, or it
-    will assert against the answer it already took.
-    """
-    _revision._reset_checkout_revision_cache()
+def _isolate_test_checkout_revisions() -> Iterator[None]:
+    """Discard synthetic checkout entries and preserve the imported code identity."""
     yield
+    cache = _revision._CHECKOUT_REVISION_CACHE
+    working_revision = cache.get(_WORKING_PACKAGE_ROOT)
     _revision._reset_checkout_revision_cache()
+    if working_revision is not None:
+        cache[_WORKING_PACKAGE_ROOT] = working_revision
 
 
 @pytest.fixture(autouse=True)

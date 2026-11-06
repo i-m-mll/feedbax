@@ -158,7 +158,7 @@ class PointMass(AbstractSkeleton[CartesianState]):
         augments them with a first-order force filter row when one is used.
 
         The disturbance channel ``B_w`` matches the convention used by
-        ``feedbax.intervene.FixedField`` / ``CurlField``: an additive force
+        ``feedbax.mechanics.force_fields.FixedField`` / ``CurlField``: an additive force
         on the velocity row, identical in structure to ``B``. This is
         consistent with the ``rlrmp.analysis.hinf_riccati.linearize_pointmass``
         derivation.

@@ -190,7 +190,7 @@ def _task_input_binding(
     if expected_shape is not None:
         data["expected_shape"] = expected_shape
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [data],
         "bindings": [
             {
@@ -262,7 +262,7 @@ def _schema_workspace():
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -1385,7 +1385,7 @@ def test_training_manifest_writes_artifacts_and_rebuildable_index(tmp_path: Path
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
         task_binding_spec={
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [],
             "bindings": [],
             "metadata": {},
@@ -1538,7 +1538,7 @@ def test_studio_schema_enumeration_does_not_wrap_runtime_network_ports(
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -1678,7 +1678,7 @@ def test_runtime_wrapper_normalization_does_not_mark_feedback_cut_recurrent() ->
                 "output_ports": ["effector"],
             },
             "feedback": {
-                "type": "FeedbackChannels",
+                "type": "Channel",
                 "params": {},
                 "input_ports": ["input"],
                 "output_ports": ["output"],
@@ -1795,7 +1795,7 @@ def test_studio_schema_enumeration_reports_dynamic_mux_input_mismatch(
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "target_on",
@@ -1978,7 +1978,7 @@ def test_studio_schema_task_data_trajectory_bindings_use_sample_view(
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "target_position",
@@ -2045,7 +2045,7 @@ def test_studio_schema_enumeration_infers_mux_output_width_from_sample_shapes(
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "target_position",
@@ -2144,7 +2144,7 @@ def test_studio_schema_reports_derived_dimension_conflict(application_registry_b
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "position",
@@ -2259,7 +2259,7 @@ def test_studio_schema_uses_subgraph_boundary_shapes_for_parent_ports(
     scenario = workspace.scenarios[train_stage.scenario_id]
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "target_position",
@@ -2523,7 +2523,6 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
                     "amplitude": 1.0,
                     "field": [0.0, 0.0],
                     "active": False,
-                    "label": "perturb",
                 },
                 "input_ports": ["force", "params_override"],
                 "output_ports": ["force"],
@@ -2536,14 +2535,14 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
     )
     task_binding = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "perturb",
                     "label": "Perturbation params",
-                    "kind": "intervention",
-                    "role": "component_parameter",
-                    "path": "intervene.perturb",
+                    "kind": "signal",
+                    "role": "graph_input",
+                    "path": "inputs.perturb",
                     "bindable": True,
                     "dtype": "object",
                     "value_spec": {
@@ -2559,8 +2558,7 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
                     "source_data_id": "perturb",
                     "target_node_id": "field",
                     "target_port": "params_override",
-                    "role": "component_parameter",
-                    "metadata": {"task_parameter_label": "perturb"},
+                    "role": "graph_input",
                 }
             ],
             "metadata": {},
@@ -2574,15 +2572,6 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
         component_registry=application_registry_bundle.components,
     )
     assert not [issue for issue in issues if issue.severity == "error"]
-
-    task_binding.bindings[0].metadata["task_parameter_label"] = "missing"
-    issues = validate_task_binding_schema(
-        task_binding,
-        graph,
-        "/task_binding_spec",
-        component_registry=application_registry_bundle.components,
-    )
-    assert {issue.type for issue in issues} >= {"component_parameter_label_unknown"}
 
     occupied_payload = graph.model_dump(mode="json", exclude_none=True)
     occupied_payload.update(
@@ -2607,7 +2596,6 @@ def test_studio_schema_accepts_component_parameter_bindings_with_declared_label(
         }
     )
     occupied_graph = GraphSpec.model_validate(occupied_payload)
-    task_binding.bindings[0].metadata["task_parameter_label"] = "perturb"
     issues = validate_task_binding_schema(
         task_binding,
         occupied_graph,
@@ -2695,7 +2683,7 @@ def test_worker_emits_durable_training_manifest(
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
         task_binding_spec={
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [],
             "bindings": [],
             "metadata": {},
@@ -2749,7 +2737,7 @@ def test_worker_spec_contract_accepts_scenario_owned_task_binding_v2(
     _require_worker_specs(
         _worker_contract_job(
             task_binding_spec={
-                "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v3",
                 "exposed_data": [
                     {
                         "id": "inputs",
@@ -2807,7 +2795,7 @@ def test_worker_spec_contract_migrates_legacy_task_binding_v1(application_regist
 
     _require_worker_specs(job, bootstrap_state=BootstrapState(application_registry_bundle, ()))
 
-    assert job.task_binding_spec["schema_version"] == "feedbax.spec.studio.task_bindings.v2"
+    assert job.task_binding_spec["schema_version"] == "feedbax.spec.studio.task_bindings.v3"
     assert job.task_binding_spec["exposed_data"][0]["id"] == "inputs"
     assert "exposed_outputs" not in job.task_binding_spec
     assert job.task_binding_spec["bindings"][0]["source_data_id"] == "inputs"
@@ -2818,7 +2806,7 @@ def test_worker_spec_contract_rejects_runtime_network_payloads(application_regis
     job = _worker_contract_job(
         graph_spec=_runtime_network_graph_spec(),
         task_binding_spec={
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -2854,7 +2842,7 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings(
         _require_worker_specs(
             _worker_contract_job(
                 task_binding_spec={
-                    "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                    "schema_version": "feedbax.spec.studio.task_bindings.v3",
                     "exposed_data": [
                         {
                             "id": "inputs",
@@ -2891,7 +2879,7 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings(
         ),
         (
             {
-                "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v3",
                 "exposed_outputs": [],
                 "bindings": [],
                 "metadata": {},
@@ -2900,7 +2888,7 @@ def test_worker_spec_contract_rejects_graph_incompatible_task_bindings(
         ),
         (
             {
-                "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v3",
                 "exposed_data": [],
                 "bindings": [
                     {

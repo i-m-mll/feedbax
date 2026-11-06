@@ -14,13 +14,12 @@ from __future__ import annotations
 from typing import Any
 
 GRAPH_BINDABLE_TASK_DATA_ROLES = frozenset(
-    {"model_input", "graph_input", "component_parameter"}
+    {"model_input", "graph_input"}
 )
 PROTOCOL_TASK_DATA_ROLES = frozenset(
     {
         "target",
         "initial_state",
-        "intervention",
         "eval_control",
         "trial_control",
         "compact_task_trajectory",
@@ -34,7 +33,6 @@ PROTOCOL_TASK_DATA_KINDS = frozenset(
     {
         "target",
         "initial_state",
-        "intervention",
         "eval_control",
         "trial_control",
         "validation",
@@ -44,7 +42,6 @@ PROTOCOL_TASK_DATA_KINDS = frozenset(
 PROTOCOL_TASK_DATA_PATH_PREFIXES = (
     "targets",
     "inits",
-    "intervene",
     "validation_trials",
     "eval",
     "trial_controls",

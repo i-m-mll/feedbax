@@ -109,7 +109,7 @@ from feedbax.orchestration.executor_family import (
     executor_family_adapter,
 )
 from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleEvidence
-from feedbax.orchestration.events import RunEventReader
+from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES, RunEventReader
 from feedbax.orchestration.input_materialization import preflight_resolved_inputs
 from feedbax.orchestration.revision import (
     FeedbaxRevisionError,
@@ -1966,15 +1966,10 @@ class StageEngine:
     def _stage_collect(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         collected, checkpoint_custody = self._group_collection_maps(state)
         collection_recovery: dict[str, Mapping[str, Any]] = {}
-        executor_failures = [
-            {
-                "row_id": row.row_id,
-                "error": state.rows[row.row_id].error or "executor reported failure without detail",
-            }
-            for row in self.bundle.rows
-            if state.rows[row.row_id].status == "failed"
-        ]
-        preserve_executor_failure = bool(executor_failures)
+        preserve_executor_failure = any(
+            state.rows[row.row_id].status == "failed" for row in self.bundle.rows
+        )
+        deferred_collection_failure: Exception | None = None
         secondary_evidence: list[dict[str, Any]] = []
         for row in self.bundle.rows:
             row_state = state.rows[row.row_id]
@@ -1987,6 +1982,7 @@ class StageEngine:
             except Exception as exc:
                 if not preserve_executor_failure:
                     raise
+                deferred_collection_failure = deferred_collection_failure or exc
                 outputs = {}
                 secondary_evidence.append(
                     {
@@ -1995,6 +1991,7 @@ class StageEngine:
                         "detail": str(exc),
                     }
                 )
+            row_state = row_state.model_copy(update={"collected_outputs": outputs})
             missing_outputs = executor_family_adapter(
                 row.execution_family
             ).missing_collection_outputs(self.bundle, row, outputs)
@@ -2004,20 +2001,30 @@ class StageEngine:
                     "row_id": row.row_id,
                     "missing_outputs": missing_outputs,
                 }
+                failure = OrchestrationStageError(
+                    f"declared collection outputs are absent for row "
+                    f"{row.row_id!r}: {missing_outputs!r}"
+                )
                 if not preserve_executor_failure:
-                    raise OrchestrationStageError(
-                        f"declared collection outputs are absent for row "
-                        f"{row.row_id!r}: {missing_outputs!r}"
-                    )
+                    raise failure
+                deferred_collection_failure = deferred_collection_failure or failure
                 secondary_evidence.append(evidence)
             elif uses_registered_native_execution(row):
                 try:
                     checkpoint_custody[row.row_id] = _publish_verified_native_collection(
                         self.bundle, row, outputs
                     )
+                    row_state = _reconcile_collected_checkpoint_stop(
+                        self.bundle,
+                        state,
+                        row,
+                        row_state,
+                        checkpoint_custody[row.row_id],
+                    )
                 except Exception as exc:
                     if not preserve_executor_failure:
                         raise
+                    deferred_collection_failure = deferred_collection_failure or exc
                     secondary_evidence.append(
                         {
                             "kind": "checkpoint_custody_verification_after_executor_failure",
@@ -2034,9 +2041,18 @@ class StageEngine:
                 row_recovery = recovery_evidence(row.row_id)
                 if row_recovery is not None:
                     collection_recovery[row.row_id] = dict(row_recovery)
-            row_state = row_state.model_copy(update={"collected_outputs": outputs})
             state = state.with_row(row.row_id, row_state)
             self.store.save(state)
+        executor_failures = [
+            {
+                "row_id": row.row_id,
+                "error": state.rows[row.row_id].error or "executor reported failure without detail",
+            }
+            for row in self.bundle.rows
+            if state.rows[row.row_id].status == "failed"
+        ]
+        if not executor_failures and deferred_collection_failure is not None:
+            raise deferred_collection_failure
         stage_outputs: dict[str, Any] = {"rows": collected}
         if self.bundle.execution_family == "evaluation-matrix" and not executor_failures:
             lifecycles = [
@@ -2204,6 +2220,15 @@ class StageEngine:
         row_state = state.rows[row.row_id]
         outputs = row_state.collected_outputs
         runtime_inputs = self.row_conformance_inputs.get(row.row_id)
+        cancellation = state.budget_counters.get("cancellation")
+        if (
+            state.abort_reason == "operator-stop-after-checkpoint"
+            and isinstance(cancellation, Mapping)
+            and cancellation.get("action") == "stop"
+        ):
+            runtime_inputs = (runtime_inputs or RowConformanceRuntimeInputs()).model_copy(
+                update={"operator_checkpoint_stop": True}
+            )
         run_spec = _row_payload(row)
         collect = state.stage(STAGE_COLLECT)
         custody = collect.outputs.get("checkpoint_custody", {}).get(row.row_id)
@@ -2487,7 +2512,10 @@ class StageEngine:
         row_status_set = set(row_statuses.values())
         if certificate.overall == "fail":
             status = "failed"
-        elif state.abort_reason:
+        elif state.abort_reason and (
+            state.abort_reason != "operator-stop-after-checkpoint"
+            or "stopped" not in row_status_set
+        ):
             status = "aborted"
         elif row_status_set == {"completed"}:
             status = "completed"
@@ -4348,6 +4376,70 @@ def _optimizer_payloads(run_spec: Mapping[str, Any]) -> list[Mapping[str, Any]]:
         if isinstance(value, Mapping):
             payloads.append(value)
     return payloads
+
+
+def _reconcile_collected_checkpoint_stop(
+    bundle: RunBundle,
+    state: RunSetState,
+    row: RunRowSpec,
+    row_state: RowState,
+    custody: Mapping[str, Any],
+) -> RowState:
+    """Resolve a RunPod terminal probe using authenticated checkpoint-stop evidence."""
+    cancellation = state.budget_counters.get("cancellation")
+    if (
+        bundle.deployment_policy.driver != "runpod"
+        or state.abort_reason != "operator-stop-after-checkpoint"
+        or not isinstance(cancellation, Mapping)
+        or cancellation.get("action") != "stop"
+        or row_state.status not in {"completed", "failed"}
+        or row_state.error is not None
+    ):
+        return row_state
+    event_name = f"{row.row_id}.events.jsonl"
+    event_path = bundle.run_set_dir / "events" / event_name
+    if row_state.collected_outputs.get(event_name) != str(event_path):
+        return row_state
+    events = RunEventReader(event_path).read_all()
+    terminal = [event for event in events if event.type in RUN_EVENT_TERMINAL_TYPES]
+    if len(terminal) != 1:
+        return row_state
+    (event,) = terminal
+    provenance = row.execution.row_provenance
+    if (
+        event is not events[-1]
+        or event.type != "complete"
+        or event.run_set_id != bundle.run_set_id
+        or event.row_id != row.row_id
+        or provenance is None
+        or event.payload.get("run_id") != provenance.planned_run_id
+        or event.payload.get("status") != "cancelled"
+    ):
+        return row_state
+
+    artifacts = _load_collected_native_artifacts(bundle, row, row_state, custody, _row_payload(row))
+    manifest = artifacts["manifest_payload"]
+    diagnostics = artifacts["training_diagnostics"]
+    frame = artifacts["native_batch_frame"]
+    worker_cancellation = manifest.get("provenance", {}).get("metadata", {}).get("cancellation")
+    if (
+        manifest["status"] != "cancelled"
+        or diagnostics.get("terminal_status") != "cancelled"
+        or not isinstance(worker_cancellation, Mapping)
+        or worker_cancellation.get("action") != "stop"
+        or frame.segment <= 0
+        or manifest.get("completed_batches") != frame.cumulative
+        or custody.get("completed_training_batches") != frame.cumulative
+    ):
+        return row_state
+    return row_state.model_copy(
+        update={
+            "status": "stopped",
+            "error": state.abort_reason,
+            "event_seq_high_water_mark": event.seq,
+            "last_event_type": event.type,
+        }
+    )
 
 
 def _load_collected_native_artifacts(

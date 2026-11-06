@@ -26,9 +26,11 @@ from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
     ParameterConstraintSpec,
+    STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
     StudioTaskBindingSpec,
     WireSpec,
 )
+from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.web.worker.execution import (
     _build_optimizer,
@@ -46,6 +48,7 @@ from feedbax.web.worker.app import _Job, _require_worker_specs
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
 from feedbax.web.worker.diagnostics import GraphCompilationError
 from feedbax.contracts.studio_api import TrainingWebSocketEvent
+from feedbax.contracts.training import TaskSpec
 from feedbax.orchestration.events import run_event_from_legacy_worker_event
 from feedbax.web.services.training_service import TrainingService
 
@@ -123,7 +126,7 @@ def _acausal_task_binding_spec() -> dict:
 
 def _task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "model_input",
@@ -158,7 +161,7 @@ def _task_binding_spec() -> dict:
 
 def _network_task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "model_input",
@@ -258,7 +261,7 @@ def _cde_task_binding_spec() -> dict:
             }
         )
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": exposed_data,
         "bindings": bindings,
         "metadata": {},
@@ -282,7 +285,7 @@ def _mux_graph_spec() -> dict:
 
 def _mux_task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "position",
@@ -542,7 +545,7 @@ def test_worker_rollout_matches_runtime_for_task_seeded_noisy_cycle() -> None:
     graph = compiled.graph
     key = jax.random.PRNGKey(17)
     rollout = rollout_graph(graph, compiled, key=key)
-    _, graph_key = jax.random.split(key)
+    graph_key = derive_key(key, "studio-trial", "graph")
     outputs, final_state, history = graph(
         {"seed": jnp.array(seed), "drive": jnp.array(drive)},
         init_state_from_component(graph),
@@ -879,17 +882,17 @@ def test_post_serialization_cleanup_failure_reports_residual_path(
 @pytest.mark.parametrize(
     "fixture, expected_losses, expected_output",
     [
-        ("linear", [0.0904710814, 0.0101577155, 0.0054140552], [0.1759796143] * 4),
-        ("constrained", [0.9710375071, 0.7839561701, 0.6168751121], [-0.6854143143] * 4),
+        ("linear", [0.4799930155, 0.2428681999, 0.0857427195], [-0.0948367119] * 4),
+        ("constrained", [0.0715106800, 0.0280279387, 0.0050593941], [-0.0155360159] * 4),
         (
             "recurrent",
-            [0.8857897520, 0.3174341917, 0.1139833331],
-            [-0.2304591388, -0.2057695985, -0.1899056733, -0.1794523597],
+            [0.0006390046, 0.1656780392, 0.0214153193],
+            [-0.0984299108, -0.1582289338, -0.1803956926, -0.1881809831],
         ),
     ],
 )
-def test_studio_update_preserves_seeded_training(fixture, expected_losses, expected_output):
-    """Preserve seeded updates with reset templates excluded from optimizer ownership."""
+def test_studio_update_reproduces_v4_seeded_training(fixture, expected_losses, expected_output):
+    """Pin v4 seeded updates with reset templates excluded from optimizer ownership."""
     from feedbax.training.studio_executor import StudioUpdateKernel
 
     graph_spec = _linear_graph_spec()
@@ -1414,7 +1417,7 @@ def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
         output_bindings={"output": ("delay", "output")},
     ).model_dump(mode="json", exclude_none=True)
     task_binding_spec = {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "model_input",
@@ -1683,6 +1686,93 @@ def test_worker_trains_on_named_timeline_segment(tmp_path: Path, monkeypatch) ->
     assert weights[0] == 1.0
     assert weights[1] == pytest.approx(1.9)
     assert weights[2] == 3.0
+
+
+def test_studio_sampling_follows_task_data_and_epoch_ids() -> None:
+    key = jax.random.key(40)
+    data = _task_binding_spec()["exposed_data"][0]
+    other_data = {**data, "id": "other_input", "path": "inputs.other"}
+    sampled_length = {
+        "mode": "distribution",
+        "distribution": {"family": "uniform", "parameters": {"min": 2, "max": 5}},
+    }
+    sampled_value = {
+        "mode": "distribution",
+        "distribution": {"family": "normal", "parameters": {"mean": 0, "std": 1}},
+    }
+    final_epoch = {"id": "finish", "label": "Finish", "length": {"mode": "constant"}}
+    sample_epoch = {"id": "sample", "label": "Sample", "length": sampled_length}
+    unrelated_epoch = {"id": "prefix", "label": "Prefix", "length": sampled_length}
+    value_entry = {
+        "target_id": data["id"],
+        "epoch_id": "sample",
+        "value_spec": sampled_value,
+    }
+
+    def sample(epochs, entries, exposed):
+        epoch_order = {epoch["id"]: i for i, epoch in enumerate(epochs)}
+        task = TaskSpec.model_validate(
+            {
+                "type": "Generic",
+                "timeline": {
+                    "schema_version": STUDIO_TASK_TIMELINE_SCHEMA_VERSION,
+                    "epochs": [{**epoch, "index": i} for i, epoch in enumerate(epochs)],
+                    "signals": [
+                        {key: item[key] for key in ("id", "label", "kind", "path")}
+                        for item in exposed
+                    ],
+                    "epoch_value_specs": sorted(
+                        entries,
+                        key=lambda entry: (entry["target_id"], epoch_order[entry["epoch_id"]]),
+                    ),
+                },
+            }
+        )
+        binding = StudioTaskBindingSpec(exposed_data=exposed)
+        values = worker_execution._materialize_task_data(binding, task, 12, key=key)
+        bounds = worker_execution._timeline_epoch_bounds(task.timeline, 12, key)
+        return values, bounds
+
+    before, original_bounds = sample(
+        [sample_epoch, final_epoch],
+        [value_entry],
+        [data],
+    )
+    after, edited_bounds = sample(
+        [unrelated_epoch, {**sample_epoch, "label": "Relabeled"}, final_epoch],
+        [
+            {**value_entry, "epoch_id": "prefix"},
+            {**value_entry, "target_id": other_data["id"]},
+            value_entry,
+        ],
+        [other_data, {**data, "label": "Relabeled input"}],
+    )
+
+    start, end = edited_bounds[1:3]
+    assert end - start == original_bounds[1]
+    kept = after[data["id"]][start:end]
+    assert jnp.array_equal(before[data["id"]][: original_bounds[1]], kept)
+    assert not jnp.array_equal(after[other_data["id"]][start:end], kept)
+
+
+def test_compile_training_run_rejects_a_path_that_shadows_task_data_identity() -> None:
+    binding = _task_binding_spec()
+    original = binding["exposed_data"][0]
+    binding["exposed_data"].append({**original, "id": "alias", "path": original["id"]})
+
+    with pytest.raises(GraphCompilationError) as caught:
+        compile_training_run(
+            component_registry=ComponentRegistry(load_user_components=False),
+            graph_spec=_linear_graph_spec(),
+            training_spec=_training_spec(),
+            task_spec={"type": "Generic", "params": {}},
+            task_binding_spec=binding,
+            cfg=_cfg(),
+        )
+
+    (diagnostic,) = caught.value.diagnostics
+    assert diagnostic.code == "worker.ambiguous_task_data_path"
+    assert diagnostic.location == {"path": "/task_binding_spec/exposed_data/1/path"}
 
 
 def test_compile_training_run_rejects_bound_task_data_without_value_spec() -> None:

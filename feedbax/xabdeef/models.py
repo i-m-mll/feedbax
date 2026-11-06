@@ -11,23 +11,25 @@ import equinox as eqx
 import jax.random as jr
 from jaxtyping import PRNGKeyArray
 
-from feedbax.models.feedback import SimpleFeedback
-from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics import Mechanics
+from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.models.networks import PopulationStructure, SimpleStagedNetwork
-from feedbax.models.cde import CDENetwork
+from feedbax.models.cde import cde_controller
+from feedbax.models.feedback import SimpleFeedback
+from feedbax.models.networks import PopulationStructure, recurrent_controller
+from feedbax.models.support import identity_func
+from feedbax.runtime.channel import ChannelSpec
+from feedbax.runtime.feedback import StateSelector
 from feedbax.runtime.noise import Multiplicative, Normal
 from feedbax.tasks import AbstractTask
 
 
-def identity_func(x):
-    """The identity function."""
-    return x
-
-
-def _point_mass_feedback(state):
-    return state.plant.skeleton.pos, state.plant.skeleton.vel
+def _point_mass_feedback(delay: int, noise_std: float) -> ChannelSpec:
+    return ChannelSpec(
+        where=StateSelector(("plant.skeleton.pos", "plant.skeleton.vel")),
+        delay=delay,
+        noise_func=Normal(std=noise_std),
+    )
 
 
 def point_mass_nn(
@@ -47,7 +49,6 @@ def point_mass_nn(
     tau_rise: float = 0.0,
     tau_decay: float = 0.0,
     population_structure: Optional[PopulationStructure] = None,
-    sisu_gating: str = "additive",
     *,
     key: PRNGKeyArray,
 ):
@@ -74,9 +75,6 @@ def point_mass_nn(
         velocity_damping: Decays the velocity of the point mass.
         tau_rise: The time constant for the rise of the first-order actuation filter.
         tau_decay: The time constant for the decay of the first-order actuation filter.
-        sisu_gating: How SISU is incorporated. ``"additive"`` (default) concatenates
-            SISU with the input. ``"multiplicative"`` strips SISU from the input and
-            applies it as post-hidden gain modulation.
         key: The random key to use for initializing the model.
     """
     key1, key2 = jr.split(key)
@@ -84,11 +82,7 @@ def point_mass_nn(
     system = PointMass(mass=mass, damping=damping)
     mechanics = Mechanics(DirectForceInput(system), dt)
 
-    feedback_spec = dict(
-        where=_point_mass_feedback,
-        delay=feedback_delay_steps,
-        noise_func=Normal(std=feedback_noise_std),
-    )
+    feedback_spec = _point_mass_feedback(feedback_delay_steps, feedback_noise_std)
 
     # automatically determine network input size
     input_size = (
@@ -96,7 +90,7 @@ def point_mass_nn(
         + n_extra_inputs
     )
 
-    net = SimpleStagedNetwork(
+    net = recurrent_controller(
         input_size,
         hidden_size,
         out_size=system.input_size,
@@ -104,7 +98,6 @@ def point_mass_nn(
         hidden_type=hidden_type,
         out_nonlinearity=out_nonlinearity,
         population_structure=population_structure,
-        sisu_gating=sisu_gating,
         key=key1,
     )
     body = SimpleFeedback(
@@ -146,9 +139,8 @@ def cde_controller_nn(
 ) -> SimpleFeedback:
     """Point mass controlled by a Neural CDE controller.
 
-    Follows the same structure as ``point_mass_nn`` but replaces
-    ``SimpleStagedNetwork`` with ``CDENetwork``. The CDE outputs
-    sigmoid-bounded actions in [0, 1].
+    The controller uses a native CDE graph and outputs sigmoid-bounded
+    actions in [0, 1].
 
     Args:
         task: The task providing trial specs and input dimensions.
@@ -175,18 +167,14 @@ def cde_controller_nn(
     system = PointMass(mass=mass, damping=damping)
     mechanics = Mechanics(DirectForceInput(system), dt)
 
-    feedback_spec = dict(
-        where=_point_mass_feedback,
-        delay=feedback_delay_steps,
-        noise_func=Normal(std=feedback_noise_std),
-    )
+    feedback_spec = _point_mass_feedback(feedback_delay_steps, feedback_noise_std)
 
     # Automatically determine observation dimensionality
     obs_dim = SimpleFeedback.get_nn_input_size(
         task, mechanics, feedback_spec=feedback_spec
     )
 
-    net = CDENetwork(
+    net = cde_controller(
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
         out_size=system.input_size,

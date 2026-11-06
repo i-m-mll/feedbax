@@ -10,21 +10,25 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from feedbax.models.feedback import FeedbackChannels
+from feedbax.runtime.feedback import SelectState
 from feedbax.runtime.channel import Channel, toggle_channel_noise
 from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.affine_composer import AffineValueComposer
 from feedbax.runtime.components import Demux, ElementwiseAffineModulator
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec, WireSpec
-from feedbax.runtime.graph import init_state_from_component
+from feedbax.contracts.graph import (
+    ComponentSpec,
+    GraphSpec,
+    RetainedObservableSpec,
+    StudioTaskBindingSpec,
+    WireSpec,
+)
+from feedbax.runtime._graph_key_schedule import derive_key, step_key
+from feedbax.runtime.graph import GraphTraceRequest, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.runtime.task_bindings import (
-    apply_task_parameter_state_inits,
-    expose_task_bindings,
     expose_task_inputs,
 )
-from feedbax.studio.schema import validate_task_binding_schema
-from feedbax.intervene import (
+from feedbax.mechanics.force_fields import (
     CurlField,
     CurlFieldParams,
     DynamicsMatrixPerturb,
@@ -40,11 +44,12 @@ from feedbax.compiler.serialization import (
     graph_to_spec,
     prototypes_from_task_bindings,
 )
-from feedbax.compiler import GraphCompilationError
+from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.compiler.prototypes import output_prototypes_for_node
 from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.runtime.state import CartesianState
+from feedbax.runtime.retained_observables import lower_retention_plan
 
 
 def _components() -> ComponentRegistry:
@@ -94,14 +99,14 @@ def _force_field_cases():
                     field=jnp.array([0.4, -0.6]),
                     active=True,
                 ),
-                label="fixed_parity",
+
             ),
             {
                 "scale": 2.0,
                 "amplitude": 1.5,
                 "field": [0.4, -0.6],
                 "active": True,
-                "label": "fixed_parity",
+
             },
             {"force": force},
             ["force", "params_override"],
@@ -110,13 +115,13 @@ def _force_field_cases():
             "CurlField",
             CurlField(
                 params=CurlFieldParams(scale=1.25, amplitude=0.75, active=True),
-                label="curl_parity",
+
             ),
             {
                 "scale": 1.25,
                 "amplitude": 0.75,
                 "active": True,
-                "label": "curl_parity",
+
             },
             {"effector": effector, "force": force},
             ["effector", "force", "params_override"],
@@ -129,14 +134,14 @@ def _force_field_cases():
                     delta_A=jnp.asarray(delta_A),
                     active=True,
                 ),
-                label="dynamics_parity",
+
                 mass=1.75,
             ),
             {
                 "scale": 0.5,
                 "delta_A": delta_A,
                 "active": True,
-                "label": "dynamics_parity",
+
                 "mass": 1.75,
             },
             {"effector": effector, "force": force},
@@ -216,8 +221,8 @@ def test_registered_intervention_rollout_preserves_signal_dtype_and_gradients(
 
         noise = effect is None
         if noise:
-            # Each step, node and signal leaf gets its own split from the seed.
-            sample_keys = [jr.split(jr.split(step_key, 1)[0], 1)[0] for step_key in jr.split(key, 2)]
+            node_keys = [derive_key(step_key(key, t), "occurrence", "field") for t in range(2)]
+            sample_keys = [jr.split(node_key, 1)[0] for node_key in node_keys]
             effect = jnp.stack([jr.normal(sample_key, (2,), dtype) for sample_key in sample_keys])
         effect = jnp.broadcast_to(jnp.asarray(effect), signal.shape)
         if not active:
@@ -294,7 +299,7 @@ def test_elementwise_affine_modulator_graphspec_round_trips_and_runs() -> None:
 
 def test_task_data_reference_vector_composes_into_affine_controller_reference() -> None:
     task_binding_spec = {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "target_position",
@@ -449,7 +454,7 @@ def _derived_mux_task_bindings(
     second_shape = second_shape or ["time", 1]
     return StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "kinematics",
@@ -661,38 +666,55 @@ def test_disabled_channel_roundtrip_preserves_authored_noise(noise_model: str) -
         assert jnp.array_equal(enabled, rollout(authored_enabled))
 
 
-def test_feedback_channels_materialize_point_mass_selector() -> None:
+@pytest.mark.parametrize("selector", ["point_mass_pos_vel", "paths"])
+def test_feedback_channels_materialize_point_mass_selector(selector: str) -> None:
     spec = _point_mass_feedback_spec(
-        selector="point_mass_pos_vel",
+        selector=selector,
         delay=2,
         noise_std=0.05,
         add_noise=True,
         noise_role="sensory_feedback",
         noise_timing="pre_controller",
     )
-    graph = spec_to_graph(spec, component_registry=_components())
+    spec.retained_observables = [RetainedObservableSpec(selector="port:feedback.feedback")]
+    compiled = compile_graph(GraphDocument(graph=spec), _components())
+    graph = compiled.graph
+    assert "port:feedback.feedback" in lower_retention_plan(compiled.resolved.graph).by_selector
 
     mechanics = graph.nodes["mechanics"]
-    feedback = graph.nodes["feedback"]
+    subgraph = graph.nodes["feedback"]
+    feedback = subgraph.nodes["channel"]
     assert isinstance(mechanics, Mechanics)
-    assert isinstance(feedback, FeedbackChannels)
-    assert isinstance(feedback.channels, Channel)
-    assert feedback.channels.delay == 2
-    assert feedback.channels.noise_role == "sensory_feedback"
-    assert feedback.channels.noise_timing == "pre_controller"
-    assert isinstance(feedback.channels.noise_func, Normal)
-    assert feedback.channels.noise_func.std == 0.05
+    assert isinstance(subgraph.nodes["select"], SelectState)
+    assert isinstance(feedback, Channel)
+    assert feedback.delay == 2
+    assert feedback.noise_role == "sensory_feedback"
+    assert feedback.noise_timing == "pre_controller"
+    assert isinstance(feedback.noise_func, Normal)
+    assert feedback.noise_func.std == 0.05
 
-    selected = feedback.specs.where(mechanics.state_index.init)
+    selected = subgraph.nodes["select"].where(mechanics.state_index.init)
     assert len(selected) == 2
     assert selected[0].shape == (2,)
     assert selected[1].shape == (2,)
 
     roundtrip = graph_to_spec(graph)
-    params = roundtrip.nodes["feedback"].params
-    assert params["selector"] == "point_mass_pos_vel"
-    assert params["paths"] == ["plant.skeleton.pos", "plant.skeleton.vel"]
+    interior = roundtrip.subgraphs["feedback"]
+    params = interior.nodes["channel"].params
+    assert interior.nodes["select"].params["paths"] == ["plant.skeleton.pos", "plant.skeleton.vel"]
     assert params["noise_role"] == "sensory_feedback"
+    restored = spec_to_graph(roundtrip, component_registry=_components())
+    _, _, trace = restored.rollout_with_trace(
+        {"force": jnp.ones((4, 2))},
+        restored.init_state(key=jr.key(0)),
+        key=jr.key(1),
+        n_steps=4,
+        trace=(
+            GraphTraceRequest(kind="port", selector="port", node="feedback", port="feedback"),
+            GraphTraceRequest(kind="state_path", selector="state", path="feedback.output"),
+        ),
+    )
+    assert eqx.tree_equal(trace["port"], trace["state"])
 
 
 @pytest.mark.parametrize(
@@ -896,12 +918,8 @@ def test_force_field_graphspec_builders_preserve_contract_and_runtime(
     materialized = graph.nodes["field"]
 
     assert isinstance(materialized, type(direct_component))
-    assert materialized.label == params["label"]
     assert tuple(input_ports) == materialized.input_ports
     assert materialized.output_ports == ("force",)
-    assert set(materialized.task_parameter_state_indices()) == {params["label"]}
-    with pytest.deprecated_call(match="intervention_state_indices"):
-        assert set(materialized.intervention_state_indices()) == {params["label"]}
 
     direct_out = _call_component(direct_component, inputs)
     materialized_out = _call_component(materialized, inputs)
@@ -912,7 +930,6 @@ def test_force_field_graphspec_builders_preserve_contract_and_runtime(
     assert node.type == component_type
     assert node.input_ports == input_ports
     assert node.output_ports == ["force"]
-    assert node.params["label"] == params["label"]
     assert bool(node.params["active"]) is True
     if component_type == "FixedField":
         assert node.params["field"] == pytest.approx(params["field"])
@@ -938,7 +955,6 @@ def test_force_field_registry_exposes_params_override_ports_and_builders() -> No
         assert meta.builder is not None
         assert set(meta.input_ports) == input_ports
         assert meta.output_ports == ["force"]
-        assert "label" in meta.default_params
         if component_type == "DynamicsMatrixPerturb":
             assert "delta_A" in meta.default_params
             assert "mass" in meta.default_params
@@ -1482,7 +1498,7 @@ def test_fixed_field_graphspec_preserves_params_override_semantics() -> None:
                 "amplitude": 1.0,
                 "field": [0.0, 0.0],
                 "active": False,
-                "label": "override_field",
+
             },
             input_ports=["force", "params_override"],
             output_ports=["force"],
@@ -1544,7 +1560,7 @@ def test_dynamics_matrix_perturb_graphspec_requires_explicit_mass() -> None:
 
 def _affine_composer_params() -> dict[str, Any]:
     return {
-        "schema_version": "feedbax.component.affine_value_composer.v1",
+        "schema_version": "feedbax.component.affine_value_composer.v2",
         "output_block_size": 2,
         "feature_rules": [
             {
@@ -1557,7 +1573,7 @@ def _affine_composer_params() -> dict[str, Any]:
         "gain_init": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 1.0, 0.0]],
         "bias_init": [0.5, -0.5],
         "use_bias": True,
-        "label": "composer_binding",
+
     }
 
 
@@ -1577,7 +1593,7 @@ def test_affine_value_composer_runtime_and_trainable_defaults() -> None:
         gain_init=params["gain_init"],
         bias_init=params["bias_init"],
         use_bias=True,
-        label="composer_binding",
+
     )
 
     outputs = _call_component(component, _affine_composer_inputs())
@@ -1611,11 +1627,6 @@ def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides(
     assert isinstance(component, AffineValueComposer)
     assert component.output_block_size == 2
     assert component.feature_dim == 4
-    assert set(component.task_parameter_state_indices()) == {
-        "composer_binding.gain",
-        "composer_binding.bias",
-    }
-
     inputs = {
         **_affine_composer_inputs(),
         "gain": jnp.array([[0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=jnp.float32),
@@ -1627,7 +1638,7 @@ def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides(
     roundtrip = graph_to_spec(graph)
     node = roundtrip.nodes["field"]
     assert node.type == "AffineValueComposer"
-    assert node.param_schema_version == "feedbax.component.affine_value_composer.v1"
+    assert node.param_schema_version == "feedbax.component.affine_value_composer.v2"
     assert node.params["output_block_size"] == 2
     assert node.params["feature_rules"] == _affine_composer_params()["feature_rules"]
     assert jnp.allclose(
@@ -1638,120 +1649,6 @@ def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides(
         jnp.asarray(node.params["bias_init"]),
         jnp.asarray(_affine_composer_params()["bias_init"]),
     )
-    assert node.params["label"] == "composer_binding"
-
-
-def test_affine_value_composer_component_parameter_binding_updates_state(
-    application_registry_bundle,
-) -> None:
-    spec = GraphSpec(
-        nodes={
-            "field": ComponentSpec(
-                type="AffineValueComposer",
-                params=_affine_composer_params(),
-                input_ports=["base", "state", "target", "gain", "bias"],
-                output_ports=["value"],
-            )
-        },
-        input_ports=["base", "state", "target"],
-        output_ports=["value"],
-        input_bindings={
-            "base": ("field", "base"),
-            "state": ("field", "state"),
-            "target": ("field", "target"),
-        },
-        output_bindings={"value": ("field", "value")},
-    )
-    graph = spec_to_graph(
-        spec,
-        component_registry=application_registry_bundle.components,
-    )
-    binding_spec = StudioTaskBindingSpec.model_validate(
-        {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
-            "exposed_data": [
-                {
-                    "id": "composer_gain",
-                    "label": "Composer gain",
-                    "kind": "intervention",
-                    "role": "component_parameter",
-                    "path": "intervene.composer_gain",
-                    "bindable": True,
-                    "dtype": "array",
-                    "value_spec": {
-                        "mode": "constant",
-                        "value": [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
-                    },
-                    "metadata": {"temporal_support": "constant"},
-                },
-                {
-                    "id": "composer_bias",
-                    "label": "Composer bias",
-                    "kind": "intervention",
-                    "role": "component_parameter",
-                    "path": "intervene.composer_bias",
-                    "bindable": True,
-                    "dtype": "vector",
-                    "value_spec": {
-                        "mode": "constant",
-                        "value": [1.0, 2.0],
-                    },
-                    "metadata": {"temporal_support": "constant"},
-                },
-            ],
-            "bindings": [
-                {
-                    "id": "task:composer_gain->field:gain",
-                    "source_data_id": "composer_gain",
-                    "target_node_id": "field",
-                    "target_port": "gain",
-                    "role": "component_parameter",
-                    "metadata": {"task_parameter_label": "composer_binding.gain"},
-                },
-                {
-                    "id": "task:composer_bias->field:bias",
-                    "source_data_id": "composer_bias",
-                    "target_node_id": "field",
-                    "target_port": "bias",
-                    "role": "component_parameter",
-                    "metadata": {"task_parameter_label": "composer_binding.bias"},
-                },
-            ],
-            "metadata": {},
-        }
-    )
-
-    issues = validate_task_binding_schema(
-        binding_spec,
-        spec,
-        "/task_binding_spec",
-        component_registry=application_registry_bundle.components,
-    )
-    assert not [issue for issue in issues if issue.severity == "error"]
-    exposure = expose_task_bindings(graph, binding_spec)
-    assert exposure.input_plans == ()
-    assert {plan.target_label for plan in exposure.state_init_plans} == {
-        "composer_binding.gain",
-        "composer_binding.bias",
-    }
-
-    state = init_state_from_component(exposure.graph)
-    updated_state = apply_task_parameter_state_inits(
-        state,
-        exposure.graph,
-        exposure.state_init_plans,
-        {
-            "composer_gain": jnp.array(
-                [[0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
-                dtype=jnp.float32,
-            ),
-            "composer_bias": jnp.array([1.0, 2.0], dtype=jnp.float32),
-        },
-    )
-    component = exposure.graph.nodes["field"]
-    outputs, _ = component(_affine_composer_inputs(), updated_state, key=jr.PRNGKey(0))
-
-    assert jnp.allclose(outputs["value"], jnp.array([16.0, 28.0], dtype=jnp.float32))
 
 
 def test_affine_value_composer_output_prototypes_and_negative_validation() -> None:
@@ -1821,11 +1718,10 @@ def test_affine_value_composer_registry_metadata() -> None:
 
     assert meta is not None
     assert meta.output_prototype_fn is not None
-    assert meta.param_schema_version == "feedbax.component.affine_value_composer.v1"
+    assert meta.param_schema_version == "feedbax.component.affine_value_composer.v2"
     assert set(meta.input_ports) == {"base", "state", "target", "gain", "bias"}
     assert meta.output_ports == ["value"]
-    assert meta.default_params["label"] == "affine_value_composer"
-    assert meta.default_params["schema_version"] == "feedbax.component.affine_value_composer.v1"
+    assert meta.default_params["schema_version"] == "feedbax.component.affine_value_composer.v2"
 
 
 def test_channel_rejects_unknown_noise_model() -> None:

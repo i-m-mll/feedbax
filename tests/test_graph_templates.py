@@ -17,10 +17,10 @@ from feedbax.compiler.templates import (
     recurrent_controller_template_graph,
     simple_feedback_template_graph,
 )
-from feedbax.compiler import GraphCompilationError
+from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 from feedbax.models.feedback import SimpleFeedback
-from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork, VanillaRNN
+from feedbax.models.networks import LeakyRNNCell, VanillaRNN, recurrent_controller
 from feedbax.objectives import CompositeLoss
 from feedbax.tasks import SimpleReaches, prepare_trial
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
@@ -71,7 +71,6 @@ def test_spec_to_graph_controller_template_instantiates_explicit_nodes() -> None
         _network_controller_graph_spec(), ComponentRegistry(load_user_components=False)
     )
 
-    assert not any(isinstance(node, SimpleStagedNetwork) for node in graph.nodes.values())
     assert set(graph.nodes) == {"input_mux", "cell", "readout", "mechanics"}
 
 
@@ -755,8 +754,8 @@ def test_authoring_normalization_does_not_turn_unsupported_runtime_params_into_p
     assert "modulator_input" not in normalized.nodes["network"].params
 
 
-def test_opaque_runtime_network_serialization_requires_authored_subgraph_identity() -> None:
-    network = SimpleStagedNetwork(
+def test_nested_recurrent_graph_serialization_requires_authored_subgraph_identity() -> None:
+    network = recurrent_controller(
         input_size=4,
         hidden_size=3,
         out_size=2,
@@ -764,7 +763,7 @@ def test_opaque_runtime_network_serialization_requires_authored_subgraph_identit
     )
     with pytest.raises(
         ValueError,
-        match="Programmatic graph component reverse resolution must match exactly one",
+        match="Programmatic composite node.*has no declared component binding",
     ):
         graph_to_spec(
             Graph(
@@ -833,8 +832,8 @@ def test_builtin_executable_templates_are_exposed_in_component_registry() -> Non
     assert feedback.template_id == "feedbax.templates.simple_feedback"
     assert feedback.template_kind == "executable"
     assert feedback.template_graph is not None
-    assert feedback.template_graph.subgraphs is None
-    assert {"input_mux", "cell", "readout"} <= set(feedback.template_graph.nodes)
+    assert set(feedback.template_graph.subgraphs["net"].nodes) == {"input_mux", "cell", "readout"}
+    assert {"feedback_select", "feedback", "feedback_values", "net"} <= set(feedback.template_graph.nodes)
 
 
 def test_generic_template_node_instantiates_persisted_subgraph() -> None:
@@ -864,8 +863,18 @@ def test_generic_template_node_instantiates_persisted_subgraph() -> None:
         subgraphs={"controller": subgraph},
     )
 
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
-    assert isinstance(graph.nodes["controller"], Graph)
+    cell_key = jax.random.key(42)
+    graph = compile_graph(
+        GraphDocument(graph=spec),
+        ComponentRegistry(load_user_components=False),
+        initialization_keys={("controller", "cell"): cell_key},
+    ).graph
+    controller = graph.nodes["controller"]
+    assert isinstance(controller, Graph)
+    assert jnp.array_equal(
+        controller.nodes["cell"].cell.weight_ih,
+        eqx.nn.GRUCell(3, 4, key=cell_key).weight_ih,
+    )
 
     state = init_state_from_component(graph)
     outputs, _ = graph(
@@ -951,7 +960,7 @@ def test_simple_feedback_template_infers_feedback_motor_and_force_filter_shapes(
     assert "input_shape" not in spec.nodes["force_filter"].params
 
     graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
-    assert graph.nodes["feedback"].input_proto.shape == (6,)
+    assert graph.nodes["feedback"].input_proto.pos.shape == (2,)
     assert graph.nodes["efferent"].input_proto.shape == (2,)
     assert graph.nodes["force_filter"].input_proto.shape == (2,)
 
@@ -967,7 +976,7 @@ def test_simple_feedback_template_infers_feedback_motor_and_force_filter_shapes(
 
 
 @pytest.mark.parametrize("start", [[0.0, 0.0], [0.4, -0.3]])
-def test_delayed_feedback_template_starts_and_continues_like_legacy(start) -> None:
+def test_delayed_feedback_template_matches_direct_construction_at_reset_and_continuation(start) -> None:
     key = jax.random.key(0)
     task = SimpleReaches(
         n_steps=4,
@@ -982,45 +991,40 @@ def test_delayed_feedback_template_starts_and_continues_like_legacy(start) -> No
     )
     compiled = spec_to_graph(spec, registry)
     graph = spec_to_graph(graph_to_spec(compiled, registry), registry)
-    net = eqx.tree_at(
-        lambda net: (net.hidden, net.readout),
-        SimpleStagedNetwork(10, 5, out_size=2, key=key),
-        (graph.nodes["cell"].cell, graph.nodes["readout"].layer),
-    )
-    legacy = SimpleFeedback(
-        net,
+    from feedbax.runtime.feedback import StateSelector
+
+    direct = SimpleFeedback(
+        graph.nodes["net"],
         graph.nodes["mechanics"],
-        feedback_spec=ChannelSpec(where=lambda state: state.effector, delay=2, noise_func=None),
+        feedback_spec=ChannelSpec(where=StateSelector(("effector",)), delay=2, noise_func=None),
         motor_noise_func=None,
     ).prepare()
+    assert direct.wires == graph.wires
+    assert set(graph_to_spec(direct).nodes) == set(spec.nodes)
 
     prepared = prepare_trial(graph, trial)
-    legacy_prepared = prepare_trial(legacy, trial)
+    direct_prepared = prepare_trial(direct, trial)
     initial = graph.state_view(prepared.init_state)
     assert jnp.allclose(initial.mechanics.effector.pos, jnp.asarray(start))
     assert jnp.allclose(initial.mechanics.plant.skeleton.pos, initial.mechanics.effector.pos)
-    initial_feedback = jnp.asarray([*start, 0.0, 0.0, 0.0, 0.0])
-    assert jnp.allclose(initial.feedback.output, initial_feedback)
+    initial_feedback = initial.mechanics.effector
+    assert eqx.tree_equal(initial.feedback.output, initial_feedback)
     for sample in initial.feedback.queue:
-        assert jnp.allclose(sample, initial_feedback)
+        assert eqx.tree_equal(sample, initial_feedback)
 
     outputs, _, history = run_component(
         graph, prepared.inputs, prepared.init_state, key=key, n_steps=prepared.n_steps
     )
-    expected, _, legacy_history = run_component(
-        legacy,
-        legacy_prepared.inputs,
-        legacy_prepared.init_state,
+    expected, _, direct_history = run_component(
+        direct,
+        direct_prepared.inputs,
+        direct_prepared.init_state,
         key=key,
-        n_steps=legacy_prepared.n_steps,
+        n_steps=direct_prepared.n_steps,
     )
     assert jnp.allclose(outputs["effector"].pos[0], jnp.asarray(start))
     assert eqx.tree_equal(outputs, expected, rtol=1e-6, atol=1e-7)
-    legacy_feedback = legacy_history.feedback.output
-    assert jnp.allclose(
-        history.feedback.output,
-        jnp.concatenate((legacy_feedback.pos, legacy_feedback.vel, legacy_feedback.force), axis=-1),
-    )
+    assert eqx.tree_equal(history.feedback, direct_history.feedback, rtol=1e-6, atol=1e-7)
 
     if any(start):
         state = prepare_trial(graph, trial).init_state
@@ -1035,7 +1039,59 @@ def test_delayed_feedback_template_starts_and_continues_like_legacy(start) -> No
         assert eqx.tree_equal(
             continued, jax.tree.map(lambda value: value[2:], outputs), rtol=1e-6, atol=1e-7
         )
-        assert jnp.allclose(continued_history.feedback.output, history.feedback.output[2:])
+        assert eqx.tree_equal(
+            continued_history.feedback.output,
+            jax.tree.map(lambda value: value[2:], history.feedback.output),
+            rtol=1e-6,
+            atol=1e-7,
+        )
+
+
+def test_multi_channel_feedback_round_trip_preserves_noise_and_state_tree() -> None:
+    from feedbax.runtime.feedback import StateSelector
+    from feedbax.runtime.noise import Multiplicative, Normal
+
+    registry = ComponentRegistry(load_user_components=False)
+    spec = simple_feedback_template_graph(
+        {"network": {"input_size": 10, "hidden_size": 5, "out_size": 2}}
+    )
+    compiled = spec_to_graph(spec, registry)
+    direct = SimpleFeedback(
+        compiled.nodes["net"],
+        compiled.nodes["mechanics"],
+        feedback_spec={
+            "pose": ChannelSpec(StateSelector(("effector.pos", "effector.vel")), 2, Normal(0.03)),
+            "load": [ChannelSpec(StateSelector(("effector.force",)), 1)],
+        },
+        motor_delay=1,
+        motor_noise_func=Multiplicative(Normal(0.01)) + Normal(0.02),
+        tau_rise=0.05,
+        tau_decay=0.06,
+    ).prepare()
+    serialized = graph_to_spec(direct, registry)
+    restored = spec_to_graph(serialized, registry)
+    key = jax.random.key(9)
+    task = SimpleReaches(
+        n_steps=4,
+        loss_func=CompositeLoss(()),
+        workspace=[[-1, -1], [1, 1]],
+        fixed_endpoints=[[0.4, -0.3], [0.6, 0.2]],
+    )
+    trial = task.get_train_trial(key)
+
+    def rollout(model):
+        prepared = prepare_trial(model, trial)
+        return run_component(
+            model, prepared.inputs, prepared.init_state, key=key, n_steps=prepared.n_steps
+        )
+
+    expected, _, direct_history = rollout(direct)
+    actual, _, restored_history = rollout(restored)
+    assert eqx.tree_equal(actual, expected)
+    assert eqx.tree_equal(restored_history, direct_history)
+    assert jnp.any(restored_history.feedback["pose"].noise[0][1:] != 0)
+    assert jnp.any(restored_history.efferent.noise[1:] != 0)
+    assert restored_history.feedback["load"][0].noise is None
 
 
 def test_stateful_input_shape_fields_round_trip() -> None:

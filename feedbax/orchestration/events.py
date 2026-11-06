@@ -15,8 +15,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Self, TextIO
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -157,6 +155,9 @@ def _normalize_structured_mapped_value(
 
 
 def _json_metric_value(value: Any) -> Any:
+    import jax
+    import jax.numpy as jnp
+
     if value is None or isinstance(value, (bool, int, str)):
         return value
     if isinstance(value, (jax.Array, np.ndarray, np.generic)):

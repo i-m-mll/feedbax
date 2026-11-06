@@ -26,7 +26,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
@@ -434,11 +433,12 @@ def test_linear_zero_initialization_is_compiled_executed_and_serialized() -> Non
         _registry(),
     )
     default = spec_to_graph(linear_spec({}), _registry())
-    expected_default = eqx.nn.Linear(3, 2, key=jax.random.PRNGKey(0))
-    assert legacy.nodes["linear"].initialization == "random"
-    assert default.nodes["linear"].initialization == "random"
-    assert jnp.array_equal(default.nodes["linear"].layer.weight, expected_default.weight)
-    assert jnp.array_equal(default.nodes["linear"].layer.bias, expected_default.bias)
+    legacy_linear = legacy.nodes["linear"]
+    default_linear = default.nodes["linear"]
+    assert legacy_linear.initialization == default_linear.initialization == "random"
+    assert jnp.any(default_linear.layer.weight != 0)
+    assert jnp.array_equal(legacy_linear.layer.weight, default_linear.layer.weight)
+    assert jnp.array_equal(legacy_linear.layer.bias, default_linear.layer.bias)
 
 
 def test_round_trip_preserves_node_types_and_topology() -> None:
@@ -532,7 +532,7 @@ def _worker_task_binding_spec(
     if value_spec is not None:
         exposed["value_spec"] = value_spec
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [exposed],
         "bindings": [
             {

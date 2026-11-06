@@ -1,7 +1,7 @@
 {
   "schema_id": "feedbax.spec.figure",
   "schema_version": "feedbax.spec.figure.v2",
-  "name": "sisu-m2-terminal-pulse-response",
+  "name": "terminal-pulse-response",
   "assembler": "feedbax.grid_figure",
   "assembler_params": {
     "width": 1500,
@@ -420,21 +420,21 @@
       {
         "input_role": "pulse_discrete",
         "kind": "AnalysisRunManifest",
-        "analysis_type": "rlrmp2.reach_context_lateral_pulse_reduction",
+        "analysis_type": "example.reach_context_lateral_pulse_reduction",
         "artifact_role": "reach_context_lateral_pulse_result",
         "artifact_provider": "results",
-        "payload_schema_id": "rlrmp2.analysis.reach_context_lateral_pulse",
-        "payload_schema_version": "rlrmp2.analysis.reach_context_lateral_pulse.v1",
+        "payload_schema_id": "example.analysis.reach_context_lateral_pulse",
+        "payload_schema_version": "example.analysis.reach_context_lateral_pulse.v1",
         "manifest_status": "completed"
       },
       {
         "input_role": "pulse_continuous",
         "kind": "AnalysisRunManifest",
-        "analysis_type": "rlrmp2.reach_context_lateral_pulse_reduction",
+        "analysis_type": "example.reach_context_lateral_pulse_reduction",
         "artifact_role": "reach_context_lateral_pulse_result",
         "artifact_provider": "results",
-        "payload_schema_id": "rlrmp2.analysis.reach_context_lateral_pulse",
-        "payload_schema_version": "rlrmp2.analysis.reach_context_lateral_pulse.v1",
+        "payload_schema_id": "example.analysis.reach_context_lateral_pulse",
+        "payload_schema_version": "example.analysis.reach_context_lateral_pulse.v1",
         "manifest_status": "completed"
       }
     ],

@@ -63,7 +63,7 @@ def _timeline(*, first: float = 1.0, second: float = 3.0) -> dict[str, object]:
 def _binding() -> StudioTaskBindingSpec:
     return StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "hold",

@@ -47,7 +47,7 @@ from tests.support.fake_project_experiment import (
 )
 
 #: The subdirectory a namespaced corpus files part of itself in.
-STUDY = "sisu"
+STUDY = "calibration"
 
 
 @pytest.fixture

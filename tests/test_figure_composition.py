@@ -85,7 +85,7 @@ def _base_spec(*, name: str = "shared") -> FigureSpec:
         assembler_params={"rows": 1, "cols": 1},
         panels=[PanelSpec(name="main", title="Shared")],
         trace_families=[_family()],
-        metadata={"family": "sisu_m2", "variant": "base"},
+        metadata={"family": "velocity_profiles", "variant": "base"},
     )
 
 
@@ -755,13 +755,13 @@ def test_composition_precedence_acknowledgement_is_prefix_aware_both_directions(
         "root.json",
         _base_spec().model_dump(mode="json", exclude_none=True),
     )
-    ancestor_value = {"family": "sisu_m2", "variant": "ancestor"}
+    ancestor_value = {"family": "velocity_profiles", "variant": "ancestor"}
     parent = _composition(root, _replace("same-id", ancestor_path, ancestor_value))
     parent_ref = _write_payload(
         tmp_path, "parent.json", parent.model_dump(mode="json", exclude_none=True)
     )
     child_value: Any = (
-        {"family": "sisu_m2", "variant": "child"}
+        {"family": "velocity_profiles", "variant": "child"}
         if child_path == "metadata"
         else "child"
     )
@@ -805,14 +805,14 @@ def test_composition_precedence_rejects_sibling_descendant_acknowledgement(
         _replace(
             "ancestor",
             ancestor_path,
-            {"family": "sisu_m2", "variant": "ancestor"},
+            {"family": "velocity_profiles", "variant": "ancestor"},
         ),
     )
     parent_ref = _write_payload(
         tmp_path, "parent.json", parent.model_dump(mode="json", exclude_none=True)
     )
     child_value: Any = (
-        {"family": "sisu_m2", "variant": "child"}
+        {"family": "velocity_profiles", "variant": "child"}
         if child_path == "metadata"
         else "child"
     )

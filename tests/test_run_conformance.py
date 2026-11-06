@@ -592,11 +592,15 @@ def test_completed_batches_accepts_only_a_fully_attested_authorized_stop() -> No
     assert check_completed_batches(_authorized_stopped_row()).status == "pass"
 
 
+@pytest.mark.parametrize("operator_stop", [False, True])
 def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
     tmp_path: Path,
+    operator_stop: bool,
 ) -> None:
     from feedbax.contracts.manifest import load_manifest
     from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError
+    from feedbax.contracts.worker import NATIVE_TRAINING_COLLECTION_OUTPUTS
+    from feedbax.orchestration.events import RunEvent
     from feedbax.orchestration.state import RunSetState, StageState, utc_now
     from feedbax.orchestration.stages import (
         OrchestrationStageError,
@@ -607,6 +611,7 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
     from feedbax.training import execute_training_run_spec
     from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
     from feedbax.training.diagnostics import load_method_training_trace
+    from feedbax.training.interruption import CancellationDecision
     from tests.test_orchestration_core import FakeDriver, _bundle, _with_local_realized_proof
     from tests.test_training_run_executor import (
         _execution_context,
@@ -626,6 +631,7 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
     checkpoint_root = collection_root / "checkpoints"
     manifest_root = collection_root / "manifests"
     context = _execution_context(collection_root=collection_root, run_spec=spec)
+    decision = CancellationDecision("stop", "test", GENERATED_AT.timestamp())
     result = execute_training_run_spec(
         spec,
         preparation=_valid_materialized_preparation(spec, initial_batch=10),
@@ -635,6 +641,11 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
         execution_context=context,
         progress_callback=progress.append,
         stop_before_update=lambda: len(progress) == 4,
+        cancellation_probe=(
+            (lambda _coordinate: decision if len(progress) == 3 else None)
+            if operator_stop
+            else None
+        ),
     )
     payload_path = tmp_path / "payload.json"
     payload_path.write_bytes(
@@ -648,6 +659,7 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
     launch = row_spec.launch.model_copy(
         update={
             "command": ["python", "-m", "feedbax", "execute-training-run-spec"],
+            "collect": list(NATIVE_TRAINING_COLLECTION_OUTPUTS),
             "payload_routing": {"kind": "registered-execution-payload"},
         }
     )
@@ -672,6 +684,8 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
 
     state = RunSetState(
         run_set_id=bundle.run_set_id,
+        abort_reason="operator-stop-after-checkpoint" if operator_stop else None,
+        budget_counters={"cancellation": decision.as_provenance()} if operator_stop else {},
         rows={
             row_spec.row_id: RowState(
                 status="stopped", error="operator-stop-after-checkpoint", collected_outputs=outputs
@@ -688,14 +702,58 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
         },
     )
     state = _with_local_realized_proof(state, bundle)
+    if operator_stop:
+        remote = bundle.model_copy(
+            update={
+                "deployment_policy": bundle.deployment_policy.model_copy(
+                    update={"driver": "runpod", "venue": "remote"}
+                )
+            }
+        )
+        event_name = f"{row_spec.row_id}.events.jsonl"
+        event_path = remote.run_set_dir / "events" / event_name
+        event_path.parent.mkdir(parents=True, exist_ok=True)
+        remote_outputs = {**outputs, event_name: str(event_path)}
+        failed_row = state.rows[row_spec.row_id].model_copy(
+            update={"status": "failed", "error": None, "collected_outputs": {}}
+        )
+        failed_state = state.with_row(row_spec.row_id, failed_row).with_stage("COLLECT", StageState())
+
+        class CollectedStopDriver(FakeDriver):
+            def collect(self, bundle, row, state):
+                return remote_outputs
+
+        remote_engine = StageEngine(bundle=remote, driver=CollectedStopDriver())
+        event = RunEvent(
+            run_set_id=remote.run_set_id,
+            row_id=row_spec.row_id,
+            seq=0,
+            emitted_at_ms=int(GENERATED_AT.timestamp() * 1000),
+            type="failed",
+            payload={"run_id": manifest.id, "status": "failed"},
+        )
+        event_path.write_text(event.model_dump_json() + "\n")
+        with pytest.raises(OrchestrationStageError, match="executor reported failure"):
+            remote_engine._stage_collect(failed_state)
+        event = event.model_copy(
+            update={"type": "complete", "payload": {"run_id": manifest.id, "status": "cancelled"}}
+        )
+        event_path.write_text(event.model_dump_json() + "\n")
+        stopped, collected = remote_engine._stage_collect(failed_state)
+        assert stopped.rows[row_spec.row_id].status == "stopped"
+        assert collected["checkpoint_custody"][row_spec.row_id] == custody
     engine = StageEngine(
         bundle=bundle,
         driver=FakeDriver(),
-        row_conformance_inputs={
-            row_spec.row_id: RowConformanceRuntimeInputs(
-                authorized_batch_stop=AuthorizedBatchStop(stop_after_batches=4)
-            )
-        },
+        row_conformance_inputs=(
+            None
+            if operator_stop
+            else {
+                row_spec.row_id: RowConformanceRuntimeInputs(
+                    authorized_batch_stop=AuthorizedBatchStop(stop_after_batches=4)
+                )
+            }
+        ),
     )
     observed_at = utc_now()
     row = engine._conformance_artifacts(row_spec, state, observed_at=observed_at)
@@ -719,6 +777,11 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
     )
     with pytest.raises(ValueError, match="failing certificate"):
         assert_certificate_allows_completed_registration(unauthorized)
+    if operator_stop:
+        without_worker_stop = replace(
+            row, manifest_payload={**row.manifest_payload, "provenance": {}}
+        )
+        assert "lacks worker checkpoint-stop" in check_completed_batches(without_worker_stop).detail
 
     diagnostics = row.training_diagnostics
     swapped_counts = {
@@ -1530,8 +1593,7 @@ def test_lr_trace_normalizes_fresh_init_completed_batch_steps_at_cosine_boundary
     position N-1. Without the normalization the constant-to-cosine boundary sample
     (step 500) certifies against the peak (schedule position 500) and is off by ~0.18%.
 
-    Mirrors the preserved SISU wave-1 run; the observed values are its authentic
-    recorded learning rates at completed batches 500, 6500, and 12000.
+    Uses recorded learning rates at completed batches 500, 6500, and 12000.
     """
     optimizer = OptimizerSpec(
         type="adamw",

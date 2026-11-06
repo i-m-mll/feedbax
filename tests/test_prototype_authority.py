@@ -192,6 +192,13 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
                     params, jnp.zeros(3, dtype=jnp.float16), node_name="test", node_type=kind
                 )
         for tree in ([jnp.zeros(3)], {"x": jnp.zeros(3)}):
+            if kind == "Channel":
+                assert validate_or_add_input_shape({}, tree, node_name="test", node_type=kind) == {}
+                with pytest.raises(ValueError, match="single-array"):
+                    validate_or_add_input_shape(
+                        {"input_shape": [3]}, tree, node_name="test", node_type=kind
+                    )
+                continue
             with pytest.raises(ValueError, match="single-array"):
                 validate_or_add_input_shape({}, tree, node_name="test", node_type=kind)
 
@@ -515,7 +522,7 @@ def test_prototype_dependencies_defer_without_reinterpreting_parameters() -> Non
             "affine": ComponentSpec(
                 type="AffineValueComposer",
                 params={
-                    "schema_version": "feedbax.component.affine_value_composer.v1",
+                    "schema_version": "feedbax.component.affine_value_composer.v2",
                     "output_block_size": 1,
                     "feature_rules": [{"kind": "identity", "state_slice": [0, 1]}],
                 },
@@ -551,7 +558,7 @@ def test_parameter_determined_prototypes_are_equivalent_across_subgraph_boundari
 
     linear = ComponentSpec(
         type="Linear",
-        params={"input_size": 2, "output_size": 3},
+        params={"input_size": 2, "output_size": 3, "initialization": "zeros", "bias_init": 1.25},
         input_ports=["input"],
         output_ports=["output"],
     )
@@ -562,7 +569,6 @@ def test_parameter_determined_prototypes_are_equivalent_across_subgraph_boundari
         output_ports=["output"],
         output_bindings={"output": ("linear", "output")},
     )
-    results = []
     for nested in (False, True):
         source = "body" if nested else "linear"
         spec = GraphSpec(
@@ -604,9 +610,7 @@ def test_parameter_determined_prototypes_are_equivalent_across_subgraph_boundari
             return state, outputs["output"]
 
         _, output = jax.lax.scan(step, init_state_from_component(graph), jnp.ones((2, 2)))
-        assert output.shape == (2, 3)
-        results.append(output)
-    assert jnp.array_equal(*results)
+        assert jnp.array_equal(output, jnp.asarray([[0.0] * 3, [1.25] * 3]))
 
 
 @pytest.mark.parametrize(

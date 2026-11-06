@@ -12,7 +12,6 @@ from operator import attrgetter
 from collections.abc import Callable
 from copy import copy
 from typing import ClassVar, Literal, Optional, Self
-import warnings
 
 import equinox as eqx
 from equinox import Module, field
@@ -24,7 +23,13 @@ from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.runtime._graph import detect_cycles_and_sort
-from feedbax.runtime._graph_key_schedule import keyed_nodes, reset_key
+from feedbax.runtime._graph_key_schedule import (
+    derive_key,
+    keyed_nodes,
+    reset_key,
+    step_key,
+    step_keys,
+)
 from feedbax.runtime._rollout import scan_rollout, select_step_inputs
 from feedbax.runtime.selectors import Selection, select
 
@@ -92,12 +97,29 @@ class Component(Module):
         return None
 
     def replace_state_value(self, state: State, path: tuple[str, ...], value: PyTree) -> State:
-        """Replace the stored state value or an attribute within it."""
-        idx = getattr(self, "state_index", None)
+        """Replace an owned StateIndex value or an attribute within it.
+
+        An explicit StateIndex attribute selects that slot. Other paths are
+        relative to the component's primary ``state_index``.
+        """
+        from feedbax.runtime.state_indices import cast_to_state_dtypes
+
+        idx = getattr(self, path[0], None) if path else None
+        explicit_slot = isinstance(idx, StateIndex)
+        if explicit_slot:
+            path = path[1:]
+        else:
+            idx = getattr(self, "state_index", None)
         if not isinstance(idx, StateIndex):
-            raise ValueError(f"{type(self).__name__} has no state_index for explicit initialization")
+            raise ValueError(f"{type(self).__name__} has no StateIndex for path {path!r}")
+        current = state.get(idx)
         if path:
-            value = eqx.tree_at(attrgetter(".".join(path)), state.get(idx), value)
+            where = attrgetter(".".join(path))
+            if explicit_slot:
+                value = cast_to_state_dtypes(value, where(current))
+            value = eqx.tree_at(where, current, value)
+        elif explicit_slot:
+            value = cast_to_state_dtypes(value, current)
         return state.set(idx, value)
 
     def initial_outputs(self, state_value: PyTree | None) -> dict[str, PyTree]:
@@ -110,28 +132,6 @@ class Component(Module):
                 outputs[port] = attrgetter(port)(state_value)
         return outputs
 
-    def task_parameter_state_indices(self) -> dict[str, StateIndex]:
-        """Return task-parameter labels mapped to StateIndex values."""
-        legacy = type(self).__dict__.get("intervention_state_indices")
-        if legacy is not None and legacy is not Component.intervention_state_indices:
-            warnings.warn(
-                "Overriding intervention_state_indices() is deprecated; override "
-                "task_parameter_state_indices().",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            return legacy(self)
-        return {}
-
-    def intervention_state_indices(self) -> dict[str, StateIndex]:
-        """Deprecated alias for task_parameter_state_indices()."""
-        warnings.warn(
-            "intervention_state_indices() is deprecated; use "
-            "task_parameter_state_indices().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.task_parameter_state_indices()
 
 
 class RolloutStepContext(Module):
@@ -591,37 +591,37 @@ class Graph(Component):
         return tuple(execution_order), tuple(cycle_wires)
 
     def state_view(self, state: State) -> PyTree:
+        return self._view_from_state_and_carry(state, {})
+
+    def _rollout_state_view(self, state: State, carry: dict | None) -> PyTree:
+        if not carry:
+            return self.state_view(state)
+        return self._view_from_state_and_carry(state, carry)
+
+    def _view_from_state_and_carry(self, state: State, carry: dict) -> PyTree:
+        """Project stored state and named recurrent outputs from the live carry."""
         node_states: dict[str, PyTree] = {}
         for name, node in self.nodes.items():
-            node_state = node.state_view(state)
+            child_carry = carry.get(_nested_cycle_key(name))
+            node_state = (
+                node._rollout_state_view(state, child_carry)
+                if isinstance(node, Graph) and child_carry
+                else node.state_view(state)
+            )
             if node_state is not None:
                 node_states[name] = node_state
+        if carry:
+            for wire in self._cycle_wires:
+                alias = (wire.recurrent_initializer or {}).get("state_slot")
+                if (
+                    isinstance(alias, str)
+                    and alias not in node_states
+                    and self.output_bindings.get(alias) == (wire.source_node, wire.source_port)
+                ):
+                    node_states[alias] = carry[(wire.target_node, wire.target_port)]
         if self.state_view_fn is None:
             return GraphState(node_states)
         return self.state_view_fn(node_states)
-
-    def task_parameter_state_indices(self) -> dict[str, StateIndex]:
-        indices: dict[str, StateIndex] = {}
-        for name, node in self.nodes.items():
-            node_indices = node.task_parameter_state_indices()
-            for label, idx in node_indices.items():
-                if label in indices:
-                    raise ValueError(
-                        f"Duplicate task-parameter label '{label}' in graph nodes "
-                        f"('{name}' conflicts with another node)."
-                    )
-                indices[label] = idx
-        return indices
-
-    def intervention_state_indices(self) -> dict[str, StateIndex]:
-        """Deprecated alias for task_parameter_state_indices()."""
-        warnings.warn(
-            "Graph.intervention_state_indices() is deprecated; use "
-            "Graph.task_parameter_state_indices().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.task_parameter_state_indices()
 
     def state_consistency_update(self, state: State) -> State:
         if self.state_consistency_fn is None:
@@ -667,8 +667,8 @@ class Graph(Component):
         enabled state history. History includes the initial state view.
         Streaming loss and filtered state history require a rollout. Cycle
         overrides require a recurrent graph. For a single step, ``t`` supplies
-        the hook's timestep and defaults to zero. Rollouts start at zero, and
-        an acyclic rollout rejects a supplied ``t``.
+        the timestep for random streams and hooks and defaults to zero.
+        Rollouts start at zero, and an acyclic rollout rejects a supplied ``t``.
         """
         recurrent = self._needs_iteration
         if cycle_init and not recurrent:
@@ -719,7 +719,7 @@ class Graph(Component):
         outputs, state, _, _ = self._transition(
             inputs,
             state,
-            key=key,
+            key=step_key(key, t),
             t=t,
             rollout_step_hook=rollout_step_hook,
         )
@@ -756,7 +756,9 @@ class Graph(Component):
             cycle_port_values: Cycle-wire port values from the previous step,
                 keyed by ``(target_node, target_port)`` tuples. ``None`` on
                 the first step uses defaults derived from ``state``.
-            key: PRNGKey for any noise in the step.
+            key: Trial PRNG key. Reuse it across calls and pass the timestep
+                as ``t`` to match a scanned rollout.
+            t: Scalar integer timestep in the unsigned 32-bit range.
 
         Returns:
             ``(outputs, new_state, cycle_port_values)`` where:
@@ -820,6 +822,7 @@ class Graph(Component):
         rollout_step_hook: Optional[RolloutStepHook],
         trace: tuple[GraphTraceRequest, ...] = (),
     ) -> tuple[dict[str, PyTree], State, dict[tuple[str, str], PyTree], dict[str, PyTree]]:
+        transition_key = step_key(key, t)
         if not self._needs_iteration:
             cycle_port_values = None
         elif cycle_port_values is None:
@@ -828,7 +831,7 @@ class Graph(Component):
             inputs,
             state,
             cycle_port_values,
-            key=key,
+            key=transition_key,
             t=t,
             rollout_step_hook=rollout_step_hook,
             trace=trace,
@@ -874,8 +877,9 @@ class Graph(Component):
                     new_cycle_port_values[port_key] = value
 
         outputs = {
-            ext_port: port_values[(node_name, node_port)]
-            for ext_port, (node_name, node_port) in self.output_bindings.items()
+            port: port_values[self.output_bindings[port]]
+            for port in self.output_ports
+            if port in self.output_bindings
         }
         trace_values = {}
         if trace:
@@ -922,7 +926,7 @@ class Graph(Component):
                     graph=self,
                     component=node,
                     t=t,
-                    key=node_key,
+                    key=derive_key(node_key, "hook"),
                     state=state,
                     step_inputs=step_inputs,
                     port_values=port_values,
@@ -941,10 +945,16 @@ class Graph(Component):
                     if (node_name, port_name) in port_values
                 }
             if isinstance(node, Graph):
-                node_outputs, state, node_cycle_values = node.step(
+                child_carry = nested_cycle_values.get(node_name)
+                if child_carry is None and node._needs_iteration:
+                    raise ValueError(
+                        f"Missing recurrent carry for subgraph {node_name!r}. "
+                        "Pass the previous step's full carry, or None to seed a trial."
+                    )
+                node_outputs, state, node_cycle_values, _ = node._transition(
                     node_inputs,
                     state,
-                    nested_cycle_values.get(node_name),
+                    child_carry,
                     key=node_key,
                     t=t,
                     rollout_step_hook=rollout_step_hook,
@@ -1086,7 +1096,9 @@ class Graph(Component):
 
             if request.kind == "state_path":
                 path = request.path or request.selector.removeprefix("state_path:")
-                values[request.selector] = _select_state_path(self.state_view(state), path)
+                values[request.selector] = _select_state_path(
+                    self._rollout_state_view(state, cycle_port_values), path
+                )
                 continue
 
             raise ValueError(f"Unsupported trace request kind {request.kind!r}")
@@ -1171,6 +1183,19 @@ class Graph(Component):
             target_key = (wire.target_node, wire.target_port)
             if target_key in init_values:
                 continue
+            initializer = wire.recurrent_initializer or {}
+            if initializer.get("kind") == "state_output" and (
+                "source_node" in initializer or "source_port" in initializer
+            ):
+                reset_node = initializer.get("source_node")
+                reset_port = initializer.get("source_port")
+                if not isinstance(reset_node, str) or reset_node not in self.nodes:
+                    raise ValueError(f"{wire} state_output initializer has an unknown source node")
+                reset_outputs = self.nodes[reset_node].initial_outputs(node_states.get(reset_node))
+                if not isinstance(reset_port, str) or reset_port not in reset_outputs:
+                    raise ValueError(f"{wire} state_output initializer has no initial source port")
+                init_values[target_key] = reset_outputs[reset_port]
+                continue
             source_state = node_states.get(wire.source_node, None)
             if source_state is None:
                 metadata_value = self._initial_value_from_recurrent_initializer(
@@ -1250,12 +1275,12 @@ class Graph(Component):
                 reset_outputs[source] = outputs[source]
             return reset_outputs[source]
 
-        node_keys = dict(keyed_nodes(self._execution_order, key)) if nested_nodes else {}
-        for node_name, node in nested_nodes.items():
+        for node_name, node_key in keyed_nodes(tuple(nested_nodes), key):
+            node = nested_nodes[node_name]
             init_values[_nested_cycle_key(node_name)] = node._get_initial_cycle_values(
                 state,
                 input_value=lambda port, name=node_name: nested_input_value((name, port)),
-                key=reset_key(node_keys[node_name]),
+                key=reset_key(node_key),
             )
 
         missing = [
@@ -1294,12 +1319,12 @@ class Graph(Component):
                     "kind 'zeros' requires 'shape'"
                 )
             try:
-                return jnp.zeros(tuple(int(dim) for dim in shape))
+                return jnp.zeros(tuple(int(dim) for dim in shape), dtype=initializer.get("dtype"))
             except (TypeError, ValueError) as exc:
                 raise ValueError(
                     f"Wire {wire.source_node}.{wire.source_port} -> "
                     f"{wire.target_node}.{wire.target_port} recurrent_initializer "
-                    f"has invalid shape {shape!r}"
+                    f"has invalid shape {shape!r} or dtype {initializer.get('dtype')!r}"
                 ) from exc
         if kind == "constant":
             if "value" not in initializer:
@@ -1402,9 +1427,8 @@ class Graph(Component):
         eval_state = jt.map(lambda value: value, state)
         outputs: dict[tuple[str, str], PyTree] = {}
         outgoing_wires = self._outgoing_wires
-        for node_name, node_key in keyed_nodes(self._execution_order, key):
-            if node_name not in upstream_nodes:
-                continue
+        producer_order = (name for name in self._execution_order if name in upstream_nodes)
+        for node_name, node_key in keyed_nodes(producer_order, derive_key(key, "initializer")):
             node = self.nodes[node_name]
             missing_inputs = [
                 port_name
@@ -1418,10 +1442,12 @@ class Graph(Component):
                 port_name: port_values[(node_name, port_name)] for port_name in node.input_ports
             }
             if isinstance(node, Graph):
-                node_outputs, eval_state = node._call_single_step(
+                node_outputs, eval_state, _, _ = node._transition(
                     node_inputs,
                     eval_state,
                     key=node_key,
+                    t=0,
+                    rollout_step_hook=None,
                 )
             else:
                 node_outputs, eval_state = node(node_inputs, eval_state, key=node_key)
@@ -1488,7 +1514,7 @@ class Graph(Component):
             first_leaf = jt.leaves(first_input)[0]
             n_steps = int(first_leaf.shape[0])
 
-        keys = jax.random.split(key, n_steps)
+        keys = step_keys(key, n_steps)
 
         init_cycle_values = (
             self._seed_cycle_carry(inputs, state, key, cycle_init)
@@ -1525,7 +1551,7 @@ class Graph(Component):
             step_inputs_seq,
             keys,
             n_steps,
-            state_view_fn=self.state_view,
+            state_view_fn=self._rollout_state_view,
             init_step_carry=init_cycle_values,
             checkpoint=self.checkpoint if checkpoint is None else checkpoint,
             save_history=save_history,

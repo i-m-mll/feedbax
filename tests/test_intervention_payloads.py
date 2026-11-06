@@ -7,12 +7,12 @@ from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.intervene import (
+from feedbax.runtime.signal_transforms import (
     ConstantInput,
     ConstantInputParams,
     NetworkClamp,
     NetworkConstantInput,
-    NetworkIntervenorParams,
+    NetworkValueParams,
 )
 from feedbax.runtime.graph import Graph, init_state_from_component
 from feedbax.runtime.iteration import run_component
@@ -67,8 +67,8 @@ def _authored_spec(component_type, params, *, version=None):
 @pytest.mark.parametrize(
     ("component_cls", "params_cls", "field", "values", "expected"),
     [
-        (NetworkClamp, NetworkIntervenorParams, "unit_spec", [8.0, None], [8.0, 3.0]),
-        (NetworkConstantInput, NetworkIntervenorParams, "unit_spec", [5.0, None], [12.0, 3.0]),
+        (NetworkClamp, NetworkValueParams, "unit_spec", [8.0, None], [8.0, 3.0]),
+        (NetworkConstantInput, NetworkValueParams, "unit_spec", [5.0, None], [12.0, 3.0]),
         (ConstantInput, ConstantInputParams, "arrays", [5.0, 7.0], [12.0, 17.0]),
     ],
     ids=["clamp", "selected-addition", "dense-addition"],
@@ -145,7 +145,7 @@ def test_intervention_payload_preserves_state_dtype_and_precision(registry):
         graph = Graph(
             nodes={
                 "intervention": NetworkClamp(
-                    NetworkIntervenorParams(
+                    NetworkValueParams(
                         unit_spec=jnp.array([value, jnp.nan], dtype=jnp.float64)
                     )
                 )

@@ -13,8 +13,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParamSchema
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
-from feedbax.models.networks import PopulationStructure, SimpleStagedNetwork
-from feedbax.runtime.graph import Graph
+from feedbax.models.networks import PopulationStructure, recurrent_controller
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 
@@ -69,10 +68,12 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
         for kind in (*_SHAPED_SIGNAL_TYPES, *_SCALAR_CONTROL_TYPES)
     },
     **{(kind, "input_shape"): [3] for kind in _SHAPED_SIGNAL_TYPES},
+    ("AssembleFeedback", "layout"): {"list": [None]},
     ("AffineFeedbackController", "bias"): [0.25],
     ("AffineFeedbackController", "feedforward"): [0.5],
     ("Channel", "noise_role"): "motor_command",
     ("Channel", "noise_timing"): "post_controller",
+    ("Linear", "bias_init"): 0.125,
     ("DelayedReaches", "n_control_stages"): 49,
     ("DelayedReaches", "go_cue_event_name"): "go",
     ("DynamicsMatrixPerturb", "mass"): 1.25,
@@ -93,14 +94,15 @@ _INTERVENTION_PAYLOAD_FIELDS = {
 
 
 _VALUES: dict[tuple[str, str], Any] = {
-    ("AffineValueComposer", "schema_version"): "feedbax.component.affine_value_composer.v1",
+    ("AffineValueComposer", "schema_version"): "feedbax.component.affine_value_composer.v2",
     ("AffineValueComposer", "feature_rules"): [{"kind": "identity", "state_slice": [1, 2]}],
     ("Channel", "add_noise"): False,
+    ("Channel", "include_zero_noise_terms"): True,
     ("DelayedReaches", "hold_epochs"): [0],
     ("DelayedReaches", "move_epochs"): [1, 2],
     ("DelayedReaches", "target_visible_from_start"): True,
     ("DelayedReaches", "target_on_epochs"): [0, 2],
-    ("FeedbackChannels", "paths"): ["effector.force"],
+    ("SelectState", "paths"): ["effector.force"],
     ("StateFeedbackSelector", "state_slices"): {
         "position": {"start": 1, "stop": 3},
         "velocity": {"start": 3, "stop": 5},
@@ -127,6 +129,12 @@ def _non_default_value(component_type: str, schema: ParamSchema) -> Any:
     key = (component_type, schema.name)
     if key in _VALUES:
         return deepcopy(_VALUES[key])
+    if key == ("JointMuscleGeometry", "paths"):
+        paths = deepcopy(schema.default)
+        paths[0]["params"]["reference_length"] *= 1.1
+        return paths
+    if schema.name == "dtype":
+        return "float16"
     if schema.default is None:
         return deepcopy(_NONE_VALUES[key])
     if schema.type == "bool":
@@ -172,11 +180,10 @@ def _contextualize_params(
         params.setdefault("input_shape", [2])
         if param_name in {"additive_noise_std", "signal_dependent_noise_std"}:
             params["noise_model"] = "signal_dependent_plus_additive"
-    elif component_type == "FeedbackChannels":
-        if param_name == "paths":
-            params["selector"] = "paths"
-        if param_name == "noise_std":
-            params["add_noise"] = True
+        if param_name == "include_zero_noise_terms":
+            params["noise_std"] = 0.0
+    elif component_type == "AssembleFeedback" and param_name == "n_inputs":
+        params["layout"] = {"tuple": [None] * params["n_inputs"]}
     elif component_type == "AffineValueComposer" and param_name == "output_block_size":
         size = int(params["output_block_size"])
         params["gain_init"] = [[0.0] for _ in range(size)]
@@ -226,6 +233,8 @@ def _single_node_spec(
         prototype_shape = tuple(int(dim) for dim in params["input_shape"])
     elif component_type in _SCALAR_CONTROL_TYPES:
         prototype_shape = (params["n_dims"],)
+    elif component_type == "VectorElements":
+        prototype_shape = (params["size"],)
     elif component_type == "RigidTendonHillMuscleThelen":
         count = params["n_muscles"]
         prototype_shape = () if count == 1 else (count,)
@@ -233,10 +242,10 @@ def _single_node_spec(
         ("node", port): jnp.zeros(prototype_shape, dtype=params.get("input_dtype"))
         for port in input_ports
     }
-    if component_type == "FeedbackChannels":
+    if component_type == "SelectState":
         point_mass = registry.get("PointMass")
         assert point_mass is not None and point_mass.builder is not None
-        prototypes[("node", "mechanics")] = point_mass.builder({"dt": 0.01}).state_index.init
+        prototypes[("node", "state")] = point_mass.builder({"dt": 0.01}).state_index.init
     elif component_type == "Demux":
         prototypes[("node", "input")] = jnp.zeros(sum(params["sizes"]))
     elif component_type == "AffineValueComposer":
@@ -263,6 +272,34 @@ def roundtrip_registry(component_type: str, monkeypatch: pytest.MonkeyPatch) -> 
     return ComponentRegistry(load_user_components=False)
 
 
+def test_registries_capture_penzai_options_and_keep_metadata_detached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from feedbax.component_registry import builtins
+
+    options = [{"name": "example", "description": "Original"}]
+    monkeypatch.setattr(builtins, "penzai_builder_options", lambda: options)
+
+    first = ComponentRegistry(load_user_components=False)
+    metadata = first.get("PenzaiAdapter")
+    assert metadata is not None
+    names = metadata.param_schema[0].options
+    assert names is not None
+    names.append("detached")
+
+    repeat = ComponentRegistry(load_user_components=False).get("PenzaiAdapter")
+    assert repeat is not None
+    assert repeat.param_schema[0].options == ["example"]
+
+    options[0]["description"] = "Updated"
+    updated = ComponentRegistry(load_user_components=False).get("PenzaiAdapter")
+    assert updated is not None
+    assert updated.param_schema[0].option_descriptions == {"example": "Updated"}
+    original = first.get("PenzaiAdapter")
+    assert original is not None
+    assert original.param_schema[0].option_descriptions == {"example": "Original"}
+
+
 @pytest.mark.parametrize("component_type", _registry_cases())
 def test_registered_buildable_component_param_round_trips(
     component_type: str,
@@ -270,13 +307,16 @@ def test_registered_buildable_component_param_round_trips(
 ) -> None:
     """Every declared leaf parameter is exercised non-default and must survive."""
     registry = roundtrip_registry
+    restore_registry = ComponentRegistry(load_user_components=False)
     meta = registry.get(component_type)
     assert meta is not None
     baseline_params = _contextualize_params(component_type, None, deepcopy(meta.default_params))
     baseline_spec, baseline_prototypes = _single_node_spec(
         registry, component_type, baseline_params
     )
-    baseline = graph_to_spec(spec_to_graph(baseline_spec, registry, baseline_prototypes))
+    baseline = graph_to_spec(
+        spec_to_graph(baseline_spec, registry, baseline_prototypes), registry
+    )
 
     probes: list[ParamSchema | None] = [
         schema
@@ -297,7 +337,7 @@ def test_registered_buildable_component_param_round_trips(
             params[schema.name] = _non_default_value(component_type, schema)
             params = _contextualize_params(component_type, schema.name, params)
             spec, prototypes = _single_node_spec(registry, component_type, params)
-            serialized = graph_to_spec(spec_to_graph(spec, registry, prototypes))
+            serialized = graph_to_spec(spec_to_graph(spec, registry, prototypes), registry)
         emitted = serialized.nodes["node"]
         assert emitted.type == component_type, witness
 
@@ -315,12 +355,9 @@ def test_registered_buildable_component_param_round_trips(
                 f"{witness} did not affect the canonical GraphSpec"
             )
 
-        second = spec_to_graph(
-            serialized,
-            ComponentRegistry(load_user_components=False),
-            prototypes,
-        )
-        assert graph_to_spec(second).nodes["node"].params == emitted.params, witness
+        second = spec_to_graph(serialized, restore_registry, prototypes)
+        restored_params = graph_to_spec(second, restore_registry).nodes["node"].params
+        assert restored_params == emitted.params, witness
 
 
 def test_two_link_arm_nondefault_lengths_round_trip() -> None:
@@ -404,14 +441,14 @@ def test_channel_rejects_noncanonical_noise_spellings(params: dict[str, Any]) ->
         spec_to_graph(spec, registry)
 
 
-def test_opaque_programmatic_composite_is_not_guessed() -> None:
+def test_programmatic_recurrent_controller_graph_round_trips() -> None:
     population = PopulationStructure.from_indices(
         input_only_indices=[0],
         readout_only_indices=[1],
         recurrent_only_indices=[2],
         input_readout_indices=[3],
     )
-    network = SimpleStagedNetwork(
+    network = recurrent_controller(
         input_size=5,
         hidden_size=4,
         out_size=2,
@@ -420,14 +457,13 @@ def test_opaque_programmatic_composite_is_not_guessed() -> None:
         out_nonlinearity=jax.nn.sigmoid,
         hidden_noise_std=0.2,
         population_structure=population,
-        population_mask_mode="plain_all_ones",
         dtype=jnp.float16,
         key=jax.random.PRNGKey(0),
     )
-    graph = Graph(nodes={"net": network})
+    spec = graph_to_spec(network)
+    roundtrip = graph_to_spec(spec_to_graph(spec, ComponentRegistry(load_user_components=False)))
 
-    with pytest.raises(
-        ValueError,
-        match="Programmatic graph component reverse resolution must match exactly one",
-    ):
-        graph_to_spec(graph)
+    assert roundtrip == spec
+    assert roundtrip.nodes["cell"].params["dtype"] == "float16"
+    assert roundtrip.nodes["readout"].params["initialization"] == "zero_bias"
+    assert roundtrip.nodes["hidden_noise"].params["input_dtype"] == "float16"

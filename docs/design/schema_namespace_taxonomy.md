@@ -56,7 +56,7 @@ exports a reusable global parameter payload schema identity.
   `retained_observables` artifacts use distinct `feedbax.manifest.training.*`
   identities because they are execution outputs, not request specs.
 - Legacy `feedbax.studio.task_bindings.v1` remains a registered migration input
-  to `feedbax.spec.studio.task_bindings.v2`.
+  through `feedbax.spec.studio.task_bindings.v2` to the current `feedbax.spec.studio.task_bindings.v3` format.
 - Legacy `feedbax.studio.task_bindings.v0` and `feedbax.objective.v0` remain
   explicit rejection inputs with clear unsupported-version diagnostics.
 - Flat test-only or future identities such as `feedbax.demo` are rejected at

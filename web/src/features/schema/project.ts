@@ -29,7 +29,6 @@ const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set(['model_input', 'graph_input']);
 const PROTOCOL_TASK_DATA_KINDS = new Set([
   'target',
   'initial_state',
-  'intervention',
   'eval_control',
   'trial_control',
   'validation',
@@ -38,7 +37,6 @@ const PROTOCOL_TASK_DATA_KINDS = new Set([
 const PROTOCOL_TASK_DATA_PATH_PREFIXES = [
   'targets',
   'inits',
-  'intervene',
   'validation_trials',
   'eval',
   'trial_controls',
@@ -422,8 +420,6 @@ function componentPortDimension(
       dimension = nPairs === null ? null : nPairs * 2;
     }
     if (port === 'force_2d') dimension = 2;
-  } else if (componentType === 'FeedbackChannels' && direction === 'output' && port === 'output') {
-    dimension = feedbackChannelsWidth(nodeParams);
   }
   if (dimensionParam) dimension = positiveIntParam(nodeParams, dimensionParam);
   if (dimension === null) return null;
@@ -434,17 +430,6 @@ function componentPortDimension(
       dimension_param: dimensionParam,
     },
   };
-}
-
-function feedbackChannelsWidth(params: Record<string, unknown>): number | null {
-  const channels = params.channels;
-  if (!Array.isArray(channels)) return null;
-  const width = channels.reduce((sum, channel) => {
-    if (channel === 'position' || channel === 'velocity') return sum + 2;
-    if (channel === 'force') return sum + 2;
-    return sum;
-  }, 0);
-  return width > 0 ? width : null;
 }
 
 function positiveIntParam(params: Record<string, unknown>, key: string): number | null {

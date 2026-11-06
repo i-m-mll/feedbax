@@ -28,29 +28,18 @@ from feedbax.orchestration.repo_snapshot import (
     seal_repo_snapshot,
     verify_repo_snapshot,
 )
-
-
-def _git(root: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-C", str(root), *args],
-        check=True,
-        capture_output=True,
-        text=True,
-        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
-    ).stdout.strip()
+from tests.support.git_fixtures import run_fixture_git
 
 
 def _repo(tmp_path: Path) -> Path:
     root = tmp_path / "tracked repo"
     root.mkdir()
-    _git(root, "init")
-    _git(root, "config", "user.email", "snapshot@example.invalid")
-    _git(root, "config", "user.name", "Snapshot Test")
+    run_fixture_git(root, "init")
     (root / ".gitignore").write_text("*.secret\nignored-dir/\n", encoding="utf-8")
     (root / "tracked.txt").write_text("committed\n", encoding="utf-8")
     (root / "space name.txt").write_text("space\n", encoding="utf-8")
-    _git(root, "add", ".gitignore", "tracked.txt", "space name.txt")
-    _git(root, "commit", "-m", "fixture")
+    run_fixture_git(root, "add", ".gitignore", "tracked.txt", "space name.txt")
+    run_fixture_git(root, "commit", "-m", "fixture")
     return root
 
 
@@ -78,16 +67,14 @@ def test_feedbax_snapshot_carries_verified_distribution_provenance(tmp_path: Pat
     root = tmp_path / "feedbax"
     package = root / "feedbax"
     package.mkdir(parents=True)
-    _git(root, "init")
-    _git(root, "config", "user.email", "snapshot@example.invalid")
-    _git(root, "config", "user.name", "Snapshot Test")
+    run_fixture_git(root, "init")
     (root / "pyproject.toml").write_text(
         '[project]\nname = "feedbax"\nversion = "0.0.0"\n',
         encoding="utf-8",
     )
     (package / "__init__.py").write_text('VALUE = "sealed"\n', encoding="utf-8")
-    _git(root, "add", "pyproject.toml", "feedbax/__init__.py")
-    _git(root, "commit", "-m", "Feedbax fixture")
+    run_fixture_git(root, "add", "pyproject.toml", "feedbax/__init__.py")
+    run_fixture_git(root, "commit", "-m", "Feedbax fixture")
 
     snapshot = seal_repo_snapshot("provider", root, snapshot_parent=tmp_path / "snapshots")
     provenance = snapshot.staging_root.joinpath(*PROVENANCE_PATH.split("/"))
@@ -98,7 +85,7 @@ def test_feedbax_snapshot_carries_verified_distribution_provenance(tmp_path: Pat
         snapshot.record.distribution_provenance_sha256
         == hashlib.sha256(provenance.read_bytes()).hexdigest()
     )
-    assert json.loads(provenance.read_bytes())["revision"] == _git(root, "rev-parse", "HEAD")
+    assert json.loads(provenance.read_bytes())["revision"] == run_fixture_git(root, "rev-parse", "HEAD")
 
     mismatched = snapshot.record.model_copy(update={"distribution_provenance_sha256": "0" * 64})
     with pytest.raises(RepoSnapshotCacheFault, match="distribution provenance digest mismatch"):
@@ -246,8 +233,8 @@ def test_snapshot_omits_tracked_deletion_and_preserves_symlink(tmp_path: Path) -
     (root / "target.txt").write_text("target bytes\n", encoding="utf-8")
     (root / "tracked-link").symlink_to("target.txt")
     (root / "deleted.txt").write_text("delete me\n", encoding="utf-8")
-    _git(root, "add", "target.txt", "tracked-link", "deleted.txt")
-    _git(root, "commit", "-m", "link and deletion fixture")
+    run_fixture_git(root, "add", "target.txt", "tracked-link", "deleted.txt")
+    run_fixture_git(root, "commit", "-m", "link and deletion fixture")
     (root / "deleted.txt").unlink()
 
     snapshot = seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
@@ -332,8 +319,8 @@ def test_snapshot_fails_closed_for_non_top_level_and_gitlink(tmp_path: Path) -> 
     with pytest.raises(RepoSnapshotError, match="must equal the Git top level"):
         seal_repo_snapshot("repo", nested, snapshot_parent=tmp_path / "snapshots")
 
-    commit = _git(root, "rev-parse", "HEAD")
-    _git(root, "update-index", "--add", "--cacheinfo", f"160000,{commit},vendor/sub")
+    commit = run_fixture_git(root, "rev-parse", "HEAD")
+    run_fixture_git(root, "update-index", "--add", "--cacheinfo", f"160000,{commit},vendor/sub")
     with pytest.raises(RepoSnapshotError, match="gitlink/submodule"):
         seal_repo_snapshot("repo", root, snapshot_parent=tmp_path / "snapshots")
 
@@ -421,9 +408,7 @@ Path(result).write_text(json.dumps(payload), encoding="utf-8")
 def _bulky_repo(root: Path) -> Path:
     """Build a repo whose seal takes long enough for concurrent sealers to interleave."""
     root.mkdir(parents=True)
-    _git(root, "init")
-    _git(root, "config", "user.email", "concurrent@example.invalid")
-    _git(root, "config", "user.name", "Concurrent Test")
+    run_fixture_git(root, "init")
     for index in range(48):
         package = root / f"package {index % 6}"
         package.mkdir(exist_ok=True)
@@ -431,8 +416,8 @@ def _bulky_repo(root: Path) -> Path:
         module.write_text(f"VALUE = {index}\n" + "# padding\n" * 64, encoding="utf-8")
         if index % 8 == 0:
             module.chmod(0o755)
-    _git(root, "add", "-A")
-    _git(root, "commit", "-m", "concurrent fixture")
+    run_fixture_git(root, "add", "-A")
+    run_fixture_git(root, "commit", "-m", "concurrent fixture")
     return root
 
 

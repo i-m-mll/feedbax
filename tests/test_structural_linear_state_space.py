@@ -44,7 +44,6 @@ def _spec(*, active: bool = False) -> GraphSpec:
                     "delta_A": [[0.0, 0.5], [0.0, 0.0]],
                     "scale": 1.0,
                     "active": active,
-                    "label": "structural_field",
                     "dt": 0.1,
                     "initial_state": [0.0, 2.0],
                     "pos_slice": [0, 1],
@@ -89,7 +88,6 @@ def _sparse_spec() -> GraphSpec:
                     },
                     "scale": 2.0,
                     "active": True,
-                    "label": "structural_field",
                     "dt": 0.1,
                     "initial_state": [0.0, 0.0, 1.0, 0.0],
                     "pos_slice": [0, 2],
@@ -230,14 +228,13 @@ def test_signed_and_nominal_structural_variants(
             vel_slice=(1, 2),
         )
         trial = TaskTrialSpec(
-            inits=WhereDict(),
-            targets=WhereDict(),
-            inputs={"force": jnp.zeros((1, 1)), "epsilon": jnp.zeros((1, 0))},
-            intervene={
-                component.label: StructuralLinearDynamicsPerturbation.from_entries(
+            inits=WhereDict({
+                "structural_params_index": StructuralLinearDynamicsPerturbation.from_entries(
                     (2, 2), [(0, 1, 0.5)], scale=scale, active=active
                 )
-            },
+            }),
+            targets=WhereDict(),
+            inputs={"force": jnp.zeros((1, 1)), "epsilon": jnp.zeros((1, 0))},
         )
         prepared = prepare_trial(component, trial)
         outputs, _ = eqx.filter_jit(component)(
@@ -254,17 +251,16 @@ def test_task_trial_selects_one_constant_structural_variant() -> None:
     graph = spec_to_graph(_spec(), ComponentRegistry(load_user_components=False))
     component = graph.nodes["plant"]
     trial = TaskTrialSpec(
-        inits=WhereDict(),
+        inits=WhereDict({
+            "plant.structural_params_index": StructuralLinearDynamicsPerturbation(
+                delta_A=jnp.asarray([[0.0, -0.5], [0.0, 0.0]]),
+                active=True,
+            )
+        }),
         targets=WhereDict(),
         inputs={
             "force": jnp.zeros((3, 1)),
             "epsilon": jnp.zeros((3, 1)),
-        },
-        intervene={
-            "structural_field": StructuralLinearDynamicsPerturbation(
-                delta_A=jnp.asarray([[0.0, -0.5], [0.0, 0.0]]),
-                active=True,
-            )
         },
         timeline=TrialTimeline(n_steps=3),
     )
@@ -278,7 +274,6 @@ def test_task_trial_selects_one_constant_structural_variant() -> None:
         jnp.asarray([[0.0, -0.5], [0.0, 0.0]]),
     )
     assert bool(selected.active)
-    assert "intervene:structural_field" not in prepared.inputs
 
 
 def test_graphspec_round_trip_preserves_structural_identity() -> None:
@@ -290,14 +285,7 @@ def test_graphspec_round_trip_preserves_structural_identity() -> None:
     assert node.type == "StructuralLinearStateSpace"
     assert node.param_schema_version == STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION
     assert node.params["delta_A"] == [[0.0, 0.5], [0.0, 0.0]]
-    assert node.params["label"] == "structural_field"
     assert node.params["active"] is True
-    assert (
-        spec_to_graph(GraphSpec.model_validate_json(round_tripped.model_dump_json()), registry)
-        .nodes["plant"]
-        .label
-        == "structural_field"
-    )
 
 
 def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> None:

@@ -53,7 +53,7 @@ def test_training_environment_protocol_accepts_structural_implementation():
             return EnvironmentStep(
                 obs={"t": t},
                 target=None,
-                intervene=None,
+
                 reward=None,
                 done=None,
             )

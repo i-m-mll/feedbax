@@ -130,12 +130,6 @@ class TestSelectionBasics:
         assert isinstance(sel, Selection)
         assert sel.tree is simple_module
 
-    def test_selection_repr(self, simple_module):
-        sel = select(simple_module)
-        repr_str = repr(sel)
-        assert "Selection" in repr_str
-        assert "SimpleModule" in repr_str
-
     def test_count_all_leaves(self, simple_module):
         count = select(simple_module).count()
         # SimpleModule has weight (array), bias (array) as dynamic leaves

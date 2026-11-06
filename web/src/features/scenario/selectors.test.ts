@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRlrmpModelGraph } from '@/data/rlrmp-model-graph';
+import { createBlankGraph } from '@/stores/graphStore';
 import { buildScenarioEntityRegistry } from '@/features/scenario/entities';
 import {
   preferredSelectorForGraphPort,
@@ -14,11 +14,17 @@ import { defaultTaskSpec, defaultTrainingSpec } from '@/stores/trainingStore';
 import type { StudioSchemaRegistry } from '@/types/workspace';
 
 function registry() {
-  const { graph, uiState } = createRlrmpModelGraph('selector test');
+  const graph = createBlankGraph();
+  graph.nodes.mechanics = {
+    type: 'PointMass',
+    params: {},
+    input_ports: ['force'],
+    output_ports: ['effector'],
+  };
   const workspace = buildWorkspaceSnapshot({
     workspace: null,
     graph,
-    uiState,
+    uiState: null,
     trainingSpec: defaultTrainingSpec,
     taskSpec: defaultTaskSpec,
     analysisSnapshot: null,
@@ -248,6 +254,18 @@ describe('scenario selector options', () => {
         options
       ).map((candidate) => candidate.label)
     ).toEqual(['Decoder readout']);
+  });
+
+  it('keeps a provider recurrent carry distinct from an instantaneous edge', () => {
+    const schema = schemaRegistry();
+    const edge = schema.selector_targets.find((target) => target.kind === 'edge')!;
+    edge.kind = 'recurrent_carry';
+
+    const options = selectorOptionsForRegistry({ registry: registry(), schemaRegistry: schema });
+    const option = options.find((candidate) => candidate.schema_target_id === edge.id);
+
+    expect(option?.selector.namespace).toBe('recurrent_carry');
+    expect(option?.selector.compact).toBe(edge.selector);
   });
 
   it('represents graph structural selector target kinds from provider schema', () => {

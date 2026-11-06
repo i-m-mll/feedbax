@@ -3931,13 +3931,14 @@ def build_atomic_directory_publish_command(source: str, destination: str) -> str
 
 
 def build_native_resume_seed_command(
-    source: str, attempt: str, target: str, resolved: ResolvedAssemblyInput
+    source: str, attempt: str, target: str, resolved: ResolvedAssemblyInput, *, workdir: str
 ) -> str:
-    """Build the shared secure clone plus atomic no-replace publication protocol."""
+    """Run the secure checkpoint clone in the row's realized environment."""
 
     return (
-        f"python3 -c {_sq(SECURE_CHECKPOINT_SEED_SCRIPT)} {_sq(source)} {_sq(attempt)} "
-        f"{_sq(target)} {_sq(native_resume_checkpoint_authority_json(resolved))}"
+        f"(cd {_sq(workdir)} && uv run --no-sync python -c {_sq(SECURE_CHECKPOINT_SEED_SCRIPT)} "
+        f"{_sq(source)} {_sq(attempt)} {_sq(target)} "
+        f"{_sq(native_resume_checkpoint_authority_json(resolved))})"
     )
 
 
@@ -4258,10 +4259,13 @@ def build_launch_row_command(
         assert namespace.seed_source is not None
         assert namespace.seed_attempt is not None
         assert namespace.seed_target is not None
-        seed_command = (
-            f"{build_native_resume_seed_command(namespace.seed_source, namespace.seed_attempt, namespace.seed_target, checkpoint_source)} "
-            "&& "
-        )
+        seed_command = build_native_resume_seed_command(
+            namespace.seed_source,
+            namespace.seed_attempt,
+            namespace.seed_target,
+            checkpoint_source,
+            workdir=workdir,
+        ) + " && "
     return (
         f"mkdir -p {_sq(namespace.sentinel_dir)} {_sq(str(PurePosixPath(log_file).parent))} "
         f"{_sq(events_dir)} {_sq(row_dir)} {_sq(jax_cache_dir)} && "
@@ -4275,10 +4279,10 @@ def build_launch_row_command(
         f"touch {_sq(started_file)} && "
         f"FEEDBAX_PROCESS_IDENTITY={_sq(launch_token)} "
         f"setsid -f bash -lc {_sq(inner)} </dev/null >{_sq(log_file)} 2>&1 && "
-        f"i=0; while {{ [ ! -s {_sq(pid_file)} ] || "
+        f"{{ i=0; while {{ [ ! -s {_sq(pid_file)} ] || "
         f'[ ! -s {_sq(process_identity_file)} ]; }} && [ "$i" -lt 40 ]; do '
         "i=$((i+1)); sleep 0.05; done; "
-        f"[ -s {_sq(pid_file)} ] && [ -s {_sq(process_identity_file)} ]"
+        f"[ -s {_sq(pid_file)} ] && [ -s {_sq(process_identity_file)} ]; }}"
     )
 
 

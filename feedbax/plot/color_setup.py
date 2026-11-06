@@ -47,7 +47,7 @@ def _trial_sequence(hps: TreeNamespace) -> Sequence[int]:
 
 
 # Generic colorscales shipped by Feedbax. Project vocabulary such as
-# perturbation amplitudes, SISU settings, or task-condition names belongs in a
+# perturbation amplitudes or task-condition names belongs in a
 # caller-supplied ColorConfig.
 COLORSCALES: dict[str, str | Sequence[str] | Sequence[tuple]] = dict(
     replicate="twilight",

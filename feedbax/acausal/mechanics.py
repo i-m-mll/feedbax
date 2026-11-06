@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 
 from feedbax.acausal.base import AcausalElement, AcausalEquation, AcausalPort, Domain
-from feedbax.contracts.acausal_interface import ACTIVATION_PAYLOAD
+from feedbax._acausal_payload import ACTIVATION_PAYLOAD
 
 
 def _fqn(element: str, port: str, slot: str) -> str:

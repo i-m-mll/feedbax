@@ -55,11 +55,11 @@ class DerivedDimensionConflict(DerivedDimensionError):
     """Raised when a declared builder dimension contradicts the derived value."""
 
 
-def array_proto_from_shape(shape: Any) -> jax.Array | None:
+def array_proto_from_shape(shape: Any, *, dtype: Any = None) -> jax.Array | None:
     if not isinstance(shape, (list, tuple)):
         return None
     try:
-        return jnp.zeros(tuple(int(dim) for dim in shape))
+        return jnp.zeros(tuple(int(dim) for dim in shape), dtype=dtype)
     except (TypeError, ValueError):
         return None
 
@@ -142,9 +142,6 @@ def prototypes_from_task_bindings(task_binding_spec: Any) -> dict[tuple[str, str
         item = data_by_id.get(str(source_id))
         if item is None or target_node is None or target_port is None:
             continue
-        role = _field(binding, "role") or _field(item, "role")
-        if role == "component_parameter" and _task_data_temporality(item) == "constant":
-            continue
         expected_shape = (
             getattr(item, "expected_shape", None)
             if not isinstance(item, Mapping)
@@ -154,34 +151,6 @@ def prototypes_from_task_bindings(task_binding_spec: Any) -> dict[tuple[str, str
         if sample_shape is not None:
             prototypes[(str(target_node), str(target_port))] = jnp.zeros(tuple(sample_shape))
     return prototypes
-
-
-def _field(value: Any, name: str, default: Any = None) -> Any:
-    if isinstance(value, Mapping):
-        return value.get(name, default)
-    return getattr(value, name, default)
-
-
-def _metadata(value: Any) -> dict[str, Any]:
-    metadata = _field(value, "metadata", {})
-    return metadata if isinstance(metadata, dict) else {}
-
-
-def _task_data_temporality(data: Any) -> str:
-    metadata = _metadata(data)
-    explicit = metadata.get("temporality") or metadata.get("temporal_support")
-    if isinstance(explicit, str):
-        if explicit in {"trajectory", "materialized_trajectory", "epoch_masked_signal"}:
-            return "time_varying"
-        if explicit in {"constant", "trial_constant", "initial", "per_trial"}:
-            return "constant"
-    shape = _field(data, "expected_shape")
-    value_spec = _field(data, "value_spec")
-    if shape is None:
-        shape = _field(value_spec, "shape")
-    if isinstance(shape, (list, tuple)) and shape and shape[0] == "time":
-        return "time_varying"
-    return "constant"
 
 
 def explicit_proto(
@@ -211,6 +180,12 @@ def validate_or_add_input_shape(
             f"{node_type} node {node_name!r} port 'input' requires an input prototype. "
             "Connect it to a source with a known output shape or provide input_shape."
         )
+    if (
+        node_type == "Channel"
+        and not hasattr(proto, "shape")
+        and all(next_params.get(field) is None for field in ("input_shape", "input_dtype"))
+    ):
+        return next_params
     try:
         inferred = prototype_params(proto)
     except ValueError as exc:

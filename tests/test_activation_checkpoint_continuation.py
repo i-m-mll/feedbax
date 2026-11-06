@@ -15,7 +15,8 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.contracts.training import GraphTopologySourceSpec
 from feedbax.contracts.worker import ProgressCoordinate
-from feedbax.models.cde import CDENetwork
+from feedbax.compiler.cde_templates import cde_controller_spec
+from feedbax.models.cde import cde_controller
 from feedbax.runtime.iteration import iterate_component
 from feedbax.training.checkpoint_custody import load_latest_checkpoint, write_checkpoint_transaction
 from tests.test_checkpoint_custody import _run_spec
@@ -70,11 +71,11 @@ def _initial_slots(kind, *, seed):
         ).graph
         model = graph.prepare()
     else:
-        model = CDENetwork(
+        model = cde_controller(
             obs_dim=2, hidden_dim=3, out_size=2, vf_width=4, vf_depth=1, key=key
         ).prepare()
     return {
-        "model": (model, model.init_state(key=key)),
+        "model": (model, (model.init_state(key=key), None)),
         "optimizer": optax.adam(0.05).init(eqx.filter(model, eqx.is_inexact_array)),
         "prng": key,
         "batch_counter": jnp.asarray(0, dtype=jnp.int32),
@@ -87,9 +88,30 @@ def _train_step(slots, observations):
     rollout_key, next_key = jax.random.split(slots["prng"])
 
     def loss(component):
-        outputs, final_carry, history = iterate_component(
-            component, {"input": observations}, carry, len(observations), rollout_key
-        )
+        state, cycle = carry
+        if component._needs_iteration:
+            cycle = component.initial_cycle_port_values(state, cycle, key=rollout_key)
+            initial_hidden = cycle[("h_prev_in", "input")]
+
+            def step(step_carry, xs):
+                current_state, current_cycle = step_carry
+                obs, step_key = xs
+                outputs, next_state, next_cycle = component.step(
+                    {"input": obs}, current_state, current_cycle, key=step_key
+                )
+                return (next_state, next_cycle), outputs
+
+            final_carry, outputs = jax.lax.scan(
+                step,
+                (state, cycle),
+                (observations, jax.random.split(rollout_key, len(observations))),
+            )
+            history = jnp.concatenate([initial_hidden[None], outputs["hidden"]])
+        else:
+            outputs, state, history = iterate_component(
+                component, {"input": observations}, state, len(observations), rollout_key
+            )
+            final_carry = (state, None)
         return jnp.sum(outputs["output"][:, 0]), (outputs, final_carry, history)
 
     (_, trajectory), grads = eqx.filter_value_and_grad(loss, has_aux=True)(model)
@@ -107,12 +129,10 @@ def _train_step(slots, observations):
 
 def _run_contract(kind):
     spec = _run_spec()
-    if kind == "graph":
-        spec = spec.model_copy(
-            update={
-                "graph": GraphTopologySourceSpec(inline=_nonlinear_graph().model_dump(mode="json"))
-            }
-        )
+    graph = _nonlinear_graph() if kind == "graph" else cde_controller_spec(2, 3, 2, 4, 1)
+    spec = spec.model_copy(
+        update={"graph": GraphTopologySourceSpec(inline=graph.model_dump(mode="json"))}
+    )
     return spec, spec.worker_execution.method_contract.phase_program
 
 
@@ -123,12 +143,13 @@ def _interrupted_training(kind):
     if kind == "cde":
         model, _ = fresh["model"]
         learned, _ = interrupted["model"]
-        _assert_same_arrays(history.hidden[0], model.h0)
-        assert jnp.any(grads.h0 != 0)
-        assert jnp.any(learned.h0 != model.h0)
+        h0 = model.nodes["h0"].value
+        _assert_same_arrays(history[0], h0)
+        assert jnp.any(grads.nodes["h0"].value != 0)
+        assert jnp.any(learned.nodes["h0"].value != h0)
     else:
-        model, carry = interrupted["model"]
-        assert jnp.any(carry.get(model.nodes["rnn"].state_index).hidden != 0)
+        model, (state, _) = interrupted["model"]
+        assert jnp.any(state.get(model.nodes["rnn"].state_index).hidden != 0)
     return interrupted
 
 
@@ -140,6 +161,9 @@ def _resume(root, kind):
     spec, program = _run_contract(kind)
     expected = _interrupted_training(kind)
     fresh = _initial_slots(kind, seed=17)
+    if kind == "cde":
+        model, (state, _) = fresh["model"]
+        fresh["model"] = (model, (state, model.initial_cycle_port_values(state)))
     loaded = load_latest_checkpoint(
         root,
         expected_run_spec=spec,
@@ -155,12 +179,13 @@ def _resume(root, kind):
     _assert_slots((trajectory, grads), expected_step)
 
     if kind == "cde":
-        model, carry = loaded["model"]
-        stored_hidden = carry.get(model.state_index).hidden
-        _assert_same_arrays(trajectory[2].hidden[0], stored_hidden)
-        assert jnp.any(stored_hidden != model.h0)
-        _assert_same_arrays(grads.h0, jnp.zeros_like(model.h0))
-        assert jnp.any(grads.vector_field.layers[0].weight != 0)
+        model, (_, cycle) = loaded["model"]
+        stored_hidden = cycle[("h_prev_in", "input")]
+        h0 = model.nodes["h0"].value
+        _assert_same_arrays(trajectory[2][0], stored_hidden)
+        assert jnp.any(stored_hidden != h0)
+        _assert_same_arrays(grads.nodes["h0"].value, jnp.zeros_like(h0))
+        assert jnp.any(grads.nodes["vf"].linears[0].weight != 0)
 
 
 @pytest.mark.parametrize("kind", ["graph", "cde"])

@@ -123,7 +123,7 @@ def _workspace():
     }
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -768,14 +768,14 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
     request = StudioEvaluationMatrixRequest(
         workspace=prepared_training.workspace,
         training_run_ids=[training_ref.id],
-        eval_params={"targets": "8-direction center-out"},
+        eval_params={"trial_count": 8},
         condition_matrix={
             "axes": [
                 {
-                    "id": "sisu",
-                    "label": "SISU",
-                    "path": "eval_params.sisu",
-                    "values": [0.25, 0.5],
+                    "id": "gain",
+                    "label": "Feedback gain",
+                    "path": "eval_params.gain",
+                    "values": [0, 0.5],
                 }
             ],
             "mode": "cross",
@@ -792,6 +792,7 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
     first = stage_studio_evaluation_matrix(request)
     second = stage_studio_evaluation_matrix(request)
 
+    assert preview.condition_labels == ["Feedback gain=0", "Feedback gain=0.5"]
     assert preview.total_eval_count == 2
     assert preview.new_manifest_count == 2
     assert first.preview.pending_count == 2
@@ -803,6 +804,8 @@ def test_stage_studio_evaluation_matrix_records_checkpoint_policy_and_is_idempot
     assert isinstance(eval_manifest, EvaluationRunManifest)
     assert isinstance(checkpoint_manifest, CheckpointSelectionManifest)
     assert eval_manifest.status == "pending"
+    assert [ref.metadata["condition_label"] for ref in first.manifest_refs] == preview.condition_labels
+    assert eval_manifest.metadata["condition_axis_coordinates"] == {"gain": 0}
     assert eval_manifest.evaluation_spec.inline["params"]["checkpoint_policy"] == {
         "mode": "best-by-metric",
         "metric": "final_validation_loss",
@@ -1085,6 +1088,16 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
         for collection in train_stage.output_collections
         if collection.kind == "training_runs"
     ]
+    eval_stage.selection_spec["condition_matrix"] = {
+        "axes": [
+            {
+                "id": "gain",
+                "label": "Feedback gain",
+                "path": "eval_params.gain",
+                "values": [0],
+            }
+        ]
+    }
     payload = {
         "workspace": prepared_training.workspace.model_dump(mode="json", exclude_none=True),
         "selection_spec": {
@@ -1092,7 +1105,6 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
             "manifest_kind": "TrainingRunManifest",
             "ids": [training_ref.id],
         },
-        "eval_params": {"perturbation": "none"},
         "checkpoint_policy": {"mode": "last"},
         "issues": ["717e8fb"],
         "root": str(tmp_path),
@@ -1105,6 +1117,7 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
 
     assert preview.status_code == 200
     assert preview.json()["total_eval_count"] == 1
+    assert preview.json()["condition_labels"] == ["Feedback gain=0"]
     assert staged.status_code == 200
     assert staged.json()["preview"]["pending_count"] == 1
     assert launched.status_code == 200
@@ -1113,10 +1126,11 @@ def test_studio_evaluation_endpoints_preview_stage_and_run_local(
         stage for stage in launched.json()["workspace"]["stages"] if stage["kind"] == "eval"
     )
     assert eval_stage_payload["status"] == "completed"
-    assert (
-        eval_stage_payload["output_collections"][0]["item_refs"][0]["metadata"]["status"]
-        == "completed"
-    )
+    ref = eval_stage_payload["output_collections"][0]["item_refs"][0]
+    assert ref["metadata"]["status"] == "completed"
+    assert ref["metadata"]["condition_label"] == "Feedback gain=0"
+    assert ref["metadata"]["condition_axis_coordinates"] == {"gain": 0}
+    assert load_manifest(ref["uri"]).metadata["condition_label"] == "Feedback gain=0"
 
 
 def test_studio_training_plan_endpoint_rejects_missing_training_spec(studio_client):
@@ -1151,7 +1165,7 @@ def test_task_binding_spec_rejects_source_output_id():
     with pytest.raises(ValueError, match="source_output_id.*source_data_id"):
         StudioTaskBindingSpec.model_validate(
             {
-                "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v3",
                 "exposed_data": [
                     {
                         "id": "inputs",

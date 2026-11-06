@@ -7,18 +7,11 @@ from feedbax.runtime.mapping import WhereDict
 from feedbax.contracts.graph import StudioTaskBindingSpec
 from feedbax.runtime.components import Constant, Gain
 from feedbax.runtime.graph import Component, Graph, Wire, init_state_from_component
-from feedbax.runtime.task_bindings import (
-    apply_task_parameter_state_inits,
-    binding_spec_from_legacy_extra_inputs,
-    expose_task_bindings,
-)
-from feedbax.intervene import TimeSeriesParam
+from feedbax.runtime.task_bindings import expose_task_inputs
 from feedbax.tasks import (
     TaskTrialSpec,
     TrialTimeline,
-    extract_timeseries_params,
     infer_n_steps,
-    merge_intervene_inputs,
     prepare_inputs,
     prepare_trial,
     safe_state_set,
@@ -66,19 +59,15 @@ class _InterventionNode(Component):
     def __call__(self, inputs, state, *, key):
         return {"output": inputs["input"]}, state
 
-    def task_parameter_state_indices(self):
-        return {"foo": self.params_index}
-
-
 def _graph() -> Graph:
     return Graph(
         nodes={"net": _InterventionNode()},
         wires=(),
-        input_ports=("input", "intervene:foo"),
+        input_ports=("input", "gain"),
         output_ports=("output",),
         input_bindings={
             "input": ("net", "input"),
-            "intervene:foo": ("net", "params_override"),
+            "gain": ("net", "params_override"),
         },
         output_bindings={"output": ("net", "output")},
     )
@@ -90,40 +79,14 @@ def test_where_key_to_path_strips_unique_suffix() -> None:
 
 
 def test_prepare_inputs_wraps_single_required_port() -> None:
-    graph = _graph()
+    graph = Graph(nodes={"gain": Gain(1.0)}, input_ports=("input",),
+                  input_bindings={"input": ("gain", "input")})
     inputs = jnp.zeros((3, 2), dtype=jnp.float32)
 
     prepared = prepare_inputs(graph, inputs)
 
     assert set(prepared) == {"input"}
     assert jnp.array_equal(prepared["input"], inputs)
-
-
-def test_intervention_inputs_are_prefixed_when_merged() -> None:
-    inputs = {"input": jnp.zeros((3, 2), dtype=jnp.float32)}
-    intervene_inputs = {"foo": _Params(None, jnp.arange(3.0))}
-
-    merged = merge_intervene_inputs(inputs, intervene_inputs)
-
-    assert set(merged) == {"input", "intervene:foo"}
-    assert merged["intervene:foo"].dynamic_gain.shape == (3,)
-
-
-def test_extract_timeseries_params_broadcasts_static_leaves_and_defaults_for_none() -> None:
-    params = _Params(
-        static_gain=None,
-        dynamic_gain=TimeSeriesParam(jnp.asarray([2.0, 3.0, 4.0], dtype=jnp.float32)),
-    )
-    defaults = _Params(
-        static_gain=jnp.asarray(1.0, dtype=jnp.float32),
-        dynamic_gain=jnp.asarray(0.0, dtype=jnp.float32),
-    )
-
-    extracted = extract_timeseries_params(params, defaults)
-
-    assert extracted.static_gain.shape == (3,)
-    assert jnp.array_equal(extracted.static_gain, jnp.ones((3,), dtype=jnp.float32))
-    assert jnp.array_equal(extracted.dynamic_gain, jnp.asarray([2.0, 3.0, 4.0]))
 
 
 def test_set_state_by_path_updates_graph_node_state_attribute() -> None:
@@ -151,17 +114,20 @@ def test_set_state_matching_dtypes_casts_replacement_to_existing_dtype() -> None
     assert safe_state_set is set_state_matching_dtypes
 
 
-def test_prepare_trial_applies_inits_interventions_and_infers_timeline_steps() -> None:
+def test_prepare_trial_applies_owned_resets_and_passes_typed_input() -> None:
     graph = _graph()
     trial_spec = TaskTrialSpec(
-        inits=WhereDict({"net.hidden": jnp.asarray([7.0, 8.0], dtype=jnp.float32)}),
+        inits=WhereDict({
+            "net.hidden": jnp.asarray([7.0, 8.0], dtype=jnp.float32),
+            "net.params_index.static_gain": jnp.asarray(4.0),
+        }),
         targets=WhereDict(),
-        inputs=jnp.zeros((5, 2), dtype=jnp.float32),
-        intervene={
-            "foo": _Params(
-                static_gain=jnp.asarray(4.0, dtype=jnp.float32),
-                dynamic_gain=TimeSeriesParam(jnp.asarray([1.0, 2.0, 3.0])),
-            )
+        inputs={
+            "input": jnp.zeros((5, 2), dtype=jnp.float32),
+            "gain": _Params(
+                static_gain=None,
+                dynamic_gain=jnp.asarray([1.0, 2.0, 3.0]),
+            ),
         },
         timeline=TrialTimeline(n_steps=3),
     )
@@ -169,75 +135,13 @@ def test_prepare_trial_applies_inits_interventions_and_infers_timeline_steps() -
     prepared = prepare_trial(graph, trial_spec)
 
     assert prepared.n_steps == 3
-    assert set(prepared.inputs) == {"input", "intervene:foo"}
+    assert set(prepared.inputs) == {"input", "gain"}
     assert jnp.array_equal(
         graph.state_view(prepared.init_state).net.hidden, jnp.asarray([7.0, 8.0])
     )
     node = graph.get_node("net")
     assert prepared.init_state.get(node.params_index).static_gain == jnp.asarray(4.0)
-    assert prepared.inputs["intervene:foo"].dynamic_gain.shape == (3,)
-
-
-def test_task_parameter_binding_exposes_constant_state_init_plan() -> None:
-    graph = _graph()
-    binding_spec = {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
-        "exposed_data": [
-            {
-                "id": "foo",
-                "label": "Foo params",
-                "kind": "intervention",
-                "role": "component_parameter",
-                "path": "intervene.foo",
-                "bindable": True,
-                "dtype": "object",
-                "metadata": {"temporal_support": "constant"},
-            }
-        ],
-        "bindings": [
-            {
-                "id": "task:foo->net:params_override",
-                "source_data_id": "foo",
-                "target_node_id": "net",
-                "target_port": "params_override",
-                "role": "component_parameter",
-                "metadata": {"task_parameter_label": "foo"},
-            }
-        ],
-        "metadata": {},
-    }
-
-    exposure = expose_task_bindings(graph, StudioTaskBindingSpec.model_validate(binding_spec))
-
-    assert exposure.input_plans == ()
-    assert exposure.state_init_plans[0].target_label == "foo"
-    state = init_state_from_component(exposure.graph)
-    replacement = _Params(
-        static_gain=jnp.asarray(9.0, dtype=jnp.float32),
-        dynamic_gain=jnp.asarray(0.5, dtype=jnp.float32),
-    )
-    updated = apply_task_parameter_state_inits(
-        state,
-        exposure.graph,
-        exposure.state_init_plans,
-        {"foo": replacement},
-    )
-
-    node = exposure.graph.get_node("net")
-    assert updated.get(node.params_index).static_gain == jnp.asarray(9.0)
-
-
-def test_legacy_extra_inputs_map_intervene_prefix_to_component_parameter_binding() -> None:
-    graph = _graph()
-    binding_spec = binding_spec_from_legacy_extra_inputs(graph, ["intervene:foo"])
-
-    assert binding_spec.exposed_data[0].role == "component_parameter"
-    assert binding_spec.exposed_data[0].metadata["legacy_input"] == "intervene:foo"
-    exposure = expose_task_bindings(graph, binding_spec)
-
-    assert exposure.state_init_plans == ()
-    assert exposure.input_plans[0].graph_input == "intervene:foo"
-    assert exposure.input_plans[0].target_port == "params_override"
+    assert prepared.inputs["gain"].dynamic_gain.shape == (3,)
 
 
 @pytest.mark.parametrize(
@@ -281,7 +185,7 @@ def test_task_exposure_preserves_existing_input_authority(wires, input_ports, me
     )
 
     with pytest.raises(ValueError, match=message):
-        expose_task_bindings(graph, binding_spec)
+        expose_task_inputs(graph, binding_spec)
 
 
 def test_infer_n_steps_prefers_timeline_over_input_length() -> None:

@@ -1,4 +1,4 @@
-"""GraphSpec declarations for vector intervention components."""
+"""GraphSpec declarations for vector transform components."""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, model_validator
 
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.migrations import ComponentMigration
-from feedbax.intervene.intervene import (
+from feedbax.runtime.signal_transforms import (
     ConstantInput,
     ConstantInputParams,
     NetworkClamp,
     NetworkConstantInput,
-    NetworkIntervenorParams,
+    NetworkValueParams,
 )
 from feedbax.runtime.graph import Component
 
@@ -31,19 +31,19 @@ class _Registry(Protocol):
     def register_migration(self, migration: ComponentMigration) -> None: ...
 
 
-_VectorIntervention = NetworkClamp | NetworkConstantInput | ConstantInput
+_VectorTransform = NetworkClamp | NetworkConstantInput | ConstantInput
 _PayloadDtype = Literal["float16", "bfloat16", "float32", "float64"]
 _FLOAT32_MAX = float(jnp.finfo(jnp.float32).max)
 _InterventionScale = Annotated[FiniteFloat, Field(ge=-_FLOAT32_MAX, le=_FLOAT32_MAX)]
 
 
-class _VectorInterventionParams(BaseModel):
+class _VectorTransformParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     payload_field: ClassVar[str]
     active: bool = False
     payload_dtype: _PayloadDtype = Field(
-        default="float32", description="Floating-point dtype of the stored intervention vector."
+        default="float32", description="Floating-point dtype of the stored transform vector."
     )
 
     @model_validator(mode="after")
@@ -53,11 +53,11 @@ class _VectorInterventionParams(BaseModel):
             if self.active:
                 raise ValueError(f"{self.payload_field} is required when active is true")
         else:
-            _validate_intervention_vector_range(payload, jnp.dtype(self.payload_dtype))
+            _validate_transform_vector_range(payload, jnp.dtype(self.payload_dtype))
         return self
 
 
-class _NetworkClampParams(_VectorInterventionParams):
+class _NetworkClampParams(_VectorTransformParams):
     payload_field = "unit_spec"
     unit_spec: list[FiniteFloat | None] | None = Field(
         default=None, description="Vector of unit values. Null entries leave units unchanged."
@@ -68,7 +68,7 @@ class _NetworkConstantInputParams(_NetworkClampParams):
     scale: _InterventionScale = 1.0
 
 
-class _ConstantInputParams(_VectorInterventionParams):
+class _ConstantInputParams(_VectorTransformParams):
     payload_field = "arrays"
     scale: _InterventionScale = 1.0
     arrays: list[FiniteFloat] | None = Field(
@@ -81,7 +81,7 @@ def _without_legacy_clamp_scale(params: Mapping[str, Any]) -> dict[str, Any]:
     return {name: value for name, value in params.items() if name != "scale"}
 
 
-def _intervention_payload_dtype(name: _PayloadDtype) -> jnp.dtype:
+def _transform_payload_dtype(name: _PayloadDtype) -> jnp.dtype:
     dtype = jnp.dtype(name)
     if jax.dtypes.canonicalize_dtype(dtype) != dtype:
         raise ValueError(
@@ -90,7 +90,7 @@ def _intervention_payload_dtype(name: _PayloadDtype) -> jnp.dtype:
     return dtype
 
 
-def _validate_intervention_vector_range(values: list[float | None], dtype: Any) -> None:
+def _validate_transform_vector_range(values: list[float | None], dtype: Any) -> None:
     limit = float(jnp.finfo(dtype).max)
     if any(value is not None and abs(value) > limit for value in values):
         raise ValueError(f"Intervention vector contains values outside the range of {dtype}")
@@ -99,20 +99,20 @@ def _validate_intervention_vector_range(values: list[float | None], dtype: Any) 
 def _build_vector_intervention(
     values: Mapping[str, Any],
     *,
-    runtime_type: type[_VectorIntervention],
+    runtime_type: type[_VectorTransform],
     payload_field: str,
-) -> _VectorIntervention:
+) -> _VectorTransform:
     params = dict(values)
     payload_dtype = params.pop("payload_dtype")
     payload = params[payload_field]
     if payload is not None:
-        dtype = _intervention_payload_dtype(payload_dtype)
+        dtype = _transform_payload_dtype(payload_dtype)
         params[payload_field] = jnp.asarray(
             [float("nan") if value is None else value for value in payload], dtype=dtype
         )
     if issubclass(runtime_type, ConstantInput):
         return runtime_type(params=ConstantInputParams(**params))
-    return runtime_type(params=NetworkIntervenorParams(**params))
+    return runtime_type(params=NetworkValueParams(**params))
 
 
 def _extract_vector_intervention(
@@ -122,8 +122,8 @@ def _extract_vector_intervention(
     payload_field: str,
 ) -> BaseModel:
     params = cast(
-        ConstantInputParams | NetworkIntervenorParams,
-        cast(_VectorIntervention, component).params_index.init,
+        ConstantInputParams | NetworkValueParams,
+        cast(_VectorTransform, component).params_index.init,
     )
     payload = getattr(params, payload_field)
     values: dict[str, Any] = {"active": params.active.tolist(), payload_field: None}
@@ -138,7 +138,7 @@ def _extract_vector_intervention(
                 f"{type(component).__name__} {payload_field} has unsupported GraphSpec dtype "
                 f"{payload_dtype!r}. Convert the payload to a supported real floating dtype."
             )
-        _intervention_payload_dtype(payload_dtype)
+        _transform_payload_dtype(payload_dtype)
         values["payload_dtype"] = payload_dtype
         vector = payload.tolist()
         if payload_field == "unit_spec":
@@ -149,7 +149,7 @@ def _extract_vector_intervention(
     return type(model).model_validate(values)
 
 
-def _vector_intervention_output_prototype(
+def _vector_transform_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
     *,
@@ -172,11 +172,11 @@ def _vector_intervention_output_prototype(
                 f"to input vector shape {shape}"
             )
         if component == "NetworkClamp":
-            _validate_intervention_vector_range(payload, signal.dtype)
+            _validate_transform_vector_range(payload, signal.dtype)
     return {"output": signal}
 
 
-def register_vector_interventions(registry: _Registry) -> None:
+def register_vector_transforms(registry: _Registry) -> None:
     for runtime_type, model, description, icon in (
         (NetworkClamp, _NetworkClampParams, "Clamp network unit activity.", "Pin"),
         (
@@ -202,8 +202,8 @@ def register_vector_interventions(registry: _Registry) -> None:
                     payload_field=payload_field,
                 ),
                 extractor=partial(_extract_vector_intervention, payload_field=payload_field),
-                override_reason="Translate JSON vectors to and from intervention state arrays.",
-                category="Interventions",
+                override_reason="Translate JSON vectors to and from transform state arrays.",
+                category="Signal Processing",
                 description=description,
                 input_ports=["input"],
                 output_ports=["output"],
@@ -213,7 +213,7 @@ def register_vector_interventions(registry: _Registry) -> None:
                     outputs={"output": PortType(dtype="vector")},
                 ),
                 output_prototype_fn=partial(
-                    _vector_intervention_output_prototype,
+                    _vector_transform_output_prototype,
                     component=name,
                     payload_field=payload_field,
                 ),
@@ -229,6 +229,6 @@ def register_vector_interventions(registry: _Registry) -> None:
                 target_param_schema_version="2",
                 migration_id=f"feedbax.component.{name}.params.v1-to-v2",
                 migrate_params=legacy_projection or dict,
-                description="Preserve disabled interventions and require a payload when enabled.",
+                description="Preserve disabled transforms and require a payload when enabled.",
             )
         )

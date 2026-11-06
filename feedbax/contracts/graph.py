@@ -137,7 +137,7 @@ class WireSpec(BaseModel):
     """Specification for a wire connecting two ports.
 
     A recurrent `state_output` initializer can opt into
-    `seed_channel_history` when it feeds a Channel directly or through Ravel.
+    `seed_channel_history` when it feeds a Channel directly or through Ravel or SelectState.
     Fresh trial preparation then repeats the initial sample through the delay.
     """
 
@@ -567,6 +567,7 @@ class NodeUIState(BaseModel):
     """UI state for a node."""
 
     position: CanvasPositionSpec
+    label: Optional[str] = None
     collapsed: bool = False
     selected: bool = False
     reversed: bool = False
@@ -1185,8 +1186,8 @@ class StudioTaskBindingSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["feedbax.spec.studio.task_bindings.v2"] = (
-        "feedbax.spec.studio.task_bindings.v2"
+    schema_version: Literal["feedbax.spec.studio.task_bindings.v3"] = (
+        "feedbax.spec.studio.task_bindings.v3"
     )
     exposed_data: List[StudioTaskDataSpec] = Field(default_factory=list)
     bindings: List[StudioTaskBinding] = Field(default_factory=list)

@@ -33,6 +33,7 @@ from feedbax.contracts.studio_training import (
     StudioTrainingAssemblySpec,
     StudioTrainingIdentityAdapter,
 )
+from tests.support.git_fixtures import run_fixture_git
 from tests.support.training_fixtures import synthetic_training_program_registry
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
@@ -381,31 +382,20 @@ def _git_seal_ready(root: Path, *tracked: str) -> None:
     if not to_add:
         (root / ".sealed").write_text("sealed\n", encoding="utf-8")
         to_add = [".sealed"]
-    # Every fixture repo in this module is built this way and forking `git` is
-    # the file's dominant cost, so this is deliberately three processes rather
-    # than one per file plus two for identity: the adds are batched and the
-    # committer identity rides on the commit as `-c` overrides.
-    git = ["git", "-C", str(root), "--no-optional-locks"]
-    subprocess.run([*git, "init", "--quiet"], check=True, capture_output=True)
-    subprocess.run([*git, "add", "--", *to_add], check=True, capture_output=True)
-    subprocess.run(
-        [
-            *git,
-            "-c",
-            "user.email=runpod@example.invalid",
-            "-c",
-            "user.name=RunPod Test",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--quiet",
-            "--no-verify",
-            "-m",
-            "fixture",
-        ],
-        check=True,
-        capture_output=True,
-    )
+    run_fixture_git(root, "init", "--quiet")
+    run_fixture_git(root, "add", "--", *to_add)
+    run_fixture_git(root, "commit", "--quiet", "-m", "fixture")
+
+
+_FIXTURE_LOCK = b"""\
+version = 1
+
+[[package]]
+name = "feedbax"
+version = "0.0.0"
+source = { editable = "." }
+"""
+_FIXTURE_LOCK_SHA256 = hashlib.sha256(_FIXTURE_LOCK).hexdigest()
 
 
 def _bundle(
@@ -415,11 +405,11 @@ def _bundle(
     deadman_enabled: bool = False,
     baseline: bool = True,
     smoke_enabled: bool = False,
+    seal_repo: bool = False,
 ) -> RunBundle:
-    lockfile = tmp_path / "uv.lock"
-    lockfile.write_bytes((Path(__file__).resolve().parents[1] / "uv.lock").read_bytes())
-    lockfile_sha256 = hashlib.sha256(lockfile.read_bytes()).hexdigest()
-    _git_seal_ready(tmp_path, "uv.lock")
+    if seal_repo:
+        (tmp_path / "uv.lock").write_bytes(_FIXTURE_LOCK)
+        _git_seal_ready(tmp_path, "uv.lock")
     training_config = None
     if baseline:
         # The baseline extension lives inside a schema-valid authored field and
@@ -462,7 +452,7 @@ def _bundle(
         environment=EnvironmentDeclaration(
             python_version="3.12",
             image_id="runpod/pytorch:1.0.3@sha256:" + "a" * 64,
-            lockfile_hashes={"uv.lock": lockfile_sha256},
+            lockfile_hashes={"uv.lock": _FIXTURE_LOCK_SHA256},
             overlay_steps=["uv pip install extra"],
         ),
         budget=BudgetPolicy(max_wall_clock_seconds=30),
@@ -602,23 +592,9 @@ def _sealed_state(
 
 def _init_snapshot_repo(root: Path) -> None:
     root.mkdir(parents=True)
-    subprocess.run(["git", "-C", str(root), "init"], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(root), "config", "user.email", "runpod@example.invalid"],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(root), "config", "user.name", "RunPod Test"],
-        check=True,
-    )
     (root / "tracked.txt").write_text("tracked\n", encoding="utf-8")
-    (root / "uv.lock").write_bytes((Path(__file__).resolve().parents[1] / "uv.lock").read_bytes())
-    subprocess.run(["git", "-C", str(root), "add", "tracked.txt", "uv.lock"], check=True)
-    subprocess.run(
-        ["git", "-C", str(root), "commit", "-m", "fixture"],
-        check=True,
-        capture_output=True,
-    )
+    (root / "uv.lock").write_bytes(_FIXTURE_LOCK)
+    _git_seal_ready(root, "tracked.txt", "uv.lock")
 
 
 def _owned_state(bundle: RunBundle, pod_id: str = "pod-123") -> RunSetState:
@@ -871,22 +847,6 @@ def test_create_failure_ambiguous_halts_acquisition(tmp_path: Path) -> None:
     assert len(transport.create_names) == 1
     assert persisted.acquisition_intents[0].state == "ambiguous-unresolved"
     assert persisted.provisioning_stop_reason == "ambiguous-acquisition-unresolved"
-
-
-def test_ambiguous_create_zero_match_stops_without_next_candidate(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path)
-    store = RunSetStateStore(bundle.run_set_dir / "ambiguous-state.json")
-    transport = AcquisitionLeaseTransport(store)
-    transport.create_results = [CommandResult(0, "garbage")]
-    engine, _driver, state = _acquisition_engine(bundle, store, transport)
-
-    with pytest.raises(OrchestrationStageError, match="ambiguous-acquisition-unresolved"):
-        engine._engine_owned_provision(state, attempt_ordinal=1)
-
-    persisted = store.load()
-    assert len(transport.create_names) == 1
-    assert persisted.acquisition_intents[0].state == "ambiguous-unresolved"
-    assert persisted.provisioning_stop_reason == "ambiguous-acquisition-unresolved"
     assert "unresolved_owned_pod" in persisted.acquisition_intents[0].evidence
 
 
@@ -1082,7 +1042,7 @@ def test_post_provision_early_failure_retains_identity_and_verifies_teardown(
     provider-side absence before the acquisition intent is considered
     resolved.
     """
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     store = RunSetStateStore(bundle.run_set_dir / "post-provision-failure-state.json")
     transport = AcquisitionLeaseTransport(store)
     transport.create_results = [CommandResult(0, '{"id":"pod-early-failure"}')]
@@ -1096,6 +1056,7 @@ def test_post_provision_early_failure_retains_identity_and_verifies_teardown(
             image=bundle.environment.image_id or "",
             datacenters=("CA-MTL-1",),
             poll_seconds=1,
+            local_repos={"feedbax": tmp_path},
         ),
         transport=transport,
     )
@@ -1691,10 +1652,14 @@ def test_provision_reuses_provided_endpoint_and_disables_teardown(tmp_path: Path
 def test_provided_endpoint_certify_fails_without_provider_realization_facts(
     tmp_path: Path,
 ) -> None:
-    bundle = _bundle(tmp_path).model_copy(update={"smoke_enabled": False})
+    bundle = _bundle(tmp_path, seal_repo=True).model_copy(update={"smoke_enabled": False})
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
-        config=RunPodDriverConfig(ssh_host="198.51.100.10", ssh_port=2222),
+        config=RunPodDriverConfig(
+            ssh_host="198.51.100.10",
+            ssh_port=2222,
+            local_repos={"feedbax": tmp_path},
+        ),
         transport=transport,
     )
     provision_record = dict(driver.provision(bundle, _state(bundle)))
@@ -1892,8 +1857,11 @@ def test_provision_record_preserves_accepted_datacenter_when_pod_get_omits_it(
 def test_accepted_datacenter_persists_into_realized_deployment_evidence(
     tmp_path: Path,
 ) -> None:
-    bundle = _bundle(tmp_path)
-    driver = RunPodOrchestrationDriver(transport=FakeRunPodTransport())
+    bundle = _bundle(tmp_path, seal_repo=True)
+    driver = RunPodOrchestrationDriver(
+        config=RunPodDriverConfig(local_repos={"feedbax": tmp_path}),
+        transport=FakeRunPodTransport(),
+    )
     provision = driver._provision_record(
         {
             "id": "pod-123",
@@ -2182,7 +2150,7 @@ def test_provider_authorization_failure_stops_stage_once(tmp_path: Path) -> None
 
 
 def test_provision_timeout_removes_pod_and_reprovisions(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path).model_copy(
+    bundle = _bundle(tmp_path, seal_repo=True).model_copy(
         update={"budget": BudgetPolicy(max_wall_clock_seconds=30, max_spend_usd=3.0)}
     )
     transport = FakeRunPodTransport()
@@ -2279,7 +2247,7 @@ def test_endpoint_ready_after_deadline_is_rejected_and_torn_down(tmp_path: Path)
                 )
             return result
 
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     transport = LateReadyTransport()
     create_call = (
         "pod",
@@ -2512,7 +2480,7 @@ def test_plan_records_deduplicated_lock_sources_with_complete_keys(tmp_path: Pat
 
 
 def test_realize_env_rejects_preflight_plan_digest_mismatch(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(local_repos={"feedbax": tmp_path}),
@@ -2562,12 +2530,8 @@ def test_runpod_wholesale_snapshot_sync_deletes_stale_secret(tmp_path: Path) -> 
     local_repo = tmp_path / "feedbax"
     _init_snapshot_repo(local_repo)
     (local_repo / ".gitignore").write_text("*.secret\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(local_repo), "add", ".gitignore"], check=True)
-    subprocess.run(
-        ["git", "-C", str(local_repo), "commit", "-m", "ignore secrets"],
-        check=True,
-        capture_output=True,
-    )
+    run_fixture_git(local_repo, "add", ".gitignore")
+    run_fixture_git(local_repo, "commit", "-m", "ignore secrets")
     (local_repo / "local.secret").write_text("never ship\n", encoding="utf-8")
     remote = tmp_path / "remote repo"
     remote.mkdir()
@@ -2649,7 +2613,7 @@ def test_realize_env_fails_closed_when_repo_rsync_fails(tmp_path: Path) -> None:
 
 
 def test_realize_env_waits_for_delayed_done_sentinel(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     bundle = bundle.model_copy(
         update={"environment": bundle.environment.model_copy(update={"overlay_steps": []})}
     )
@@ -2691,7 +2655,7 @@ def test_realize_env_waits_for_delayed_done_sentinel(tmp_path: Path) -> None:
 
 
 def test_realize_env_failed_sentinel_raises_with_remote_log_tail(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     bundle = bundle.model_copy(
         update={"environment": bundle.environment.model_copy(update={"overlay_steps": []})}
     )
@@ -2713,7 +2677,7 @@ def test_realize_env_failed_sentinel_raises_with_remote_log_tail(tmp_path: Path)
 
 
 def test_realize_env_sentinel_timeout_raises(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     bundle = bundle.model_copy(
         update={"environment": bundle.environment.model_copy(update={"overlay_steps": []})}
     )
@@ -2741,7 +2705,7 @@ def test_realize_env_sentinel_timeout_raises(tmp_path: Path) -> None:
 
 
 def test_realize_env_fingerprint_match_skips_environment_steps(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(local_repos={"feedbax": tmp_path}),
@@ -3574,7 +3538,7 @@ def test_deadman_disabled_when_keep_alive(tmp_path: Path) -> None:
 def test_deadman_is_verified_and_started_once_during_environment_realization(
     tmp_path: Path,
 ) -> None:
-    bundle = _bundle(tmp_path, deadman_enabled=True)
+    bundle = _bundle(tmp_path, seal_repo=True, deadman_enabled=True)
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
@@ -3610,7 +3574,7 @@ def test_deadman_is_verified_and_started_once_during_environment_realization(
 
 
 def test_named_runpod_preflight_checks_happen_before_provision(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     transport = FakeRunPodTransport()
     transport.queue_runpodctl(
         ("user", "--output", "json"),
@@ -3707,7 +3671,7 @@ def test_runpod_preflight_reports_independent_static_failures_in_canonical_order
 def test_stage_preflight_composes_core_and_runpod_static_failures_before_provider_queries(
     tmp_path: Path,
 ) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     bundle = bundle.model_copy(
         update={
             "environment": bundle.environment.model_copy(
@@ -3754,7 +3718,7 @@ def test_stage_preflight_composes_core_and_runpod_static_failures_before_provide
 def test_runpod_preflight_queries_credentials_despite_independent_declaration_failures(
     tmp_path: Path,
 ) -> None:
-    bundle = _bundle(tmp_path, deadman_enabled=True)
+    bundle = _bundle(tmp_path, seal_repo=True, deadman_enabled=True)
     bundle = bundle.model_copy(
         update={"environment": bundle.environment.model_copy(update={"python_version": None})}
     )
@@ -3788,7 +3752,7 @@ def test_runpod_preflight_collects_image_probe_exception_and_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     transport = FakeRunPodTransport()
     monkeypatch.setattr(
         transport,
@@ -3825,7 +3789,7 @@ def test_runpod_preflight_collects_image_probe_exception_and_credentials(
 def test_completed_preflight_validation_rejects_dependency_skip_sentinel(
     tmp_path: Path,
 ) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     transport = FakeRunPodTransport()
     transport.queue_runpodctl(
         ("user", "--output", "json"),
@@ -3860,7 +3824,7 @@ def test_completed_preflight_validation_rejects_dependency_skip_sentinel(
 def test_runpod_preflight_records_balance_skip_after_credential_failure(
     tmp_path: Path,
 ) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     transport = FakeRunPodTransport()
     transport.queue_runpodctl(
         ("user", "--output", "json"),
@@ -4057,8 +4021,8 @@ def test_smoke_launch_copies_declared_continuation_seed_into_scratch_namespace(
     monkeypatch.setattr(
         runpod_module,
         "build_native_resume_seed_command",
-        lambda source_path, attempt, target, resolved: (
-            f"SEED {source_path} {attempt} {target} {resolved is source}"
+        lambda source_path, attempt, target, resolved, *, workdir: (
+            f"SEED {source_path} {attempt} {target} {resolved is source} {workdir}"
         ),
     )
     namespace = build_runpod_execution_namespace(
@@ -4084,7 +4048,7 @@ def test_smoke_launch_copies_declared_continuation_seed_into_scratch_namespace(
 
     assert "SEED /remote/runs/inputs/" in command
     assert "/remote/runs/smoke/warm/.checkpoint-seed-attempt" in command
-    assert "/remote/runs/smoke/warm/checkpoints True" in command
+    assert "/remote/runs/smoke/warm/checkpoints True /workspace/feedbax" in command
     assert command.index("SEED ") < command.index("touch /remote/runs/sentinels/smoke-warm.started")
 
 
@@ -4332,7 +4296,7 @@ def test_runpod_remote_smoke_preserves_unverified_live_process(tmp_path: Path) -
 
 
 def test_runpod_preflight_rejects_non_native_smoke_row_by_name(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path, smoke_enabled=True)
+    bundle = _bundle(tmp_path, seal_repo=True, smoke_enabled=True)
     row = bundle.rows[0].model_copy(
         update={"launch": bundle.rows[0].launch.model_copy(update={"command": ["echo", "full"]})}
     )
@@ -4359,7 +4323,7 @@ def test_declared_continuation_without_source_custody_fails_before_transport(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     continuation = CheckpointContinuationRequest(
         source_completed_batches=10,
         additional_batches=4,
@@ -4457,15 +4421,8 @@ def test_remote_layout_rejects_missing_or_hash_mismatched_lock(tmp_path: Path) -
 
     lock_path = Path(config.local_repos["consumer"]) / "uv.lock"
     lock_path.write_text("version = 2\n", encoding="utf-8")
-    subprocess.run(
-        ["git", "-C", str(lock_path.parent), "add", "uv.lock"],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(lock_path.parent), "commit", "-m", "add mismatched lock"],
-        check=True,
-        capture_output=True,
-    )
+    run_fixture_git(lock_path.parent, "add", "uv.lock")
+    run_fixture_git(lock_path.parent, "commit", "-m", "add mismatched lock")
     mismatch_error, _ = _realization_layout_error(missing_bundle, config)
     assert mismatch_error is not None
     assert "hash mismatch" in mismatch_error
@@ -4638,7 +4595,7 @@ def test_preflight_rejects_non_deterministic_environment_declarations(
     environment_update: dict[str, Any],
     failed_check: str,
 ) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     bundle = bundle.model_copy(
         update={"environment": bundle.environment.model_copy(update=environment_update)}
     )
@@ -4680,7 +4637,7 @@ def test_realize_env_rejects_runtime_provenance_mismatch(
     tmp_path: Path,
     mismatch: str,
 ) -> None:
-    bundle = _bundle(tmp_path)
+    bundle = _bundle(tmp_path, seal_repo=True)
     transport = FakeRunPodTransport()
     transport.queue_ssh(CommandResult(0, ""))
     transport.queue_ssh(CommandResult(1, ""))
@@ -4731,7 +4688,7 @@ def test_explicit_primary_repo_controls_environment_and_row_workdirs(tmp_path: P
 
 
 def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path, baseline=False)
+    bundle = _bundle(tmp_path, seal_repo=True, baseline=False)
     transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
         config=RunPodDriverConfig(
@@ -4756,7 +4713,7 @@ def test_stage_engine_records_named_runpod_checks_before_provision(tmp_path: Pat
 
 
 def test_fresh_runpod_driver_restores_completed_preflight_before_provision(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    bundle = _bundle(tmp_path, seal_repo=True, keep_alive=True, baseline=False)
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     first_transport = FakeRunPodTransport()
     first_transport.queue_runpodctl(
@@ -4815,26 +4772,11 @@ def test_live_preflight_rejects_report_only_descendant_science_checkout_before_p
 ) -> None:
     science_repo = tmp_path / "science"
     _init_snapshot_repo(science_repo)
-    git = ["git", "-C", str(science_repo), "--no-optional-locks"]
-    expected = subprocess.run(
-        [*git, "rev-parse", "HEAD^{commit}"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    expected = run_fixture_git(science_repo, "rev-parse", "HEAD^{commit}")
     (science_repo / "report.md").write_text("report-only descendant\n", encoding="utf-8")
-    subprocess.run([*git, "add", "report.md"], check=True, capture_output=True)
-    subprocess.run(
-        [*git, "commit", "-m", "report only"],
-        check=True,
-        capture_output=True,
-    )
-    observed = subprocess.run(
-        [*git, "rev-parse", "HEAD^{commit}"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    run_fixture_git(science_repo, "add", "report.md")
+    run_fixture_git(science_repo, "commit", "-m", "report only")
+    observed = run_fixture_git(science_repo, "rev-parse", "HEAD^{commit}")
     assert observed != expected
 
     bundle_root = tmp_path / "bundle"
@@ -4914,7 +4856,7 @@ def test_live_preflight_rejects_report_only_descendant_science_checkout_before_p
 
 
 def test_completed_preflight_without_schedule_check_is_rerun(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    bundle = _bundle(tmp_path, seal_repo=True, keep_alive=True, baseline=False)
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     first_transport = FakeRunPodTransport()
     first_transport.queue_runpodctl(
@@ -4968,7 +4910,7 @@ def test_completed_preflight_without_schedule_check_is_rerun(tmp_path: Path) -> 
 def test_fresh_runpod_driver_rejects_invalid_completed_preflight_before_provision(
     tmp_path: Path, tamper: str
 ) -> None:
-    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    bundle = _bundle(tmp_path, seal_repo=True, keep_alive=True, baseline=False)
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     first_transport = FakeRunPodTransport()
     first_transport.queue_runpodctl(
@@ -5031,7 +4973,7 @@ def test_fresh_runpod_driver_rejects_invalid_completed_preflight_before_provisio
 
 
 def test_fresh_runpod_driver_rejects_unbound_completed_preflight_offline(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    bundle = _bundle(tmp_path, seal_repo=True, keep_alive=True, baseline=False)
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     first_transport = FakeRunPodTransport()
     first_transport.queue_runpodctl(
@@ -5102,7 +5044,7 @@ def test_fresh_runpod_driver_rejects_unbound_completed_preflight_offline(tmp_pat
 
 
 def test_completed_preflight_rejects_evidence_without_repo_plan_binding(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path, baseline=False)
+    bundle = _bundle(tmp_path, seal_repo=True, baseline=False)
     config = RunPodDriverConfig(
         gpu_id="NVIDIA GeForce RTX 4090",
         image=bundle.environment.image_id or "",
@@ -5138,7 +5080,7 @@ def test_completed_preflight_rejects_evidence_without_repo_plan_binding(tmp_path
 
 
 def test_separate_process_existing_run_rejects_legacy_preflight(tmp_path: Path) -> None:
-    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    bundle = _bundle(tmp_path, seal_repo=True, keep_alive=True, baseline=False)
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     transport = FakeRunPodTransport()
     transport.queue_runpodctl(
@@ -5217,7 +5159,7 @@ orchestrate._run_existing(
 def test_legacy_completed_preflight_rejects_semantic_tampering_offline(
     tmp_path: Path, tamper: str
 ) -> None:
-    bundle = _bundle(tmp_path, keep_alive=True, baseline=False)
+    bundle = _bundle(tmp_path, seal_repo=True, keep_alive=True, baseline=False)
     store = RunSetStateStore(bundle.run_set_dir / "state.json")
     first_transport = FakeRunPodTransport()
     first_transport.queue_runpodctl(

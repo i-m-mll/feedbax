@@ -11,12 +11,12 @@ from feedbax.compiler.templates import (
     recurrent_node_output_initializer,
 )
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.intervene import (
+from feedbax.mechanics.force_fields import (
     PlanarTargetRelativeSelector,
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,
 )
-from feedbax.models.cde import CDENetwork
+from feedbax.models.cde import cde_controller
 from feedbax.runtime.components import Noise, Sum
 from feedbax.runtime.graph import Component, Graph, GraphTraceRequest, Wire
 from feedbax.runtime.state import CartesianState
@@ -144,22 +144,16 @@ def test_graph_controller_rejects_native_boolean_latch_state():
 
 def test_graph_controller_analyzes_cde_from_live_initial_hidden_through_continuation():
     key = jax.random.key(0)
-    net = CDENetwork(obs_dim=1, hidden_dim=2, out_size=1, use_anti_nf=False, decay=0.25, key=key)
+    graph = cde_controller(1, 2, 1, use_anti_nf=False, decay=0.25, key=key)
     learned_hidden = jnp.array([2.0, -4.0], dtype=jnp.float32)
-    net = eqx.tree_at(lambda node: node.h0, net, learned_hidden)
-    graph = Graph(
-        nodes={"net": net},
-        input_ports=("input",),
-        output_ports=("output",),
-        input_bindings={"input": ("net", "input")},
-        output_bindings={"output": ("net", "output")},
-    )
+    graph = eqx.tree_at(lambda g: g.nodes["h0"].value, graph, learned_hidden)
     native_state = graph.init_state(key=key)
     controller = graph_controller(graph, key=key, dtype=jnp.float32)
     initial = controller.initial_state()
-    unpacked, _ = controller.unpack_state(initial)
-    assert jnp.array_equal(unpacked.get(net.state_index).hidden, learned_hidden)
-    assert jnp.array_equal(controller.pack_state(native_state, {}), initial)
+    hidden_carry_key = ("h_prev_in", "input")
+    unpacked_state, unpacked_carry = controller.unpack_state(initial)
+    assert jnp.array_equal(unpacked_carry[hidden_carry_key], learned_hidden)
+    assert jnp.array_equal(controller.pack_state(unpacked_state, unpacked_carry), initial)
 
     obs = jnp.array([0.5], dtype=jnp.float32)
     native_carry = None
@@ -176,36 +170,15 @@ def test_graph_controller_analyzes_cde_from_live_initial_hidden_through_continua
     def step(h):
         return controller.step(h, obs, 2)[0]
 
-    continuation = flat_state
-    jacobian = jax.jit(jax.jacfwd(step))(continuation)
-    assert jacobian.shape == (5, 5)
+    jacobian = jax.jit(jax.jacfwd(step))(flat_state)
+    assert jacobian.shape == (3, 3)
     assert jnp.all(jnp.isfinite(jacobian))
-    # At constant observation, a hidden-state perturbation decays by 25%.
-    hidden_direction = jnp.array([1.0, 1.0], dtype=jnp.float32)
-    base_state, carry = controller.unpack_state(continuation)
-    perturbed = net.replace_state_value(
-        base_state, ("hidden",), base_state.get(net.state_index).hidden + hidden_direction
-    )
-    direction = controller.pack_state(perturbed, carry) - continuation
-    tangent, _ = controller.unpack_state(jacobian @ direction)
-    assert jnp.allclose(tangent.get(net.state_index).hidden, 0.75 * hidden_direction)
-
-
-def test_graph_controller_refuses_cde_initialization_with_ambiguous_slot_ownership():
-    key = jax.random.key(0)
-    first = CDENetwork(obs_dim=1, hidden_dim=2, out_size=1, use_anti_nf=False, key=key)
-    second = eqx.tree_at(lambda node: node.h0, first, jnp.ones_like(first.h0))
-    graph = Graph(
-        nodes={"first": first, "second": second},
-        wires=(Wire("first", "output", "second", "input"),),
-        input_ports=("input",),
-        output_ports=("output",),
-        input_bindings={"input": ("first", "input")},
-        output_bindings={"output": ("second", "output")},
-    )
-
-    with pytest.raises(ValueError, match="CDENetwork nodes sharing one state slot"):
-        graph_controller(graph, key=key, dtype=jnp.float32)
+    hidden_direction = jnp.ones(2, dtype=jnp.float32)
+    base_state, carry = controller.unpack_state(flat_state)
+    perturbed = {**carry, hidden_carry_key: carry[hidden_carry_key] + hidden_direction}
+    direction = controller.pack_state(base_state, perturbed) - flat_state
+    _, tangent = controller.unpack_state(jacobian @ direction)
+    assert jnp.allclose(tangent[hidden_carry_key], 0.75 * hidden_direction)
 
 
 def test_graph_controller_threads_recurrent_feedback_cycle_and_trace():
@@ -513,7 +486,7 @@ def test_graph_controller_seeds_noise_reset_from_first_transition_key():
         )
         h0 = controller.initial_state()
         _, carry = controller.unpack_state(h0)
-        key_t = custom_policy(key, 0) if custom else jax.random.fold_in(key, 0)
+        key_t = custom_policy(key, 0) if custom else key
         native_outputs, _, _ = graph.step({"input": value}, graph.init_state(key=key), key=key_t)
         result = controller.step_with_trace(h0, value, 0)
         assert jnp.array_equal(carry["sum", "b"], native_outputs["output"])

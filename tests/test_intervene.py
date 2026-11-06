@@ -7,15 +7,14 @@ import jax.random as jr
 import numpy as np
 import pytest
 
-from feedbax.intervene import (
+from feedbax.runtime.signal_transforms import (
     AddNoise,
     AddNoiseParams,
     ConstantInput,
     ConstantInputParams,
-    DynamicsMatrixPerturb,
-    DynamicsMatrixPerturbParams,
 )
-from feedbax.intervene.perturbations import feedback_impulse
+from feedbax.models.feedback_impulse import feedback_impulse
+from feedbax.mechanics.force_fields import DynamicsMatrixPerturb, DynamicsMatrixPerturbParams
 from feedbax.runtime.graph import Graph, Wire, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.runtime.state import CartesianState
@@ -197,10 +196,9 @@ def test_nested_feedback_impulse_and_task_constant_input(feedback):
     trial = prepare_trial(
         graph,
         TaskTrialSpec(
-            inits={},
+            inits={"constant.params_index.scale": jnp.asarray(2.0)},
             targets={},
             inputs={"input": feedback},
-            intervene={"constant_input": ConstantInputParams(scale=2.0, arrays=offsets)},
         ),
     )
     outputs, _, _ = run_component(

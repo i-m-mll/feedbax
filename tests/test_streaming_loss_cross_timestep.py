@@ -176,7 +176,7 @@ def test_scan_streaming_loss_dtype_and_gradient_parity(
                 inputs,
                 keys,
                 n_steps,
-                state_view_fn=lambda s: _FakeState(s.get(index), s.get(index)),
+                state_view_fn=lambda s, _: _FakeState(s.get(index), s.get(index)),
                 init_step_carry=state_dtype(0),
                 checkpoint=checkpoint,
                 streaming_loss_fn=streaming_fn,
@@ -270,7 +270,7 @@ def test_mixed_streaming_objective_matches_retained_rollout():
             inputs,
             keys,
             n_steps,
-            state_view_fn=lambda s: _FakeState(s.get(index), s.get(index)),
+            state_view_fn=lambda s, _: _FakeState(s.get(index), s.get(index)),
             streaming_loss_fn=step_loss,
         )
         value = aux if streaming else loss(jt.map(lambda x: x[None, 1:], aux), batch, scale).total

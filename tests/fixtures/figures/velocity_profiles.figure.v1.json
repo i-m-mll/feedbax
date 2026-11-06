@@ -1,7 +1,7 @@
 {
   "schema_id": "feedbax.spec.figure",
   "schema_version": "feedbax.spec.figure.v2",
-  "name": "sisu-m2-terminal-velocity-profiles",
+  "name": "terminal-velocity-profiles",
   "assembler": "feedbax.grid_figure",
   "assembler_params": {
     "width": 1180,
@@ -431,7 +431,7 @@
         "artifact_role": "velocity_profile_result",
         "artifact_provider": "results",
         "manifest_status": "completed",
-        "analysis_type": "rlrmp2.trained_velocity_profiles"
+        "analysis_type": "example.trained_velocity_profiles"
       },
       {
         "input_role": "comparators",
@@ -439,7 +439,7 @@
         "artifact_role": "velocity_profile_result",
         "artifact_provider": "results",
         "manifest_status": "completed",
-        "analysis_type": "rlrmp2.trained_velocity_profiles"
+        "analysis_type": "example.trained_velocity_profiles"
       },
       {
         "input_role": "hinf_1p05_reference",
@@ -447,7 +447,7 @@
         "artifact_role": "velocity_profile_result",
         "artifact_provider": "results",
         "manifest_status": "completed",
-        "analysis_type": "rlrmp2.trained_velocity_profiles"
+        "analysis_type": "example.trained_velocity_profiles"
       }
     ]
   }

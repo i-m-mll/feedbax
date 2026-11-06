@@ -10,5 +10,5 @@ def get_readout_norm_loss(value: float) -> ModelLoss:
     """Returns a loss term that penalizes deviation of the readout norm from `value`."""
     return ModelLoss(
         "fix_readout_norm",
-        lambda model: (readout_norm_func(model.step.net.readout.weight) - value) ** 2,
+        lambda model: (readout_norm_func(model.get_node("net.readout").layer.weight) - value) ** 2,
     )

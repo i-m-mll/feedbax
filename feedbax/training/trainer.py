@@ -4,7 +4,7 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from contextlib import nullcontext
 from functools import wraps
 from typing import Optional, Tuple
@@ -16,7 +16,7 @@ import optax  # type: ignore
 from equinox import field
 from feedbax._vendor.jax_cookbook.misc import mse
 from feedbax._vendor.jax_cookbook.progress import progress_piter
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from jaxtyping import Array, Float, PRNGKeyArray
 
 from feedbax.objectives.loss import AbstractLoss, TermTree
 from feedbax.runtime.graph import Component, RolloutStepHook
@@ -25,34 +25,9 @@ from feedbax.runtime.parameter_constraints import project_component_parameters
 from feedbax.runtime.state import StateT
 from feedbax.tasks import (
     TaskTrialSpec,
-    extract_timeseries_params,
     infer_n_steps,
     prepare_inputs,
 )
-
-
-def _cast_to_state_dtypes(new_value, current_value):
-    """Cast a replacement StateIndex value to the stored State leaf dtypes."""
-
-    def _cast_leaf(new_leaf, current_leaf):
-        if hasattr(current_leaf, "dtype"):
-            if getattr(current_leaf, "weak_type", False):
-                raise ValueError(
-                    "Cannot update a weakly typed StateIndex leaf with public "
-                    "Equinox State.set(); initialize the component StateIndex "
-                    "with an explicitly typed JAX array."
-                )
-            return jnp.asarray(new_leaf, dtype=current_leaf.dtype)
-        return new_leaf
-
-    return jt.map(_cast_leaf, new_value, current_value)
-
-
-def _state_set_matching_dtypes(state, idx, new_value):
-    """Set a StateIndex value via public Equinox API after dtype normalization."""
-
-    current_value = state.get(idx)
-    return state.set(idx, _cast_to_state_dtypes(new_value, current_value))
 
 
 def grad_wrap_simple_loss_func(
@@ -122,25 +97,6 @@ class SimpleTrainer(eqx.Module):
         return eqx.combine(trainable, frozen)
 
 
-def _extract_intervene_inputs(
-    intervene: Mapping,
-    model: Component,
-) -> dict[str, PyTree]:
-    """Extract time-varying intervention params from a trial spec."""
-
-    indices = model.intervention_state_indices()
-    result = {}
-    for label, params in intervene.items():
-        if label not in indices:
-            continue
-        idx = indices[label]
-        default_params = idx.init
-        tv_params = extract_timeseries_params(params, default_params)
-        if tv_params is not None:
-            result[f"intervene:{label}"] = tv_params
-    return result
-
-
 def grad_wrap_abstract_loss(
     loss_func: AbstractLoss,
     loss_reduction_fn: Optional[Callable] = None,
@@ -161,13 +117,6 @@ def grad_wrap_abstract_loss(
         def _run_trial(trial_spec, init_state, key):
             inputs = prepare_inputs(model, trial_spec.inputs)
             n_steps = infer_n_steps(inputs, getattr(trial_spec, "timeline", None))
-            if trial_spec.intervene:
-                intervene_inputs = _extract_intervene_inputs(
-                    trial_spec.intervene,
-                    model,
-                )
-                if intervene_inputs:
-                    inputs = {**inputs, **intervene_inputs}
             _, _, state_history = run_component(
                 model,
                 inputs,

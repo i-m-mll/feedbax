@@ -69,6 +69,15 @@ def _where_force(states, *_):
     return states.efferent.output
 
 
+def _where_command(states, *_):
+    channel = states.efferent
+    if channel.queue:
+        return channel.queue[-1]
+    if channel.noise is None:
+        return channel.output
+    return channel.output - channel.noise
+
+
 DEFAULT_VARSET: LDict[str, VarSpec] = LDict.of(VAR_LEVEL_LABEL)(
     {
         ResponseVar.POSITION: VarSpec(
@@ -81,7 +90,7 @@ DEFAULT_VARSET: LDict[str, VarSpec] = LDict.of(VAR_LEVEL_LABEL)(
             labels=Labels("Velocity", "Vel.", "v"),
         ),
         ResponseVar.COMMAND: VarSpec(
-            where=lambda states, *_: states.net.output,
+            where=_where_command,
             labels=Labels("Control command", "Command", "u"),
         ),
         ResponseVar.FORCE: VarSpec(

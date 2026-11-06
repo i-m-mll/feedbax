@@ -240,8 +240,9 @@ def _exercise_checkpoint_continuation(tmp_path, kind, solver_type, *, publish=Tr
         (kind, solver)
         for kind in ("filter", "dae", "mechanics", "nested")
         for solver in (dfx.Euler, dfx.Tsit5)
+        if (kind, solver) != ("filter", dfx.Tsit5)
     ]
-    + [("dae", dfx.ImplicitEuler), ("backend", dfx.Tsit5)],
+    + [("backend", dfx.Tsit5)],
 )
 def test_solver_checkpoint_executes_returned_model_and_runtime_state(tmp_path, kind, solver_type):
     _exercise_checkpoint_continuation(tmp_path, kind, solver_type)

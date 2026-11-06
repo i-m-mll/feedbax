@@ -4,6 +4,7 @@ from feedbax.component_registry import ComponentRegistry
 
 import jax
 import jax.numpy as jnp
+import pytest
 
 from feedbax.contracts.graph import (
     AdditiveGraphChannelAdapterSpec,
@@ -95,11 +96,37 @@ def test_edge_additive_channel_adapter_materializes_sum_and_runs() -> None:
     )
 
     materialized = materialize_additive_channel_adapters(spec)
-    adapter_node = materialized.nodes["sensory_feedback_additive"]
+    adapter_id, _ = materialized.input_bindings["perturbation.feedback"]
+    adapter_node = materialized.nodes[adapter_id]
+    original_adapter = spec.additive_channel_adapters[0]
+    relabeled = spec.model_copy(
+        update={
+            "additive_channel_adapters": [
+                original_adapter.model_copy(update={"label": "display only"})
+            ]
+        }
+    )
+    assert materialize_additive_channel_adapters(relabeled).input_bindings == (
+        materialized.input_bindings
+    )
+
+    explicit = spec.model_copy(
+        update={
+            "additive_channel_adapters": [
+                original_adapter.model_copy(update={"adapter_node": "stable_adapter_id"})
+            ]
+        }
+    )
+    assert materialize_additive_channel_adapters(explicit).input_bindings[
+        "perturbation.feedback"
+    ] == ("stable_adapter_id", "b")
+    collision = spec.model_copy(update={"nodes": {**spec.nodes, adapter_id: adapter_node}})
+    with pytest.raises(ValueError, match="would reuse node ID"):
+        materialize_additive_channel_adapters(collision)
 
     assert materialized.additive_channel_adapters == []
     assert materialized.input_bindings["perturbation.feedback"] == (
-        "sensory_feedback_additive",
+        adapter_id,
         "b",
     )
     assert adapter_node.type == "Sum"
@@ -108,8 +135,8 @@ def test_edge_additive_channel_adapter_materializes_sum_and_runs() -> None:
         (wire.source_node, wire.source_port, wire.target_node, wire.target_port)
         for wire in materialized.wires
     } == {
-        ("source", "output", "sensory_feedback_additive", "a"),
-        ("sensory_feedback_additive", "output", "readout", "input"),
+        ("source", "output", adapter_id, "a"),
+        (adapter_id, "output", "readout", "input"),
     }
 
     graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
@@ -166,8 +193,9 @@ def test_input_additive_channel_adapter_wraps_existing_input_binding() -> None:
         key=jax.random.PRNGKey(0),
     )
 
-    assert graph.input_bindings["command"] == ("command_input_additive", "a")
-    assert graph.input_bindings["perturbation.command"] == ("command_input_additive", "b")
+    adapter_id, port = graph.input_bindings["perturbation.command"]
+    assert port == "b"
+    assert graph.input_bindings["command"] == (adapter_id, "a")
     assert jnp.array_equal(outputs["output"], jnp.asarray([4.0, 7.0]))
     assert validate_graph_spec(
         spec,

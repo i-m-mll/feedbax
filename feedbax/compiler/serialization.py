@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence, cast
 
-from equinox.nn import State
+from jaxtyping import PRNGKeyArray
 
-from feedbax.runtime.channel import Channel
-from feedbax.runtime.components import Ravel
+from feedbax.models.feedback import feedback_state_view
+from feedbax.runtime._graph_key_schedule import derive_key
+from feedbax.runtime.trial_history import trial_history_plan
 from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
@@ -201,12 +201,26 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
     )
 
 
+def _subgraph_leaf_keys(
+    node_name: str, keys: dict[tuple[str, ...], PRNGKeyArray]
+) -> dict[tuple[str, ...], PRNGKeyArray]:
+    if () in keys:
+        raise ValueError(f"Initialization key for composite node {node_name!r} must name a leaf")
+    return keys
+
+
 def _instantiate_graph(
     spec: GraphSpec,
     component_registry: Any,
     resolution: GraphParameterResolution,
+    *,
+    construction_key: PRNGKeyArray,
+    initialization_keys: Mapping[tuple[str, ...], PRNGKeyArray] | None = None,
 ) -> Graph:
     """Instantiate a resolved graph for the graph compiler."""
+    keys_by_node: dict[str, dict[tuple[str, ...], PRNGKeyArray]] = {}
+    for (node_name, *path), key in (initialization_keys or {}).items():
+        keys_by_node.setdefault(node_name, {})[tuple(path)] = key
     execution_registry = component_registry
     metadata_registry = component_registry
     spec, authored_array_values = _materialize_graph_component_params(spec)
@@ -214,6 +228,7 @@ def _instantiate_graph(
     nodes: dict[str, Component] = {}
     component_bindings: dict[str, ComponentBinding] = {}
     for node_name, node_spec in spec.nodes.items():
+        node_keys = keys_by_node.pop(node_name, {})
         node_type = node_spec.type
         node_params, lowering_metadata = _split_lowering_metadata(node_spec, metadata_registry)
         if node_spec.param_schema_version is not None:
@@ -268,6 +283,8 @@ def _instantiate_graph(
                 consumer="compile_graph",
             )
             if required_domain != CAUSAL_DOMAIN_ID:
+                if node_keys:
+                    raise ValueError(f"Cannot supply initialization keys to acausal node {node_name!r}")
                 domain = builtin_domain_registry().get(required_domain)
                 if domain is None:
                     raise ValueError(
@@ -298,7 +315,11 @@ def _instantiate_graph(
                 consumer="compile_graph",
             )
             nodes[node_name] = _instantiate_graph(
-                causal_subgraph, metadata_registry, resolution.subgraphs[node_name]
+                causal_subgraph,
+                metadata_registry,
+                resolution.subgraphs[node_name],
+                construction_key=derive_key(construction_key, "construction", node_name),
+                initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
             )
             continue
         if spec.subgraphs and node_name in spec.subgraphs:
@@ -309,7 +330,11 @@ def _instantiate_graph(
                 consumer="compile_graph",
             )
             nodes[node_name] = _instantiate_graph(
-                causal_subgraph, metadata_registry, resolution.subgraphs[node_name]
+                causal_subgraph,
+                metadata_registry,
+                resolution.subgraphs[node_name],
+                construction_key=derive_key(construction_key, "construction", node_name),
+                initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
             )
             continue
         meta = metadata_registry.get(node_type)
@@ -324,6 +349,18 @@ def _instantiate_graph(
         delta_A_declaration = authored_array_values.get(node_name, {}).get(("delta_A",))
         if node_type == "StructuralLinearStateSpace" and delta_A_declaration is not None:
             params = {**params, "_authored_delta_A_value_spec": delta_A_declaration}
+        if node_keys:
+            if (
+                node_keys.keys() != {()}
+                or meta is None
+                or "key" not in meta.params.build_context_fields
+            ):
+                raise ValueError(
+                    f"Initialization keys at {node_name!r} must address a leaf accepting a key"
+                )
+            params = {**params, "key": node_keys[()]}
+        elif meta is not None and "key" in meta.params.build_context_fields:
+            params = {**params, "key": derive_key(construction_key, "construction", node_name)}
         component = build_component(
             node_name,
             node_type,
@@ -345,6 +382,9 @@ def _instantiate_graph(
                 )
         nodes[node_name] = component
 
+    if keys_by_node:
+        raise ValueError(f"Initialization keys name unknown nodes: {sorted(keys_by_node)}")
+
     wires = tuple(
         Wire(
             wire.source_node,
@@ -364,7 +404,7 @@ def _instantiate_graph(
         name: (binding[0], binding[1]) for name, binding in spec.output_bindings.items()
     }
 
-    graph = Graph(
+    return Graph(
         nodes=nodes,
         wires=wires,
         input_ports=tuple(spec.input_ports),
@@ -373,76 +413,11 @@ def _instantiate_graph(
         output_bindings=output_bindings,
         parameter_constraints=normalize_parameter_constraints(spec.parameter_constraints),
         component_bindings=component_bindings,
+        state_consistency_fn=trial_history_plan(nodes, wires),
+        state_view_fn=feedback_state_view(
+            nodes, wires, input_bindings=input_bindings, output_bindings=output_bindings
+        ),
     )
-    return _bind_trial_history_initializers(graph)
-
-
-def _bind_trial_history_initializers(graph: Graph) -> Graph:
-    children = tuple(
-        name
-        for name, node in graph.nodes.items()
-        if isinstance(node, Graph) and node.state_consistency_fn is not None
-    )
-    routes = []
-    for wire in graph.wires:
-        initializer = wire.recurrent_initializer or {}
-        if "seed_channel_history" not in initializer:
-            continue
-        seed_history = initializer["seed_channel_history"]
-        if not isinstance(seed_history, bool):
-            raise ValueError(f"{wire} seed_channel_history must be a boolean")
-        if not seed_history:
-            continue
-        if wire.temporality != "recurrent" or initializer.get("kind") != "state_output":
-            raise ValueError(f"{wire} seed_channel_history requires a recurrent state_output")
-        channel = wire.target_node
-        flatten = isinstance(graph.nodes[channel], Ravel)
-        if flatten:
-            targets = [
-                edge.target_node
-                for edge in graph.wires
-                if edge.source_node == wire.target_node
-                and edge.temporality == "instant"
-                and isinstance(graph.nodes[edge.target_node], Channel)
-            ]
-            if len(targets) != 1:
-                raise ValueError(f"{wire} seed_channel_history requires one Channel after Ravel")
-            channel = targets[0]
-        if not isinstance(graph.nodes[channel], Channel):
-            raise ValueError(
-                f"{wire} seed_channel_history must feed a Channel, optionally through Ravel"
-            )
-        routes.append((channel, wire.source_node, wire.source_port, flatten))
-
-    if not routes and not children:
-        return graph
-    return graph.with_state_consistency(_TrialHistoryPlan(children, tuple(routes)))
-
-
-@dataclass(frozen=True)
-class _TrialHistoryPlan:
-    children: tuple[str, ...]
-    routes: tuple[tuple[str, str, str, bool], ...]
-
-    def __call__(self, graph: Graph, state: State) -> State:
-        for name in self.children:
-            state = graph.nodes[name].state_consistency_update(state)
-
-        samples = {}
-        for channel_name, source_name, source_port, flatten in self.routes:
-            source = graph.nodes[source_name]
-            outputs = source.initial_outputs(source.state_view(state))
-            if source_port not in outputs:
-                raise ValueError(
-                    f"Channel {channel_name!r} seed_channel_history requires an initial "
-                    f"output from {source_name}.{source_port}"
-                )
-            value = outputs[source_port]
-            samples[channel_name] = Ravel.flatten(value) if flatten else value
-
-        for channel_name, sample in samples.items():
-            state = cast(Channel, graph.nodes[channel_name]).fill_history(state, sample)
-        return state
 
 
 def _split_lowering_metadata(
