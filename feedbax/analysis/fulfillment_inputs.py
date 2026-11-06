@@ -7,6 +7,7 @@ import hashlib
 from pathlib import Path
 
 from feedbax._atomic import write_bytes_atomic
+from feedbax._secure_fs import canonicalize_trusted_system_aliases
 from feedbax.analysis.evaluation_inputs import resolve_evaluation_inputs
 from feedbax.analysis.execution_context import (
     EMPTY_STAGED_EXECUTION_CONTEXT,
@@ -88,8 +89,12 @@ def stage_node_inputs(
         )
         if resolved is None:
             return
-        if location is None or (location.root == root and location.artifact_provider is None):
-            relative = resolved.path.relative_to(root)
+        if location is None or (
+            location.artifact_provider is None
+            and canonicalize_trusted_system_aliases(location.root) == root
+        ):
+            source_root = location.root if location is not None else root
+            relative = resolved.path.relative_to(source_root)
             _stage_bytes(destination / relative, resolved.raw_bytes)
             if location is not None and location in context.parent_execution_locations:
                 locations[context.parent_execution_locations.index(location)] = replace(

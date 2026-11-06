@@ -354,10 +354,19 @@ def test_execute_node_for_an_analysis_never_returns_a_pre_existing_receipt(
     assert again_path == path
 
 
-@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("authority", ["local", "external", "system_alias"])
 def test_rebuild_stages_original_exact_parent_and_root_local_artifact(
-    environment, recipes: _Recipes, tmp_path: Path, external: bool
+    environment, recipes: _Recipes, tmp_path: Path, authority: str
 ) -> None:
+    import sys
+
+    external = authority == "external"
+    parent_root = tmp_path / "retained" if external else environment.root
+    if authority == "system_alias":
+        private_var = Path("/private/var")
+        if sys.platform != "darwin" or not parent_root.is_relative_to(private_var):
+            pytest.skip("this case requires a fixture under Darwin's /var system alias")
+        parent_root = Path("/var") / parent_root.relative_to(private_var)
     evaluation = _evaluation_node()
     parent = fulfill_node(evaluation, environment=environment).receipt
     local_path = parent.path
@@ -400,11 +409,7 @@ def test_rebuild_stages_original_exact_parent_and_root_local_artifact(
     )
     context = with_staged_parent_execution_locations(
         environment.execution_context,
-        [
-            StagedParentExecutionLocation(
-                ref, tmp_path / "retained" if external else environment.root, relative.as_posix()
-            )
-        ],
+        [StagedParentExecutionLocation(ref, parent_root, relative.as_posix())],
     )
     request = replace(request, execution_context=context)
     fulfill_node(request, environment=environment)
