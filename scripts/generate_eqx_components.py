@@ -22,7 +22,7 @@ from typing import Literal, Union, get_args, get_origin
 import equinox.nn as nn
 
 TRAINABLE_DTYPE_PARAMS = {"dtype"}
-DEFAULT_TRAINABLE_DTYPE = "jnp.float32"
+DEFAULT_TRAINABLE_DTYPE = "float32"
 
 
 @dataclass
@@ -41,6 +41,8 @@ class ComponentSpec:
     docstring: str | None = None
     # Parameters to exclude from __init__ (handled specially)
     exclude_params: tuple[str, ...] = ()
+    # Feedbax-owned defaults expressed in the generated module's namespace.
+    default_expressions: dict[str, str] = field(default_factory=dict)
     # Constructor seeds exposed as live properties: public name -> (layer attribute, type).
     layer_properties: dict[str, tuple[str, str]] = field(default_factory=dict)
     # How the wrapper calls the underlying layer.
@@ -84,6 +86,7 @@ COMPONENT_SPECS: list[ComponentSpec] = [
             "activation": ("activation", "Callable"),
             "final_activation": ("final_activation", "Callable"),
         },
+        default_expressions={"activation": "relu", "final_activation": "identity_activation"},
     ),
     # === Convolutional layers ===
     ComponentSpec(
@@ -335,25 +338,7 @@ def format_default(default) -> str:
             return "()"
         return repr(default)
     if callable(default):
-        # For callable defaults like activation functions
-        if hasattr(default, "__module__") and hasattr(default, "__name__"):
-            module = default.__module__
-            name = default.__name__
-            # Handle JAX functions
-            if module.startswith("jax"):
-                if "nn" in module:
-                    return f"jax.nn.{name}"
-                return f"jax.{name}"
-            # Handle lambdas - use a sensible default
-            if name == "<lambda>":
-                return "lambda x: x"
-            return name
-        if hasattr(default, "__name__"):
-            name = default.__name__
-            if name == "<lambda>":
-                return "lambda x: x"
-            return name
-        return "None"  # Can't represent this default
+        raise ValueError("Callable defaults require an explicit default expression")
     # Handle dataclass field defaults (MISSING, factory, etc.)
     default_str = str(default)
     if "MISSING" in default_str or "factory" in default_str.lower():
@@ -361,12 +346,19 @@ def format_default(default) -> str:
     return repr(default)
 
 
-def default_for_param(name: str, default) -> str:
-    """Return generated defaults, overriding trainable dtype to float32."""
+def default_for_param(spec: ComponentSpec, name: str, default) -> str:
+    """Return the Feedbax override or render the upstream default."""
 
+    if name in spec.default_expressions:
+        return spec.default_expressions[name]
     if name in TRAINABLE_DTYPE_PARAMS and default is None:
-        return DEFAULT_TRAINABLE_DTYPE
-    return format_default(default)
+        return repr(DEFAULT_TRAINABLE_DTYPE)
+    try:
+        return format_default(default)
+    except ValueError as exc:
+        raise ValueError(
+            f"Cannot generate default for {spec.eqx_class_name}.{name}: {exc}"
+        ) from exc
 
 
 def generate_component_class(spec: ComponentSpec) -> str:
@@ -411,7 +403,7 @@ def generate_component_class(spec: ComponentSpec) -> str:
 
     for name, param in keyword_params:
         type_hint = format_type_annotation(param.annotation)
-        default = default_for_param(name, param.default)
+        default = default_for_param(spec, name, param.default)
         if type_hint and default:
             init_params.append(f"{name}: {type_hint} = {default}")
         elif type_hint:
@@ -531,12 +523,11 @@ from __future__ import annotations
 from collections.abc import Hashable
 from typing import Any, Callable, Literal, Optional, Sequence, Union
 
-import jax
-import jax.numpy as jnp
 import equinox as eqx
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
+from feedbax.runtime.components import identity_activation, relu
 from feedbax.runtime.graph import Component
 
 
@@ -685,11 +676,7 @@ def _call_multihead_attention_layer(
         category_header = f"\n# {'=' * 60}\n# {category.upper()} LAYERS\n# {'=' * 60}\n"
         body_parts.append(category_header)
         for spec in specs:
-            try:
-                class_code = generate_component_class(spec)
-                body_parts.append(class_code)
-            except Exception as e:
-                print(f"Warning: Failed to generate {spec.eqx_class_name}: {e}")
+            body_parts.append(generate_component_class(spec))
 
     return header + all_str + contracts + helpers + "".join(body_parts)
 

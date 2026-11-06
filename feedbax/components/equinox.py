@@ -12,12 +12,11 @@ from __future__ import annotations
 from collections.abc import Hashable
 from typing import Any, Callable, Literal, Optional, Sequence, Union
 
-import jax
-import jax.numpy as jnp
 import equinox as eqx
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
+from feedbax.runtime.components import identity_activation, relu
 from feedbax.runtime.graph import Component
 
 
@@ -347,7 +346,7 @@ class Linear(Component):
         in_features: Union[int, Literal["scalar"]],
         out_features: Union[int, Literal["scalar"]],
         use_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -435,11 +434,11 @@ class MLP(Component):
         out_size: Union[int, Literal["scalar"]],
         width_size: int,
         depth: int,
-        activation: Callable = jax.nn.relu,
-        final_activation: Callable = lambda x: x,
+        activation: Callable = relu,
+        final_activation: Callable = identity_activation,
         use_bias: bool = True,
         use_final_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -525,7 +524,7 @@ class Conv1d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -599,7 +598,7 @@ class Conv2d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -673,7 +672,7 @@ class Conv3d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -749,7 +748,7 @@ class ConvTranspose1d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -827,7 +826,7 @@ class ConvTranspose2d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -905,7 +904,7 @@ class ConvTranspose3d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -974,7 +973,7 @@ class GRUCell(Component):
         input_size: int,
         hidden_size: int,
         use_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -1020,7 +1019,7 @@ class LSTMCell(Component):
         input_size: int,
         hidden_size: int,
         use_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -1074,7 +1073,7 @@ class LayerNorm(Component):
         eps: float = 1e-05,
         use_weight: bool = True,
         use_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
         elementwise_affine: Optional[bool] = None,
     ):
         self.shape = shape
@@ -1128,7 +1127,7 @@ class RMSNorm(Component):
         eps: float = 1e-05,
         use_weight: bool = True,
         use_bias: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
     ):
         self.shape = shape
         self.eps = eps
@@ -1175,7 +1174,7 @@ class GroupNorm(Component):
         channels: Optional[int] = None,
         eps: float = 1e-05,
         channelwise_affine: bool = True,
-        dtype=jnp.float32,
+        dtype="float32",
     ):
         self.groups = groups
         self.channels = channels
@@ -1230,7 +1229,7 @@ class BatchNorm(Component):
         channelwise_affine: bool = True,
         momentum: float = 0.99,
         inference: bool = False,
-        dtype=jnp.float32,
+        dtype="float32",
     ):
         self.input_size = input_size
         self.axis_name = axis_name
@@ -1757,7 +1756,7 @@ class MultiheadAttention(Component):
         use_output_bias: bool = False,
         dropout_p: float = 0.0,
         inference: bool = False,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
@@ -1871,7 +1870,7 @@ class Embedding(Component):
         num_embeddings: Optional[int] = None,
         embedding_size: Optional[int] = None,
         weight: Optional[Float[Array, "num_embeddings embedding_size"]] = None,
-        dtype=jnp.float32,
+        dtype="float32",
         *,
         key: PRNGKeyArray,
     ):
