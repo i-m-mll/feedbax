@@ -5,7 +5,7 @@ from collections.abc import Callable, Hashable, Mapping, Sequence
 from functools import cached_property, partial, wraps
 from itertools import chain
 from pathlib import Path
-from types import EllipsisType, MappingProxyType
+from types import EllipsisType, FunctionType, MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -55,7 +55,6 @@ from feedbax.persistence.support import get_md5_hexdigest
 from feedbax.config.tree import (
     DoNotHashTree,
     _align_trees_to_structure,
-    _hash_pytree,
     hash_callable_leaves,
     ldict_label_only_fn,
     move_ldict_level_above,
@@ -99,8 +98,10 @@ from feedbax.analysis.result_cache import (
     ANALYSIS_RESULT_CACHE_SCHEMA_VERSION,
     RESULTS_CACHE_SUBDIR,
     AnalysisResultCacheCorruption,
+    _UnsupportedCacheInput,
     _CACHE_LOAD_ERRORS,
     _CACHE_SAVE_ERRORS,
+    _fingerprint_cache_inputs,
     _load_analysis_result_cache,
     _write_analysis_result_cache,
 )
@@ -345,6 +346,10 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     Fields:
         inputs: The port->input mapping for the analysis instance.
         variant: Label of the evaluation variant this analysis uses (primarily).
+        cache_result: Reuse raw computation results for supported prepared values. Cached
+            computations must treat their inputs as read-only values and use a stable
+            analysis implementation within the cache. Opaque inputs such as Python
+            functions run without result-cache reads or writes.
     """
 
     _exclude_fields = (
@@ -482,14 +487,10 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             def _compute_core(data_for_compute, kwargs_for_compute):
                 if self._vmap_spec is not None:
                     # Extract vmapped dependencies
-                    compute_fn = _extract_vmapped_kwargs_to_args(
-                        self.compute, self._vmap_spec.vmapped_dep_names
-                    )
+                    vmapped_names = self._vmap_spec.vmapped_dep_names
+                    compute_fn = _extract_vmapped_kwargs_to_args(self.compute, vmapped_names)
                     try:
-                        vmapped_deps = [
-                            kwargs_for_compute.pop(name)
-                            for name in self._vmap_spec.vmapped_dep_names
-                        ]
+                        vmapped_deps = [kwargs_for_compute[name] for name in vmapped_names]
                     except KeyError as e:
                         raise KeyError(
                             f"Unknown dependency '{e.args[0]}' for analysis {self.name} "
@@ -500,7 +501,10 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                             self, self._vmap_spec, data_for_compute, vmapped_deps
                         )
                     )
-                    compute_fn = partial(compute_fn, **kwargs_for_compute)
+                    compute_fn = partial(
+                        compute_fn,
+                        **{k: v for k, v in kwargs_for_compute.items() if k not in vmapped_names},
+                    )
                     return vmap_multi(
                         compute_fn, in_axes_sequence=self._vmap_spec.in_axes_sequence
                     )(
@@ -562,67 +566,65 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 result = _compute_core(prepped_data, prepped_kwargs)
                 return result
 
-        def _try_load_result_from_cache() -> tuple[Optional[Path], Optional[Any]]:
-            """Attempt to load the result from cache."""
+        def _compute_cached():
+            # Declared default functions are part of the stable analysis implementation.
+            config = {
+                name: value
+                for name, value in self._field_params.items()
+                if name != "_map_make_figs_spec"
+                and not (
+                    isinstance(value, FunctionType)
+                    and value is self.__dataclass_fields__[name].default
+                )
+            }
+            try:
+                inputs_hash = _fingerprint_cache_inputs(
+                    type(self), config, prepped_data, prepped_kwargs
+                )
+            except _UnsupportedCacheInput as exc:
+                logger.debug("Skipping result cache for %s: %s", self.name, exc)
+                return _run_compute()
+
+            analysis_id = self.md5_str
             cache_root = (
                 analysis_context.results_cache_dir
                 if analysis_context is not None
                 else PATHS.cache / RESULTS_CACHE_SUBDIR
             )
-            cache_root.mkdir(parents=True, exist_ok=True)
-
+            cache_path = cache_root / (
+                f"{ANALYSIS_RESULT_CACHE_SCHEMA_VERSION}_{analysis_id}_{inputs_hash}.pkl"
+            )
             try:
-                inputs_hash = _hash_pytree((prepped_data, prepped_kwargs))
-            except TypeError as e:
-                logger.error(
-                    f"Failed to hash inputs for caching of {self.name}: {e}", exc_info=True
+                result = _load_analysis_result_cache(
+                    cache_path, analysis_id=analysis_id, inputs_hash=inputs_hash
                 )
-                # Fallback: disable caching for this invocation
-                return None, None
+            except FileNotFoundError:
+                pass
+            except AnalysisResultCacheCorruption as exc:
+                logger.warning(
+                    "Ignoring invalid cached result for %s at %s (will recompute): %s",
+                    self.name,
+                    cache_path,
+                    exc,
+                )
+            else:
+                logger.info("Loaded cached result for %s from %s", self.name, cache_path)
+                return result
 
-            analysis_id = self.md5_str
-            cache_fname = f"{self.name}_{analysis_id}_{inputs_hash}.pkl"
-            cache_path = cache_root / cache_fname
-
-            if cache_path.exists():
-                try:
-                    logger.info(f"Loading cached result for {self.name}")
-                    return None, _load_analysis_result_cache(
-                        cache_path,
-                        analysis_id=analysis_id,
-                        inputs_hash=inputs_hash,
-                    )
-                except AnalysisResultCacheCorruption as e:
-                    logger.warning(
-                        f"Ignoring invalid cached result for {self.name} at "
-                        f"{cache_path} (will recompute): {e}"
-                    )
-
-            return cache_path, None
-
-        result = None
-        cache_path = None
+            result = _run_compute()
+            try:
+                _write_analysis_result_cache(
+                    cache_path, analysis_id=analysis_id, inputs_hash=inputs_hash, result=result
+                )
+                logger.info("Saved cache for %s to %s", self.name, cache_path)
+            except _CACHE_SAVE_ERRORS as exc:
+                logger.warning("Could not save cache for %s: %s", self.name, exc)
+            return result
 
         use_result_cache = self.cache_result and (
             analysis_context is None or analysis_context.use_result_cache
         )
-        if use_result_cache:
-            cache_path, result = _try_load_result_from_cache()
-
-        if result is None:
-            result = _run_compute()
-
-        if use_result_cache and cache_path is not None:
-            try:
-                _write_analysis_result_cache(
-                    cache_path,
-                    analysis_id=self.md5_str,
-                    inputs_hash=_hash_pytree((prepped_data, prepped_kwargs)),
-                    result=result,
-                )
-                logger.info(f"Saved cache for {self.name} to {cache_path}")
-            except _CACHE_SAVE_ERRORS as e:
-                logger.warning(f"Could not save cache for {self.name}: {e}")
+        result = _compute_cached() if use_result_cache else _run_compute()
 
         result = _apply_final_ops(self, "results", result, data=prepped_data, **prepped_kwargs)
         if analysis_context is not None:
