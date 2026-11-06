@@ -1,8 +1,4 @@
-"""Pre-built effector templates combining muscles with geometry.
-
-Each template is a feedbax Component that wraps multiple muscle models
-and a geometry object, converting excitation vectors into joint torques
-or Cartesian forces.
+"""Pre-built native effector graphs combining muscles with geometry.
 
 :copyright: Copyright 2024 by MLL <mll@mll.bio>.
 :license: Apache 2.0. See LICENSE for details.
