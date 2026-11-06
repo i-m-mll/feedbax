@@ -48,6 +48,7 @@ from equinox import AbstractVar, Module
 from feedbax._vendor.jax_cookbook.misc import softmin
 from jaxtyping import Array, ArrayLike, Float, PyTree
 
+from feedbax._numerics import sqrt_with_zero_grad
 from feedbax.runtime.graph import Component
 from feedbax.runtime.mapping import WhereDict
 from feedbax.runtime.naming import get_unique_label
@@ -1444,14 +1445,19 @@ class EffectorStraightPathLoss(AbstractLoss):
     and final position.
 
     !!! Info ""
-        Calculates the length of the paths followed, and normalizes by the
-        Euclidean (straight-line) distance between the initial and final state.
+        Divides the path length by the straight-line distance from the initial
+        position to the selected endpoint. Differentiation uses a zero gradient
+        for zero-length segments. With a zero reference distance, a stationary
+        path scores zero and a moving path scores positive infinity, which can
+        make the batch mean infinite. Both zero-reference cases use a zero
+        gradient by convention.
 
     Attributes:
         label: The label for the loss term.
         normalize_by: Controls whether to normalize by the distance between the
             initial position & actual final position, or the initial position
-            & task-specified goal position.
+            & task-specified goal position. For position target trajectories,
+            the goal is the last target position.
     """
 
     label: str = "effector_path_straightness"
@@ -1467,21 +1473,28 @@ class EffectorStraightPathLoss(AbstractLoss):
         assert trial_specs is not None, "EffectorStraightPathLoss requires trial_specs"
 
         effector_pos = states.mechanics.effector.pos
+        initial_pos = effector_pos[:, 0]
         pos_diff = jnp.diff(effector_pos, axis=1)
-        piecewise_lengths = jnp.linalg.norm(pos_diff, axis=-1)
+        piecewise_lengths = sqrt_with_zero_grad(jnp.sum(jnp.square(pos_diff), axis=-1))
         path_length = jnp.sum(piecewise_lengths, axis=1)
         if self.normalize_by == "actual":
             final_pos = effector_pos[:, -1]
         elif self.normalize_by == "goal":
-            final_pos = trial_specs.targets["mechanics.effector"].value.pos
+            final_pos = jnp.asarray(trial_specs.targets["mechanics.effector.pos"].value)
+            if final_pos.ndim == effector_pos.ndim:
+                if final_pos.shape[1] == 0:
+                    raise ValueError("EffectorStraightPathLoss requires a nonempty goal trajectory")
+                final_pos = final_pos[:, -1]
+            final_pos = jnp.broadcast_to(final_pos, initial_pos.shape)
         else:
             raise ValueError("normalize_by must be 'actual' or 'goal'")
-        init_final_diff = final_pos - effector_pos[:, 0]
-        straight_length = jnp.linalg.norm(init_final_diff, axis=-1)
+        init_final_diff = final_pos - initial_pos
+        straight_length = sqrt_with_zero_grad(jnp.sum(jnp.square(init_final_diff), axis=-1))
 
-        loss = path_length / straight_length
-
-        return loss
+        zero_reference = straight_length == 0
+        # Keep the division's derivative finite at a zero reference distance.
+        ratio = path_length / jnp.where(zero_reference, 1, straight_length)
+        return jnp.where(zero_reference & (path_length > 0), jnp.inf, ratio)
 
 
 def power_discount(n_steps: int, discount_exp: int = 6) -> Array:
