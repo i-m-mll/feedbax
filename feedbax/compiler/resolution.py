@@ -13,7 +13,11 @@ from feedbax.component_registry import (
     format_missing_interior_message,
     required_interior_domain,
 )
-from feedbax.component_registry.declarations import MissingPrototypeInput
+from feedbax.component_registry.declarations import (
+    DeclaredComponent,
+    InputPrototypeParameter,
+    MissingPrototypeInput,
+)
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.acausal_interface import (
     SourcePayload,
@@ -101,13 +105,13 @@ def _complete_component_node(
     node_name: str,
     node: ComponentSpec,
     registry: Any,
+    meta: DeclaredComponent | None,
 ) -> ComponentSpec:
     from feedbax.compiler.serialization import (
         _split_lowering_metadata,
         _validate_dynamic_component_ports,
     )
 
-    meta = registry.get(node.type)
     if meta is None:
         return node
     if meta.is_composite:
@@ -145,11 +149,25 @@ def _prototype_signature(proto: Any) -> Any:
 
 
 class _Completion:
-    def __init__(self, graph: GraphSpec, registry: Any, path: str, identities_resolved: bool):
+    def __init__(
+        self,
+        graph: GraphSpec,
+        registry: Any,
+        path: str,
+        identities_resolved: bool,
+        driven_boundary_ports: frozenset[str] = frozenset(),
+    ):
         self.registry = registry
         self.path = path
         self.graph = normalize_acausal_interfaces_for_graph(graph)
+        self.driven_inputs = {(wire.target_node, wire.target_port) for wire in self.graph.wires} | {
+            tuple(binding)
+            for port, binding in self.graph.input_bindings.items()
+            if port in driven_boundary_ports
+        }
         self.nodes: dict[str, ComponentSpec] = {}
+        self.metadata: dict[str, DeclaredComponent | None] = {}
+        self.prototype_parameters: dict[str, InputPrototypeParameter] = {}
         self.completed: dict[str, ComponentSpec] = {}
         self.inputs: dict[tuple[str, str], Any] = {}
         self.outputs: dict[tuple[str, str], Any] = {}
@@ -166,6 +184,13 @@ class _Completion:
             except (KeyError, TypeError, ValueError) as exc:
                 self.fail(name, exc)
                 self.nodes[name] = node
+                continue
+            type_id = self.nodes[name].type
+            if type_id not in self.metadata:
+                self.metadata[type_id] = registry.get(type_id)
+            meta = self.metadata[type_id]
+            if meta is not None and meta.compiler.input_prototype_parameter is not None:
+                self.prototype_parameters[name] = meta.compiler.input_prototype_parameter
         for index, rule in enumerate(self.graph.derived_dimensions):
             node = self.nodes.get(rule.node)
             if node is None:
@@ -190,6 +215,11 @@ class _Completion:
                     registry,
                     f"{path}/subgraphs/{_token(name)}",
                     identities_resolved,
+                    frozenset(
+                        port
+                        for port in subgraph.input_bindings
+                        if (name, port) in self.driven_inputs
+                    ),
                 )
             elif isinstance(subgraph, AcausalGraphSpec) and name in self.nodes:
                 self.acausal_payloads[name] = derive_acausal_interface(subgraph).input_payloads
@@ -217,6 +247,9 @@ class _Completion:
                     f"existing prototype {self.inputs[key]!r}, source provides {proto!r}"
                 )
             return False
+        if node in self.completed and (rule := self.prototype_parameters.get(node)) is not None:
+            if port == rule.port:
+                rule.resolve(self.completed[node].params, proto)
         self.inputs[key] = proto
         return True
 
@@ -304,6 +337,18 @@ class _Completion:
                 )
             if rule.param not in params:
                 params[rule.param] = derived
+        prototype_parameter = self.prototype_parameters.get(name)
+        connected_prototype = None
+        if prototype_parameter is not None:
+            key = (name, prototype_parameter.port)
+            connected_prototype = self.inputs.get(key)
+            if (
+                connected_prototype is None
+                and key in self.driven_inputs
+                and params.get(prototype_parameter.parameter) is None
+            ):
+                return False
+
         prototype = None
         if node.type in STATEFUL_PROTOTYPE_TYPES:
             prototype = self.inputs.get((name, "input"))
@@ -315,7 +360,10 @@ class _Completion:
                 params, prototype, node_name=name, node_type=node.type
             )
         final = _complete_component_node(
-            name, node.model_copy(update={"params": params}), self.registry
+            name,
+            node.model_copy(update={"params": params}),
+            self.registry,
+            self.metadata[node.type],
         )
         for rule, derived in dimensions:
             declared = final.params.get(rule.param)
@@ -337,6 +385,11 @@ class _Completion:
         if prototype is not None:
             validate_or_add_input_shape(
                 final.params, prototype, node_name=name, node_type=node.type
+            )
+        if prototype_parameter is not None:
+            value = prototype_parameter.resolve(final.params, connected_prototype)
+            final = final.model_copy(
+                update={"params": {**final.params, prototype_parameter.parameter: value}}
             )
         self.completed[name] = final
         return True
@@ -467,18 +520,24 @@ class _Completion:
                 ),
                 None,
             )
-            cause = (
-                DerivedDimensionError(
+            if rule is not None:
+                cause = DerivedDimensionError(
                     f"Derived dimension for {name}.{rule.param} could not resolve a prototype "
                     f"for input port {rule.port!r}",
                     rule=rule,
                 )
-                if rule is not None
-                else ValueError(
-                    f"{node.type} node {name!r} port 'input' requires an input prototype. "
-                    "Connect a completed source or provide input_shape."
+            else:
+                prototype_parameter = self.prototype_parameters.get(name)
+                port = prototype_parameter.port if prototype_parameter is not None else "input"
+                parameter = (
+                    prototype_parameter.parameter
+                    if prototype_parameter is not None
+                    else "input_shape"
                 )
-            )
+                cause = ValueError(
+                    f"{node.type} node {name!r} port {port!r} requires an input prototype. "
+                    f"Connect a completed source or provide {parameter}."
+                )
             errors.append(ParameterResolutionError(f"{self.path}/nodes/{_token(name)}", cause))
         graph = self.graph.model_copy(
             update={"nodes": {**self.nodes, **self.completed}, "subgraphs": subgraphs or None}

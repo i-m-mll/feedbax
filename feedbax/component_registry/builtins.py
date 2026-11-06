@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import partial
 from math import prod
 from typing import Any, Protocol
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
@@ -20,6 +22,16 @@ from feedbax.contracts.array_values import (
 from feedbax.compiler.penzai_compiler import penzai_builder_options
 from feedbax.contracts.migrations import ComponentMigration
 from feedbax.contracts.representation import RepresentationSpec
+from feedbax.control import (
+    Derivative,
+    Integrator,
+    IntegratorDiscrete,
+    PID,
+    PIDDiscrete,
+    UnitDelay,
+    ZeroOrderHold,
+)
+from feedbax.control._vector import control_vector_prototype, require_control_vector
 from feedbax.control.affine import AffineFeedbackController, affine_feedback_output_prototype
 from feedbax.mechanics.muscle_config import (
     default_6muscle_2link_attachment_paths,
@@ -101,6 +113,7 @@ from .acausal_adapters import register_acausal_components
 from .declarations import (
     ComponentConstructorPlan,
     DeclaredComponent,
+    InputPrototypeParameter,
     MissingPrototypeInput,
     ParameterField,
     declare_component,
@@ -1325,16 +1338,61 @@ def input_or_n_dims_output_prototype(
     return {"output": _n_dims_proto(params)}
 
 
-def error_or_n_dims_output_prototype(
+def _control_vector(
+    params: Mapping[str, Any], proto: Any, *, port: str
+) -> jax.ShapeDtypeStruct:
+    dtype = params.get("input_dtype")
+    if dtype is None and proto is not None:
+        dtype = getattr(proto, "dtype", None)
+    expected = control_vector_prototype(params.get("n_dims", 1), dtype)
+    if proto is not None:
+        require_control_vector(proto, expected, port=port)
+    return expected
+
+
+def _control_input_dtype(params: Mapping[str, Any], proto: Any, *, port: str) -> str:
+    return _control_vector(params, proto, port=port).dtype.name
+
+
+def _control_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
+    *,
+    port: str,
 ) -> dict[str, Any]:
-    """Return the error prototype, or an ``n_dims`` vector when unconnected."""
+    proto = _control_vector(params, inputs.get(port), port=port)
+    return {"output": jnp.zeros(proto.shape, dtype=proto.dtype)}
 
-    proto = inputs.get("error")
-    if proto is not None:
-        return {"output": proto}
-    return {"output": _n_dims_proto(params)}
+
+_CONTROL_INPUT_PROTOTYPE = InputPrototypeParameter(
+    "input", "input_dtype", partial(_control_input_dtype, port="input")
+)
+_CONTROL_ERROR_PROTOTYPE = InputPrototypeParameter(
+    "error", "input_dtype", partial(_control_input_dtype, port="error")
+)
+_CONTROL_INPUT_DTYPE = ParameterField(
+    name="input_dtype",
+    type="str",
+    default=None,
+    description="Real floating-point dtype. Defaults to the connected signal dtype when known.",
+)
+
+
+class _PIDParams(BaseModel):
+    Kp: float = Field(default=1.0, json_schema_extra={"feedbax": {"required": True}})
+    Ki: float = 0.0
+    Kd: float = 0.0
+    dt: float = Field(default=0.01, ge=0.0, json_schema_extra={"feedbax": {"required": True}})
+    n_dims: int = Field(default=1, ge=1, json_schema_extra={"feedbax": {"required": True}})
+    input_dtype: str | None = Field(default=None, description=_CONTROL_INPUT_DTYPE.description)
+
+
+class _ContinuousPIDParams(_PIDParams):
+    integral_limit: float | None = 1000.0
+
+
+class _DiscretePIDParams(_PIDParams):
+    output_limit: float | None = 1000.0
 
 
 def rate_limiter_output_prototype(
@@ -3382,12 +3440,14 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="Integrator",
+            runtime_type=Integrator,
             category="Control",
             description="Continuous-time integrator (Euler).",
             parameter_fields=[
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
                 ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                _CONTROL_INPUT_DTYPE,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3396,18 +3456,21 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="input"),
+            input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
         )
     )
     registry.register(
         declare_component(
             name="Derivative",
+            runtime_type=Derivative,
             category="Control",
             description="Finite-difference derivative.",
             parameter_fields=[
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
                 ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                _CONTROL_INPUT_DTYPE,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3416,7 +3479,8 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="input"),
+            input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
         )
     )
     registry.register(
@@ -3456,16 +3520,11 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="PID",
+            runtime_type=PID,
             category="Control",
             description="Continuous PID with anti-windup.",
-            parameter_fields=[
-                ParameterField(name="Kp", type="float", default=1.0, required=True),
-                ParameterField(name="Ki", type="float", default=0.0, required=False),
-                ParameterField(name="Kd", type="float", default=0.0, required=False),
-                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(name="integral_limit", type="float", default=1000.0, required=False),
-                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
-            ],
+            param_model=_ContinuousPIDParams,
+            attribute_paths={"integral_limit": "integral_limit_param"},
             input_ports=["error"],
             output_ports=["output"],
             icon="Gauge",
@@ -3473,22 +3532,18 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"error": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=error_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="error"),
+            input_prototype_parameter=_CONTROL_ERROR_PROTOTYPE,
         )
     )
     registry.register(
         declare_component(
             name="PIDDiscrete",
+            runtime_type=PIDDiscrete,
             category="Control",
             description="Discrete PID (velocity form).",
-            parameter_fields=[
-                ParameterField(name="Kp", type="float", default=1.0, required=True),
-                ParameterField(name="Ki", type="float", default=0.0, required=False),
-                ParameterField(name="Kd", type="float", default=0.0, required=False),
-                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(name="output_limit", type="float", default=1000.0, required=False),
-                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
-            ],
+            param_model=_DiscretePIDParams,
+            attribute_paths={"output_limit": "output_limit_param"},
             input_ports=["error"],
             output_ports=["output"],
             icon="Gauge",
@@ -3496,7 +3551,8 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"error": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=error_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="error"),
+            input_prototype_parameter=_CONTROL_ERROR_PROTOTYPE,
         )
     )
     registry.register(
@@ -3535,12 +3591,14 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="IntegratorDiscrete",
+            runtime_type=IntegratorDiscrete,
             category="Discrete",
             description="Discrete-time accumulator.",
             parameter_fields=[
                 ParameterField(name="dt", type="float", default=1.0, min=0.0, required=True),
                 ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                _CONTROL_INPUT_DTYPE,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3549,17 +3607,20 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="input"),
+            input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
         )
     )
     registry.register(
         declare_component(
             name="UnitDelay",
+            runtime_type=UnitDelay,
             category="Discrete",
             description="Unit delay (z^-1).",
             parameter_fields=[
                 ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                _CONTROL_INPUT_DTYPE,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3568,18 +3629,21 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="input"),
+            input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
         )
     )
     registry.register(
         declare_component(
             name="ZeroOrderHold",
+            runtime_type=ZeroOrderHold,
             category="Discrete",
             description="Sample and hold every N steps.",
             parameter_fields=[
                 ParameterField(name="hold_steps", type="int", default=1, min=1, required=True),
                 ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                _CONTROL_INPUT_DTYPE,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3588,7 +3652,8 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=partial(_control_output_prototype, port="input"),
+            input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
         )
     )
     # --- Signal processing components ---

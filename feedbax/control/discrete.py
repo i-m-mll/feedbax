@@ -8,13 +8,13 @@ Provides discrete-time accumulators, unit delays, and zero-order holds.
 
 from __future__ import annotations
 
-import equinox as eqx
 from equinox import field
 from equinox.nn import State, StateIndex
 import jax.numpy as jnp
-import jax.tree as jt
-from jaxtyping import Array, PRNGKeyArray, PyTree
+from jax.typing import DTypeLike
+from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.control._vector import initial_control_vector, require_control_vector
 from feedbax.runtime.graph import Component
 
 
@@ -27,6 +27,7 @@ class IntegratorDiscrete(Component):
         dt: Scaling factor per step (defaults to 1.0 for pure accumulation).
         n_dims: Dimensionality of the accumulated signal.
         initial_value: Initial accumulator value.
+        input_dtype: Real floating dtype of the input and carry.
     """
 
     input_ports = ("input",)
@@ -34,6 +35,8 @@ class IntegratorDiscrete(Component):
 
     dt: float
     n_dims: int = field(static=True)
+    input_dtype: str = field(static=True)
+    initial_value: float
     state_index: StateIndex
 
     def __init__(
@@ -41,10 +44,14 @@ class IntegratorDiscrete(Component):
         dt: float = 1.0,
         n_dims: int = 1,
         initial_value: float = 0.0,
+        *,
+        input_dtype: DTypeLike | None = None,
     ):
         self.dt = float(dt)
-        self.n_dims = n_dims
-        initial_state = jnp.zeros(n_dims) + initial_value
+        self.initial_value = float(initial_value)
+        initial_state = initial_control_vector(n_dims, input_dtype, self.initial_value)
+        self.n_dims = initial_state.shape[0]
+        self.input_dtype = initial_state.dtype.name
         self.state_index = StateIndex(initial_state)
 
     def __call__(
@@ -55,7 +62,8 @@ class IntegratorDiscrete(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
         y = state.get(self.state_index)
-        y_new = y + inputs["input"] * self.dt
+        u = require_control_vector(inputs["input"], y, port="input")
+        y_new = y + u * self.dt
         state = state.set(self.state_index, y_new)
         return {"output": y_new}, state
 
@@ -68,21 +76,28 @@ class UnitDelay(Component):
     Args:
         n_dims: Dimensionality of the signal.
         initial_value: Initial output value (before any input arrives).
+        input_dtype: Real floating dtype of the input and carry.
     """
 
     input_ports = ("input",)
     output_ports = ("output",)
 
     n_dims: int = field(static=True)
+    input_dtype: str = field(static=True)
+    initial_value: float
     state_index: StateIndex
 
     def __init__(
         self,
         n_dims: int = 1,
         initial_value: float = 0.0,
+        *,
+        input_dtype: DTypeLike | None = None,
     ):
-        self.n_dims = n_dims
-        initial_state = jnp.zeros(n_dims) + initial_value
+        self.initial_value = float(initial_value)
+        initial_state = initial_control_vector(n_dims, input_dtype, self.initial_value)
+        self.n_dims = initial_state.shape[0]
+        self.input_dtype = initial_state.dtype.name
         self.state_index = StateIndex(initial_state)
 
     def __call__(
@@ -93,7 +108,8 @@ class UnitDelay(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
         prev = state.get(self.state_index)
-        state = state.set(self.state_index, inputs["input"])
+        u = require_control_vector(inputs["input"], prev, port="input")
+        state = state.set(self.state_index, u)
         return {"output": prev}, state
 
 
@@ -104,6 +120,7 @@ class ZeroOrderHold(Component):
         hold_steps: Number of steps to hold each sample.
         n_dims: Dimensionality of the signal.
         initial_value: Initial held value.
+        input_dtype: Real floating dtype of the input and carry.
     """
 
     input_ports = ("input",)
@@ -111,6 +128,8 @@ class ZeroOrderHold(Component):
 
     hold_steps: int = field(static=True)
     n_dims: int = field(static=True)
+    input_dtype: str = field(static=True)
+    initial_value: float
     state_index: StateIndex
 
     def __init__(
@@ -118,10 +137,14 @@ class ZeroOrderHold(Component):
         hold_steps: int = 1,
         n_dims: int = 1,
         initial_value: float = 0.0,
+        *,
+        input_dtype: DTypeLike | None = None,
     ):
         self.hold_steps = int(hold_steps)
-        self.n_dims = n_dims
-        held_value = jnp.zeros(n_dims) + initial_value
+        self.initial_value = float(initial_value)
+        held_value = initial_control_vector(n_dims, input_dtype, self.initial_value)
+        self.n_dims = held_value.shape[0]
+        self.input_dtype = held_value.dtype.name
         step_counter = jnp.zeros((), dtype=jnp.int32)
         initial_state = (held_value, step_counter)
         self.state_index = StateIndex(initial_state)
@@ -134,7 +157,7 @@ class ZeroOrderHold(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
         held_value, step_counter = state.get(self.state_index)
-        u = inputs["input"]
+        u = require_control_vector(inputs["input"], held_value, port="input")
 
         # Sample on counter == 0, otherwise hold
         should_sample = step_counter == 0

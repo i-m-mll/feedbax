@@ -988,6 +988,7 @@ def _registered_outputs(
         },
         {
             "type": "Derivative",
+            "params": {"n_dims": 2},
             "inputs": {"input": jnp.zeros((2,))},
             "input_ports": ["input"],
             "output_ports": ["output"],
@@ -1002,6 +1003,7 @@ def _registered_outputs(
         },
         {
             "type": "PIDDiscrete",
+            "params": {"n_dims": 5},
             "inputs": {"error": jnp.zeros((5,))},
             "input_ports": ["error"],
             "output_ports": ["output"],
@@ -1016,6 +1018,7 @@ def _registered_outputs(
         },
         {
             "type": "UnitDelay",
+            "params": {"n_dims": 3},
             "inputs": {"input": jnp.zeros((3,))},
             "input_ports": ["input"],
             "output_ports": ["output"],
