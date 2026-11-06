@@ -98,7 +98,6 @@ from feedbax.contracts.manifest import (
     OverridePatch,
     canonical_manifest_path,
     evaluation_run_manifest_id,
-    load_manifest,
     spec_payload,
     write_manifest,
     load_manifest_bytes,
@@ -122,10 +121,7 @@ from feedbax.contracts.selection import (
     preview_selection_spec,
     select_parent_refs,
 )
-from feedbax.persistence.manifest_index import (
-    iter_indexed_manifest_paths_by_kind,
-    iter_manifest_files,
-)
+from feedbax.persistence.manifest_discovery import iter_manifests_by_kind
 from feedbax.plugins.registry import ExperimentRegistry
 
 ANALYSIS_BUNDLE_SCHEMA_ID = "feedbax.spec.analysis_bundle"
@@ -638,16 +634,7 @@ def iter_candidate_manifests(
     manifest_kind: str = "EvaluationRunManifest",
 ) -> list[AnyManifest]:
     """Load candidate run manifests of one kind from a manifest root."""
-    root_path = Path(root) if root is not None else default_manifest_root()
-    manifests: list[AnyManifest] = []
-    manifest_paths = iter_indexed_manifest_paths_by_kind(manifest_kind, root=root_path)
-    if not manifest_paths:
-        manifest_paths = iter_manifest_files(root_path)
-    for manifest_path in manifest_paths:
-        manifest = load_manifest(manifest_path)
-        if manifest.kind == manifest_kind:
-            manifests.append(manifest)
-    return manifests
+    return [manifest for manifest, _path in iter_manifests_by_kind(manifest_kind, root=root)]
 
 
 def _get_path(value: Any, path: str) -> Any:

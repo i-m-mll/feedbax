@@ -266,7 +266,7 @@ def test_training_run_list_surfaces_sanitized_corruption_failure(
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path))
     run_dir = _write_current_run(tmp_path, state_text="{not-json")
     monkeypatch.setattr(runs_api, "training_service", TrainingService())
-    monkeypatch.setattr(runs_api, "iter_indexed_manifest_records_by_kind", lambda *_args: [])
+    monkeypatch.setattr(runs_api, "manifest_records_by_kind", lambda *_args: [])
     app = FastAPI()
     app.include_router(runs_api.router, prefix="/api/runs")
 

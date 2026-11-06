@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.analysis.bundles import iter_candidate_manifests
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
+    canonical_manifest_path,
     load_manifest,
     spec_payload,
     write_manifest,
@@ -20,6 +23,7 @@ def _write_training_run(
     *,
     learning_rate: float,
     loss: float,
+    index: bool = True,
 ) -> TrainingRunManifest:
     manifest = TrainingRunManifest(
         id=run_id,
@@ -41,7 +45,7 @@ def _write_training_run(
             "studio": {"axis_coordinates": {"learning_rate": learning_rate}},
         },
     )
-    write_manifest(manifest, root=root)
+    write_manifest(manifest, root=root, index=index)
     return manifest
 
 
@@ -130,3 +134,77 @@ def test_runs_dir_import_copies_manifest_with_import_provenance(
     )
     assert imported.metadata["imported_from"]["source"] == "runs_dir"
     assert imported.metadata["studio"]["axis_coordinates"]["learning_rate"] == 0.001
+
+
+@pytest.mark.parametrize("index_state", ["missing", "partial", "stale"])
+def test_selection_uses_manifest_files(tmp_path: Path, monkeypatch, index_state: str) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    _write_training_run(tmp_path, "run:unindexed", learning_rate=0.01, loss=0.4, index=False)
+    if index_state != "missing":
+        _write_training_run(tmp_path, "run:indexed", learning_rate=0.01, loss=0.3)
+    if index_state == "stale":
+        removed = _write_training_run(tmp_path, "run:removed", learning_rate=0.01, loss=0.2)
+        canonical_manifest_path(removed.kind, removed.id, root=tmp_path).unlink()
+        current = _write_training_run(tmp_path, "run:changed", learning_rate=0.01, loss=0.1)
+        write_manifest(
+            current.model_copy(update={"status": "cancelled"}), root=tmp_path, index=False
+        )
+
+    expected = {"run:unindexed"} if index_state == "missing" else {"run:unindexed", "run:indexed"}
+    with TestClient(create_app()) as client:
+        preview = client.post(
+            "/api/runs/selection/preview",
+            json={
+                "selection_spec": {
+                    "mode": "query",
+                    "manifest_kind": "TrainingRunManifest",
+                    "query": {"manifest_kind": "TrainingRunManifest", "statuses": ["completed"]},
+                },
+            },
+        )
+        exact = client.get("/api/runs/training/run:unindexed/manifest")
+
+    assert preview.status_code == 200
+    assert {ref["id"] for ref in preview.json()["parent_refs"]} == expected
+    assert exact.status_code == 200
+    assert exact.json()["id"] == "run:unindexed"
+    assert {
+        manifest.id
+        for manifest in iter_candidate_manifests(tmp_path, manifest_kind="TrainingRunManifest")
+        if manifest.status == "completed"
+    } == expected
+
+
+def test_runs_dir_import_reads_only_selected_target_receipts(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(target))
+    for index in range(15):
+        _write_training_run(target, f"run:unrelated-{index}", learning_rate=0.01, loss=0.4)
+    _write_training_run(target, "run:existing", learning_rate=0.01, loss=0.2, index=False)
+    _write_training_run(source, "run:existing", learning_rate=0.01, loss=0.9)
+    _write_training_run(source, "run:new", learning_rate=0.01, loss=0.3)
+
+    target_receipts_read = set()
+    read_bytes = Path.read_bytes
+
+    def track_receipt_read(path: Path) -> bytes:
+        if path.suffix == ".json" and path.is_relative_to(target / "manifests"):
+            target_receipts_read.add(path.stem)
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", track_receipt_read)
+    with TestClient(create_app()) as client:
+        response = client.post("/api/runs/import/runs-dir", json={"path": str(source)})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["imported_manifest_ids"] == ["run:new"]
+    assert payload["skipped_manifest_ids"] == ["run:existing"]
+    assert {
+        run["id"]: run["metrics"]["final_validation_loss"] for run in payload["training_runs"]
+    } == {
+        "run:new": 0.3,
+        "run:existing": 0.2,
+    }
+    assert target_receipts_read <= {"run_existing", "run_new"}

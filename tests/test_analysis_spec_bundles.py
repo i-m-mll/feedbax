@@ -560,7 +560,7 @@ def test_analysis_run_spec_reuses_completed_manifest_without_recipe_call(
         registry=application_registry_bundle.analysis_recipes,
         experiment_registry=application_registry_bundle.experiment_packages,
     )
-    with patch("feedbax.analysis.specs.iter_manifest_files") as iter_files:
+    with patch("feedbax.persistence.manifest_discovery.iter_manifest_files") as iter_files:
         iter_files.side_effect = AssertionError("filesystem fallback should not run")
         rerun_manifest, rerun_path = execute_analysis_run_spec(
             spec,
