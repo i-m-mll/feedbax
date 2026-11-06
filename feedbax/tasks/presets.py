@@ -7,6 +7,7 @@ from typing import Any
 
 
 DELAYED_CENTER_OUT_PRESET = "delayed_center_out"
+DEFAULT_DELAYED_N_STEPS = 140
 
 _DELAYED_CENTER_OUT_DEFAULTS: dict[str, Any] = {
     "preset": DELAYED_CENTER_OUT_PRESET,
@@ -29,10 +30,12 @@ def delayed_center_out_reaches_params(
 ) -> dict[str, Any]:
     """Return compact params for delayed center-out reaches.
 
-    ``n_control_stages`` is a serialized task-spec alias for the rollout/control
-    length.  Materializing a :class:`feedbax.tasks.DelayedReaches` instance from
-    these params maps it to ``n_steps = n_control_stages + 1`` because the task
-    trial includes an initial state plus control transitions.
+    ``n_control_stages`` is the rollout length. A :class:`feedbax.tasks.DelayedReaches`
+    instance uses ``n_steps = n_control_stages + 1`` to include the initial state.
+
+    The default prep range ``[5, 15)`` requires at least 15 control stages.
+    Set ``epoch_len_ranges`` explicitly for a shorter rollout, for example
+    ``[[2, 7]]`` for eight control stages.
     """
 
     params = dict(_DELAYED_CENTER_OUT_DEFAULTS)
@@ -59,11 +62,11 @@ def apply_delayed_reaches_preset(params: Mapping[str, Any]) -> dict[str, Any]:
     return merged
 
 
-def delayed_reaches_n_steps_from_params(params: Mapping[str, Any], default: int = 140) -> int:
+def delayed_reaches_n_steps_from_params(
+    params: Mapping[str, Any], default: int = DEFAULT_DELAYED_N_STEPS
+) -> int:
     """Materialize DelayedReaches constructor ``n_steps`` from compact params."""
 
-    if "n_steps" in params:
-        return int(params["n_steps"])
-    if "n_control_stages" in params:
+    if params.get("n_control_stages") is not None:
         return int(params["n_control_stages"]) + 1
-    return default
+    return int(params.get("n_steps", default))

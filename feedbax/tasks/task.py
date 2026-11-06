@@ -18,6 +18,7 @@ import logging
 from abc import abstractmethod
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import cached_property, partial
+from numbers import Integral
 from typing import (
     Any,
     TYPE_CHECKING,
@@ -57,6 +58,11 @@ from feedbax.objectives.loss import (
 )
 from feedbax.runtime.batch import BatchInfo
 from feedbax.runtime.state import CartesianState, StateT
+from feedbax.tasks._delayed_timing import (
+    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
+    DEFAULT_DELAYED_MOVE_EPOCHS,
+    delayed_timing_issues,
+)
 from feedbax.tasks.presets import delayed_center_out_reaches_params
 
 if TYPE_CHECKING:
@@ -1674,16 +1680,13 @@ class DelayedReaches(AbstractTask):
     seed_validation: int = 5555
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
     input_dependencies: dict[str, TrialSpecDependency] = field(default_factory=dict)
-    epoch_len_ranges: Sequence[Tuple[int, int]] = field(
-        default=(
-            (5, 15),  # pre-target on
-            (10, 20),  # target on ("stim")
-        )
-    )
+    epoch_len_ranges: Sequence[Tuple[int, int]] = DEFAULT_DELAYED_EPOCH_LEN_RANGES
     epoch_names: Sequence[str] = ("hold", "target_on", "movement")
     hold_epochs: Int[Array, " _"] = field(default=(0, 1), converter=jnp.asarray)
     target_on_epochs: Int[Array, " _"] = field(default=(1, 2), converter=jnp.asarray)
-    move_epochs: Int[Array, " _"] = field(default=(2,), converter=jnp.asarray)
+    move_epochs: Int[Array, " _"] = field(
+        default=DEFAULT_DELAYED_MOVE_EPOCHS, converter=jnp.asarray
+    )
     p_catch_trial: float = 0.5  #! TODO
     preset: Optional[str] = None
     target_visible_from_start: bool = False
@@ -1708,7 +1711,9 @@ class DelayedReaches(AbstractTask):
         The preset uses exactly two authored epochs, ``prep`` and ``movement``.
         The sampled boundary between them is the go cue: the hold signal is on
         during ``prep`` and target scoring starts in ``movement``.  The target is
-        visible throughout the trial.
+        visible throughout the trial. The default prep range is ``[5, 15)`` and
+        requires at least 15 control stages. For a shorter rollout, pass an
+        explicit range such as ``epoch_len_ranges=((2, 7),)`` for eight stages.
         """
 
         params = delayed_center_out_reaches_params(
@@ -1718,6 +1723,18 @@ class DelayedReaches(AbstractTask):
         )
         params.pop("n_control_stages", None)
         return cls(loss_func=loss_func, n_steps=n_control_stages + 1, **params)
+
+    def __post_init__(self):
+        if not isinstance(self.n_steps, Integral) or isinstance(self.n_steps, bool):
+            raise ValueError("DelayedReaches n_steps must be an integer")
+        self.n_steps = int(self.n_steps)
+        move_epochs = self.move_epochs
+        if isinstance(move_epochs, (Array, np.ndarray)):
+            move_epochs = np.asarray(move_epochs).tolist()
+        issues = delayed_timing_issues(self.n_steps, self.epoch_len_ranges, move_epochs)
+        if issues:
+            raise ValueError(issues[0].message)
+        self.epoch_len_ranges = tuple((int(lo), int(hi)) for lo, hi in self.epoch_len_ranges)
 
     def __check_init__(self):
         if len(self.epoch_len_ranges) + 1 != len(self.epoch_names):
@@ -1835,8 +1852,6 @@ class DelayedReaches(AbstractTask):
     def _go_cue_event_steps(self, epoch_bounds: Array) -> Optional[Array]:
         if self.go_cue_event_name is None:
             return None
-        if self.move_epochs.shape[0] == 0:
-            return None
         go_cue_step = jnp.take(epoch_bounds, self.move_epochs[0], axis=-1)
         return jnp.expand_dims(go_cue_step, axis=-1).astype(jnp.int32)
 
@@ -1862,7 +1877,6 @@ class DelayedReaches(AbstractTask):
         key_epochs, key_catch = jr.split(key)
         epoch_lengths_pre = gen_epoch_lengths(key_epochs, self.epoch_len_ranges)
         remaining_len = (self.n_steps - 1) - jnp.sum(epoch_lengths_pre)
-        remaining_len = jnp.maximum(remaining_len, 0)
         epoch_lengths = jnp.concatenate((epoch_lengths_pre, jnp.array([remaining_len])))
         epoch_bounds = jnp.pad(jnp.cumsum(epoch_lengths), (1, 0), constant_values=(0, -1))
         epoch_masks = get_masks(self.n_steps - 1, epoch_bounds)
@@ -2095,8 +2109,8 @@ def gen_epoch_lengths(
         (1, 3),
     ),
 ) -> Int[Array, " n_epochs"]:
-    """Generate a random integer in each given ranges."""
-    ranges_arr = jnp.array(ranges, dtype=int)
+    """Draw each duration from ``[lo, hi)``, or use ``lo`` when both bounds match."""
+    ranges_arr = jnp.asarray(ranges, dtype=int).reshape(-1, 2)
     return jr.randint(key, (ranges_arr.shape[0],), *ranges_arr.T)
 
 
