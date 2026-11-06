@@ -39,9 +39,8 @@ from feedbax.models.support import identity_func
 from feedbax.runtime.noise import Multiplicative, Normal
 from feedbax.components.penzai import (
     PENZAI_AVAILABLE,
+    UnsupportedPenzaiStateError,
     build_penzai_subgraph,
-    get_penzai_builder,
-    penzai_state_variable_paths,
 )
 from feedbax.contracts.acausal_interface import MUSCLE_EXCITATION_PAYLOAD
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
@@ -473,23 +472,18 @@ def _build_penzai_adapter(params: Mapping[str, Any]) -> Component:
         for key, value in params.items()
         if key not in ("builder_name", "input_port", "output_port")
     }
-    builder_info = get_penzai_builder(builder_name)
-    if builder_info is None:
-        raise ValueError(f"Unknown Penzai builder {builder_name!r}")
-    builder_fn, default_params = builder_info
-    pz_model = builder_fn({**default_params, **builder_params})
-    state_paths = penzai_state_variable_paths(pz_model)
-    if state_paths:
+    try:
+        return build_penzai_subgraph(
+            builder_name=builder_name,
+            params=builder_params,
+            input_port=str(params.get("input_port", "input")),
+            output_port=str(params.get("output_port", "output")),
+        )
+    except UnsupportedPenzaiStateError as exc:
         raise ValueError(
             "penzai.stateful_unsupported: PenzaiAdapter node uses unsupported "
-            f"StateVariable leaves at {', '.join(state_paths)}"
-        )
-    return build_penzai_subgraph(
-        builder_name=builder_name,
-        params=builder_params,
-        input_port=str(params.get("input_port", "input")),
-        output_port=str(params.get("output_port", "output")),
-    )
+            f"StateVariable leaves at {', '.join(exc.paths)}"
+        ) from exc
 
 
 def _build_threshold_latched_force(params: Mapping[str, Any]) -> ThresholdLatchedForce:

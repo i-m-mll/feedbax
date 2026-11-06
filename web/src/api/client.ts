@@ -210,28 +210,16 @@ export async function fetchPenzaiBuilders(): Promise<PenzaiBuilderInfo[]> {
   return response.data.builders;
 }
 
-export async function compilePenzaiNode(
-  graphId: string | null | undefined,
-  payload: PenzaiNodeRequest,
-): Promise<DomainCompileReport> {
-  const path = graphId
-    ? `/api/graphs/${encodeURIComponent(graphId)}/nodes/penzai/compile`
-    : "/api/penzai/compile";
-  return parseContract(
-    "DomainCompileReport",
-    await requestJson(path, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
-  );
-}
-
 export async function inspectPenzaiNode(
+  graphId: string | null,
   payload: PenzaiNodeRequest,
 ): Promise<PenzaiInspectorPayload> {
+  const path = graphId
+    ? `/api/graphs/${encodeURIComponent(graphId)}/nodes/penzai/inspect`
+    : "/api/penzai/inspect";
   const response = parseContract(
     "PenzaiInspectorResponse",
-    await requestJson("/api/penzai/inspect", {
+    await requestJson(path, {
       method: "POST",
       body: JSON.stringify(payload),
     }),

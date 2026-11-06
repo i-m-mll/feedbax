@@ -13,6 +13,7 @@ models for use within feedbax computational graphs. It handles:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence, TYPE_CHECKING
 
@@ -224,6 +225,18 @@ class OutputMapping(Module):
 # =============================================================================
 
 
+class UnsupportedPenzaiStateError(NotImplementedError):
+    """A model contains state variables that Feedbax cannot rebind."""
+
+    def __init__(self, paths: Sequence[str]):
+        self.paths = tuple(paths)
+        super().__init__(
+            "PenzaiSubgraph does not yet support stateful Penzai models. "
+            f"StateVariable paths were found at {', '.join(paths)}; "
+            "implement explicit Penzai state rebinding before using this model."
+        )
+
+
 class PenzaiStateManager(Module):
     """Manages Penzai StateVariable extraction and binding.
 
@@ -253,27 +266,10 @@ class PenzaiStateManager(Module):
             PenzaiStateManager configured for the model's state variables.
             If penzai is not available, returns an empty state manager.
         """
-        # If penzai is not available, we can't scan for StateVariables
-        # Return an empty state manager for non-penzai models
-        if not PENZAI_AVAILABLE:
-            return cls.empty()
-
         state_vars = penzai_state_variable_paths(pz_model)
-
         if state_vars:
-            paths = ", ".join(state_vars)
-            raise NotImplementedError(
-                "PenzaiSubgraph does not yet support stateful Penzai models. "
-                "StateVariable paths were found at "
-                f"{paths}; implement explicit Penzai state rebinding before using this model."
-            )
-
-        # Create initial state as a dict mapping paths to values.
-        initial_state: dict[tuple[Any, ...], Any] = {}
-
-        return cls(
-            state_index=StateIndex(initial_state),
-        )
+            raise UnsupportedPenzaiStateError(state_vars)
+        return cls.empty()
 
     @classmethod
     def empty(cls) -> "PenzaiStateManager":
@@ -558,13 +554,7 @@ class PenzaiSubgraph(Component):
         Raises:
             ImportError: If treescope is not installed.
         """
-        _require_treescope()
-
-        # treescope.render_to_html returns HTML as a string
-        # _require_treescope ensures treescope is not None
-        assert treescope is not None  # For type checker
-        html = treescope.render_to_html(self.pz_model, roundtrip_mode=False)
-        return html if isinstance(html, str) else str(html)
+        return render_penzai_model_html(self.pz_model)
 
     def state_view(self, state: State) -> PyTree | None:
         """Return the state view for this component.
@@ -779,9 +769,35 @@ def penzai_structure_summary(pz_model: PyTree) -> dict[str, int]:
     }
 
 
+class UnknownPenzaiBuilderError(ValueError):
+    """The requested name has no registered model builder."""
+
+
+def resolve_penzai_model(
+    builder_name: str,
+    params: Mapping[str, Any] | None = None,
+) -> PyTree:
+    """Construct a registered model using defaults overridden by the caller."""
+    builder_info = get_penzai_builder(builder_name)
+    if builder_info is None:
+        raise UnknownPenzaiBuilderError(
+            f"Unknown Penzai builder {builder_name!r}. Available builders: {list_penzai_builders()}"
+        )
+    _require_penzai()
+    builder_fn, default_params = builder_info
+    return builder_fn({**default_params, **(params or {})})
+
+
+def render_penzai_model_html(model: PyTree) -> str:
+    """Render an already constructed Penzai model."""
+    _require_treescope()
+    assert treescope is not None
+    return str(treescope.render_to_html(model, roundtrip_mode=False))
+
+
 def build_penzai_subgraph(
     builder_name: str,
-    params: dict[str, Any] | None = None,
+    params: Mapping[str, Any] | None = None,
     input_port: str = "input",
     output_port: str = "output",
 ) -> PenzaiSubgraph:
@@ -799,21 +815,8 @@ def build_penzai_subgraph(
     Raises:
         ValueError: If builder_name is not registered.
     """
-    builder_info = get_penzai_builder(builder_name)
-    if builder_info is None:
-        raise ValueError(
-            f"Unknown Penzai builder '{builder_name}'. Available builders: {list_penzai_builders()}"
-        )
-
-    builder_fn, default_params = builder_info
-    merged_params = {**default_params, **(params or {})}
-    pz_model = builder_fn(merged_params)
-
-    # Construct directly (not via from_layer) so builder_name is set during
-    # __init__ rather than via post-construction mutation.  Bug: bc551f7
-    _require_penzai()
     return PenzaiSubgraph(
-        pz_model=pz_model,
+        pz_model=resolve_penzai_model(builder_name, params),
         input_mapping=InputMapping.single(input_port),
         output_mapping=OutputMapping.single(output_port),
         builder_name=builder_name,

@@ -10,7 +10,10 @@ import uuid
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import DomainCompileReport
 from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
-from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report
+from feedbax.compiler.penzai_compiler import (
+    compile_penzai_authoring_report,
+    inspect_penzai_model,
+)
 from feedbax.web.config import GRAPHS_DIR, ensure_dirs
 from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
@@ -36,6 +39,7 @@ from feedbax.contracts.graph import (
     studio_semantic_document_sha256,
 )
 from feedbax.compiler import GraphDocument, compile_graph
+from feedbax.contracts.studio_api import PenzaiInspectorPayload, PenzaiNodeRequest
 
 
 @dataclass
@@ -295,12 +299,7 @@ class GraphService:
             node_path=node_path,
             component_registry=component_registry,
         )
-        key = "/".join(node_path)
-        record.project.compile_reports = {
-            **(record.project.compile_reports or {}),
-            key: report,
-        }
-        self._save_project(self._path_for(graph_id), record.project)
+        self._save_compile_report(record, node_path, report)
         return report
 
     def compile_penzai_node(
@@ -321,13 +320,32 @@ class GraphService:
             output_port=output_port,
             node_path=node_path,
         )
+        self._save_compile_report(record, node_path, report)
+        return report
+
+    def inspect_penzai_node(
+        self, graph_id: str, payload: PenzaiNodeRequest
+    ) -> PenzaiInspectorPayload:
+        record = self.get_graph(graph_id)
+        report, html = inspect_penzai_model(
+            builder_name=payload.builder_name,
+            params=payload.params,
+            input_port=payload.input_port,
+            output_port=payload.output_port,
+            node_path=payload.node_path,
+        )
+        self._save_compile_report(record, payload.node_path, report)
+        return PenzaiInspectorPayload(html=html, report=report)
+
+    def _save_compile_report(
+        self, record: GraphRecord, node_path: list[str], report: DomainCompileReport
+    ) -> None:
         key = "/".join(node_path)
         record.project.compile_reports = {
             **(record.project.compile_reports or {}),
             key: report,
         }
-        self._save_project(self._path_for(graph_id), record.project)
-        return report
+        self._save_project(self._path_for(record.graph_id), record.project)
 
     def export_graph(self, graph_id: str, export_format: str) -> dict:
         record = self.get_graph(graph_id)

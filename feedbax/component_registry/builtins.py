@@ -136,6 +136,20 @@ class _ConstantParams(BaseModel):
     )
 
 
+def _extract_penzai_adapter_params(component: Any, model: Any) -> Any:
+    if component.builder_name is None:
+        raise ValueError("PenzaiAdapter serialization requires a registered builder name")
+    (input_port,) = component.input_ports
+    (output_port,) = component.output_ports
+    return type(model).model_validate(
+        {
+            "builder_name": component.builder_name,
+            "input_port": input_port,
+            "output_port": output_port,
+        }
+    )
+
+
 def _extract_analytical_plant_params(component: Any, model: Any) -> Any:
     from feedbax.mechanics.backend import DiffraxBackend
 
@@ -1353,6 +1367,8 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="PenzaiAdapter",
             builder=_builders._build_penzai_adapter,
+            extractor=_extract_penzai_adapter_params,
+            override_reason="Recover the named builder and ports from the wrapped model.",
             category="Structure",
             description="Penzai neural network adapter (leaf). Wraps a trained Penzai model for inference.",
             parameter_fields=[
@@ -1374,7 +1390,6 @@ def register_builtin_components(registry: _Registry) -> None:
             output_ports=["output"],
             icon="Hexagon",
             interior_domain=PENZAI_DOMAIN_ID,
-            is_composite=True,
             template_kind="display",
             port_types=PortTypeSpec(
                 inputs={"input": PortType(dtype="any")},

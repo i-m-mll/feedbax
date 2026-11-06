@@ -44,6 +44,7 @@ import {
   connectionFromReactFlow,
   portIsConserving,
 } from '@/features/domains/acausal';
+import { hasInspectorInterior } from '@/features/domains/context';
 
 const DEFAULT_VIEWPORT = { x: 0, y: 0, zoom: 1 };
 const DEFAULT_POSITION = { x: 200, y: 200 };
@@ -2366,11 +2367,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       const hasSubgraph = Boolean(state.graph.subgraphs?.[nodeId]);
       const componentDef = nodeSpec ? get()._componentRegistry.get(nodeSpec.type) : undefined;
       const isComposite = Boolean(componentDef?.is_composite);
-      const isReadOnlyInspector =
-        Boolean(componentDef?.interior_domain) &&
-        componentDef?.template_kind === 'display' &&
-        !componentDef?.template_graph &&
-        !hasSubgraph;
+      const isReadOnlyInspector = hasInspectorInterior(componentDef) && !hasSubgraph;
       if (!nodeSpec || (!isComposite && !hasSubgraph && !isReadOnlyInspector)) {
         return state;
       }
