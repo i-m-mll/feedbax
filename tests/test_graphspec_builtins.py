@@ -31,8 +31,8 @@ from feedbax.intervene import (
     FixedField,
     FixedFieldParams,
 )
-from feedbax.mechanics.mechanics import Mechanics
-from feedbax.mechanics.plant import DirectForceInput
+from feedbax.mechanics.mechanics import Mechanics, MechanicsState
+from feedbax.mechanics.plant import DirectForceInput, PlantState
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 from feedbax.compiler.serialization import (
@@ -493,8 +493,8 @@ def test_point_mass_graphspec_preserves_mass_damping_and_dt() -> None:
     assert params["damping"] == 4.5
 
 
-def test_feedback_channels_materialize_point_mass_selector() -> None:
-    spec = GraphSpec(
+def _point_mass_feedback_spec(**feedback_params: Any) -> GraphSpec:
+    return GraphSpec(
         nodes={
             "mechanics": ComponentSpec(
                 type="PointMass",
@@ -504,14 +504,7 @@ def test_feedback_channels_materialize_point_mass_selector() -> None:
             ),
             "feedback": ComponentSpec(
                 type="FeedbackChannels",
-                params={
-                    "selector": "point_mass_pos_vel",
-                    "delay": 2,
-                    "noise_std": 0.05,
-                    "add_noise": True,
-                    "noise_role": "sensory_feedback",
-                    "noise_timing": "pre_controller",
-                },
+                params=feedback_params,
                 input_ports=["mechanics"],
                 output_ports=["feedback"],
             ),
@@ -526,10 +519,25 @@ def test_feedback_channels_materialize_point_mass_selector() -> None:
                 recurrent_initializer={"kind": "state_output", "state_slot": "mechanics"},
             )
         ],
-        output_ports=["feedback"],
-        output_bindings={"feedback": ("feedback", "feedback")},
+        input_ports=["force"],
+        input_bindings={"force": ("mechanics", "force")},
+        output_ports=["effector", "feedback"],
+        output_bindings={
+            "effector": ("mechanics", "effector"),
+            "feedback": ("feedback", "feedback"),
+        },
     )
 
+
+def test_feedback_channels_materialize_point_mass_selector() -> None:
+    spec = _point_mass_feedback_spec(
+        selector="point_mass_pos_vel",
+        delay=2,
+        noise_std=0.05,
+        add_noise=True,
+        noise_role="sensory_feedback",
+        noise_timing="pre_controller",
+    )
     graph = spec_to_graph(spec, component_registry=_components())
 
     mechanics = graph.nodes["mechanics"]
@@ -553,6 +561,101 @@ def test_feedback_channels_materialize_point_mass_selector() -> None:
     assert params["selector"] == "point_mass_pos_vel"
     assert params["paths"] == ["plant.skeleton.pos", "plant.skeleton.vel"]
     assert params["noise_role"] == "sensory_feedback"
+
+
+@pytest.mark.parametrize(
+    ("selector", "paths"),
+    [
+        ("plant_skeleton", None),
+        ("paths", ["plant.skeleton"]),
+        ("point_mass_pos_vel", None),
+    ],
+)
+def test_point_mass_feedback_rollout_preserves_selected_state_and_delay(
+    selector: str, paths: list[str] | None
+) -> None:
+    params = {"paths": paths} if paths is not None else {}
+    spec = _point_mass_feedback_spec(
+        selector=selector, delay=2, input_shape=[[2], [2]], add_noise=False, **params
+    )
+    graph = spec_to_graph(spec, component_registry=_components())
+
+    outputs, _ = graph(
+        {"force": jnp.ones((6, 2))},
+        init_state_from_component(graph),
+        key=jr.key(0),
+        n_steps=6,
+    )
+
+    effector = outputs["effector"]
+    feedback = outputs["feedback"]
+    assert jnp.all(effector.vel[0] > 0)
+    if selector == "point_mass_pos_vel":
+        assert isinstance(feedback, tuple)
+        expected = (effector.pos, effector.vel)
+    else:
+        assert isinstance(feedback, CartesianState)
+        expected = effector
+
+    for actual, undelayed in zip(
+        jax.tree.leaves(feedback), jax.tree.leaves(expected), strict=True
+    ):
+        assert actual.shape == undelayed.shape
+        assert actual.dtype == undelayed.dtype
+        assert jnp.all(actual[:3] == 0)
+        assert jnp.array_equal(actual[3:], undelayed[:-3])
+
+
+def test_point_mass_feedback_rejects_invalid_selector_path_at_compile_time() -> None:
+    spec = _point_mass_feedback_spec(selector="paths", paths=["plant.skeleton.missing"])
+
+    with pytest.raises(GraphCompilationError, match=r"feedback.*plant\.skeleton\.missing"):
+        spec_to_graph(spec, component_registry=_components())
+
+
+def test_nested_feedback_rollout_preserves_mixed_state_dtypes() -> None:
+    feedback = _single_node_spec(
+        "FeedbackChannels",
+        {"selector": "plant_skeleton", "delay": 1},
+        input_ports=["mechanics"],
+        output_ports=["feedback"],
+    )
+    spec = GraphSpec(
+        nodes={
+            "nested": ComponentSpec(
+                type="Subgraph", input_ports=["mechanics"], output_ports=["feedback"]
+            )
+        },
+        subgraphs={"nested": feedback},
+        input_ports=["mechanics"],
+        output_ports=["feedback"],
+        input_bindings={"mechanics": ("nested", "mechanics")},
+        output_bindings={"feedback": ("nested", "feedback")},
+    )
+    skeleton = CartesianState(
+        pos=jnp.zeros(2, dtype=jnp.float16),
+        vel=jnp.zeros(2, dtype=jnp.float32),
+        force=jnp.zeros(2, dtype=jnp.bfloat16),
+    )
+    mechanics = MechanicsState(PlantState(skeleton), CartesianState(), None)
+    graph = spec_to_graph(
+        spec, component_registry=_components(), input_prototypes={("nested", "mechanics"): mechanics}
+    )
+    trajectory = jax.tree.map(lambda x: jnp.stack((x + 1, x + 2, x + 3)), mechanics)
+    outputs, _, _ = graph.rollout_with_trace(
+        {"mechanics": trajectory},
+        init_state_from_component(graph),
+        key=jr.key(0),
+        n_steps=3,
+        trace=(),
+    )
+
+    assert isinstance(outputs["feedback"], CartesianState)
+    for actual, source in zip(
+        jax.tree.leaves(outputs["feedback"]), jax.tree.leaves(trajectory.plant.skeleton), strict=True
+    ):
+        assert actual.dtype == source.dtype
+        assert jnp.array_equal(actual, jnp.concatenate((jnp.zeros_like(source[:1]), source[:-1])))
 
 
 def test_channel_structured_motor_noise_round_trips() -> None:
@@ -932,13 +1035,6 @@ def _registered_outputs(
             "shapes": {"output": ((3,),)},
         },
         {
-            "type": "FeedbackChannels",
-            "params": {"input_shape": [[2], [3]]},
-            "input_ports": ["mechanics"],
-            "output_ports": ["feedback"],
-            "shapes": {"feedback": ((2,), (3,))},
-        },
-        {
             "type": "FirstOrderFilter",
             "inputs": {"input": jnp.zeros((4,))},
             "input_ports": ["input"],
@@ -1103,8 +1199,10 @@ def test_registered_builtin_output_prototypes(case: dict[str, Any]) -> None:
         assert _tree_shapes(outputs[port]) == expected_shapes
 
 
-@pytest.mark.parametrize("component_type", ["TwoLinkArm", "PointMass"])
-def test_registered_mechanics_state_output_prototypes(component_type: str) -> None:
+@pytest.mark.parametrize(("component_type", "skeleton_leaves"), [("TwoLinkArm", 4), ("PointMass", 3)])
+def test_registered_mechanics_state_output_prototypes(
+    component_type: str, skeleton_leaves: int
+) -> None:
     outputs = _registered_outputs(
         component_type,
         {},
@@ -1114,7 +1212,9 @@ def test_registered_mechanics_state_output_prototypes(component_type: str) -> No
     )
 
     assert isinstance(outputs["effector"], CartesianState)
-    assert outputs["state"] is outputs["effector"]
+    assert isinstance(outputs["state"], MechanicsState)
+    assert _tree_shapes(outputs["state"].effector) == _tree_shapes(outputs["effector"])
+    assert _tree_shapes(outputs["state"].plant.skeleton) == ((2,),) * skeleton_leaves
 
 
 def test_registered_linear_state_space_output_prototype() -> None:

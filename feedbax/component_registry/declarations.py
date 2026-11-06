@@ -481,6 +481,8 @@ class ComponentCompilerFacet:
     is_composite: bool = False
     output_prototype_fn: OutputPrototypeFn | None = None
     input_prototype_parameter: InputPrototypeParameter | None = None
+    # Bind runtime-only constructor parameters to resolved output ports.
+    build_output_prototypes: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def param_schema(self) -> tuple[ParamSchema, ...]:
@@ -668,6 +670,7 @@ def declare_component(
     override_reason: str | None = None,
     output_prototype_fn: OutputPrototypeFn | None = None,
     input_prototype_parameter: InputPrototypeParameter | None = None,
+    build_output_prototypes: Mapping[str, str] | None = None,
     provenance: str | None = None,
     identity: ComponentIdentity | None = None,
     owner: str | None = None,
@@ -691,6 +694,12 @@ def declare_component(
     )
     public_schema = _param_schema_from_model(model)
     required_fields = frozenset(schema.name for schema in public_schema if schema.required)
+    prototype_bindings = dict(build_output_prototypes or {})
+    if prototype_bindings:
+        if output_prototype_fn is None or set(prototype_bindings.values()) - set(output_ports):
+            raise ValueError(f"Component {name!r} must infer each output prototype it builds from")
+        if set(prototype_bindings) & (set(model.model_fields) | set(build_context_fields)):
+            raise ValueError(f"Component {name!r} cannot author compiler-provided prototypes")
     if extractor is not None and override_reason is None:
         raise ValueError(f"Component {name!r} extractor override requires a reason")
     if override_reason is not None and builder is None and extractor is None:
@@ -750,6 +759,7 @@ def declare_component(
             is_composite=is_composite,
             output_prototype_fn=output_prototype_fn,
             input_prototype_parameter=input_prototype_parameter,
+            build_output_prototypes=prototype_bindings,
         ),
         serialization=ComponentSerializationFacet(
             param_schema_version=param_schema_version,

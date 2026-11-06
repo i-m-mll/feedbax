@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import partial
 from math import prod
 from typing import Any, Protocol
@@ -33,6 +33,7 @@ from feedbax.control import (
 )
 from feedbax.control._vector import control_vector_prototype, require_control_vector
 from feedbax.control.affine import AffineFeedbackController, affine_feedback_output_prototype
+from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.muscle_config import (
     default_6muscle_2link_attachment_paths,
     default_6muscle_2link_segment_lengths,
@@ -231,14 +232,6 @@ def _channel_noise_values(channel: Any) -> dict[str, Any]:
     }
 
 
-def _prototype_shape(prototype: Any) -> list[int] | list[list[int]] | None:
-    leaves = jt.leaves(prototype)
-    if not leaves or not all(hasattr(leaf, "shape") for leaf in leaves):
-        return None
-    shapes = [[int(dim) for dim in leaf.shape] for leaf in leaves]
-    return shapes[0] if len(shapes) == 1 else shapes
-
-
 def _extract_channel_params(component: Any, model: Any) -> Any:
     values = {
         "delay": int(component.delay),
@@ -272,7 +265,6 @@ def _extract_feedback_channel_params(component: Any, model: Any) -> Any:
         "add_noise": noise["add_noise"],
         "noise_role": noise["noise_role"],
         "noise_timing": noise["noise_timing"],
-        "input_shape": _prototype_shape(channel.input_proto),
     }
     return type(model).model_validate(values)
 
@@ -1249,21 +1241,11 @@ def feedback_channels_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return the configured feedback-channel state prototype."""
+    """Select the signal tree from the resolved mechanics input."""
+    from feedbax.compiler.builders import _feedback_prototype
 
-    input_shape = params.get("input_shape")
-    if (
-        isinstance(input_shape, (list, tuple))
-        and input_shape
-        and all(isinstance(item, (list, tuple)) for item in input_shape)
-    ):
-        return {
-            "feedback": tuple(jnp.zeros(tuple(int(dim) for dim in item)) for item in input_shape)
-        }
-    proto = _array_proto_from_shape(input_shape)
-    if proto is None:
-        proto = (jnp.zeros(2), jnp.zeros(2))
-    return {"feedback": proto}
+    mechanics = _required_input(inputs, "mechanics", component="FeedbackChannels")
+    return {"feedback": _feedback_prototype(params, mechanics)}
 
 
 def spring_output_prototype(
@@ -1285,13 +1267,13 @@ def damper_output_prototype(
 
 
 def mechanics_state_output_prototype(
+    builder: Callable[[Mapping[str, Any]], Mechanics],
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return the default Cartesian state prototype used by mechanics plants."""
-
-    effector = CartesianState()
-    return {"effector": effector, "state": effector}
+    """Publish the same port trees as the initialized mechanics component."""
+    mechanics = builder(params)
+    return mechanics.initial_outputs(mechanics.state_index.init)
 
 
 def linear_state_space_output_prototype(
@@ -2144,7 +2126,9 @@ def register_builtin_components(registry: _Registry) -> None:
                     "state": PortType(dtype="state"),
                 },
             ),
-            output_prototype_fn=mechanics_state_output_prototype,
+            output_prototype_fn=partial(
+                mechanics_state_output_prototype, _builders._build_two_link_arm
+            ),
             representation=_two_link_arm_representation(),
         )
     )
@@ -2174,7 +2158,9 @@ def register_builtin_components(registry: _Registry) -> None:
                     "state": PortType(dtype="state"),
                 },
             ),
-            output_prototype_fn=mechanics_state_output_prototype,
+            output_prototype_fn=partial(
+                mechanics_state_output_prototype, _builders._build_point_mass
+            ),
             representation=_point_mass_representation(),
             template_graph=point_mass_template_graph(),
             template_id="feedbax.templates.mechanics.point_mass",
@@ -2544,7 +2530,10 @@ def register_builtin_components(registry: _Registry) -> None:
                     name="noise_timing", type="str", default="pre_controller", required=False
                 ),
                 ParameterField(
-                    name="input_shape", type="array", default=[[2], [2]], required=False
+                    name="input_shape",
+                    type="array",
+                    required=False,
+                    description="Legacy shape metadata. The selected mechanics state determines the channel shape.",
                 ),
             ],
             input_ports=["mechanics"],
@@ -2555,6 +2544,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 outputs={"feedback": PortType(dtype="state")},
             ),
             output_prototype_fn=feedback_channels_output_prototype,
+            build_output_prototypes={"feedback_proto": "feedback"},
         )
     )
     registry.register(

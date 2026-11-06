@@ -54,6 +54,7 @@ class GraphParameterResolution:
     node_inputs: dict[tuple[str, str], Any]
     node_outputs: dict[tuple[str, str], Any]
     errors: tuple[ParameterResolutionError, ...]
+    subgraphs: dict[str, GraphParameterResolution]
 
     @property
     def graph_outputs(self) -> dict[str, Any]:
@@ -496,12 +497,25 @@ class _Completion:
     def finish(self) -> GraphParameterResolution:
         subgraphs = dict(self.graph.subgraphs or {})
         errors = list(self.errors.values())
-        for name, child in self.children.items():
-            resolved = child.finish()
-            subgraphs[name] = resolved.graph
-            errors.extend(resolved.errors)
+        children = {name: child.finish() for name, child in self.children.items()}
+        for name, child in children.items():
+            subgraphs[name] = child.graph
+            errors.extend(child.errors)
         for name, node in self.nodes.items():
-            if name in self.errors or name in self.completed:
+            if name in self.errors:
+                continue
+            if name in self.completed:
+                meta = self.metadata[node.type]
+                ports = meta.compiler.build_output_prototypes.values() if meta else ()
+                missing = next((port for port in ports if (name, port) not in self.outputs), None)
+                if missing is not None:
+                    cause = self.deferred.get(name) or ValueError(
+                        f"{node.type} node {name!r} requires a resolved output "
+                        f"prototype for port {missing!r}"
+                    )
+                    errors.append(
+                        ParameterResolutionError(f"{self.path}/nodes/{_token(name)}", cause)
+                    )
                 continue
             for wire in self.graph.wires:
                 if wire.target_node == name and wire.source_node in self.deferred:
@@ -542,7 +556,7 @@ class _Completion:
         graph = self.graph.model_copy(
             update={"nodes": {**self.nodes, **self.completed}, "subgraphs": subgraphs or None}
         )
-        return GraphParameterResolution(graph, self.inputs, self.outputs, tuple(errors))
+        return GraphParameterResolution(graph, self.inputs, self.outputs, tuple(errors), children)
 
 
 def _token(value: str) -> str:
