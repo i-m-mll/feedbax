@@ -591,15 +591,7 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
         mt_length: Array,
         mp: HillMuscleParams,
     ) -> Array:
-        """Compute fiber velocity from force equilibrium.
-
-        Inverts the force-velocity relationship to find the velocity that
-        produces the required force. Uses piecewise inversion:
-        - If fv_required < 1.0: concentric (shortening) branch
-        - If fv_required >= 1.0: eccentric (lengthening) branch
-
-        This follows MotorNet's `_normalized_muscle_vel` approach.
-        """
+        """Compute fiber velocity from force equilibrium."""
         # Tendon force
         tendon_force = self._compute_tendon_force(fiber_length, mt_length, mp)
 
@@ -614,38 +606,8 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
 
         # Solve for velocity
         norm_required = required_fiber_force / mp.max_isometric_force
-        active_required = jnp.maximum(norm_required - passive, 0.0)
-
-        afl = jnp.maximum(activation * fl, 1e-6)
-        fv_required = jnp.clip(active_required / afl, 0.0, self.force_velocity.eccentric_force_max)
-
-        # Invert force-velocity relationship (piecewise)
-        a = self.force_velocity.concentric_curvature
-        b = self.force_velocity.eccentric_curvature
-        fmax = self.force_velocity.eccentric_force_max
-
-        # Concentric branch (fv < 1): shortening
-        # fv = (1 + v/a) / (1 - v/a)  =>  v = a * (fv - 1) / (fv + 1)
-        concentric_vel = a * (fv_required - 1.0) / (fv_required + 1.0 + 1e-8)
-
-        # Eccentric branch (fv >= 1): lengthening
-        # fv = fmax - (fmax-1) * (1 - v/b) / (1 + v/b)
-        # Solve for v:
-        # (fmax - fv) / (fmax - 1) = (1 - v/b) / (1 + v/b)
-        # Let r = (fmax - fv) / (fmax - 1 + 1e-8)
-        # r * (1 + v/b) = 1 - v/b
-        # r + r*v/b = 1 - v/b
-        # v/b * (r + 1) = 1 - r
-        # v = b * (1 - r) / (r + 1 + 1e-8)
-        r = (fmax - fv_required) / (fmax - 1.0 + 1e-8)
-        eccentric_vel = b * (1.0 - r) / (r + 1.0 + 1e-8)
-
-        # Select based on fv_required
-        norm_velocity = jnp.where(fv_required < 1.0, concentric_vel, eccentric_vel)
-
-        # Clamp to the shared normalized velocity convention.
-        norm_velocity = jnp.clip(
-            norm_velocity, -1.0, ECCENTRIC_VELOCITY_LIMIT_FRACTION
+        norm_velocity = self.force_velocity._inverse_active_force(
+            norm_required - passive, activation * fl,
         )
 
         return norm_velocity * mp.vmax * mp.optimal_fiber_length
