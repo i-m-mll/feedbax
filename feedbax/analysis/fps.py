@@ -1,7 +1,7 @@
 from collections.abc import Callable, Mapping
 from functools import partial
 from types import MappingProxyType
-from typing import Any, Optional, TypeVar
+from typing import Any, ClassVar, Optional, TypeVar
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -26,6 +26,7 @@ from feedbax.analysis.fp_finder import (
 from feedbax.analysis.pca import PCAResults, StatesPCA
 from feedbax.plot.experiments import plot_fp_pcs
 from feedbax.config.tree import ldict_level_to_bottom
+from feedbax.contracts.computation_revision import ANALYSIS_ENGINE_REVISION
 
 T = TypeVar("T")
 
@@ -64,6 +65,7 @@ class FixedPoints(AbstractAnalysis[FixedPointsPorts]):
     """
 
     Ports = FixedPointsPorts
+    computation_revision: ClassVar[str] = ANALYSIS_ENGINE_REVISION
     inputs: FixedPointsPorts = eqx.field(
         default_factory=FixedPointsPorts, converter=FixedPointsPorts.converter
     )

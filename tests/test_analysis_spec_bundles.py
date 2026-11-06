@@ -532,7 +532,9 @@ def test_analysis_run_spec_reuses_completed_manifest_without_recipe_call(
             data=build_toy_analysis_data(value=int(inputs[0].states["value"])),
         )
 
-    application_registry_bundle.analysis_recipes.register(TOY_ANALYSIS_TYPE, recipe)
+    application_registry_bundle.analysis_recipes.register(
+        TOY_ANALYSIS_TYPE, recipe, computation_revision="toy-v1"
+    )
     eval_manifest, eval_path = _execute_toy_eval(
         tmp_path,
         n_trials=2,
@@ -571,7 +573,7 @@ def test_analysis_run_spec_reuses_completed_manifest_without_recipe_call(
             experiment_registry=application_registry_bundle.experiment_packages,
         )
         indexed_manifest, indexed_path = find_manifest_by_id(
-            analysis_run_manifest_id(spec),
+            manifest.id,
             root=tmp_path,
         )
 
@@ -1345,7 +1347,9 @@ def test_staged_bundle_rerun_reuses_eval_and_analysis_manifests(
         )
 
     application_registry_bundle.evaluation_recipes.register(TOY_EVALUATION_TYPE, eval_recipe)
-    application_registry_bundle.analysis_recipes.register(TOY_ANALYSIS_TYPE, analysis_recipe)
+    application_registry_bundle.analysis_recipes.register(
+        TOY_ANALYSIS_TYPE, analysis_recipe, computation_revision="toy-v1"
+    )
     _write_toy_training(tmp_path, method="minimax")
     bundle = AnalysisBundleSpec(
         name="toy_cache_reuse",

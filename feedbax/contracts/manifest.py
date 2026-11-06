@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.artifact_store import (
@@ -53,6 +53,7 @@ from feedbax.contracts.base import (
     authenticated_manifest_ref_metadata as authenticated_manifest_ref_metadata,
 )
 from feedbax.contracts.graph import AnalysisInputRequirement
+from feedbax.contracts.computation_revision import validate_computation_revision
 from feedbax.contracts.retention_artifact_schema import (
     retention_artifact_metadata,
 )
@@ -1175,10 +1176,32 @@ class AnalysisEvaluationStateResolutionDiagnostic(StrictModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class AnalysisComputation(StrictModel):
+    """Authority for an analysis receipt at a resolved execution identity."""
+
+    model_config = ConfigDict(frozen=True)
+
+    engine_revision: str
+    recipe_revision: str | None = None
+    execution_nonce: uuid.UUID | None = None
+
+    @field_validator("engine_revision", "recipe_revision")
+    @classmethod
+    def _validate_revision(cls, revision: str | None) -> str | None:
+        return validate_computation_revision(revision)
+
+    @model_validator(mode="after")
+    def _validate_authority(self) -> AnalysisComputation:
+        if (self.recipe_revision is None) == (self.execution_nonce is None):
+            raise ValueError("analysis computation requires exactly one recipe revision or nonce")
+        return self
+
+
 class AnalysisRunManifest(BaseManifest):
     kind: Literal["AnalysisRunManifest"] = "AnalysisRunManifest"
     schema_version: str = ANALYSIS_RUN_MANIFEST_SCHEMA_VERSION
     analysis_spec: SpecPayload
+    computation: AnalysisComputation | None = None
     inputs: list[ParentRef] = Field(default_factory=list)
     evaluation_state_sources: list[AnalysisEvaluationStateSource] = Field(default_factory=list)
     evaluation_state_resolution_diagnostics: list[AnalysisEvaluationStateResolutionDiagnostic] = (
@@ -1971,9 +1994,20 @@ def planned_training_run_set_manifest_id(
     return f"feedbax-training-run-set:{digest[:32]}"
 
 
-def analysis_run_manifest_id(spec: AnalysisRunSpec) -> str:
-    """Return deterministic run identity for an analysis spec."""
-    digest = sha256_bytes(canonical_json_bytes(spec))
+def analysis_run_manifest_id(
+    spec: AnalysisRunSpec, *, computation: AnalysisComputation | None = None
+) -> str:
+    """Return a resolved run ID, or the historical spec-only ID without computation."""
+    preimage = (
+        spec
+        if computation is None
+        else {
+            "schema_version": "feedbax.identity.analysis_run.v2",
+            "spec": spec.model_dump(mode="json", exclude_none=True),
+            "computation": computation.model_dump(mode="json", exclude_none=True),
+        }
+    )
+    digest = sha256_bytes(canonical_json_bytes(preimage))
     return f"feedbax-analysis-run:{digest[:32]}"
 
 
@@ -2033,7 +2067,14 @@ def write_manifest(
         and manifest.schema_version == EVALUATION_RUN_MANIFEST_SCHEMA_VERSION
         else manifest.model_dump_json(indent=2, exclude_none=True)
     )
-    write_bytes_atomic(path, (serialized + "\n").encode("utf-8"), mode=0o666)
+    one_execution = (
+        isinstance(manifest, AnalysisRunManifest)
+        and manifest.computation is not None
+        and manifest.computation.execution_nonce is not None
+    )
+    write_bytes_atomic(
+        path, (serialized + "\n").encode("utf-8"), mode=0o666, replace=not one_execution
+    )
     if index:
         from feedbax.persistence.manifest_index import index_manifest_file
 

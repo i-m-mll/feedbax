@@ -345,7 +345,9 @@ def test_analysis_node_executes_then_reuses(environment) -> None:
             data=build_toy_analysis_data(value=3),
         )
 
-    environment.registries.analysis_recipes.register("testpkg.fulfillment", analysis_recipe)
+    environment.registries.analysis_recipes.register(
+        "testpkg.fulfillment", analysis_recipe, computation_revision="1"
+    )
     node = AnalysisNodeRequest(
         node_key="analysis/main",
         spec=AnalysisRunSpec(analysis_type="testpkg.fulfillment", params={"k": 1}),
@@ -466,8 +468,6 @@ def test_a_verified_token_cannot_be_paired_with_a_foreign_profile(
 ) -> None:
     """The token names the profile it measured, so the two cannot be mismatched."""
     from dataclasses import replace as dataclass_replace
-
-    from feedbax.analysis.fulfillment import FulfillmentReceipt
 
     receipt = fulfill_node(_evaluation_node("eval/token"), environment=environment).receipt
     with pytest.raises(ValueError, match="not the profile the verified read settled"):

@@ -105,6 +105,7 @@ from feedbax.analysis.result_cache import (
     _load_analysis_result_cache,
     _write_analysis_result_cache,
 )
+from feedbax.contracts.computation_revision import validate_computation_revision
 
 if TYPE_CHECKING:
     from typing import ClassVar as AbstractClassVar
@@ -342,14 +343,17 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
     Class attributes:
         Ports: The structure and defaults for the input ports of the analysis subclass.
+        computation_revision: Revision of the raw computation, including its implementation
+            dependencies. Declare it as a ClassVar on each cacheable concrete class and change it when
+            the computation changes. Subclasses must declare their own revision.
 
     Fields:
         inputs: The port->input mapping for the analysis instance.
         variant: Label of the evaluation variant this analysis uses (primarily).
-        cache_result: Reuse raw computation results for supported prepared values. Cached
-            computations must treat their inputs as read-only values and use a stable
-            analysis implementation within the cache. Opaque inputs such as Python
-            functions run without result-cache reads or writes.
+        cache_result: Reuse raw computation results for a declared computation revision
+            and supported prepared values. Cached computations must treat their inputs
+            as read-only values. Opaque inputs such as Python functions run without
+            result-cache reads or writes.
     """
 
     _exclude_fields = (
@@ -364,6 +368,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     )
 
     Ports: ClassVar[type[PortsType]] = NoPorts  # type: ignore
+    computation_revision: ClassVar[str | None] = None
     inputs: PortsType = field(default_factory=NoPorts, converter=NoPorts.converter)
 
     variant: Optional[str] = (
@@ -391,6 +396,10 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
     _map_make_figs_spec: Optional[tuple[Callable[[Any], bool], Optional[str | Sequence[str]]]] = (
         field(default=None)
     )
+
+    def __check_init__(self) -> None:
+        if any(member.name == "computation_revision" for member in dataclasses.fields(self)):
+            raise TypeError("computation_revision must be declared as a ClassVar")
 
     def __post_init__(self):
         """Validate inputs instance and check for unresolved required inputs."""
@@ -566,7 +575,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 result = _compute_core(prepped_data, prepped_kwargs)
                 return result
 
-        def _compute_cached():
+        def _compute_cached(computation_revision: str):
             # Declared default functions are part of the stable analysis implementation.
             config = {
                 name: value
@@ -579,7 +588,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             }
             try:
                 inputs_hash = _fingerprint_cache_inputs(
-                    type(self), config, prepped_data, prepped_kwargs
+                    type(self), computation_revision, config, prepped_data, prepped_kwargs
                 )
             except _UnsupportedCacheInput as exc:
                 logger.debug("Skipping result cache for %s: %s", self.name, exc)
@@ -624,7 +633,12 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         use_result_cache = self.cache_result and (
             analysis_context is None or analysis_context.use_result_cache
         )
-        result = _compute_cached() if use_result_cache else _run_compute()
+        computation_revision = (
+            validate_computation_revision(vars(type(self)).get("computation_revision"))
+            if use_result_cache
+            else None
+        )
+        result = _compute_cached(computation_revision) if computation_revision else _run_compute()
 
         result = _apply_final_ops(self, "results", result, data=prepped_data, **prepped_kwargs)
         if analysis_context is not None:

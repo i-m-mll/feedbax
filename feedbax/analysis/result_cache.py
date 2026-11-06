@@ -17,10 +17,11 @@ import jax.tree_util as jtu
 import numpy as np
 
 from feedbax._atomic import write_bytes_atomic
+from feedbax.contracts.computation_revision import ANALYSIS_ENGINE_REVISION
 
 
 RESULTS_CACHE_SUBDIR = "results"
-ANALYSIS_RESULT_CACHE_SCHEMA_VERSION = "feedbax.analysis.result-cache.v2"
+ANALYSIS_RESULT_CACHE_SCHEMA_VERSION = "feedbax.analysis.result-cache.v3"
 
 _CACHE_LOAD_ERRORS = (
     OSError,
@@ -43,16 +44,20 @@ class _UnsupportedCacheInput(TypeError):
 
 
 def _fingerprint_cache_inputs(
-    analysis_type: type, config: Mapping[str, Any], data: Any, kwargs: Mapping[str, Any]
+    analysis_type: type,
+    computation_revision: str,
+    config: Mapping[str, Any],
+    data: Any,
+    kwargs: Mapping[str, Any],
 ) -> str:
-    """Hash computation configuration and prepared values under cache value semantics.
+    """Hash the declared computation, its configuration, and prepared values.
 
     Supported values are typed scalars, concrete arrays, ordered containers,
     Equinox fields (including static fields), and registered PyTrees whose
     children and auxiliary data are supported. Arrays are identified by logical
     values, dtype and shape rather than storage layout. The analysis must treat
-    its inputs as read-only values and its named classes as stable within a
-    cache. Opaque objects and Python functions cannot authorize reuse.
+    its inputs as read-only values. Opaque objects and Python functions cannot
+    authorize reuse.
     """
     digest = hashlib.sha256()
 
@@ -172,7 +177,9 @@ def _fingerprint_cache_inputs(
             encode(child)
 
     text(ANALYSIS_RESULT_CACHE_SCHEMA_VERSION)
+    text(ANALYSIS_ENGINE_REVISION)
     type_name(analysis_type)
+    text(computation_revision)
     try:
         encode(config)
         encode(kwargs)

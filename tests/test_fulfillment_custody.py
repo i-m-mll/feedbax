@@ -135,7 +135,9 @@ def environment(tmp_path: Path, application_registry_bundle, recipes: _Recipes):
         "testpkg.custody.stateful", stateful_evaluation_recipe
     )
     application_registry_bundle.report_recipes.register("testpkg.custody", report_recipe)
-    application_registry_bundle.analysis_recipes.register("testpkg.custody", analysis_recipe)
+    application_registry_bundle.analysis_recipes.register(
+        "testpkg.custody", analysis_recipe, computation_revision="test-v1"
+    )
     return FulfillmentEnvironment(
         root=tmp_path / "receipts",
         registries=application_registry_bundle,
@@ -465,6 +467,7 @@ def test_analysis_rebuild_stages_evaluation_states(
     environment.registries.analysis_recipes.register(
         "testpkg.readstates",
         analysis_recipe,
+        computation_revision="test-v1",
         evaluation_states_structure=lambda _manifest: jtu.tree_structure(
             {"trajectory": [1, 2, 3]}
         ),

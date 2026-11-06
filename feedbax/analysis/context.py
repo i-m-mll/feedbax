@@ -25,6 +25,7 @@ from feedbax.contracts.artifact_store import (
     store_artifact,
 )
 from feedbax.contracts.manifest import (
+    AnalysisComputation,
     AnalysisOutputDescriptor,
     AnalysisDataProduct,
     AnalysisEvaluationStateResolutionDiagnostic,
@@ -82,6 +83,9 @@ class AnalysisRunContext:
 
     ``use_result_cache`` controls result-cache reads and writes throughout the
     computation graph. It does not affect authenticated input resolution.
+    Registered recipe execution supplies its resolved computation identity.
+    Standalone materializers can use the spec-only address when their own spec
+    already binds computation authority.
     """
 
     spec: AnalysisRunSpec
@@ -94,6 +98,7 @@ class AnalysisRunContext:
     experiment_registry: ExperimentRegistry | None = None
     index_manifest: bool = True
     use_result_cache: bool = True
+    computation: AnalysisComputation | None = None
     _artifacts: list[ArtifactRef] = field(default_factory=list, init=False)
     _regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = field(
         default_factory=list,
@@ -116,8 +121,8 @@ class AnalysisRunContext:
 
     @property
     def manifest_id(self) -> str:
-        """Return the deterministic analysis-run manifest identifier."""
-        return analysis_run_manifest_id(self.spec)
+        """Return the resolved analysis-run manifest identifier."""
+        return analysis_run_manifest_id(self.spec, computation=self.computation)
 
     @property
     def root_path(self) -> Path:
@@ -498,6 +503,7 @@ class AnalysisRunContext:
                 "AnalysisRunSpec",
                 self.spec.model_dump(mode="json", exclude_none=True),
             ),
+            computation=self.computation,
             inputs=list(self.spec.inputs),
             evaluation_state_sources=list(self._evaluation_state_sources),
             evaluation_state_resolution_diagnostics=list(

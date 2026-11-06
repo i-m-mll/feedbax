@@ -1,6 +1,7 @@
 """Fresh execution must bypass cached computations throughout the analysis graph."""
 
 from pathlib import Path
+from typing import ClassVar
 
 import equinox as eqx
 import pytest
@@ -28,11 +29,15 @@ def cached_graph():
     computation = {"value": 3}
 
     class Source(AbstractAnalysis):
+        computation_revision: ClassVar[str] = "1"
+
         def compute(self, data, **kwargs):
             calls["source"] += 1
             return computation["value"]
 
     class Selected(ToyAnalysis):
+        computation_revision: ClassVar[str] = "1"
+
         def compute(self, data, source, **kwargs):
             calls["selected"] += 1
             return {"value": source + 1}
@@ -55,7 +60,7 @@ def cached_graph():
 
     spec = AnalysisRunSpec(analysis_type="test.cached_graph")
     registry = AnalysisRecipeRegistry()
-    registry.register(spec.analysis_type, recipe)
+    registry.register(spec.analysis_type, recipe, computation_revision="1")
     return spec, registry, calls, computation, recipe
 
 
@@ -78,7 +83,9 @@ def test_fresh_execution_bypasses_selected_and_transitive_result_caches(
 
     _manifest, path = execute()
     assert calls == {"source": 1, "selected": 1}
-    cache_dir = AnalysisRunContext(spec=spec, root=tmp_path).results_cache_dir
+    cache_dir = AnalysisRunContext(
+        spec=spec, root=tmp_path, computation=registry.computation(spec.analysis_type)
+    ).results_cache_dir
     def cache_snapshot():
         return {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in cache_dir.glob("*.pkl")}
 
@@ -103,14 +110,15 @@ def test_fresh_execution_bypasses_selected_and_transitive_result_caches(
 
     uncached_root = tmp_path / "uncached"
     execute(root=uncached_root, **fresh)
-    assert not AnalysisRunContext(spec=spec, root=uncached_root).results_cache_dir.exists()
+    assert not (uncached_root / "cache" / "analysis_results").exists()
 
 
 def test_rebuild_detects_changed_computation_despite_mirrored_result_caches(
     tmp_path: Path, application_registry_bundle, cached_graph
 ) -> None:
     spec, _registry, calls, computation, recipe = cached_graph
-    application_registry_bundle.analysis_recipes.register(spec.analysis_type, recipe)
+    registry = application_registry_bundle.analysis_recipes
+    registry.register(spec.analysis_type, recipe, computation_revision="1")
     environment = FulfillmentEnvironment(root=tmp_path, registries=application_registry_bundle)
     node = AnalysisNodeRequest(node_key="cached", spec=spec)
     execute_analysis_run_spec(
@@ -120,7 +128,9 @@ def test_rebuild_detects_changed_computation_despite_mirrored_result_caches(
         experiment_registry=application_registry_bundle.experiment_packages,
         root=tmp_path,
     )
-    cache_dir = AnalysisRunContext(spec=spec, root=tmp_path).results_cache_dir
+    cache_dir = AnalysisRunContext(
+        spec=spec, root=tmp_path, computation=registry.computation(spec.analysis_type)
+    ).results_cache_dir
     cached_bytes = {p: p.read_bytes() for p in cache_dir.glob("*.pkl")}
     assert len(cached_bytes) == 2
     receipt = fulfill_node(node, environment=environment).receipt
