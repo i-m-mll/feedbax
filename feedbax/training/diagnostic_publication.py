@@ -11,6 +11,7 @@ from tempfile import TemporaryFile
 from types import TracebackType
 from typing import BinaryIO
 
+from feedbax._atomic import sync_parent_directories
 from feedbax.contracts.base import ArtifactRef, sha256_file
 from feedbax.training.diagnostics import (
     METHOD_TRAINING_TRACE_ARTIFACT_ROLE,
@@ -73,6 +74,7 @@ class _StagedTrainingDiagnostics:
                 raise conflict_error(
                     f"training diagnostics already exist with different content: {self._path}"
                 ) from exc
+        sync_parent_directories(self._path)
         self._staged.unlink()
         return self._path
 

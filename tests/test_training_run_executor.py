@@ -26,6 +26,7 @@ import feedbax.training.executor as training_executor
 import feedbax.training.phase_executor as phase_executor
 import feedbax.orchestration.events as orchestration_events
 import feedbax.__main__ as feedbax_main
+from feedbax import _atomic
 from feedbax.analysis.execution_context import (
     StagedCheckpointCustodyRootBinding,
     resolve_staged_execution_context,
@@ -3915,6 +3916,34 @@ def test_native_diagnostics_conflict_fails_before_training_or_checkpoint_side_ef
     assert list(collection_root.iterdir()) == [diagnostics_path]
     assert not (tmp_path / "manifest-root").exists()
     assert not (tmp_path / "checkpoint-root").exists()
+
+
+def test_native_manifest_waits_for_diagnostics_directory_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    collection_root = tmp_path / "row"
+    collection_root.mkdir()
+    sync_directory = _atomic._fsync_directory
+
+    def fail_diagnostics_sync(path: Path) -> None:
+        if path == collection_root.resolve():
+            assert (path / "training-diagnostics.json").is_file()
+            raise OSError("diagnostics directory sync failed")
+        sync_directory(path)
+
+    monkeypatch.setattr(_atomic, "_fsync_directory", fail_diagnostics_sync)
+    with pytest.raises(OSError, match="diagnostics directory sync failed"):
+        execute_training_run_spec(
+            _run_spec(),
+            registry=synthetic_training_program_registry(),
+            initial_slots=_initial_slots(),
+            manifest_root=tmp_path / "manifest-root",
+            checkpoint_root=tmp_path / "checkpoint-root",
+            execution_context=_execution_context(collection_root=collection_root),
+            retain_history=False,
+        )
+
+    assert not (collection_root / "manifest.json").exists()
 
 
 def test_orchestration_injects_canonical_context_only_for_native_commands() -> None:
