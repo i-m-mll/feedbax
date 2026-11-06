@@ -41,6 +41,7 @@ from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from feedbax._atomic import write_bytes_atomic as _write_bytes_atomic
+from feedbax.components.equinox import _LegacyWrapperLayoutError
 from feedbax._secure_fs import (
     SecurePathRigor,
     directory_open_flags,
@@ -7224,6 +7225,8 @@ def _deserialize_checkpoint_slot(slot: CheckpointSlotBlobRef, path: Path) -> Any
     blob_bytes = _read_blob(slot, path)
     try:
         return pickle.loads(blob_bytes)
+    except _LegacyWrapperLayoutError as exc:
+        raise CheckpointCompatibilityError(f"checkpoint slot {slot.slot!r}: {exc}") from exc
     except Exception as exc:
         raise CheckpointIntegrityError(
             f"checkpoint slot {slot.slot!r} could not be deserialized"

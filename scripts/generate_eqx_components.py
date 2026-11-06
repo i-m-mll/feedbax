@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import inspect
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from types import UnionType
+from typing import Literal, Union, get_args, get_origin
 
 import equinox.nn as nn
 
@@ -40,6 +41,8 @@ class ComponentSpec:
     docstring: str | None = None
     # Parameters to exclude from __init__ (handled specially)
     exclude_params: tuple[str, ...] = ()
+    # Constructor seeds exposed as live properties: public name -> (layer attribute, type).
+    layer_properties: dict[str, tuple[str, str]] = field(default_factory=dict)
     # How the wrapper calls the underlying layer.
     call_kind: Literal[
         "single_input",
@@ -70,7 +73,17 @@ COMPONENT_SPECS: list[ComponentSpec] = [
     ComponentSpec(
         "MLP",
         category="linear",
-        docstring="Multi-layer perceptron with configurable depth and activations.",
+        docstring="""Multi-layer perceptron with configurable depth and activations.
+
+    The constructor's `activation` and `final_activation` seed the layer's
+    activations. The properties expose the live callables used by the layer,
+    with learned parameters batched per hidden layer and neuron for
+    `activation` and per output neuron for a vector-valued `final_activation`.
+    """,
+        layer_properties={
+            "activation": ("activation", "Callable"),
+            "final_activation": ("final_activation", "Callable"),
+        },
     ),
     # === Convolutional layers ===
     ComponentSpec(
@@ -144,6 +157,7 @@ COMPONENT_SPECS: list[ComponentSpec] = [
         state_handling="threads_eqx_state",
         key_handling="optional_forwarded",
         docstring="Batch normalization with explicit Equinox State threading.",
+        exclude_params=("mode",),
     ),
     # === Pooling layers ===
     ComponentSpec(
@@ -225,7 +239,12 @@ COMPONENT_SPECS: list[ComponentSpec] = [
     ComponentSpec(
         "Embedding",
         category="other",
-        docstring="Embedding layer for discrete tokens.",
+        docstring="""Embedding layer for discrete tokens.
+
+    The optional constructor `weight` seeds the embedding table. The
+    `weight` property exposes the live table, including when randomly initialized.
+    """,
+        layer_properties={"weight": ("weight", 'Float[Array, "num_embeddings embedding_size"]')},
     ),
     ComponentSpec(
         "Dropout",
@@ -237,7 +256,12 @@ COMPONENT_SPECS: list[ComponentSpec] = [
     ComponentSpec(
         "PReLU",
         category="other",
-        docstring="Parametric ReLU activation.",
+        docstring="""Parametric ReLU activation.
+
+    The constructor `init_alpha` seeds the negative slope. The
+    `init_alpha` property exposes the live slope as an array.
+    """,
+        layer_properties={"init_alpha": ("negative_slope", "Array")},
     ),
 ]
 
@@ -256,6 +280,13 @@ def format_type_annotation(annotation) -> str:
     if annotation is type(None):
         return "None"
 
+    if get_origin(annotation) in (Union, UnionType):
+        args = get_args(annotation)
+        if len(args) == 2 and type(None) in args:
+            arg = next(arg for arg in args if arg is not type(None))
+            return f"Optional[{format_type_annotation(arg)}]"
+        return f"Union[{', '.join(format_type_annotation(arg) for arg in args)}]"
+
     # Handle Literal types specially
     if hasattr(annotation, "__origin__"):
         origin = annotation.__origin__
@@ -270,12 +301,6 @@ def format_type_annotation(annotation) -> str:
             # Format Literal args as strings
             formatted_args = ", ".join(repr(a) for a in args)
             return f"Literal[{formatted_args}]"
-
-        # Handle Optional (Union with None)
-        if origin_name == "Union" and type(None) in args:
-            non_none_args = [a for a in args if a is not type(None)]
-            if len(non_none_args) == 1:
-                return f"Optional[{format_type_annotation(non_none_args[0])}]"
 
         if args:
             formatted_args = ", ".join(format_type_annotation(a) for a in args)
@@ -376,8 +401,6 @@ def generate_component_class(spec: ComponentSpec) -> str:
 
     # Build __init__ signature
     init_params = ["self"]
-    init_body_assignments = []
-    stored_attrs = []
 
     for name, param in positional_params:
         type_hint = format_type_annotation(param.annotation)
@@ -385,8 +408,6 @@ def generate_component_class(spec: ComponentSpec) -> str:
             init_params.append(f"{name}: {type_hint}")
         else:
             init_params.append(name)
-        stored_attrs.append(name)
-        init_body_assignments.append(f"self.{name} = {name}")
 
     for name, param in keyword_params:
         type_hint = format_type_annotation(param.annotation)
@@ -399,8 +420,6 @@ def generate_component_class(spec: ComponentSpec) -> str:
             init_params.append(f"{name} = {default}")
         else:
             init_params.append(name)
-        stored_attrs.append(name)
-        init_body_assignments.append(f"self.{name} = {name}")
 
     # Add key parameter
     if has_key_param:
@@ -427,14 +446,27 @@ def generate_component_class(spec: ComponentSpec) -> str:
     call_body = f"""
         return {call_helpers[spec.call_kind]}(self, inputs, state, key=key)"""
 
-    # Generate attribute declarations for stored params
+    # Generate fields only for parameters owned by the wrapper.
     attr_declarations = []
+    init_body_assignments = []
     for name, param in positional_params + keyword_params:
-        type_hint = format_type_annotation(param.annotation)
-        if type_hint:
-            attr_declarations.append(f"    {name}: {type_hint}")
-        else:
-            attr_declarations.append(f"    {name}: Any")
+        if name in spec.layer_properties:
+            continue
+        type_hint = format_type_annotation(param.annotation) or "Any"
+        attr_declarations.append(f"    {name}: {type_hint}")
+        init_body_assignments.append(f"        self.{name} = {name}\n")
+
+    properties = "".join(
+        f"\n    @property\n"
+        f"    def {name}(self) -> {type_hint}:\n"
+        f"        return self.layer.{layer_attr}\n"
+        for name, (layer_attr, type_hint) in spec.layer_properties.items()
+    )
+    if spec.layer_properties:
+        properties += (
+            "\n    def __setstate__(self, state: _PickleState) -> None:\n"
+            f"        _restore_wrapper_state(self, state, {tuple(spec.layer_properties)!r})\n"
+        )
 
     # Build the class
     docstring = spec.docstring or f"Component wrapper for eqx.nn.{spec.eqx_class_name}."
@@ -461,8 +493,8 @@ class {spec.eqx_class_name}(Component):
     layer: eqx.nn.{spec.eqx_class_name}
 {chr(10).join(attr_declarations) if attr_declarations else ""}
     def __init__({", ".join(init_params)}):
-{chr(10).join(f"        {line}" for line in init_body_assignments)}
-        self.layer = eqx.nn.{spec.eqx_class_name}({layer_call_args})
+{"".join(init_body_assignments)}        self.layer = eqx.nn.{spec.eqx_class_name}({layer_call_args})
+{properties}
 
     def __call__(
         self,
@@ -508,7 +540,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 from feedbax.runtime.graph import Component
 
 
-EQUINOX_WRAPPER_SCHEMA_VERSION = "feedbax.equinox_wrappers.v2"
+EQUINOX_WRAPPER_SCHEMA_VERSION = "feedbax.equinox_wrappers.v3"
 EQUINOX_WRAPPER_GENERATOR = "scripts/generate_eqx_components.py"
 EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
 
@@ -544,7 +576,31 @@ EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
         + "}\n"
     )
 
-    helpers = """
+    helpers = '''
+
+class _LegacyWrapperLayoutError(ValueError):
+    """Pickled wrapper state predates layer-owned trainable parameters."""
+
+
+_PickleState = dict[str, Any] | tuple[dict[str, Any] | None, dict[str, Any]]
+
+
+def _restore_wrapper_state(
+    component: Component, state: _PickleState, former_fields: tuple[str, ...]
+) -> None:
+    attrs, slots = state if isinstance(state, tuple) else (state, {})
+    obsolete = ((attrs or {}).keys() | slots.keys()).intersection(former_fields)
+    if obsolete:
+        fields = ", ".join(sorted(obsolete))
+        raise _LegacyWrapperLayoutError(
+            f"{type(component).__name__} uses the pre-v3 wrapper layout ({fields}). "
+            "Use the producer version of Feedbax to export the live layer parameters."
+        )
+    if attrs is not None:
+        vars(component).update(attrs)
+    for name, value in slots.items():
+        object.__setattr__(component, name, value)
+
 
 def _call_single_input_layer(
     component: Component,
@@ -618,7 +674,7 @@ def _call_multihead_attention_layer(
         key=key,
     )
     return {"output": output}, state
-"""
+'''
 
     # Generate classes grouped by category
     body_parts = []
