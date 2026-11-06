@@ -21,6 +21,26 @@ from feedbax.training.rl.env import RLEnvConfig, _physics_substep
 pytestmark = pytest.mark.usefixtures("enable_jax_x64")
 
 
+def test_pointmass_vector_field_preserves_mixed_precision():
+    pointmass = PointMass(
+        mass=jnp.array(3, dtype=jnp.float32),
+        damping=jnp.array(1, dtype=jnp.float32),
+    )
+    state = CartesianState(
+        pos=jnp.zeros(2, dtype=jnp.float64),
+        vel=jnp.array([0, 3], dtype=jnp.float32),
+        force=jnp.array([2**24, 0], dtype=jnp.float32),
+    )
+    force = jnp.array([1, 0], dtype=jnp.float32)
+
+    derivative = jax.jit(PointMass.vector_field)(pointmass, 0, state, force)
+
+    assert derivative.pos.dtype == derivative.vel.dtype == jnp.float64
+    np.testing.assert_array_equal(derivative.pos, [0, 3])
+    # The force sum and damping ratio round in float32 before widening.
+    np.testing.assert_array_equal(derivative.vel, [2**24 / 3, -1 - 2**-25])
+
+
 @pytest.mark.parametrize("solver_type", [dfx.Euler, dfx.Heun, dfx.Tsit5])
 @pytest.mark.parametrize("mixed", [False, True])
 @pytest.mark.parametrize("compiled", [False, True])

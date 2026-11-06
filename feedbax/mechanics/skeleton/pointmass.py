@@ -7,11 +7,10 @@
 from typing import Optional
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 
-from feedbax.mechanics.dynamics import LinearSystem, LTISystem
+from feedbax.mechanics.dynamics import LinearSystem
 from feedbax.mechanics.skeleton import AbstractSkeleton
 from feedbax.runtime.state import CartesianState
 
@@ -36,6 +35,13 @@ class PointMass(AbstractSkeleton[CartesianState]):
     mass: float
     damping: float = 0
 
+    def _divide_by_mass(self, numerator: Array | float) -> Array | float:
+        return numerator / self.mass
+
+    @property
+    def _damping_gain(self) -> Array | float:
+        return -self._divide_by_mass(self.damping)
+
     @property
     def A(self) -> Array:
         A_undamped = jnp.sum(jnp.stack(
@@ -47,7 +53,7 @@ class PointMass(AbstractSkeleton[CartesianState]):
 
         vel_slice = slice(N_DIM, 2 * N_DIM)
         A_damping = jnp.zeros_like(A_undamped).at[vel_slice, vel_slice].set(
-            -(self.damping / self.mass) * jnp.eye(N_DIM)
+            self._damping_gain * jnp.eye(N_DIM)
         )
 
         return A_undamped + A_damping
@@ -55,17 +61,13 @@ class PointMass(AbstractSkeleton[CartesianState]):
     @property
     def B(self) -> Array:
         return jnp.concatenate(
-            [jnp.zeros((N_DIM, N_DIM)), jnp.eye(N_DIM) / self.mass],
+            [jnp.zeros((N_DIM, N_DIM)), self._divide_by_mass(jnp.eye(N_DIM))],
             axis=0,
         )
 
     @property
     def C(self) -> Array:
         return jnp.array(1)  # TODO
-
-    @property
-    def _lti_system(self) -> LTISystem:
-        return LTISystem(self.A, self.B, self.C)
 
     def vector_field(
         self, t: Scalar, state: CartesianState, input: Float[Array, "input"]
@@ -81,10 +83,12 @@ class PointMass(AbstractSkeleton[CartesianState]):
         # `update_state_given_effector_force` executed during the
         # "update_effector_force" stage of `Mechanics`
         force = input + state.force
-        state_ = jnp.concatenate([state.pos, state.vel])
-        d_y = self._lti_system.vector_field(t, state_, force)
-
-        return CartesianState(pos=d_y[:2], vel=d_y[2:])
+        # Match the separate state and force terms of A @ state + B @ force.
+        unit = jnp.ones(())
+        damping_gain = jnp.asarray(self._damping_gain, dtype=unit.dtype)
+        velocity = state.vel.astype(jnp.result_type(unit, state.pos, state.vel))
+        acceleration = damping_gain * velocity + self._divide_by_mass(unit) * force
+        return CartesianState(pos=velocity.astype(acceleration.dtype), vel=acceleration)
 
     def forward_kinematics(self, state: CartesianState) -> CartesianState:
         """Trivially, returns the Cartesian state of the point mass itself."""
@@ -143,7 +147,7 @@ class PointMass(AbstractSkeleton[CartesianState]):
     @property
     def input_size(self) -> int:
         """Number of control variables."""
-        return self.B.shape[1]
+        return N_DIM
 
     def linearize(self, state: Optional[CartesianState] = None) -> LinearSystem:
         """Continuous-time ``(A, B, B_w)`` for the point mass.
