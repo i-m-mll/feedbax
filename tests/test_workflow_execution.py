@@ -549,7 +549,7 @@ def test_analysis_computation_revision_controls_reuse_and_preserves_exact_receip
     second_revision = "recipe-20" if scenario == "recipe-revision" else first_revision
     with monkeypatch.context() as prior_engine:
         if scenario == "engine-revision":
-            prior_engine.setattr(analysis_specs, "ANALYSIS_ENGINE_REVISION", "1")
+            prior_engine.setattr(analysis_specs, "ANALYSIS_ENGINE_REVISION", "3")
         first_registry = registered(10, first_revision)
         first, first_path = run(first_registry)
     first_bytes = first_path.read_bytes()
