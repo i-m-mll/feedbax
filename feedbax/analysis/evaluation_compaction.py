@@ -16,6 +16,7 @@ from feedbax.contracts.strict_json import strict_json_loads
 
 from feedbax.analysis.execution_context import StagedExecutionContext
 from feedbax.contracts.evaluation_lifecycle import (
+    EvaluationBatchCompactionEvidence,
     EvaluationBatchConsumerDeclaration,
     EvaluationBatchLeafAcknowledgement,
     EvaluationBatchMergeCheckpoint,
@@ -47,6 +48,7 @@ from feedbax.contracts.base import (
 from feedbax.contracts.manifest import (
     AnalysisRunManifest,
     AnalysisRunSpec,
+    canonical_manifest_path,
     EvaluationRunManifest,
     RegenerationCommand,
     RegenerationSpec,
@@ -456,7 +458,19 @@ def reclaim_evaluation_batch_caches(
     manifest_ids = tuple(outcome.manifest_id for outcome in outcomes)
     if tuple(outcome.row_id for outcome in outcomes) != batch.ordered_row_ids:
         raise ValueError("reclamation outcomes drifted from the authored batch")
-    current_parent_authorities = _parent_authorities_from_outcomes(outcomes)
+    evaluation_provider = (
+        ImmutableArtifactBlobProvider(evaluation_custody_root.absolute())
+        if evaluation_custody_root is not None
+        else None
+    )
+    published = (
+        tuple(_read_batch_manifest(evaluation_provider, outcome.manifest_id) for outcome in outcomes)
+        if evaluation_provider is not None
+        else ()
+    )
+    current_parent_authorities = _parent_authorities_from_outcomes(
+        outcomes, published=published
+    )
     declarations_by_leaf = {item.leaf_id: item for item in required_declarations}
     if len(declarations_by_leaf) != len(required_declarations):
         raise ValueError("raw cache reclamation requires unique consumer declarations")
@@ -497,6 +511,7 @@ def reclaim_evaluation_batch_caches(
         provider.get_bytes(acknowledgement.fragment)
         provider.get_bytes(acknowledgement.merge_state)
     checkpoint = custody_root / "reclamation-checkpoints" / f"{batch.batch_id}.json"
+    evidence = None
     if not policy.retain_intermediates and checkpoint.is_file():
         evidence = EvaluationBatchReclamationEvidence.model_validate(
             _normalize_legacy_reclamation_checkpoint(
@@ -506,7 +521,8 @@ def reclaim_evaluation_batch_caches(
         # A reused merge records how the acknowledgement was obtained this time.
         exclude = {"reused_verified_fragment"}
         if (
-            evidence.batch_index != batch_index
+            evidence.batch_id != batch.batch_id
+            or evidence.batch_index != batch_index
             or evidence.ordered_row_ids != batch.ordered_row_ids
             or canonical_json_bytes(
                 [
@@ -519,28 +535,26 @@ def reclaim_evaluation_batch_caches(
             )
         ):
             raise ValueError("evaluation batch reclamation checkpoint identity drifted")
-        return evidence.model_copy(update={"leaf_acknowledgements": tuple(acknowledgements)})
     retention_record_ids: tuple[str, ...] = ()
-    if evaluation_custody_root is not None:
+    if evaluation_provider is not None:
         from feedbax.analysis.evaluation import finalize_evaluation_batch_retention
 
-        evaluation_manifests = tuple(
-            EvaluationRunManifest.model_validate(
-                strict_json_loads(Path(outcome.manifest_path).read_text(encoding="utf-8"))
-            )
-            for outcome in outcomes
-        )
         completed_at = datetime.now(timezone.utc)
-        grace_seconds = policy.intermediate_grace_seconds or 0
         retention_record_ids = finalize_evaluation_batch_retention(
-            evaluation_manifests,
-            root=evaluation_custody_root,
+            tuple(manifest for manifest, _, _ in published),
+            root=evaluation_provider.root,
             retain_intermediates=policy.retain_intermediates,
-            grace_expires_at=completed_at + timedelta(seconds=grace_seconds),
+            grace_expires_at=completed_at + timedelta(
+                seconds=policy.intermediate_grace_seconds or 0
+            ),
             manifest_sha256s=tuple(
-                sha256_bytes(Path(outcome.manifest_path).read_bytes()) for outcome in outcomes
+                parent.metadata["manifest_sha256"] for parent in current_parent_authorities
             ),
         )
+    if evidence is not None:
+        if evidence.retention_record_ids != retention_record_ids:
+            raise ValueError("evaluation batch reclamation checkpoint retention drifted")
+        return evidence.model_copy(update={"leaf_acknowledgements": tuple(acknowledgements)})
     if policy.retain_intermediates:
         return EvaluationBatchReclamationEvidence(
             batch_id=batch.batch_id,
@@ -616,6 +630,15 @@ def reclaim_evaluation_batch_caches(
             "entries": entries,
         }
         _atomic_write_json(intent_path, intent)
+    if evaluation_provider is not None:
+        expected_cache_paths = tuple(
+            evaluation_states_cache_path(manifest_id, root=evaluation_provider.root)
+            for manifest_id in manifest_ids
+        )
+        if tuple(Path(entry["path"]).resolve() for entry in intent["entries"]) != (
+            expected_cache_paths
+        ):
+            raise ValueError("evaluation reclamation intent is outside its batch provider")
     for entry in intent["entries"]:
         path = Path(entry["path"])
         if entry["status"] == "completed":
@@ -839,6 +862,7 @@ def apply_evaluation_payload_retention(
     policy: EvaluationPayloadRetentionPolicy,
     replay: EvaluationReplayIdentity,
     custody_root: Path,
+    reclamations: Sequence[EvaluationBatchReclamationEvidence] = (),
     completed_at: datetime | None = None,
 ) -> EvaluationPayloadRetentionEvidence:
     """Commit terminal output and intermediate custody after successful publication."""
@@ -931,6 +955,12 @@ def apply_evaluation_payload_retention(
                 provider.schedule_lease_release(lease_id, expires_at=grace_expires_at)
                 temporary_leases.append(lease_id)
 
+    evaluation_records = _evaluation_retention_refs(reclamations)
+    if policy.retain_intermediates:
+        retained_intermediates.extend(evaluation_records)
+    else:
+        temporary_leases.extend(evaluation_records)
+
     return EvaluationPayloadRetentionEvidence(
         policy=policy,
         replay=replay,
@@ -941,8 +971,102 @@ def apply_evaluation_payload_retention(
     )
 
 
+def _evaluation_retention_refs(
+    reclamations: Sequence[EvaluationBatchReclamationEvidence],
+) -> tuple[str, ...]:
+    return tuple(
+        f"evaluation/{record_id}"
+        for batch in reclamations
+        for record_id in batch.retention_record_ids
+    )
+
+
+def verify_evaluation_batch_retention(
+    compaction: EvaluationBatchCompactionEvidence,
+    evaluation_root: Path | None,
+) -> dict[Path, list[str]]:
+    """Resolve evaluation records through their authenticated reclamation batch."""
+    from feedbax.analysis.evaluation import _evaluation_batch_retention_records
+    from feedbax.persistence.content_retention import verify_finalized_run_retention
+
+    retention = compaction.retention
+    if retention is None:
+        return {}
+    retain = retention.policy.retain_intermediates
+    retained = tuple(
+        item for item in retention.retained_intermediate_ids if item.startswith("evaluation/")
+    )
+    disposable = tuple(
+        item for item in retention.temporary_lease_ids if item.startswith("evaluation/")
+    )
+    batch_record_ids = _evaluation_retention_refs(compaction.reclamations)
+    expected = (batch_record_ids, ()) if retain else ((), batch_record_ids)
+    if (retained, disposable) != expected or len(batch_record_ids) != len(set(batch_record_ids)):
+        raise ValueError("evaluation retention records do not match their reclamation batches")
+    if evaluation_root is None:
+        return {}
+
+    groups: dict[Path, list[str]] = {}
+    for batch in compaction.reclamations:
+        provider = _evaluation_batch_provider(evaluation_root, batch.batch_id)
+        fragment = batch.leaf_acknowledgements[0].fragment
+        parents = _parent_authorities_from_state(fragment)
+        manifest_ids = batch.retained_cache_manifest_ids or batch.removed_cache_manifest_ids
+        if (
+            fragment.metadata.get("batch_id") != batch.batch_id
+            or fragment.metadata.get("matrix_intent_hash") != compaction.matrix_intent_hash
+            or tuple(parent.id for parent in parents) != manifest_ids
+        ):
+            raise ValueError("evaluation retention manifest authorities drifted from their batch")
+        manifests = []
+        digests = []
+        for parent in parents:
+            manifest, _, raw = _read_batch_manifest(provider, parent.id)
+            digest = sha256_bytes(raw)
+            if parent.metadata["manifest_sha256"] != digest or parent.metadata["size_bytes"] != len(raw):
+                raise ValueError("evaluation retention manifest does not match batch custody")
+            manifests.append(manifest)
+            digests.append(digest)
+        records = _evaluation_batch_retention_records(
+            manifests,
+            digests,
+            retain_intermediates=retain,
+            grace_expires_at=datetime.now(timezone.utc),
+        )
+        if records is None and not batch.retention_record_ids:
+            continue
+        if records is None:
+            raise ValueError("evaluation retention batch has no durable states")
+        root_id, targets, lease = records
+        expected_record_id = root_id if lease is None else lease.lease_id
+        if batch.retention_record_ids != (expected_record_id,):
+            raise ValueError("evaluation retention record does not belong to its batch provider")
+        verify_finalized_run_retention(provider, root_id, targets, lease=lease)
+        if lease is not None:
+            groups[provider.root] = [lease.lease_id]
+    return groups
+
+
+def _evaluation_collection_groups(
+    compaction: EvaluationBatchCompactionEvidence,
+    compaction_root: Path,
+    evaluation_root: Path | None,
+) -> tuple[dict[Path, list[str]], dict[Path, list[str]]]:
+    intermediate = verify_evaluation_batch_retention(compaction, evaluation_root)
+    outputs: dict[Path, list[str]] = {}
+    if compaction.retention is not None:
+        for lease_ref in compaction.retention.temporary_lease_ids:
+            if lease_ref.startswith("analysis/"):
+                outputs.setdefault((compaction_root / "analysis").absolute(), []).append(
+                    lease_ref.removeprefix("analysis/")
+                )
+            elif not lease_ref.startswith("evaluation/"):
+                intermediate.setdefault(compaction_root.absolute(), []).append(lease_ref)
+    return outputs, intermediate
+
+
 def activate_evaluation_payload_collection(
-    evidence: EvaluationPayloadRetentionEvidence,
+    compaction: EvaluationBatchCompactionEvidence,
     *,
     compaction_root: Path,
     evaluation_root: Path | None = None,
@@ -954,44 +1078,26 @@ def activate_evaluation_payload_collection(
         launch_scheduled_lease_collection,
     )
 
-    immediate: dict[Path, list[str]] = {}
-    scheduled: dict[Path, list[str]] = {}
-    for lease_ref in evidence.temporary_lease_ids:
-        if lease_ref.startswith("analysis/"):
-            root = (compaction_root / "analysis").absolute()
-            lease_id = lease_ref.removeprefix("analysis/")
-            target = immediate
-        elif lease_ref.startswith("evaluation/"):
-            if evaluation_root is None:
-                continue
-            root = evaluation_root.absolute()
-            lease_id = lease_ref.removeprefix("evaluation/")
-            target = (
-                immediate
-                if evidence.policy.intermediate_disposition == "immediate"
-                else scheduled
-            )
-        else:
-            root = compaction_root.absolute()
-            lease_id = lease_ref
-            target = (
-                immediate
-                if evidence.policy.intermediate_disposition == "immediate"
-                else scheduled
-            )
-        target.setdefault(root, []).append(lease_id)
-    for root, lease_ids in sorted(immediate.items(), key=lambda item: str(item[0])):
+    outputs, intermediate = _evaluation_collection_groups(
+        compaction, compaction_root, evaluation_root
+    )
+    if compaction.retention is None:
+        return
+    immediate = outputs
+    if compaction.retention.policy.intermediate_disposition == "immediate":
+        immediate.update(intermediate)
+    elif schedule_grace:
+        for root, lease_ids in intermediate.items():
+            launch_scheduled_lease_collection(root, tuple(sorted(lease_ids)))
+    for root, lease_ids in immediate.items():
         collect_release_leases(
             ImmutableArtifactBlobProvider(root),
             tuple(sorted(lease_ids)),
         )
-    if schedule_grace:
-        for root, lease_ids in sorted(scheduled.items(), key=lambda item: str(item[0])):
-            launch_scheduled_lease_collection(root, tuple(sorted(lease_ids)))
 
 
 def launch_evaluation_payload_recovery(
-    evidence: EvaluationPayloadRetentionEvidence,
+    compaction: EvaluationBatchCompactionEvidence,
     *,
     compaction_root: Path,
     evaluation_root: Path,
@@ -1001,19 +1107,10 @@ def launch_evaluation_payload_recovery(
     """Keep exact disposable leases reclaimable after worker crash or idle."""
     from feedbax.persistence.content_retention import launch_scheduled_lease_collection
 
-    groups: dict[Path, list[str]] = {}
-    for lease_ref in evidence.temporary_lease_ids:
-        if lease_ref.startswith("analysis/"):
-            root = (compaction_root / "analysis").absolute()
-            lease_id = lease_ref.removeprefix("analysis/")
-        elif lease_ref.startswith("evaluation/"):
-            root = evaluation_root.absolute()
-            lease_id = lease_ref.removeprefix("evaluation/")
-        else:
-            root = compaction_root.absolute()
-            lease_id = lease_ref
-        groups.setdefault(root, []).append(lease_id)
-    for root, lease_ids in sorted(groups.items(), key=lambda item: str(item[0])):
+    outputs, intermediate = _evaluation_collection_groups(
+        compaction, compaction_root, evaluation_root
+    )
+    for root, lease_ids in (*outputs.items(), *intermediate.items()):
         launch_scheduled_lease_collection(
             root,
             tuple(sorted(lease_ids)),
@@ -1033,6 +1130,34 @@ def _artifact_target(artifact: ArtifactRef) -> ContentRetentionTarget:
             size_bytes=artifact.size_bytes,
         ),
     )
+
+
+def verify_evaluation_compaction_intermediates(
+    provider: ImmutableArtifactBlobProvider,
+    compaction: EvaluationBatchCompactionEvidence,
+) -> None:
+    """Authenticate compact intermediates or their exact, previously exercised release."""
+    from feedbax.persistence.content_retention import require_released_leases
+
+    temporary = set(compaction.retention.temporary_lease_ids) if compaction.retention else set()
+    missing: dict[str, tuple[ContentRetentionTarget, ...]] = {}
+    for batch in compaction.reclamations:
+        for acknowledgement in batch.leaf_acknowledgements:
+            for kind, artifact in (
+                ("fragment", acknowledgement.fragment),
+                ("merge", acknowledgement.merge_state),
+            ):
+                try:
+                    provider.get_bytes(artifact)
+                except FileNotFoundError:
+                    lease_id = _intermediate_lease_id(
+                        compaction.matrix_intent_hash, acknowledgement.leaf_id, batch.batch_id, kind
+                    )
+                    if lease_id not in temporary:
+                        raise
+                    missing[lease_id] = (_artifact_target(artifact),)
+    if missing:
+        require_released_leases(provider, missing, owner="feedbax.evaluation.compaction")
 
 
 def _intermediate_lease_id(
@@ -1224,15 +1349,47 @@ def _parent_authorities_bytes(parents: Sequence[ParentRef]) -> bytes:
     return canonical_json_bytes([parent.model_dump(mode="json") for parent in parents])
 
 
+def _evaluation_batch_provider(root: Path, batch_id: str) -> ImmutableArtifactBlobProvider:
+    if not batch_id or batch_id in {".", ".."} or Path(batch_id).name != batch_id:
+        raise ValueError("evaluation retention batch selector is unsafe")
+    return ImmutableArtifactBlobProvider((root / batch_id).absolute())
+
+
+def _read_batch_manifest(
+    provider: ImmutableArtifactBlobProvider,
+    manifest_id: str,
+) -> tuple[EvaluationRunManifest, Path, bytes]:
+    path = canonical_manifest_path("EvaluationRunManifest", manifest_id, root=provider.root)
+    if path.resolve(strict=True) != path or not path.is_file():
+        raise ValueError("evaluation retention manifest is outside its batch provider")
+    raw = path.read_bytes()
+    manifest = EvaluationRunManifest.model_validate(strict_json_loads(raw))
+    if manifest.id != manifest_id or manifest.status != "completed":
+        raise ValueError("evaluation retention manifest identity drifted")
+    cache = manifest.metadata.get("cache")
+    states_path = cache.get("states_path") if isinstance(cache, Mapping) else None
+    expected_cache = evaluation_states_cache_path(manifest_id, root=provider.root)
+    if not isinstance(states_path, str) or Path(states_path).resolve() != expected_cache:
+        raise ValueError("evaluation retention manifest belongs to a different batch provider")
+    return manifest, path, raw
+
+
 def _parent_authorities_from_outcomes(
     outcomes: Sequence[EvaluationLifecycleRowOutcome],
+    *,
+    published: Sequence[tuple[EvaluationRunManifest, Path, bytes]] = (),
 ) -> tuple[ParentRef, ...]:
     parents = []
-    for outcome in outcomes:
+    for index, outcome in enumerate(outcomes):
         path = Path(outcome.manifest_path)
-        if not path.is_file():
-            raise ValueError("evaluation parent manifest is unavailable")
-        manifest_bytes = path.read_bytes()
+        if published:
+            _, expected_path, manifest_bytes = published[index]
+            if path.resolve(strict=True) != expected_path:
+                raise ValueError("evaluation outcome does not belong to the batch provider")
+        else:
+            if not path.is_file():
+                raise ValueError("evaluation parent manifest is unavailable")
+            manifest_bytes = path.read_bytes()
         parents.append(
             ParentRef(
                 kind="EvaluationRunManifest",
