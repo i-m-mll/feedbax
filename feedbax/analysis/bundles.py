@@ -121,7 +121,7 @@ from feedbax.contracts.selection import (
     preview_selection_spec,
     select_parent_refs,
 )
-from feedbax.persistence.manifest_discovery import iter_manifests_by_kind
+from feedbax.persistence.manifest_discovery import DuplicateManifestError, iter_manifests_by_kind
 from feedbax.plugins.registry import ExperimentRegistry
 
 ANALYSIS_BUNDLE_SCHEMA_ID = "feedbax.spec.analysis_bundle"
@@ -634,7 +634,12 @@ def iter_candidate_manifests(
     manifest_kind: str = "EvaluationRunManifest",
 ) -> list[AnyManifest]:
     """Load candidate run manifests of one kind from a manifest root."""
-    return [manifest for manifest, _path in iter_manifests_by_kind(manifest_kind, root=root)]
+    try:
+        return [manifest for manifest, _path in iter_manifests_by_kind(manifest_kind, root=root)]
+    except DuplicateManifestError as exc:
+        raise DuplicateBundleRootError(
+            "the bundle's candidate root set", [f"{manifest_kind}:{exc.manifest_id}"]
+        ) from exc
 
 
 def _get_path(value: Any, path: str) -> Any:
@@ -693,12 +698,6 @@ def select_bundle_manifests(
     bundle, _composition = resolve_analysis_bundle_authoring(bundle, repo_root=repo_root)
     allowed_ids = set(run_ids) if run_ids is not None else None
     candidates = iter_candidate_manifests(root, manifest_kind=bundle.predicate.manifest_kind)
-    # A full scan reaches every manifest file under the root, so two files can
-    # hold one address. That is a corrupt root, and it is refused here — at the
-    # single place selection happens — rather than downstream, where the
-    # duplicate would expand into duplicated execution while every set
-    # comparison over it counted one.
-    require_unique_root_addresses(candidates, what="the bundle's candidate root set")
     if bundle.predicate.top_k_by_metric_per_group is not None:
         effective_predicate = bundle.predicate
         if allowed_ids is not None:
@@ -2694,11 +2693,6 @@ def _select_dry_run_manifests(
         return matched, preview
 
     candidates = iter_candidate_manifests(root, manifest_kind=selection_spec.manifest_kind)
-    # The same refusal `select_bundle_manifests` makes, for the same reason: a
-    # full scan reaches every manifest file under the root, so two files can
-    # hold one address. Selecting by id membership below would then admit both
-    # while every set comparison over the result counted one.
-    require_unique_root_addresses(candidates, what="the bundle's dry-run candidate root set")
     rows = [_manifest_index_row_for_manifest(manifest) for manifest in candidates]
     full_preview = preview_selection_spec(selection_spec, rows, limit=None)
     preview = preview_selection_spec(selection_spec, rows, limit=preview_limit)

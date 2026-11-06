@@ -47,7 +47,11 @@ from feedbax.contracts.migrations import (
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.persistence.manifest_discovery import find_manifests_in_scan
+from feedbax.persistence.manifest_discovery import (
+    DuplicateManifestError,
+    ManifestLocationError,
+    find_manifests_in_scan,
+)
 from feedbax.persistence.manifest_index import (
     connect_index,
     default_index_path,
@@ -473,6 +477,8 @@ def import_manifest_packet(
             provider._publish_manifest_bindings_locked(proposed)
     except ContentManifestConflictError as exc:
         raise ManifestPacketConflictError(str(exc)) from exc
+    except (DuplicateManifestError, ManifestLocationError) as exc:
+        raise ManifestPacketValidationError(str(exc)) from exc
     return ManifestPacketImportResult(
         root=str(root_path),
         packet_path=str(packet_path),

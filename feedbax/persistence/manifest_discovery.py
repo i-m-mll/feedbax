@@ -31,6 +31,15 @@ class ManifestKindMismatch(ValueError):
     """Raised when the manifest holding a requested identifier is the wrong kind."""
 
 
+class DuplicateManifestError(ValueError):
+    """Multiple receipts in the same discovery tier claim one manifest ID."""
+
+    def __init__(self, manifest_id: str, root: Path, paths: Sequence[Path]) -> None:
+        self.manifest_id = manifest_id
+        locations = ", ".join(str(path) for path in paths)
+        super().__init__(f"Manifest {manifest_id!r} is duplicated under {root}: {locations}")
+
+
 def find_manifest_by_id(
     manifest_id: str,
     *,
@@ -193,8 +202,7 @@ def _single_manifest_match(
     if not matches:
         raise FileNotFoundError(f"Manifest {manifest_id!r} not found under {root_path}")
     if len(matches) > 1:
-        paths = ", ".join(str(path) for _manifest, path in matches)
-        raise ValueError(f"Manifest {manifest_id!r} is duplicated under {root_path}: {paths}")
+        raise DuplicateManifestError(manifest_id, root_path, [path for _, path in matches])
     return matches[0]
 
 
