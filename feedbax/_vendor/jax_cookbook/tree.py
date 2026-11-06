@@ -102,6 +102,7 @@ def get_ensemble(
     *args: Any,
     n: int,
     key: PRNGKeyArray,
+    out_axes: PyTree = eqx.if_array(0),
     **kwargs: Any,
 ) -> PyTree[Any, "S"]:
     """Vmap a function over `n` random keys.
@@ -109,10 +110,11 @@ def get_ensemble(
     Arguments:
         func: A function that returns a PyTree, and whose final keyword argument
             is `key: PRNGKeyArray`.
-        n: The number of keys to split; i.e. the size of the batch
-            dimensions in the array leaves of the returned PyTree.
+        n: Number of members in the ensemble.
         *args: The positional arguments to `func`.
         key: The key to split to perform the vmap.
+        out_axes: Equinox output axes for the returned PyTree. Pass the same
+            specification as input axes when mapping over the ensemble.
         **kwargs: The keyword arguments to `func`.
     """
     keys = jr.split(key, n)
@@ -120,7 +122,7 @@ def get_ensemble(
     def func_(key):
         return func(*args, **kwargs, key=key)
 
-    return eqx.filter_vmap(func_)(keys)
+    return eqx.filter_vmap(func_, out_axes=out_axes)(keys)
 
 
 @jax.named_scope("jax_cookbook.tree.take")

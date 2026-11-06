@@ -579,6 +579,7 @@ def eval_ensemble_on_trials(
     *,
     key: PRNGKeyArray,
     n_replicates: int,
+    model_axes: PyTree,
     rollout_step_hook: Optional[RolloutStepHook] = None,
 ) -> StateT:
     """Evaluate an ensemble of models on caller-supplied trial specifications.
@@ -586,18 +587,17 @@ def eval_ensemble_on_trials(
     Args:
         task: Task whose :meth:`AbstractTask.eval_trials` implementation runs
             each ensemble replicate.
-        models: Ensemble PyTree. Array leaves with shape
-            ``(n_replicates, ...)`` and any floating, integer, or boolean dtype
-            are mapped over the ensemble axis. Other leaves are broadcast to all
-            ensemble members.
+        models: Ensemble PyTree.
         trial_specs: Batched :class:`TaskTrialSpec` with leading trial axis,
             such as input leaves with shape ``(n_trials, n_steps, ...)`` and
             floating, integer, or boolean dtype. The same trial specs are used
             for every ensemble replicate.
-        key: JAX PRNG key with shape ``(2,)`` and dtype ``uint32``. It is split
-            into ``n_replicates`` keys, then each replicate key is split into
-            ``n_trials`` keys for :meth:`AbstractTask.eval_trials`.
-        n_replicates: Size of the leading ensemble axis on mapped model leaves.
+        key: JAX PRNG key split into one key per replicate, then one key per
+            trial for :meth:`AbstractTask.eval_trials`.
+        n_replicates: Number of ensemble members.
+        model_axes: Equinox ``filter_vmap`` input axes for the model PyTree.
+            Use the constructor's output axes. An integer maps that axis
+            and ``None`` shares the leaf or subtree across members.
         rollout_step_hook: Optional hook passed through to
             :meth:`AbstractTask.eval_trials`.
 
@@ -610,6 +610,7 @@ def eval_ensemble_on_trials(
         trial_specs,
         key=key,
         n_replicates=n_replicates,
+        model_axes=model_axes,
         rollout_step_hook=rollout_step_hook,
     )
 
@@ -1001,63 +1002,28 @@ class AbstractTask(Module):
             rollout_step_hook=rollout_step_hook,
         )
 
-    @eqx.filter_jit
     def _eval_ensemble(
         self,
-        eval_fn: Callable[..., T],
+        eval_fn: Callable[[Component, PRNGKeyArray], T],
         models: Component,
         n_replicates: int,
         key: PRNGKeyArray,
+        model_axes: PyTree,
         ensemble_random_trials: bool = True,
-        rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> T:
-        # TODO: Instead, we should expect the user to provide `keys` instead of `key`,
-        # if they are vmapping `eval`.
-        if ensemble_random_trials:
-            key = jr.split(key, n_replicates)
-            key_in_axis = 0
-        else:
-            key_in_axis = None
+        if n_replicates < 1:
+            raise ValueError("n_replicates must be positive")
 
-        return self._eval_ensemble_map(
-            eval_fn,
-            models,
-            n_replicates,
-            key,
-            key_in_axis=key_in_axis,
-            rollout_step_hook=rollout_step_hook,
+        def evaluate(model, member):
+            return eval_fn(model, member if ensemble_random_trials else key)
+
+        # In shared-key mode the mapped indices enforce the declared size.
+        members = (
+            jr.split(key, n_replicates) if ensemble_random_trials else jnp.arange(n_replicates)
         )
+        return eqx.filter_vmap(evaluate, in_axes=(model_axes, 0))(models, members)
 
     @eqx.filter_jit
-    def _eval_ensemble_map(
-        self,
-        eval_fn: Callable[..., T],
-        models: Component,
-        n_replicates: int,
-        keys: PRNGKeyArray,
-        *,
-        key_in_axis: int | None,
-        rollout_step_hook: Optional[RolloutStepHook] = None,
-    ) -> T:
-        # Partition into arrays that have the ensemble (batch) dimension
-        # and everything else.  StateIndex.init leaves may be arrays without
-        # a batch dimension; those must NOT be vmapped.
-        def _is_batched_array(x):
-            return eqx.is_array(x) and x.ndim >= 1 and x.shape[0] == n_replicates
-
-        models_arrays, models_other = eqx.partition(
-            models,
-            _is_batched_array,
-        )
-
-        def evaluate_single(model_arrays, model_other, key):
-            model = eqx.combine(model_arrays, model_other)
-            return eval_fn(model, key, rollout_step_hook=rollout_step_hook)
-
-        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, key_in_axis))(
-            models_arrays, models_other, keys
-        )
-
     def eval_ensemble_on_trials(
         self,
         models: Component,
@@ -1065,36 +1031,16 @@ class AbstractTask(Module):
         *,
         key: PRNGKeyArray,
         n_replicates: int,
+        model_axes: PyTree,
         rollout_step_hook: Optional[RolloutStepHook] = None,
     ) -> StateT:
-        """Evaluate an ensemble of models on caller-supplied trial specifications.
+        """Evaluate model replicates on the same caller-supplied trial specifications.
 
-        Args:
-            models: Ensemble PyTree. Array leaves with shape
-                ``(n_replicates, ...)`` and any floating, integer, or boolean
-                dtype are mapped over the ensemble axis. Other leaves are
-                broadcast to all ensemble members.
-            trial_specs: Batched :class:`TaskTrialSpec` with leading trial axis,
-                such as input leaves with shape ``(n_trials, n_steps, ...)`` and
-                floating, integer, or boolean dtype. The same trial specs are
-                used for every ensemble replicate.
-            key: JAX PRNG key with shape ``(2,)`` and dtype ``uint32``. It is
-                split into ``n_replicates`` keys, then each replicate key is
-                split into ``n_trials`` keys for :meth:`eval_trials`.
-            n_replicates: Size of the leading ensemble axis on mapped model
-                leaves.
-            rollout_step_hook: Optional hook passed through to
-                :meth:`eval_trials`.
-
-        Returns:
-            State PyTree with leading axes
-            ``(n_replicates, n_trials, n_steps, ...)`` on array leaves. Leaf
-            dtypes match the evaluated model state leaves.
+        See :func:`eval_ensemble_on_trials` for the model axes and key contract.
         """
         n_trials = _leading_axis_size(trial_specs, name="trial_specs")
-        keys = jr.split(key, n_replicates)
 
-        def eval_trials(model, replicate_key, rollout_step_hook=None):
+        def eval_trials(model, replicate_key):
             return self.eval_trials(
                 model,
                 trial_specs,
@@ -1102,15 +1048,9 @@ class AbstractTask(Module):
                 rollout_step_hook=rollout_step_hook,
             )
 
-        return self._eval_ensemble_map(
-            eval_trials,
-            models,
-            n_replicates,
-            keys,
-            key_in_axis=0,
-            rollout_step_hook=rollout_step_hook,
-        )
+        return self._eval_ensemble(eval_trials, models, n_replicates, key, model_axes)
 
+    @eqx.filter_jit
     def eval_ensemble_with_loss(
         self,
         models: Component,
@@ -1118,6 +1058,8 @@ class AbstractTask(Module):
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
         rollout_step_hook: Optional[RolloutStepHook] = None,
+        *,
+        model_axes: PyTree,
     ) -> tuple[StateT, TermTree]:
         """Return states and losses for an ensemble of models evaluated on the tasks's set of
         validation trials.
@@ -1125,20 +1067,22 @@ class AbstractTask(Module):
         Arguments:
             models: The ensemble of models to evaluate.
             n_replicates: The number of models in the ensemble.
-            key: For providing randomness during model evaluation.
-                Will be split into `n_replicates` keys.
-            ensemble_random_trials: If `False`, each model in the ensemble will be
-                evaluated on the same set of trials.
+            key: Key for model evaluation.
+            ensemble_random_trials: Split the key per replicate if true,
+                or share it across replicates if false.
+            model_axes: Equinox input axes for the model, as in
+                :func:`eval_ensemble_on_trials`.
         """
         return self._eval_ensemble(
-            self.eval_with_loss,
+            partial(self.eval_with_loss, rollout_step_hook=rollout_step_hook),
             models,
             n_replicates,
             key,
+            model_axes,
             ensemble_random_trials=ensemble_random_trials,
-            rollout_step_hook=rollout_step_hook,
         )
 
+    @eqx.filter_jit
     def eval_ensemble(
         self,
         models: Component,
@@ -1146,6 +1090,8 @@ class AbstractTask(Module):
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
         rollout_step_hook: Optional[RolloutStepHook] = None,
+        *,
+        model_axes: PyTree,
     ) -> StateT:
         """Return states for an ensemble of models evaluated on the tasks's set of
         validation trials.
@@ -1153,18 +1099,19 @@ class AbstractTask(Module):
         Arguments:
             models: The ensemble of models to evaluate.
             n_replicates: The number of models in the ensemble.
-            key: For providing randomness during model evaluation.
-                Will be split into `n_replicates` keys.
-            ensemble_random_trials: If `False`, each model in the ensemble will be
-                evaluated on the same set of trials.
+            key: Key for model evaluation.
+            ensemble_random_trials: Split the key per replicate if true,
+                or share it across replicates if false.
+            model_axes: Equinox input axes for the model, as in
+                :func:`eval_ensemble_on_trials`.
         """
         return self._eval_ensemble(
-            self.eval,
+            partial(self.eval, rollout_step_hook=rollout_step_hook),
             models,
             n_replicates,
             key,
+            model_axes,
             ensemble_random_trials=ensemble_random_trials,
-            rollout_step_hook=rollout_step_hook,
         )
 
     @eqx.filter_jit
@@ -1216,6 +1163,8 @@ class AbstractTask(Module):
         key: PRNGKeyArray,
         ensemble_random_trials: bool = True,
         rollout_step_hook: Optional[RolloutStepHook] = None,
+        *,
+        model_axes: PyTree,
     ) -> Tuple[StateT, TermTree[AbstractLoss], TaskTrialSpec]:
         """Evaluate an ensemble of models on a single training batch.
 
@@ -1224,36 +1173,31 @@ class AbstractTask(Module):
             n_replicates: The number of models in the ensemble.
             batch_info: Information about the training batch.
             key: For providing randomness during model evaluation.
-            ensemble_random_trials: If `False`, each model in the ensemble will be
-                evaluated on the same set of trials.
+            ensemble_random_trials: Split the key per replicate if true,
+                or share it across replicates if false.
+            model_axes: Equinox input axes for the model, as in
+                :func:`eval_ensemble_on_trials`.
 
         Returns:
-            The losses for the trials in the batch, for each model in the ensemble.
-            The evaluated model states, for each trial and each model in the ensemble.
-            The trial specifications for the batch.
+            States, losses, and trial specifications, each with a leading
+            replicate axis on its array leaves.
         """
-        models_arrays, models_other = eqx.partition(
-            models,
-            eqx.is_array,
-        )
 
-        def evaluate_single(model_arrays, model_other, batch_info, key):
-            model = eqx.combine(model_arrays, model_other)
+        def eval_batch(model, replicate_key):
             return self.eval_train_batch(
                 model,
                 batch_info,
-                key,
+                replicate_key,
                 rollout_step_hook=rollout_step_hook,
             )
 
-        if ensemble_random_trials:
-            key = jr.split(key, n_replicates)
-            key_in_axis = 0
-        else:
-            key_in_axis = None
-
-        return eqx.filter_vmap(evaluate_single, in_axes=(0, None, None, key_in_axis))(
-            models_arrays, models_other, batch_info, key
+        return self._eval_ensemble(
+            eval_batch,
+            models,
+            n_replicates,
+            key,
+            model_axes,
+            ensemble_random_trials=ensemble_random_trials,
         )
 
     def add_input(

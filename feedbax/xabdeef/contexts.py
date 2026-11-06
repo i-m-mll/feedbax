@@ -5,10 +5,11 @@
 """
 
 from collections.abc import Callable, Sequence
+from functools import partial
 from typing import Optional
 
 import equinox as eqx
-from jaxtyping import PRNGKeyArray
+from jaxtyping import PRNGKeyArray, PyTree
 
 import feedbax._vendor.jax_cookbook.tree as jtree
 from feedbax.runtime.graph import Component
@@ -25,13 +26,20 @@ class TrainingContext(eqx.Module):
         task: The task.
         where_train: A function that takes the model and returns the parts of the
             model to be trained.
-        ensembled: Whether `model` is an ensemble of models.
+        n_replicates: Number of models constructed.
+        model_axes: Axes used to construct the ensemble, for passing to task
+            evaluation. A scalar model has no mapped axes.
     """
 
     model: Component
     task: AbstractTask
     where_train: Callable = lambda model: model.nodes["net"]
-    ensembled: bool = False
+    n_replicates: int = 1
+    model_axes: PyTree = None
+
+    @property
+    def ensembled(self) -> bool:
+        return self.n_replicates > 1
 
 
 def point_mass_nn_simple_reaches(
@@ -84,41 +92,36 @@ def point_mass_nn_simple_reaches(
         eval_reach_length=0.5,
     )
 
-    # TODO: Generalize this for all pre-built models
+    if n_replicates < 1:
+        raise ValueError("n_replicates must be an integer >= 1")
+
+    build = partial(
+        point_mass_nn,
+        task,
+        n_steps=n_steps,
+        dt=dt,
+        mass=mass,
+        encoding_size=encoding_size,
+        hidden_size=hidden_size,
+        hidden_type=hidden_type,
+        feedback_delay_steps=feedback_delay_steps,
+    )
     if n_replicates == 1:
-        model = point_mass_nn(
-            task,
-            n_steps=n_steps,
-            dt=dt,
-            mass=mass,
-            encoding_size=encoding_size,
-            hidden_size=hidden_size,
-            hidden_type=hidden_type,
-            feedback_delay_steps=feedback_delay_steps,
-            key=key,
-        )
-        ensembled = False
-    elif n_replicates > 1:
+        model_axes = None
+        model = build(key=key)
+    else:
+        model_axes = eqx.if_array(0)
         model = jtree.get_ensemble(
-            point_mass_nn,
-            task,
-            n_steps=n_steps,
-            dt=dt,
-            mass=mass,
-            encoding_size=encoding_size,
-            hidden_size=hidden_size,
-            hidden_type=hidden_type,
-            feedback_delay_steps=feedback_delay_steps,
+            build,
             n=n_replicates,
             key=key,
+            out_axes=model_axes,
         )
-        ensembled = True
-    else:
-        raise ValueError("n_replicates must be an integer >= 1")
 
     return TrainingContext(
         model=model,
         task=task,
         where_train=where_train,
-        ensembled=ensembled,
+        n_replicates=n_replicates,
+        model_axes=model_axes,
     )

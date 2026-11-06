@@ -3,10 +3,12 @@ import jax.numpy as jnp
 import jax.tree as jt
 import feedbax._vendor.jax_cookbook.tree as jtree
 import numpy as np
+import pytest
 
 import equinox as eqx
 from equinox.nn import StateIndex
 
+from feedbax.runtime.batch import BatchInfo
 from feedbax.runtime.mapping import WhereDict
 from feedbax.runtime.graph import (
     Component,
@@ -125,9 +127,11 @@ class DynamicInputTask(DummyTask):
         )
 
 
-def _make_dynamic_eval_graph():
+def _make_dynamic_eval_graph(accumulator=None):
+    if accumulator is None:
+        accumulator = _EvalAccumulator()
     return Graph(
-        nodes={"counter": _EvalCounter(), "acc": _EvalAccumulator()},
+        nodes={"counter": _EvalCounter(), "acc": accumulator},
         wires=(Wire("counter", "output", "acc", "base"),),
         input_ports=("delta",),
         output_ports=("total",),
@@ -202,14 +206,89 @@ def test_eval_trials_rollout_step_hook_runs_inside_rollout():
     )
 
 
-def test_public_eval_ensemble_on_trials_matches_private_partition_path():
-    task = DynamicInputTask()
-    n_replicates = 2
-    model = jtree.get_ensemble(
-        lambda *, key: _make_dynamic_eval_graph(),
-        n=n_replicates,
-        key=jax.random.PRNGKey(0),
+class _EnsembleAccumulator(Component):
+    input_ports = ("delta", "base")
+    output_ports = ("total",)
+
+    gain: jax.Array
+    state_index: StateIndex
+
+    def __call__(self, inputs, state, *, key):
+        update = jnp.stack(
+            (
+                self.gain * inputs["base"],
+                inputs["delta"] + jax.random.uniform(key),
+            )
+        )
+        total = state.get(self.state_index) + update
+        return {"total": total}, state.set(self.state_index, total)
+
+    def state_view(self, state):
+        return state.get(self.state_index)
+
+
+class _EnsembleLoss(AbstractLoss):
+    label: str = "ensemble"
+
+    def term(self, states, trial_specs, model):
+        return states.nodes["acc"][..., 0]
+
+
+class _EnsembleTask(DynamicInputTask):
+    loss_func: AbstractLoss = _EnsembleLoss()
+
+    def get_train_trial(self, key, batch_info=None):
+        return TaskTrialSpec(
+            inits=WhereDict(),
+            targets=WhereDict(),
+            inputs={"delta": jax.random.uniform(key, (self.n_steps,))},
+        )
+
+
+def _ensemble_graphs(n_replicates, *, map_initial_state):
+    base = _make_dynamic_eval_graph(
+        _EnsembleAccumulator(jnp.array(1.0), StateIndex(jnp.array([4.0, -2.0])))
+    ).prepare()
+
+    def gain(graph):
+        return graph.nodes["acc"].gain
+
+    def initializer(graph):
+        return graph.nodes["acc"].state_index.init
+
+    def build(*, key):
+        gain_key, init_key = jax.random.split(key)
+        graph = eqx.tree_at(gain, base, jax.random.uniform(gain_key))
+        if map_initial_state:
+            graph = eqx.tree_at(
+                initializer, graph, initializer(base) + jax.random.uniform(init_key, (2,))
+            )
+        return graph
+
+    axes = jt.map(lambda _: None, base)
+    axes = eqx.tree_at(
+        (lambda graph: (gain(graph), initializer(graph))) if map_initial_state else gain,
+        axes,
+        (0, 1) if map_initial_state else 0,
+        is_leaf=lambda x: x is None,
     )
+    key = jax.random.PRNGKey(0)
+    models = jtree.get_ensemble(
+        build,
+        n=n_replicates,
+        key=key,
+        out_axes=axes,
+    )
+    scalar_models = [
+        build(key=replicate_key) for replicate_key in jax.random.split(key, n_replicates)
+    ]
+    return models, axes, scalar_models
+
+
+@pytest.mark.parametrize("n_replicates", [2, 3])
+def test_public_eval_ensemble_on_trials_preserves_shared_state_initializer(n_replicates):
+    task = _EnsembleTask()
+    models, axes, scalar_models = _ensemble_graphs(n_replicates, map_initial_state=False)
     trial_specs = TaskTrialSpec(
         inits=WhereDict(),
         targets=WhereDict(),
@@ -222,42 +301,68 @@ def test_public_eval_ensemble_on_trials_matches_private_partition_path():
     )
     key = jax.random.PRNGKey(123)
     n_trials = trial_specs.inputs["delta"].shape[0]
-
-    def eval_explicit_trials(model, key, rollout_step_hook=None):
-        return task.eval_trials(
-            model,
-            trial_specs,
-            jax.random.split(key, n_trials),
-            rollout_step_hook=rollout_step_hook,
-        )
-
-    expected = task._eval_ensemble(
-        eval_explicit_trials,
-        model,
-        n_replicates,
-        key,
-    )
     actual = eval_ensemble_on_trials(
         task,
-        model,
+        models,
         trial_specs,
         key=key,
         n_replicates=n_replicates,
+        model_axes=axes,
     )
 
-    assert jt.structure(actual) == jt.structure(expected)
-    jt.map(
-        lambda actual_leaf, expected_leaf: (
-            np.testing.assert_array_equal(
-                np.asarray(actual_leaf),
-                np.asarray(expected_leaf),
-            )
-            if eqx.is_array(actual_leaf)
-            else actual_leaf == expected_leaf
-        ),
-        actual,
-        expected,
+    expected = [
+        task.eval_trials(model, trial_specs, jax.random.split(replicate_key, n_trials))
+        for model, replicate_key in zip(scalar_models, jax.random.split(key, n_replicates))
+    ]
+    totals = actual.nodes["acc"]
+    assert totals.shape == (n_replicates, n_trials, task.n_steps, 2)
+    np.testing.assert_allclose(
+        totals, jnp.stack([state.nodes["acc"] for state in expected]), rtol=1e-6, atol=1e-6
     )
+
+
+@pytest.mark.parametrize("ensemble_random_trials", [False, True])
+def test_eval_ensemble_train_batch_matches_scalar_with_mapped_initializers(ensemble_random_trials):
+    task = _EnsembleTask()
+    n_replicates = 2
+    models, axes, scalar_models = _ensemble_graphs(n_replicates, map_initial_state=True)
+    key = jax.random.PRNGKey(123)
+    batch_info = BatchInfo(size=2, current=0, total=1)
+    states, losses, trials = task.eval_ensemble_train_batch(
+        models,
+        n_replicates,
+        batch_info,
+        key,
+        ensemble_random_trials=ensemble_random_trials,
+        model_axes=axes,
+    )
+
+    keys = jax.random.split(key, n_replicates) if ensemble_random_trials else [key] * n_replicates
+    for i, (model, replicate_key) in enumerate(zip(scalar_models, keys)):
+        scalar_states, scalar_losses, scalar_trials = task.eval_train_batch(
+            model, batch_info, replicate_key
+        )
+        np.testing.assert_allclose(
+            states.nodes["acc"][i], scalar_states.nodes["acc"], rtol=1e-6, atol=1e-6
+        )
+        np.testing.assert_allclose(losses.value[i], scalar_losses.value, rtol=1e-6, atol=1e-6)
+        np.testing.assert_array_equal(trials.inputs["delta"][i], scalar_trials.inputs["delta"])
+
+
+def test_eval_ensemble_train_batch_rejects_replicate_count_mismatch_with_shared_key():
+    task = DynamicInputTask()
+    key = jax.random.PRNGKey(123)
+    models = jtree.get_ensemble(lambda *, key: _make_dynamic_eval_graph(), n=2, key=key)
+
+    with pytest.raises(ValueError, match="inconsistent sizes"):
+        task.eval_ensemble_train_batch(
+            models,
+            n_replicates=3,
+            batch_info=BatchInfo(size=2, current=0, total=1),
+            key=key,
+            ensemble_random_trials=False,
+            model_axes=eqx.if_array(0),
+        )
 
 
 def test_trainer_loss_wrapper_rollout_step_hook_runs_inside_rollout():
