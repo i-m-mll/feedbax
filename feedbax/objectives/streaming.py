@@ -162,7 +162,7 @@ def _collect_leaf_terms(
     if isinstance(loss, CompositeLoss):
         result = []
         for name, child in loss.terms.items():
-            w = loss.weights.get(name, 1.0)
+            w = loss.weights[name]
             result.extend(_collect_leaf_terms(child, parent_weight * w))
         return result
 
