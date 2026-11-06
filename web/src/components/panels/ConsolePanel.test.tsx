@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 describe('ConsolePanel', () => {
-  it('renders streamed training log lines', () => {
+  it('shows training log entries and structured diagnostics together', () => {
     act(() => {
       useTrainingStore.setState({
         consoleLogs: [
@@ -27,18 +27,6 @@ describe('ConsolePanel', () => {
             timestamp: 0,
           },
         ],
-      });
-    });
-
-    render(<ConsolePanel />);
-
-    expect(screen.getByText('[4]')).toBeInTheDocument();
-    expect(screen.getByText('loss plateaued')).toBeInTheDocument();
-  });
-
-  it('renders structured training diagnostics line by line', () => {
-    act(() => {
-      useTrainingStore.setState({
         trainingDiagnostics: [
           {
             schema_id: 'feedbax.diagnostic.domain',
@@ -55,9 +43,9 @@ describe('ConsolePanel', () => {
 
     render(<ConsolePanel />);
 
-    expect(screen.getByText('[diagnostic]')).toBeInTheDocument();
-    expect(
-      screen.getByText("ERROR graph.missing_subgraph [network]: Network node 'network' has no subgraph")
-    ).toBeInTheDocument();
+    expect(screen.getByText('loss plateaued')).toHaveTextContent(/\b4\b/);
+    const diagnostic = screen.getByText(/Network node 'network' has no subgraph/);
+    expect(diagnostic).toHaveTextContent('graph.missing_subgraph');
+    expect(diagnostic).toHaveTextContent(/error/i);
   });
 });

@@ -300,14 +300,14 @@ test('parameter editing preserves geometry and survives save/reload', async ({ p
   await expect(hiddenSize).toHaveValue('100');
   await hiddenSize.scrollIntoViewIfNeeded();
   await expect(hiddenSize).toBeInViewport({ ratio: 1 });
-  const nodeName = page.getByRole('textbox', { name: 'Node name', exact: true });
+  const nodeLabel = page.getByRole('textbox', { name: 'Node label', exact: true });
   const fieldBounds = await hiddenSize.boundingBox();
-  const nameBounds = await nodeName.boundingBox();
+  const labelBounds = await nodeLabel.boundingBox();
   expect(fieldBounds).not.toBeNull();
-  expect(nameBounds).not.toBeNull();
+  expect(labelBounds).not.toBeNull();
   const expectStableGeometry = async () => {
     expect(await hiddenSize.boundingBox()).toEqual(fieldBounds);
-    expect(await nodeName.boundingBox()).toEqual(nameBounds);
+    expect(await nodeLabel.boundingBox()).toEqual(labelBounds);
   };
 
   await hiddenSize.hover();
