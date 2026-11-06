@@ -1,4 +1,5 @@
 from collections import namedtuple
+from functools import partial
 
 import jax
 import jax.numpy as jnp
@@ -42,14 +43,24 @@ def eig(
     return DecompResults(eigvals, eigvecs_l, eigvecs_r)
 
 
-def svd(arr: Float[Array, "... m n"], **kwargs) -> DecompResults:
-    """Compute singular values and vectors of matrices."""
-    singvecs_l, singvals, singvecs_r_adj = jax.lax.linalg.svd(arr, **kwargs)
-    return DecompResults(singvals, singvecs_l, singvecs_r_adj.conj().T)
+def svd(arr: Inexact[Array, "... m n"], *, compute_uv: bool = True, **kwargs) -> DecompResults:
+    """Compute the singular value decomposition over the last two axes.
+
+    The basis fields contain left and right singular vectors as columns, with
+    their leading columns aligned to the singular values. When `compute_uv`
+    is false, both basis fields are `None`. Additional keywords are forwarded
+    to `jax.lax.linalg.svd`. Keep the SVD options static under JIT.
+    """
+    if not compute_uv:
+        singvals = jax.lax.linalg.svd(arr, compute_uv=False, **kwargs)
+        return DecompResults(singvals, None, None)
+
+    singvecs_l, singvals, singvecs_r_adj = jax.lax.linalg.svd(arr, compute_uv=True, **kwargs)
+    return DecompResults(singvals, singvecs_l, singvecs_r_adj.conj().mT)
 
 
 class DecompPorts(AbstractAnalysisPorts):
-    matrices: InputOf[Float[Array, "... m n"]]
+    matrices: InputOf[Inexact[Array, "... m n"]]
 
 
 class SquareDecompPorts(AbstractAnalysisPorts):
@@ -83,9 +94,25 @@ class SVD(AbstractAnalysis[DecompPorts]):
         data: AnalysisInputData,
         *,
         matrices,
+        full_matrices: bool = True,
+        compute_uv: bool = True,
+        subset_by_index: tuple[int, int] | None = None,
+        algorithm: jax.lax.linalg.SvdAlgorithm | None = None,
         **kwargs,
     ):
-        return jtree.unzip(jt.map(svd, matrices), tuple_cls=DecompResults)
+        """Return singular values and column bases in the input tree layout.
+
+        When `compute_uv` is false, each basis field has `None` in place of
+        every input matrix. Keep the SVD options static under JIT.
+        """
+        decompose = partial(
+            svd,
+            full_matrices=full_matrices,
+            compute_uv=compute_uv,
+            subset_by_index=subset_by_index,
+            algorithm=algorithm,
+        )
+        return jtree.unzip(jt.map(decompose, matrices), tuple_cls=DecompResults)
 
 
 def complex_to_polar_abs_angle(arr: Array) -> LDict[str, Array]:
