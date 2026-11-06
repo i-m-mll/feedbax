@@ -96,17 +96,12 @@ from feedbax.runtime.filters import (
 from feedbax.intervene.intervene import (
     AddNoise,
     AddNoiseParams,
-    ConstantInput,
-    ConstantInputParams,
     CurlField,
     CurlFieldParams,
     DynamicsMatrixPerturb,
     DynamicsMatrixPerturbParams,
     FixedField,
     FixedFieldParams,
-    NetworkClamp,
-    NetworkConstantInput,
-    NetworkIntervenorParams,
 )
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
 from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
@@ -133,6 +128,7 @@ from .declarations import (
     ParameterField,
     declare_component,
 )
+from .interventions import register_vector_interventions
 from .templates import register_builtin_graph_templates
 from .prototypes import array_prototype, prototype_params, migrate_stateful_v1
 
@@ -2933,30 +2929,8 @@ def register_builtin_components(registry: _Registry) -> None:
             output_prototype_fn=input_passthrough_output_prototype,
         )
     )
-    registry.register(
-        declare_component(
-            name="NetworkClamp",
-            runtime_type=NetworkClamp,
-            constructor=ComponentConstructorPlan(
-                groups={"params": (NetworkIntervenorParams, ("scale", "active"))}
-            ),
-            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
-            category="Interventions",
-            description="Clamp network unit activity.",
-            parameter_fields=[
-                ParameterField(name="scale", type="float", default=1.0, required=True),
-                ParameterField(name="active", type="bool", default=False, required=False),
-            ],
-            input_ports=["input"],
-            output_ports=["output"],
-            icon="Pin",
-            port_types=PortTypeSpec(
-                inputs={"input": PortType(dtype="vector")},
-                outputs={"output": PortType(dtype="vector")},
-            ),
-            output_prototype_fn=input_passthrough_output_prototype,
-        )
-    )
+    register_vector_interventions(registry)
+
     # --- Muscles ---
     registry.register(
         declare_component(
@@ -3218,54 +3192,6 @@ def register_builtin_components(registry: _Registry) -> None:
                     float(value) for value in default_6muscle_2link_segment_lengths()
                 ],
             ),
-        )
-    )
-    registry.register(
-        declare_component(
-            name="NetworkConstantInput",
-            runtime_type=NetworkConstantInput,
-            constructor=ComponentConstructorPlan(
-                groups={"params": (NetworkIntervenorParams, ("scale", "active"))}
-            ),
-            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
-            category="Interventions",
-            description="Add constant input to network units.",
-            parameter_fields=[
-                ParameterField(name="scale", type="float", default=1.0, required=True),
-                ParameterField(name="active", type="bool", default=False, required=False),
-            ],
-            input_ports=["input"],
-            output_ports=["output"],
-            icon="Asterisk",
-            port_types=PortTypeSpec(
-                inputs={"input": PortType(dtype="vector")},
-                outputs={"output": PortType(dtype="vector")},
-            ),
-            output_prototype_fn=input_passthrough_output_prototype,
-        )
-    )
-    registry.register(
-        declare_component(
-            name="ConstantInput",
-            runtime_type=ConstantInput,
-            constructor=ComponentConstructorPlan(
-                groups={"params": (ConstantInputParams, ("scale", "active"))}
-            ),
-            attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
-            category="Interventions",
-            description="Add a constant input to a signal.",
-            parameter_fields=[
-                ParameterField(name="scale", type="float", default=1.0, required=True),
-                ParameterField(name="active", type="bool", default=False, required=False),
-            ],
-            input_ports=["input"],
-            output_ports=["output"],
-            icon="Minus",
-            port_types=PortTypeSpec(
-                inputs={"input": PortType(dtype="vector")},
-                outputs={"output": PortType(dtype="vector")},
-            ),
-            output_prototype_fn=input_passthrough_output_prototype,
         )
     )
     registry.register(

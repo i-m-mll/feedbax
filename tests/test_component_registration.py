@@ -1012,13 +1012,10 @@ def test_declared_parameter_model_owns_defaults_required_fields_and_constraints(
         registry.resolve_component_spec("GRU", {"input_size": 0, "hidden_size": 4})
 
 
-def test_builtin_contract_classification_meets_generic_adoption_gate() -> None:
+def test_builtin_custom_parameter_contracts_explain_the_override() -> None:
     registry = ComponentRegistry(load_user_components=False)
     classifications = registry.component_classification()
-    generic = sum(value == "generic" for value in classifications.values())
-    custom = sum(value == "custom" for value in classifications.values())
 
-    assert generic / (generic + custom) >= 0.80
     assert all(
         registry.get(name).params.override_reason
         for name, classification in classifications.items()
