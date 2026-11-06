@@ -8,7 +8,7 @@ import pytest
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import DelayLine, Linear
 from feedbax.runtime.filters import FirstOrderFilter
-from feedbax.runtime.graph import Graph, Wire, init_state_from_component
+from feedbax.runtime.graph import Graph, GraphTraceRequest, Wire, init_state_from_component
 from feedbax.compiler.templates import (
     network_template_graph,
     recurrent_graph_input_initializer,
@@ -395,6 +395,121 @@ def test_graph_input_recurrent_initializer_graphspec_runs_from_external_input() 
         outputs["out"],
         jnp.array([[4.0, 5.0], [2.0, 2.5], [1.0, 1.25]]),
     )
+
+
+def test_compiled_nested_recurrent_rollout_seeds_from_parent_wire() -> None:
+    child = GraphSpec(
+        nodes={
+            "linear": ComponentSpec(
+                type="Linear",
+                params={"input_size": 1, "output_size": 1, "use_bias": False},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "delay": ComponentSpec(
+                type="Channel",
+                params={"delay": 1, "noise_std": 0.25},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="linear",
+                source_port="output",
+                target_node="linear",
+                target_port="input",
+                temporality="recurrent",
+                recurrent_initializer=recurrent_graph_input_initializer("seed", state_slot="input"),
+            ),
+            WireSpec(
+                source_node="linear",
+                source_port="output",
+                target_node="delay",
+                target_port="input",
+            ),
+        ],
+        input_ports=["seed"],
+        output_ports=["out"],
+        output_bindings={"out": ("delay", "output")},
+    )
+    registry = ComponentRegistry(load_user_components=False)
+
+    def compile_parent(*, wired: bool) -> Graph:
+        wires = []
+        bindings = {"raw": ("encoder", "input")}
+        if wired:
+            wires.append(
+                WireSpec(
+                    source_node="encoder",
+                    source_port="output",
+                    target_node="nested",
+                    target_port="seed",
+                )
+            )
+        else:
+            bindings["seed"] = ("nested", "seed")
+        spec = GraphSpec(
+            nodes={
+                "encoder": ComponentSpec(
+                    type="Gain",
+                    params={"gain": 2.0},
+                    input_ports=["input"],
+                    output_ports=["output"],
+                ),
+                "nested": ComponentSpec(
+                    type="Subgraph",
+                    input_ports=["seed"],
+                    output_ports=["out"],
+                ),
+            },
+            subgraphs={"nested": child},
+            wires=wires,
+            input_ports=list(bindings),
+            input_bindings=bindings,
+            output_ports=["out"],
+            output_bindings={"out": ("nested", "out")},
+        )
+        return spec_to_graph(
+            spec,
+            registry,
+            input_prototypes={("__graph__", name): jnp.zeros(1) for name in bindings},
+        )
+
+    key = jax.random.PRNGKey(17)
+    raw = jnp.array([8.0])
+    direct = compile_parent(wired=False)
+    expected, _, expected_history = direct(
+        {"raw": jnp.broadcast_to(raw, (4, 1)), "seed": 2.0 * raw},
+        init_state_from_component(direct),
+        key=key,
+        n_steps=4,
+        return_state_history=True,
+    )
+
+    wired = compile_parent(wired=True)
+    inputs = {"raw": raw}
+    outputs, final_state, history = wired(
+        inputs,
+        init_state_from_component(wired),
+        key=key,
+        n_steps=4,
+        return_state_history=True,
+    )
+    state_selector = "state_path:nested.delay.output"
+    traced, traced_state, trace = wired.rollout_with_trace(
+        inputs,
+        init_state_from_component(wired),
+        key=key,
+        n_steps=4,
+        trace=(GraphTraceRequest(kind="state_path", selector=state_selector),),
+    )
+    assert jnp.array_equal(outputs["out"], expected["out"])
+    assert jnp.array_equal(history.nested.delay.output, expected_history.nested.delay.output)
+    assert jnp.array_equal(history.nested.delay.output[0], jnp.zeros(1))
+    assert jnp.array_equal(traced["out"], outputs["out"])
+    assert eqx.tree_equal(traced_state, final_state)
+    assert jnp.array_equal(trace[state_selector], history.nested.delay.output[1:])
 
 
 def test_graph_input_recurrent_initializer_serializes_verbatim() -> None:
