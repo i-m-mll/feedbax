@@ -321,6 +321,7 @@ class ConformanceRowArtifacts:
     realized_deployment_evidence: Mapping[str, Any] | None = None
     evaluation_lifecycle: Mapping[str, Any] | None = None
     collected_checkpoint_custody: Mapping[str, Any] | None = None
+    native_batch_frame: NativeBatchFrame | None = None
 
 
 class CheckRegistry:
@@ -966,6 +967,39 @@ class _RealizedBatchFrame:
         return self.cumulative - self.segment
 
 
+@dataclass(frozen=True)
+class NativeBatchFrame(_RealizedBatchFrame):
+    """Batch authority derived from the exact native COLLECT receipt and artifacts."""
+
+    expected_segment: int
+    expected_origin: int | None = None
+    inherited_checkpoint_id: str | None = None
+
+
+def _effective_batch_frame(
+    row: ConformanceRowArtifacts,
+    *,
+    unframed_count: Any,
+    require_explicit_frame: bool = False,
+) -> _RealizedBatchFrame | None:
+    if row.native_batch_frame is not None:
+        return row.native_batch_frame
+    if (
+        _path(row.collected_checkpoint_custody, "checkpoint_disposition") == "inherited_terminal"
+        or _path(_manifest_payload(row), "inherited_terminal_checkpoint") not in (_MISSING, None)
+    ):
+        raise ValueError("inherited terminal completion requires verified native batch authority")
+    diagnostics = row.training_diagnostics
+    if require_explicit_frame:
+        segment = _path(diagnostics, "segment_completed_batches")
+        cumulative = _path(diagnostics, "cumulative_completed_batches")
+        if segment is _MISSING and cumulative is _MISSING:
+            return None
+        if segment is _MISSING or cumulative is _MISSING:
+            raise ValueError("lr_trace requires both segment and cumulative batch counts")
+    return _realized_batch_frame(diagnostics, unframed_count=unframed_count)
+
+
 def _realized_batch_frame(
     diagnostics: Mapping[str, Any] | None, *, unframed_count: Any
 ) -> _RealizedBatchFrame | None:
@@ -994,12 +1028,16 @@ def _realized_batch_frame(
 def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
     """Verify full completion or an authorized, internally consistent stop."""
     check_id = "completed_batches"
-    expected = _first_present(
-        _path(row.bundle_row_spec, "expected_batches"),
-        _path(row.bundle_row_spec, "completed_batches"),
-        _path(row.bundle_row_spec, "training", "n_batches"),
-        _path(row.bundle_row_spec, "training_config", "n_batches"),
-        _path(row.bundle_row_spec, "n_batches"),
+    expected = (
+        row.native_batch_frame.expected_segment
+        if row.native_batch_frame is not None
+        else _first_present(
+            _path(row.bundle_row_spec, "expected_batches"),
+            _path(row.bundle_row_spec, "completed_batches"),
+            _path(row.bundle_row_spec, "training", "n_batches"),
+            _path(row.bundle_row_spec, "training_config", "n_batches"),
+            _path(row.bundle_row_spec, "n_batches"),
+        )
     )
     if expected is _MISSING:
         return missing_input_check(check_id, "bundle_row_spec.n_batches")
@@ -1012,8 +1050,8 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
         _path(manifest, "summary_metrics", "n_batches"),
     )
     try:
-        frame = _realized_batch_frame(
-            diagnostics,
+        frame = _effective_batch_frame(
+            row,
             unframed_count=_first_present(
                 _path(diagnostics, "summary", "completed_batches"),
                 _path(diagnostics, "summary_metrics", "completed_batches"),
@@ -1049,6 +1087,22 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
                 expected=frame.cumulative,
                 observed=native_manifest_count,
                 detail="training manifest completed batches disagree with the realized batch frame",
+            )
+        if isinstance(frame, NativeBatchFrame) and frame.inherited_checkpoint_id is not None:
+            return pass_check(
+                check_id,
+                expected={
+                    "segment": 0,
+                    "cumulative": frame.expected_origin,
+                    "checkpoint_disposition": "inherited_terminal",
+                },
+                observed={
+                    "segment": frame.segment,
+                    "cumulative": frame.cumulative,
+                    "origin": frame.origin,
+                    "checkpoint_disposition": "inherited_terminal",
+                    "transaction_id": frame.inherited_checkpoint_id,
+                },
             )
         return pass_check(check_id, expected=authored_batches, observed=frame.segment)
 
@@ -1324,8 +1378,8 @@ def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
     if interval is _MISSING:
         return missing_input_check(check_id, "bundle_row_spec.checkpoint_interval")
     try:
-        frame = _realized_batch_frame(
-            row.training_diagnostics,
+        frame = _effective_batch_frame(
+            row,
             unframed_count=_first_present(
                 _path(row.training_diagnostics, "summary", "completed_batches"),
                 _path(row.bundle_row_spec, "expected_batches"),
@@ -1495,8 +1549,23 @@ def check_events_terminal(row: ConformanceRowArtifacts) -> CheckEntry:
 def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
     """Verify realized learning-rate samples against the declared schedule."""
     check_id = "lr_trace"
-    trace = _lr_trace(row)
     try:
+        trace = _lr_trace(row)
+        frame = _effective_batch_frame(
+            row, unframed_count=_MISSING, require_explicit_frame=True
+        )
+        if isinstance(frame, NativeBatchFrame) and frame.inherited_checkpoint_id is not None:
+            verdict = pass_check if trace == {} else fail_check
+            return verdict(
+                check_id,
+                expected={"sample_count": 0},
+                observed={
+                    "sample_count": (
+                        None if trace is None else sum(len(samples) for samples in trace.values())
+                    ),
+                    "checkpoint_disposition": "inherited_terminal",
+                },
+            )
         context = reconcile_resume_context_authority(
             extract_resume_context(row.bundle_row_spec, row.training_diagnostics),
             row.preflight_resume_context,
@@ -1518,6 +1587,8 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
         return missing_input_check(check_id, "bundle_row_spec optimizer spec")
     if trace is None:
         return missing_input_check(check_id, "training_diagnostics.lr_trace")
+    if not trace:
+        return fail_check(check_id, expected="realized learning-rate samples", observed=0)
     assert optimizer_spec is not None
     missing_context = [
         key
@@ -1533,7 +1604,7 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
     try:
         trace = _normalize_lr_trace_steps(
             trace,
-            row.training_diagnostics,
+            frame,
             event_log=row.event_log,
             schedule_position_dependent=not context_independent,
         )
@@ -1557,8 +1628,7 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
             )
         expected = {}
         observed = {}
-        segment_completed = _path(row.training_diagnostics, "segment_completed_batches")
-        minimum_samples = lr_trace_minimum_samples(segment_completed)
+        minimum_samples = lr_trace_minimum_samples(frame.segment if frame is not None else None)
         for coordinates, coordinate_trace in trace.items():
             samples = _selected_lr_samples(
                 coordinate_trace,
@@ -1613,7 +1683,7 @@ def check_lr_trace(row: ConformanceRowArtifacts) -> CheckEntry:
 
 def _normalize_lr_trace_steps(
     trace: Mapping[tuple[tuple[str, int], ...], Mapping[int, float]],
-    training_diagnostics: Mapping[str, Any] | None,
+    frame: _RealizedBatchFrame | None,
     *,
     event_log: Path | str | Sequence[Mapping[str, Any]] | Mapping[str, Any] | None = None,
     schedule_position_dependent: bool = True,
@@ -1624,24 +1694,11 @@ def _normalize_lr_trace_steps(
     normalization: a constant or absent schedule certifies the same value at every
     coordinate, so its recorded samples are left untranslated.
     """
-    segment_raw = _path(training_diagnostics, "segment_completed_batches")
-    cumulative_raw = _path(training_diagnostics, "cumulative_completed_batches")
-    if segment_raw is _MISSING and cumulative_raw is _MISSING:
+    if frame is None:
         return {coordinates: dict(samples) for coordinates, samples in trace.items()}
-    if segment_raw is _MISSING or cumulative_raw is _MISSING:
-        raise ValueError(
-            "lr_trace continuation frame requires both segment_completed_batches and "
-            "cumulative_completed_batches"
-        )
-
-    segment_completed = int(segment_raw)
-    cumulative_completed = int(cumulative_raw)
-    if segment_completed < 0 or cumulative_completed < segment_completed:
-        raise ValueError(
-            "invalid lr_trace continuation frame: expected "
-            "0 <= segment_completed_batches <= cumulative_completed_batches"
-        )
-    resume_origin = cumulative_completed - segment_completed
+    segment_completed = frame.segment
+    cumulative_completed = frame.cumulative
+    resume_origin = frame.origin
     if resume_origin == 0:
         if not schedule_position_dependent:
             # A constant or absent schedule has no position to align, so the recorded
@@ -2099,7 +2156,9 @@ def _canonical_terminal_status(status: Any) -> str | None:
 
 
 def _manifest_payload(row: ConformanceRowArtifacts, *, force_load: bool = False) -> Any:
-    if row.manifest_payload is not None and not force_load:
+    if row.manifest_payload is not None and (
+        not force_load or row.native_batch_frame is not None
+    ):
         return row.manifest_payload
     if row.manifest_path is None:
         return row.manifest_payload or {}
