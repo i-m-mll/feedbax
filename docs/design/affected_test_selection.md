@@ -1,0 +1,9 @@
+# Affected test selection
+
+`uv run --no-sync python -m scripts.affected_tests --base <commit>` reports candidate test files for changes between the commit and the working tree, including untracked files. A candidate is a shadow result. The full reference gate remains the acceptance check.
+
+The selector uses [Pants dependents](https://www.pantsbuild.org/2.33/reference/goals/dependents) for Python. Install the [Pants launcher](https://www.pantsbuild.org/2.33/docs/getting-started/installing-pants) on `PATH` to query it. The selector generates targets in a temporary directory from the checkout's Python sources and reads the Python constraint from `pyproject.toml`. uv runs Python tests. The selector uses the existing Bun installation and Vitest configuration to find related Studio unit tests. Studio browser and build checks remain separate from the Vitest graph.
+
+The shadow report currently proposes a Python subset for PPO implementation and direct Python test edits, and a Vitest subset for Studio TypeScript source and test edits. Shared graph contracts, generated contracts, deleted and renamed sources, unrecognized files, external project changes, and unavailable inference ask for the full gate with a reason. Changes to graph fixtures and plugin declarations require their own provenance and runtime evidence before they can be narrowed. A first-party import that Pants resolves to a package initializer can still name a nonexistent submodule, so the graph alone does not certify import validity.
+
+`--replay <commit> --source-only` evaluates the production paths in a historical change against the current source graph. Replaying without `--source-only` includes edited tests as well. Use `--replay-repo <checkout>` to inspect a historical change from an external repository. This records the external paths and asks for full validation.
