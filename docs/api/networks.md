@@ -2,8 +2,8 @@
 
 ::: feedbax.models.networks.orthogonal_gru_cell
 
-::: feedbax.models.networks.NetworkState
+::: feedbax.models.networks.recurrent_controller
 
-::: feedbax.models.networks.SimpleStagedNetwork
+::: feedbax.models.cde.cde_controller
 
 

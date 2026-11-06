@@ -146,7 +146,7 @@ def _run(init_step_carry, step_fn, component, init_state, n_steps, **kwargs):
         inputs,
         jr.split(jr.PRNGKey(2), n_steps),
         n_steps,
-        state_view_fn=component.state_view,
+        state_view_fn=lambda state, _: component.state_view(state),
         init_step_carry=init_step_carry,
         **kwargs,
     )

@@ -71,6 +71,11 @@ class _TrialHistoryPlan:
         for name in self.children:
             state = graph.nodes[name].state_consistency_update(state)
 
+        sources = dict.fromkeys(source for _, source, _, _ in self.routes)
+        for source in sources:
+            if source not in self.children:
+                state = graph.nodes[source].state_consistency_update(state)
+
         samples = {}
         for channel_name, source_name, source_port, adapter_name in self.routes:
             source = graph.nodes[source_name]

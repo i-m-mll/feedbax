@@ -591,11 +591,34 @@ class Graph(Component):
         return tuple(execution_order), tuple(cycle_wires)
 
     def state_view(self, state: State) -> PyTree:
+        return self._view_from_state_and_carry(state, {})
+
+    def _rollout_state_view(self, state: State, carry: dict | None) -> PyTree:
+        if not carry:
+            return self.state_view(state)
+        return self._view_from_state_and_carry(state, carry)
+
+    def _view_from_state_and_carry(self, state: State, carry: dict) -> PyTree:
+        """Project stored state and named recurrent outputs from the live carry."""
         node_states: dict[str, PyTree] = {}
         for name, node in self.nodes.items():
-            node_state = node.state_view(state)
+            child_carry = carry.get(_nested_cycle_key(name))
+            node_state = (
+                node._rollout_state_view(state, child_carry)
+                if isinstance(node, Graph) and child_carry
+                else node.state_view(state)
+            )
             if node_state is not None:
                 node_states[name] = node_state
+        if carry:
+            for wire in self._cycle_wires:
+                alias = (wire.recurrent_initializer or {}).get("state_slot")
+                if (
+                    isinstance(alias, str)
+                    and alias not in node_states
+                    and self.output_bindings.get(alias) == (wire.source_node, wire.source_port)
+                ):
+                    node_states[alias] = carry[(wire.target_node, wire.target_port)]
         if self.state_view_fn is None:
             return GraphState(node_states)
         return self.state_view_fn(node_states)
@@ -1526,7 +1549,7 @@ class Graph(Component):
             step_inputs_seq,
             keys,
             n_steps,
-            state_view_fn=self.state_view,
+            state_view_fn=self._rollout_state_view,
             init_step_carry=init_cycle_values,
             checkpoint=self.checkpoint if checkpoint is None else checkpoint,
             save_history=save_history,

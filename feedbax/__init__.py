@@ -11,7 +11,7 @@ import os
 _LAZY_EXPORTS = {
     "BUILTIN_GRAPH_TEMPLATES": ("feedbax.compiler.templates", "BUILTIN_GRAPH_TEMPLATES"),
     "cde_controller": ("feedbax.models.cde", "cde_controller"),
-    "cde_controller_spec": ("feedbax.models.cde", "cde_controller_spec"),
+    "cde_controller_spec": ("feedbax.compiler.cde_templates", "cde_controller_spec"),
     "Component": ("feedbax.runtime.graph", "Component"),
     "Graph": ("feedbax.runtime.graph", "Graph"),
     "GraphTemplateMetadata": ("feedbax.compiler.templates", "GraphTemplateMetadata"),

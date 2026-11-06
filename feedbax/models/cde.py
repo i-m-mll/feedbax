@@ -4,13 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import equinox as eqx
 import jax.numpy as jnp
+import jax.random as jr
 from jaxtyping import PRNGKeyArray
 
-from feedbax.component_registry.cde_templates import (
-    cde_controller_spec as cde_controller_spec,
-    cde_initialization_keys as cde_initialization_keys,
-)
 from feedbax.runtime.graph import Graph
 
 
@@ -29,13 +27,23 @@ def cde_controller(
 ) -> Graph:
     """Compile and initialize a native neural CDE controller."""
     from feedbax.compiler import GraphDocument, compile_graph
+    from feedbax.compiler.cde_templates import cde_controller_spec
     from feedbax.component_registry import ComponentRegistry
 
     spec = cde_controller_spec(
-        obs_dim, hidden_dim, out_size, vf_width, vf_depth, decay, use_anti_nf, alpha, dtype, key=key
+        obs_dim, hidden_dim, out_size, vf_width, vf_depth, decay, use_anti_nf, alpha, dtype
     )
-    return compile_graph(
+    field_key, readout_key, h0_key, gate_key = jr.split(key, 4)
+    keys = {("vf",): field_key, ("linear",): readout_key}
+    if use_anti_nf:
+        keys[("gru_gate",)] = gate_key
+    graph = compile_graph(
         GraphDocument(graph=spec),
         ComponentRegistry(load_user_components=False),
-        initialization_keys=cde_initialization_keys(key, use_anti_nf=use_anti_nf),
+        initialization_keys=keys,
     ).graph
+    return eqx.tree_at(
+        lambda model: model.nodes["h0"].value,
+        graph,
+        0.01 * jr.normal(h0_key, (hidden_dim,), dtype=dtype),
+    )

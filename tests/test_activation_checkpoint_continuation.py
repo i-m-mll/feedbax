@@ -15,7 +15,8 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.contracts.training import GraphTopologySourceSpec
 from feedbax.contracts.worker import ProgressCoordinate
-from feedbax.models.cde import cde_controller, cde_controller_spec
+from feedbax.compiler.cde_templates import cde_controller_spec
+from feedbax.models.cde import cde_controller
 from feedbax.runtime.iteration import iterate_component
 from feedbax.training.checkpoint_custody import load_latest_checkpoint, write_checkpoint_transaction
 from tests.test_checkpoint_custody import _run_spec

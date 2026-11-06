@@ -9,7 +9,8 @@ import pytest
 from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
-from feedbax.models.cde import cde_controller, cde_controller_spec
+from feedbax.compiler.cde_templates import cde_controller_spec
+from feedbax.models.cde import cde_controller
 from feedbax.runtime.graph import Graph, GraphTraceRequest
 
 
@@ -114,6 +115,11 @@ def test_graph_round_trip_preserves_dtype_topology_and_initializer():
 def test_scan_matches_jitted_and_vmapped_step_and_differentiates():
     key = jr.key(4)
     graph = cde_controller(2, 3, 2, vf_width=8, vf_depth=1, key=key)
+    ensemble = eqx.filter_vmap(
+        lambda model_key: cde_controller(2, 3, 2, vf_width=8, vf_depth=1, key=model_key)
+    )(jr.split(key, 2))
+    assert ensemble.nodes["h0"].value.shape == (2, 3)
+    assert not jnp.array_equal(*ensemble.nodes["h0"].value)
     state = graph.init_state(key=key)
     observations = jnp.array([[1.0, 0.5], [0.2, -0.6], [0.1, 0.9]])
 
@@ -142,15 +148,17 @@ def test_scan_matches_jitted_and_vmapped_step_and_differentiates():
 
 
 def test_full_model_builder():
-    from feedbax.objectives.loss import CompositeLoss
+    from feedbax.analysis.aligned import DEFAULT_VARSET, ResponseVar
     from feedbax.tasks import SimpleReaches, prepare_trial
+    from feedbax.xabdeef.losses import simple_reach_loss
     from feedbax.xabdeef.models import cde_controller_nn
 
     model_key, trial_key, run_key = jr.split(jr.key(5), 3)
     task = SimpleReaches(
-        loss_func=CompositeLoss(terms={}),
+        loss_func=simple_reach_loss(),
         workspace=jnp.array([[-1.0, -1.0], [1.0, 1.0]]),
         n_steps=10,
+        eval_n_directions=2,
     )
     model = cde_controller_nn(
         task,
@@ -170,8 +178,24 @@ def test_full_model_builder():
         prepared.init_state,
         n_steps=prepared.n_steps,
         key=run_key,
-        trace=(GraphTraceRequest(kind="port", selector="hidden", node="net", port="hidden"),),
+        trace=(
+            GraphTraceRequest(kind="port", selector="hidden", node="net", port="hidden"),
+            GraphTraceRequest(kind="port", selector="command", node="net", port="output"),
+        ),
     )
     assert all(jnp.all(jnp.isfinite(x)) for x in jax.tree.leaves(outputs))
     assert trace["hidden"].shape == (prepared.n_steps, 8)
     assert jnp.all(jnp.isfinite(trace["hidden"]))
+    _, _, history = model(
+        prepared.inputs,
+        prepared.init_state,
+        n_steps=prepared.n_steps,
+        key=run_key,
+        return_state_history=True,
+    )
+    assert jnp.array_equal(history.net.hidden[0], model.net.nodes["h0"].value)
+    assert jnp.array_equal(history.net.hidden[1:], trace["hidden"])
+    assert jnp.allclose(DEFAULT_VARSET[ResponseVar.COMMAND].where(history)[1:], trace["command"])
+    states, losses = task.eval_with_loss(model, run_key)
+    assert states.net.hidden.shape == (2, prepared.n_steps, 8)
+    assert jnp.all(jnp.isfinite(losses["nn_hidden"].value))

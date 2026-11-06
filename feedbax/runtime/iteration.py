@@ -65,7 +65,7 @@ def iterate_component(
         step_inputs,
         keys,
         n_steps,
-        state_view_fn=component.state_view,
+        state_view_fn=lambda state, _: component.state_view(state),
         checkpoint=checkpoint,
         save_history=state_filter is not False,
         state_filter=state_filter,
