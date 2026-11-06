@@ -654,9 +654,28 @@ class Graph(Component):
         cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
         streaming_loss_fn: Optional[Callable] = None,
         rollout_step_hook: Optional[RolloutStepHook] = None,
-        t: PyTree = 0,
+        t: PyTree = None,
     ) -> tuple[dict[str, PyTree], State] | tuple[dict[str, PyTree], State, PyTree | None]:
-        if self._needs_iteration:
+        """Execute one step or scan a time-major rollout.
+
+        An explicit ``n_steps`` scans even an acyclic graph. A recurrent graph
+        infers the rollout length from its inputs when ``n_steps`` is omitted.
+        An acyclic graph with no length returns a single step's outputs and,
+        if requested, its unstacked state view.
+
+        A rollout returns an extra value for streaming loss or requested,
+        enabled state history. History includes the initial state view.
+        Streaming loss and filtered state history require a rollout. Cycle
+        overrides require a recurrent graph. For a single step, ``t`` supplies
+        the hook's timestep and defaults to zero. Rollouts start at zero, and
+        an acyclic rollout rejects a supplied ``t``.
+        """
+        recurrent = self._needs_iteration
+        if cycle_init and not recurrent:
+            raise ValueError("cycle_init requires a recurrent graph")
+        if n_steps is not None or recurrent:
+            if t is not None and not recurrent:
+                raise ValueError("t is only supported for a single step")
             save_history = return_state_history and state_filter is not False
             outputs, state, aux, _ = self._scan_rollout(
                 inputs,
@@ -672,11 +691,15 @@ class Graph(Component):
             if streaming_loss_fn is not None or save_history:
                 return outputs, state, aux
             return outputs, state
+        if streaming_loss_fn is not None:
+            raise ValueError("streaming_loss_fn requires n_steps on an acyclic graph")
+        if return_state_history and state_filter is not True:
+            raise ValueError("state_filter requires n_steps on an acyclic graph")
         outputs, state = self._call_single_step(
             inputs,
             state,
             key=key,
-            t=t,
+            t=0 if t is None else t,
             rollout_step_hook=rollout_step_hook,
         )
         if return_state_history:
