@@ -168,6 +168,7 @@ class ComponentRegistry:
         template_id: str | None = None,
         template_kind: str | None = None,
         output_prototype_fn: OutputPrototypeFn | None = None,
+        prototype_depends_on_connected_inputs: bool = False,
         provenance: str | None = None,
         owner: str | None = None,
         param_schema_version: str = "1",
@@ -220,6 +221,7 @@ class ComponentRegistry:
             extractor=extractor,
             override_reason=override_reason or "downstream registered constructor",
             output_prototype_fn=output_prototype_fn,
+            prototype_depends_on_connected_inputs=prototype_depends_on_connected_inputs,
             provenance=provenance or _current_provenance(),
             owner=owner,
             param_schema_version=param_schema_version,
@@ -645,6 +647,9 @@ class ComponentRegistry:
                     ),
                     dynamic_port_policy=meta.get("dynamic_port_policy"),
                     output_prototype_fn=meta.get("output_prototype_fn"),
+                    prototype_depends_on_connected_inputs=meta.get(
+                        "prototype_depends_on_connected_inputs", False
+                    ),
                     provenance=f"file:{py_file}",
                     representation=meta.get("representation"),
                 )

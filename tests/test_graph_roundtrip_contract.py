@@ -216,6 +216,9 @@ def _single_node_spec(
             )
         }
     )
+    if component_type == "AffineFeedbackController":
+        feedback_shape = jnp.asarray(params["gain"]).shape[-1:]
+        return spec, {("node", "feedback"): jnp.zeros(feedback_shape)}
     prototype_shape = (2,)
     if component_type in _SHAPED_SIGNAL_TYPES and isinstance(
         params.get("input_shape"), list
