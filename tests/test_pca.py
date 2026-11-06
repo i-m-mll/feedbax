@@ -1,4 +1,4 @@
-"""Focused contract tests for JAX-native state PCA."""
+"""Focused contract tests for raw-array and state PCA."""
 
 from io import BytesIO
 import json
@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from jaxtyping import Array
 
+from feedbax.analysis.dimred import pca
 from feedbax.analysis.pca import (
     PCACentering,
     PCA_RESULT_SCHEMA_VERSION,
@@ -41,6 +42,58 @@ def _data(hidden: Array) -> AnalysisInputData:
 
 def _data_with_states(states: object) -> AnalysisInputData:
     return AnalysisInputData(models={}, tasks={}, states=states, hps={}, extras={})
+
+
+@pytest.mark.parametrize(("shape", "rank"), [((2, 5), 2), ((5, 2), 2), ((2, 2, 7), 4)])
+def test_raw_pca_retains_sample_axes_and_reconstructs_in_the_state_pca_basis(
+    shape: tuple[int, ...], rank: int
+) -> None:
+    values = jnp.asarray(np.random.default_rng(42).normal(size=shape), dtype=jnp.float32)
+    raw = jax.jit(pca)(values)
+    fitted = StatesPCA().compute(_data(values))
+
+    assert raw.components.shape == (*shape[:-1], rank)
+    assert raw.singular_values.shape == (rank,)
+    assert raw.components.dtype == values.dtype
+
+    scores = raw.components.reshape(-1, rank)
+    state_scores = fitted.states_pc.reshape(-1, rank)
+    alignment = jnp.where(jnp.sum(scores * state_scores, axis=0) < 0, -1, 1)
+    np.testing.assert_allclose(
+        (raw.components * alignment) @ fitted.basis + fitted.mean,
+        values,
+        rtol=1e-5,
+        atol=1e-6,
+    )
+
+
+@pytest.mark.parametrize(
+    ("samples", "hermitian"),
+    [
+        pytest.param(
+            np.array([[1e8], [1e8], [1e8 + 8]], dtype=np.float32),
+            False,
+            id="rounded-mean",
+        ),
+        pytest.param(
+            np.array(
+                [[3, -1 + 1j, -2 - 1j], [-1 - 1j, 2, -1 + 1j], [-2 + 1j, -1 - 1j, 3]],
+                dtype=np.complex64,
+            ),
+            True,
+            id="complex-hermitian",
+        ),
+    ],
+)
+def test_raw_pca_keeps_the_svd_score_orientation(samples: np.ndarray, hermitian: bool) -> None:
+    values = jnp.asarray(samples)
+    centered = values - values.mean(axis=0)
+    left, singular_values, _ = jnp.linalg.svd(centered, full_matrices=False, hermitian=hermitian)
+
+    raw = pca(values, hermitian=hermitian)
+
+    np.testing.assert_allclose(raw.components, left * singular_values, rtol=1e-6)
+    np.testing.assert_allclose(raw.singular_values, singular_values, rtol=1e-6)
 
 
 def test_states_pca_matches_covariance_and_has_deterministic_component_signs() -> None:

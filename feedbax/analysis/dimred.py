@@ -4,21 +4,19 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
-import logging
+from math import prod
 from typing import Any
 
 import equinox as eqx
-import jax.numpy as jnp
 from jaxtyping import Array, Shaped
 
-
-logger = logging.getLogger(__name__)
+from feedbax.analysis.pca import _fit_pca
 
 
 class PCAResults(eqx.Module):
     """
     Attributes:
-        components: Principal components.
+        components: Principal-component scores with shape ``(*batch, rank)``.
         singular_values: Singular values $S$.
     """
 
@@ -32,21 +30,20 @@ def pca(
 ) -> PCAResults:
     """Principal component analysis.
 
-    Takes the last axis of `x` as features. Flattens the preceding dimensions,
-    then mean subtracts the features and performs singular value decomposition.
-    Unflattens the PCs back to the original shape before returning.
+    Takes the last axis of `x` as features and flattens all leading axes into
+    samples. Centers each feature and uses a reduced SVD. The scores retain the
+    leading shape and replace the feature axis with the number of returned
+    singular values, normally `min(samples, features)`. Score signs follow the SVD.
 
     Arguments:
         x: Input features.
         **kwargs: Additional arguments for `jax.numpy.linalg.svd`.
     """
-    # TODO: Return a module that can transform other data by the same components
-    X = x.reshape(-1, x.shape[-1])
-    X -= X.mean(axis=0)
-    U, S, Vt = jnp.linalg.svd(X, full_matrices=False, **kwargs)
-    # L = S ** 2 / (X.shape[0] - 1)
+    *batch_shape, feature_count = x.shape
+    samples = x.reshape(prod(batch_shape), feature_count)
+    _, _, (left, singular_values, _) = _fit_pca(samples, svd_options=kwargs)
 
     return PCAResults(
-        components=(U @ jnp.diag(S)).reshape(*x.shape),
-        singular_values=S,
+        components=(left * singular_values).reshape(*batch_shape, singular_values.size),
+        singular_values=singular_values,
     )
