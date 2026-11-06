@@ -16,14 +16,19 @@ References:
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from numbers import Number
 from operator import index
+from typing import Any
 
+import jax.numpy as jnp
 from equinox import field
 from equinox.nn import State, StateIndex
-import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.component_registry.declarations import ParameterField
+from feedbax.component_registry.discovery import component
+from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.runtime.graph import Component
 
 
@@ -51,6 +56,58 @@ def require_thelen_input_shape(
         )
 
 
+def thelen_muscle_output_prototype(
+    params: Mapping[str, Any], inputs: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Publish all four Thelen port shapes from the declared muscle count."""
+    shape = thelen_muscle_shape(params["n_muscles"])
+    for port in RigidTendonHillMuscleThelen.input_ports:
+        if port in inputs:
+            require_thelen_input_shape(inputs[port], shape, port=port)
+    proto = jnp.zeros(shape)
+    return dict.fromkeys(RigidTendonHillMuscleThelen.output_ports, proto)
+
+
+@component(
+    "RigidTendonHillMuscleThelen",
+    category="Muscles",
+    description=(
+        "Rigid-tendon Hill muscle with scalar signals for one muscle "
+        "and vectors for multiple muscles."
+    ),
+    parameter_fields=[
+        ParameterField(name="n_muscles", type="int", default=6, min=1, required=True),
+        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
+        ParameterField(name="tau_activation", type="float", default=0.015, min=0.0, required=False),
+        ParameterField(
+            name="tau_deactivation", type="float", default=0.05, min=0.0, required=False
+        ),
+        ParameterField(
+            name="max_isometric_force", type="float", default=500.0, min=0.0, required=False
+        ),
+        ParameterField(
+            name="optimal_muscle_length",
+            type="float",
+            default=0.1,
+            min=0.0,
+            required=False,
+        ),
+        ParameterField(
+            name="tendon_slack_length", type="float", default=0.2, min=0.0, required=False
+        ),
+        ParameterField(
+            name="initial_activation", type="float", default=0.001, min=0.0, required=False
+        ),
+    ],
+    icon="Dumbbell",
+    configure=lambda cls: dict(
+        port_types=PortTypeSpec(
+            inputs={port: PortType(dtype="any") for port in cls.input_ports},
+            outputs={port: PortType(dtype="any") for port in cls.output_ports},
+        )
+    ),
+    output_prototype_fn=thelen_muscle_output_prototype,
+)
 class RigidTendonHillMuscleThelen(Component):
     """Thelen 2003 rigid tendon model with pre-computed FV constants.
 
@@ -157,16 +214,9 @@ class RigidTendonHillMuscleThelen(Component):
         self.vmax = vmax_factor * optimal_muscle_length
         self.ce_0 = 3.0 * self.vmax
         self.ce_1 = self.ce_Af * self.vmax
-        self.ce_2 = (
-            3.0 * self.ce_Af * self.vmax * self.ce_fmlen
-            - 3.0 * self.ce_Af * self.vmax
-        )
-        self.ce_3 = (
-            8.0 * self.ce_Af * self.ce_fmlen + 8.0 * self.ce_fmlen
-        )
-        self.ce_4 = (
-            self.ce_Af * self.ce_fmlen * self.vmax - self.ce_1
-        )
+        self.ce_2 = 3.0 * self.ce_Af * self.vmax * self.ce_fmlen - 3.0 * self.ce_Af * self.vmax
+        self.ce_3 = 8.0 * self.ce_Af * self.ce_fmlen + 8.0 * self.ce_fmlen
+        self.ce_4 = self.ce_Af * self.ce_fmlen * self.vmax - self.ce_1
         self.ce_5 = 8.0 * (self.ce_Af + 1.0)
 
         if jnp.ndim(initial_activation) != 0:
@@ -235,10 +285,7 @@ class RigidTendonHillMuscleThelen(Component):
         muscle_vel = mt_velocity
 
         # --- Force-length (active): Gaussian ---
-        flce = jnp.exp(
-            -((muscle_len / self.optimal_muscle_length) - 1.0) ** 2
-            / self.ce_gamma
-        )
+        flce = jnp.exp(-(((muscle_len / self.optimal_muscle_length) - 1.0) ** 2) / self.ce_gamma)
 
         # --- Force-length (passive): exponential ---
         # l0_pe = optimal_muscle_length (normalized slack muscle length = 1.0)
