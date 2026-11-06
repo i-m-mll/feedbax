@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable, Mapping
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 import json
@@ -835,8 +836,7 @@ def _execute_evaluation_batch_rows(
         # store-wide SQLite index records all rows against their published
         # paths. The index is built once (not once per row), so the fixed store
         # overhead does not scale with row count.
-        index = connect_index(staging / "index" / "feedbax.sqlite")
-        try:
+        with closing(connect_index(staging / "index" / "feedbax.sqlite")) as index, index:
             published_rows = []
             for row in result.rows:
 
@@ -862,8 +862,6 @@ def _execute_evaluation_batch_rows(
                         artifacts=tuple(publish(artifact) for artifact in row.artifacts),
                     )
                 )
-        finally:
-            index.close()
         _register_evaluation_batch_retention_root(
             [row.result for row in published_rows],
             root=staging,
