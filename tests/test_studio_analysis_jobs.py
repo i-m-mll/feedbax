@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
+import httpx
 from fastapi.testclient import TestClient
 import pytest
 
@@ -29,6 +32,7 @@ from feedbax.contracts.manifest import (
     load_manifest,
 )
 from feedbax.contracts.studio_api import GenerateAnalysisRequest
+from feedbax.web.api import analysis as analysis_api
 from feedbax.web.api.analysis import _run_analysis_sync, _spec_for_analysis_request
 from feedbax.web.app import create_app
 from feedbax.plugins.bootstrap import BootstrapState
@@ -117,6 +121,168 @@ def studio_registries(application_registry_bundle, monkeypatch):
 
     monkeypatch.setattr("feedbax.web.app.compose_application", compose)
     return application_registry_bundle
+
+
+def test_studio_analysis_jobs_bound_and_drain_per_app(
+    tmp_path: Path,
+    monkeypatch,
+    studio_registries,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    jobs_path = "/api/analyses/jobs"
+    release_analysis = Event()
+    figure_calls: list[str] = []
+
+    def figure_request(name: str) -> dict:
+        return {
+            "node_id": name,
+            "job_kind": "figure",
+            "figure_spec": {"name": name, "assembler": "test.studio_figure"},
+        }
+
+    def result(manifest_id: str) -> analysis_api.AnalysisJobResult:
+        return analysis_api.AnalysisJobResult(
+            manifest_id=manifest_id,
+            manifest_path=str(tmp_path / "manifest.json"),
+            figure_hashes=[],
+            artifact_ids=[],
+            artifact_paths=[],
+        )
+
+    async def submit(client: httpx.AsyncClient, payload: dict) -> str:
+        response = await client.post(jobs_path, json=payload)
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["status"] == "pending"
+        return data["request_id"]
+
+    async def status(client: httpx.AsyncClient, request_id: str) -> dict:
+        response = await client.get(f"{jobs_path}/status/{request_id}")
+        assert response.status_code == 200, response.text
+        return response.json()["data"]
+
+    async def settle(client: httpx.AsyncClient, request_id: str) -> dict:
+        async with asyncio.timeout(5):
+            while True:
+                data = await status(client, request_id)
+                if data["status"] in {"complete", "error"}:
+                    return data
+                await asyncio.sleep(0.01)
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        analysis_started = asyncio.Event()
+        first_app_ready = asyncio.Event()
+        stop_first_app = asyncio.Event()
+
+        def run_analysis(spec, _registries):
+            loop.call_soon_threadsafe(analysis_started.set)
+            assert release_analysis.wait(15), "test did not release running analysis"
+            return result(analysis_run_manifest_id(spec))
+
+        def run_figure(spec, _registries):
+            figure_calls.append(spec.name)
+            return result(analysis_api.figure_manifest_id(spec))
+
+        monkeypatch.setattr(analysis_api, "_run_analysis_sync", run_analysis)
+        monkeypatch.setattr(analysis_api, "_run_figure_sync", run_figure)
+        first_app, second_app = create_app(), create_app()
+
+        async def serve_first_app() -> None:
+            async with first_app.router.lifespan_context(first_app):
+                first_app_ready.set()
+                await stop_first_app.wait()
+
+        async with (
+            second_app.router.lifespan_context(second_app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=first_app), base_url="http://studio"
+            ) as first,
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=second_app), base_url="http://studio"
+            ) as second,
+        ):
+            first_lifespan = asyncio.create_task(serve_first_app())
+            try:
+                await asyncio.wait_for(first_app_ready.wait(), 5)
+                running_id = await submit(
+                    first,
+                    {
+                        "node_id": TOY_JOB_ANALYSIS_TYPE,
+                        "eval_run_id": "feedbax-evaluation-run:blocked",
+                    },
+                )
+                await asyncio.wait_for(analysis_started.wait(), 5)
+                assert (await status(first, running_id))["status"] == "running"
+
+                queued_id = await submit(first, figure_request("queued"))
+                assert (await status(first, queued_id))["status"] == "pending"
+                rejected = await first.post(jobs_path, json=figure_request("rejected"))
+                assert rejected.status_code == 503, rejected.text
+
+                assert (await second.get(f"{jobs_path}/status/{running_id}")).status_code == 404
+                independent_id = await submit(second, figure_request("independent"))
+                assert (await first.get(f"{jobs_path}/status/{independent_id}")).status_code == 404
+                independent = await settle(second, independent_id)
+                assert independent["status"] == "complete", independent["error"]
+                assert (await status(first, running_id))["status"] == "running"
+                assert (await status(first, queued_id))["status"] == "pending"
+
+                stop_first_app.set()
+                cancelled = await settle(first, queued_id)
+                assert cancelled["status"] == "error"
+                assert cancelled["error"]
+                assert not first_lifespan.done()
+                assert (
+                    await first.post(jobs_path, json=figure_request("closing"))
+                ).status_code == 503
+                assert (await status(first, running_id))["status"] == "running"
+            finally:
+                release_analysis.set()
+                stop_first_app.set()
+                await asyncio.wait_for(first_lifespan, 5)
+
+            completed = await status(first, running_id)
+            assert completed["status"] == "complete", completed["error"]
+            assert (await status(first, queued_id))["status"] == "error"
+            assert figure_calls == ["independent"]
+
+    asyncio.run(scenario())
+
+
+def test_studio_analysis_job_thread_start_failure_closes_admission(
+    tmp_path: Path,
+    monkeypatch,
+    studio_registries,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    worker_called = Event()
+    start_thread = Thread.start
+    payload = {
+        "node_id": TOY_JOB_ANALYSIS_TYPE,
+        "eval_run_id": "feedbax-evaluation-run:thread-start-failure",
+    }
+
+    def fail_analysis_thread_start(thread: Thread) -> None:
+        if thread.name.startswith("analysis_"):
+            raise RuntimeError("can't start new thread")
+        start_thread(thread)
+
+    def run_analysis(_spec, _registries):
+        worker_called.set()
+        raise AssertionError("rejected work must not execute")
+
+    monkeypatch.setattr(analysis_api, "_run_analysis_sync", run_analysis)
+    with TestClient(create_app()) as client:
+        with monkeypatch.context() as patch:
+            patch.setattr(Thread, "start", fail_analysis_thread_start)
+            failed = client.post("/api/analyses/jobs", json=payload)
+        assert failed.status_code == 503, failed.text
+
+        later = client.post("/api/analyses/jobs", json=payload)
+        assert later.status_code == 503, later.text
+
+    assert not worker_called.is_set()
 
 
 def test_studio_analysis_job_routes_eval_run_through_executable_spec(
