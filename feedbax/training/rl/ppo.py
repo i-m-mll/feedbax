@@ -37,9 +37,9 @@ from feedbax.training.rl.obs_norm import (
 from feedbax.training.rl.policy import (
     ActorCritic,
     LatticeNoiseState,
+    _clip_action,
     init_lattice_noise,
     maybe_resample_noise,
-    sample_action_with_noise,
 )
 from feedbax.training.rl.tasks import (
     CurriculumState,
@@ -107,11 +107,14 @@ class Rollout(NamedTuple):
 
     Attributes:
         obs: Observations.
-        actions: Actions taken.
+        actions: Actions scored by PPO. Under LATTICE these are the Beta draws
+            before the fixed clipping transform used for environment execution.
         log_probs: Log probabilities of actions.
         values: Value estimates.
         rewards: Rewards received.
         dones: Episode termination flags.
+        latent_noise: Fixed collection noise, shared by environments at each
+            timestep, or None when LATTICE is disabled.
     """
 
     obs: Float[Array, "T N obs_dim"]
@@ -120,6 +123,7 @@ class Rollout(NamedTuple):
     values: Float[Array, "T N"]
     rewards: Float[Array, "T N"]
     dones: Bool[Array, "T N"]
+    latent_noise: Float[Array, "T latent_dim"] | None = None
 
 
 class _EpisodeCarry(NamedTuple):
@@ -204,6 +208,7 @@ def _ppo_loss(
     clip_eps: float,
     vf_coef: float,
     ent_coef: float,
+    latent_noise: Float[Array, "B latent_dim"] | None = None,
 ) -> tuple[Float[Array, ""], tuple[Float[Array, ""], Float[Array, ""], Float[Array, ""]]]:
     """PPO clipped loss function.
 
@@ -217,12 +222,15 @@ def _ppo_loss(
         clip_eps: Clipping epsilon.
         vf_coef: Value loss coefficient.
         ent_coef: Entropy bonus coefficient.
+        latent_noise: The fixed noise sampled during collection for each row.
+            Its dynamics are policy-independent, so only the conditional Beta
+            density enters the likelihood ratio.
 
     Returns:
         Tuple of (total_loss, (policy_loss, value_loss, entropy)).
     """
-    dist, value = policy.dist_and_value(obs)
-    logp = jnp.sum(dist.log_prob(actions), axis=-1)
+    dist, value = policy.dist_and_value(obs, latent_noise)
+    logp = dist.joint_log_prob(actions)
     ratio = jnp.exp(logp - old_logp)
     unclipped = ratio * advantages
     clipped = jnp.clip(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * advantages
@@ -386,7 +394,7 @@ def _collect_rollout_extended(
     lattice_resample_interval: int,
     curriculum_arm_reach: float,
     use_obs_norm: Bool[Array, ""],
-    use_lattice: Bool[Array, ""],
+    use_lattice: bool,
     use_curriculum: Bool[Array, ""],
     distance_weight: Float[Array, ""],
 ) -> tuple[
@@ -432,7 +440,6 @@ def _collect_rollout_extended(
         ),
     )
     use_obs_norm = jnp.asarray(use_obs_norm)
-    use_lattice = jnp.asarray(use_lattice)
     use_curriculum = jnp.asarray(use_curriculum)
 
     max_target_distance = curriculum_state.max_target_fraction * curriculum_arm_reach
@@ -446,32 +453,26 @@ def _collect_rollout_extended(
     def scan_step(carry, _):
         states, key, lat_state, episodes = carry
 
-        def split_with_lattice(key):
+        if use_lattice:
             key, act_key, reset_key, noise_key = jax.random.split(key, 4)
-            return key, act_key, reset_key, noise_key
-
-        def split_without_lattice(key):
+        else:
             key, act_key, reset_key = jax.random.split(key, 3)
-            return key, act_key, reset_key, key
-
-        key, act_key, reset_key, noise_key = jax.lax.cond(
-            use_lattice,
-            split_with_lattice,
-            split_without_lattice,
-            key,
-        )
 
         obs = v_get_obs(plant, cfg, states)
         obs_normed = normalize_obs(obs_norm_state, obs)
         obs = jnp.where(use_obs_norm, obs_normed, obs)
 
         act_keys = jax.random.split(act_key, n_envs)
+        latent_noise = lat_state.noise if use_lattice else None
         actions, log_probs, values = jax.vmap(
-            sample_action_with_noise,
-            in_axes=(None, 0, 0, None, None),
-        )(policy, obs, act_keys, lat_state.noise, use_lattice)
+            lambda observation, act_key: policy._draw_action(
+                observation, act_key, latent_noise, clip=not use_lattice,
+            ),
+        )(obs, act_keys)
 
-        states, _, rewards, outcome = v_step(states, actions)
+        # The execution transform leaves the original Beta draws available for PPO.
+        env_actions = _clip_action(actions) if use_lattice else actions
+        states, _, rewards, outcome = v_step(states, env_actions)
         completed = outcome.completed
         returns = episodes.returns + rewards
         eligible = completed & outcome.success_eligible
@@ -484,12 +485,10 @@ def _collect_rollout_extended(
         reset_keys = jax.random.split(reset_key, n_envs)
         states = v_auto_reset(states, completed, reset_keys)
 
-        def _resample(state):
-            return maybe_resample_noise(state, noise_key, lattice_resample_interval)
+        if use_lattice:
+            lat_state = maybe_resample_noise(lat_state, noise_key, lattice_resample_interval)
 
-        lat_state = jax.lax.cond(use_lattice, _resample, lambda s: s, lat_state)
-
-        rollout_step = Rollout(obs, actions, log_probs, values, rewards, completed)
+        rollout_step = Rollout(obs, actions, log_probs, values, rewards, completed, latent_noise)
         episode_totals = _EpisodeTotals(
             return_sum=jnp.sum(jnp.where(completed, returns, 0.0)),
             completed=jnp.sum(completed),
@@ -533,7 +532,7 @@ def _batched_collect_rollouts_extended(
     lattice_resample_interval: int,
     curriculum_arm_reach: float,
     use_obs_norm: Bool[Array, ""],
-    use_lattice: Bool[Array, ""],
+    use_lattice: bool,
     use_curriculum: Bool[Array, ""],
     distance_weight: Float[Array, ""],
 ) -> tuple[
@@ -544,7 +543,7 @@ def _batched_collect_rollouts_extended(
     _EpisodeCarry,
     _EpisodeTotals,
 ]:
-    """Vectorized rollout collection with dynamically gated enhancements."""
+    """Vectorized rollout collection across bodies."""
     n_bodies = jt.leaves(batched_plant)[0].shape[0]
     keys = jax.random.split(key, n_bodies)
     # Bug: a39e7d0 — capture broadcast args via closure to avoid PjitFunction leaf
@@ -603,6 +602,7 @@ def _update_one(
     flat_ret = returns.reshape(-1)
     flat_adv = (flat_adv - jnp.mean(flat_adv)) / (jnp.std(flat_adv) + 1e-8)
 
+    n_envs = rollout.obs.shape[1]
     batch_size = flat_obs.shape[0]
     minibatch_size = batch_size // n_minibatches
 
@@ -616,6 +616,10 @@ def _update_one(
         start = (i % n_minibatches) * minibatch_size
         mb_idx = jax.lax.dynamic_slice(perm, (start,), (minibatch_size,))
 
+        # Flat samples are time-major, with one noise vector shared per timestep.
+        latent_noise = (
+            None if rollout.latent_noise is None else rollout.latent_noise[mb_idx // n_envs]
+        )
         (_, _), grads = eqx.filter_value_and_grad(
             _ppo_loss,
             has_aux=True,
@@ -629,6 +633,7 @@ def _update_one(
             clip_eps,
             vf_coef,
             ent_coef,
+            latent_noise,
         )
 
         updates, opt_state = optimizer.update(grads, opt_state, policy)
@@ -723,7 +728,7 @@ def _run_ppo_updates(
     curriculum_arm_reach: float,
     reward_ramp_updates: Float[Array, ""],
     use_obs_norm: Bool[Array, ""],
-    use_lattice: Bool[Array, ""],
+    use_lattice: bool,
     use_curriculum: Bool[Array, ""],
 ) -> tuple[_PPOTrainCarry, _PPOTrainHistory]:
     """Run the PPO outer update loop as one compiled JAX scan.
@@ -742,7 +747,7 @@ def _run_ppo_updates(
         )
         key, collect_key, update_key = jax.random.split(carry.key, 3)
         policy = eqx.combine(carry.dynamic_policy, static_policy)
-        states, rollout, last_values, returned_lattice, episodes, totals = (
+        states, rollout, last_values, lattice, episodes, totals = (
             _batched_collect_rollouts_extended(
                 batched_plant,
                 env_config,
@@ -762,12 +767,6 @@ def _run_ppo_updates(
                 use_curriculum,
                 distance_weight,
             )
-        )
-
-        lattice = jt.map(
-            lambda old, new: jnp.where(use_lattice, new, old),
-            carry.lattice,
-            returned_lattice,
         )
 
         policy, opt_state = _batched_update(
@@ -916,15 +915,15 @@ def train_ppo_batched(
     # Bug: 2055433 -- per-body enhancement state initialization.
     batched_obs_norm = _stack_pytrees(*[init_obs_norm(obs_dim) for _ in range(n_bodies)])
 
-    hidden_dim = int(ppo_config.hidden_dim)
+    latent_dim = policies[0].actor.layers[-1].in_features
     if enhancements.lattice_noise:
         key, lattice_key = jax.random.split(key)
         lattice_keys = jax.random.split(lattice_key, n_bodies)
         batched_lattice = eqx.filter_vmap(
-            lambda k: init_lattice_noise(hidden_dim, k),
+            lambda k: init_lattice_noise(latent_dim, k),
         )(lattice_keys)
     else:
-        zero_noise = jnp.zeros((hidden_dim,))
+        zero_noise = jnp.zeros((latent_dim,))
         zero_state = LatticeNoiseState(
             noise=zero_noise,
             steps_since_resample=jnp.array(0, dtype=jnp.int32),
@@ -934,7 +933,7 @@ def train_ppo_batched(
     batched_curriculum = _stack_pytrees(*[init_curriculum() for _ in range(n_bodies)])
 
     use_obs_norm = jnp.asarray(enhancements.obs_norm, dtype=bool)
-    use_lattice = jnp.asarray(enhancements.lattice_noise, dtype=bool)
+    use_lattice = enhancements.lattice_noise
     use_curriculum = jnp.asarray(enhancements.curriculum, dtype=bool)
 
     def init_body(plant, key, max_target_fraction):
