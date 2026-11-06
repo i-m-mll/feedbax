@@ -1869,6 +1869,71 @@ def _migrate_studio_task_binding_v1_payload(payload: dict[str, Any]) -> dict[str
     return migrated
 
 
+def _migrate_studio_task_binding_v2_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Translate legacy task data already routed to a concrete graph input."""
+
+    source_data = payload.get("exposed_data") or []
+    data_by_id = {data["id"]: data for data in source_data}
+    bindings = []
+    for raw_binding in payload.get("bindings") or []:
+        binding = dict(raw_binding)
+        data = data_by_id.get(binding.get("source_data_id"), {})
+        metadata = data.get("metadata") or {}
+        role = binding.get("role") or data.get("role") or metadata.get("task_data_role")
+        if role == "component_parameter":
+            temporal = metadata.get("temporality") or metadata.get("temporal_support")
+            temporal = temporal if isinstance(temporal, str) else None
+            shape = data.get("expected_shape")
+            if shape is None:
+                shape = (data.get("value_spec") or {}).get("shape")
+            time_varying = temporal in {
+                "trajectory", "materialized_trajectory", "epoch_masked_signal",
+                "time_varying", "per_step",
+            } or (
+                temporal not in {"constant", "trial_constant", "initial", "per_trial"}
+                and isinstance(shape, (list, tuple))
+                and bool(shape)
+                and shape[0] == "time"
+            )
+            if not time_varying:
+                raise ValueError(
+                    f"Legacy constant task binding {binding['id']!r} selected a global "
+                    "state label. Open it in the original producer to identify the "
+                    "owning component, then reauthor it for that component's input."
+                )
+            binding["role"] = "graph_input"
+            binding["metadata"] = dict(binding.get("metadata", {}))
+            binding["metadata"].pop("task_parameter_label", None)
+        bindings.append(binding)
+
+    exposed_data = []
+    for raw_data in source_data:
+        data = dict(raw_data)
+        if (
+            data.get("kind") == "intervention"
+            and data.get("id") == "intervene"
+            and data.get("path") == "intervene"
+            and not data.get("bindable")
+        ):
+            continue
+        metadata = dict(data.get("metadata", {}))
+        role = data.get("role") or metadata.get("task_data_role")
+        if role == "component_parameter" or data.get("kind") == "intervention":
+            if data.get("bindable"):
+                data.update(role="graph_input", kind="signal")
+            else:
+                data.update(role="protocol_value", kind="protocol_value")
+            path = data.get("path", "")
+            if path.startswith("intervene."):
+                data["path"] = f"inputs.{data['id']}"
+            metadata.pop("task_parameter_label", None)
+            if "task_data_role" in metadata:
+                metadata["task_data_role"] = data["role"]
+            data["metadata"] = metadata
+        exposed_data.append(data)
+    return {**payload, "exposed_data": exposed_data, "bindings": bindings}
+
+
 def _migrate_studio_value_spec_v1_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Migrate legacy Studio ValueSpec v1 payloads to the v2 envelope."""
     from feedbax.contracts.graph import StudioValueSpec
@@ -5970,9 +6035,9 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported = None
             rejected = ("feedbax.spec.studio.biomechanics.v0",)
         elif kind == "StudioTaskBindingSpec":
-            current_version = f"{schema_id}.v2"
+            current_version = f"{schema_id}.v3"
             stance = "migrate"
-            supported = (STUDIO_TASK_BINDING_LEGACY_V1,)
+            supported = (STUDIO_TASK_BINDING_LEGACY_V1, f"{schema_id}.v2")
             rejected = ("feedbax.studio.task_bindings.v0",)
         elif kind == "StudioValueSpec":
             current_version = f"{schema_id}.v2"
@@ -7602,6 +7667,16 @@ default_spec_registry.register_migration(
             "Rename exposed_outputs to exposed_data and source_output_id to "
             "source_data_id for scenario-owned task data bindings."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioTaskBindingSpec",
+    SchemaMigration(
+        source_version="feedbax.spec.studio.task_bindings.v2",
+        target_version="feedbax.spec.studio.task_bindings.v3",
+        migration_id="studio-task-bindings-v2-to-v3",
+        migrate=_migrate_studio_task_binding_v2_payload,
+        description="Bind task controls directly to graph input ports.",
     ),
 )
 default_spec_registry.register_migration(

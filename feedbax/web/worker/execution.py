@@ -21,9 +21,7 @@ import optax
 from feedbax.runtime.graph import Graph, GraphTraceRequest, init_state_from_component
 from feedbax.runtime.task_bindings import (
     TaskInputPlan,
-    TaskParameterStateInitPlan,
-    apply_task_parameter_state_inits,
-    expose_task_bindings,
+    expose_task_inputs,
 )
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.runtime.retained_observables import (
@@ -93,7 +91,6 @@ class CompiledTrainingRun:
     training_spec: TrainingSpec
     task_binding_spec: StudioTaskBindingSpec
     task_inputs: tuple[TaskInputPlan, ...]
-    state_init_plans: tuple[TaskParameterStateInitPlan, ...]
     retention_plan: RetentionPlan
     trace_requests: tuple[GraphTraceRequest, ...]
     loss_terms: tuple[LossTermPlan, ...]
@@ -229,8 +226,7 @@ def compile_training_run(
             ],
         ) from exc
 
-    binding_exposure = expose_task_bindings(graph, binding_model)
-    graph = binding_exposure.graph
+    graph, task_inputs = expose_task_inputs(graph, binding_model)
     n_steps = int(cfg.n_reach_steps)
     try:
         retention_plan = lower_retention_plan(graph_model, training_model, task_spec=task_spec)
@@ -259,8 +255,7 @@ def compile_training_run(
         graph_spec=graph_model,
         training_spec=training_model,
         task_binding_spec=binding_model,
-        task_inputs=binding_exposure.input_plans,
-        state_init_plans=binding_exposure.state_init_plans,
+        task_inputs=task_inputs,
         retention_plan=retention_plan,
         trace_requests=trace_requests,
         loss_terms=loss_terms,
@@ -271,7 +266,7 @@ def compile_training_run(
         metadata={
             "execution": "generic_graph",
             "task_spec": task_model.model_dump(mode="json", exclude_none=True),
-            "task_input_count": len(binding_exposure.input_plans),
+            "task_input_count": len(task_inputs),
             "trace_request_count": len(trace_requests),
             "loss_term_count": len(loss_terms),
             "trainable_nodes": list(trainable_nodes),
@@ -590,13 +585,6 @@ def rollout_graph(
         for plan in compiled.task_inputs
     }
     state = init_state_from_component(graph)
-    if compiled.state_init_plans:
-        state = apply_task_parameter_state_inits(
-            state,
-            graph,
-            compiled.state_init_plans,
-            {plan.data_id: task_data[plan.data_id][0] for plan in compiled.state_init_plans},
-        )
     outputs, final_state, trace = graph.rollout_with_trace(
         inputs,
         state,

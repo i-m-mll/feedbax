@@ -256,7 +256,7 @@ const components: ComponentDefinition[] = [
       { name: 'eval_n_directions', type: 'int', default: 7, required: false },
     ],
     input_ports: [],
-    output_ports: ['inputs', 'targets', 'inits', 'intervene'],
+    output_ports: ['inputs', 'targets', 'inits'],
     representation: {
       frame: 'world.xy',
       units: 'm',

@@ -123,7 +123,7 @@ def _acausal_task_binding_spec() -> dict:
 
 def _task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "model_input",
@@ -158,7 +158,7 @@ def _task_binding_spec() -> dict:
 
 def _network_task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "model_input",
@@ -258,7 +258,7 @@ def _cde_task_binding_spec() -> dict:
             }
         )
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": exposed_data,
         "bindings": bindings,
         "metadata": {},
@@ -282,7 +282,7 @@ def _mux_graph_spec() -> dict:
 
 def _mux_task_binding_spec() -> dict:
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "position",
@@ -1414,7 +1414,7 @@ def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
         output_bindings={"output": ("delay", "output")},
     ).model_dump(mode="json", exclude_none=True)
     task_binding_spec = {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [
             {
                 "id": "model_input",

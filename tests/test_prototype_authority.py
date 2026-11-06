@@ -515,7 +515,7 @@ def test_prototype_dependencies_defer_without_reinterpreting_parameters() -> Non
             "affine": ComponentSpec(
                 type="AffineValueComposer",
                 params={
-                    "schema_version": "feedbax.component.affine_value_composer.v1",
+                    "schema_version": "feedbax.component.affine_value_composer.v2",
                     "output_block_size": 1,
                     "feature_rules": [{"kind": "identity", "state_slice": [0, 1]}],
                 },

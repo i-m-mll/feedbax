@@ -1185,8 +1185,8 @@ class StudioTaskBindingSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["feedbax.spec.studio.task_bindings.v2"] = (
-        "feedbax.spec.studio.task_bindings.v2"
+    schema_version: Literal["feedbax.spec.studio.task_bindings.v3"] = (
+        "feedbax.spec.studio.task_bindings.v3"
     )
     exposed_data: List[StudioTaskDataSpec] = Field(default_factory=list)
     bindings: List[StudioTaskBinding] = Field(default_factory=list)

@@ -17,12 +17,11 @@ def test_studio_rollout_matches_trial_preparation_with_constant_parameter() -> N
             "field": ComponentSpec(
                 type="AffineValueComposer",
                 params={
-                    "schema_version": "feedbax.component.affine_value_composer.v1",
+                    "schema_version": "feedbax.component.affine_value_composer.v2",
                     "output_block_size": 1,
                     "feature_rules": [{"kind": "identity", "state_slice": [0, 1]}],
                     "gain_init": [[2.0]],
                     "bias_init": [0.0],
-                    "label": "field",
                 },
                 input_ports=["base", "state", "target", "gain", "bias"],
                 output_ports=["value"],
@@ -41,9 +40,9 @@ def test_studio_rollout_matches_trial_preparation_with_constant_parameter() -> N
         {
             "id": port,
             "label": port,
-            "kind": "intervention" if port == "gain" else "signal",
-            "role": "component_parameter" if port == "gain" else "model_input",
-            "path": "intervene.field.gain" if port == "gain" else f"inputs.{port}",
+            "kind": "signal",
+            "role": "model_input",
+            "path": f"inputs.{port}",
             "bindable": True,
             "expected_shape": ["time", 1, 1] if port == "gain" else ["time", 1],
             "value_spec": {"mode": "constant", "value": values},
@@ -54,9 +53,9 @@ def test_studio_rollout_matches_trial_preparation_with_constant_parameter() -> N
         {
             "id": "trial_bias",
             "label": "Trial bias",
-            "kind": "intervention",
-            "role": "component_parameter",
-            "path": "intervene.field.bias",
+            "kind": "signal",
+            "role": "graph_input",
+            "path": "inputs.bias",
             "bindable": True,
             "expected_shape": [1],
             "value_spec": {"mode": "constant", "value": bias},
@@ -68,7 +67,7 @@ def test_studio_rollout_matches_trial_preparation_with_constant_parameter() -> N
             "source_data_id": port,
             "target_node_id": "field",
             "target_port": port,
-            "role": "component_parameter" if port == "gain" else "model_input",
+            "role": "model_input",
         }
         for port in steps
     ]
@@ -78,8 +77,7 @@ def test_studio_rollout_matches_trial_preparation_with_constant_parameter() -> N
             "source_data_id": "trial_bias",
             "target_node_id": "field",
             "target_port": "bias",
-            "role": "component_parameter",
-            "metadata": {"task_parameter_label": "field.bias"},
+            "role": "graph_input",
         }
     )
     compiled = compile_training_run(
@@ -99,7 +97,7 @@ def test_studio_rollout_matches_trial_preparation_with_constant_parameter() -> N
         },
         task_spec={"type": "Generic", "params": {}},
         task_binding_spec={
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": task_data,
             "bindings": bindings,
         },
@@ -114,10 +112,11 @@ def test_studio_rollout_matches_trial_preparation_with_constant_parameter() -> N
             inits=WhereDict(),
             targets=WhereDict(),
             inputs={
-                graph_input: jnp.asarray(steps[port])
+                graph_input: (
+                    jnp.asarray([bias] * 3) if port == "bias" else jnp.asarray(steps[port])
+                )
                 for graph_input, (_, port) in graph.input_bindings.items()
             },
-            intervene={"field.bias": jnp.asarray(bias)},
         ),
     )
     key = jr.key(0)

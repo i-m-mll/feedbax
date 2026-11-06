@@ -9,7 +9,6 @@ import jax.random as jr
 import numpy as np
 import pytest
 
-from feedbax.intervene import InterventionSpec
 from feedbax.objectives import CompositeLoss, TargetSpec, make_streaming_loss_fn
 from feedbax.runtime.batch import BatchInfo
 from feedbax.runtime.graph import Component, Graph
@@ -17,7 +16,6 @@ from feedbax.runtime.iteration import run_component
 from feedbax.runtime.state import CartesianState
 from feedbax.tasks import (
     SimpleReaches,
-    TaskInterventionSpecs,
     TaskTrialSpec,
     TrialSpecDependency,
     WhereDict,
@@ -107,7 +105,7 @@ def test_simple_reaches_generated_training_batch_matches_scalar_rollouts(context
 
     generation_key, evaluation_key = jr.split(key)
     trials = [
-        task.get_train_trial_with_intervenor_params(trial_key, batch)
+        task.sample_trial(trial_key, batch)
         for trial_key in jr.split(generation_key, batch.size)
     ]
     histories = [
@@ -174,9 +172,6 @@ class _DriveRecorder(Component):
         self.state_index = eqx.nn.StateIndex(CartesianState())
         self.offset_index = eqx.nn.StateIndex(jnp.zeros(2))
 
-    def task_parameter_state_indices(self):
-        return {"offset": self.offset_index}
-
     def __call__(self, inputs, state, *, key):
         effector = state.get(self.state_index)
         pos = inputs["drive"] + state.get(self.offset_index)
@@ -204,25 +199,25 @@ class _ReachesWithNativeDependency(SimpleReaches):
         return replace(
             trial,
             targets=WhereDict({_POSITION: target}),
+            inits=WhereDict({
+                **trial.inits,
+                "mechanics.effector.offset_index": TrialSpecDependency(
+                    lambda trial, key: trial.inputs["effector_target"].pos[0]
+                ),
+            }),
             extra={
-                "offset": TrialSpecDependency(lambda trial, key: trial.intervene["offset"]),
+                "offset": TrialSpecDependency(lambda trial, key: trial.inputs["effector_target"].pos[0]),
             },
         )
 
 
 def test_simple_reaches_realizes_added_inputs_per_validation_trial():
-    intervention = {
-        "offset": InterventionSpec(
-            lambda trial, batch_info, *, key: trial.inputs["effector_target"].pos[0]
-        )
-    }
     task = _ReachesWithNativeDependency(
         n_steps=5,
         loss_func=CompositeLoss(()),
         workspace=((-1.0, -1.0), (1.0, 1.0)),
         eval_n_directions=7,
         epoch_name="reach",
-        intervention_specs=TaskInterventionSpecs(training=intervention, validation=intervention),
     )
 
     def noise(trial, key):
@@ -235,7 +230,7 @@ def test_simple_reaches_realizes_added_inputs_per_validation_trial():
     sampled = task.sample_trial(jr.key(0))
     assert sampled.inputs["drive"].shape == (4, 2)
     np.testing.assert_allclose(
-        sampled.inputs["drive"], 2 * sampled.inputs["z_noise"] + sampled.intervene["offset"]
+        sampled.inputs["drive"], 2 * sampled.inputs["z_noise"] + sampled.extra["offset"]
     )
 
     trials = task.validation_trials
@@ -244,10 +239,10 @@ def test_simple_reaches_realizes_added_inputs_per_validation_trial():
     assert np.unique(trials.inputs["z_noise"], axis=0).shape[0] == 7
     np.testing.assert_array_equal(drives, replace(task).validation_trials.inputs["drive"])
     np.testing.assert_array_equal(
-        trials.intervene["offset"], trials.inputs["effector_target"].pos[:, 0]
+        trials.extra["offset"], trials.inputs["effector_target"].pos[:, 0]
     )
     np.testing.assert_allclose(
-        drives, 2 * trials.inputs["z_noise"] + trials.intervene["offset"][:, None, :]
+        drives, 2 * trials.inputs["z_noise"] + trials.extra["offset"][:, None, :]
     )
     np.testing.assert_array_equal(
         trials.targets[_POSITION].value, jnp.swapaxes(trials.inputs["effector_target"].pos, 0, 1)
@@ -269,7 +264,7 @@ def test_simple_reaches_realizes_added_inputs_per_validation_trial():
     states = task.eval(model, jr.key(1))
     np.testing.assert_allclose(
         states.nodes["mechanics"].nodes["effector"].pos,
-        drives + trials.intervene["offset"][:, None, :],
+        drives + trials.extra["offset"][:, None, :],
     )
 
     _, _, training_trials = task.eval_train_batch(model, BatchInfo(3, 0, 1), jr.key(2))

@@ -12,11 +12,10 @@ import type {
 import { delayedReachTaskDataValueSpec, VALUE_SCHEMA_VERSION } from './taskTimeline';
 
 export const TASK_BINDING_SCHEMA_VERSION: StudioTaskBindingSpec['schema_version'] =
-  'feedbax.spec.studio.task_bindings.v2';
+  'feedbax.spec.studio.task_bindings.v3';
 export const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set([
   'model_input',
   'graph_input',
-  'component_parameter',
 ]);
 
 export const TASK_COMPONENT_TYPES = new Set([
@@ -141,17 +140,7 @@ function genericTaskData(): StudioTaskDataSpec[] {
     value: { dtype: 'float32', shape: ['state'], units: null, frame: null },
     metadata: { temporal_support: 'initial' },
   });
-  const interveneData = taskDataSpec({
-    id: 'intervene',
-    label: 'Intervention',
-    kind: 'intervention',
-    role: 'intervention',
-    path: 'intervene',
-    bindable: false,
-    value: { dtype: 'float32', shape: ['time', 'channels'], units: null, frame: 'task_time' },
-    metadata: { temporal_support: 'trajectory' },
-  });
-  return [inputsData, targetsData, initsData, interveneData];
+  return [inputsData, targetsData, initsData];
 }
 
 function delayedReachTaskData(): StudioTaskDataSpec[] {
@@ -220,7 +209,7 @@ function delayedReachTaskData(): StudioTaskDataSpec[] {
         task_data_surface: 'protocol',
       },
     }),
-    ...genericTaskData().filter((data) => data.id === 'inits' || data.id === 'intervene'),
+    ...genericTaskData().filter((data) => data.id === 'inits'),
   ];
   return data.map((item) => ({
     ...item,

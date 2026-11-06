@@ -35,7 +35,6 @@ from feedbax.compiler.prototypes import (
     prototypes_from_task_bindings,
 )
 from feedbax.compiler.resolution import GraphParameterResolution, resolve_graph_parameters
-from feedbax.runtime.task_bindings import COMPONENT_PARAMETER_ROLE, task_data_temporality
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
     PortType,
@@ -1542,15 +1541,6 @@ def validate_task_binding_schema(
                         issue_prefix="task_binding",
                     )
                 )
-            if data is not None and task_data_role(data) == COMPONENT_PARAMETER_ROLE:
-                issues.extend(
-                    _component_parameter_binding_issues(
-                        data,
-                        target_node,
-                        binding,
-                        binding_path,
-                    )
-                )
 
         target = (binding.target_node_id, binding.target_port)
         if target in occupied or target in binding_targets:
@@ -1590,7 +1580,7 @@ def _task_data_role_issues(
                 type="task_data_bindable_role_mismatch",
                 message=(
                     f"Task data {data.id!r} has protocol role {role!r}; only "
-                    "model_input, graph_input, or component_parameter Task Data "
+                    "model_input or graph_input Task Data "
                     "may be marked bindable"
                 ),
                 location={"path": f"{data_path}/bindable"},
@@ -1605,8 +1595,7 @@ def _task_data_role_issues(
             )
         )
     if (
-        role != COMPONENT_PARAMETER_ROLE
-        and data.bindable
+        data.bindable
         and (data.kind in PROTOCOL_TASK_DATA_KINDS or task_data_uses_protocol_path(data))
     ):
         issues.append(
@@ -1614,85 +1603,13 @@ def _task_data_role_issues(
                 type="task_data_protocol_path_bindable",
                 message=(
                     f"Task data {data.id!r} points at protocol-owned task data; "
-                    "targets, initial state, interventions, and eval/trial controls "
+                    "targets, initial state, and eval/trial controls "
                     "must stay out of graph input bindings"
                 ),
                 location={"path": f"{data_path}/path"},
             )
         )
     return issues
-
-
-def _component_parameter_binding_issues(
-    data: Any,
-    target_node: Any,
-    binding: Any,
-    binding_path: str,
-) -> list[SchemaValidationIssue]:
-    issues: list[SchemaValidationIssue] = []
-    temporality = task_data_temporality(data)
-    if temporality == "constant":
-        labels = _static_task_parameter_labels(binding.target_node_id, target_node)
-        label = _task_parameter_label(binding)
-        if not labels:
-            issues.append(
-                SchemaValidationIssue(
-                    type="component_parameter_declaration_unknown",
-                    message=(
-                        f"Task binding {binding.id!r} is constant within trial, but "
-                        f"{binding.target_node_id!r} has no static task-parameter "
-                        "declaration visible to Studio validation"
-                    ),
-                    location={"path": binding_path},
-                )
-            )
-        elif label not in labels:
-            issues.append(
-                SchemaValidationIssue(
-                    type="component_parameter_label_unknown",
-                    message=(
-                        f"Task binding {binding.id!r} references task-parameter "
-                        f"label {label!r}; declared labels are {sorted(labels)!r}"
-                    ),
-                    location={"path": f"{binding_path}/metadata/task_parameter_label"},
-                )
-            )
-    elif binding.target_port == "params_override":
-        labels = _static_task_parameter_labels(binding.target_node_id, target_node)
-        if not labels:
-            issues.append(
-                SchemaValidationIssue(
-                    type="component_parameter_declaration_unknown",
-                    message=(
-                        f"Task binding {binding.id!r} targets params_override, but "
-                        f"{binding.target_node_id!r} has no static task-parameter "
-                        "declaration visible to Studio validation"
-                    ),
-                    location={"path": binding_path},
-                )
-            )
-    return issues
-
-
-def _task_parameter_label(binding: Any) -> str:
-    metadata = getattr(binding, "metadata", None)
-    if isinstance(metadata, dict):
-        label = metadata.get("task_parameter_label")
-        if isinstance(label, str) and label:
-            return label
-    return str(binding.source_data_id)
-
-
-def _static_task_parameter_labels(node_id: str, node: Any) -> set[str]:
-    if "label" not in getattr(node, "params", {}):
-        return set()
-    label = node.params.get("label") or node_id
-    if getattr(node, "type", None) == "AffineValueComposer":
-        labels = {f"{label}.gain"}
-        if bool(node.params.get("use_bias", True)):
-            labels.add(f"{label}.bias")
-        return {str(item) for item in labels}
-    return {str(label)}
 
 
 def validate_intervention_schema(

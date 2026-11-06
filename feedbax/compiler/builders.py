@@ -14,7 +14,7 @@ from feedbax._delayed_reaches import (
 from feedbax.compiler.solver_config import DEFAULT_PLANAR_SOLVER, resolve_acausal_solver
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.graph import Component
-from feedbax.intervene.intervene import (
+from feedbax.mechanics.force_fields import (
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,
 )
@@ -257,7 +257,7 @@ def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComp
     if mode != "open_loop":
         raise ValueError("Only open_loop TaskComponent is supported from GraphSpec")
 
-    trial_spec = task.get_train_trial_with_intervenor_params(key=jr.PRNGKey(0))
+    trial_spec = task.sample_trial(key=jr.PRNGKey(0))
     return TaskComponent(task=task, trial_spec=trial_spec, mode="open_loop")
 
 
@@ -301,7 +301,6 @@ def _build_threshold_latched_force(params: Mapping[str, Any]) -> ThresholdLatche
             lateral_force=float(params.get("lateral_force", 0.0)),
             ramp_duration=float(params.get("ramp_duration", 0.0)),
         ),
-        label=str(params.get("label", "threshold_latched_force")),
     )
 
 
@@ -322,7 +321,6 @@ def _build_structural_linear_state_space(
         vel_slice=tuple(params.get("vel_slice", (2, 4))),
         scale=float(params.get("scale", 1.0)),
         active=bool(params.get("active", False)),
-        label=str(params.get("label", "structural_linear_dynamics")),
     )
 
 

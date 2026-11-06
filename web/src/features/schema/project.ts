@@ -29,7 +29,6 @@ const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set(['model_input', 'graph_input']);
 const PROTOCOL_TASK_DATA_KINDS = new Set([
   'target',
   'initial_state',
-  'intervention',
   'eval_control',
   'trial_control',
   'validation',
@@ -38,7 +37,6 @@ const PROTOCOL_TASK_DATA_KINDS = new Set([
 const PROTOCOL_TASK_DATA_PATH_PREFIXES = [
   'targets',
   'inits',
-  'intervene',
   'validation_trials',
   'eval',
   'trial_controls',

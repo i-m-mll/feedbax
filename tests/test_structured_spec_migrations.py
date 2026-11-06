@@ -2007,7 +2007,10 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     )
     assert task_binding_policy is not None
     assert task_binding_policy.stance == "migrate"
-    assert task_binding_policy.supported_old_versions == (STUDIO_TASK_BINDING_LEGACY_V1,)
+    assert task_binding_policy.supported_old_versions == (
+        STUDIO_TASK_BINDING_LEGACY_V1,
+        "feedbax.spec.studio.task_bindings.v2",
+    )
     assert task_binding_policy.rejected_old_versions == ("feedbax.studio.task_bindings.v0",)
     representation_policy = default_spec_registry.resolve("RepresentationSpec").policy
     assert representation_policy is not None
@@ -2087,7 +2090,7 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         {"schema_version": STUDIO_TASK_BINDING_LEGACY_V1},
     )
     assert migrated.migrated
-    assert migrated.target_version == "feedbax.spec.studio.task_bindings.v2"
+    assert migrated.target_version == "feedbax.spec.studio.task_bindings.v3"
 
     with pytest.raises(UnsupportedSpecVersion) as excinfo:
         default_spec_registry.migrate(
@@ -2278,16 +2281,54 @@ def test_studio_task_binding_entrypoint_migrates_v1_payload() -> None:
     )
 
     assert result.source_version == STUDIO_TASK_BINDING_LEGACY_V1
-    assert result.target_version == "feedbax.spec.studio.task_bindings.v2"
-    assert result.payload["schema_version"] == "feedbax.spec.studio.task_bindings.v2"
+    assert result.target_version == "feedbax.spec.studio.task_bindings.v3"
+    assert result.payload["schema_version"] == "feedbax.spec.studio.task_bindings.v3"
     assert result.payload["exposed_data"][0]["id"] == "inputs"
     assert "exposed_outputs" not in result.payload
     assert result.payload["bindings"][0]["source_data_id"] == "inputs"
     assert "source_output_id" not in result.payload["bindings"][0]
     assert [record.migration_id for record in result.migration_records] == [
-        "studio-task-bindings-v1-to-v2"
+        "studio-task-bindings-v1-to-v2",
+        "studio-task-bindings-v2-to-v3",
     ]
     assert result.migration_records[0].metadata["spec_path"] == "task_binding_spec"
+
+
+@pytest.mark.parametrize("binding_role", ["", "component_parameter"])
+@pytest.mark.parametrize("temporality", ["constant", "trajectory"])
+def test_v2_task_binding_migrates_only_direct_input_routes(temporality, binding_role) -> None:
+    payload = {
+        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "exposed_data": [{
+            "id": "gain",
+            "label": "Gain",
+            "kind": "intervention",
+            "role": "component_parameter",
+            "path": "intervene.visible.gain",
+            "bindable": True,
+            "metadata": {"temporality": temporality},
+        }],
+        "bindings": [{
+            "id": "task:gain->visible:gain",
+            "source_data_id": "gain",
+            "target_node_id": "visible",
+            "target_port": "gain",
+            "role": binding_role,
+            "metadata": {"task_parameter_label": "visible.gain"},
+        }],
+    }
+    if temporality == "constant":
+        with pytest.raises(ValueError, match="original producer"):
+            migrate_studio_task_binding_spec(payload)
+        return
+
+    result = migrate_studio_task_binding_spec(payload)
+    data, = result.payload["exposed_data"]
+    binding, = result.payload["bindings"]
+    assert data["path"] == "inputs.gain"
+    assert binding["role"] == data["role"] == "graph_input"
+    assert (binding["target_node_id"], binding["target_port"]) == ("visible", "gain")
+    assert binding["metadata"] == {}
 
 
 def test_studio_task_binding_entrypoint_rejects_explicit_unsupported_version() -> None:

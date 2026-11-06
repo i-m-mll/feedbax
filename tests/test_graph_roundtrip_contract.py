@@ -94,7 +94,7 @@ _INTERVENTION_PAYLOAD_FIELDS = {
 
 
 _VALUES: dict[tuple[str, str], Any] = {
-    ("AffineValueComposer", "schema_version"): "feedbax.component.affine_value_composer.v1",
+    ("AffineValueComposer", "schema_version"): "feedbax.component.affine_value_composer.v2",
     ("AffineValueComposer", "feature_rules"): [{"kind": "identity", "state_slice": [1, 2]}],
     ("Channel", "add_noise"): False,
     ("Channel", "include_zero_noise_terms"): True,

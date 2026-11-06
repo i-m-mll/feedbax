@@ -1,8 +1,8 @@
-"""Intervention components for graph-based models."""
+"""Components that add forces to a mechanics graph."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
@@ -11,78 +11,35 @@ from equinox import field
 from equinox.nn import State, StateIndex
 import jax
 import jax.numpy as jnp
-import jax.tree as jt
-import feedbax._vendor.jax_cookbook.tree as jtree
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.runtime.graph import Component
 from feedbax.mechanics.units import require_positive_finite
-from feedbax.runtime.noise import Normal
+from feedbax.runtime.graph import Component
+from feedbax.runtime.signal_transforms import (
+    TransformParams,
+    _bool_param,
+    _float_param,
+    _match_signal_dtype,
+    _merge_params_override,
+    _strong_typed,
+)
 
 
 THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1 = "feedbax.component.threshold_latched_force.v1"
-THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION = "feedbax.component.threshold_latched_force.v2"
+THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2 = "feedbax.component.threshold_latched_force.v2"
+THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION = "feedbax.component.threshold_latched_force.v3"
 
 
-def _float_param(value):
-    return jnp.asarray(value, dtype=jnp.float32)
-
-
-def _bool_param(value):
-    return jnp.asarray(value, dtype=bool)
-
-
-def _merge_params_override(
-    base_params: "InterventionParams",
-    override: "InterventionParams",
-) -> "InterventionParams":
-    """Merge override params into base, keeping base values where override has None.
-
-    Override leaves take precedence. This allows per-step time-varying params
-    to override the default State-stored params.
-    """
-    return jt.map(
-        lambda o, b: o if o is not None else b,
-        override,
-        base_params,
-        is_leaf=lambda x: x is None,
-    )
-
-
-class InterventionParams(eqx.Module):
-    scale: Array = field(default_factory=lambda: _float_param(1.0), converter=_float_param)
-    active: Array = field(default_factory=lambda: _bool_param(True), converter=_bool_param)
-
-
-def _strong_typed(params: InterventionParams) -> InterventionParams:
-    """Convert params to strong-typed JAX arrays for StateIndex storage.
-
-    State.set() enforces exact dtype/weak-type matching between old and new
-    values.  Trial-specific params from JAX random functions are strong-typed.
-    To ensure compatibility, the StateIndex initial values must also be
-    strong-typed.
-    """
-
-    def _convert(x):
-        if isinstance(x, jnp.ndarray):
-            return jnp.asarray(x, dtype=jnp.result_type(x))
-        if isinstance(x, bool | int | float):
-            return jnp.asarray(x, dtype=jnp.result_type(x))
-        return x
-
-    return jt.map(_convert, params)
-
-
-class CurlFieldParams(InterventionParams):
+class CurlFieldParams(TransformParams):
     amplitude: Array = field(default_factory=lambda: _float_param(1.0), converter=_float_param)
 
 
-class FixedFieldParams(InterventionParams):
+class FixedFieldParams(TransformParams):
     amplitude: Array = field(default_factory=lambda: _float_param(1.0), converter=_float_param)
     field: Array = field(default_factory=lambda: jnp.array([0.0, 0.0], dtype=jnp.float32))
 
 
-class ThresholdLatchedForceParams(InterventionParams):
+class ThresholdLatchedForceParams(TransformParams):
     """Trial-specific parameters for ``ThresholdLatchedForce``."""
 
     threshold: Array = field(default_factory=lambda: _float_param(0.0), converter=_float_param)
@@ -259,13 +216,13 @@ class ThresholdLatchState(eqx.Module):
     forward: Array
 
 
-class DynamicsMatrixPerturbParams(InterventionParams):
+class DynamicsMatrixPerturbParams(TransformParams):
     """Parameters for ``DynamicsMatrixPerturb``.
 
     The perturbation acts on the **velocity row** of the skeleton dynamics:
     ``dot v += delta_A @ [pos, vel]``. This is the natural force-channel
     embedding of a model-class ``ΔA`` perturbation, matching the disturbance
-    structure used by ``feedbax.intervene.FixedField`` / ``CurlField``
+    structure used by ``FixedField`` / ``CurlField``
     (see ``rlrmp.analysis.hinf_riccati.linearize_pointmass``'s ``Bw_c``).
 
     Attributes:
@@ -276,20 +233,6 @@ class DynamicsMatrixPerturbParams(InterventionParams):
     delta_A: Array = field(default_factory=lambda: jnp.zeros((2, 4), dtype=jnp.float32))
 
 
-class AddNoiseParams(InterventionParams): ...
-
-
-class NetworkIntervenorParams(InterventionParams):
-    unit_spec: Optional[PyTree] = None
-
-
-class ConstantInputParams(InterventionParams):
-    arrays: Optional[PyTree] = None
-
-
-class CopyParams(InterventionParams): ...
-
-
 class CurlField(Component):
     """Velocity-dependent curl field added to a force signal."""
 
@@ -297,13 +240,11 @@ class CurlField(Component):
     output_ports = ("force",)
 
     params_index: StateIndex
-    label: str = field(default="curl_field", static=True)
 
-    def __init__(self, params: Optional[CurlFieldParams] = None, label: str = "curl_field"):
+    def __init__(self, params: Optional[CurlFieldParams] = None):
         if params is None:
             params = CurlFieldParams(active=False)
         self.params_index = StateIndex(_strong_typed(params))
-        self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         params: CurlFieldParams = state.get(self.params_index)
@@ -315,13 +256,10 @@ class CurlField(Component):
         def apply_field():
             vel = effector.vel
             curl = params.amplitude * jnp.array([-1.0, 1.0]) * vel[..., ::-1]
-            return _intervention_result_dtype(force, force + params.scale * curl)
+            return _match_signal_dtype(force, force + params.scale * curl)
 
         new_force = jax.lax.cond(params.active, apply_field, lambda: force)
         return {"force": new_force}, state
-
-    def task_parameter_state_indices(self):
-        return {self.label: self.params_index}
 
 
 class FixedField(Component):
@@ -331,13 +269,11 @@ class FixedField(Component):
     output_ports = ("force",)
 
     params_index: StateIndex
-    label: str = field(default="fixed_field", static=True)
 
-    def __init__(self, params: Optional[FixedFieldParams] = None, label: str = "fixed_field"):
+    def __init__(self, params: Optional[FixedFieldParams] = None):
         if params is None:
             params = FixedFieldParams(active=False)
         self.params_index = StateIndex(_strong_typed(params))
-        self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         params: FixedFieldParams = state.get(self.params_index)
@@ -346,15 +282,12 @@ class FixedField(Component):
         force = inputs["force"]
 
         def apply_field():
-            return _intervention_result_dtype(
+            return _match_signal_dtype(
                 force, force + params.scale * params.amplitude * params.field
             )
 
         new_force = jax.lax.cond(params.active, apply_field, lambda: force)
         return {"force": new_force}, state
-
-    def task_parameter_state_indices(self):
-        return {self.label: self.params_index}
 
 
 class ThresholdLatchedForce(Component):
@@ -377,7 +310,6 @@ class ThresholdLatchedForce(Component):
     state_selector: ThresholdStateSelector = field(static=True)
     direction: Literal["increasing", "decreasing"] = field(static=True)
     dt: float = field(static=True)
-    label: str = field(default="threshold_latched_force", static=True)
 
     def __init__(
         self,
@@ -386,7 +318,6 @@ class ThresholdLatchedForce(Component):
         direction: Literal["increasing", "decreasing"],
         dt: float,
         params: Optional[ThresholdLatchedForceParams] = None,
-        label: str = "threshold_latched_force",
     ):
         if direction not in ("increasing", "decreasing"):
             raise ValueError("direction must be 'increasing' or 'decreasing'")
@@ -408,7 +339,6 @@ class ThresholdLatchedForce(Component):
         self.state_selector = _parse_threshold_state_selector(state_selector)
         self.direction = direction
         self.dt = require_positive_finite("ThresholdLatchedForce.dt", dt)
-        self.label = label
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         del key
@@ -493,9 +423,6 @@ class ThresholdLatchedForce(Component):
         )
         return {"force": new_force}, state
 
-    def task_parameter_state_indices(self):
-        return {self.label: self.params_index}
-
     def to_params(self) -> dict[str, Any]:
         """Return the versioned GraphSpec parameters for this component."""
 
@@ -509,7 +436,6 @@ class ThresholdLatchedForce(Component):
             "scale": float(self.params_index.init.scale),
             "active": bool(self.params_index.init.active),
             "dt": self.dt,
-            "label": self.label,
         }
 
 
@@ -533,20 +459,17 @@ class DynamicsMatrixPerturb(Component):
         mass: Effector mass, used to convert the desired ``dx/dt``
             perturbation into a force. Should match the plant's mass
             (typically ``1.0``).
-        label: Component label for parameter scheduling.
     """
 
     input_ports = ("effector", "force", "params_override")
     output_ports = ("force",)
 
     params_index: StateIndex
-    label: str = field(default="dynamics_matrix_perturb", static=True)
     mass: float = field(static=True)
 
     def __init__(
         self,
         params: Optional[DynamicsMatrixPerturbParams] = None,
-        label: str = "dynamics_matrix_perturb",
         mass: float | None = None,
     ):
         if mass is None:
@@ -557,7 +480,6 @@ class DynamicsMatrixPerturb(Component):
         if params is None:
             params = DynamicsMatrixPerturbParams(active=False)
         self.params_index = StateIndex(_strong_typed(params))
-        self.label = label
         self.mass = require_positive_finite("DynamicsMatrixPerturb.mass", mass)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -574,194 +496,7 @@ class DynamicsMatrixPerturb(Component):
             # converts this back into a velocity-row perturbation
             # dot v += delta_A @ x.
             df = self.mass * (params.delta_A @ x)
-            return _intervention_result_dtype(force, force + params.scale * df)
+            return _match_signal_dtype(force, force + params.scale * df)
 
         new_force = jax.lax.cond(params.active, apply_perturbation, lambda: force)
         return {"force": new_force}, state
-
-    def task_parameter_state_indices(self):
-        return {self.label: self.params_index}
-
-
-class AddNoise(Component):
-    """Adds noise to a signal."""
-
-    input_ports = ("input",)
-    output_ports = ("output",)
-
-    noise_func: Callable[[PRNGKeyArray, Array], Array] = field(default_factory=Normal)
-    params_index: StateIndex
-    label: str = field(default="add_noise", static=True)
-
-    def __init__(
-        self,
-        noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]] = None,
-        params: Optional[AddNoiseParams] = None,
-        label: str = "add_noise",
-    ):
-        if params is None:
-            params = AddNoiseParams(active=False)
-        if noise_func is None:
-            noise_func = Normal()
-        self.noise_func = noise_func
-        self.params_index = StateIndex(_strong_typed(params))
-        self.label = label
-
-    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        params: AddNoiseParams = state.get(self.params_index)
-        signal = inputs["input"]
-
-        def apply_noise():
-            keys = jtree.random_split_like_tree(key, signal)
-            noise = jt.map(lambda x, leaf_key: self.noise_func(leaf_key, x), signal, keys)
-            return jt.map(
-                lambda x, n: _intervention_result_dtype(x, x + params.scale * n),
-                signal,
-                noise,
-            )
-
-        output = jax.lax.cond(params.active, apply_noise, lambda: signal)
-        return {"output": output}, state
-
-    def task_parameter_state_indices(self):
-        return {self.label: self.params_index}
-
-
-def _intervention_result_dtype(signal, result):
-    """Match the unchanged branch dtype for real floating signals."""
-    dtype = getattr(signal, "dtype", None)
-    if dtype is not None and dtype != result.dtype and jnp.issubdtype(dtype, jnp.floating):
-        return result.astype(dtype)
-    return result
-
-
-class NetworkClamp(Component):
-    """Clamps units to specified values (NaN means unchanged)."""
-
-    input_ports = ("input",)
-    output_ports = ("output",)
-
-    params_index: StateIndex
-    label: str = field(default="network_clamp", static=True)
-
-    def __init__(
-        self,
-        params: Optional[NetworkIntervenorParams] = None,
-        label: str = "network_clamp",
-    ):
-        if params is None:
-            params = NetworkIntervenorParams(active=False)
-        self.params_index = StateIndex(_strong_typed(params))
-        self.label = label
-
-    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        params: NetworkIntervenorParams = state.get(self.params_index)
-        signal = inputs["input"]
-
-        def apply():
-            if params.unit_spec is None:
-                return signal
-            return jt.map(
-                lambda x, y: _intervention_result_dtype(x, jnp.where(jnp.isnan(y), x, y)),
-                signal,
-                params.unit_spec,
-            )
-
-        output = jax.lax.cond(params.active, apply, lambda: signal)
-        return {"output": output}, state
-
-    def task_parameter_state_indices(self):
-        return {self.label: self.params_index}
-
-
-class NetworkConstantInput(Component):
-    """Adds a constant input to a signal."""
-
-    input_ports = ("input",)
-    output_ports = ("output",)
-
-    params_index: StateIndex
-    label: str = field(default="network_constant_input", static=True)
-
-    def __init__(
-        self,
-        params: Optional[NetworkIntervenorParams] = None,
-        label: str = "network_constant_input",
-    ):
-        if params is None:
-            params = NetworkIntervenorParams(active=False)
-        self.params_index = StateIndex(_strong_typed(params))
-        self.label = label
-
-    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        params: NetworkIntervenorParams = state.get(self.params_index)
-        signal = inputs["input"]
-
-        def apply():
-            if params.unit_spec is None:
-                return signal
-            return jt.map(
-                lambda x, y: _intervention_result_dtype(x, x + params.scale * jnp.nan_to_num(y)),
-                signal,
-                params.unit_spec,
-            )
-
-        output = jax.lax.cond(params.active, apply, lambda: signal)
-        return {"output": output}, state
-
-    def task_parameter_state_indices(self):
-        return {self.label: self.params_index}
-
-
-class ConstantInput(Component):
-    """Adds a constant array to a signal."""
-
-    input_ports = ("input",)
-    output_ports = ("output",)
-
-    params_index: StateIndex
-    label: str = field(default="constant_input", static=True)
-
-    def __init__(
-        self,
-        params: Optional[ConstantInputParams] = None,
-        label: str = "constant_input",
-    ):
-        if params is None:
-            params = ConstantInputParams(active=False)
-        self.params_index = StateIndex(_strong_typed(params))
-        self.label = label
-
-    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        params: ConstantInputParams = state.get(self.params_index)
-        return {"output": self._apply(inputs["input"], params)}, state
-
-    @staticmethod
-    def _apply(signal: PyTree, params: ConstantInputParams) -> PyTree:
-        def apply():
-            if params.arrays is None:
-                return signal
-            return jt.map(
-                lambda x, y: _intervention_result_dtype(x, x + params.scale * y),
-                signal,
-                params.arrays,
-            )
-
-        return jax.lax.cond(params.active, apply, lambda: signal)
-
-    def task_parameter_state_indices(self):
-        return {self.label: self.params_index}
-
-
-class Copy(Component):
-    """Pass-through component."""
-
-    input_ports = ("input",)
-    output_ports = ("output",)
-
-    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        return {"output": inputs["input"]}, state
-
-
-def is_intervenor(element) -> bool:
-    return isinstance(element, Component) and bool(element.task_parameter_state_indices())

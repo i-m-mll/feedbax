@@ -52,11 +52,13 @@ from feedbax.mechanics.muscle_config import (
 )
 from feedbax.mechanics.linear_state_space import (
     STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+    STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION_V1,
     LinearStateSpace,
 )
 from feedbax.runtime.feedback import AssembleFeedback, SelectState, StateSelector
 from feedbax.runtime.affine_composer import (
     AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1,
     AffineValueComposer,
     affine_value_composer_output_prototype,
 )
@@ -99,9 +101,7 @@ from feedbax.runtime.filters import (
     HighPassFilter,
     require_real_floating_filter_prototype,
 )
-from feedbax.intervene.intervene import (
-    AddNoise,
-    AddNoiseParams,
+from feedbax.mechanics.force_fields import (
     CurlField,
     CurlFieldParams,
     DynamicsMatrixPerturb,
@@ -122,9 +122,10 @@ from feedbax.compiler.muscle_templates import (
 from feedbax.models.networks import VanillaRNN
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import StateFeedbackSelector, state_feedback_output_prototype
-from feedbax.intervene.intervene import (
+from feedbax.mechanics.force_fields import (
     THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
     THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
+    THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2,
 )
 
 from .acausal_adapters import register_acausal_components
@@ -136,7 +137,8 @@ from .declarations import (
     ParameterField,
     declare_component,
 )
-from .interventions import register_vector_interventions
+from feedbax.runtime.signal_transforms import AddNoise, AddNoiseParams
+from .signal_transforms import register_vector_transforms
 from .muscle_graph import register_muscle_graph_leaves
 from .templates import register_builtin_graph_templates
 from .prototypes import array_prototype, prototype_params, migrate_stateful_v1
@@ -249,7 +251,6 @@ def _extract_structural_linear_state_space_params(component: Any, model: Any) ->
             "delta_A": delta_A,
             "scale": component.initial_scale,
             "active": component.initial_active,
-            "label": component.label,
             "dt": component.dt,
             "initial_state": list(component.initial_state),
             "pos_slice": list(component.pos_slice),
@@ -372,8 +373,16 @@ def _extract_declared_to_params(component: Any, model: Any) -> Any:
     return type(model).model_validate(component.to_params())
 
 
+def _drop_transform_label(params: dict[str, Any]) -> dict[str, Any]:
+    return {name: value for name, value in params.items() if name != "label"}
+
+
+def _migrate_affine_value_composer_v1(params: dict[str, Any]) -> dict[str, Any]:
+    return {**_drop_transform_label(params), "schema_version": AFFINE_VALUE_COMPOSER_SCHEMA_VERSION}
+
+
 def _migrate_threshold_latched_force_v1(params: dict[str, Any]) -> dict[str, Any]:
-    migrated = dict(params)
+    migrated = _drop_transform_label(params)
     selector = dict(migrated["state_selector"])
     selector["kind"] = "fixed"
     migrated["state_selector"] = selector
@@ -2418,12 +2427,6 @@ def _declare_builtin_components(
                 ),
                 ParameterField(name="scale", type="float", default=1.0, required=False),
                 ParameterField(name="active", type="bool", default=False, required=False),
-                ParameterField(
-                    name="label",
-                    type="str",
-                    default="structural_linear_dynamics",
-                    required=False,
-                ),
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=False),
                 ParameterField(
                     name="initial_state",
@@ -2729,6 +2732,7 @@ def _declare_builtin_components(
     registry.register(
         declare_component(
             name="CurlField",
+            param_schema_version="2",
             runtime_type=CurlField,
             constructor=ComponentConstructorPlan(
                 groups={"params": (CurlFieldParams, ("scale", "amplitude", "active"))}
@@ -2738,13 +2742,12 @@ def _declare_builtin_components(
                 "amplitude": "params_index.init.amplitude",
                 "active": "params_index.init.active",
             },
-            category="Interventions",
+            category="Mechanics",
             description="Velocity-dependent curl field.",
             parameter_fields=[
                 ParameterField(name="scale", type="float", default=1.0, required=True),
                 ParameterField(name="amplitude", type="float", default=1.0, required=True),
                 ParameterField(name="active", type="bool", default=False, required=False),
-                ParameterField(name="label", type="str", default="curl_field", required=False),
             ],
             input_ports=["effector", "force", "params_override"],
             output_ports=["force"],
@@ -2763,6 +2766,7 @@ def _declare_builtin_components(
     registry.register(
         declare_component(
             name="FixedField",
+            param_schema_version="2",
             runtime_type=FixedField,
             constructor=ComponentConstructorPlan(
                 groups={
@@ -2779,14 +2783,13 @@ def _declare_builtin_components(
                 "field": "params_index.init.field",
                 "active": "params_index.init.active",
             },
-            category="Interventions",
+            category="Mechanics",
             description="Fixed force field.",
             parameter_fields=[
                 ParameterField(name="scale", type="float", default=1.0, required=True),
                 ParameterField(name="amplitude", type="float", default=1.0, required=True),
                 ParameterField(name="field", type="array", default=[0.0, 0.0], required=True),
                 ParameterField(name="active", type="bool", default=False, required=False),
-                ParameterField(name="label", type="str", default="fixed_field", required=False),
             ],
             input_ports=["force", "params_override"],
             output_ports=["force"],
@@ -2807,7 +2810,7 @@ def _declare_builtin_components(
             builder=_builders._build_threshold_latched_force,
             extractor=_extract_declared_to_params,
             override_reason="state selector and intervention parameters are aggregated objects",
-            category="Interventions",
+            category="Mechanics",
             description="Additive force latched by a runtime state-threshold crossing.",
             parameter_fields=[
                 ParameterField(
@@ -2846,12 +2849,6 @@ def _declare_builtin_components(
                 ParameterField(name="scale", type="float", default=1.0, required=True),
                 ParameterField(name="active", type="bool", default=False, required=False),
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(
-                    name="label",
-                    type="str",
-                    default="threshold_latched_force",
-                    required=False,
-                ),
             ],
             param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
             input_ports=["state", "target", "force", "params_override"],
@@ -2876,7 +2873,7 @@ def _declare_builtin_components(
             owner="feedbax",
             source_param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
             target_param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
-            migration_id="feedbax.component.ThresholdLatchedForce.params.v1-to-v2",
+            migration_id="feedbax.component.ThresholdLatchedForce.params.v1-to-v3",
             migrate_params=_migrate_threshold_latched_force_v1,
             description="Classify legacy state selectors as fixed-coordinate selectors.",
         )
@@ -2884,6 +2881,7 @@ def _declare_builtin_components(
     registry.register(
         declare_component(
             name="DynamicsMatrixPerturb",
+            param_schema_version="2",
             runtime_type=DynamicsMatrixPerturb,
             constructor=ComponentConstructorPlan(
                 groups={
@@ -2899,7 +2897,7 @@ def _declare_builtin_components(
                 "delta_A": "params_index.init.delta_A",
                 "active": "params_index.init.active",
             },
-            category="Interventions",
+            category="Mechanics",
             description="State-feedback dynamics-matrix perturbation in the force channel.",
             parameter_fields=[
                 ParameterField(name="scale", type="float", default=1.0, required=True),
@@ -2910,12 +2908,6 @@ def _declare_builtin_components(
                     required=True,
                 ),
                 ParameterField(name="active", type="bool", default=False, required=False),
-                ParameterField(
-                    name="label",
-                    type="str",
-                    default="dynamics_matrix_perturb",
-                    required=False,
-                ),
                 ParameterField(
                     name="mass",
                     type="float",
@@ -2949,7 +2941,7 @@ def _declare_builtin_components(
                 "gain_init": "gain",
                 "bias_init": "bias",
             },
-            category="Interventions",
+            category="Control",
             description="State/target-conditioned affine value composer.",
             parameter_fields=[
                 ParameterField(
@@ -2973,12 +2965,6 @@ def _declare_builtin_components(
                 ParameterField(name="gain_init", type="array", default=[[0.0]], required=False),
                 ParameterField(name="bias_init", type="array", default=[0.0], required=False),
                 ParameterField(name="use_bias", type="bool", default=True, required=False),
-                ParameterField(
-                    name="label",
-                    type="str",
-                    default="affine_value_composer",
-                    required=False,
-                ),
             ],
             input_ports=["base", "state", "target", "gain", "bias"],
             output_ports=["value"],
@@ -3006,7 +2992,7 @@ def _declare_builtin_components(
                 groups={"params": (AddNoiseParams, ("scale", "active"))}
             ),
             attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
-            category="Interventions",
+            category="Signal Processing",
             description="Add noise to a signal.",
             parameter_fields=[
                 ParameterField(name="scale", type="float", default=1.0, required=True),
@@ -3022,7 +3008,30 @@ def _declare_builtin_components(
             output_prototype_fn=input_passthrough_output_prototype,
         )
     )
-    register_vector_interventions(registry)
+    for component, source, target, migrate in (
+        ("CurlField", "1", "2", _drop_transform_label),
+        ("FixedField", "1", "2", _drop_transform_label),
+        ("DynamicsMatrixPerturb", "1", "2", _drop_transform_label),
+        ("StructuralLinearStateSpace", STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION_V1,
+         STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION, _drop_transform_label),
+        ("ThresholdLatchedForce", THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2,
+         THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION, _drop_transform_label),
+        ("AffineValueComposer", AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1,
+         AFFINE_VALUE_COMPOSER_SCHEMA_VERSION, _migrate_affine_value_composer_v1),
+    ):
+        registry.register_migration(
+            ComponentMigration(
+                source_type=component,
+                target_type=component,
+                owner="feedbax",
+                source_param_schema_version=source,
+                target_param_schema_version=target,
+                migration_id=f"feedbax.component.{component}.drop-label",
+                migrate_params=migrate,
+                description="Use the graph node identity in place of the legacy parameter label.",
+            )
+        )
+    register_vector_transforms(registry)
 
     # --- Muscles ---
     arm_muscle_graph = arm_6muscle_rigid_tendon_graph()
@@ -3322,7 +3331,7 @@ def _declare_builtin_components(
                 ParameterField(name="eval_grid_n", type="int", default=1, min=1, required=False),
             ],
             input_ports=[],
-            output_ports=["inputs", "targets", "inits", "intervene"],
+            output_ports=["inputs", "targets", "inits"],
             icon="Target",
             port_types=PortTypeSpec(
                 inputs={},
@@ -3330,7 +3339,6 @@ def _declare_builtin_components(
                     "inputs": PortType(dtype="any"),
                     "targets": PortType(dtype="state"),
                     "inits": PortType(dtype="state"),
-                    "intervene": PortType(dtype="any"),
                 },
             ),
             representation=_reach_task_representation(delayed=False),
@@ -3449,7 +3457,7 @@ def _declare_builtin_components(
                 ParameterField(name="eval_grid_n", type="int", default=1, min=1, required=False),
             ],
             input_ports=[],
-            output_ports=["inputs", "targets", "inits", "intervene"],
+            output_ports=["inputs", "targets", "inits"],
             icon="Timer",
             port_types=PortTypeSpec(
                 inputs={},
@@ -3457,7 +3465,6 @@ def _declare_builtin_components(
                     "inputs": PortType(dtype="any"),
                     "targets": PortType(dtype="state"),
                     "inits": PortType(dtype="state"),
-                    "intervene": PortType(dtype="any"),
                 },
             ),
             representation=_reach_task_representation(delayed=True),
@@ -3892,7 +3899,7 @@ def _declare_builtin_components(
                 ),
             ],
             input_ports=[],
-            output_ports=["inputs", "targets", "inits", "intervene"],
+            output_ports=["inputs", "targets", "inits"],
             icon="Anchor",
             port_types=PortTypeSpec(
                 inputs={},
@@ -3900,7 +3907,6 @@ def _declare_builtin_components(
                     "inputs": PortType(dtype="any"),
                     "targets": PortType(dtype="state"),
                     "inits": PortType(dtype="state"),
-                    "intervene": PortType(dtype="any"),
                 },
             ),
         )

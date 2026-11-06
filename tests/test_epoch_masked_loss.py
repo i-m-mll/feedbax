@@ -124,7 +124,7 @@ def _make_trial_specs(
         inits=WhereDict(),
         targets=targets,
         inputs={},
-        intervene={},
+
         timeline=timeline,
     )
 

@@ -100,7 +100,6 @@ class RLEnvironmentAdapter(eqx.Module):
             ``EnvironmentStep`` with fields:
             - ``obs``: observation vector from the new state
             - ``target``: ``None`` (RL has no supervised target)
-            - ``intervene``: ``None``
             - ``reward``: scalar reward
             - ``done``: episode-done flag (0.0 or 1.0)
         """
@@ -114,7 +113,6 @@ class RLEnvironmentAdapter(eqx.Module):
         return EnvironmentStep(
             obs=obs,
             target=None,
-            intervene=None,
             reward=reward,
             done=done,
         )
