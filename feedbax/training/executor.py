@@ -694,6 +694,7 @@ def execute_training_run_spec(
     progress_callback: ProgressCallback | None = None,
     run_event_emitter: RunEventEmitter | None = None,
     cancellation_probe: CancellationProbe | None = None,
+    stop_before_update: Callable[[], bool] | None = None,
     execution_started_at_monotonic: float | None = None,
     execution_start_semantics: str = "executor_entry",
     execution_context: NativeExecutionProducerContext | Mapping[str, Any] | None = None,
@@ -712,6 +713,8 @@ def execute_training_run_spec(
     ``cancellation_probe`` is checked at progress boundaries. A ``stop``
     decision completes the next durable checkpoint before returning a cancelled
     manifest; ``terminate`` emits a cancelled manifest immediately.
+    ``stop_before_update`` can interrupt before any pending update, finalizing
+    the last committed state and preserving its slots and checkpoint custody.
 
     ``checkpoint_source_root`` names a read-only source for legacy resume or an
     explicit initialization/fork plan. Plan-driven execution additionally
@@ -1264,7 +1267,9 @@ def execute_training_run_spec(
                 or program.batch_progress is not None
             ),
             update_budget=update_budget,
+            stop_before_update=stop_before_update,
         )
+        status = "cancelled" if execution.interrupted or cancellation is not None else "completed"
         if method_observation_buffer is not None:
             method_observation_buffer.flush()
             method_observation_buffer.assert_empty()
@@ -1314,7 +1319,7 @@ def execute_training_run_spec(
         diagnostics = _build_training_diagnostics(
             manifest_id=exact_manifest_id,
             run_id=resolved_run_id,
-            status="cancelled" if cancellation is not None else "completed",
+            status=status,
             final_coordinate=execution.coordinate,
             final_slots=execution.slots,
             program=program,
@@ -1351,7 +1356,9 @@ def execute_training_run_spec(
             history_events=history_events,
             final_metrics=final_metrics,
             issues=issues,
-            status="cancelled" if cancellation is not None else "completed",
+            status=status,
+            stopped=execution.interrupted,
+            stop_reason="operator-stop" if execution.interrupted else None,
             cancellation=cancellation,
             runtime_telemetry=runtime_telemetry,
             execution_context=producer_context,
@@ -1386,7 +1393,7 @@ def execute_training_run_spec(
                 "complete",
                 {
                     "run_id": resolved_run_id,
-                    "status": "cancelled" if cancellation is not None else "completed",
+                    "status": status,
                     "coordinate": terminal_coordinate,
                     "program_step": execution.coordinate.program_step,
                     "manifest_path": str(manifest_path),
@@ -1572,7 +1579,7 @@ def execute_training_run_spec(
         raise
     return TrainingRunExecutionResult(
         run_id=resolved_run_id,
-        status="cancelled" if cancellation is not None else "completed",
+        status=status,
         start_completed_batches=execution.start_completed_batches,
         end_completed_batches=execution.end_completed_batches,
         manifest=manifest,

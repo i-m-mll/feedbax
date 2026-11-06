@@ -774,32 +774,33 @@ def test_worker_rejects_repeated_terminal_job_id_without_checkpoint_residue(
     assert (checkpoint_dirs[0] / "checkpoint.eqx").read_bytes() == b"first-checkpoint"
 
 
-def test_worker_cleans_checkpoint_when_job_ownership_handoff_fails(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize("cleanup_denied", [False, True])
+def test_worker_preserves_checkpoint_custody_when_handoff_fails(
+    monkeypatch, tmp_path: Path, cleanup_denied: bool
 ) -> None:
     checkpoint_dir = tmp_path / "feedbax_ckpt_handoff"
     checkpoint_dir.mkdir()
     checkpoint_path = checkpoint_dir / "checkpoint.eqx"
     checkpoint_path.write_bytes(b"checkpoint")
-    result = SimpleNamespace(
-        checkpoint_path=str(checkpoint_path),
-        final_loss=0.5,
-        final_batch=1,
-        retention_plan={},
-        retained_observables={},
-        manifest_path=None,
-        manifest_payload=None,
-    )
+    result = SimpleNamespace(checkpoint_path=str(checkpoint_path))
 
-    class FailingStopEvent:
-        def is_set(self) -> bool:
-            raise RuntimeError("handoff failed")
+    class FailingHandoffLock:
+        fail = True
+
+        def __enter__(self) -> None:
+            if self.fail:
+                self.fail = False
+                raise RuntimeError("handoff failed")
+
+        def __exit__(self, *_exc: object) -> None:
+            pass
 
     job = worker_app._Job(
         job_id="job-handoff",
         run_set_id="set-a",
         total_batches=1,
-        stop_event=FailingStopEvent(),
+        stop_event=threading.Event(),
+        _state_lock=FailingHandoffLock(),
         graph_spec={},
         training_spec={},
         task_spec={},
@@ -808,67 +809,28 @@ def test_worker_cleans_checkpoint_when_job_ownership_handoff_fails(
     monkeypatch.setattr(worker_execution, "compile_training_run", lambda **_kwargs: object())
     monkeypatch.setattr(worker_execution, "run_training_graph", lambda *_args, **_kwargs: result)
 
-    with pytest.raises(RuntimeError, match="handoff failed"):
+    if cleanup_denied:
+        def deny_cleanup(_path):
+            raise PermissionError("cleanup denied")
+
+        monkeypatch.setattr(worker_checkpoint.shutil, "rmtree", deny_cleanup)
+
+    error = CheckpointCleanupError if cleanup_denied else RuntimeError
+    message = "residual checkpoint path" if cleanup_denied else "handoff failed"
+    with pytest.raises(error, match=message) as caught:
         worker_app._run_training_real(
             job,
             SimpleNamespace(),
             SimpleNamespace(bundle=SimpleNamespace(components={})),
         )
 
-    assert job.checkpoint_path is None
-    assert not checkpoint_dir.exists()
-
-
-def test_worker_ownership_handoff_cleanup_failure_retains_job_pointer(
-    monkeypatch, tmp_path: Path
-) -> None:
-    checkpoint_dir = tmp_path / "feedbax_ckpt_handoff_failure"
-    checkpoint_dir.mkdir()
-    checkpoint_path = checkpoint_dir / "checkpoint.eqx"
-    checkpoint_path.write_bytes(b"checkpoint")
-    result = SimpleNamespace(
-        checkpoint_path=str(checkpoint_path),
-        final_loss=0.5,
-        final_batch=1,
-        retention_plan={},
-        retained_observables={},
-        manifest_path=None,
-        manifest_payload=None,
-    )
-
-    class FailingStopEvent:
-        def is_set(self) -> bool:
-            raise RuntimeError("handoff failed")
-
-    job = worker_app._Job(
-        job_id="job-handoff",
-        run_set_id="set-a",
-        total_batches=1,
-        stop_event=FailingStopEvent(),
-        graph_spec={},
-        training_spec={},
-        task_spec={},
-        task_binding_spec={},
-    )
-    monkeypatch.setattr(worker_execution, "compile_training_run", lambda **_kwargs: object())
-    monkeypatch.setattr(worker_execution, "run_training_graph", lambda *_args, **_kwargs: result)
-    monkeypatch.setattr(
-        worker_checkpoint.shutil,
-        "rmtree",
-        lambda _path: (_ for _ in ()).throw(PermissionError("cleanup denied")),
-    )
-
-    with pytest.raises(CheckpointCleanupError, match="residual checkpoint path") as caught:
-        worker_app._run_training_real(
-            job,
-            SimpleNamespace(),
-            SimpleNamespace(bundle=SimpleNamespace(components={})),
-        )
-
-    assert caught.value.checkpoint_path == str(checkpoint_path)
-    assert job.checkpoint_path == str(checkpoint_path)
-    assert job.checkpoint_cleanup_error == str(caught.value)
-    assert checkpoint_dir.exists()
+    if cleanup_denied:
+        assert job.checkpoint_path == str(checkpoint_path)
+        assert job.checkpoint_cleanup_error == str(caught.value)
+        assert checkpoint_path.is_file()
+    else:
+        assert job.checkpoint_path is None
+        assert not checkpoint_dir.exists()
 
 
 def test_worker_eviction_cleanup_failure_retains_registry_pointer_for_retry(
@@ -1225,8 +1187,9 @@ def test_worker_evicts_oldest_terminal_jobs(monkeypatch) -> None:
         assert client.get(f"/jobs/{third}/manifest").json()["job_id"] == third
 
 
+@pytest.mark.parametrize("cancelled", [False, True])
 def test_training_service_starts_state_backed_worker_run(
-    monkeypatch, tmp_path, application_registry_bundle
+    monkeypatch, tmp_path, application_registry_bundle, cancelled
 ) -> None:
     starts: list[dict[str, Any]] = []
 
@@ -1269,8 +1232,8 @@ def test_training_service_starts_state_backed_worker_run(
                 payload={
                     "legacy_type": "training_complete",
                     "job_id": row.row_id,
-                    "batch": body["total_batches"],
-                    "total_batches": body["total_batches"],
+                    "batch": 1 if cancelled else body["total_batches"],
+                    **({"status": "cancelled", "program_step": 8} if cancelled else {}),
                     "loss": 0.125,
                 },
             )
@@ -1331,11 +1294,12 @@ def test_training_service_starts_state_backed_worker_run(
         status = None
         while time.monotonic() < deadline:
             status = await service.get_status(job_id)
-            if status and status["status"] == "completed":
+            if status and status["status"] == ("stopped" if cancelled else "completed"):
                 break
             await asyncio.sleep(0.01)
 
         assert status is not None
+        assert status["status"] == ("stopped" if cancelled else "completed")
         assert status["run_set_id"] == starts[0]["run_set_id"]
         assert status["last_loss"] == 0.125
         assert starts == [
@@ -1349,6 +1313,15 @@ def test_training_service_starts_state_backed_worker_run(
             }
         ]
         assert service.list_live_training_runs()[0]["id"] == job_id
+        if cancelled:
+            replay_service = TrainingService()
+            [event] = [item async for item in replay_service.stream_progress(job_id, from_seq=0)]
+            assert event.raw["type"] == "training_stopped"
+            assert event.raw["batch"] == 1
+            assert event.raw["program_step"] == 8
+            replay_status = await replay_service.get_status(job_id)
+            assert replay_status is not None
+            assert replay_status["status"] == "stopped"
 
     asyncio.run(run())
 

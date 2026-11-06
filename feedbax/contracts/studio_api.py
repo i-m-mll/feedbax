@@ -485,15 +485,27 @@ class TrainingTrajectoryEvent(_TrainingPositionEvent):
     execution: Optional[str] = None
 
 
-class TrainingCompleteEvent(_TrainingEvent):
-    """Training completion event sent over the Studio WebSocket."""
-
-    type: Literal["training_complete"]
-    batch: int = Field(ge=0, strict=True)
+class _TrainingTerminalEvent(_TrainingEvent):
+    batch: int = Field(ge=0, strict=True, description="Completed training batches.")
+    program_step: Optional[int] = Field(
+        default=None, ge=0, strict=True, description="Phase-program step."
+    )
     loss: Optional[float] = None
     manifest_path: Optional[str] = None
     manifest_id: Optional[str] = None
     execution: Optional[str] = None
+
+
+class TrainingCompleteEvent(_TrainingTerminalEvent):
+    """Training completion event sent over the Studio WebSocket."""
+
+    type: Literal["training_complete"]
+
+
+class TrainingStoppedEvent(_TrainingTerminalEvent):
+    """Training stop event sent over the Studio WebSocket."""
+
+    type: Literal["training_stopped"]
 
 
 class TrainingErrorEvent(_TrainingEvent):
@@ -521,6 +533,7 @@ TrainingWebSocketEvent = (
     | TrainingLogEvent
     | TrainingTrajectoryEvent
     | TrainingCompleteEvent
+    | TrainingStoppedEvent
     | TrainingErrorEvent
     | TrainingResyncEvent
 )

@@ -1097,9 +1097,16 @@ def test_run_training_graph_emits_selector_keyed_live_trajectory_tracks(
     assert all(len(sample) == 2 for sample in track["samples"])
 
 
-def test_run_training_graph_stopped_run_returns_latest_batch_loss(
+@pytest.mark.parametrize(
+    ("stop_at", "terminal_batch", "outcome"),
+    [(0, 0, "cancelled"), (3, 3, "cancelled"), (5, 5, "completed")],
+)
+def test_run_training_graph_stop_preserves_committed_checkpoint(
     tmp_path: Path,
     monkeypatch,
+    stop_at: int,
+    terminal_batch: int,
+    outcome: str,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
 
@@ -1111,13 +1118,16 @@ def test_run_training_graph_stopped_run_returns_latest_batch_loss(
         task_binding_spec=_task_binding_spec(),
         cfg=_cfg(),
     )
-    events: list[dict] = []
+    progress: list[dict] = []
     stop_event = threading.Event()
+    if stop_at == 0:
+        stop_event.set()
 
     def emit(event: dict) -> None:
-        events.append(event)
-        if event["type"] == "training_progress" and event["program_step"] == 3:
-            stop_event.set()
+        if event["type"] == "training_progress":
+            progress.append(event)
+            if event["batch"] == stop_at:
+                stop_event.set()
 
     result = run_training_graph(
         compiled,
@@ -1128,13 +1138,18 @@ def test_run_training_graph_stopped_run_returns_latest_batch_loss(
         emit=emit,
     )
 
-    progress_losses = [event["loss"] for event in events if event["type"] == "training_progress"]
-    assert len(progress_losses) == result.final_batch == 3
-    assert result.final_loss == pytest.approx(progress_losses[-1])
-    assert result.manifest_payload is not None
-    assert _checkpoint_steps(
-        result.manifest_payload, tmp_path / "runs" / "checkpoints" / "test-job"
-    ) == [3]
+    assert [event["batch"] for event in progress] == list(range(1, terminal_batch + 1))
+    assert result.final_batch == result.final_program_step == terminal_batch
+    if progress:
+        assert result.final_loss == pytest.approx(progress[-1]["loss"])
+    manifest = result.manifest_payload
+    assert manifest is not None
+    assert manifest["status"] == manifest["terminal_certification"]["termination_reason"] == outcome
+    assert manifest["stopped"] is (outcome == "cancelled")
+    assert manifest["completed_batches"] == terminal_batch
+    assert _checkpoint_steps(manifest, tmp_path / "runs" / "checkpoints" / "test-job") == (
+        [terminal_batch] if terminal_batch else []
+    )
 
 
 def test_run_training_graph_projects_parameter_constraints_after_update(

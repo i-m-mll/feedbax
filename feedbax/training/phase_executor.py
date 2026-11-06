@@ -229,6 +229,7 @@ class PhaseExecutionResult:
     progress: list[ProgressCoordinate] = field(default_factory=list)
     checkpoints: dict[str, PhaseCheckpoint] = field(default_factory=dict)
     checkpoint_visits: tuple[PhaseCheckpoint, ...] = ()
+    interrupted: bool = False
 
 
 @dataclass(frozen=True)
@@ -550,6 +551,7 @@ class PhaseProgramExecutor:
         progress_interval: int | None = None,
         include_completed_batches_in_progress: bool = False,
         update_budget: int | None = None,
+        stop_before_update: Callable[[], bool] | None = None,
     ) -> PhaseExecutionResult:
         """Execute phases from the start or from a checkpoint barrier.
 
@@ -557,7 +559,8 @@ class PhaseProgramExecutor:
         training-batch authority, not against phase boundaries or checkpoint
         visit ordinals. ``update_budget`` uses the same authority as a delta
         from the entry counter and may end naturally before the budget is used.
-        A terminal partial interval is always emitted.
+        A terminal partial interval is always emitted. A stop observed before
+        an update also closes the interval at the last committed coordinate.
 
         A checkpoint restored by external custody can be passed directly as
         ``resume_checkpoint``. ``resume_from_barrier`` selects a stored in-memory visit.
@@ -614,8 +617,10 @@ class PhaseProgramExecutor:
         last_progress_batch = initial_batch
         last_checkpoint_batch = initial_batch
         phase_name: str | None = start_phase
+        interrupted = False
         while phase_name is not None:
             phase = self._phases[phase_name]
+            entry_coordinate = coordinate
             schedule_origin_step = (
                 coordinate.schedule_origin_step
                 if resuming_within_phase
@@ -628,6 +633,11 @@ class PhaseProgramExecutor:
                 }
             )
             for inner_step in range(resume_inner_step, phase.max_steps):
+                if phase.update_steps and stop_before_update is not None and stop_before_update():
+                    if inner_step == resume_inner_step:
+                        coordinate = entry_coordinate
+                    interrupted = True
+                    break
                 coordinate = coordinate.model_copy(update={"inner_step": inner_step})
                 for step_name in phase.update_steps:
                     step = self._steps[step_name]
@@ -785,11 +795,10 @@ class PhaseProgramExecutor:
                             start_completed_batches=initial_batch,
                         )
 
-            next_phase = self._next_phase(
-                phase.name,
-                current_slots,
-                coordinate,
-                checkpoint_context,
+            next_phase = (
+                None
+                if interrupted
+                else self._next_phase(phase.name, current_slots, coordinate, checkpoint_context)
             )
             completed_batches = self._completed_training_batches(current_slots, coordinate)
             if (
@@ -808,7 +817,11 @@ class PhaseProgramExecutor:
                     progress_callback(_copy_progress_coordinate(observed_coordinate))
 
             saved_barrier: str | None = None
-            if checkpoint_interval is None and phase.checkpoint_barrier is not None:
+            if (
+                checkpoint_interval is None
+                and not interrupted
+                and phase.checkpoint_barrier is not None
+            ):
                 saved_barrier = self._save_barrier(
                     phase.checkpoint_barrier,
                     coordinate,
@@ -820,16 +833,13 @@ class PhaseProgramExecutor:
                 and completed_batches != last_checkpoint_batch
             ):
                 saved_barrier = self._save_phase_barrier(
-                    phase.name,
+                    coordinate.phase,
                     coordinate,
                     current_slots,
                 )
-                last_checkpoint_batch = completed_batches
             if saved_barrier is not None:
-                coordinate = coordinate.model_copy(
-                    update={"completed_barrier": saved_barrier}
-                )
-                if self._should_stop_at_barrier(
+                coordinate = coordinate.model_copy(update={"completed_barrier": saved_barrier})
+                if not interrupted and self._should_stop_at_barrier(
                     saved_barrier,
                     stop_after_barrier=stop_after_barrier,
                     stop_after_next_barrier=stop_after_next_barrier,
@@ -850,6 +860,7 @@ class PhaseProgramExecutor:
             coordinate,
             progress,
             start_completed_batches=initial_batch,
+            interrupted=interrupted,
         )
 
     def _validate_destination_updates(
@@ -911,6 +922,7 @@ class PhaseProgramExecutor:
         progress: list[ProgressCoordinate],
         *,
         start_completed_batches: int,
+        interrupted: bool = False,
     ) -> PhaseExecutionResult:
         result = PhaseExecutionResult(
             slots=_copy_executor_mapping(slots),
@@ -918,6 +930,7 @@ class PhaseProgramExecutor:
             start_completed_batches=start_completed_batches,
             end_completed_batches=self._completed_training_batches(slots, coordinate),
             progress=progress,
+            interrupted=interrupted,
         )
         if self._checkpoint_history is not None:
             result.checkpoints = self._checkpoint_history.as_dict()

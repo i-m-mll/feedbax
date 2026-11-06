@@ -1660,12 +1660,29 @@ export interface TrainingCompleteEvent {
   seq: number;
   emitted_at_ms: number;
   worker_seq?: number | null;
-  type: "training_complete";
   batch: number;
+  program_step?: number | null;
   loss?: number | null;
   manifest_path?: string | null;
   manifest_id?: string | null;
   execution?: string | null;
+  type: "training_complete";
+}
+
+export interface TrainingStoppedEvent {
+  schema_id?: "feedbax.spec.studio.api_transport";
+  schema_version?: "feedbax.spec.studio.api_transport.v3";
+  job_id: string;
+  seq: number;
+  emitted_at_ms: number;
+  worker_seq?: number | null;
+  batch: number;
+  program_step?: number | null;
+  loss?: number | null;
+  manifest_path?: string | null;
+  manifest_id?: string | null;
+  execution?: string | null;
+  type: "training_stopped";
 }
 
 export interface TrainingErrorEvent {
@@ -4865,15 +4882,36 @@ export const TrainingCompleteEventSchema: z.ZodType<TrainingCompleteEvent> = z.l
       "seq": z.number().int().safe(),
       "emitted_at_ms": z.number().int().safe(),
       "worker_seq": z.number().int().safe().nullable().optional(),
-      "type": z.literal("training_complete"),
       "batch": z.number().int().safe().gte(0),
+      "program_step": z.number().int().safe().gte(0).nullable().optional(),
       "loss": z.number().finite().nullable().optional(),
       "manifest_path": z.string().nullable().optional(),
       "manifest_id": z.string().nullable().optional(),
       "execution": z.string().nullable().optional(),
+      "type": z.literal("training_complete"),
     })
     .strict()
 ) as unknown as z.ZodType<TrainingCompleteEvent>;
+
+export const TrainingStoppedEventSchema: z.ZodType<TrainingStoppedEvent> = z.lazy(() =>
+  z
+    .object({
+      "schema_id": z.literal("feedbax.spec.studio.api_transport").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.api_transport.v3").optional(),
+      "job_id": z.string(),
+      "seq": z.number().int().safe(),
+      "emitted_at_ms": z.number().int().safe(),
+      "worker_seq": z.number().int().safe().nullable().optional(),
+      "batch": z.number().int().safe().gte(0),
+      "program_step": z.number().int().safe().gte(0).nullable().optional(),
+      "loss": z.number().finite().nullable().optional(),
+      "manifest_path": z.string().nullable().optional(),
+      "manifest_id": z.string().nullable().optional(),
+      "execution": z.string().nullable().optional(),
+      "type": z.literal("training_stopped"),
+    })
+    .strict()
+) as unknown as z.ZodType<TrainingStoppedEvent>;
 
 export const TrainingErrorEventSchema: z.ZodType<TrainingErrorEvent> = z.lazy(() =>
   z
@@ -5299,9 +5337,9 @@ export const InspectionStatusResponseSchema: z.ZodType<InspectionStatusResponse>
     .strict()
 ) as unknown as z.ZodType<InspectionStatusResponse>;
 
-export type TrainingWebSocketEvent = TrainingProgressEvent | TrainingLogEvent | TrainingTrajectoryEvent | TrainingCompleteEvent | TrainingErrorEvent | TrainingResyncEvent;
+export type TrainingWebSocketEvent = TrainingProgressEvent | TrainingLogEvent | TrainingTrajectoryEvent | TrainingCompleteEvent | TrainingStoppedEvent | TrainingErrorEvent | TrainingResyncEvent;
 
-export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = z.union([TrainingProgressEventSchema, TrainingLogEventSchema, TrainingTrajectoryEventSchema, TrainingCompleteEventSchema, TrainingErrorEventSchema, TrainingResyncEventSchema]) as unknown as z.ZodType<TrainingWebSocketEvent>;
+export const TrainingWebSocketEventSchema: z.ZodType<TrainingWebSocketEvent> = z.union([TrainingProgressEventSchema, TrainingLogEventSchema, TrainingTrajectoryEventSchema, TrainingCompleteEventSchema, TrainingStoppedEventSchema, TrainingErrorEventSchema, TrainingResyncEventSchema]) as unknown as z.ZodType<TrainingWebSocketEvent>;
 
 export const contractSchemas = {
   GraphListResponse: GraphListResponseSchema,

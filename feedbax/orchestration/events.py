@@ -814,6 +814,8 @@ def run_event_from_legacy_worker_event(
     event_type = _legacy_worker_type_to_run_event_type(legacy_type)
     payload: MutableMapping[str, Any] = dict(event)
     payload["legacy_type"] = legacy_type
+    if legacy_type == "training_stopped":
+        payload["status"] = "cancelled"
     payload.pop("schema_id", None)
     payload.pop("schema_version", None)
     payload.pop("seq", None)
@@ -832,9 +834,11 @@ def legacy_worker_event_from_run_event(event: Mapping[str, Any]) -> dict[str, An
     """Convert a worker run-event envelope back to the legacy Studio event shape."""
     run_event = RunEvent.model_validate(event)
     payload = dict(run_event.payload)
-    legacy_type = payload.pop("legacy_type", None) or _run_event_type_to_legacy_worker_type(
-        run_event.type
-    )
+    legacy_type = payload.pop("legacy_type", None)
+    if run_event.type == "complete" and payload.get("status") == "cancelled":
+        legacy_type = "training_stopped"
+    if not legacy_type:
+        legacy_type = _run_event_type_to_legacy_worker_type(run_event.type)
     payload["type"] = legacy_type
     payload["seq"] = run_event.seq
     payload.setdefault("job_id", run_event.row_id)
@@ -845,6 +849,7 @@ def _legacy_worker_type_to_run_event_type(legacy_type: str) -> str:
     return {
         "training_progress": "progress",
         "training_complete": "complete",
+        "training_stopped": "complete",
         "training_error": "failed",
         "training_log": "log",
         "training_trajectory": "trajectory",
