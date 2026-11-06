@@ -17,6 +17,7 @@ from feedbax.runtime.affine_composer import AffineValueComposer
 from feedbax.runtime.components import Demux, ElementwiseAffineModulator
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec, WireSpec
 from feedbax.runtime.graph import init_state_from_component
+from feedbax.runtime.iteration import run_component
 from feedbax.runtime.task_bindings import (
     apply_task_parameter_state_inits,
     expose_task_bindings,
@@ -142,6 +143,98 @@ def _force_field_cases():
             ["effector", "force", "params_override"],
         ),
     )
+
+
+@pytest.mark.parametrize(
+    ("component_type", "params", "effect"),
+    [
+        (
+            "FixedField",
+            {"amplitude": 1.0, "field": [2.0002, -2.0002]},
+            [2.0002, -2.0002],
+        ),
+        ("CurlField", {"amplitude": 1.0}, [-4.0, 2.0]),
+        (
+            "DynamicsMatrixPerturb",
+            {"mass": 1.5, "delta_A": [[1.0, 0.0, 1.0, 0.0], [0.0, 1.0, -1.0, 0.0]]},
+            [6.0, -9.0],
+        ),
+        ("AddNoise", {}, None),
+    ],
+    ids=["fixed", "curl", "dynamics", "noise"],
+)
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32])
+@pytest.mark.parametrize("active", [False, True], ids=["inactive", "active"])
+def test_registered_intervention_rollout_preserves_signal_dtype_and_gradients(
+    component_type, params, effect, dtype, active
+):
+    with jax.experimental.enable_x64(dtype == jnp.float32):
+        registry = _components()
+        metadata = registry.get(component_type)
+        input_port, output_port = (
+            ("input", "output") if component_type == "AddNoise" else ("force", "force")
+        )
+        signal = jnp.array([[-1.0, 1.0], [0.0, 0.0]], dtype=dtype)
+        inputs = {input_port: signal}
+        if "effector" in metadata.input_ports:
+            inputs["effector"] = CartesianState(
+                pos=jnp.array([[2.0, -4.0], [2.0, -4.0]], dtype=dtype),
+                vel=jnp.array([[2.0, 4.0], [2.0, 4.0]], dtype=dtype),
+            )
+        graph = spec_to_graph(
+            _single_node_spec(
+                component_type,
+                {**params, "scale": 0.5, "active": active},
+                input_ports=metadata.input_ports,
+                output_ports=metadata.output_ports,
+            ),
+            registry,
+            {("field", port): jax.tree.map(lambda x: x[0], value) for port, value in inputs.items()},
+        )
+        params_index = graph.nodes["field"].params_index
+        key = jr.key(7)
+        weights = jnp.array([1, 3], dtype=jnp.float32)
+
+        def loss(signal, scale):
+            state = init_state_from_component(graph)
+            intervention = eqx.tree_at(lambda p: p.scale, state.get(params_index), scale)
+            outputs, _, _ = run_component(
+                graph,
+                {**inputs, input_port: signal},
+                state.set(params_index, intervention),
+                key=key,
+                n_steps=2,
+                state_filter=False,
+            )
+            result = outputs[output_port]
+            return (result.astype(jnp.float32) * weights).sum(), result
+
+        scale = jnp.float32(0.5)
+        (_, result), (signal_grad, scale_grad) = jax.value_and_grad(
+            loss, argnums=(0, 1), has_aux=True
+        )(signal, scale)
+
+        noise = effect is None
+        if noise:
+            # Each step, node and signal leaf gets its own split from the seed.
+            sample_keys = [jr.split(jr.split(step_key, 1)[0], 1)[0] for step_key in jr.split(key, 2)]
+            effect = jnp.stack([jr.normal(sample_key, (2,), dtype) for sample_key in sample_keys])
+        effect = jnp.broadcast_to(jnp.asarray(effect), signal.shape)
+        if not active:
+            effect = jnp.zeros_like(effect)
+        expected = (signal + scale * effect).astype(dtype)
+        assert result.dtype == dtype
+        assert jnp.array_equal(signal_grad, jnp.broadcast_to(weights, signal.shape))
+        weighted_effect = effect * weights
+        if noise and active:
+            # The compiled sampler can round differently than a standalone draw.
+            eps = float(jnp.finfo(dtype).eps)
+            assert jnp.allclose(result.astype(jnp.float32), expected.astype(jnp.float32), rtol=eps)
+            grad_tolerance = eps * float(jnp.abs(weighted_effect).sum())
+        else:
+            assert jnp.array_equal(result, expected)
+            grad_tolerance = 1e-5
+        assert scale_grad == pytest.approx(float(weighted_effect.sum()), abs=grad_tolerance)
 
 
 def test_elementwise_affine_modulator_graphspec_round_trips_and_runs() -> None:

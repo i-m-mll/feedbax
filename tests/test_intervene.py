@@ -122,17 +122,16 @@ class TestDynamicsMatrixPerturb:
             DynamicsMatrixPerturb(mass=0.0)
 
 
-def test_add_noise_splits_key_per_signal_leaf() -> None:
+def test_add_noise_keeps_each_signal_leaf_dtype_and_random_stream() -> None:
     component = AddNoise(params=AddNoiseParams(active=True))
     state = State(component)
-    signal = {
-        "left": jnp.zeros((4,), dtype=jnp.float32),
-        "right": jnp.zeros((4,), dtype=jnp.float32),
-    }
+    signal = (jnp.zeros((4,), dtype=jnp.float16), jnp.zeros((3,), dtype=jnp.bfloat16))
+    key = jr.key(0)
+    outputs, _ = component({"input": signal}, state, key=key)
 
-    outputs, _ = component({"input": signal}, state, key=jr.PRNGKey(0))
-
-    assert not jnp.allclose(outputs["output"]["left"], outputs["output"]["right"])
+    for result, leaf, leaf_key in zip(outputs["output"], signal, jr.split(key, 2), strict=True):
+        assert result.dtype == leaf.dtype
+        assert jnp.array_equal(result, jr.normal(leaf_key, leaf.shape, leaf.dtype))
 
 
 @pytest.fixture

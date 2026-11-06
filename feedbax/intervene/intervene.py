@@ -315,7 +315,7 @@ class CurlField(Component):
         def apply_field():
             vel = effector.vel
             curl = params.amplitude * jnp.array([-1.0, 1.0]) * vel[..., ::-1]
-            return force + params.scale * curl
+            return _intervention_result_dtype(force, force + params.scale * curl)
 
         new_force = jax.lax.cond(params.active, apply_field, lambda: force)
         return {"force": new_force}, state
@@ -346,7 +346,9 @@ class FixedField(Component):
         force = inputs["force"]
 
         def apply_field():
-            return force + params.scale * params.amplitude * params.field
+            return _intervention_result_dtype(
+                force, force + params.scale * params.amplitude * params.field
+            )
 
         new_force = jax.lax.cond(params.active, apply_field, lambda: force)
         return {"force": new_force}, state
@@ -572,7 +574,7 @@ class DynamicsMatrixPerturb(Component):
             # converts this back into a velocity-row perturbation
             # dot v += delta_A @ x.
             df = self.mass * (params.delta_A @ x)
-            return force + params.scale * df
+            return _intervention_result_dtype(force, force + params.scale * df)
 
         new_force = jax.lax.cond(params.active, apply_perturbation, lambda: force)
         return {"force": new_force}, state
@@ -612,7 +614,11 @@ class AddNoise(Component):
         def apply_noise():
             keys = jtree.random_split_like_tree(key, signal)
             noise = jt.map(lambda x, leaf_key: self.noise_func(leaf_key, x), signal, keys)
-            return jt.map(lambda x, n: x + params.scale * n, signal, noise)
+            return jt.map(
+                lambda x, n: _intervention_result_dtype(x, x + params.scale * n),
+                signal,
+                noise,
+            )
 
         output = jax.lax.cond(params.active, apply_noise, lambda: signal)
         return {"output": output}, state
