@@ -13,6 +13,7 @@ import pytest
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler import GraphCompilationError
+from feedbax.compiler.builders import build_component
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
@@ -346,28 +347,73 @@ def test_target_relative_graphspec_round_trip_preserves_frame_selectors() -> Non
     assert node.params["lateral_force"] == pytest.approx(2.0)
 
 
-def test_native_graph_materialization_runs_target_relative_frame() -> None:
-    graph = spec_to_graph(
-        _target_relative_graph_spec(), ComponentRegistry(load_user_components=False)
+@pytest.fixture(scope="module")
+def compiled_target_relative_rollout():
+    registry = ComponentRegistry(load_user_components=False)
+    graph = spec_to_graph(_target_relative_graph_spec(), registry)
+    stabilization = build_component(
+        "hold",
+        "Stabilization",
+        {"n_steps": 4, "workspace": [[-1.0, -1.0], [1.0, 1.0]]},
+        component_registry=registry,
     )
-    target = jnp.array([0.0, 1.0])
-    positions = jnp.array([[0.0, 0.0], [0.0, 0.5], [0.0, 0.75]])
+    trial = stabilization.trial_spec
+    (initial,) = trial.inits.values()
+    targets = trial.inputs.effector_target.pos
+    incoming_force = jnp.array([0.5, 0.25])
 
-    def step(state: State, position: jax.Array) -> tuple[State, jax.Array]:
-        outputs, state = graph(
-            {
-                "state": CartesianState(pos=position, vel=jnp.zeros((2,))),
-                "target": {"goal": target},
-                "force": jnp.zeros((2,)),
-            },
-            state,
-            key=jr.PRNGKey(0),
-        )
-        return state, outputs["force"]
+    def run(positions, targets, activations):
+        def step(state, sample):
+            position, target, active = sample
+            outputs, state = graph(
+                {
+                    "state": CartesianState(pos=position, vel=jnp.zeros((2,))),
+                    "target": {"goal": target},
+                    "force": incoming_force,
+                    "params_override": ThresholdLatchedForceParams(
+                        threshold=0.5, lateral_force=2.0, active=active
+                    ),
+                },
+                state,
+                key=jr.PRNGKey(0),
+            )
+            return state, outputs["force"]
 
-    _, forces = eqx.filter_jit(lambda: jax.lax.scan(step, State(graph), positions))()
+        return jax.lax.scan(step, State(graph), (positions, targets, activations))[1]
 
-    assert jnp.allclose(forces, jnp.array([[0.0, 0.0], [-2.0, 0.0], [-2.0, 0.0]]))
+    return eqx.filter_jit(jax.vmap(run)), initial.pos, targets, incoming_force
+
+
+def test_compiled_mixed_batch_preserves_passthrough_and_trial_frame(
+    compiled_target_relative_rollout,
+) -> None:
+    run, start, targets, incoming_force = compiled_target_relative_rollout
+    reaches = start + jnp.array([[0.0, -1.0], [0.0, -0.375], [0.0, -0.25]])
+    drift = start + jnp.array([[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]])
+    changed_targets = targets.at[1:].add(jnp.array([1.0, -1.0]))
+
+    forces = run(
+        jnp.stack([drift, reaches, reaches]),
+        jnp.stack([targets, targets, changed_targets]),
+        jnp.array([[False, False, False], [True, True, True], [False, True, True]]),
+    )
+
+    assert jnp.array_equal(forces[0], jnp.broadcast_to(incoming_force, (3, 2)))
+    expected = jnp.array([[0.5, 0.25], [-1.5, 0.25], [-1.5, 0.25]])
+    assert jnp.allclose(forces[1], expected)
+    assert jnp.allclose(forces[2], expected)
+
+
+@pytest.mark.parametrize("active_at_start", [True, False])
+def test_compiled_activation_rejects_degenerate_trial_frame(
+    compiled_target_relative_rollout, active_at_start
+) -> None:
+    run, start, targets, _ = compiled_target_relative_rollout
+    positions = start + jnp.array([[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]])
+    targets = targets.at[1:].add(jnp.array([0.0, 1.0]))
+
+    with pytest.raises(eqx.EquinoxRuntimeError, match="requires distinct trial start and target"):
+        run(positions[None], targets[None], jnp.array([[active_at_start, True, True]]))
 
 
 def test_native_graph_materialization_runs_runtime_state_trigger() -> None:
