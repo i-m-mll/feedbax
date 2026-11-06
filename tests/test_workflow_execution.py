@@ -267,17 +267,6 @@ def _mutate(path: Path, **changes: Any) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_preflight_states_the_whole_closure_in_dependency_order(
-    outputs: QuillonOutputs,
-) -> None:
-    closure = _closure(outputs, _chain(outputs))
-    assert closure.order == CHAIN_ORDER
-    assert closure.target == LogicalKey("report", "chain-leaf")
-    for node in closure.nodes:
-        assert node.compiled.content_hash == node.plan_node.content_hash
-        assert node.document["schema_id"] == node.compiled_schema_id
-
-
 def test_a_document_that_no_longer_hashes_to_what_was_pinned_refuses(
     outputs: QuillonOutputs,
 ) -> None:
@@ -1750,18 +1739,22 @@ def test_a_plan_that_drops_an_input_the_lock_states_refuses(
         workflow_plan_from_document(document)
 
 
-def test_a_plan_derived_from_its_own_locks_reconciles(
-    outputs: QuillonOutputs, environment: FulfillmentEnvironment
-) -> None:
-    """The reconciliation is exact, so an untouched plan must survive it."""
+def test_a_plan_derived_from_its_own_locks_reconciles(outputs: QuillonOutputs) -> None:
     target = _chain(outputs)
     index = read_compiled_outputs(outputs.output_directory)
     plan = derive_workflow_plan(index, target=target)
-
     round_tripped = workflow_plan_from_document(plan.document())
 
-    closure = prepare_workflow(round_tripped, read_compiled_outputs(outputs.output_directory))
-    assert closure.order == _closure(outputs, target).order
+    closure = prepare_workflow(round_tripped, index)
+
+    assert closure.order == CHAIN_ORDER
+    assert closure.target == LogicalKey("report", "chain-leaf")
+    for node in closure.nodes:
+        assert node.compiled.content_hash == node.plan_node.content_hash
+        assert node.document["schema_id"] == node.compiled_schema_id
+        assert node.plan_node.operation.parameters["compiled_schema_id"] == node.compiled.schema_id
+        assert node.plan_node.execution_identity == node.compiled.execution_identity
+        assert node.plan_node.key == node.compiled.key
 
 
 def test_the_bytes_authenticated_are_the_bytes_bound(
@@ -2555,18 +2548,6 @@ def test_a_node_fact_the_lock_does_not_determine_refuses_at_preflight(
     assert any(difference.startswith(f"{compared_field}:") for difference in differences)
     assert substituted in str(caught.value)
     assert calls.evaluation == before, "a refused closure never runs"
-
-
-def test_an_honest_derived_plan_still_reconciles_every_node_fact(
-    outputs: QuillonOutputs,
-) -> None:
-    """The node gate refuses substitutions, not the plans derivation produces."""
-    closure = _closure(outputs, _chain(outputs))
-    assert closure.order == CHAIN_ORDER
-    for node in closure.nodes:
-        assert node.plan_node.operation.parameters["compiled_schema_id"] == node.compiled.schema_id
-        assert node.plan_node.execution_identity == node.compiled.execution_identity
-        assert node.plan_node.key == node.compiled.key
 
 
 def test_a_half_stated_restated_profile_is_refused_rather_than_dropped(
