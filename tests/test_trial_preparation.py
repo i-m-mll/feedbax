@@ -1,10 +1,12 @@
 import equinox as eqx
 import jax.numpy as jnp
+import pytest
 from equinox.nn import StateIndex
 
 from feedbax.runtime.mapping import WhereDict
 from feedbax.contracts.graph import StudioTaskBindingSpec
-from feedbax.runtime.graph import Component, Graph, init_state_from_component
+from feedbax.runtime.components import Constant, Gain
+from feedbax.runtime.graph import Component, Graph, Wire, init_state_from_component
 from feedbax.runtime.task_bindings import (
     apply_task_parameter_state_inits,
     binding_spec_from_legacy_extra_inputs,
@@ -236,6 +238,50 @@ def test_legacy_extra_inputs_map_intervene_prefix_to_component_parameter_binding
     assert exposure.state_init_plans == ()
     assert exposure.input_plans[0].graph_input == "intervene:foo"
     assert exposure.input_plans[0].target_port == "params_override"
+
+
+@pytest.mark.parametrize(
+    ("wires", "input_ports", "message"),
+    [
+        (
+            (Wire("source", "output", "gain", "input"),),
+            (),
+            r"gain\.input.*task:command.*wire source\.output",
+        ),
+        ((), ("task:command->gain.input",), r"command-binding.*already declared"),
+    ],
+)
+def test_task_exposure_preserves_existing_input_authority(wires, input_ports, message) -> None:
+    graph = Graph(
+        nodes={"source": Constant(2.0), "gain": Gain(3.0)},
+        wires=wires,
+        input_ports=input_ports,
+    )
+    binding_spec = StudioTaskBindingSpec.model_validate(
+        {
+            "exposed_data": [
+                {
+                    "id": "command",
+                    "label": "Command",
+                    "kind": "derived",
+                    "path": "command",
+                    "bindable": True,
+                }
+            ],
+            "bindings": [
+                {
+                    "id": "command-binding",
+                    "source_data_id": "command",
+                    "target_node_id": "gain",
+                    "target_port": "input",
+                    "role": "model_input",
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ValueError, match=message):
+        expose_task_bindings(graph, binding_spec)
 
 
 def test_infer_n_steps_prefers_timeline_over_input_length() -> None:

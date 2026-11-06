@@ -48,7 +48,7 @@ import {
   scopedTaskBindingSpec,
   canAuthorTaskBindings,
   ROOT_TASK_BINDING_MESSAGE,
-  targetInputOccupied,
+  findTaskBinding,
 } from '@/features/scenario/taskBindings';
 import {
   projectStudioSchema,
@@ -61,6 +61,7 @@ import {
   deriveSubgraphBoundaryOverrides,
 } from '@/features/schema/dimensions';
 import { expandMuxForPort, isNextMuxInputPort, normalizeDynamicPorts } from '@/features/graph/dynamicPorts';
+import { findCausalInputDriver, findWireConnectionDriver, inputDriverConflict } from '@/features/graph/inputDrivers';
 import { CustomNode } from './CustomNode';
 import { SubgraphNode } from './SubgraphNode';
 import { RoutedEdge } from './RoutedEdge';
@@ -1390,10 +1391,17 @@ export function Canvas() {
             signature,
           };
         }
-        if (targetInputOccupied(graph, taskBindingSpec, connection.target, connection.targetHandle)) {
+        const driver = findCausalInputDriver(
+          graph, connection.target, connection.targetHandle, (owner) => owner.kind === 'wire'
+        );
+        const taskBinding = findTaskBinding(taskBindingSpec, connection.target, connection.targetHandle);
+        const owner = driver?.owner ?? (taskBinding && `Task Data '${taskBinding.source_data_id}'`);
+        if (owner) {
           return {
             status: 'blocked',
-            message: `${connection.target}.${connection.targetHandle} is already occupied`,
+            message: inputDriverConflict(
+              connection.target, connection.targetHandle, owner, `Task Data '${taskDataId}'`
+            ),
             signature,
           };
         }
@@ -1430,10 +1438,18 @@ export function Canvas() {
           signature,
         };
       }
-      if (targetInputOccupied(graph, taskBindingSpec, connection.target, connection.targetHandle)) {
+      const driver = findWireConnectionDriver(
+        graph, connection.target, connection.targetHandle, graphStack.at(-1)
+      );
+      const taskBinding = findTaskBinding(taskBindingSpec, connection.target, connection.targetHandle);
+      const owner = driver?.owner ?? (taskBinding && `Task Data '${taskBinding.source_data_id}'`);
+      if (owner) {
         return {
           status: 'blocked',
-          message: `${connection.target}.${connection.targetHandle} is already occupied`,
+          message: inputDriverConflict(
+            connection.target, connection.targetHandle, owner,
+            `wire ${connection.source}.${connection.sourceHandle}`
+          ),
           signature,
         };
       }
@@ -1455,7 +1471,7 @@ export function Canvas() {
         : issues;
       return feedbackFromIssues(filteredIssues, 'Ports are compatible', signature);
     },
-    [componentRegistry, graph, schemaRegistry, taskBindingSpec]
+    [componentRegistry, graph, graphStack, schemaRegistry, taskBindingSpec]
   );
 
   const hasBlockingCanvasConnectionIssue = useCallback(
@@ -1482,14 +1498,6 @@ export function Canvas() {
         if (!connection.target || !connection.targetHandle) return;
         if (isStateHandle(connection.targetHandle)) return;
         upsertTaskBinding(taskDataId, connection.target, connection.targetHandle);
-        return;
-      }
-      if (
-        !isAcausalLayer &&
-        connection.target &&
-        connection.targetHandle &&
-        targetInputOccupied(graph, taskBindingSpec, connection.target, connection.targetHandle)
-      ) {
         return;
       }
       if (

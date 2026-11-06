@@ -209,6 +209,36 @@ describe('projectStudioSchema', () => {
     expect(issueTypes).toContain('graph_input_occupied');
   });
 
+  it('names conflicting external inputs and recurrent wires at their exact target', () => {
+    const registry = projectStudioSchema(
+      {
+        ...graph,
+        input_ports: ['command', 'override'],
+        input_bindings: {
+          command: ['sink', 'excitation'],
+          override: ['sink', 'excitation'],
+        },
+        wires: [{
+          source_node: 'source',
+          source_port: 'output',
+          target_node: 'sink',
+          target_port: 'excitation',
+          temporality: 'recurrent',
+          recurrent_initializer: { kind: 'zeros' },
+        }],
+      },
+      components
+    );
+    const conflicts = registry.issues.filter((issue) => issue.type === 'graph_input_occupied');
+
+    expect(conflicts).toHaveLength(2);
+    expect(conflicts[0].message).toContain('sink.excitation');
+    expect(conflicts[0].message).toContain("external input 'command'");
+    expect(conflicts[0].message).toContain("external input 'override'");
+    expect(conflicts[1].message).toContain("external input 'command'");
+    expect(conflicts[1].message).toContain('recurrent wire source.output');
+  });
+
   it('validates task-data binding conflicts against projected schemas', () => {
     const registry = projectStudioSchema(
       {

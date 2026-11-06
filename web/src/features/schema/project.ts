@@ -22,6 +22,7 @@ import {
   muxInputIndex,
   normalizeDynamicPorts,
 } from '@/features/graph/dynamicPorts';
+import { causalInputDrivers, inputDriverConflict } from '@/features/graph/inputDrivers';
 import { taskBindingId } from '@/features/scenario/taskBindings';
 
 const GRAPH_BINDABLE_TASK_DATA_ROLES = new Set(['model_input', 'graph_input']);
@@ -818,23 +819,28 @@ function validateGraphConnections(
   portIndex: PortSchemaIndex
 ): SchemaValidationIssue[] {
   const issues: SchemaValidationIssue[] = [];
-  const occupied = new Map<string, string>();
-  for (const [graphPort, binding] of Object.entries(graph.input_bindings)) {
-    occupied.set(`${binding[0]}.${binding[1]}`, `input_bindings.${graphPort}`);
-  }
-  graph.wires.forEach((wire, index) => {
-    const path = `wires.${index}`;
-    const targetKey = `${wire.target_node}.${wire.target_port}`;
-    const previous = occupied.get(targetKey);
+  const occupied = new Map<string, Map<string, { owner: string; path: string }>>();
+  for (const driver of causalInputDrivers(graph)) {
+    const { node, port, owner, path } = driver;
+    let nodeInputs = occupied.get(node);
+    if (!nodeInputs) {
+      nodeInputs = new Map();
+      occupied.set(node, nodeInputs);
+    }
+    const previous = nodeInputs.get(port);
     if (previous) {
       issues.push({
         type: 'graph_input_occupied',
-        message: `Input ${targetKey} is already occupied`,
+        message: inputDriverConflict(node, port, previous.owner, owner),
         severity: 'error',
-        location: { path, occupied_by: previous },
+        location: { node, port, path, occupied_by: previous.path },
       });
+    } else {
+      nodeInputs.set(port, driver);
     }
-    occupied.set(targetKey, path);
+  }
+  graph.wires.forEach((wire, index) => {
+    const path = `wires.${index}`;
     issues.push(
       ...validateConnectionAgainstSchemaWithIndex(
         portIndex,

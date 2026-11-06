@@ -1026,6 +1026,25 @@ describe('graphStore recurrent connections', () => {
     );
   });
 
+  it('rejects a new wire to an exposed root input', () => {
+    const { uiState } = useGraphStore.getState();
+    const graph = activeCausalGraph();
+    useGraphStore.getState().hydrateGraph(
+      { ...graph, input_ports: ['external'], input_bindings: { external: ['a', 'input'] } },
+      uiState
+    );
+
+    useGraphStore.getState().onConnect({
+      source: 'b',
+      sourceHandle: 'output',
+      target: 'a',
+      targetHandle: 'input',
+    });
+
+    expect(activeCausalGraph().wires).toEqual(graph.wires);
+    expect(activeCausalGraph().input_bindings).toEqual({ external: ['a', 'input'] });
+  });
+
   it('marks the newly dropped cycle-closing edge as recurrent', () => {
     useGraphStore.getState().onConnect({
       source: 'b',

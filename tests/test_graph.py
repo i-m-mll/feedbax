@@ -287,7 +287,6 @@ def _make_cyclic_graph():
     ``b``: y = x + 1
 
     Wires:
-      external "input" -> a.x
       a.y -> b.x
       b.y -> a.x   (recurrent one-step feedback)
 
@@ -301,9 +300,7 @@ def _make_cyclic_graph():
             Wire("a", "y", "b", "x"),
             Wire("b", "y", "a", "x", temporality="recurrent"),
         ),
-        input_ports=("input",),
         output_ports=("out",),
-        input_bindings={"input": ("a", "x")},
         output_bindings={"out": ("b", "y")},
     )
     return graph
@@ -375,9 +372,7 @@ def test_graph_rejects_instant_cycles():
                 Wire("a", "y", "b", "x"),
                 Wire("b", "y", "a", "x"),
             ),
-            input_ports=("input",),
             output_ports=("out",),
-            input_bindings={"input": ("a", "x")},
             output_bindings={"out": ("b", "y")},
         )._execution_order
 
@@ -620,58 +615,42 @@ def test_attr_string_where_supports_explicit_nodes_index_path():
     assert where(graph) == graph.nodes["net"].factor
 
 
-def test_graph_step_cyclic_threads_cycle_values():
-    """Smoke: chain three ``step`` calls on a cyclic graph; cycle values propagate.
+def test_recurrent_wire_and_external_input_cannot_share_a_target():
+    cyclic = _make_cyclic_graph()
+    with pytest.raises(ValueError, match=r"a\.x.*external input 'input'.*recurrent wire b\.y"):
+        Graph(
+            nodes=cyclic.nodes,
+            wires=cyclic.wires,
+            input_ports=("input",),
+            input_bindings={"input": ("a", "x")},
+        )
 
-    The back-edge target is ``a.x`` (cycle wire b.y -> a.x). Because external
-    "input" also binds to ``a.x``, the explicit input wins on any step that
-    provides one. We chain calls and verify the contract: ``cycle_port_values``
-    returned is keyed by ``("a", "x")`` and equals ``b.y`` from the
-    just-completed step.
-    """
+
+def test_graph_surgery_rejects_competing_wire_and_preserves_recurrent_delay():
     graph = _make_cyclic_graph()
-    assert graph._needs_iteration  # sanity: cycle detected
+    with pytest.raises(ValueError, match=r"a\.x.*recurrent wire b\.y.*instant wire a\.y"):
+        graph.add_wire(Wire("a", "y", "a", "x"))
 
-    state = init_state_from_component(graph)
-
-    # First step: seed cycle explicitly (the toy components are stateless and
-    # don't expose initial_outputs, so None would raise — see
-    # _get_initial_cycle_values).
-    seed_cycle = {("a", "x"): jnp.array(0.0)}
-
-    # Step 1: input = 4, a.y = 0.5*4 = 2, b.y = 2 + 1 = 3
-    out1, state, cyc1 = graph.step(
-        {"input": jnp.array(4.0)},
-        state,
-        seed_cycle,
-        key=jax.random.PRNGKey(0),
+    graph = graph.remove_wire(graph.wires[-1]).add_wire(
+        Wire(
+            "b",
+            "y",
+            "a",
+            "x",
+            temporality="recurrent",
+            recurrent_initializer={"kind": "constant", "value": 4.0},
+        )
     )
-    assert out1["out"] == jnp.array(3.0)
-    assert ("a", "x") in cyc1
-    # cycle stores the source value (b.y) of the back-edge.
-    assert cyc1[("a", "x")] == jnp.array(3.0)
-
-    # Step 2: pass cycle from step 1; input dominates a.x again.
-    out2, state, cyc2 = graph.step(
-        {"input": jnp.array(2.0)},
-        state,
-        cyc1,
-        key=jax.random.PRNGKey(1),
+    modified = graph.insert_between(
+        "double", _Scaler(2.0), "b", "y", "a", "x", input_port="x", output_port="y"
     )
-    # a.y = 0.5*2 = 1, b.y = 2
-    assert out2["out"] == jnp.array(2.0)
-    assert cyc2[("a", "x")] == jnp.array(2.0)
-
-    # Step 3: omit external input -> cycle value (b.y = 2.0) drives a.x.
-    # a.y = 0.5*2 = 1, b.y = 2
-    out3, _, cyc3 = graph.step(
+    outputs, _ = modified(
         {},
-        state,
-        cyc2,
-        key=jax.random.PRNGKey(2),
+        init_state_from_component(modified),
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
     )
-    assert out3["out"] == jnp.array(2.0)
-    assert cyc3[("a", "x")] == jnp.array(2.0)
+    assert jnp.array_equal(outputs["out"], jnp.array([5.0, 6.0, 7.0]))
 
 
 def test_graph_input_recurrent_initializer_seeds_call_once_from_trial_input() -> None:
@@ -1044,8 +1023,6 @@ def test_graph_step_equivalent_to_call_with_iteration():
     graph = _make_cyclic_graph()
     n_steps = 5
 
-    # Use varying inputs so each timestep is distinguishable.
-    inputs_seq = jnp.arange(1.0, 1.0 + n_steps, dtype=jnp.float32)
     base_key = jax.random.PRNGKey(42)
     keys = jax.random.split(base_key, n_steps)
     seed_cycle = {("a", "x"): jnp.array(0.0, dtype=jnp.float32)}
@@ -1054,7 +1031,7 @@ def test_graph_step_equivalent_to_call_with_iteration():
     # (it does jax.random.split(key, n_steps) internally).
     state_ref = init_state_from_component(graph)
     outputs_ref, _ = graph(
-        {"input": inputs_seq},
+        {},
         state_ref,
         key=base_key,
         n_steps=n_steps,
@@ -1067,7 +1044,7 @@ def test_graph_step_equivalent_to_call_with_iteration():
     out_history = []
     for t in range(n_steps):
         out_t, state_manual, cycle = graph.step(
-            {"input": inputs_seq[t]},
+            {},
             state_manual,
             cycle,
             key=keys[t],
@@ -1081,10 +1058,10 @@ def test_graph_step_equivalent_to_call_with_iteration():
 def test_graph_step_with_trace_returns_selected_boundary_values():
     graph = _make_cyclic_graph()
     state = init_state_from_component(graph)
-    seed_cycle = {("a", "x"): jnp.array(0.0)}
+    seed_cycle = {("a", "x"): jnp.array(4.0)}
 
     outputs, state, cycle, trace = graph.step_with_trace(
-        {"input": jnp.array(4.0)},
+        {},
         state,
         seed_cycle,
         key=jax.random.PRNGKey(0),
