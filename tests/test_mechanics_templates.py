@@ -32,7 +32,7 @@ pytestmark = [pytest.mark.usefixtures("enable_jax_x64"), pytest.mark.feedbax_con
 
 
 def _registry() -> ComponentRegistry:
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 def _rollout(system: AcausalSystem, inputs: dict[str, jax.Array], steps: int = 8) -> jax.Array:

@@ -547,7 +547,7 @@ def recurrent_controller(
         dtype=jnp.dtype(dtype if dtype is not None else jnp.float32).name,
     )
     keys = dict(zip(("cell", "encoder", "readout"), jr.split(key, 3), strict=True))
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     return compile_graph(
         GraphDocument(graph=spec),
         registry,

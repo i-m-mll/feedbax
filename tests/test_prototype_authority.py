@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from feedbax.component_registry import ComponentPack
+from feedbax.component_registry import ParameterField
+from feedbax.component_registry import declare_component
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -13,13 +17,26 @@ from feedbax.studio.schema import enumerate_studio_schema_registry
 
 @pytest.mark.parametrize("declared_size", [None, 4])
 def test_custom_nested_prototype_drives_compiler_and_studio_dimensions(declared_size) -> None:
-    components = ComponentRegistry(load_user_components=False)
-    components.register_component_type(
-        "VectorSource",
-        builder=lambda params: Constant(jnp.zeros(params["width"])),
-        param_schema=[{"name": "width", "type": "int", "default": 3}],
-        output_ports=["output"],
-        output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])},
+    components = ComponentRegistry()
+    components.ingest(
+        ComponentPack(
+            components=(
+                declare_component(
+                    name="VectorSource",
+                    builder=lambda params: Constant(jnp.zeros(params["width"])),
+                    output_ports=["output"],
+                    output_prototype_fn=lambda params, inputs: {
+                        "output": jnp.zeros(params["width"])
+                    },
+                    parameter_fields=[
+                        ParameterField(name='width', type='int', default=3)
+                    ],
+                    input_ports=(),
+                    category="Custom",
+                    override_reason="Synthetic fixture constructor",
+                ),
+            )
+        )
     )
     child = GraphSpec(
         nodes={"source": ComponentSpec(type="VectorSource", output_ports=["output"])},
@@ -85,7 +102,7 @@ def test_stateful_dtype_survives_scan_and_serialization(component_type, nested) 
     from feedbax.compiler.serialization import graph_to_spec
     from feedbax.runtime.graph import init_state_from_component
 
-    components = ComponentRegistry(load_user_components=False)
+    components = ComponentRegistry()
     leaf = GraphSpec(
         nodes={
             "sum": ComponentSpec(type="Sum", input_ports=["a", "b"], output_ports=["output"]),
@@ -171,7 +188,7 @@ def test_stateful_prototype_declarations_and_schema_migration() -> None:
     from feedbax.compiler.prototypes import infer_node_input_prototypes, validate_or_add_input_shape
     from feedbax.runtime.components import DelayLine
 
-    components = ComponentRegistry(load_user_components=False)
+    components = ComponentRegistry()
     for kind in ("DelayLine", "Channel", "FirstOrderFilter"):
         old = {**components.get(kind).default_params, "input_shape": [3]}
         old.pop("input_dtype", None)
@@ -267,7 +284,7 @@ def test_direct_filter_preserves_structured_signal_dtypes() -> None:
 def test_filter_rejects_non_real_floating_state_leaves(dtype) -> None:
     from feedbax.runtime.filters import FirstOrderFilter
 
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     invalid = jnp.zeros(2, dtype=dtype)
     for prototype in (invalid, {"valid": jnp.zeros(2), "invalid": (invalid,)}):
         with pytest.raises(
@@ -283,7 +300,7 @@ def test_filter_rejects_non_real_floating_state_leaves(dtype) -> None:
 def test_integer_source_filter_is_rejected_during_compilation() -> None:
     from feedbax.compiler import GraphCompilationError
 
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     spec = GraphSpec(
         nodes={
             "source": ComponentSpec(type="Constant", params={"value": 1}, output_ports=["output"]),
@@ -339,21 +356,42 @@ def test_final_parameter_meaning_drives_derived_state_and_studio(nested) -> None
             calls["relay"] += 1
             return value
 
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_component_type(
-        "NormalizedSource",
-        builder=lambda params: Constant(jnp.ones(params["width"])),
-        param_model=SourceParams,
-        output_ports=["output"],
-        output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])},
+    registry = ComponentRegistry()
+    registry.ingest(
+        ComponentPack(
+            components=(
+                declare_component(
+                    name="NormalizedSource",
+                    builder=lambda params: Constant(jnp.ones(params["width"])),
+                    param_model=SourceParams,
+                    output_ports=["output"],
+                    output_prototype_fn=lambda params, inputs: {
+                        "output": jnp.zeros(params["width"])
+                    },
+                    input_ports=(),
+                    category="Custom",
+                    override_reason="Synthetic fixture constructor",
+                ),
+            )
+        )
     )
-    registry.register_component_type(
-        "DerivedRelay",
-        builder=lambda params: Gain(gain=1.0),
-        param_model=RelayParams,
-        input_ports=["input"],
-        output_ports=["output"],
-        output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])},
+    registry.ingest(
+        ComponentPack(
+            components=(
+                declare_component(
+                    name="DerivedRelay",
+                    builder=lambda params: Gain(gain=1.0),
+                    param_model=RelayParams,
+                    input_ports=["input"],
+                    output_ports=["output"],
+                    output_prototype_fn=lambda params, inputs: {
+                        "output": jnp.zeros(params["width"])
+                    },
+                    category="Custom",
+                    override_reason="Synthetic fixture constructor",
+                ),
+            )
+        )
     )
     leaf = GraphSpec(
         nodes={
@@ -434,14 +472,24 @@ def test_parameter_normalizer_cannot_contradict_derived_dimension() -> None:
         def normalize_width(cls, value):
             return value + 1
 
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_component_type(
-        "ContradictoryRelay",
-        builder=lambda params: Gain(gain=1.0),
-        param_model=ContradictoryParams,
-        input_ports=["input"],
-        output_ports=["output"],
-        output_prototype_fn=lambda params, inputs: {"output": jnp.zeros(params["width"])},
+    registry = ComponentRegistry()
+    registry.ingest(
+        ComponentPack(
+            components=(
+                declare_component(
+                    name="ContradictoryRelay",
+                    builder=lambda params: Gain(gain=1.0),
+                    param_model=ContradictoryParams,
+                    input_ports=["input"],
+                    output_ports=["output"],
+                    output_prototype_fn=lambda params, inputs: {
+                        "output": jnp.zeros(params["width"])
+                    },
+                    category="Custom",
+                    override_reason="Synthetic fixture constructor",
+                ),
+            )
+        )
     )
     spec = GraphSpec(
         nodes={
@@ -485,9 +533,7 @@ def test_recurrent_constant_initializer_seeds_final_state_dtype_and_shape() -> N
             )
         ],
     )
-    compiled = compile_graph(
-        GraphDocument(graph=graph), ComponentRegistry(load_user_components=False)
-    )
+    compiled = compile_graph(GraphDocument(graph=graph), ComponentRegistry())
     params = compiled.resolved.graph.nodes["delay"].params
     assert params["input_shape"] == [3]
     assert params["input_dtype"] == "float16"
@@ -501,7 +547,7 @@ def test_prototype_dependencies_defer_without_reinterpreting_parameters() -> Non
         ConstantArrayValueSpec,
     )
 
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     value = ConstantArrayValueSpec(
         schema_id=ARRAY_VALUE_SCHEMA_ID,
         schema_version=ARRAY_VALUE_SCHEMA_VERSION,
@@ -599,9 +645,7 @@ def test_parameter_determined_prototypes_are_equivalent_across_subgraph_boundari
             output_ports=["output"],
             output_bindings={"output": ("delay", "output")},
         )
-        compiled = compile_graph(
-            GraphDocument(graph=spec), ComponentRegistry(load_user_components=False)
-        )
+        compiled = compile_graph(GraphDocument(graph=spec), ComponentRegistry())
         assert compiled.resolved.graph.nodes["delay"].params["input_shape"] == [3]
         graph = compiled.graph
 
@@ -646,7 +690,7 @@ def test_invalid_derived_rules_reject_in_compilation_and_studio(rule_patch, shap
         input_bindings={"input": ("linear", "input")},
     )
     prototypes = {} if shape is None else {("__graph__", "input"): jnp.zeros(shape)}
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     with pytest.raises(GraphCompilationError) as caught:
         compile_graph(GraphDocument(graph=graph), registry, prototypes)
     assert reason in caught.value.record.diagnostics[0].observed_condition

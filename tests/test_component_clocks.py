@@ -77,7 +77,7 @@ def test_waveforms_keep_their_own_clocks_across_scanned_rollouts(x64: bool) -> N
             output_ports=list(nodes),
             output_bindings={name: (name, "output") for name in nodes},
         )
-        registry = ComponentRegistry(load_user_components=False)
+        registry = ComponentRegistry()
         graph = spec_to_graph(spec, registry)
         serialized = graph_to_spec(graph, registry)
         for name, node in nodes.items():
@@ -155,7 +155,7 @@ def test_affine_schedule_policy_applies_when_resuming_a_scanned_rollout(policy: 
         input_bindings={"feedback": ("controller", "feedback")},
         output_bindings={"command": ("controller", "command")},
     )
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
     key = jax.random.key(0)
 
     first, state, _ = graph.rollout_with_trace(

@@ -34,7 +34,7 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
 @pytest.fixture
 def application_registry_bundle() -> ApplicationRegistryBundle:
     """Return fresh caller-owned registries for explicit lifecycle tests."""
-    return new_application_registry_bundle(local_component_source=None)
+    return new_application_registry_bundle()
 
 
 @pytest.fixture

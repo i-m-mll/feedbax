@@ -20,7 +20,7 @@ def _compile(graph):
     # Exercise the same serialized GraphDocument boundary as the Studio worker.
     document = GraphDocument(graph=graph)
     serialized = GraphDocument.model_validate_json(document.model_dump_json())
-    return compile_graph(serialized, ComponentRegistry(load_user_components=False))
+    return compile_graph(serialized, ComponentRegistry())
 
 
 def _tap(namespace, compact, *, operation="scale", **intervention):
@@ -238,7 +238,7 @@ def test_studio_worker_rollout_executes_authored_tap():
             "bindings": [],
         },
         cfg=SimpleNamespace(n_reach_steps=2),
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
     )
     rollout = rollout_graph(compiled.graph, compiled, key=jr.key(0))
     np.testing.assert_allclose(rollout["outputs"]["left"], [6.0, 6.0])

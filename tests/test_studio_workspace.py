@@ -150,7 +150,7 @@ def test_create_graph_persists_default_workspace(tmp_path):
 
 def test_studio_save_load_materializes_dynamic_ports_with_explicit_registry(tmp_path):
     service = GraphService(storage_dir=tmp_path)
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     graph = GraphSpec(
         nodes={
             "mux": ComponentSpec(type="Mux", params={"n_inputs": 3}),
@@ -181,7 +181,7 @@ def test_studio_save_load_materializes_dynamic_ports_with_explicit_registry(tmp_
 
 def test_studio_save_stamps_nested_mechanics_without_completing_params(tmp_path):
     service = GraphService(storage_dir=tmp_path)
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     interior = point_mass_template_graph()
     interior.nodes["mass"].params.clear()
     graph = GraphSpec(

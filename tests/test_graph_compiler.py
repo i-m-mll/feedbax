@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from feedbax.component_registry import ComponentPack
+from feedbax.component_registry import ParameterField
+from feedbax.component_registry import declare_component
+
 import pytest
 import jax
 import jax.numpy as jnp
@@ -33,7 +37,7 @@ from feedbax.runtime.graph import init_state_from_component
 
 
 def test_replacing_a_removed_node_does_not_reuse_its_trainability() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
 
     def compile_linear(**params):
         spec = GraphSpec(
@@ -87,7 +91,7 @@ def _document() -> GraphDocument:
 
 
 def test_compile_graph_is_deterministic_and_records_runtime_key_order() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
 
     first = compile_graph(_document(), registry)
     second = compile_graph(_document(), registry)
@@ -137,7 +141,7 @@ def test_compile_rejects_competing_drivers_before_realization(
             graph.input_bindings["override"] = ("gain", "input")
 
     with pytest.raises(GraphCompilationError) as caught:
-        compile_graph(GraphDocument(graph=graph), ComponentRegistry(load_user_components=False))
+        compile_graph(GraphDocument(graph=graph), ComponentRegistry())
 
     (diagnostic,) = caught.value.record.diagnostics
     assert diagnostic.phase is CompilerPhase.STRUCTURAL_PARSING
@@ -173,7 +177,7 @@ def test_compile_failure_is_a_stable_source_mapped_phase_diagnostic() -> None:
     with pytest.raises(GraphCompilationError) as caught:
         compile_graph(
             GraphDocument(graph=graph),
-            ComponentRegistry(load_user_components=False),
+            ComponentRegistry(),
         )
 
     record = caught.value.record
@@ -203,7 +207,7 @@ def test_compile_graph_migrates_an_explicit_older_graph_schema() -> None:
 
     compiled = compile_graph(
         GraphDocument(graph=payload),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
     )
 
     assert compiled.record.graph_schema_source_version == "feedbax.spec.graph.v4"
@@ -234,7 +238,7 @@ def test_compiler_generated_adapter_has_truthful_source_map_origin() -> None:
 
     compiled = compile_graph(
         GraphDocument(graph=graph),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
     )
 
     adapter_id, _ = compiled.resolved.graph.input_bindings["disturbance"]
@@ -251,7 +255,7 @@ def test_compiler_generated_adapter_has_truthful_source_map_origin() -> None:
 
 
 def test_workspace_view_edits_cannot_change_semantic_or_runtime_identity() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     first = compile_graph(_document(), registry)
     root = SemanticAnchor(
         semantic_document_sha256=first.record.document_sha256,
@@ -295,16 +299,20 @@ def test_graph_document_and_compiler_reject_presentation_state() -> None:
 
 @pytest.mark.parametrize("nested", [False, True])
 def test_migrated_component_semantics_are_the_executed_graph(nested: bool) -> None:
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_migration(
-        ComponentMigration(
-            source_type="LegacyGain",
-            target_type="Gain",
-            owner="feedbax",
-            source_param_schema_version="legacy-scale",
-            target_param_schema_version="1",
-            migration_id="tests.legacy-gain-to-current",
-            migrate_params=lambda params: {"gain": params["scale"]},
+    registry = ComponentRegistry()
+    registry.ingest(
+        ComponentPack(
+            migrations=(
+                ComponentMigration(
+                    source_type="LegacyGain",
+                    target_type="Gain",
+                    owner="feedbax",
+                    source_param_schema_version="legacy-scale",
+                    target_param_schema_version="1",
+                    migration_id="tests.legacy-gain-to-current",
+                    migrate_params=lambda params: {"gain": params["scale"]},
+                ),
+            )
         )
     )
     child = GraphSpec(
@@ -365,22 +373,39 @@ def test_migrated_component_semantics_are_the_executed_graph(nested: bool) -> No
 
 
 def test_migrations_precede_inference_and_defaults_follow_derived_dimensions() -> None:
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_component_type(
-        "VectorSource",
-        builder=lambda params: Constant(jnp.ones(params["width"])),
-        param_schema=[{"name": "width", "type": "int", "default": 3}],
-        output_ports=["output"],
-        output_prototype_fn=lambda params, inputs: {"output": jnp.ones(params["width"])},
+    registry = ComponentRegistry()
+    registry.ingest(
+        ComponentPack(
+            components=(
+                declare_component(
+                    name="VectorSource",
+                    builder=lambda params: Constant(jnp.ones(params["width"])),
+                    output_ports=["output"],
+                    output_prototype_fn=lambda params, inputs: {
+                        "output": jnp.ones(params["width"])
+                    },
+                    parameter_fields=[
+                        ParameterField(name='width', type='int', default=3)
+                    ],
+                    input_ports=(),
+                    category="Custom",
+                    override_reason="Synthetic fixture constructor",
+                ),
+            )
+        )
     )
-    registry.register_migration(
-        ComponentMigration(
-            source_type="LegacyVectorSource",
-            target_type="VectorSource",
-            owner="feedbax",
-            target_param_schema_version="1",
-            migration_id="tests.legacy-vector-to-current",
-            migrate_params=lambda params: {"width": params["n"]},
+    registry.ingest(
+        ComponentPack(
+            migrations=(
+                ComponentMigration(
+                    source_type="LegacyVectorSource",
+                    target_type="VectorSource",
+                    owner="feedbax",
+                    target_param_schema_version="1",
+                    migration_id="tests.legacy-vector-to-current",
+                    migrate_params=lambda params: {"width": params["n"]},
+                ),
+            )
         )
     )
     graph = GraphSpec(
@@ -436,7 +461,7 @@ def test_unknown_component_version_points_to_nested_authored_node() -> None:
         output_bindings={"output": ("nested", "output")},
     )
     with pytest.raises(GraphCompilationError) as caught:
-        compile_graph(GraphDocument(graph=graph), ComponentRegistry(load_user_components=False))
+        compile_graph(GraphDocument(graph=graph), ComponentRegistry())
     diagnostic = caught.value.record.diagnostics[0]
     assert diagnostic.source_anchor.authored_path == "/graph/subgraphs/nested/nodes/gain"
     assert "source_param_schema_version='unknown'" in diagnostic.observed_condition
@@ -451,13 +476,21 @@ def test_parameter_normalization_is_applied_once_before_runtime_construction() -
         def convert_percent(cls, value: float) -> float:
             return value / 100
 
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_component_type(
-        "PercentGain",
-        builder=lambda params: Gain(gain=params["gain"]),
-        param_model=GainParams,
-        input_ports=["input"],
-        output_ports=["output"],
+    registry = ComponentRegistry()
+    registry.ingest(
+        ComponentPack(
+            components=(
+                declare_component(
+                    name="PercentGain",
+                    builder=lambda params: Gain(gain=params["gain"]),
+                    param_model=GainParams,
+                    input_ports=["input"],
+                    output_ports=["output"],
+                    category="Custom",
+                    override_reason="Synthetic fixture constructor",
+                ),
+            )
+        )
     )
     graph = GraphSpec(
         nodes={

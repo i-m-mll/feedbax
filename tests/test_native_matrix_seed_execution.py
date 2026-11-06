@@ -146,7 +146,7 @@ def _register(context) -> None:
 
 PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
-        "tests.matrix_seed", "1", 1, families=(FamilyRequirement("training_programs"),)
+        "tests.matrix_seed", "1", 2, families=(FamilyRequirement("training_programs"),)
     ),
     _register,
 )

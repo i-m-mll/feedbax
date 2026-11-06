@@ -129,7 +129,7 @@ def tally(run_spec, root, states_path, execution_context):
 
 PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
-        "vantry_study.science", "1.0", 1,
+        "vantry_study.science", "1.0", 2,
         families=(FamilyRequirement("evaluation_recipes"),),
     ),
     lambda context: context.registry(EVALUATION_RECIPES).register(TALLY, tally),

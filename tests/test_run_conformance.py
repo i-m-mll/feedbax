@@ -2046,7 +2046,7 @@ def test_plugin_check_discovery_and_failure_propagation() -> None:
                 PluginDeclaration(
                     "tests.conformance",
                     "1",
-                    1,
+                    2,
                     families=(FamilyRequirement("conformance_checks"),),
                 ),
                 lambda context: context.registry(CONFORMANCE_CHECKS).register(
@@ -2056,7 +2056,7 @@ def test_plugin_check_discovery_and_failure_propagation() -> None:
 
     state = asyncio.run(
         bootstrap_application(
-            new_registration_context(local_component_source=None),
+            new_registration_context(),
             entry_points=(FakeEntryPoint(),),
         )
     )
@@ -2088,7 +2088,7 @@ def test_conformance_plugin_discovery_rejects_legacy_registrars() -> None:
     with pytest.raises(BootstrapError) as excinfo:
         asyncio.run(
             bootstrap_application(
-                new_registration_context(local_component_source=None),
+                new_registration_context(),
                 entry_points=(FakeEntryPoint(),),
             )
         )

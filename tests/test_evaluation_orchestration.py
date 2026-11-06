@@ -84,7 +84,7 @@ from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
 def _assembly_registry():
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = new_application_registry_bundle()
     return build_default_assembly_registry(
         method_registry=registries.training_programs,
         row_lowerer_registry=registries.row_lowerers,
@@ -279,7 +279,7 @@ def _grouped_worker_tasks(
 def _register_grouped_worker_recipe(monkeypatch, batch_recipe) -> ApplicationRegistryBundle:
     from feedbax.plugins import composition
 
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = new_application_registry_bundle()
     registries.evaluation_recipes.register(
         "tests.evaluation_orchestration",
         lambda *_args: pytest.fail("expected the batch recipe"),
@@ -699,7 +699,7 @@ def test_insufficient_disk_fails_before_run_output_root(
     )
     run_set_id = "disk-refusal"
     output_root = Path(request.orchestration_root) / run_set_id
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = new_application_registry_bundle()
     engine = StageEngine.from_request(
         request,
         context=AssemblyContext(
@@ -782,7 +782,7 @@ def test_stage_engine_reuses_the_pre_root_capacity_decision_inside_the_lock(
         SimpleNamespace(disk_usage=disk_usage),
     )
     run_set_id = "single-pre-root-decision"
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = new_application_registry_bundle()
     engine = StageEngine.from_request(
         request,
         context=AssemblyContext(
@@ -1258,7 +1258,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     declaration=PluginDeclaration(
         plugin_id="tests.evaluation_plugin",
         version="1",
-        downstream_protocol_version=1,
+        downstream_protocol_version=2,
         families=(
             FamilyRequirement(EVALUATION_RECIPES.family),
             FamilyRequirement(EVALUATION_BATCH_CONSUMERS.family),

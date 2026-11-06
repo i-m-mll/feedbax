@@ -1,3 +1,4 @@
+from feedbax.component_registry import ComponentPack
 from dataclasses import replace
 
 import pytest
@@ -8,7 +9,7 @@ from feedbax.contracts.migrations import ComponentMigration, UnsupportedComponen
 
 
 def test_component_migration_chain_validates_only_at_current_endpoint():
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     first = ComponentMigration(
         source_type="Gain",
         target_type="Gain",
@@ -28,8 +29,8 @@ def test_component_migration_chain_validates_only_at_current_endpoint():
         target_param_schema_version="1",
         migrate_params=lambda params: {"gain": params["intermediate_value"] + 1},
     )
-    registry.register_migration(first)
-    registry.register_migration(last)
+    registry.ingest(ComponentPack(migrations=(first,)))
+    registry.ingest(ComponentPack(migrations=(last,)))
 
     resolution = registry.resolve_component_spec(
         "Gain", {"scale": 4.0}, historical_unversioned=True

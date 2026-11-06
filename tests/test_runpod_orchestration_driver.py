@@ -5130,7 +5130,7 @@ import sys
 from feedbax.bin import orchestrate
 from feedbax.plugins.composition import compose_application
 
-bootstrap = asyncio.run(compose_application(local_component_source=None))
+bootstrap = asyncio.run(compose_application())
 orchestrate._run_existing(
     sys.argv[1],
     stop_after_stage="PROVISION",

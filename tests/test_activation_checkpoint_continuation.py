@@ -67,7 +67,7 @@ def _initial_slots(kind, *, seed):
     key = jax.random.PRNGKey(seed)
     if kind == "graph":
         graph = compile_graph(
-            GraphDocument(graph=_nonlinear_graph()), ComponentRegistry(load_user_components=False)
+            GraphDocument(graph=_nonlinear_graph()), ComponentRegistry()
         ).graph
         model = graph.prepare()
     else:

@@ -742,7 +742,7 @@ class TestFactoryRegistry:
                     output_bindings={"output": ("projection", "output")},
                 )
             )
-            registry = ComponentRegistry(load_user_components=False)
+            registry = ComponentRegistry()
             graph = compile_graph(document, registry).graph
             outputs, _ = graph(
                 {"input": jnp.array([2.0])},

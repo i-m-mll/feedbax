@@ -169,7 +169,7 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
     if registry is None:
         from feedbax.component_registry import ComponentRegistry
 
-        registry = ComponentRegistry(load_user_components=False)
+        registry = ComponentRegistry()
 
     nodes: dict[str, ComponentSpec] = {}
     subgraphs: dict[str, GraphSpec] = {}

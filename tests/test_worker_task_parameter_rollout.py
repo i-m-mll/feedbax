@@ -103,7 +103,7 @@ def test_studio_rollout_matches_trial_preparation_with_constant_parameter() -> N
             "bindings": bindings,
         },
         cfg=SimpleNamespace(n_reach_steps=3),
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
     )
 
     graph = compiled.graph

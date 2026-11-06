@@ -109,7 +109,7 @@ def test_affine_feedback_controller_graph_spec_round_trips() -> None:
         output_bindings={"command": ("controller", "command")},
     )
 
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
     assert isinstance(graph.nodes["controller"], AffineFeedbackController)
 
     state = init_state_from_component(graph)
@@ -283,7 +283,7 @@ def test_affine_command_survives_a_delayed_channel(
         feedback = feedback.astype(jnp.float32)
     expected = jnp.asarray(expected, dtype=jnp.float32)
     delayed = jnp.concatenate((jnp.zeros_like(expected[:1]), expected[:-1]))
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
 
     def compile_and_check(graph_spec: GraphSpec) -> Graph:
         graph = compile_graph(

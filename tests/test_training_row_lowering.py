@@ -124,7 +124,7 @@ def _lowerer_plugin(plugin_id: str = "tests.downstream") -> PluginRegistration:
         PluginDeclaration(
             plugin_id,
             "1",
-            1,
+            2,
             families=(FamilyRequirement("training_programs"),),
         ),
         lambda context: context.registry(TRAINING_PROGRAMS).register_program(program),
@@ -397,7 +397,7 @@ def test_plugin_registration_replays_in_isolated_contexts() -> None:
     states = tuple(
         asyncio.run(
             bootstrap_application(
-                new_registration_context(local_component_source=None),
+                new_registration_context(),
                 registrations=(_lowerer_plugin(f"tests.downstream.{index}"),),
             )
         )
@@ -1044,7 +1044,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
         "tests.downstream_row",
         "1",
-        1,
+        2,
         families=(FamilyRequirement("training_programs"),),
     ),
     register,
@@ -1072,7 +1072,7 @@ from feedbax.bin.orchestrate import _load_assembly_request
 from feedbax.orchestration import AssemblyContext, assemble_run_bundle, build_default_assembly_registry
 from feedbax.plugins.composition import compose_application
 
-state = asyncio.run(compose_application(local_component_source=None))
+state = asyncio.run(compose_application())
 request = _load_assembly_request(sys.argv[1])
 bundle = assemble_run_bundle(
     request,

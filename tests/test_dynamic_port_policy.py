@@ -1,4 +1,8 @@
 from __future__ import annotations
+from feedbax.component_registry import ComponentPack
+from feedbax.component_registry import ParameterField
+from feedbax.contracts.component import DynamicPortPolicy
+from feedbax.component_registry import declare_component
 
 from typing import Any
 
@@ -15,7 +19,6 @@ from feedbax.contracts.component import (
     COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
     COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
     ComponentDefinition,
-    DynamicPortPolicy,
     DynamicPortPolicyError,
     PortType,
     derive_dynamic_port_count,
@@ -26,7 +29,7 @@ from feedbax.contracts.migrations import default_spec_registry
 
 
 def test_builtin_mux_and_demux_policies_preserve_dynamic_port_layouts() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     mux = registry.get("Mux")
     demux = registry.get("Demux")
 
@@ -99,21 +102,33 @@ def test_dynamic_port_layout_validation_fails_closed() -> None:
 
 
 def test_registry_exports_external_dynamic_port_policy_in_v3_definition() -> None:
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_component_type(
-        "example.VariableFanIn",
-        lambda params: params,
-        param_schema=[{"name": "fan_in", "type": "int", "default": 2}],
-        input_ports=["source_0", "source_1"],
-        output_ports=["output"],
-        dynamic_port_policy={
-            "count_param": "fan_in",
-            "count_mode": "integer",
-            "direction": "input",
-            "fixed_output_ports": ["output"],
-            "generated_name_template": "source_{index}",
-            "dynamic_port_type": {"dtype": "vector"},
-        },
+    registry = ComponentRegistry()
+    registry.ingest(
+        ComponentPack(
+            components=(
+                declare_component(
+                    name="example.VariableFanIn",
+                    builder=lambda params: params,
+                    input_ports=["source_0", "source_1"],
+                    output_ports=["output"],
+                    dynamic_port_policy=DynamicPortPolicy.model_validate(
+                        {
+                            "count_param": "fan_in",
+                            "count_mode": "integer",
+                            "direction": "input",
+                            "fixed_output_ports": ["output"],
+                            "generated_name_template": "source_{index}",
+                            "dynamic_port_type": {"dtype": "vector"},
+                        }
+                    ),
+                    parameter_fields=[
+                        ParameterField(name='fan_in', type='int', default=2)
+                    ],
+                    category="Custom",
+                    override_reason="Synthetic fixture constructor",
+                ),
+            )
+        )
     )
 
     definition = next(item for item in registry.list_all() if item.name == "example.VariableFanIn")
