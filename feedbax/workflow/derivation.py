@@ -21,10 +21,8 @@ The five reference kinds land in exactly three places:
   before this module sees it;
 * :class:`~feedbax.contracts.experiment_compile_lock.PlannedProductReference` is
   an edge to another node *of this closure*, resolved through the upstream
-  envelope's own compiled output. Both pre-run pins the reference carries — the
-  upstream envelope's hash and the content hash of the document it compiles into
-  — are checked against that output, so a stale reference refuses instead of
-  binding the wrong document;
+  envelope's own compiled output. The envelope, document, schema and execution
+  pins are checked against that output before it can be bound;
 * the two receipt kinds are edges to something already produced outside the
   closure, carried on the edge as an ``external`` record, and
   :class:`~feedbax.contracts.experiment_compile_lock.NotApplicableReference` is a
@@ -498,19 +496,22 @@ def _edge_declaration(reference: Any, *, consumer: CompiledEnvelope) -> EdgeDecl
     raise UnsupportedCompiledProductError(type(reference).__name__, ref=str(consumer.lock_path))
 
 
-def lock_edge_declarations(compiled: CompiledEnvelope) -> tuple[EdgeDeclaration, ...]:
-    """Return the edges one compile lock, by itself, determines for its node.
-
-    This is the same derivation :func:`derive_workflow_plan` performs, exposed
-    so a *later* stage can re-derive it and compare. A plan is a durable document
-    and travels apart from the locks it was derived from; re-deriving from the
-    lock is the only way to prove that what a plan says a node's inputs are is
-    still what the lock says they are.
-    """
-    return tuple(
-        _edge_declaration(reference, consumer=compiled)
-        for reference in compiled.plan_edge_references()
-    )
+def lock_edge_declarations(
+    compiled: CompiledEnvelope, by_ref: Mapping[str, CompiledEnvelope]
+) -> tuple[EdgeDeclaration, ...]:
+    """Project the lock's edges after verifying their producer pins."""
+    edges = []
+    for reference in compiled.plan_edge_references():
+        edge = _edge_declaration(reference, consumer=compiled)
+        if isinstance(reference, PlannedProductReference):
+            upstream = by_ref.get(reference.envelope_ref)
+            if upstream is None:
+                raise UnresolvedPlannedProductError(reference, consumer_ref=compiled.envelope_ref)
+            _check_planned_product(
+                reference, consumer=compiled, upstream=upstream, binding=edge.binding
+            )
+        edges.append(edge)
+    return tuple(edges)
 
 
 def _check_planned_product(
@@ -518,40 +519,28 @@ def _check_planned_product(
     *,
     consumer: CompiledEnvelope,
     upstream: CompiledEnvelope,
+    binding: str | None,
 ) -> None:
-    """Prove the upstream output is the one the reference pinned before the run.
-
-    A planned product reference states three facts that exist pre-run: the
-    upstream envelope's hash, the content hash of the document it compiles into,
-    and that document's schema identity. All three are checked, so a reference
-    that has gone stale refuses instead of binding whatever now sits at the ref.
-    """
-    mismatches: list[str] = []
-    if upstream.envelope_hash != reference.envelope_hash:
-        mismatches.append(
-            f"envelope_hash pinned {reference.envelope_hash} but {upstream.lock_path.name} "
-            f"records {upstream.envelope_hash}"
+    """Prove the upstream output is the one the reference pinned before the run."""
+    if reference.producer_execution_identity is None:
+        raise CompiledOutputError(
+            f"{consumer.lock_path.name} references {reference.envelope_ref!r} at role "
+            f"{reference.role_path!r} without a producer_execution_identity pin. "
+            "Recompile the consumer and its producer from their authored envelopes."
         )
-    if upstream.content_hash != reference.compiled_content_hash:
-        mismatches.append(
-            f"compiled_content_hash pinned {reference.compiled_content_hash} but "
-            f"{upstream.document_path.name} hashes to {upstream.content_hash}"
-        )
-    if upstream.schema_id != reference.product_schema_id:
-        mismatches.append(
-            f"product_schema_id pinned {reference.product_schema_id!r} but "
-            f"{upstream.document_path.name} declares {upstream.schema_id!r}"
-        )
-    if upstream.name != reference.product_name:
-        mismatches.append(
-            f"product_name pinned {reference.product_name!r} but the upstream compiled output "
-            f"is named {upstream.name!r}"
-        )
-    binding = (
-        "complete_receipt_set"
-        if isinstance(reference.consumer, AnalysisReceiptSetBinding)
-        else "single_receipt"
-    )
+    observed = {
+        "envelope_hash": upstream.envelope_hash,
+        "compiled_content_hash": upstream.content_hash,
+        "producer_execution_identity": upstream.execution_identity,
+        "product_schema_id": upstream.schema_id,
+        "product_schema_version": upstream.document.get("schema_version"),
+        "product_name": upstream.name,
+    }
+    mismatches = [
+        f"{field} pinned {pinned!r} but {upstream.lock_path.name} resolves to {value!r}"
+        for field, value in observed.items()
+        if (pinned := getattr(reference, field)) != value
+    ]
     if binding == "complete_receipt_set" and upstream.kind.receipt_shape != "set":
         mismatches.append(
             f"complete_receipt_set requires a set-valued product, but "
@@ -585,17 +574,11 @@ def derive_workflow_plan(
             compiler identity this derivation always records.
     """
     root = index.resolve_target(target)
+    by_ref = index.by_envelope_ref()
 
     def expand(source_ref: str) -> NodeDeclaration:
-        compiled = index.require(source_ref)
-        edges: list[EdgeDeclaration] = []
-        for reference in compiled.plan_edge_references():
-            if isinstance(reference, PlannedProductReference):
-                upstream = index.by_envelope_ref().get(reference.envelope_ref)
-                if upstream is None:
-                    raise UnresolvedPlannedProductError(reference, consumer_ref=source_ref)
-                _check_planned_product(reference, consumer=compiled, upstream=upstream)
-            edges.append(_edge_declaration(reference, consumer=compiled))
+        compiled = by_ref[source_ref]
+        edges = lock_edge_declarations(compiled, by_ref)
         input_types = {".".join(edge.role_path): edge.input_type for edge in edges}
         return NodeDeclaration(
             node=PlanNode(
@@ -615,7 +598,7 @@ def derive_workflow_plan(
                     "compiled_name": compiled.name,
                 },
             ),
-            edges=tuple(edges),
+            edges=edges,
         )
 
     return expand_workflow_plan(

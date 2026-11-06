@@ -1272,19 +1272,6 @@ class PlanLockDisagreementError(WorkflowExecutionError):
         }
 
 
-def _edge_facts(edge: PlanEdge) -> dict[str, Any]:
-    """Return the authority-bearing facts one edge states, for exact comparison."""
-    return {
-        "role_path": list(edge.role_path),
-        "status": edge.status,
-        "basis": edge.basis,
-        "reason": edge.reason,
-        "rule": edge.rule,
-        "producer": None if edge.producer is None else edge.producer.text,
-        "external": None if edge.external is None else dict(edge.external),
-    }
-
-
 def _duplicate_role_differences(edges: Sequence[PlanEdge], *, stated_by: str) -> list[str]:
     """Return one difference per role path *edges* states more than once.
 
@@ -1318,14 +1305,18 @@ def require_plan_matches_locks(plan: WorkflowPlan, index: CompiledOutputIndex) -
     over the one shape that would otherwise be dropped silently by the
     comparison itself rather than reported by it.
     """
+    by_ref = index.by_envelope_ref()
+    plan_refs = {node.key: node.source_ref for node in plan.nodes}
     for plan_node in plan.nodes:
         compiled = index.require(plan_node.source_ref)
         lock_edges: list[PlanEdge] = []
-        for declaration in lock_edge_declarations(compiled):
+        declarations = lock_edge_declarations(compiled, by_ref)
+        producer_refs = {edge.role_path: edge.producer_ref for edge in declarations}
+        for declaration in declarations:
             producer: LogicalKey | None = None
             if declaration.producer_ref is not None:
-                producer = index.require(declaration.producer_ref).key
-            lock_edges.append(declaration.edge(plan_node.key, producer))
+                producer = by_ref[declaration.producer_ref].key
+            lock_edges.append(declaration.edge(compiled.key, producer))
         plan_edges = plan.input_edges(plan_node.key)
         duplicates = _duplicate_role_differences(
             lock_edges, stated_by="the lock"
@@ -1350,8 +1341,12 @@ def require_plan_matches_locks(plan: WorkflowPlan, index: CompiledOutputIndex) -
                     "edge for it"
                 )
                 continue
-            lock_facts = _edge_facts(lock_edge)
-            plan_facts = _edge_facts(plan_edge)
+            lock_facts = lock_edge.record()
+            plan_facts = plan_edge.record()
+            lock_facts["producer_source_ref"] = producer_refs[role_path]
+            plan_facts["producer_source_ref"] = (
+                plan_refs.get(plan_edge.producer) if plan_edge.producer is not None else None
+            )
             for name in sorted(lock_facts):
                 if lock_facts[name] != plan_facts[name]:
                     differences.append(
@@ -1442,6 +1437,8 @@ def prepare_workflow(plan: WorkflowPlan, index: CompiledOutputIndex) -> Prepared
             lock determines.
         PlanLockDisagreementError: A node's declared inputs are not the ones its
             compile lock determines.
+        CompiledOutputError: A planned input's producer does not match the pins
+            in the consumer's compile lock.
     """
     require_operations_realizable(plan)
     require_certified_applicability(plan)
