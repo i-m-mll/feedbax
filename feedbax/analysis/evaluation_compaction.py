@@ -496,6 +496,30 @@ def reclaim_evaluation_batch_caches(
         )
         provider.get_bytes(acknowledgement.fragment)
         provider.get_bytes(acknowledgement.merge_state)
+    checkpoint = custody_root / "reclamation-checkpoints" / f"{batch.batch_id}.json"
+    if not policy.retain_intermediates and checkpoint.is_file():
+        evidence = EvaluationBatchReclamationEvidence.model_validate(
+            _normalize_legacy_reclamation_checkpoint(
+                strict_json_loads(checkpoint.read_text(encoding="utf-8"))
+            )
+        )
+        # A reused merge records how the acknowledgement was obtained this time.
+        exclude = {"reused_verified_fragment"}
+        if (
+            evidence.batch_index != batch_index
+            or evidence.ordered_row_ids != batch.ordered_row_ids
+            or canonical_json_bytes(
+                [
+                    item.model_dump(mode="json", exclude=exclude)
+                    for item in evidence.leaf_acknowledgements
+                ]
+            )
+            != canonical_json_bytes(
+                [item.model_dump(mode="json", exclude=exclude) for item in acknowledgements]
+            )
+        ):
+            raise ValueError("evaluation batch reclamation checkpoint identity drifted")
+        return evidence.model_copy(update={"leaf_acknowledgements": tuple(acknowledgements)})
     retention_record_ids: tuple[str, ...] = ()
     if evaluation_custody_root is not None:
         from feedbax.analysis.evaluation import finalize_evaluation_batch_retention
@@ -527,23 +551,6 @@ def reclaim_evaluation_batch_caches(
             retention_record_ids=retention_record_ids,
             removed_cache_bytes=0,
         )
-    checkpoint = custody_root / "reclamation-checkpoints" / f"{batch.batch_id}.json"
-    if checkpoint.is_file():
-        evidence = EvaluationBatchReclamationEvidence.model_validate(
-            _normalize_legacy_reclamation_checkpoint(
-                strict_json_loads(checkpoint.read_text(encoding="utf-8"))
-            )
-        )
-        if (
-            evidence.batch_index != batch_index
-            or evidence.ordered_row_ids != batch.ordered_row_ids
-            or canonical_json_bytes(
-                [item.model_dump(mode="json") for item in evidence.leaf_acknowledgements]
-            )
-            != canonical_json_bytes([item.model_dump(mode="json") for item in acknowledgements])
-        ):
-            raise ValueError("evaluation batch reclamation checkpoint identity drifted")
-        return evidence
     intent_path = custody_root / "reclamation-intents" / f"{batch.batch_id}.json"
     acknowledgement_hashes = [item.merge_state.sha256 for item in acknowledgements]
     if intent_path.is_file():

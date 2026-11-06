@@ -42,6 +42,11 @@ import jax.tree_util as jtu
 from pydantic import BaseModel, Field, model_validator
 
 from feedbax.contracts._authoring_inputs import AuthoringTextReader, read_authoring_text
+from feedbax.contracts.artifact_custody import (
+    CONTENT_OBJECT_REF_PREFIX,
+    ContentObjectRef,
+    ContentRetentionTarget,
+)
 from feedbax.contracts.strict_json import strict_json_loads
 
 from feedbax.contracts.evaluation_states import (
@@ -68,6 +73,7 @@ from feedbax.contracts.manifest import (
     evaluation_run_manifest_id,
     evaluation_states_cache_path,
     load_manifest,
+    load_manifest_bytes,
     spec_payload,
     write_manifest,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
@@ -665,6 +671,7 @@ def _execute_evaluation_run_plan(
     batch: EvaluationBatchExecution | None = None,
     matrix_metadata: Mapping[str, Any] | None = None,
     published_states: dict[tuple[str, str], Any] | None = None,
+    recover_published_batch: bool = False,
 ):
     from feedbax.analysis.harness import MatrixMaterializerHarness
 
@@ -704,10 +711,10 @@ def _execute_evaluation_run_plan(
     }
     if batch is not None and type(batch) is not EvaluationBatchExecution:
         raise TypeError("batch must be an EvaluationBatchExecution instance")
-    if published_states is not None and (
+    if (published_states is not None or recover_published_batch) and (
         batch is None or batch.batch_units is None or len(batch.batch_units) != 1
     ):
-        raise ValueError("in-memory states handoff requires one batch unit")
+        raise ValueError("batch state handoff or recovery requires one batch unit")
     if batch is not None:
         if escape_hatch_reason is not None:
             raise ValueError("batched execution only accepts EvaluationRunMatrixSpec")
@@ -725,21 +732,31 @@ def _execute_evaluation_run_plan(
                 if not batch_row_ids or len(batch_row_ids) != len(set(batch_row_ids)) or unknown:
                     raise ValueError("batch_units require non-empty unique known ordered row ids")
                 batch_ids.append(batch_id)
+                row_payloads = plan.row_payloads(batch_row_ids)
+                batch_root = Path(root) / batch_id
+                batch_regeneration = {
+                    **regeneration_parameters,
+                    "batch_execution": {
+                        "mode": "governed_ordered_partition",
+                        "batch_id": batch_id,
+                        "ordered_row_ids": batch_row_ids,
+                    },
+                }
+                if recover_published_batch:
+                    return _load_published_evaluation_batch(
+                        row_payloads,
+                        root=batch_root,
+                        matrix_metadata=matrix_metadata,
+                        regeneration_parameters=batch_regeneration,
+                    )
                 result = _execute_evaluation_batch_rows(
-                    plan.row_payloads(batch_row_ids),
+                    row_payloads,
                     registry=registry,
-                    root=Path(root) / batch_id,
+                    root=batch_root,
                     execution_context=execution_context,
                     matrix_metadata=matrix_metadata,
                     published_states=published_states,
-                    regeneration_parameters={
-                        **regeneration_parameters,
-                        "batch_execution": {
-                            "mode": "governed_ordered_partition",
-                            "batch_id": batch_id,
-                            "ordered_row_ids": batch_row_ids,
-                        },
-                    },
+                    regeneration_parameters=batch_regeneration,
                 )
                 completed.extend(result.rows)
             return HarnessResult(
@@ -803,6 +820,16 @@ def _execute_evaluation_run_plan(
         matrix_metadata=matrix_metadata,
         regeneration_parameters=regeneration_parameters,
     )
+
+
+_MATRIX_HARNESS_COMMAND = ("python", "-m", "feedbax", "matrix-harness")
+_EVALUATION_MATRIX_SOURCE = "EvaluationRunMatrixSpec"
+
+
+def _evaluation_batch_matrix_metadata(
+    metadata: Mapping[str, Any], rows: Sequence[tuple[str, Mapping[str, Any]]]
+) -> dict[str, Any]:
+    return {**metadata, "batch_execution": {"row_ids": [row_id for row_id, _ in rows]}}
 
 
 def _execute_evaluation_batch_rows(
@@ -890,7 +917,6 @@ def _execute_evaluation_batch_rows(
         provenance = collect_git_provenance()
         completed: dict[str, tuple[EvaluationRunManifest, Path]] = {}
         staged_states: dict[tuple[str, str], Any] = {}
-        batch_metadata = {"row_ids": [item.row_id for item in items]}
         for item, result in zip(items, results, strict=True):
             try:
                 manifest, path = _store_batched_evaluation_result(
@@ -918,10 +944,10 @@ def _execute_evaluation_batch_rows(
         result = MatrixMaterializerHarness(root=staging, shared_store=True).materialize(
             rows,
             execute=execute,
-            command=["python", "-m", "feedbax", "matrix-harness"],
+            command=_MATRIX_HARNESS_COMMAND,
             title="Evaluation run matrix",
-            source="EvaluationRunMatrixSpec",
-            matrix_metadata={**matrix_metadata, "batch_execution": batch_metadata},
+            source=_EVALUATION_MATRIX_SOURCE,
+            matrix_metadata=_evaluation_batch_matrix_metadata(matrix_metadata, rows),
             regeneration_parameters=regeneration_parameters,
         )
         # Publish into one shared physical store: every row's manifest lands in
@@ -968,27 +994,149 @@ def _execute_evaluation_batch_rows(
         raise
 
 
-def _register_evaluation_batch_retention_root(
-    manifests: Sequence[EvaluationRunManifest],
+@dataclass(frozen=True)
+class _PublishedEvaluationRow:
+    row_id: str
+    manifest: EvaluationRunManifest
+    path: Path
+    raw: bytes
+    states_cache_path: Path
+
+
+def _load_published_evaluation_batch(
+    rows: Sequence[tuple[str, Mapping[str, Any]]],
     *,
     root: Path,
-) -> None:
-    """Separate retained products from disposable batch evaluation states."""
-    from feedbax.contracts.artifact_custody import (
-        CONTENT_OBJECT_REF_PREFIX,
-        ContentObjectRef,
-        ContentRetentionTarget,
-        ContentRootRecord,
+    matrix_metadata: Mapping[str, Any],
+    regeneration_parameters: Mapping[str, Any],
+) -> tuple[_PublishedEvaluationRow, ...]:
+    """Authenticate existing rows against the active publication and current plan."""
+    from feedbax.analysis.harness import (
+        GOVERNED_BATCH_AUTHORITY,
+        ROW_REGENERATION_ROLE,
+        SHARED_REGENERATION_ROLE,
+        build_row_regeneration_spec,
+        build_shared_regeneration_context,
     )
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.persistence.content_retention import require_active_root
 
     provider = ImmutableArtifactBlobProvider(root.absolute())
+    pending = []
+    manifest_versions: list[tuple[str, str]] = []
+    for row_id, resolved in rows:
+        spec = EvaluationRunSpec.model_validate(resolved)
+        manifest_id = evaluation_run_manifest_id(spec)
+        path = canonical_manifest_path("EvaluationRunManifest", manifest_id, root=root)
+        if not path.is_file():
+            raise ValueError(f"published evaluation row {row_id!r} manifest is unavailable")
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise ValueError(
+                f"published evaluation row {row_id!r} manifest is unavailable"
+            ) from exc
+        pending.append((row_id, resolved, spec, manifest_id, path, raw))
+        manifest_versions.append((manifest_id, sha256_bytes(raw)))
+    if not pending or len({manifest_id for manifest_id, _ in manifest_versions}) != len(pending):
+        raise ValueError("published evaluation batch requires distinct, non-empty row manifests")
+    root_digest = _evaluation_batch_retention_digest(manifest_versions)
+    product_root = require_active_root(provider, f"evaluation-products:{root_digest}")
+    if product_root.root_kind != "logical-ref":
+        raise ValueError("published evaluation batch product root has the wrong authority kind")
+    matrix_metadata = _evaluation_batch_matrix_metadata(matrix_metadata, rows)
+
+    def expected_shared_bytes(metadata: Mapping[str, Any]) -> bytes:
+        regeneration = build_shared_regeneration_context(
+            command=_MATRIX_HARNESS_COMMAND,
+            source=_EVALUATION_MATRIX_SOURCE,
+            custody="content-addressed",
+            escape_hatch_reason=None,
+            matrix_metadata=metadata,
+            regeneration_parameters=regeneration_parameters,
+        )
+        return canonical_json_bytes(regeneration.model_dump(mode="json", exclude_none=True))
+
+    published = []
+    shared_ref = None
+    for row_id, resolved, spec, manifest_id, path, raw in pending:
+        manifest = load_manifest_bytes(raw)
+        if (
+            not isinstance(manifest, EvaluationRunManifest)
+            or manifest.id != manifest_id
+            or manifest.status != "completed"
+            or manifest.evaluation_spec
+            != spec_payload("EvaluationRunSpec", spec.model_dump(mode="json", exclude_none=True))
+            or manifest.input_training_runs != spec.inputs
+            or manifest.metadata.get("matrix_harness")
+            != {
+                "row_id": row_id,
+                "source": _EVALUATION_MATRIX_SOURCE,
+                "custody": "content-addressed",
+            }
+        ):
+            raise ValueError(f"published evaluation row {row_id!r} does not match the expected row")
+        cache_path = evaluation_states_cache_path(manifest_id, root=root)
+        cache = manifest.metadata.get("cache")
+        if (
+            not isinstance(cache, Mapping)
+            or not isinstance(cache.get("states_path"), str)
+            or Path(cache["states_path"]).absolute() != cache_path.absolute()
+            or cache.get("states_cache_key") != manifest_id
+        ):
+            raise ValueError(f"published evaluation row {row_id!r} has a noncanonical state cache")
+        row_refs = [
+            artifact for artifact in manifest.artifacts if artifact.role == ROW_REGENERATION_ROLE
+        ]
+        shared_refs = [
+            artifact for artifact in manifest.artifacts if artifact.role == SHARED_REGENERATION_ROLE
+        ]
+        if len(row_refs) != 1 or len(shared_refs) != 1:
+            raise ValueError(f"published evaluation row {row_id!r} lacks exact regeneration refs")
+        if shared_ref is None:
+            shared_ref = shared_refs[0]
+            shared_raw = provider.get_bytes(shared_ref)
+            if shared_raw != expected_shared_bytes(matrix_metadata):
+                # Older publications authenticate the matrix replay context but omit
+                # the governed compaction declaration. Require those exact old bytes.
+                legacy_metadata = {
+                    key: value
+                    for key, value in matrix_metadata.items()
+                    if key != GOVERNED_BATCH_AUTHORITY
+                }
+                if GOVERNED_BATCH_AUTHORITY not in matrix_metadata or shared_raw != (
+                    expected_shared_bytes(legacy_metadata)
+                ):
+                    raise ValueError("published evaluation batch regeneration context drifted")
+        elif shared_refs[0] != shared_ref:
+            raise ValueError(f"published evaluation row {row_id!r} uses a different shared context")
+        regeneration = build_row_regeneration_spec(
+            command=_MATRIX_HARNESS_COMMAND,
+            row_id=row_id,
+            resolved=resolved,
+            shared_context=shared_ref,
+        )
+        if provider.get_bytes(row_refs[0]) != canonical_json_bytes(
+            regeneration.model_dump(mode="json", exclude_none=True)
+        ):
+            raise ValueError(f"published evaluation row {row_id!r} regeneration does not match")
+        published.append(_PublishedEvaluationRow(row_id, manifest, path, raw, cache_path))
+    product_targets, _ = _evaluation_batch_retention_targets([row.manifest for row in published])
+    if product_root.targets != product_targets:
+        raise ValueError("published evaluation batch product root targets drifted")
+    return tuple(published)
+
+
+def _evaluation_batch_retention_digest(manifest_versions: Sequence[tuple[str, str]]) -> str:
+    return sha256_bytes(canonical_json_bytes(sorted(manifest_versions)))
+
+
+def _evaluation_batch_retention_targets(
+    manifests: Sequence[EvaluationRunManifest],
+) -> tuple[tuple[ContentRetentionTarget, ...], tuple[ContentRetentionTarget, ...]]:
     product_objects: dict[str, ContentObjectRef] = {}
     state_objects: dict[str, ContentObjectRef] = {}
-    manifest_versions: list[tuple[str, str]] = []
     for manifest in manifests:
-        manifest_path = canonical_manifest_path(manifest.kind, manifest.id, root=root)
-        manifest_versions.append((manifest.id, sha256_bytes(manifest_path.read_bytes())))
         for artifact in manifest.artifacts:
             if artifact.sha256 is None or artifact.size_bytes is None:
                 raise ValueError(
@@ -999,33 +1147,51 @@ def _register_evaluation_batch_retention_root(
                 sha256=artifact.sha256,
                 size_bytes=artifact.size_bytes,
             )
-            provider.get_object(object_ref)
             objects = state_objects if artifact.role == "evaluation_states" else product_objects
             previous = objects.get(object_ref.sha256)
             if previous is not None and previous != object_ref:
                 raise ValueError(f"conflicting artifact sizes for SHA-256 {object_ref.sha256}")
             objects[object_ref.sha256] = object_ref
-    root_digest = sha256_bytes(canonical_json_bytes(sorted(manifest_versions)))
-    if product_objects:
+
+    def targets(objects: dict[str, ContentObjectRef]) -> tuple[ContentRetentionTarget, ...]:
+        return tuple(
+            ContentRetentionTarget(ref_kind="object", object=objects[digest])
+            for digest in sorted(objects)
+        )
+
+    return targets(product_objects), targets(state_objects)
+
+
+def _register_evaluation_batch_retention_root(
+    manifests: Sequence[EvaluationRunManifest],
+    *,
+    root: Path,
+) -> None:
+    """Separate retained products from disposable batch evaluation states."""
+    from feedbax.contracts.artifact_custody import ContentRootRecord
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+    provider = ImmutableArtifactBlobProvider(root.absolute())
+    manifest_versions: list[tuple[str, str]] = []
+    for manifest in manifests:
+        manifest_path = canonical_manifest_path(manifest.kind, manifest.id, root=root)
+        manifest_versions.append((manifest.id, sha256_bytes(manifest_path.read_bytes())))
+    products, states = _evaluation_batch_retention_targets(manifests)
+    root_digest = _evaluation_batch_retention_digest(manifest_versions)
+    if products:
         provider.register_root(
             ContentRootRecord(
                 root_id=f"evaluation-products:{root_digest}",
                 root_kind="logical-ref",
-                targets=tuple(
-                    ContentRetentionTarget(ref_kind="object", object=product_objects[digest])
-                    for digest in sorted(product_objects)
-                ),
+                targets=products,
             )
         )
-    if state_objects:
+    if states:
         provider.register_root(
             ContentRootRecord(
                 root_id=f"evaluation-intermediates:{root_digest}",
                 root_kind="run",
-                targets=tuple(
-                    ContentRetentionTarget(ref_kind="object", object=state_objects[digest])
-                    for digest in sorted(state_objects)
-                ),
+                targets=states,
             )
         )
 
@@ -1059,7 +1225,7 @@ def finalize_evaluation_batch_retention(
     manifest_versions = [
         (manifest.id, digest) for manifest, digest in zip(manifests, manifest_sha256s, strict=True)
     ]
-    root_digest = sha256_bytes(canonical_json_bytes(sorted(manifest_versions)))
+    root_digest = _evaluation_batch_retention_digest(manifest_versions)
     root_id = f"evaluation-intermediates:{root_digest}"
     targets = tuple(
         ContentRetentionTarget(
