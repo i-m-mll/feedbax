@@ -14,6 +14,8 @@ from feedbax.contracts.manifest import (
     spec_payload,
     write_manifest,
 )
+from feedbax.persistence.manifest_discovery import find_manifest_by_id
+from feedbax.persistence.manifest_index import index_manifest_file
 from feedbax.web.api import runs
 from feedbax.web.app import create_app
 
@@ -77,7 +79,7 @@ def test_create_eval_run_writes_versioned_manifest(
     )
 
     created = asyncio.run(runs.create_eval_run(payload))
-    manifest, path = runs._load_evaluation_manifest_from_index(created.id)
+    manifest, path = find_manifest_by_id(created.id, expected_kind="EvaluationRunManifest")
 
     assert isinstance(manifest, EvaluationRunManifest)
     assert path.is_file()
@@ -99,7 +101,7 @@ def test_create_eval_run_writes_versioned_manifest(
         root=tmp_path,
     )
     repeated = asyncio.run(runs.create_eval_run(payload))
-    preserved, _path = runs._load_evaluation_manifest_from_index(repeated.id)
+    preserved, _path = find_manifest_by_id(repeated.id, expected_kind="EvaluationRunManifest")
 
     assert repeated.id == created.id
     assert repeated.status == "completed"
@@ -271,6 +273,26 @@ def test_pending_training_manifest_lifecycle_is_status_guarded(
     )
     assert superseded.status_code == 200
     assert superseded.json()["superseded_by"] == "feedbax-training-run:replacement"
+
+
+def test_training_list_uses_canonical_receipt_after_cancelling_legacy_run(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
+    run_id = "feedbax-training-run:legacy"
+    canonical = write_manifest(_training_manifest(run_id, "pending"), root=tmp_path)
+    legacy = canonical.with_name("a-legacy.json")
+    canonical.rename(legacy)
+    index_manifest_file(legacy, root=tmp_path)
+    with TestClient(create_app()) as client:
+        cancelled = client.post(f"/api/runs/training/{run_id}/cancel")
+        assert cancelled.status_code == 200
+        listed = client.get("/api/runs/training")
+
+    assert listed.status_code == 200
+    assert [(row["id"], row["status"]) for row in listed.json()] == [(run_id, "cancelled")]
 
 
 def test_superseding_training_run_marks_dependent_evaluations_stale(

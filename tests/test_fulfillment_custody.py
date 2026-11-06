@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 
 import pytest
 
 from feedbax.analysis.evaluation import EvaluationRecipeResult
+from feedbax.analysis.execution_context import (
+    StagedParentExecutionLocation,
+    with_staged_parent_execution_locations,
+)
+from feedbax.analysis.manifest_inputs import authenticated_manifest_ref
 from feedbax.analysis.fulfillment import (
     FulfillmentAdmissionError,
     artifact_bytes_path,
@@ -50,6 +56,7 @@ from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     ReportSpec,
     evaluation_run_manifest_id,
+    evaluation_states_cache_path,
     load_manifest,
     spec_payload,
 )
@@ -347,6 +354,141 @@ def test_execute_node_for_an_analysis_never_returns_a_pre_existing_receipt(
     assert again_path == path
 
 
+@pytest.mark.parametrize("authority", ["local", "external", "system_alias"])
+def test_rebuild_stages_original_exact_parent_and_root_local_artifact(
+    environment, recipes: _Recipes, tmp_path: Path, authority: str
+) -> None:
+    import sys
+
+    external = authority == "external"
+    parent_root = tmp_path / "retained" if external else environment.root
+    if authority == "system_alias":
+        private_var = Path("/private/var")
+        if sys.platform != "darwin" or not parent_root.is_relative_to(private_var):
+            pytest.skip("this case requires a fixture under Darwin's /var system alias")
+        parent_root = Path("/var") / parent_root.relative_to(private_var)
+    evaluation = _evaluation_node()
+    parent = fulfill_node(evaluation, environment=environment).receipt
+    local_path = parent.path
+    relative = local_path.relative_to(environment.root)
+    raw = b"  " + json.dumps(
+        json.loads(local_path.read_bytes()), separators=(",", ":"), sort_keys=True
+    ).encode() + b"\n\n"
+    original = tmp_path / "retained" / relative if external else local_path
+    original.parent.mkdir(parents=True, exist_ok=True)
+    original.write_bytes(raw)
+    artifact_path = _stored_artifact_path(environment, evaluation)
+    artifact_relative = artifact_path.relative_to(environment.root)
+    if external:
+        local_path.unlink()
+    ref = authenticated_manifest_ref(parent.manifest, original, "evaluation_run")
+    unrelated = environment.root / "unrelated"
+    unrelated.write_bytes(b"private unrelated bytes")
+    observed_roots: list[Path] = []
+
+    def report_recipe(_spec, root, inputs):
+        observed_roots.append(root)
+        assert inputs[0].path.read_bytes() == raw
+        assert (root / artifact_relative).read_bytes() == b"baseline:1\n"
+        if root != environment.root:
+            assert not (root / "unrelated").exists()
+            assert (root / relative).exists() is not external
+            assert inputs[0].path == (original if external else root / relative)
+        artifact = store_bytes_artifact(
+            b"# Report\n", root=root, role=REPORT_RENDER_ROLE, logical_name="report.md",
+            media_type="text/markdown",
+        )
+        return ReportRecipeResult(
+            artifacts=[artifact], summary={"value": inputs[0].manifest.summary_metrics["payload"]}
+        )
+
+    environment.registries.report_recipes.register("testpkg.readparent", report_recipe)
+    request = ReportNodeRequest(
+        node_key="report/original",
+        spec=ReportSpec(report_type="testpkg.readparent", inputs=[ref]),
+    )
+    context = with_staged_parent_execution_locations(
+        environment.execution_context,
+        [StagedParentExecutionLocation(ref, parent_root, relative.as_posix())],
+    )
+    request = replace(request, execution_context=context)
+    fulfill_node(request, environment=environment)
+    recipes.payload = "drifted"
+
+    if external:
+        assert rebuild_node(request, environment=environment).matched
+    else:
+        with pytest.raises(FulfillmentDriftError) as excinfo:
+            rebuild_nodes([evaluation, request], environment=environment)
+        evaluation_outcome, report_outcome = excinfo.value.outcomes
+        assert not evaluation_outcome.matched
+        assert report_outcome.matched
+
+    assert observed_roots[0] == environment.root
+    assert observed_roots[1] != environment.root
+    assert original.read_bytes() == raw
+    assert artifact_path.read_bytes() == b"baseline:1\n"
+
+
+def test_rebuild_refuses_before_opening_workspace(environment, monkeypatch) -> None:
+    from feedbax.analysis import fulfillment_custody
+
+    def unexpected_workspace(*args, **kwargs):
+        pytest.fail("a refused receipt must not allocate a candidate workspace")
+
+    monkeypatch.setattr(fulfillment_custody, "shadow_custody", unexpected_workspace)
+    with pytest.raises(FulfillmentAdmissionError):
+        rebuild_node(_evaluation_node(), environment=environment)
+
+
+@pytest.mark.parametrize("state_source", ["cache", "durable", "recomputed"])
+def test_analysis_rebuild_stages_evaluation_states(
+    environment, recipes: _Recipes, state_source: str
+) -> None:
+    import jax.tree_util as jtu
+
+    evaluation = _stateful_evaluation_node(
+        states_custody="durable" if state_source == "durable" else "cache"
+    )
+    parent = fulfill_node(evaluation, environment=environment).receipt
+    cache = evaluation_states_cache_path(parent.manifest_id, root=environment.root)
+    if state_source == "recomputed":
+        cache.unlink()
+
+    def analysis_recipe(_spec, _root, inputs, _context):
+        assert list(inputs[0].states["trajectory"]) == [1, 2, 3]
+        return AnalysisRecipeResult(
+            analyses={"toy": ToyAnalysis(variant="toy")},
+            data=build_toy_analysis_data(value=3),
+        )
+
+    environment.registries.analysis_recipes.register(
+        "testpkg.readstates",
+        analysis_recipe,
+        evaluation_states_structure=lambda _manifest: jtu.tree_structure(
+            {"trajectory": [1, 2, 3]}
+        ),
+    )
+    request = AnalysisNodeRequest(
+        node_key="analysis/stateful",
+        spec=AnalysisRunSpec(
+            analysis_type="testpkg.readstates",
+            inputs=[authenticated_manifest_ref(parent.manifest, parent.path, "evaluation_run")],
+            evaluation_states_policy="require_durable" if state_source == "durable" else "recompute",
+        ),
+    )
+    fulfill_node(request, environment=environment)
+    if state_source == "recomputed":
+        cache.unlink()
+    before = parent.path.read_bytes()
+    executions = recipes.evaluation
+
+    assert rebuild_node(request, environment=environment).matched
+    assert recipes.evaluation == executions + (state_source == "recomputed")
+    assert parent.path.read_bytes() == before
+    assert cache.is_file() is (state_source != "recomputed")
+
+
 def test_rebuilt_report_projection_carries_artifacts_and_recorded_summaries(
     environment,
 ) -> None:
@@ -361,6 +503,52 @@ def test_rebuilt_report_projection_carries_artifacts_and_recorded_summaries(
     assert outcome.expected.artifacts[0].media_type == "text/markdown"
     assert outcome.expected.summaries == {"metadata_summary": {"inputs": 1}}
     assert outcome.expected.manifest_id == outcome.observed.manifest_id
+
+
+@pytest.mark.parametrize("cas", [False, True])
+def test_figure_rebuild_stages_declared_root_local_piece(environment, cas: bool) -> None:
+    import hashlib
+
+    from feedbax.analysis.fulfillment_adapters import FigureNodeRequest
+    from feedbax.contracts.base import ArtifactRef
+    from feedbax.contracts.figures import FigurePiece, FigureSpec
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.plot.constructors import register_figure_piece
+
+    root = environment.root
+    root.mkdir()
+    raw = b'{"x":[0,1,2],"y":[[1,2,3],[2,3,4]]}'
+    if cas:
+        artifact = ImmutableArtifactBlobProvider(root).store_bytes(
+            raw, role="figure_piece", logical_name="piece.json", media_type="application/json"
+        )
+    else:
+        (root / "piece.json").write_bytes(raw)
+        artifact = ArtifactRef(
+            role="figure_piece",
+            logical_name="piece.json",
+            media_type="application/json",
+            uri="piece.json",
+            sha256=hashlib.sha256(raw).hexdigest(),
+            size_bytes=len(raw),
+        )
+    piece = FigurePiece(
+        name="testpkg.custody_piece",
+        label="Piece",
+        description="Root-local rebuild input",
+        artifact_ref=artifact,
+        constructor="feedbax.profile_band",
+    )
+    register_figure_piece(piece, registry=environment.registries.figures)
+    request = FigureNodeRequest(
+        node_key="figure/piece",
+        spec=FigureSpec(
+            name="custody-piece", assembler="feedbax.grid_figure", pieces=[piece.name]
+        ),
+    )
+
+    fulfill_node(request, environment=environment)
+    assert rebuild_node(request, environment=environment).matched
 
 
 def test_intact_figure_rebuild_reports_no_drift(
@@ -485,11 +673,9 @@ def test_retained_shadow_custody_is_reusable_and_never_authoritative(
     shadow_root = tmp_path / "shadow"
 
     with shadow_custody(environment, shadow_root=shadow_root, retain=True) as shadow:
-        assert not (shadow.root / "index").exists(), (
-            "the manifest index stores absolute paths and is never mirrored"
-        )
-        assert (shadow.root / "manifests").is_dir()
+        assert list(shadow.root.iterdir()) == []
         assert rebuild_node(node, environment=environment, shadow=shadow).matched
+        assert (shadow.root / "manifests").is_dir()
         assert shadow.root == shadow_root
         assert shadow.environment.root == shadow_root
         assert shadow.environment.registries is environment.registries
@@ -497,6 +683,9 @@ def test_retained_shadow_custody_is_reusable_and_never_authoritative(
 
     with pytest.raises(ValueError, match="must not live inside the authoritative root"):
         with shadow_custody(environment, shadow_root=environment.root / "inner"):
+            pass
+    with pytest.raises(ValueError, match="must not contain the authoritative root"):
+        with shadow_custody(environment, shadow_root=environment.root.parent):
             pass
 
 
@@ -523,6 +712,47 @@ def test_a_shadow_root_symlinked_into_authoritative_custody_is_refused(
     assert sorted(entry.name for entry in inside.iterdir()) == [], (
         "a refused shadow never seeded anything inside authoritative custody"
     )
+
+
+@pytest.mark.parametrize("operation", ["rebuild", "repair"])
+@pytest.mark.parametrize("redirect", ["directory_symlink", "leaf_symlink", "leaf_hardlink"])
+def test_retained_shadow_refuses_aliased_outputs_before_execution(
+    environment, recipes: _Recipes, tmp_path: Path, operation: str, redirect: str
+) -> None:
+    node = _evaluation_node()
+    receipt = fulfill_node(node, environment=environment).receipt
+    if operation == "repair":
+        _prepare_status_corruption(environment, node, receipt.path)
+    original_root = Path(environment.root)
+
+    def authoritative_bytes() -> dict[Path, bytes]:
+        return {path: path.read_bytes() for path in original_root.rglob("*") if path.is_file()}
+
+    original = authoritative_bytes()
+    executions = recipes.evaluation
+
+    shadow_root = tmp_path / "retained-shadow"
+    shadow_receipt = shadow_root / receipt.path.relative_to(environment.root)
+    if redirect == "directory_symlink":
+        shadow_root.mkdir()
+        (shadow_root / "manifests").symlink_to(
+            Path(environment.root) / "manifests", target_is_directory=True
+        )
+    else:
+        shadow_receipt.parent.mkdir(parents=True)
+        if redirect == "leaf_symlink":
+            shadow_receipt.symlink_to(receipt.path)
+        else:
+            shadow_receipt.hardlink_to(receipt.path)
+
+    run = rebuild_node if operation == "rebuild" else repair_node
+    with shadow_custody(environment, shadow_root=shadow_root, retain=True) as shadow:
+        with pytest.raises(ValueError, match="unsafe fulfillment output path") as refusal:
+            run(node, environment=environment, shadow=shadow)
+
+    assert str(shadow_root) in str(refusal.value)
+    assert recipes.evaluation == executions
+    assert authoritative_bytes() == original
 
 
 def test_a_shadow_root_beside_a_symlinked_authoritative_root_still_opens(
@@ -727,21 +957,20 @@ def test_repair_record_is_durable_and_addressed_by_the_failed_bytes(
 ) -> None:
     node = _evaluation_node()
     receipt = fulfill_node(node, environment=environment).receipt
-    failed_manifest_sha256 = next(
-        entry.observed_sha256
-        for entry in repair_node(
-            _prepare_status_corruption(environment, node, receipt.path),
-            environment=environment,
-        ).record.quarantined
-        if entry.origin == "manifest"
-    )
+    _prepare_status_corruption(environment, node, receipt.path)
+    original = b"  " + receipt.path.read_bytes() + b"\n\n"
+    receipt.path.write_bytes(original)
+    repaired = repair_node(node, environment=environment)
+    quarantined = next(entry for entry in repaired.record.quarantined if entry.origin == "manifest")
+    assert (Path(environment.root) / quarantined.quarantine_relative_path).read_bytes() == original
+    assert repaired.record.replacement_manifest_sha256 == repaired.receipt.manifest_sha256
 
     directory = (
         Path(environment.root)
         / FULFILLMENT_REPAIR_DIRECTORY
     )
     records = sorted(directory.rglob("*.json"))
-    assert [path.name for path in records] == [f"{failed_manifest_sha256}.json"]
+    assert [path.name for path in records] == [f"{quarantined.observed_sha256}.json"]
     loaded = migrate_repair_record(json.loads(records[0].read_text(encoding="utf-8")))
     assert loaded.manifest_id == receipt.manifest_id
     assert "status_not_completed" in loaded.triggering_admission.codes
@@ -839,6 +1068,39 @@ def test_crash_before_publication_never_leaves_a_half_promoted_candidate(
     )
     assert not (Path(environment.root) / FULFILLMENT_REPAIR_DIRECTORY).exists()
     assert _quarantine_files(environment)
+
+
+def test_repair_publisher_refuses_manifest_directory_redirected_after_preflight(
+    environment, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from feedbax.analysis import fulfillment_custody
+
+    node = _evaluation_node()
+    receipt = fulfill_node(node, environment=environment).receipt
+    _prepare_status_corruption(environment, node, receipt.path)
+    original = receipt.path.read_bytes()
+    redirected = tmp_path / "redirected"
+    redirected.mkdir()
+    target = redirected / receipt.path.name
+    target.write_bytes(original)
+    receipt_directory = receipt.path.parent
+    moved_directory = receipt_directory.with_name("moved")
+    real_admit = fulfillment_custody.admit_node
+
+    def admit_then_redirect(request, *, environment, **kwargs):
+        outcome = real_admit(request, environment=environment, **kwargs)
+        if kwargs.get("manifest") is not None and outcome.admitted:
+            receipt_directory.rename(moved_directory)
+            receipt_directory.symlink_to(redirected, target_is_directory=True)
+        return outcome
+
+    monkeypatch.setattr(fulfillment_custody, "admit_node", admit_then_redirect)
+    with pytest.raises(ValueError, match="unsafe fulfillment output path"):
+        repair_node(node, environment=environment)
+
+    assert target.read_bytes() == original
+    assert (moved_directory / receipt.path.name).read_bytes() == original
+    assert not (Path(environment.root) / FULFILLMENT_REPAIR_DIRECTORY).exists()
 
 
 def test_repair_record_schema_identity_migrates_or_rejects(environment) -> None:

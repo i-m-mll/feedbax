@@ -42,19 +42,7 @@ an import. Manifest bytes are stored and returned exactly as supplied.
 
 ## Packet v2
 
-Packet v2 has one `objects` row and one physical member for each unique digest.
-Manifest and artifact entries are logical references to those objects, so many
-logical references may share one object. Import validates the complete object
-table, canonical paths, object sizes and digests, logical-key uniqueness,
-manifest schemas, target-path collisions, and resident conflicts before it
-publishes any logical manifest reference. Import then holds the content-store
-transaction while it stores objects, atomically projects every manifest file,
-rebuilds the filesystem index, and publishes logical references last. An
-interruption can therefore leave only exact unreferenced objects or exact
-manifest files; retry validates and completes them, while no logical reference
-can name an incomplete projection. The user must choose included
-(self-contained) or external (references-only) artifacts explicitly; the
-former is the default command behavior and `auto` rejects.
+Packet v2 has one `objects` row and one physical member for each unique digest. Manifest and artifact entries are logical references to those objects, so many logical references may share one object. Import validates the complete object table, canonical paths, object sizes and digests, logical-key uniqueness, and manifest schemas. Manifest target paths must name JSON files beneath `manifests/`. The content-store lock covers the selected destination checks, object writes, and atomic manifest file projection. Import commits the selected receipts to the index in one transaction and publishes logical references last. An interruption can therefore leave exact unreferenced objects or manifest files. A retry validates those files and completes publication. The user must choose included (self-contained) or external (references-only) artifacts explicitly. The former is the default command behavior and `auto` rejects.
 
 ## Offline migration
 

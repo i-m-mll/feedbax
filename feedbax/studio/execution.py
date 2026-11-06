@@ -68,9 +68,11 @@ from feedbax.contracts.selection import (
     manifest_index_rows_from_records,
     preview_selection_spec,
 )
-from feedbax.persistence.manifest_index import (
-    find_manifest_paths_by_id,
-    iter_indexed_manifest_records_by_kind,
+from feedbax.persistence.manifest_discovery import (
+    ManifestKindMismatch,
+    find_manifest_at_address,
+    find_manifest_by_id,
+    manifest_records_for_predicate,
 )
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.studio.sweep_matrix import (
@@ -675,7 +677,10 @@ def _stale_evaluation_launch_ids(request: StudioEvaluationMatrixRequest) -> set[
     root = plan["root"]
     launch_ids: set[str] = set()
     for item in plan["items"]:
-        manifest = _existing_manifest(item["evaluation_id"], root=root)
+        existing = find_manifest_at_address(
+            item["evaluation_id"], root=root, expected_kind="EvaluationRunManifest"
+        )
+        manifest = existing[0] if existing is not None else None
         status = manifest.status if isinstance(manifest, EvaluationRunManifest) else None
         if _should_launch_status(status, "stale"):
             launch_ids.add(item["evaluation_id"])
@@ -1093,20 +1098,15 @@ def _reuse_pending_training_manifest(
 ) -> tuple[TrainingRunManifest, Path] | None:
     """Return an already-staged manifest for `manifest_id`, restaging cancelled runs.
 
-    Returns `None` when nothing indexed under `manifest_id` can stand in for a
-    freshly built pending manifest, in which case the caller builds one.
+    Returns `None` when the manifest has yet to be staged.
     """
-    from feedbax.contracts.manifest import load_manifest
-    from feedbax.persistence.manifest_index import find_manifest_paths_by_id
-
-    existing_paths = find_manifest_paths_by_id(manifest_id, root=root)
-    if not existing_paths:
+    match = find_manifest_at_address(manifest_id, root=root, expected_kind="TrainingRunManifest")
+    if match is None:
         return None
-    existing = load_manifest(existing_paths[0])
-    if not isinstance(existing, TrainingRunManifest):
-        return None
+    existing, path = match
+    assert isinstance(existing, TrainingRunManifest)
     if existing.status != "cancelled":
-        return existing, existing_paths[0]
+        return existing, path
     restaged = existing.model_copy(
         update={
             "status": "pending",
@@ -1736,7 +1736,8 @@ def _evaluation_matrix_plan(request: StudioEvaluationMatrixRequest) -> dict[str,
             raise StudioExecutionPreparationError(
                 f"Stage {eval_stage.id!r} is {eval_stage.kind!r}, not 'eval'"
             )
-    training_refs = _selected_training_refs(request, workspace, eval_stage)
+    root = _request_root(request.root)
+    training_refs = _selected_training_refs(request, workspace, eval_stage, root=root)
     conditions = _expand_eval_conditions(
         request.condition_matrix or _stage_condition_matrix(eval_stage),
         base_params={**_stage_eval_params(eval_stage), **request.eval_params},
@@ -1787,7 +1788,7 @@ def _evaluation_matrix_plan(request: StudioEvaluationMatrixRequest) -> dict[str,
         "checkpoint_policy": checkpoint_policy,
         "items": items,
         "reprocess": request.reprocess,
-        "root": _request_root(request.root),
+        "root": root,
     }
 
 
@@ -1800,7 +1801,10 @@ def _evaluation_preview_from_plan(plan: dict[str, Any]) -> StudioEvaluationMatri
         eval_id = item["evaluation_id"]
         checkpoint_ids.append(item["checkpoint_id"])
         eval_ids.append(eval_id)
-        manifest = _existing_manifest(eval_id, root=root)
+        existing = find_manifest_at_address(
+            eval_id, root=root, expected_kind="EvaluationRunManifest"
+        )
+        manifest = existing[0] if existing is not None else None
         status = manifest.status if isinstance(manifest, EvaluationRunManifest) else None
         if status == "completed" or evaluation_states_cache_path(eval_id, root=root).exists():
             materialized += 1
@@ -1841,14 +1845,18 @@ def _selected_training_refs(
     request: StudioEvaluationMatrixRequest,
     workspace: StudioWorkspaceSpec,
     eval_stage: StudioStageSpec,
+    *,
+    root: Path,
 ) -> list[ParentRef]:
     refs_by_id = _available_training_refs(workspace, eval_stage)
     ids = list(request.training_run_ids)
     selection_spec = request.selection_spec or _selection_spec_from_eval_stage(eval_stage)
     if selection_spec is not None:
-        rows = manifest_index_rows_from_records(
-            iter_indexed_manifest_records_by_kind(selection_spec.manifest_kind)
-        )
+        rows = []
+        if selection_spec.mode == "query" and selection_spec.query is not None:
+            rows = manifest_index_rows_from_records(
+                manifest_records_for_predicate(selection_spec.query, root=root)
+            )
         preview = preview_selection_spec(selection_spec, rows, limit=None)
         ids = [ref.id for ref in preview.parent_refs]
     if not ids:
@@ -1857,7 +1865,7 @@ def _selected_training_refs(
             for item in eval_stage.selection_spec.get("training_run_ids", [])
             if isinstance(item, str)
         ]
-    refs = [refs_by_id.get(id_) or _indexed_training_parent_ref(id_) for id_ in ids]
+    refs = [refs_by_id.get(id_) or _training_parent_ref(id_, root=root) for id_ in ids]
     refs = [ref for ref in refs if ref is not None]
     if not refs:
         raise StudioExecutionPreparationError(
@@ -1884,23 +1892,17 @@ def _available_training_refs(
     return refs
 
 
-def _indexed_training_parent_ref(run_id: str) -> ParentRef | None:
-    row = next(
-        (
-            item
-            for item in iter_indexed_manifest_records_by_kind("TrainingRunManifest")
-            if item["id"] == run_id
-        ),
-        None,
-    )
-    if row is None:
+def _training_parent_ref(run_id: str, *, root: Path) -> ParentRef | None:
+    try:
+        manifest, path = find_manifest_by_id(run_id, root=root, expected_kind="TrainingRunManifest")
+    except (FileNotFoundError, ManifestKindMismatch):
         return None
     return ParentRef(
         kind="TrainingRunManifest",
         id=run_id,
         role="training_run",
-        uri=str(row["path"]),
-        metadata={"status": row.get("status")},
+        uri=str(path),
+        metadata={"status": manifest.status},
     )
 
 
@@ -2071,9 +2073,13 @@ def _write_checkpoint_selection_manifest(
 ) -> tuple[CheckpointSelectionManifest, Path]:
     spec = item["checkpoint_spec"]
     manifest_id = item["checkpoint_id"]
-    existing = _existing_manifest(manifest_id, root=root)
-    if isinstance(existing, CheckpointSelectionManifest):
-        return existing, _manifest_path(manifest_id, root=root)
+    match = find_manifest_at_address(
+        manifest_id, root=root, expected_kind="CheckpointSelectionManifest"
+    )
+    if match is not None:
+        existing, path = match
+        assert isinstance(existing, CheckpointSelectionManifest)
+        return existing, path
     training_ref = item["training_ref"]
     checkpoint_ref = ParentRef(
         kind="CheckpointPolicy",
@@ -2162,8 +2168,10 @@ def _write_pending_evaluation_manifest(
     root: Path,
 ) -> tuple[EvaluationRunManifest, Path]:
     manifest_id = item["evaluation_id"]
-    existing = _existing_manifest(manifest_id, root=root)
-    if isinstance(existing, EvaluationRunManifest):
+    match = find_manifest_at_address(manifest_id, root=root, expected_kind="EvaluationRunManifest")
+    if match is not None:
+        existing, path = match
+        assert isinstance(existing, EvaluationRunManifest)
         if _should_restaging_overwrite(existing.status, request.reprocess):
             restaged = existing.model_copy(
                 update={
@@ -2178,7 +2186,7 @@ def _write_pending_evaluation_manifest(
                 }
             )
             return restaged, write_manifest(restaged, root=root)
-        return existing, _manifest_path(manifest_id, root=root)
+        return existing, path
 
     training_ref = item["training_ref"]
     condition = item["condition"]
@@ -2299,20 +2307,6 @@ def _should_restaging_overwrite(status: str | None, reprocess: EvalReprocessMode
         status,
         reprocess,
     )
-
-
-def _existing_manifest(manifest_id: str, *, root: Path) -> object | None:
-    paths = find_manifest_paths_by_id(manifest_id, root=root)
-    if not paths:
-        return None
-    return load_manifest(paths[0])
-
-
-def _manifest_path(manifest_id: str, *, root: Path) -> Path:
-    paths = find_manifest_paths_by_id(manifest_id, root=root)
-    if not paths:
-        raise StudioExecutionPreparationError(f"Manifest {manifest_id!r} is not indexed")
-    return paths[0]
 
 
 def _materialize_eval_stage(

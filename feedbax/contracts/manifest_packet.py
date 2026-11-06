@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import stat
 import os
+import stat
 import tempfile
 import unicodedata
 from collections import deque
 from collections.abc import Iterable, Mapping
+from contextlib import ExitStack, closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -31,9 +32,12 @@ from feedbax.contracts.artifact_custody import (
     LegacyContentFormatError,
 )
 from feedbax.contracts.manifest import (
+    AnyManifest,
     BaseManifest,
     MANIFEST_MODELS,
+    canonical_manifest_candidate_paths,
     load_manifest,
+    load_manifest_bytes,
 )
 from feedbax.contracts.migrations import (
     SpecSchemaRegistry,
@@ -43,6 +47,17 @@ from feedbax.contracts.migrations import (
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.manifest_discovery import (
+    DuplicateManifestError,
+    ManifestLocationError,
+    find_manifests_in_scan,
+)
+from feedbax.persistence.manifest_index import (
+    connect_index,
+    default_index_path,
+    index_manifest,
+    query_manifest_paths_by_id,
+)
 
 
 MANIFEST_PACKET_SCHEMA_ID = "feedbax.spec.manifest_packet"
@@ -129,7 +144,7 @@ class ManifestPacketIndex(StrictModel):
     def _validate_unique_entries(self) -> "ManifestPacketIndex":
         object_digests = [entry.sha256 for entry in self.objects]
         object_paths = [entry.path for entry in self.objects]
-        manifest_keys = [(entry.kind, entry.id) for entry in self.manifests]
+        manifest_ids = [entry.id for entry in self.manifests]
         target_paths = [entry.target_path for entry in self.manifests]
         artifact_keys = [
             (entry.manifest_kind, entry.manifest_id, entry.ref_path) for entry in self.artifacts
@@ -137,15 +152,17 @@ class ManifestPacketIndex(StrictModel):
         for name, values in (
             ("object digest", object_digests),
             ("object path", object_paths),
-            ("manifest kind/id", manifest_keys),
+            ("manifest id", manifest_ids),
             ("artifact logical ref", artifact_keys),
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"manifest packet contains duplicate {name} entries")
         if any(path is None for path in target_paths):
             raise ValueError("manifest packet v2 requires every manifest target_path")
-        collision_keys = [str(path).casefold() for path in target_paths]
-        if len(collision_keys) != len(set(collision_keys)):
+        collision_keys = {Path(str(path).casefold()) for path in target_paths}
+        if len(collision_keys) != len(target_paths) or any(
+            parent in collision_keys for path in collision_keys for parent in path.parents
+        ):
             raise ValueError("manifest packet target paths collide on a portable filesystem")
         return self
 
@@ -299,19 +316,18 @@ def import_manifest_packet(
     on_conflict: Literal["reject"] = "reject",
     registry: SpecSchemaRegistry | None = None,
 ) -> ManifestPacketImportResult:
-    """Validate and import a directory packet into a manifest root all at once."""
+    """Validate and project a directory packet before publishing its manifest references."""
     if on_conflict != "reject":
-        raise ValueError("manifest packet v1 only supports on_conflict='reject'")
+        raise ValueError("manifest packet v2 only supports on_conflict='reject'")
 
     packet_path = Path(packet)
     root_path = Path(root) if root is not None else default_manifest_root()
     active_registry = registry or default_spec_registry
     index = _load_packet_index(packet_path, registry=active_registry)
-    target_records = _scan_manifest_root(root_path)
     packet_objects = _validate_packet_objects(packet_path, index)
     provider = ImmutableArtifactBlobProvider(root_path.absolute())
 
-    manifest_writes: list[tuple[ManifestPacketManifestEntry, Path, bytes]] = []
+    manifests: list[tuple[ManifestPacketManifestEntry, BaseManifest, Path, bytes]] = []
     errors: list[str] = []
 
     for artifact in index.artifacts:
@@ -349,14 +365,14 @@ def import_manifest_packet(
                 entry_type="manifest target",
                 entry_id=entry.id,
             )
-            target_path = _contained_path(
-                root_path,
-                target_relative_path,
-                container_name="target root",
-                entry_type="manifest target",
-                entry_id=entry.id,
-                raw_path=entry.target_path,
-            )
+            if (
+                not target_relative_path.is_relative_to("manifests")
+                or target_relative_path.suffix != ".json"
+            ):
+                raise ManifestPacketValidationError(
+                    f"Manifest packet target must be a JSON file beneath manifests/: "
+                    f"{target_relative_path}"
+                )
         except ManifestPacketValidationError as exc:
             errors.append(str(exc))
             continue
@@ -385,68 +401,183 @@ def import_manifest_packet(
                 registry=active_registry,
                 manifest_id=entry.id,
             )
+            manifest = load_manifest_bytes(raw_bytes)
+            if (manifest.kind, manifest.id) != (entry.kind, entry.id):
+                raise ManifestPacketValidationError(
+                    f"Packet manifest bytes do not state kind/id {(entry.kind, entry.id)!r}"
+                )
         except Exception as exc:
             errors.append(f"Invalid packet manifest id={entry.id!r}: {exc}")
             continue
 
-        existing = target_records.get(entry.id)
-        if existing is not None:
-            existing_sha = sha256_bytes(existing.raw_bytes)
-            if existing_sha != entry.sha256:
-                errors.append(
-                    "Divergent manifest id already exists: "
-                    f"id={entry.id!r}, existing_sha256={existing_sha!r}, "
-                    f"packet_sha256={entry.sha256!r}"
-                )
-            continue
-
-        manifest_writes.append((entry, target_path, raw_bytes))
+        manifests.append((entry, manifest, target_relative_path, raw_bytes))
 
     if errors:
         raise ManifestPacketValidationError(
             "Manifest packet import failed before writing any files:\n- " + "\n- ".join(errors)
         )
 
-    bindings = tuple(
-        (entry.kind, entry.id, data) for entry, _target, data in manifest_writes
-    ) + tuple(
-        (entry.kind, entry.id, packet_objects[entry.sha256])
-        for entry in index.manifests
-        if entry.id in target_records
-    )
-    from feedbax.persistence.manifest_index import rebuild_manifest_index
-
+    bindings = tuple((entry.kind, entry.id, data) for entry, _, _, data in manifests)
+    db_path = default_index_path(root_path)
+    imported: list[str] = []
+    skipped: list[str] = []
     try:
-        with provider._exclusive_lock():
+        with provider._exclusive_lock(), ExitStack() as stack:
+            conn = (
+                stack.enter_context(closing(connect_index(db_path))) if db_path.exists() else None
+            )
+            receipts: list[tuple[BaseManifest, Path, bytes, bool]] = []
+            for entry, manifest, target_relative_path, data in manifests:
+                indexed_paths = (
+                    query_manifest_paths_by_id(conn, entry.id) if conn is not None else []
+                )
+                destination, exists = _packet_manifest_destination(
+                    root_path, entry, target_relative_path, indexed_paths
+                )
+                receipts.append((manifest, destination, data, exists))
+
+            def load_destination(path: Path) -> AnyManifest:
+                checked_path, _ = _packet_destination_file(root_path, path.relative_to(root_path))
+                return load_manifest(checked_path)
+
+            legacy_matches = find_manifests_in_scan(
+                {manifest.id for manifest, _, _, exists in receipts if not exists},
+                root=root_path,
+                load=load_destination,
+            )
+            for receipt_index, (entry, manifest, target_relative_path, data) in enumerate(manifests):
+                legacy = legacy_matches.get(entry.id)
+                if legacy is None:
+                    continue
+                destination, exists = _packet_manifest_destination(
+                    root_path, entry, target_relative_path, [], scanned_path=legacy[1]
+                )
+                receipts[receipt_index] = (manifest, destination, data, exists)
+
             for digest in sorted(packet_objects):
                 provider.store_object(packet_objects[digest])
             proposed = provider._prepare_manifest_bindings(bindings)
             provider._validate_manifest_bindings_locked(proposed)
-            for _entry, target, data in manifest_writes:
-                _publish_packet_object(
-                    data,
-                    target,
-                    error_type=ManifestPacketConflictError,
-                )
-            db_path = rebuild_manifest_index(root_path)
+
+            for manifest, destination, data, exists in receipts:
+                if exists:
+                    skipped.append(manifest.id)
+                else:
+                    _publish_packet_object(
+                        data,
+                        destination,
+                        error_type=ManifestPacketConflictError,
+                    )
+                    imported.append(manifest.id)
+            if conn is None:
+                conn = stack.enter_context(closing(connect_index(db_path)))
+            with conn:
+                for manifest, destination, _data, _exists in receipts:
+                    index_manifest(conn, manifest, path=destination)
             provider._publish_manifest_bindings_locked(proposed)
     except ContentManifestConflictError as exc:
         raise ManifestPacketConflictError(str(exc)) from exc
-    skipped = [
-        entry.id
-        for entry in index.manifests
-        if entry.id in target_records and all(write[0].id != entry.id for write in manifest_writes)
-    ]
+    except (DuplicateManifestError, ManifestLocationError) as exc:
+        raise ManifestPacketValidationError(str(exc)) from exc
     return ManifestPacketImportResult(
         root=str(root_path),
         packet_path=str(packet_path),
-        imported_manifest_ids=[entry.id for entry, _target, _data in manifest_writes],
+        imported_manifest_ids=imported,
         skipped_manifest_ids=skipped,
         artifact_count=len(index.artifacts),
         included_artifact_count=sum(1 for entry in index.artifacts if entry.mode == "included"),
         external_artifact_count=sum(1 for entry in index.artifacts if entry.mode == "external"),
         index_path=str(db_path),
     )
+
+
+def _packet_manifest_destination(
+    root: Path,
+    entry: ManifestPacketManifestEntry,
+    target_relative_path: Path,
+    indexed_paths: list[Path],
+    *,
+    scanned_path: Path | None = None,
+) -> tuple[Path, bool]:
+    root_absolute = root.absolute()
+    root_resolved = root.resolve()
+    candidates = dict.fromkeys(
+        canonical_manifest_candidate_paths(entry.id, root=Path(".")), False
+    )
+    candidates[target_relative_path] = False
+    if scanned_path is not None:
+        candidates[scanned_path.relative_to(root)] = False
+    for path in indexed_paths:
+        absolute = path.absolute()
+        for prefix in (root_absolute, root_resolved):
+            if absolute.is_relative_to(prefix):
+                relative = absolute.relative_to(prefix)
+                if relative.is_relative_to("manifests") and ".." not in relative.parts:
+                    candidates.setdefault(relative, True)
+                break
+
+    existing: Path | None = None
+    existing_stat: os.stat_result | None = None
+    target = root_resolved / target_relative_path
+    for relative, index_only in candidates.items():
+        try:
+            path, current = _packet_destination_file(root_resolved, relative, entry_id=entry.id)
+        except FileNotFoundError:
+            continue
+        except ManifestPacketValidationError:
+            if index_only:
+                continue
+            raise
+
+        if existing_stat is not None and os.path.samestat(existing_stat, current):
+            continue
+
+        raw_bytes = path.read_bytes()
+        try:
+            current_manifest = load_manifest_bytes(raw_bytes)
+        except ValueError:
+            if index_only:
+                continue
+            raise
+        if current_manifest.id != entry.id:
+            if path == target:
+                raise ManifestPacketValidationError(
+                    f"Packet target belongs to a different manifest: {path}"
+                )
+            continue
+        if index_only and current_manifest.kind != entry.kind:
+            continue
+
+        digest = sha256_bytes(raw_bytes)
+        if current_manifest.kind != entry.kind or digest != entry.sha256:
+            raise ManifestPacketValidationError(
+                "Divergent manifest id already exists: "
+                f"id={entry.id!r}, existing_sha256={digest!r}, packet_sha256={entry.sha256!r}"
+            )
+        if existing is not None:
+            raise ManifestPacketValidationError(f"Duplicate manifest id in root: id={entry.id!r}")
+        existing, existing_stat = path, current
+
+    return (target, False) if existing is None else (existing, True)
+
+
+def _packet_destination_file(
+    root: Path, relative: Path, *, entry_id: str | None = None
+) -> tuple[Path, os.stat_result]:
+    path = _contained_path(
+        root,
+        relative,
+        container_name="target root",
+        entry_type="manifest target",
+        entry_id=entry_id or relative.as_posix(),
+        raw_path=relative.as_posix(),
+    )
+    current = path.lstat()
+    if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
+        raise ManifestPacketValidationError(
+            f"Manifest packet target must be one regular non-link file: {path}"
+        )
+    return path, current
 
 
 def migrate_manifest_packet_v1(

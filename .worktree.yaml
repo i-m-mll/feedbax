@@ -1,8 +1,7 @@
-shared:
-  - issues
+setup: cd web && bun install --frozen-lockfile
 
 post-merge:
-  - paths: ["web/package.json", "web/package-lock.json"]
-    run: cd web && npm ci
+  - paths: [".bun-version", "web/package.json", "web/bun.lock"]
+    run: cd web && bun install --frozen-lockfile
   - paths: ["pyproject.toml", "uv.lock"]
-    run: uv sync --extra all
+    run: uv sync --locked --extra all

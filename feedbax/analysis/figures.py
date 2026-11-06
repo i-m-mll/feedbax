@@ -1248,13 +1248,9 @@ def _declares_data_derived_axis_range(spec: FigureSpec) -> bool:
     )
 
 
-def _build_figures(
-    spec: FigureSpec,
-    context: ExpressionContext,
-    exec_trace: FigureExecutionTrace,
-    root: Path,
-    registry: FigureRegistry,
-) -> list[RenderedFigure]:
+def _figure_template_and_assembler(
+    spec: FigureSpec, registry: FigureRegistry
+) -> tuple[FigureTemplate | None, str]:
     template = (
         spec.template
         if isinstance(spec.template, FigureTemplate)
@@ -1262,7 +1258,31 @@ def _build_figures(
         if spec.template
         else None
     )
-    assembler_key = spec.assembler or template.assembler
+    return template, spec.assembler or template.assembler
+
+
+def figure_piece_inputs(spec: FigureSpec, *, registry: FigureRegistry) -> tuple[ArtifactRef, ...]:
+    """Return the JSON artifact inputs declared by the built-in trace binding path."""
+    template, assembler_key = _figure_template_and_assembler(spec, registry)
+    if get_figure_constructor(assembler_key, registry=registry).tier == "custom_figure":
+        return ()
+    artifacts: list[ArtifactRef] = []
+    for plan in resolve_figure_trace_bindings(spec, template, registry=registry):
+        if plan.binding.piece is not None:
+            ref = get_figure_piece(plan.binding.piece, registry=registry).artifact_ref
+            if ref is not None and ref.uri is not None and ref.media_type == "application/json":
+                artifacts.append(ref)
+    return tuple(artifacts)
+
+
+def _build_figures(
+    spec: FigureSpec,
+    context: ExpressionContext,
+    exec_trace: FigureExecutionTrace,
+    root: Path,
+    registry: FigureRegistry,
+) -> list[RenderedFigure]:
+    template, assembler_key = _figure_template_and_assembler(spec, registry)
     assembler_params = {
         **(
             getattr(template, "assembler_params", {})

@@ -4,12 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "bun --bun vite",
     "generate:contracts": "cd .. && uv run python scripts/generate_studio_contracts.py",
-    "build": "tsc -b && vite build",
-    "test": "vitest run",
-    "test:e2e": "playwright test",
-    "preview": "vite preview"
+    "build": "bun --bun tsc -b && bun --bun vite build",
+    "test": "bun --bun vitest run",
+    "test:e2e": "bun --bun playwright test",
+    "preview": "bun --bun vite preview"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",

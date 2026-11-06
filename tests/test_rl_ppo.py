@@ -17,53 +17,21 @@ def key():
     return jax.random.PRNGKey(42)
 
 
-class TestGAE:
-    def test_shapes(self):
-        T, N = 16, 4
-        rewards = jnp.ones((T, N))
-        values = jnp.ones((T, N)) * 0.5
-        dones = jnp.zeros((T, N))
-        last_values = jnp.ones(N) * 0.5
-        advantages, returns = compute_gae_scan(
-            rewards, values, dones, last_values, gamma=0.99, gae_lambda=0.95
-        )
-        assert advantages.shape == (T, N)
-        assert returns.shape == (T, N)
-
-    def test_finite(self):
-        T, N = 16, 4
-        rewards = jnp.ones((T, N))
-        values = jnp.ones((T, N)) * 0.5
-        dones = jnp.zeros((T, N))
-        last_values = jnp.ones(N) * 0.5
-        advantages, returns = compute_gae_scan(
-            rewards, values, dones, last_values, gamma=0.99, gae_lambda=0.95
-        )
-        assert jnp.all(jnp.isfinite(advantages))
-        assert jnp.all(jnp.isfinite(returns))
-
-    def test_reference_match(self):
-        """Compare scan GAE against Python loop reference implementation."""
-        T, N = 8, 2
-        key = jax.random.PRNGKey(0)
-        rewards = jax.random.normal(key, (T, N))
-        values = jax.random.normal(jax.random.PRNGKey(1), (T, N))
-        dones = jnp.zeros((T, N))
-        last_values = jnp.ones(N)
-        gamma, lam = 0.99, 0.95
-
-        # Reference: Python loop
-        ref_adv = jnp.zeros((T, N))
-        gae = jnp.zeros(N)
-        values_ext = jnp.concatenate([values, last_values[None]], axis=0)
-        for t in reversed(range(T)):
-            mask = 1.0 - dones[t]
-            delta = rewards[t] + gamma * values_ext[t + 1] * mask - values[t]
-            gae = delta + gamma * lam * mask * gae
-            ref_adv = ref_adv.at[t].set(gae)
-
-        advantages, _ = compute_gae_scan(rewards, values, dones, last_values, gamma, lam)
-        assert jnp.allclose(advantages, ref_adv, atol=1e-5)
+def test_gae_stops_at_episode_boundaries_and_bootstraps_collection_cutoff():
+    # Both lanes reset after reward 2. Only the second lane ends at the
+    # final transition, so only the first lane uses the final critic value.
+    rewards = jnp.broadcast_to(jnp.array([[1.0], [2.0], [10.0], [20.0]]), (4, 2))
+    values = jnp.broadcast_to(jnp.array([[5.0], [6.0], [7.0], [8.0]]), (4, 2))
+    dones = jnp.array([[False, False], [True, True], [False, False], [False, True]])
+    advantages, returns = compute_gae_scan(
+        rewards, values, dones, jnp.array([9.0, 9.0]), gamma=0.5, gae_lambda=0.5,
+    )
+    assert jnp.allclose(advantages, jnp.array([
+        [-2.0, -2.0], [-4.0, -4.0], [11.125, 10.0], [16.5, 12.0],
+    ]))
+    assert jnp.allclose(returns, jnp.array([
+        [3.0, 3.0], [2.0, 2.0], [18.125, 17.0], [24.5, 20.0],
+    ]))
 
 
 class TestActorCritic:

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from datetime import timedelta
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -24,10 +28,12 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.manifest_packet import export_manifest_packet, import_manifest_packet
+from feedbax.persistence import manifest_index
 from feedbax.persistence.artifact_custody import ArtifactBlobIntegrityError
 from feedbax.persistence.manifest_index import (
     connect_index,
     default_index_path,
+    find_manifest_paths_by_id,
     get_indexed_manifest_record,
     rebuild_manifest_index,
 )
@@ -279,3 +285,96 @@ def test_index_schema_migrates_away_from_payload_copy(tmp_path: Path) -> None:
         migrated.close()
     assert "payload_json" not in columns
     assert version == 2
+
+
+def test_invalid_rebuild_keeps_previous_projection(tmp_path: Path) -> None:
+    existing = _manifest("existing")
+    existing_path = write_manifest(existing, root=tmp_path)
+    added = _manifest("added")
+    added_path = write_manifest(added, root=tmp_path, index=False)
+    broken = added_path.with_name("zzzz-invalid.json")
+    assert existing_path < broken and added_path < broken
+    broken.write_text("invalid JSON", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        rebuild_manifest_index(tmp_path)
+
+    assert find_manifest_paths_by_id(existing.id, root=tmp_path) == [existing_path]
+    assert find_manifest_paths_by_id(added.id, root=tmp_path) == []
+
+
+def test_rebuild_rejects_duplicate_manifest_ids(tmp_path: Path) -> None:
+    manifest = _manifest("duplicated")
+    path = write_manifest(manifest, root=tmp_path)
+    duplicate = path.with_name("duplicate.json")
+    duplicate.write_bytes(path.read_bytes())
+
+    with pytest.raises(ValueError, match="duplicate manifest ID") as exc:
+        rebuild_manifest_index(tmp_path)
+
+    assert str(path) in str(exc.value)
+    assert str(duplicate) in str(exc.value)
+    assert find_manifest_paths_by_id(manifest.id, root=tmp_path) == [path]
+
+
+def test_publication_after_rebuild_enumeration_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    existing = _manifest("existing")
+    existing_path = write_manifest(existing, root=tmp_path)
+    incoming = _manifest("incoming")
+    db_path = default_index_path(tmp_path)
+    enumerated = Event()
+    resume_rebuild = Event()
+    published_file = Event()
+    iter_manifest_files = manifest_index.iter_manifest_files
+    index_manifest_file = manifest_index.index_manifest_file
+
+    def pause_after_enumeration(root: Path | str | None) -> list[Path]:
+        paths = iter_manifest_files(root)
+        enumerated.set()
+        assert resume_rebuild.wait(5)
+        return paths
+
+    def notify_before_indexing(path: Path, **kwargs) -> None:
+        published_file.set()
+        index_manifest_file(path, **kwargs)
+
+    monkeypatch.setattr(manifest_index, "iter_manifest_files", pause_after_enumeration)
+    monkeypatch.setattr(manifest_index, "index_manifest_file", notify_before_indexing)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        rebuild = executor.submit(rebuild_manifest_index, tmp_path)
+        try:
+            assert enumerated.wait(5)
+            publish = executor.submit(write_manifest, incoming, root=tmp_path)
+            assert published_file.wait(5)
+            # A separate connection sees the previous projection while rebuild
+            # owns the write transaction and the publisher waits to index.
+            with closing(sqlite3.connect(db_path, timeout=0)) as reader:
+                assert reader.execute("SELECT path FROM manifests").fetchall() == [
+                    (str(existing_path),)
+                ]
+                with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+                    reader.execute("BEGIN IMMEDIATE")
+        finally:
+            resume_rebuild.set()
+        assert rebuild.result(timeout=5) == db_path
+        incoming_path = publish.result(timeout=5)
+
+    assert find_manifest_paths_by_id(existing.id, root=tmp_path) == [existing_path]
+    assert find_manifest_paths_by_id(incoming.id, root=tmp_path) == [incoming_path]
+
+
+def test_indexed_record_reads_metadata_from_canonical_file(tmp_path: Path) -> None:
+    manifest = _manifest("updated")
+    path = write_manifest(manifest, root=tmp_path)
+    updated = manifest.model_copy(
+        update={"status": "failed", "created_at": manifest.created_at + timedelta(seconds=1)}
+    )
+    write_manifest(updated, root=tmp_path, index=False)
+
+    record = get_indexed_manifest_record(manifest.id, root=tmp_path)
+    assert record is not None
+    assert record["path"] == str(path)
+    assert record["status"] == record["payload"]["status"] == "failed"
+    assert record["created_at"] == updated.created_at.isoformat()

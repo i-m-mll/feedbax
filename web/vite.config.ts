@@ -9,6 +9,8 @@ const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
 
 export default defineConfig({
   test: {
+    // Transform Zod's ESM re-exports in Vitest instead of loading them through Bun's SSR interop.
+    server: { deps: { inline: ['zod'] } },
     globals: true,
     environment: 'node',
     exclude: ['**/node_modules/**', '**/dist/**', '**/e2e/**'],

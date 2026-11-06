@@ -13,7 +13,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from feedbax._ode import ode_step
 from feedbax.mechanics.plant import AbstractPlant, PlantState
@@ -85,6 +85,18 @@ class RLEnvState(NamedTuple):
     muscle_activations: Float[Array, " n_muscles"]
     t_index: Float[Array, ""]
     task: TaskParams
+
+
+class EpisodeOutcome(NamedTuple):
+    """Completion, success eligibility and success for one transition.
+
+    A reach can succeed by entering the endpoint tolerance on any step,
+    including the horizon step. Other tasks have no binary success criterion.
+    """
+
+    completed: Bool[Array, ""]
+    success_eligible: Bool[Array, ""]
+    success: Bool[Array, ""]
 
 
 def rl_env_reset(
@@ -216,6 +228,17 @@ def rl_env_step(
     state: RLEnvState,
     action: Float[Array, " n_muscles"],
 ) -> tuple[RLEnvState, Float[Array, " obs_dim"], Float[Array, ""], Float[Array, ""]]:
+    """Step the environment, returning a float done flag for episode completion."""
+    state, obs, reward, outcome = rl_env_step_with_outcome(plant, config, state, action)
+    return state, obs, reward, outcome.completed.astype(jnp.float32)
+
+
+def rl_env_step_with_outcome(
+    plant: AbstractPlant,
+    config: RLEnvConfig,
+    state: RLEnvState,
+    action: Float[Array, " n_muscles"],
+) -> tuple[RLEnvState, Float[Array, " obs_dim"], Float[Array, ""], EpisodeOutcome]:
     """Step the RL environment forward by one control step.
 
     Runs ``config.frame_skip`` physics sub-steps per control step via
@@ -231,7 +254,7 @@ def rl_env_step(
         action: Muscle excitation commands in [0, 1], shape ``(n_muscles,)``.
 
     Returns:
-        Tuple of (new_state, observation, reward, done).
+        Tuple of (new_state, observation, reward, episode_outcome).
     """
     action = jnp.clip(action, 0.0, 1.0)
     t = state.t_index
@@ -305,17 +328,14 @@ def rl_env_step(
         n_steps=config.n_steps,
     )
 
-    # Bug: 67e2e5e — Early termination on success for REACH tasks.
-    # Agent is done when it reaches within hold_threshold of the target.
-    distance = jnp.linalg.norm(effector.pos - target_pos)
-    reached_target = distance < config.hold_threshold
-    is_reach = (jnp.asarray(state.task.task_type) == TASK_REACH)
-    early_done = is_reach & reached_target
-
     new_t = t + 1
-    done = jnp.maximum(
-        (new_t >= config.n_steps).astype(jnp.float32),
-        early_done.astype(jnp.float32),
+    success_eligible = jnp.asarray(state.task.task_type) == TASK_REACH
+    endpoint_distance = jnp.linalg.norm(effector.pos - state.task.end_pos)
+    success = success_eligible & (endpoint_distance < config.hold_threshold)
+    outcome = EpisodeOutcome(
+        completed=(new_t >= config.n_steps) | success,
+        success_eligible=success_eligible,
+        success=success,
     )
 
     new_state = RLEnvState(
@@ -326,29 +346,19 @@ def rl_env_step(
     )
 
     obs = rl_env_get_obs(plant, config, new_state)
-    return new_state, obs, reward, done
+    return new_state, obs, reward, outcome
 
 
-def auto_reset(
+def rl_env_reset_sampled(
     plant: AbstractPlant,
     config: RLEnvConfig,
-    state: RLEnvState,
-    done: Float[Array, ""],
     key: PRNGKeyArray,
+    *,
+    max_target_distance: float | Float[Array, ""] = 0.0,
+    use_curriculum: bool | Bool[Array, ""] = False,
 ) -> RLEnvState:
-    """Reset environments that are done, keeping others unchanged.
-
-    Args:
-        plant: The plant model.
-        config: Environment configuration.
-        state: Current environment state.
-        done: Whether the episode is done (1.0) or not (0.0).
-        key: PRNG key for new task and state generation.
-
-    Returns:
-        Conditionally reset RLEnvState.
-    """
-    key, task_key, reset_key = jax.random.split(key, 3)
+    """Start an episode using the configured task sampling policy."""
+    _, task_key, reset_key = jax.random.split(key, 3)
     seg_lens = getattr(plant, "segment_lengths", None)
     use_fk = seg_lens is not None
     if seg_lens is None:
@@ -361,12 +371,28 @@ def auto_reset(
         task_key, task_type, config.n_steps, config.dt,
         segment_lengths=seg_lens,
         use_fk=use_fk,
-        max_target_distance=0.0,
-        use_curriculum=False,
+        max_target_distance=max_target_distance,
+        use_curriculum=use_curriculum,
         single_task=single_task,
     )
-    new_state = rl_env_reset(plant, config, new_task, reset_key)
+    return rl_env_reset(plant, config, new_task, reset_key)
 
+
+def auto_reset(
+    plant: AbstractPlant,
+    config: RLEnvConfig,
+    state: RLEnvState,
+    done: Float[Array, ""] | Bool[Array, ""],
+    key: PRNGKeyArray,
+    *,
+    max_target_distance: float | Float[Array, ""] = 0.0,
+    use_curriculum: bool | Bool[Array, ""] = False,
+) -> RLEnvState:
+    """Reset completed environments using the configured task sampling policy."""
+    new_state = rl_env_reset_sampled(
+        plant, config, key,
+        max_target_distance=max_target_distance, use_curriculum=use_curriculum,
+    )
     return jt.map(
         lambda old, new: jnp.where(done, new, old),
         state,

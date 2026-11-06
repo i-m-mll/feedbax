@@ -50,7 +50,7 @@ Documentation is available [here](https://docs.lprt.ca/feedbax).
 
 ## Web UI
 
-Feedbax includes a web interface for visually constructing and training models. To start both the backend API and frontend dev server:
+Feedbax includes a web interface for visually constructing and training models. Install the Bun version in `.bun-version`, then start the backend API and frontend dev server:
 
 ```bash
 ./scripts/dev.sh
@@ -63,7 +63,7 @@ Or run them separately:
 uv run uvicorn feedbax.web.app:app --reload --port 8000
 
 # Frontend (Vite/React on port 3008)
-cd web && npm run dev
+cd web && bun install --frozen-lockfile && bun run dev
 ```
 
 Then open http://localhost:3008 in your browser.
