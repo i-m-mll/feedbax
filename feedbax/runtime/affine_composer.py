@@ -10,13 +10,71 @@ from equinox.nn import State
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax.contracts.migrations import ComponentMigration, UnsupportedComponentMigration
 from feedbax.runtime.graph import Component
 
 
 AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1 = "feedbax.component.affine_value_composer.v1"
-AFFINE_VALUE_COMPOSER_SCHEMA_VERSION = "feedbax.component.affine_value_composer.v2"
+AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2 = "feedbax.component.affine_value_composer.v2"
+AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V3 = "feedbax.component.affine_value_composer.v3"
+AFFINE_VALUE_COMPOSER_SCHEMA_VERSION = AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2
 AFFINE_VALUE_COMPOSER_FEATURE_RULES = frozenset(
     {"identity", "target_relative_difference"}
+)
+
+
+def _affine_v1_evidence(params: Mapping[str, Any]) -> bool:
+    return params.get("schema_version") == AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1 or (
+        "schema_version" not in params and "label" in params
+    )
+
+
+def _affine_v2_evidence(params: Mapping[str, Any]) -> bool:
+    return params.get("schema_version") == AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2
+
+
+def _migrate_affine_v1(params: dict[str, Any]) -> dict[str, Any]:
+    if "schema_version" in params and not _affine_v1_evidence(params):
+        raise UnsupportedComponentMigration(
+            f"Conflicting AffineValueComposer v1 marker: {params['schema_version']!r}"
+        )
+    return {
+        **{name: value for name, value in params.items() if name != "label"},
+        "schema_version": AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2,
+    }
+
+
+def _migrate_affine_v2(params: dict[str, Any]) -> dict[str, Any]:
+    if "schema_version" in params and not _affine_v2_evidence(params):
+        raise UnsupportedComponentMigration(
+            f"Conflicting AffineValueComposer v2 marker: {params['schema_version']!r}"
+        )
+    return {name: value for name, value in params.items() if name != "schema_version"}
+
+
+AFFINE_VALUE_COMPOSER_MIGRATIONS = (
+    ComponentMigration(
+        source_type="AffineValueComposer",
+        target_type="AffineValueComposer",
+        owner="feedbax",
+        source_param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1,
+        target_param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2,
+        migration_id="feedbax.component.AffineValueComposer.drop-label",
+        migrate_params=_migrate_affine_v1,
+        description="Use the graph node identity in place of the legacy parameter label.",
+        matches_unversioned=_affine_v1_evidence,
+    ),
+    ComponentMigration(
+        source_type="AffineValueComposer",
+        target_type="AffineValueComposer",
+        owner="feedbax",
+        source_param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2,
+        target_param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V3,
+        migration_id="feedbax.component.AffineValueComposer.params.v2-to-v3",
+        migrate_params=_migrate_affine_v2,
+        description="Use the outer parameter schema version as the sole version marker.",
+        matches_unversioned=_affine_v2_evidence,
+    ),
 )
 
 

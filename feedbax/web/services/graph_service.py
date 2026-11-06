@@ -100,6 +100,7 @@ class GraphService:
         graph = normalize_graph_for_studio_authoring(
             graph,
             component_registry=component_registry,
+            component_versions="authoring",
         )
         graph_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
@@ -190,6 +191,7 @@ class GraphService:
             normalized_graph = normalize_graph_for_studio_authoring(
                 graph,
                 component_registry=component_registry,
+                component_versions="authoring",
             )
             graph_changed = normalized_graph != project.graph
             project.graph = normalized_graph
@@ -352,8 +354,10 @@ class GraphService:
         }
         self._save_project(self._path_for(record.graph_id), record.project)
 
-    def export_graph(self, graph_id: str, export_format: str) -> dict:
-        record = self.get_graph(graph_id)
+    def export_graph(
+        self, graph_id: str, export_format: str, *, component_registry: object | None = None
+    ) -> dict:
+        record = self.get_graph(graph_id, component_registry=component_registry)
         if export_format == "json":
             content = record.project.model_dump_json(indent=2)
             filename = f"{record.project.metadata.name}.json"
@@ -383,6 +387,7 @@ class GraphService:
         project = normalize_project_for_studio_authoring(
             GraphProject.model_validate(data),
             component_registry=component_registry,
+            component_versions="historical",
         )
         self._ensure_workspace(project, component_registry=component_registry)
         return project

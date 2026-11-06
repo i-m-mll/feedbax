@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional, TypeVar
 
 from feedbax.compiler.feedback_migration import lower_legacy_feedback
+from feedbax.compiler.resolution import resolve_component_node
+from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.acausal_interface import normalize_acausal_interfaces_for_graph
 from feedbax.contracts.component import DynamicPortPolicyError
 from feedbax.contracts.graph import (
@@ -29,6 +31,7 @@ def normalize_graph_for_studio_authoring(
     graph: GraphSpec,
     *,
     component_registry: Any | None = None,
+    component_versions: Literal["authoring", "historical"] | None = None,
 ) -> GraphSpec:
     """Normalize runtime/persisted component names to Studio authoring names."""
 
@@ -36,6 +39,13 @@ def normalize_graph_for_studio_authoring(
     nodes: dict[str, ComponentSpec] = {}
     for node_id, node_spec in graph.nodes.items():
         next_type = _authoring_component_type(node_spec.type)
+        if component_registry is not None and component_versions is not None:
+            node_spec = resolve_component_node(
+                node_spec.model_copy(update={"type": next_type}),
+                component_registry,
+                historical_unversioned=component_versions == "historical",
+            )
+            next_type = node_spec.type
         params = dict(node_spec.params)
         input_ports = list(node_spec.input_ports)
         output_ports = list(node_spec.output_ports)
@@ -92,6 +102,13 @@ def normalize_graph_for_studio_authoring(
                 subgraphs[node_id] = normalize_graph_for_studio_authoring(
                     subgraph,
                     component_registry=component_registry,
+                    component_versions=component_versions,
+                )
+            elif component_registry is not None and component_versions is not None:
+                subgraphs[node_id] = stamp_component_versions(
+                    subgraph,
+                    component_registry,
+                    historical_unversioned=component_versions == "historical",
                 )
             else:
                 subgraphs[node_id] = subgraph
@@ -104,6 +121,35 @@ def normalize_graph_for_studio_authoring(
             "subgraphs": subgraphs,
         }
     )
+
+
+_Graph = TypeVar("_Graph", GraphSpec, AcausalGraphSpec)
+
+
+def stamp_component_versions(
+    graph: _Graph,
+    component_registry: Any,
+    *,
+    historical_unversioned: bool = False,
+) -> _Graph:
+    """Resolve persisted node identities without completing their parameters."""
+    nodes = {
+        name: resolve_component_node(
+            node, component_registry, historical_unversioned=historical_unversioned
+        )
+        for name, node in graph.nodes.items()
+    }
+    subgraphs = (
+        {
+            name: stamp_component_versions(
+                subgraph, component_registry, historical_unversioned=historical_unversioned
+            )
+            for name, subgraph in graph.subgraphs.items()
+        }
+        if graph.subgraphs is not None
+        else None
+    )
+    return graph.model_copy(update={"nodes": nodes, "subgraphs": subgraphs})
 
 
 def normalize_task_binding_spec_for_studio_authoring(
@@ -160,10 +206,12 @@ def normalize_project_for_studio_authoring(
     project: GraphProject,
     *,
     component_registry: Any | None = None,
+    component_versions: Literal["authoring", "historical"] | None = None,
 ) -> GraphProject:
     graph = normalize_graph_for_studio_authoring(
         project.graph,
         component_registry=component_registry,
+        component_versions=component_versions,
     )
     workspace = normalize_workspace_for_studio_authoring(
         project.workspace,

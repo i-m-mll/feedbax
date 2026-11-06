@@ -11,6 +11,7 @@ from feedbax.contracts.graph import (
 )
 from feedbax.contracts.canonical_json import CanonicalJsonError
 from feedbax.contracts.migrations import (
+    UnsupportedComponentMigration,
     UnsupportedSpecVersion,
     admit_studio_persistence_document,
 )
@@ -92,12 +93,15 @@ async def create_graph(payload: dict[str, Any], request: Request) -> GraphCreate
     if admitted.graph is None:
         raise HTTPException(status_code=422, detail="Studio graph creation requires graph")
     component_registry = _component_registry(request)
-    record = service.create_graph(
-        admitted.graph,
-        workspace=admitted.workspace,
-        workspace_document=admitted.workspace_document,
-        component_registry=component_registry,
-    )
+    try:
+        record = service.create_graph(
+            admitted.graph,
+            workspace=admitted.workspace,
+            workspace_document=admitted.workspace_document,
+            component_registry=component_registry,
+        )
+    except UnsupportedComponentMigration as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return GraphCreateResponse(data={"id": record.graph_id, "metadata": record.project.metadata})
 
 
@@ -111,6 +115,8 @@ async def get_graph(graph_id: str, request: Request, response: Response) -> Grap
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
+    except UnsupportedComponentMigration as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return GraphDetailResponse(
         data={
             "graph": record.project.graph,
@@ -146,6 +152,8 @@ async def update_graph(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
+    except UnsupportedComponentMigration as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GraphSaveConflictError as exc:
         raise HTTPException(status_code=409, detail=_conflict_detail(exc)) from exc
     return GraphUpdateResponse(data={"success": True, "metadata": record.project.metadata})
@@ -171,6 +179,8 @@ async def beacon_update_graph(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
+    except UnsupportedComponentMigration as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GraphSaveConflictError as exc:
         raise HTTPException(status_code=409, detail=_conflict_detail(exc)) from exc
     return Response(status_code=204)
@@ -245,9 +255,15 @@ class ExportRequest(BaseModel):
 
 
 @router.post("/{graph_id}/export", response_model=GraphExportResponse)
-async def export_graph(graph_id: str, payload: ExportRequest) -> GraphExportResponse:
+async def export_graph(
+    graph_id: str, payload: ExportRequest, request: Request
+) -> GraphExportResponse:
     try:
-        return GraphExportResponse(data=service.export_graph(graph_id, payload.format))
+        return GraphExportResponse(
+            data=service.export_graph(
+                graph_id, payload.format, component_registry=_component_registry(request)
+            )
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
     except ValueError as exc:

@@ -73,6 +73,7 @@ def lower_legacy_feedback(graph: GraphSpec, *, recurse: bool = True) -> GraphSpe
                 "channel": ComponentSpec(
                     type="Channel",
                     params=channel_params,
+                    param_schema_version="2",
                     input_ports=["input"],
                     output_ports=["output"],
                 ),
