@@ -1460,7 +1460,7 @@ def register_builtin_components(registry: _Registry) -> None:
     # Some built-in templates materialize JAX arithmetic as authored numbers.
     jax_defaults = (
         jax.config.jax_enable_x64,
-        jax.config.jax_default_dtype_bits,
+        jnp.result_type(0.0).name,
         jax.default_backend(),
         jax.config.jax_default_device,
     )
