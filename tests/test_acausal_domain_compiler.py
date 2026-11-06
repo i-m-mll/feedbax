@@ -19,7 +19,12 @@ from feedbax.acausal import (
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.compiler.acausal_compiler import compile_acausal_graph
+from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
+from feedbax.compiler.acausal_compiler import (
+    compile_acausal_authoring_report,
+    compile_acausal_graph,
+)
+from feedbax.runtime.graph import RolloutStepContext, RolloutStepHookResult
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 
@@ -74,6 +79,137 @@ def _acausal_graph_spec(interior: AcausalGraphSpec) -> GraphSpec:
         output_bindings={"pos": ("plant", "pos")},
         subgraphs={"plant": interior},
     )
+
+
+def _prescribed_motion_graph(*, bind_input: bool = True) -> GraphSpec:
+    return GraphSpec(
+        nodes={
+            "plant": ComponentSpec(
+                type="AcausalSystem",
+                input_ports=["motion"],
+                output_ports=["velocity"],
+            ),
+        },
+        input_ports=["command"] if bind_input else [],
+        input_bindings={"command": ("plant", "motion")} if bind_input else {},
+        output_ports=["velocity"],
+        output_bindings={"velocity": ("plant", "velocity")},
+        subgraphs={
+            "plant": AcausalGraphSpec(
+                physical_domain="translational",
+                nodes={
+                    "wall": ComponentSpec(type="Ground"),
+                    "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
+                    "drive": ComponentSpec(
+                        type="ActuationInput",
+                        params={"port_name": "motion", "source_kind": "prescribed_motion"},
+                    ),
+                    "sense": ComponentSpec(
+                        type="SensorOutput",
+                        params={"port_name": "velocity", "quantity": "velocity"},
+                    ),
+                },
+                connections=[
+                    {"a": ("drive", "flange"), "b": ("sense", "flange")},
+                    {"a": ("drive", "flange"), "b": ("spring", "flange_a")},
+                    {"a": ("spring", "flange_b"), "b": ("wall", "flange")},
+                ],
+                solver={"solver_type": "euler", "dt": 0.001},
+            ),
+        },
+    )
+
+
+def test_compiled_prescribed_motion_uses_velocity_from_each_pair() -> None:
+    spec = _prescribed_motion_graph()
+    graph = compile_graph(
+        GraphDocument(graph=spec),
+        _registry(),
+        input_prototypes={("__graph__", "command"): jnp.zeros(2)},
+    ).graph
+    key = jax.random.PRNGKey(0)
+
+    outputs, _, _ = graph.rollout_with_trace(
+        {"command": jnp.array([[2.0, 0.0], [2.0, -1.0], [2.0, 0.0]])},
+        graph.init_state(key=key),
+        key=key,
+        n_steps=3,
+        trace=(),
+    )
+
+    assert jnp.array_equal(outputs["velocity"], jnp.array([0.0, -1.0, 0.0]))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [2.0, [[[2.0, 0.0]]] * 3, None],
+    ids=["scalar", "extra-axis", "missing"],
+)
+def test_compiled_prescribed_motion_rejects_invalid_rollout_input(
+    command: float | list[list[list[float]]] | None,
+) -> None:
+    graph = compile_graph(GraphDocument(graph=_prescribed_motion_graph()), _registry()).graph
+    key = jax.random.PRNGKey(0)
+    inputs = {} if command is None else {"command": jnp.asarray(command)}
+    state = graph.init_state(key=key)
+
+    with pytest.raises(ValueError, match="motion"):
+        graph.rollout_with_trace(inputs, state, key=key, n_steps=3, trace=())
+
+
+def test_named_effort_source_requires_its_own_input() -> None:
+    plant = compile_acausal_graph(_msd_interior(), "plant", _registry())
+    key = jax.random.PRNGKey(0)
+    state = plant.init_state(key=key)
+
+    with pytest.raises(ValueError, match="Missing required acausal source input 'u'"):
+        plant({"input": jnp.asarray(2.0)}, state, key=key)
+
+
+def test_compile_graph_rejects_scalar_prescribed_motion_prototype() -> None:
+    spec = _prescribed_motion_graph()
+
+    with pytest.raises(GraphCompilationError, match="motion"):
+        compile_graph(
+            GraphDocument(graph=spec),
+            _registry(),
+            input_prototypes={("__graph__", "command"): jnp.asarray(2.0)},
+        )
+
+
+def test_rollout_hook_can_supply_unbound_prescribed_motion() -> None:
+    def supply_motion(context: RolloutStepContext) -> RolloutStepHookResult:
+        return RolloutStepHookResult(
+            port_values={**context.port_values, ("plant", "motion"): jnp.array([2.0, 1.0])},
+        )
+
+    spec = _prescribed_motion_graph(bind_input=False)
+    graph = compile_graph(GraphDocument(graph=spec), _registry()).graph
+    key = jax.random.PRNGKey(0)
+
+    outputs, _, _ = graph.rollout_with_trace(
+        {},
+        graph.init_state(key=key),
+        key=key,
+        n_steps=3,
+        trace=(),
+        rollout_step_hook=supply_motion,
+    )
+
+    assert jnp.array_equal(outputs["velocity"], jnp.ones(3))
+
+
+def test_authoring_report_exposes_prescribed_motion_pair() -> None:
+    spec = _prescribed_motion_graph()
+    report = compile_acausal_authoring_report(
+        spec.subgraphs["plant"],
+        node_path=["plant"],
+        component_registry=_registry(),
+    )
+
+    assert report.status == "ok"
+    assert report.derived_interface is not None
+    assert report.derived_interface["inputs"]["motion"]["shape"] == [2]
 
 
 def _rollout_component(component: AcausalSystem, *, port: str, steps: int = 8) -> jax.Array:
@@ -217,7 +353,6 @@ def test_acausal_solver_mapping(solver_name: str, solver_cls: type, implicit: bo
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("explicit_order", [False, True])
 def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested, explicit_order):
-    from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
     from feedbax.contracts.migrations import migrate_acausal_graph_spec
 
     spec = AcausalGraphSpec(
@@ -334,8 +469,6 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
 
 
 def test_invalid_persisted_gear_has_actionable_authoring_diagnostic():
-    from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
-
     spec = AcausalGraphSpec(
         physical_domain="rotational",
         nodes={"gear": ComponentSpec(type="GearRatio", params={"ratio": 0.0})},
@@ -353,7 +486,6 @@ def test_invalid_persisted_gear_has_actionable_authoring_diagnostic():
 
 @pytest.mark.parametrize("with_adapter", [False, True])
 def test_persisted_direct_element_signal_input_binds_with_adapters(with_adapter):
-    from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
     from feedbax.contracts.migrations import migrate_acausal_graph_spec
 
     nodes = {

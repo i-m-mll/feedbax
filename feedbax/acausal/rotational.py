@@ -28,6 +28,7 @@ from feedbax.acausal.base import (
     AcausalPort,
     Domain,
 )
+from feedbax.contracts.acausal_interface import TORQUE_PAYLOAD
 
 
 @dataclass
@@ -72,6 +73,8 @@ class RotationalDamper(AcausalElement):
 @dataclass
 class TorqueSource(AcausalElement):
     """External torque from the causal world."""
+
+    source_payload = TORQUE_PAYLOAD
 
     def __init__(self, name: str):
         super().__init__(name=name)

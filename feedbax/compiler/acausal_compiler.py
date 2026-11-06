@@ -55,6 +55,11 @@ from feedbax.contracts.acausal_interface import (
     BOUNDARY_PORT_TYPE,
     SENSOR_OUTPUT_TYPE,
     ACAUSAL_SYSTEM_TYPE,
+    FORCE_PAYLOAD,
+    PRESCRIBED_MOTION_PAYLOAD,
+    TORQUE_PAYLOAD,
+    SourcePayload,
+    actuation_source_payload,
     derive_acausal_interface,
     signal_port_type,
 )
@@ -111,10 +116,10 @@ _ELEMENT_BUILDERS.update(
     }
 )
 
-_SOURCE_KIND_BUILDERS: dict[str, Type[AcausalElement]] = {
-    "force": ForceSource,
-    "torque": TorqueSource,
-    "prescribed_motion": PrescribedMotion,
+_SOURCE_BUILDERS: dict[SourcePayload, Type[AcausalElement]] = {
+    FORCE_PAYLOAD: ForceSource,
+    TORQUE_PAYLOAD: TorqueSource,
+    PRESCRIBED_MOTION_PAYLOAD: PrescribedMotion,
 }
 
 _SENSOR_QUANTITY_BUILDERS: dict[str, Type[AcausalElement]] = {
@@ -196,11 +201,11 @@ def compile_acausal_graph(
         output_bindings={name: flattened.output_bindings[name] for name in interface.output_ports},
     )
 
-    if system.input_ports != interface.input_ports:
+    if system.input_payloads != interface.input_payloads:
         raise ValueError(
             f"Acausal compiler internal error for node {node_name!r}: compiled "
-            f"input ports {system.input_ports!r} do not match derived interface "
-            f"{interface.input_ports!r}"
+            f"input payloads {system.input_payloads!r} do not match derived interface "
+            f"{interface.input_payloads!r}"
         )
     if system.output_ports != interface.output_ports:
         raise ValueError(
@@ -234,8 +239,8 @@ def compile_acausal_authoring_report(
             interface = derive_acausal_interface(interior_spec)
             derived_interface = {
                 "inputs": {
-                    name: signal_port_type().model_dump(mode="json")
-                    for name in interface.input_ports
+                    name: payload.port_type().model_dump(mode="json")
+                    for name, payload in interface.input_payloads.items()
                 },
                 "outputs": {
                     name: signal_port_type().model_dump(mode="json")
@@ -256,8 +261,8 @@ def compile_acausal_authoring_report(
             interface = derive_acausal_interface(interior_spec)
             derived_interface = {
                 "inputs": {
-                    name: signal_port_type().model_dump(mode="json")
-                    for name in interface.input_ports
+                    name: payload.port_type().model_dump(mode="json")
+                    for name, payload in interface.input_payloads.items()
                 },
                 "outputs": {
                     name: signal_port_type().model_dump(mode="json")
@@ -957,12 +962,9 @@ def _instantiate_node(
     _validate_acausal_component_meta(node_type, component_registry, node_path)
 
     if node_type == ACTUATION_INPUT_TYPE:
-        source_kind = str(params.get("source_kind", "force"))
-        builder = _SOURCE_KIND_BUILDERS.get(source_kind)
+        builder = _SOURCE_BUILDERS.get(actuation_source_payload(node_spec))
         if builder is None:
-            raise ValueError(
-                f"Unknown ActuationInput source_kind {source_kind!r} at {node_path!r}"
-            )
+            raise ValueError(f"Unsupported acausal source at {node_path!r}")
         port_name = _string_param(node_spec, "port_name", default="u", node_path=node_path)
         flattened.input_bindings[port_name] = node_id
         return builder(node_id)

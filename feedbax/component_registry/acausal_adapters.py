@@ -38,7 +38,12 @@ from feedbax.acausal.translational import (
     PrescribedMotion,
     VelocitySensor,
 )
-from feedbax.contracts.acausal_interface import conserving_port_type, signal_port_type
+from feedbax.contracts.acausal_interface import (
+    ACTUATION_PAYLOADS,
+    FORCE_PAYLOAD,
+    conserving_port_type,
+    signal_port_type,
+)
 from feedbax.contracts.component import PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, MECHANICS_DOMAIN_ID
 from feedbax.contracts.graph import ParamSchema
@@ -329,7 +334,7 @@ def _adapter_metas() -> tuple[DeclaredComponent, ...]:
                 ParamSchema(
                     name="source_kind",
                     type="enum",
-                    options=["force", "torque", "prescribed_motion"],
+                    options=list(ACTUATION_PAYLOADS),
                     default="force",
                     required=True,
                 ),
@@ -340,7 +345,7 @@ def _adapter_metas() -> tuple[DeclaredComponent, ...]:
             icon="LogIn",
             port_types=PortTypeSpec(
                 inputs={
-                    "u": signal_port_type(),
+                    "u": FORCE_PAYLOAD.port_type(),
                     "flange": conserving_port_type(),
                 },
                 outputs={},

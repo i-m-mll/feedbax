@@ -165,7 +165,9 @@ def analyze_system(
 
         elif elem.element_type == "prescribed_motion":
             for port in elem.ports.values():
-                for slot_idx, slot in enumerate(port.across_vars):
+                for slot_idx, slot in enumerate(
+                    elem.source_payload.slots if elem.source_payload else port.across_vars
+                ):
                     fqn = f"{elem.name}.{port.name}.{slot}"
                     canonical = _resolve(fqn, eliminated)
                     input_vars[canonical] = input_idx_counter
