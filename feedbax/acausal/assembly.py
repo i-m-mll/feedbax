@@ -90,9 +90,12 @@ def _make_vector_field(
         [eq for elem in elements.values() for eq in elem.equations if eq.is_through_def]
     )
     node_efforts: dict[str, set[str]] = {}
-    node_masses: dict[str, list[str]] = {}
+    node_masses = analysis.node_masses
     velocity_for_node: dict[str, str] = {}
-    position_pairs: set[tuple[int, int]] = set()
+    position_pairs = [
+        (indices[position], indices[velocity])
+        for position, velocity in analysis.free_inertial_pairs
+    ]
     for elem in elements.values():
         for port in elem.ports.values():
             position = f"{elem.name}.{port.name}.{port.across_vars[0]}"
@@ -108,18 +111,6 @@ def _make_vector_field(
                 "prescribed_motion",
             }:
                 node_efforts[node].add(f"{elem.name}.{port.name}.{port.through_var}")
-            if elem.element_type == "mass":
-                mass_keys = [
-                    key for key in elem.params if key.endswith(".mass") or key.endswith(".inertia")
-                ]
-                if not mass_keys:
-                    raise ValueError(f"Mass element '{elem.name}' has no mass/inertia parameter")
-                node_masses.setdefault(node, []).append(mass_keys[0])
-                root_pos, _ = coordinates[position]
-                root_vel, _ = coordinates[velocity]
-                if root_pos in indices and root_vel in indices:
-                    position_pairs.add((indices[root_pos], indices[root_vel]))
-
     # Physical nodes contribute once, even when several inertias share a flange.
     groups: dict[int, list[str]] = {}
     for node, velocity in velocity_for_node.items():
@@ -153,6 +144,10 @@ def _make_vector_field(
     for node, efforts in node_efforts.items():
         require(efforts, f"force balance for {node!r}")
 
+    massless = [name for network in analysis.networks for name in network.massless_variables]
+    if massless:
+        raise ValueError(f"Free acausal coordinates require inertia: {massless!r}")
+
     effort_sensors = {}
     for label in layout._outputs:
         elem = elements[label]
@@ -163,19 +158,11 @@ def _make_vector_field(
         position = f"{elem.name}.{port_name}.{port.across_vars[0]}"
         node = _resolve(position, physical_aliases)
         root, factors = coordinates[velocity_for_node[node]]
-        if root not in layout._grounded:
-            if root in layout._inputs:
-                raise ValueError(
-                    f"Net effort sensor {label!r} requires acceleration of prescribed "
-                    f"coordinate {root!r}; prescribed velocity inputs do not supply acceleration"
-                )
-            if root not in indices or not any(
-                node_masses.get(member) for member in groups[indices[root]]
-            ):
-                raise ValueError(
-                    f"Net effort sensor {label!r} has no solved acceleration for free "
-                    f"coordinate {root!r}: its reduced group requires inertia"
-                )
+        if root in layout._inputs:
+            raise ValueError(
+                f"Net effort sensor {label!r} requires acceleration of prescribed "
+                f"coordinate {root!r}; prescribed velocity inputs do not supply acceleration"
+            )
         effort_sensors[label] = (node, root, factors)
 
     def scale(factors, params):
@@ -214,8 +201,6 @@ def _make_vector_field(
                 inertia = inertia + weight**2 * sum(
                     params[key] for key in node_masses.get(node, ())
                 )
-            if not any(node_masses.get(node) for node in nodes):
-                continue
             result[idx] = effort / inertia
         return result
 
@@ -223,7 +208,7 @@ def _make_vector_field(
         inputs, params = args
         vals = build_vals(y, inputs, params)
         dy = jnp.zeros_like(y)
-        for pos_idx, vel_idx in sorted(position_pairs):
+        for pos_idx, vel_idx in position_pairs:
             dy = dy.at[pos_idx].set(y[vel_idx])
         for idx, acceleration in accelerations(vals, params).items():
             dy = dy.at[idx].set(acceleration)

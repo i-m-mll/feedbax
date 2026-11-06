@@ -748,7 +748,7 @@ def _diagnose_structural_analysis(analysis: StructuralAnalysis) -> list[DomainDi
     diagnostics: list[DomainDiagnostic] = []
     for network in analysis.networks:
         counts = network.counts
-        if counts["equations"] != counts["unknowns"]:
+        if network.massless_variables:
             diagnostics.append(
                 DomainDiagnostic(
                     severity="error",
@@ -757,10 +757,10 @@ def _diagnose_structural_analysis(analysis: StructuralAnalysis) -> list[DomainDi
                         "Acausal network is structurally unbalanced: "
                         f"elements={list(network.elements)!r}, "
                         f"equations={counts['equations']}, unknowns={counts['unknowns']}, "
-                        f"variables={list(network.differential_variables)!r}."
+                        f"free coordinates require inertia: {list(network.massless_variables)!r}."
                     ),
                     node_ids=list(network.elements),
-                    variables=list(network.differential_variables),
+                    variables=list(network.massless_variables),
                     counts=counts,
                 )
             )

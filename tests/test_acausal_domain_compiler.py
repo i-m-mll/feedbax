@@ -169,6 +169,61 @@ def _acausal_graph_spec(interior: AcausalGraphSpec) -> GraphSpec:
     )
 
 
+def test_driven_massless_spring_endpoint_is_rejected_before_stepping() -> None:
+    connections = [
+        (("wall", "flange"), ("support", "flange_a")),
+        (("mass", "flange"), ("support", "flange_b")),
+        (("mass", "flange"), ("spring", "flange_a")),
+        (("spring", "flange_b"), ("drive", "flange")),
+        (("spring", "flange_b"), ("sense", "flange")),
+    ]
+    spec = AcausalGraphSpec(
+        physical_domain="translational",
+        nodes={
+            "wall": ComponentSpec(type="Ground"),
+            "mass": ComponentSpec(type="Mass"),
+            "support": ComponentSpec(type="LinearSpring"),
+            "spring": ComponentSpec(type="LinearSpring"),
+            "drive": ComponentSpec(
+                type="ActuationInput", params={"port_name": "u", "source_kind": "force"}
+            ),
+            "sense": ComponentSpec(
+                type="SensorOutput", params={"port_name": "pos", "quantity": "position"}
+            ),
+        },
+        connections=[{"a": a, "b": b} for a, b in connections],
+        solver={"solver_type": "euler", "dt": 0.01},
+    )
+    registry = _registry()
+    with pytest.raises(GraphCompilationError, match="require inertia"):
+        spec_to_graph(
+            _acausal_graph_spec(spec), registry,
+            input_prototypes={("__graph__", "u"): jnp.zeros(1)},
+        )
+    with pytest.raises(ValueError, match="require inertia"):
+        AcausalSystem(
+            elements={
+                "wall": Ground("wall"),
+                "mass": Mass("mass"),
+                "support": LinearSpring("support"),
+                "spring": LinearSpring("spring"),
+                "drive": ForceSource("drive"),
+                "sense": PositionSensor("sense"),
+            },
+            connections=[AcausalConnection(a, b) for a, b in connections],
+        )
+    report = compile_acausal_authoring_report(
+        spec, node_path=["plant"], component_registry=registry
+    )
+    assert report.status == "error"
+    diagnostic = next(d for d in report.diagnostics if d.code == "acausal.unbalanced")
+    assert len(diagnostic.variables) == 2
+    assert all(
+        name.rsplit(".", 1)[0] in {"drive.flange", "sense.flange", "spring.flange_b"}
+        for name in diagnostic.variables
+    )
+
+
 def _prescribed_motion_graph(*, bind_input: bool = True) -> GraphSpec:
     return GraphSpec(
         nodes={
