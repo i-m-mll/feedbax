@@ -32,10 +32,9 @@ with the wall clock and so drifted on every intact figure node, and it was
 fixed by removing that field from the authenticated bytes rather than by
 exempting the artifact from comparison.
 
-Shadow custody mirrors the authoritative root's readable bytes so parents
-resolve identically in both roots. Mirroring copies; it never hard-links,
-because a hard-linked canonical artifact name would make the secure
-content-addressed store refuse to publish over an aliased name.
+Each candidate uses a separate shadow root seeded from its declared inputs.
+The original receipt is admitted before scratch allocation, and parent manifest
+bytes remain those authenticated by their original bindings.
 
 Stability note: this module is not part of the owner-ratified downstream
 inventory in ``docs/design/downstream_interface_stability.md``. The
@@ -48,7 +47,7 @@ process boundary and a repair record is written to durable storage.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
@@ -80,6 +79,7 @@ from feedbax.analysis.fulfillment_adapters import (
     execute_node,
     expand_evaluation_matrix_node,
 )
+from feedbax.analysis.fulfillment_inputs import stage_node_inputs
 from feedbax.contracts.base import (
     ArtifactRef,
     StrictModel,
@@ -113,14 +113,6 @@ FULFILLMENT_QUARANTINE_DIRECTORY = "quarantine"
 
 #: Root-relative directory holding durable repair records.
 FULFILLMENT_REPAIR_DIRECTORY = "repairs"
-
-#: Root-relative entries a shadow root never mirrors from its authoritative root.
-#: The manifest index stores absolute paths, so a copied index would resolve
-#: shadow lookups back to authoritative bytes.
-SHADOW_MIRROR_EXCLUDED: frozenset[str] = frozenset(
-    {"index", FULFILLMENT_QUARANTINE_DIRECTORY, FULFILLMENT_REPAIR_DIRECTORY}
-)
-
 
 class ArtifactProjection(StrictModel):
     """The deterministic output identity of one artifact.
@@ -513,7 +505,7 @@ def _collect_differences(
 
 @dataclass(frozen=True)
 class ShadowCustody:
-    """A seeded shadow receipt root that never holds authoritative bytes."""
+    """A candidate receipt root separate from authoritative custody."""
 
     authoritative_root: Path
     root: Path
@@ -527,21 +519,12 @@ def shadow_custody(
     shadow_root: Path | str | None = None,
     retain: bool = False,
 ) -> Iterator[ShadowCustody]:
-    """Open a shadow receipt root mirroring the authoritative root's readable bytes.
-
-    Parents must resolve identically in both roots, so the mirror copies every
-    top-level entry of the authoritative root except the manifest index (whose
-    stored paths are absolute) and this module's own quarantine and repair
-    directories. Mirroring never hard-links: a hard-linked canonical artifact
-    name makes the secure content-addressed store refuse to publish over an
-    aliased name, which would break later writes into the authoritative root.
+    """Open a separate candidate workspace. Inputs are staged at execution time.
 
     Args:
         environment: The authoritative environment being shadowed.
-        shadow_root: An explicit shadow location. A caller rebuilding many nodes
-            passes one root and pays the mirror once. It must not live inside
-            the authoritative root.
-        retain: Keep the shadow root after the block instead of discarding it.
+        shadow_root: An explicit candidate location for one node.
+        retain: Keep the workspace after the block instead of discarding it.
     """
     authoritative = Path(environment.root)
     if shadow_root is None:
@@ -551,7 +534,7 @@ def shadow_custody(
     _validate_shadow_root(chosen, authoritative)
     seeded = chosen.exists()
     if not seeded:
-        _mirror_root(authoritative, chosen)
+        chosen.mkdir(parents=True, mode=0o700)
     try:
         yield ShadowCustody(
             authoritative_root=authoritative,
@@ -636,20 +619,6 @@ def _execute_candidate(
     return execute_node(request, environment=shadow.environment)
 
 
-def _mirror_root(source: Path, destination: Path) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
-    if not source.is_dir():
-        return
-    for entry in sorted(source.iterdir()):
-        if entry.name in SHADOW_MIRROR_EXCLUDED:
-            continue
-        target = destination / entry.name
-        if entry.is_dir():
-            shutil.copytree(entry, target, dirs_exist_ok=True, symlinks=True)
-        elif entry.is_file():
-            shutil.copy2(entry, target)
-
-
 def rebuild_node(
     request: NodeRequest,
     *,
@@ -678,18 +647,6 @@ def rebuild_node(
             f"evaluation matrix node {request.node_key!r} is not a single rebuild; expand it "
             "with expand_evaluation_matrix_node or use rebuild_nodes"
         )
-    if shadow is not None:
-        return _rebuild_in_shadow(request, environment=environment, shadow=shadow)
-    with shadow_custody(environment) as opened:
-        return _rebuild_in_shadow(request, environment=environment, shadow=opened)
-
-
-def _rebuild_in_shadow(
-    request: NodeRequest,
-    *,
-    environment: FulfillmentEnvironment,
-    shadow: ShadowCustody,
-) -> NodeRebuildOutcome:
     admitted_bytes = AdmittedManifestBytes()
     admission = admit_node(request, environment=environment, capture=admitted_bytes)
     if not admission.admitted:
@@ -706,7 +663,11 @@ def _rebuild_in_shadow(
         ).manifest,
         node_kind=request.node_kind,
     )
-    rebuilt, _path = _execute_candidate(request, environment=environment, shadow=shadow)
+    workspace = nullcontext(shadow) if shadow is not None else shadow_custody(environment)
+    with workspace as candidate:
+        rebuilt, _path = _execute_staged_candidate(
+            request, environment=environment, shadow=candidate
+        )
     observed = output_projection(rebuilt, node_kind=request.node_kind)
     differences = compare_output_projections(expected, observed)
     return NodeRebuildOutcome(
@@ -718,6 +679,14 @@ def _rebuild_in_shadow(
         observed=observed,
         differences=list(differences),
     )
+
+
+def _execute_staged_candidate(
+    request: NodeRequest, *, environment: FulfillmentEnvironment, shadow: ShadowCustody
+) -> tuple[AnyManifest, Path]:
+    _validate_shadow_output(shadow, environment=environment)
+    staged_request = stage_node_inputs(request, environment=environment, destination=shadow.root)
+    return _execute_candidate(staged_request, environment=environment, shadow=shadow)
 
 
 @dataclass(frozen=True)
@@ -742,11 +711,9 @@ def rebuild_nodes(
 ) -> RebuildRun:
     """Rebuild every node serially in canonical order, refusing on any drift.
 
-    Each node is verified in its own shadow root, freshly mirrored from the
-    authoritative root. Sharing one shadow across nodes would let an earlier
-    node's rebuilt receipt stand in as a later node's parent, so a dependent
-    node would be verified against rebuilt bytes instead of the authoritative
-    ones it really binds. Every node is verified before the refusal is raised,
+    Each node stages its inputs independently from the authoritative root.
+    This keeps a rebuilt predecessor from replacing the authenticated parent a
+    later node reads. Every node is verified before the refusal is raised,
     so the drift report is complete rather than truncated at the first
     difference. Evaluation matrix nodes are expanded to their canonical rows.
 
@@ -824,19 +791,6 @@ def repair_node(
             f"evaluation matrix node {request.node_key!r} is not a single receipt; expand it "
             "with expand_evaluation_matrix_node and repair each row"
         )
-    if shadow is not None:
-        return _repair_in_shadow(request, environment=environment, shadow=shadow, metadata=metadata)
-    with shadow_custody(environment) as opened:
-        return _repair_in_shadow(request, environment=environment, shadow=opened, metadata=metadata)
-
-
-def _repair_in_shadow(
-    request: NodeRequest,
-    *,
-    environment: FulfillmentEnvironment,
-    shadow: ShadowCustody,
-    metadata: Mapping[str, Any] | None,
-) -> RepairResult:
     started_at = utc_now()
     root = Path(environment.root)
     failed_bytes = AdmittedManifestBytes()
@@ -859,7 +813,8 @@ def _repair_in_shadow(
     if failed_bytes.raw is None:  # pragma: no cover - present implies bytes were read
         raise RuntimeError("a present receipt must carry the bytes admission read")
     stored_manifest = load_manifest_bytes(failed_bytes.raw)
-    _validate_shadow_output(shadow, environment=environment)
+    if shadow is not None:
+        _validate_shadow_output(shadow, environment=environment)
     _validate_repair_destination(stored_manifest, path=manifest_path, root=root)
     quarantined = _quarantine_failed_bytes(
         stored_manifest,
@@ -868,27 +823,29 @@ def _repair_in_shadow(
         root=root,
     )
     old_manifest_sha256 = quarantined[0].observed_sha256
-    _purge_mirrored_corruption(stored_manifest, shadow_root=shadow.root)
-
-    candidate, candidate_path = _execute_candidate(request, environment=environment, shadow=shadow)
-    candidate_outcome = admit_node(request, environment=shadow.environment, path=candidate_path)
-    if not candidate_outcome.admitted:
-        raise FulfillmentRepairError(
-            f"repair candidate for node {request.node_key!r} failed admission in shadow custody: "
-            f"{candidate_outcome.describe()}",
-            outcome=candidate_outcome,
+    workspace = nullcontext(shadow) if shadow is not None else shadow_custody(environment)
+    with workspace as opened:
+        candidate, candidate_path = _execute_staged_candidate(
+            request, environment=environment, shadow=opened
         )
+        candidate_outcome = admit_node(request, environment=opened.environment, path=candidate_path)
+        if not candidate_outcome.admitted:
+            raise FulfillmentRepairError(
+                f"repair candidate for node {request.node_key!r} failed admission in shadow custody: "
+                f"{candidate_outcome.describe()}",
+                outcome=candidate_outcome,
+            )
 
-    promoted = normalize_manifest_spec_payloads(
-        candidate.model_copy(
-            update={
-                "artifacts": [
-                    _promote_artifact_bytes(artifact, shadow_root=shadow.root, root=root)
-                    for artifact in candidate.artifacts
-                ]
-            }
+        promoted = normalize_manifest_spec_payloads(
+            candidate.model_copy(
+                update={
+                    "artifacts": [
+                        _promote_artifact_bytes(artifact, shadow_root=opened.root, root=root)
+                        for artifact in candidate.artifacts
+                    ]
+                }
+            )
         )
-    )
     promoted_outcome = admit_node(request, environment=environment, manifest=promoted)
     if not promoted_outcome.admitted:
         raise FulfillmentRepairError(
@@ -984,24 +941,6 @@ def _quarantine_failed_bytes(
             )
         )
     return tuple(entries)
-
-
-def _purge_mirrored_corruption(manifest: AnyManifest, *, shadow_root: Path) -> None:
-    """Drop the failed receipt's corrupt artifact copies from the shadow root.
-
-    The shadow mirrors the authoritative root, so it also mirrors the corruption
-    being repaired. A content-addressed name holding bytes that disagree with it
-    makes the secure store refuse to publish, which would fail the candidate
-    execution for the wrong reason. Only the repaired node's own mismatched
-    copies are dropped, and only inside the shadow, whose bytes are scratch: the
-    authoritative bytes are already quarantined.
-    """
-    for artifact in manifest.artifacts:
-        path = artifact_bytes_path(artifact, root=shadow_root)
-        if path is None or not path.is_file():
-            continue
-        if hashlib.sha256(path.read_bytes()).hexdigest() != artifact.sha256:
-            path.unlink()
 
 
 def _quarantine_bytes(
