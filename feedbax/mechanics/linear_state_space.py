@@ -87,16 +87,24 @@ class StructuralLinearDynamicsPerturbation(Module):
         return cls(materialize_array_value(declaration), scale=scale, active=active)
 
     def effective_transition(self, transition: Array) -> Array:
-        """Return the transition matrix with this structural change applied."""
-        transition = jnp.asarray(transition, dtype=self.delta_A.dtype)
+        """Apply the change in the nominal floating-point matrix's dtype.
+
+        When enabled, cast the stored scale and delta to the nominal dtype
+        before multiplying and adding. When disabled, return the nominal
+        matrix directly.
+        """
+        transition = jnp.asarray(transition)
         if transition.shape != self.delta_A.shape:
             raise ValueError("delta_A must have the same shape as the transition matrix.")
-        delta_A = jax.lax.cond(
-            self.active,
-            lambda: self.scale * self.delta_A,
-            lambda: jnp.zeros_like(self.delta_A),
-        )
-        return transition + delta_A
+        if not jnp.issubdtype(transition.dtype, jnp.floating):
+            raise TypeError("The nominal transition matrix must have a floating-point dtype.")
+
+        def apply_change() -> Array:
+            scale = self.scale.astype(transition.dtype)
+            delta_A = self.delta_A.astype(transition.dtype)
+            return transition + scale * delta_A
+
+        return jax.lax.cond(self.active, apply_change, lambda: transition)
 
 
 def structural_linear_transition(
@@ -104,7 +112,7 @@ def structural_linear_transition(
     state: Array,
     perturbation: StructuralLinearDynamicsPerturbation,
 ) -> Array:
-    """Apply a structural linear transition without an additive input channel."""
+    """Apply a floating-point structural transition without an additive input channel."""
     return perturbation.effective_transition(transition) @ state
 
 
