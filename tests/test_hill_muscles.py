@@ -35,7 +35,7 @@ from feedbax.mechanics.musculoskeletal import (
     RigidTendonMusculoskeletalArm,
     CompliantTendonMusculoskeletalArm,
 )
-from feedbax.mechanics.units import DEFAULT_MUSCLE_VMAX
+from feedbax.mechanics.units import DEFAULT_MUSCLE_VMAX, ECCENTRIC_VELOCITY_LIMIT_FRACTION
 from feedbax.runtime.graph import init_state_from_component
 
 
@@ -585,7 +585,14 @@ class TestCompliantTendonMusculoskeletalArm:
         assert "forces" in outputs
         assert jnp.all(jnp.isfinite(outputs["forces"]))
 
-    def test_arm_fiber_velocities_follow_tendon_load(self):
+    @pytest.mark.parametrize(
+        ("lengthening_force_multiplier", "lengthening_velocity"),
+        [(1.0 + 7.0 / 30.0, 0.05), (2.0, ECCENTRIC_VELOCITY_LIMIT_FRACTION)],
+        ids=["equilibrium", "velocity-cap"],
+    )
+    def test_tendon_load_drives_motion_and_outputs(
+        self, lengthening_force_multiplier, lengthening_velocity
+    ):
         params = HillMuscleParams(
             max_isometric_force=500.0,
             optimal_fiber_length=0.08,
@@ -594,7 +601,9 @@ class TestCompliantTendonMusculoskeletalArm:
         )
         activation = jnp.array([0.6, 0.6])
         projection = math.cos(params.pennation_angle)
-        normalized_tendon_force = activation * projection * jnp.array([1.0 / 6.0, 1.0 + 7.0 / 30.0])
+        normalized_tendon_force = activation * projection * jnp.array([
+            1.0 / 6.0, lengthening_force_multiplier,
+        ])
         tendon_lengths = params.tendon_slack_length * TendonForceLengthCurve().inverse(
             normalized_tendon_force
         )
@@ -609,18 +618,43 @@ class TestCompliantTendonMusculoskeletalArm:
         )
         key = jr.PRNGKey(0)
         arm = CompliantTendonMusculoskeletalArm(
-            muscle_params=(params, params), geometry=geometry, key=key
+            muscle_params=(params, params),
+            geometry=geometry,
+            arm_l=(0.30, 0.33),
+            arm_m=(1.4, 1.0),
+            arm_I=(0.025, 0.045),
+            arm_s=(0.11, 0.16),
+            arm_B=((0.0, 0.0), (0.0, 0.0)),
+            dt=1e-5,
+            key=key,
         )
-        state = eqx.tree_at(lambda s: s.activations, arm.init_system_state(key=key), activation)
+        state = init_state_from_component(arm)
+        dae_state = state.get(arm.state_index)
+        dae_state = eqx.tree_at(lambda s: s.system.activations, dae_state, activation)
+        state = state.set(arm.state_index, dae_state)
 
-        derivative = arm.vector_field(0.0, state, activation)
-        normalized_velocities = derivative.fiber_lengths / (
-            params.vmax * params.optimal_fiber_length
+        outputs, stepped_state = arm({"excitations": activation}, state, key=key)
+        stepped_system = stepped_state.get(arm.state_index).system
+        normalized_velocities = (stepped_system.fiber_lengths - params.optimal_fiber_length) / (
+            arm.dt * params.vmax * params.optimal_fiber_length
+        )
+        assert jnp.allclose(normalized_velocities, jnp.array([-0.5, lengthening_velocity]))
+
+        # Euler leaves both joint angles at zero on the first step from rest.
+        # The inertia there is fixed by the parameters above, and sin(0) makes
+        # the Coriolis torque zero even after the step.
+        inertia = jnp.array([[0.256, 0.093], [0.093, 0.045]])
+        start_torque = 0.04 * params.max_isometric_force * (
+            normalized_tendon_force[0] - normalized_tendon_force[1]
+        )
+        assert jnp.allclose(
+            inertia @ (stepped_system.arm.d_angle / arm.dt), jnp.array([start_torque, 0.0])
         )
 
-        assert jnp.allclose(normalized_velocities, jnp.array([-0.5, 0.05]))
-        projected_fiber_force = activation * arm.force_velocity(normalized_velocities) * projection
-        assert jnp.allclose(projected_fiber_force, normalized_tendon_force)
+        post_acceleration = arm.vector_field(arm.dt, stepped_system, activation).arm.d_angle
+        post_force_torque = 0.04 * (outputs["forces"][0] - outputs["forces"][1])
+        assert jnp.allclose(outputs["torques"], jnp.array([post_force_torque, 0.0]))
+        assert jnp.allclose(inertia @ post_acceleration, outputs["torques"])
 
     def test_gradient_flow_compliant(self, arm):
         """Test gradients through compliant tendon model."""

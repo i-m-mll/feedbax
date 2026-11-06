@@ -454,6 +454,12 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
     For very stiff dynamics, consider using an implicit solver
     (e.g., ImplicitEuler, Kvaerno3, Kvaerno5).
 
+    Joint torque comes from the tendon spring forces at the current joint
+    angles and fiber lengths. If the required force lies outside the range
+    the fibers can produce, the inverse force-velocity law limits the speed
+    of fiber length evolution. The tendon spring still determines the
+    instantaneous transmitted force.
+
     Warning:
         This is computationally more expensive than the rigid tendon
         model and requires careful tuning of solver tolerances.
@@ -584,17 +590,25 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
         norm_force = jnp.clip(norm_force, 0.0, 10.0)  # Max 10x isometric
         return mp.max_isometric_force * norm_force
 
+    def _tendon_loads(self, state: MusculoskeletalState) -> tuple[Array, Array]:
+        """Return tendon forces and their joint torques at the given state."""
+        angle = state.arm.angle
+        mt_lengths = self.geometry.musculotendon_lengths(angle)
+        tendon_forces = jnp.array([
+            self._compute_tendon_force(state.fiber_lengths[i], mt_lengths[i], mp)
+            for i, mp in enumerate(self.muscle_params)
+        ])
+        torques = self.geometry.moment_arms(angle).T @ tendon_forces
+        return tendon_forces, torques
+
     def _compute_fiber_velocity(
         self,
         activation: Array,
         fiber_length: Array,
-        mt_length: Array,
+        tendon_force: Array,
         mp: HillMuscleParams,
     ) -> Array:
-        """Compute fiber velocity from force equilibrium."""
-        # Tendon force
-        tendon_force = self._compute_tendon_force(fiber_length, mt_length, mp)
-
+        """Compute the bounded fiber speed from the instantaneous tendon force."""
         # Required fiber force
         cos_alpha = jnp.cos(mp.pennation_angle)
         required_fiber_force = tendon_force / cos_alpha
@@ -634,35 +648,17 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
             for i in range(self.n_muscles)
         ])
 
-        # Muscle geometry
-        mt_lengths = self.geometry.musculotendon_lengths(angle)
-        moment_arms = self.geometry.moment_arms(angle)
+        tendon_forces, torques = self._tendon_loads(state)
 
-        # Fiber velocities (from force equilibrium)
         fiber_velocities = jnp.array([
             self._compute_fiber_velocity(
                 state.activations[i],
                 state.fiber_lengths[i],
-                mt_lengths[i],
+                tendon_forces[i],
                 self.muscle_params[i],
             )
             for i in range(self.n_muscles)
         ])
-
-        # Muscle forces
-        forces = []
-        for i, mp in enumerate(self.muscle_params):
-            norm_length = state.fiber_lengths[i] / mp.optimal_fiber_length
-            norm_velocity = fiber_velocities[i] / (mp.vmax * mp.optimal_fiber_length)
-            fl = self.force_length(norm_length)
-            fv = self.force_velocity(norm_velocity)
-            passive = self.passive_force_length(norm_length)
-            force = mp.max_isometric_force * (state.activations[i] * fl * fv + passive)
-            forces.append(force)
-        forces = jnp.array(forces)
-
-        # Joint torques
-        torques = moment_arms.T @ forces
 
         # Arm dynamics
         c_vec = (
@@ -692,7 +688,7 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
             activations=d_activations,
             fiber_lengths=fiber_velocities,  # d_fiber_length = velocity
             fiber_velocities=jnp.zeros_like(fiber_velocities),
-            forces=jnp.zeros_like(forces),
+            forces=jnp.zeros_like(tendon_forces),
         )
 
     def init_system_state(self, *, key: PRNGKeyArray) -> MusculoskeletalState:
@@ -751,17 +747,7 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
 
         # Compute additional outputs
         effector = self._effector(ms_state.arm)
-        mt_lengths = self.geometry.musculotendon_lengths(ms_state.arm.angle)
-
-        forces = jnp.array([
-            self._compute_tendon_force(
-                ms_state.fiber_lengths[i],
-                mt_lengths[i],
-                self.muscle_params[i],
-            )
-            for i in range(self.n_muscles)
-        ])
-        torques = self.geometry.moment_arms(ms_state.arm.angle).T @ forces
+        forces, torques = self._tendon_loads(ms_state)
 
         outputs.update({
             "effector": effector,
