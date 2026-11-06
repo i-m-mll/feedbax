@@ -83,7 +83,7 @@ N_DIM = 2
 
 
 def _validate_jittable(n_steps: int, eb: Array | None, es: Array | None):
-    """Safe under jit/vmap; supports eb ∈ {(E+1,), (B, E+1)} and es ∈ {(M,), (B, M)}."""
+    """Validate schedules on the final axis, with optional leading batch axes."""
 
     if eb is not None:
         # Nondecreasing along the last axis
@@ -378,9 +378,13 @@ def prepare_trial(model: Component, trial_spec: "TaskTrialSpec") -> PreparedTria
 class TrialTimeline(Module):
     """A typed, optional timeline: contiguous epochs + named point events.
 
+    Epoch bounds and event steps store their schedule on the last axis, with
+    any leading axes indexing trials. Names and ``n_steps`` are shared by all
+    trials in a batch.
+
     Invariants:
-      - If `epoch_bounds` is present with length E+1, `epoch_names` has length E
-      - epoch_bounds is nondecreasing; epoch_bounds[0] == 0; epoch_bounds[-1] == n_steps (preferred)
+      - If `epoch_bounds` is present with trailing length E+1, `epoch_names` has length E
+      - epoch_bounds is nondecreasing along the last axis, starts at 0 and ends at or before n_steps
       - event_steps are in [0, n_steps)
       - target_start_step is the first post-reset control output scored by target losses
     """
@@ -391,10 +395,10 @@ class TrialTimeline(Module):
     )
 
     # Epoch partition
-    epoch_bounds: Optional[Array] = None  # shape (E+1,), int
+    epoch_bounds: Optional[Array] = None  # shape (..., E+1), int
     epoch_names: Tuple[str, ...] = eqx.field(default_factory=tuple, static=True)
     # Point events
-    event_steps: Optional[Array] = None  # shape (M,), int
+    event_steps: Optional[Array] = None  # shape (..., M), int
     event_names: Tuple[str, ...] = eqx.field(default_factory=tuple, static=True)
 
     # Fast name→index maps (static, not in the PyTree)
@@ -437,75 +441,93 @@ class TrialTimeline(Module):
     def has_epochs(self) -> bool:
         return self.epoch_bounds is not None and len(self.epoch_names) > 0
 
-    def epoch_idx_at(self, t: int) -> ArrayLike:
-        """Return epoch index k such that bounds[k] ≤ t < bounds[k+1], or -1 if unknown."""
-        if self.epoch_bounds is None:
-            return -1
-        # searchsorted is jittable
-        k = jnp.searchsorted(self.epoch_bounds, jnp.asarray(t, dtype=jnp.int32), side="right") - 1
-        # Clamp to [-1, E-1]
-        E = self.epoch_bounds.shape[0] - 1
-        return jnp.where((k >= 0) & (k < E), k, -1)
+    def epoch_idx_at(self, t: ArrayLike) -> ArrayLike:
+        """Return the epoch containing each step, or -1 outside the epoch bounds.
 
-    def epoch_bounds_by_idx(self, k):
-        """JAX-safe: returns (s, e) as jnp.int32 scalars; OK if `k` is traced."""
+        The intervals are half-open. Every trial receives the same query ``t``
+        and the result has shape ``batch_shape + shape(t)`` when bounds exist.
+        Use ``vmap`` over trials and steps to pair distinct queries with trials.
+        """
+        bounds = self.epoch_bounds
+        if bounds is None:
+            return -1
+        search = partial(jnp.searchsorted, side="right")
+        for _ in bounds.shape[:-1]:
+            search = jax.vmap(search, in_axes=(0, None))
+        k = search(bounds, jnp.asarray(t, dtype=jnp.int32)) - 1
+        return jnp.where(k < bounds.shape[-1] - 1, k, -1)
+
+    def epoch_bounds_by_idx(self, k: ArrayLike) -> tuple[Array, Array]:
+        """Return start and end steps for scalar index ``0 <= k < E`` in each trial."""
         eb = self.epoch_bounds
         if eb is None:
             raise ValueError("No epoch bounds available")
 
         k = jnp.asarray(k, jnp.int32)
-        s = jax.lax.dynamic_index_in_dim(eb, k, keepdims=False)
-        e = jax.lax.dynamic_index_in_dim(eb, k + jnp.int32(1), keepdims=False)
+        s = jax.lax.dynamic_index_in_dim(eb, k, axis=-1, keepdims=False)
+        e = jax.lax.dynamic_index_in_dim(eb, k + jnp.int32(1), axis=-1, keepdims=False)
         return s, e
 
-    def epoch_mask_by_idx(self, k: int) -> Array:
-        """Boolean mask of timesteps in epoch k."""
+    def epoch_mask_by_idx(self, k: ArrayLike) -> Array:
+        """Boolean mask of timesteps in epoch k, with time on the last axis."""
         s, e = self.epoch_bounds_by_idx(k)
-        return (jnp.arange(self.n_steps) >= s) & (jnp.arange(self.n_steps) < e)
+        t = jnp.arange(self.n_steps)
+        return (t >= s[..., None]) & (t < e[..., None])
 
     def epoch_idx(self, name: str) -> int:
         return self._epoch_to_idx[name]
 
-    def epoch_bounds_by_name(self, name: str) -> tuple[int, int]:
+    def epoch_bounds_by_name(self, name: str) -> tuple[Array, Array]:
         return self.epoch_bounds_by_idx(self.epoch_idx(name))
 
     def epoch_mask(self, name: str) -> Array:
         return self.epoch_mask_by_idx(self.epoch_idx(name))
 
-    def event_time(self, name: str) -> int:
+    def event_time(self, name: str) -> int | Array:
+        """Return the named event's step per trial, as an int for a concrete single trial."""
         assert self.event_steps is not None, "No events available"
         i = self._event_to_idx[name]
-        return int(self.event_steps[i])
+        step = self.event_steps[..., i]
+        if step.ndim == 0 and not isinstance(step, jax.core.Tracer):
+            return int(step)
+        return step
 
     def epoch_name_at(self, t: int) -> Optional[str]:
+        """Return the epoch name at a step on a single concrete trial."""
+        if self.epoch_bounds is not None and self.epoch_bounds.ndim > 1:
+            raise ValueError("epoch_name_at requires unbatched epoch bounds. Select one trial first.")
         k = int(self.epoch_idx_at(t))
         if k == -1:
             return None
         return self.epoch_names[k]
 
     def events_at(self, t: int) -> list[str]:
+        """Return event names at a step on a single concrete trial."""
         if self.event_steps is None:
             return []
+        if self.event_steps.ndim > 1:
+            raise ValueError("events_at requires unbatched event steps. Select one trial first.")
         t = int(t)
         # Small list comp is fine; this is not meant for huge M in hot loops
         return [
             name for name, step in zip(self.event_names, list(self.event_steps)) if int(step) == t
         ]
 
-    def window_for_epoch(self, name: str) -> tuple[int, int]:
+    def window_for_epoch(self, name: str) -> tuple[Array, Array]:
         """Alias for epoch_bounds_by_name, reads nicely at call site."""
         return self.epoch_bounds_by_name(name)
 
     def window_for_event_centered(
         self, name: str, before: int, after: int, clamp: bool = True
-    ) -> tuple[int, int]:
-        """Return [t0, t1) around an event (e.g., analysis windows)."""
+    ) -> tuple[int | Array, int | Array]:
+        """Return [t0, t1) around an event, retaining the batch shape."""
         t = self.event_time(name)
         t0 = t - before
         t1 = t + after
         if clamp:
-            t0 = max(0, t0)
-            t1 = min(self.n_steps, t1)
+            if isinstance(t, int):
+                return max(0, t0), min(self.n_steps, t1)
+            return jnp.maximum(0, t0), jnp.minimum(self.n_steps, t1)
         return t0, t1
 
     @property
