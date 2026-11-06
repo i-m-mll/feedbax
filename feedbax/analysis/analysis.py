@@ -4,7 +4,7 @@ import pprint
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from functools import cached_property, partial, wraps
 from itertools import chain
-from pathlib import Path
+from pathlib import Path, PurePath
 from types import EllipsisType, FunctionType, MappingProxyType
 from typing import (
     TYPE_CHECKING,
@@ -102,6 +102,7 @@ from feedbax.analysis.result_cache import (
     _CACHE_LOAD_ERRORS,
     _CACHE_SAVE_ERRORS,
     _fingerprint_cache_inputs,
+    _fingerprint_semantic_values,
     _load_analysis_result_cache,
     _write_analysis_result_cache,
 )
@@ -153,6 +154,14 @@ __all__ = [
     "_write_analysis_result_cache",
     "get_validation_trial_specs",
 ]
+
+
+def _project_dependency_metadata(value: Any) -> Any:
+    if isinstance(value, PurePath):
+        return value.parts
+    # Opaque keys and factories can affect reconstruction. Only coalesce them
+    # when they are the same live object. This grants no result-cache authority.
+    return id(value)
 
 
 PARAM_SEQ_LEN_TRUNCATE = 9
@@ -828,10 +837,23 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 }
             }
         if isinstance(value, Mapping):
-            return {
-                str(key): self._hashable_input_value(item)
-                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-            }
+            children, treedef = eqx.tree_flatten_one_level(value)
+            node = treedef.node_data()
+            if node is None:
+                raise TypeError(f"Unregistered analysis input mapping: {type(value).__qualname__}")
+            cls, metadata = node
+            # Match the tree used at execution: dict keys are sorted by JAX,
+            # while ordered or custom mappings carry their own order and metadata.
+            mapping_id = _fingerprint_semantic_values(
+                metadata,
+                header=(cls.__module__, cls.__qualname__),
+                project_leaf=_project_dependency_metadata,
+            )
+            return (
+                b"feedbax.analysis.input-mapping.v2",
+                mapping_id,
+                tuple(self._hashable_input_value(child) for child in children),
+            )
         if isinstance(value, tuple):
             return tuple(self._hashable_input_value(item) for item in value)
         if isinstance(value, list):
@@ -2160,13 +2182,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
     @cached_property
     def md5_str(self):
-        """An md5 hash string that identifies this analysis.
-
-        The hash is computed from the analysis parameter values and not the instance itself.
-        Any callable leaves are first replaced with their whitespace-stripped source strings,
-        which should generally capture when the implementation is identical, and should not
-        result in any
-        """
+        """Identify a logical node from its inputs, operations, and parameters."""
         # ? TODO: De-duplicate computations *prior* to ops (i.e. some analyses get repeated with
         # ? different ops)
         ops_params = self._extract_ops_info()

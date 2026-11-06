@@ -1,7 +1,7 @@
 """Versioned result-cache helpers for analysis execution."""
 
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import fields
 from enum import Enum
 import hashlib
@@ -59,6 +59,26 @@ def _fingerprint_cache_inputs(
     its inputs as read-only values. Opaque objects and Python functions cannot
     authorize reuse.
     """
+    return _fingerprint_semantic_values(
+        config,
+        kwargs,
+        data,
+        header=(
+            ANALYSIS_RESULT_CACHE_SCHEMA_VERSION,
+            ANALYSIS_ENGINE_REVISION,
+            analysis_type.__module__,
+            analysis_type.__qualname__,
+            computation_revision,
+        ),
+    )
+
+
+def _fingerprint_semantic_values(
+    *values: Any,
+    header: tuple[str, ...] = (),
+    project_leaf: Callable[[Any], Any] | None = None,
+) -> str:
+    """Hash framed values with an optional projection for opaque leaves."""
     digest = hashlib.sha256()
 
     def frame(value: bytes | memoryview) -> None:
@@ -72,10 +92,18 @@ def _fingerprint_cache_inputs(
         text(cls.__module__)
         text(cls.__qualname__)
 
-    def array_payload(value: np.ndarray) -> None:
+    def encode_opaque_leaf(value: Any, reason: str) -> None:
+        if project_leaf is None:
+            raise _UnsupportedCacheInput(reason)
+        frame(b"projected-leaf")
+        type_name(type(value))
+        encode(project_leaf(value))
+
+    def array_payload(value: np.ndarray, source: Any) -> None:
         dtype = value.dtype
         if dtype.hasobject or dtype.fields is not None or dtype.metadata is not None:
-            raise _UnsupportedCacheInput(f"array dtype {dtype!r}")
+            encode_opaque_leaf(source, f"array dtype {dtype!r}")
+            return
         text(dtype.str)
         text(dtype.name)
         encode(value.shape)
@@ -111,19 +139,19 @@ def _fingerprint_cache_inputs(
             encode(value.value)
         elif cls is np.ndarray or (isinstance(value, np.generic) and cls is value.dtype.type):
             frame(b"numpy-array" if cls is np.ndarray else b"numpy-scalar")
-            array_payload(np.asarray(value))
+            array_payload(np.asarray(value), value)
         elif isinstance(value, jax.Array) and not isinstance(value, jax.core.Tracer):
             if not value.is_fully_addressable:
-                raise _UnsupportedCacheInput("non-addressable JAX array")
-            if jax.dtypes.issubdtype(value.dtype, jax.dtypes.prng_key):
+                encode_opaque_leaf(value, "non-addressable JAX array")
+            elif jax.dtypes.issubdtype(value.dtype, jax.dtypes.prng_key):
                 frame(b"jax-key")
                 text(str(jax.random.key_impl(value)))
                 encode(value.shape)
-                array_payload(np.asarray(jax.random.key_data(value)))
+                array_payload(np.asarray(jax.random.key_data(value)), value)
             else:
                 frame(b"jax-array")
                 encode(value.weak_type)
-                array_payload(np.asarray(value))
+                array_payload(np.asarray(value), value)
         elif cls in (dict, OrderedDict, MappingProxyType):
             frame(b"mapping")
             type_name(cls)
@@ -160,11 +188,13 @@ def _fingerprint_cache_inputs(
 
         try:
             children, definition = jtu.tree_flatten(value, is_leaf=stop_at_child)
-        except (TypeError, ValueError) as exc:
-            raise _UnsupportedCacheInput(f"cannot flatten {type(value).__qualname__}") from exc
+        except (TypeError, ValueError):
+            encode_opaque_leaf(value, f"cannot flatten {type(value).__qualname__}")
+            return
         node = definition.node_data()
         if node is None:
-            raise _UnsupportedCacheInput(f"{type(value).__module__}.{type(value).__qualname__}")
+            encode_opaque_leaf(value, f"{type(value).__module__}.{type(value).__qualname__}")
+            return
         _, aux = node
         frame(b"pytree")
         type_name(type(value))
@@ -176,14 +206,11 @@ def _fingerprint_cache_inputs(
         for child in children:
             encode(child)
 
-    text(ANALYSIS_RESULT_CACHE_SCHEMA_VERSION)
-    text(ANALYSIS_ENGINE_REVISION)
-    type_name(analysis_type)
-    text(computation_revision)
     try:
-        encode(config)
-        encode(kwargs)
-        encode(data)
+        for label in header:
+            text(label)
+        for value in values:
+            encode(value)
     except RecursionError as exc:
         raise _UnsupportedCacheInput("cyclic or deeply nested value") from exc
     return digest.hexdigest()
