@@ -1530,8 +1530,7 @@ def test_lr_trace_normalizes_fresh_init_completed_batch_steps_at_cosine_boundary
     position N-1. Without the normalization the constant-to-cosine boundary sample
     (step 500) certifies against the peak (schedule position 500) and is off by ~0.18%.
 
-    Mirrors the preserved SISU wave-1 run; the observed values are its authentic
-    recorded learning rates at completed batches 500, 6500, and 12000.
+    Uses recorded learning rates at completed batches 500, 6500, and 12000.
     """
     optimizer = OptimizerSpec(
         type="adamw",

@@ -221,6 +221,7 @@ class StudioEvaluationMatrixPreview(StudioExecutionModel):
     stage_id: str
     selected_training_run_count: int
     condition_count: int
+    condition_labels: list[str]
     checkpoint_policy_count: int
     total_eval_count: int
     materialized_count: int
@@ -1915,6 +1916,7 @@ def _evaluation_preview_from_plan(plan: dict[str, Any]) -> StudioEvaluationMatri
         stage_id=plan["stage"].id,
         selected_training_run_count=selected_count,
         condition_count=condition_count,
+        condition_labels=[condition["label"] for condition in plan["conditions"]],
         checkpoint_policy_count=1,
         total_eval_count=total,
         materialized_count=materialized,
@@ -2308,7 +2310,7 @@ def _write_pending_evaluation_manifest(
             "staged_at": utc_now().isoformat(),
             "selected_training_run_id": training_ref.id,
             "training_run_ids": [training_ref.id],
-            "eval_protocol": _eval_protocol_metadata(condition),
+            "condition_label": condition["label"],
             "checkpoint_policy": item["checkpoint_policy"],
             "checkpoint_selection_manifest_id": checkpoint_ref.id,
             "condition_axis_coordinates": condition["axis_coordinates"],
@@ -2362,15 +2364,6 @@ def _pending_evaluation_manifest_ref(
 def _evaluation_condition_label(training_ref: ParentRef, condition: dict[str, Any]) -> str:
     label = condition["label"]
     return f"{label} on {training_ref.id}" if label != "default" else f"Eval {training_ref.id}"
-
-
-def _eval_protocol_metadata(condition: dict[str, Any]) -> dict[str, Any]:
-    params = condition["params"]
-    return {
-        "targets": params.get("targets") or params.get("target_set") or "default",
-        "sisu": params.get("sisu") or params.get("sisu_value"),
-        "perturbation": params.get("perturbation") or params.get("perturbation_type"),
-    }
 
 
 def _should_launch_status(status: str | None, reprocess: EvalReprocessMode) -> bool:

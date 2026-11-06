@@ -2,7 +2,7 @@
  * AnalysisPageSettings — right sidebar content when no analysis node is selected.
  *
  * Shows eval run selector, eval parametrization fields (perturbation type,
- * amplitudes, SISU values, task variants), eval run name, and a prominent
+ * amplitudes, task variants), eval run name, and a prominent
  * "Run Evaluation" button that creates a new eval run and triggers the
  * evaluation pipeline.
  */
@@ -51,10 +51,6 @@ function generateDefaultName(params: Record<string, unknown>): string {
   if (Array.isArray(amps) && amps.length > 0) {
     parts.push(`amp ${amps.join(',')}`);
   }
-  const sisu = params.sisu_values;
-  if (Array.isArray(sisu) && sisu.length > 0) {
-    parts.push(`sisu ${sisu.join(',')}`);
-  }
   return parts.length > 0 ? parts.join(' - ') : 'Eval run';
 }
 
@@ -97,14 +93,6 @@ export function AnalysisPageSettings() {
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const nums = parseNumberList(e.target.value);
       setEvalParams({ ...evalParams, perturbation_amplitudes: nums });
-    },
-    [evalParams, setEvalParams],
-  );
-
-  const handleSisuChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const nums = parseNumberList(e.target.value);
-      setEvalParams({ ...evalParams, sisu_values: nums });
     },
     [evalParams, setEvalParams],
   );
@@ -263,21 +251,6 @@ export function AnalysisPageSettings() {
             placeholder="0.1, 0.5, 1.0"
             defaultValue={formatNumberList(evalParams.perturbation_amplitudes)}
             onBlur={handleAmplitudesChange}
-            className="w-full text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1.5 focus:outline-none focus:border-emerald-300"
-          />
-        </div>
-
-        {/* SISU values */}
-        <div className="mb-3">
-          <label className="text-xs text-slate-500 block mb-1">
-            SISU values
-          </label>
-          <input
-            key={`sisu-${activePageId}`}
-            type="text"
-            placeholder="0.0, 0.5, 1.0"
-            defaultValue={formatNumberList(evalParams.sisu_values)}
-            onBlur={handleSisuChange}
             className="w-full text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded px-2 py-1.5 focus:outline-none focus:border-emerald-300"
           />
         </div>

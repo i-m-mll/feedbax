@@ -35,7 +35,7 @@ from feedbax.orchestration.realization import (
     MachineShape,
     OrchestrationBackend,
 )
-from tests.test_invocation_backend_realization import _sisu_invocation
+from tests.test_invocation_backend_realization import _controller_invocation
 from feedbax.web.orchestration.controller import GcpEffectAdapter, StudioController
 from feedbax.web.orchestration.gcp import InstanceInfo, InstanceStatus
 from feedbax.orchestration.transition_authority import assert_disjoint_transition_authorities
@@ -107,7 +107,7 @@ class _Adapter:
 
 
 def _plan(*, paid: bool, retry_classification: str = "same-plan"):
-    invocation = _sisu_invocation()
+    invocation = _controller_invocation()
     if paid:
         registration = runpod_driver_registration()
         variant = "engine-acquired"
@@ -135,19 +135,19 @@ def _plan(*, paid: bool, retry_classification: str = "same-plan"):
         capability_variant=variant,
         code_bundle_id="git:feedbax@controller-test",
         environment_bundle_id="uv-lock:" + "d" * 64,
-        command=("feedbax", "execute-training-run-spec", "sisu-tier-a.json"),
+        command=("feedbax", "execute-training-run-spec", "controller-smoke.json"),
         machine=machine,
         timeout_seconds=120,
         retry_classification=retry_classification,
         expected_cost=expected_cost,
         billable_confirmation_class=confirmation,
-        external_effect_key=f"sisu-{variant}-controller-test",
+        external_effect_key=f"controller-{variant}-controller-test",
     )
     return invocation, backend.realize("training", (invocation, request))
 
 
 def _gcp_plan(*, project: str = "inert-project", zone: str = "northamerica-northeast1-a"):
-    invocation = _sisu_invocation()
+    invocation = _controller_invocation()
     backend = OrchestrationBackend(
         backend_id="gcp",
         supported_scientific_capabilities=frozenset({"training"}),

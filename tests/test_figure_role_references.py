@@ -1,18 +1,8 @@
 """Figure role references, authenticated row index, and row-set selectors.
 
-The mechanical gates below are the preregistered figure benchmark recorded on
-umbrella `cfdadc7` before implementation started (benchmark 2, "k2 figure as a
-row-set change"). They are grounded in the real corpus pair:
-
-* base figure — `specs/post_run/sisu_m2_velocity_profiles.figure.v1.json`,
-  copied verbatim into `tests/fixtures/figures/`;
-* authored envelope — the preregistered 16-line variant, copied verbatim into
-  `tests/fixtures/figure_roles/`;
-* row index and custody — projected from
-  `results/4e08c8d/report-production.v1.json#reports.target2x_target4x_floor`
-  and the preregistered manifest identity/digest table. The one `k1` custody
-  binding is synthetic (digest `cc..cc`, size 1); it exists only to prove that
-  binding-key resolution picks the right artifact when several are present.
+The fixtures preserve the row-set expansion benchmark's two-row structure,
+with separate per-row and shared bindings. An extra `k1` custody binding
+checks that selecting `k2` resolves the intended artifact.
 
 Mapping the authored envelope onto a `FigureRowExpansionRequest` is the
 downstream compiler's job. The small mapping performed here stands in for it
@@ -50,13 +40,13 @@ from feedbax.contracts.row_index import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
-BASE_FIGURE_PATH = FIXTURES / "figures" / "sisu_m2_velocity_profiles.figure.v1.json"
+BASE_FIGURE_PATH = FIXTURES / "figures" / "velocity_profiles.figure.v1.json"
 ENVELOPE_PATH = FIXTURES / "figure_roles" / "benchmark2_figure.envelope.json"
-ROW_INDEX_PATH = FIXTURES / "figure_roles" / "target2x_target4x_floor.row_index.json"
-ROW_CUSTODY_PATH = FIXTURES / "figure_roles" / "target2x_target4x_floor.row_custody.json"
+ROW_INDEX_PATH = FIXTURES / "figure_roles" / "velocity_comparison.row_index.json"
+ROW_CUSTODY_PATH = FIXTURES / "figure_roles" / "velocity_comparison.row_custody.json"
 
 #: Gate 2A — the literal `row_order` of the grounding production record.
-EXPECTED_ROW_IDS = ["target2x-floor", "target4x-floor"]
+EXPECTED_ROW_IDS = ["group-a", "group-b"]
 
 #: Gate 2B — resolved input identities, in resolved order.
 EXPECTED_INPUT_IDENTITIES = [
@@ -136,8 +126,8 @@ def _role_contracts(base: dict[str, Any]) -> list[FigureRoleBindingContract]:
                 {
                     "authority": "analysis_data_product",
                     "product_role": "velocity_profile_result",
-                    "product_schema_id": "rlrmp2.analysis.velocity_profile_result",
-                    "product_schema_version": "rlrmp2.analysis.velocity_profile_result.v1",
+                    "product_schema_id": "example.analysis.velocity_profile_result",
+                    "product_schema_version": "example.analysis.velocity_profile_result.v1",
                 }
             )
         contracts.append(FigureRoleBindingContract.model_validate(payload))
@@ -200,25 +190,25 @@ def _typed_cause(error: ValidationError) -> Any:
 # --- Gate 2A: selector expansion ------------------------------------------------
 
 
-def test_gate_2a_selector_expands_to_the_ordered_floor_rows(
+def test_gate_2a_selector_expands_to_the_ordered_comparison_rows(
     request_model: FigureRowExpansionRequest, row_index: AuthenticatedRowIndex
 ) -> None:
     resolved = expand_row_selector(request_model.rows, row_index)
 
     assert resolved.row_ids == EXPECTED_ROW_IDS
-    assert resolved.index_id == "target2x_target4x_floor"
+    assert resolved.index_id == "velocity_comparison"
     assert resolved.index_sha256 == row_index.canonical_sha256()
     assert resolved.index_ref == (
-        "results/4e08c8d/report-production.v1.json#reports.target2x_target4x_floor"
+        "examples/report-production.v1.json#reports.velocity_comparison"
     )
 
 
 def test_selector_union_is_closed(row_index: AuthenticatedRowIndex) -> None:
     for rejected in (
         {"mode": "any"},
-        {"mode": "all", "tag": "sisu"},
+        {"mode": "all", "tag": "reach"},
         {"mode": "tag"},
-        {"mode": "tag", "tag": "sisu", "not": "target4x"},
+        {"mode": "tag", "tag": "reach", "not": "group-b"},
         {"mode": "all", "order": "reverse"},
     ):
         with pytest.raises(ValueError):
@@ -226,10 +216,10 @@ def test_selector_union_is_closed(row_index: AuthenticatedRowIndex) -> None:
 
 
 def test_tag_mode_selects_the_declared_subset(row_index: AuthenticatedRowIndex) -> None:
-    resolved = expand_row_selector({"mode": "tag", "tag": "target4x"}, row_index)
+    resolved = expand_row_selector({"mode": "tag", "tag": "group-b"}, row_index)
 
-    assert resolved.row_ids == ["target4x-floor"]
-    assert expand_row_selector({"mode": "tag", "tag": "floor-saturated"}, row_index).row_ids == (
+    assert resolved.row_ids == ["group-b"]
+    assert expand_row_selector({"mode": "tag", "tag": "comparison"}, row_index).row_ids == (
         EXPECTED_ROW_IDS
     )
 
@@ -266,8 +256,8 @@ def test_ambiguous_custody_binding_fails_closed(custody: RowIndexCustodyBindings
 
 
 def test_row_tags_are_bounded_and_normalized() -> None:
-    assert normalize_row_tags(["sisu", "floor-saturated"]) == ("floor-saturated", "sisu")
-    for rejected in (["SISU"], ["a b"], ["x" * 41], ["sisu", "sisu"], ["t"] * 9):
+    assert normalize_row_tags(["reach", "comparison"]) == ("comparison", "reach")
+    for rejected in (["REACH"], ["a b"], ["x" * 41], ["reach", "reach"], ["t"] * 9):
         with pytest.raises(ValueError):
             normalize_row_tags(rejected)
 
@@ -397,14 +387,14 @@ def test_authored_envelope_carries_no_realization_fields(envelope: dict[str, Any
 def test_gate_2c_expansion_reproduces_the_k2_figure_shape(
     base_payload: dict[str, Any], expanded: FigureSpec
 ) -> None:
-    assert expanded.name == "sisu-floor-velocity-profiles"
+    assert expanded.name == "comparison-velocity-profiles"
     assert len(expanded.trace_families or []) == 16
     assert len(expanded.panels) == 4
     assert expanded.assembler_params["height"] == (
         base_payload["assembler_params"]["height"] * len(EXPECTED_ROW_IDS)
     )
     assert expanded.assembler_params["height"] == 1080
-    assert expanded.assembler_params["title"] == "Floor rows: velocity profiles"
+    assert expanded.assembler_params["title"] == "Comparison rows: velocity profiles"
     assert expanded.colorbar is not None
     assert expanded.colorbar.family == "row_1__trained-seen"
     assert expanded.colorbar.placement is not None
@@ -461,10 +451,10 @@ def test_gate_2c_panel_titles_are_derived_from_row_labels(
     base_titles = [panel["title"] for panel in base_payload["panels"]]
 
     assert [panel.title for panel in expanded.panels] == [
-        f"target2x floor — {base_titles[0]}",
-        f"target2x floor — {base_titles[1]}",
-        f"target4x floor — {base_titles[0]}",
-        f"target4x floor — {base_titles[1]}",
+        f"Group A — {base_titles[0]}",
+        f"Group A — {base_titles[1]}",
+        f"Group B — {base_titles[0]}",
+        f"Group B — {base_titles[1]}",
     ]
     assert [panel.name for panel in expanded.panels] == [
         "row_1__seen",
@@ -496,10 +486,10 @@ def test_gate_2c_input_authorities_are_fully_derived_from_the_role(
         if input_role == "trained":
             assert artifact["authority"] == "analysis_data_product"
             assert artifact["product_role"] == "velocity_profile_result"
-            assert artifact["product_schema_id"] == "rlrmp2.analysis.velocity_profile_result"
+            assert artifact["product_schema_id"] == "example.analysis.velocity_profile_result"
             assert (
                 artifact["product_schema_version"]
-                == "rlrmp2.analysis.velocity_profile_result.v1"
+                == "example.analysis.velocity_profile_result.v1"
             )
         else:
             assert artifact["authority"] == "artifact_provider"
@@ -687,24 +677,24 @@ def test_a_pinned_payload_schema_reaches_the_derived_artifact_selector() -> None
     contract = FigureRoleBindingContract(
         input_role="trained",
         artifact_role="result",
-        artifact_provider="rlrmp.custody",
+        artifact_provider="example.custody",
         payload_name="trained_summary",
-        payload_schema_id="rlrmp.span_result",
-        payload_schema_version="rlrmp.span_result.v1",
+        payload_schema_id="example.span_result",
+        payload_schema_version="example.span_result.v1",
     )
 
     payload = contract.artifact_payload("row_1__trained")
 
     assert payload["name"] == "trained_summary"
-    assert payload["payload_schema_id"] == "rlrmp.span_result"
-    assert payload["payload_schema_version"] == "rlrmp.span_result.v1"
+    assert payload["payload_schema_id"] == "example.span_result"
+    assert payload["payload_schema_version"] == "example.span_result.v1"
 
 
 def test_a_contract_that_pins_no_payload_schema_derives_no_selector_fields() -> None:
     contract = FigureRoleBindingContract(
         input_role="trained",
         artifact_role="result",
-        artifact_provider="rlrmp.custody",
+        artifact_provider="example.custody",
     )
 
     payload = contract.artifact_payload("row_1__trained")
@@ -722,22 +712,22 @@ def test_half_a_payload_schema_identity_is_refused(half: str) -> None:
         FigureRoleBindingContract(
             input_role="trained",
             artifact_role="result",
-            artifact_provider="rlrmp.custody",
-            **{half: "rlrmp.span_result"},
+            artifact_provider="example.custody",
+            **{half: "example.span_result"},
         )
 
 
 @pytest.mark.parametrize("field", ["payload_schema_id", "payload_schema_version"])
 def test_a_blank_payload_schema_identity_is_refused(field: str) -> None:
     stated = {
-        "payload_schema_id": "rlrmp.span_result",
-        "payload_schema_version": "rlrmp.span_result.v1",
+        "payload_schema_id": "example.span_result",
+        "payload_schema_version": "example.span_result.v1",
         field: "  ",
     }
     with pytest.raises(ValidationError, match="blank payload schema identity"):
         FigureRoleBindingContract(
             input_role="trained",
             artifact_role="result",
-            artifact_provider="rlrmp.custody",
+            artifact_provider="example.custody",
             **stated,
         )

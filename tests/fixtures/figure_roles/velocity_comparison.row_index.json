@@ -1,0 +1,17 @@
+{
+  "schema_id": "feedbax.spec.authenticated_row_index",
+  "schema_version": "feedbax.spec.authenticated_row_index.v1",
+  "index_id": "velocity_comparison",
+  "rows": [
+    {
+      "row_id": "group-a",
+      "label": "Group A",
+      "tags": ["comparison", "reach", "group-a"]
+    },
+    {
+      "row_id": "group-b",
+      "label": "Group B",
+      "tags": ["comparison", "reach", "group-b"]
+    }
+  ]
+}

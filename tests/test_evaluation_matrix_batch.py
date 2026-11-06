@@ -218,7 +218,7 @@ def test_batch_recipe_reuses_typed_source_from_authenticated_parent(
     training_path = write_manifest(training, root=parent_root, index=False)
     training_ref = authenticated_manifest_ref(training, training_path, "training_run")
     prerequisite = StagedEvaluationPrerequisite(parent=training_ref)
-    conditions = ("clean", "bank", "sisu", "bank-plus-sisu")
+    conditions = ("clean", "bank", "offset", "bank-plus-offset")
     matrix = EvaluationRunMatrixSpec(
         base=EvaluationRunSpec(
             evaluation_type=EVALUATION_TYPE,
@@ -247,7 +247,7 @@ def test_batch_recipe_reuses_typed_source_from_authenticated_parent(
         for item in items:
             source_object_ids.append(id(source))
             states = {"trial_ids": source.trial_ids}
-            if item.spec.params["condition"] in {"bank", "bank-plus-sisu"}:
+            if item.spec.params["condition"] in {"bank", "bank-plus-offset"}:
                 states["ordinary_bank_draw"] = source.draw
             results.append(
                 EvaluationRecipeResult(
@@ -279,7 +279,7 @@ def test_batch_recipe_reuses_typed_source_from_authenticated_parent(
         assert row.result.provenance.parents == [training_ref]
         states = load_evaluation_states(row.result, root=root)
         assert states["trial_ids"] == tuple(source_payload["trial_ids"])
-        if row.row_id in {"bank", "bank-plus-sisu"}:
+        if row.row_id in {"bank", "bank-plus-offset"}:
             assert states["ordinary_bank_draw"] == tuple(source_payload["draw"])
         else:
             assert "ordinary_bank_draw" not in states
