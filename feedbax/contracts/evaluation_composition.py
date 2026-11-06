@@ -13,11 +13,13 @@ belongs to the evaluation authoring surface that owns the matrix model.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from pydantic import Field, model_validator
 
+from feedbax.contracts._authoring_inputs import AuthoringTextReader
 from feedbax.contracts._parent_delta import _flatten_content_pinned_parent_deltas
 from feedbax.contracts.base import (
     StrictModel,
@@ -127,14 +129,20 @@ def flatten_evaluation_run_matrix_delta(
     spec: EvaluationRunMatrixDeltaSpec,
     *,
     repo_root: Path | str | None = None,
+    read_text: AuthoringTextReader | None = None,
 ) -> FlattenedEvaluationMatrix:
     """Resolve pinned parents root-to-child into one flattened matrix document."""
+    load_parent = (
+        load_content_pinned_json_base
+        if read_text is None
+        else partial(load_content_pinned_json_base, read_text=read_text)
+    )
     flattened = _flatten_content_pinned_parent_deltas(
         spec,
         repo_root=repo_root,
         envelope_hash=evaluation_matrix_delta_envelope_hash,
         parent_of=lambda node: node.parent,
-        load_parent=load_content_pinned_json_base,
+        load_parent=load_parent,
         deltas_of=lambda node: node.deltas,
         parse_delta_parent=EvaluationRunMatrixDeltaSpec.model_validate,
         terminal_payload=lambda payload: default_spec_registry.migrate(

@@ -4,8 +4,10 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -20,7 +22,7 @@ from feedbax.analysis.evaluation_orchestration import (
     EvaluationMatrixExecutionCapsule,
     evaluation_matrix_intent_hash,
 )
-from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.artifact_custody import ContentBinding, ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.evaluation_lifecycle import (
     EvaluationBatchConsumerDeclaration,
     EvaluationMatrixBatchPlan,
@@ -54,6 +56,7 @@ from feedbax.orchestration import (
     build_default_assembly_registry,
 )
 from feedbax.orchestration.assembly import _prepare_run_assembly
+from feedbax.orchestration.bundle import RunBundle
 from feedbax.orchestration.drivers.capabilities import DriverConstructionContext
 from feedbax.orchestration.staged_root_custody import (
     StagedRootSourceBinding,
@@ -205,6 +208,230 @@ def _assemble(request: RunAssemblyRequest, tmp_path: Path, *, run_set_id: str = 
         ),
         registry=_assembly_registry(),
     )
+
+
+def _grouped_worker_tasks(
+    tmp_path: Path,
+    ordered_batches: tuple[tuple[str, ...], ...],
+    *,
+    matrix: dict[str, Any] | None = None,
+    content_bindings: tuple[ContentBinding, ...] = (),
+) -> tuple[RunBundle, tuple[dict[str, Any], ...]]:
+    if matrix is None:
+        matrix = _sized_matrix(sum(map(len, ordered_batches)))
+    plan = EvaluationMatrixBatchPlan(
+        matrix_intent_hash=evaluation_matrix_intent_hash(matrix),
+        batches=tuple(
+            EvaluationMatrixBatchUnit(batch_id=f"{index:04d}", ordered_row_ids=row_ids)
+            for index, row_ids in enumerate(ordered_batches)
+        ),
+    )
+    request = _request(
+        tmp_path,
+        matrix,
+        batch_plan=plan,
+        output_preflight=_output_preflight(expected_rows=len(matrix["rows"])),
+    ).model_copy(update={"content_bindings": list(content_bindings)})
+    bundle = _assemble(request, tmp_path)
+    inputs_root = tmp_path / "inputs"
+    inputs_root.mkdir()
+    bundle_path = inputs_root / "run-bundle.json"
+    bundle_path.write_text(bundle.model_dump_json(exclude_none=True), encoding="utf-8")
+    payload_path = inputs_root / f"{bundle.rows[0].row_id}.json"
+    payload_uri = bundle.rows[0].execution.payload.uri
+    assert payload_uri is not None
+    shutil.copyfile(payload_uri, payload_path)
+    common = {
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": sha256_bytes(bundle_path.read_bytes()),
+        "orchestration_row_id": bundle.rows[0].row_id,
+        "inputs_root": str(inputs_root),
+        "payload_path": str(payload_path),
+        "manifest_root": str(tmp_path / "evaluations"),
+        "repo_root": str(tmp_path),
+        "compaction_root": str(tmp_path / "compaction"),
+        "timing_origin_ns": time.monotonic_ns(),
+    }
+    return bundle, tuple({**common, "batch_index": index} for index in range(len(plan.batches)))
+
+
+def _register_grouped_worker_recipe(monkeypatch, batch_recipe) -> None:
+    from feedbax.plugins import composition
+
+    registries = new_application_registry_bundle(local_component_source=None)
+    registries.evaluation_recipes.register(
+        "tests.evaluation_orchestration",
+        lambda *_args: pytest.fail("expected the batch recipe"),
+        batch_recipe=batch_recipe,
+    )
+
+    async def compose(*, modules):
+        return SimpleNamespace(bundle=registries)
+
+    monkeypatch.setattr(composition, "compose_application", compose)
+
+
+def test_grouped_worker_preserves_order_outputs_and_lineage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from feedbax.analysis import evaluation
+    from feedbax.analysis.harness import (
+        _execute_evaluation_batch_partition_group,
+        resolve_manifest_regeneration,
+    )
+    from feedbax.contracts.manifest import EvaluationRunManifest
+
+    ordered_batches = (("gain-00", "gain-01"), ("gain-02", "gain-03"))
+    _, tasks = _grouped_worker_tasks(tmp_path, ordered_batches)
+    _register_grouped_worker_recipe(
+        monkeypatch,
+        lambda items, _context: [
+            evaluation.EvaluationRecipeResult(summary_metrics={"gain": item.spec.params["gain"]})
+            for item in items
+        ],
+    )
+    materialized_counts = []
+    materialize = evaluation.materialize_matrix_rows
+
+    def record_materialization(*args, **kwargs):
+        rows = materialize(*args, **kwargs)
+        materialized_counts.append(len(rows))
+        return rows
+
+    monkeypatch.setattr(evaluation, "materialize_matrix_rows", record_materialization)
+
+    def snapshot(completed):
+        rows = []
+        for outcome, authority in zip(
+            completed["outcomes"], completed["parent_authorities"], strict=True
+        ):
+            raw = Path(outcome["manifest_path"]).read_bytes()
+            assert authority["id"] == outcome["manifest_id"]
+            assert authority["metadata"]["manifest_sha256"] == sha256_bytes(raw)
+            assert authority["metadata"]["size_bytes"] == len(raw)
+            regeneration = resolve_manifest_regeneration(
+                EvaluationRunManifest.model_validate_json(raw),
+                root=Path(tasks[0]["manifest_root"]) / completed["batch_id"],
+            )
+            assert regeneration.parameters["row_id"] == outcome["row_id"]
+            assert regeneration.parameters["batch_execution"] == {
+                "mode": "governed_ordered_partition",
+                "batch_id": completed["batch_id"],
+                "ordered_row_ids": [item["row_id"] for item in completed["outcomes"]],
+            }
+            manifest = json.loads(raw)
+            del manifest["created_at"]
+            rows.append((outcome, manifest))
+        return rows
+
+    grouped = tuple(map(snapshot, _execute_evaluation_batch_partition_group(tasks, ())))
+    assert materialized_counts == [4]
+    cached = _execute_evaluation_batch_partition_group(tasks, ())
+    assert all(batch["reused_verified_fragments"] for batch in cached)
+    assert tuple(map(snapshot, cached)) == grouped
+    assert materialized_counts == [4]
+    shutil.rmtree(tasks[0]["manifest_root"])
+    shutil.rmtree(tasks[0]["compaction_root"])
+    independent = tuple(
+        snapshot(_execute_evaluation_batch_partition_group((task,), ())[0]) for task in tasks
+    )
+    assert materialized_counts == [4, 4, 4]
+
+    assert tuple(tuple(outcome["row_id"] for outcome, _ in batch) for batch in grouped) == (
+        ordered_batches
+    )
+    assert [
+        manifest["summary_metrics"]["gain"] for batch in grouped for _, manifest in batch
+    ] == [0.0, 1.0, 2.0, 3.0]
+    assert grouped == independent
+
+
+def test_grouped_worker_reauthenticates_staged_content_before_next_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from feedbax.analysis.evaluation import EvaluationRecipeResult
+    from feedbax.analysis.harness import _execute_evaluation_batch_partition_group
+    from feedbax.orchestration.input_materialization import (
+        InputMaterializationError,
+        compile_content_input_projection,
+        materialize_content_input_projection,
+    )
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "fixture.json").write_bytes(b"{}")
+    sealed = seal_staged_root(
+        StagedRootSourceBinding("manifests", "manifest-store", source),
+        snapshot_parent=tmp_path / "sealed",
+    )
+    content_store = tmp_path / "content-store"
+    binding, *_ = migrate_staged_root_v1(
+        sealed.custody, source_root=sealed.staging_root, destination_store=content_store
+    )
+    bundle, tasks = _grouped_worker_tasks(
+        tmp_path, (("gain-00",), ("gain-01",)), content_bindings=(binding,)
+    )
+    provider = ImmutableArtifactBlobProvider(content_store)
+    (staged,) = materialize_content_input_projection(
+        compile_content_input_projection(bundle.content_bindings, provider),
+        provider,
+        destination_root=Path(tasks[0]["inputs_root"]) / "content" / "trees",
+    )
+    executed = []
+
+    def batch_recipe(items, _context):
+        executed.extend(item.row_id for item in items)
+        (staged.destination / "fixture.json").write_bytes(b"[]")
+        return [EvaluationRecipeResult() for _ in items]
+
+    _register_grouped_worker_recipe(monkeypatch, batch_recipe)
+
+    with pytest.raises(InputMaterializationError, match="materialized content object differs"):
+        _execute_evaluation_batch_partition_group(tasks, ())
+
+    assert executed == ["gain-00"]
+    assert (Path(tasks[0]["manifest_root"]) / "0000").is_dir()
+    assert not (Path(tasks[0]["manifest_root"]) / "0001").exists()
+    checkpoints = Path(tasks[0]["compaction_root"]) / "fragment-checkpoints"
+    assert sorted(path.name for path in checkpoints.iterdir()) == ["0000.json"]
+
+
+@pytest.mark.parametrize("drift_before_first_batch", [True, False])
+def test_grouped_worker_rejects_changed_source_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift_before_first_batch: bool
+) -> None:
+    from feedbax.analysis.evaluation import EvaluationRecipeResult
+    from feedbax.analysis.harness import _execute_evaluation_batch_partition_group
+
+    source = tmp_path / "source.json"
+    _write_json(source, {"value": 1})
+    matrix = _sized_matrix(2)
+    matrix["sources"] = [{"alias": "source", "kind": "json", "uri": source.name}]
+    matrix["derivations"] = [
+        {"output_path": "params.derived", "query": {"item": "source", "path": "value"}}
+    ]
+    _, tasks = _grouped_worker_tasks(tmp_path, (("gain-00",), ("gain-01",)), matrix=matrix)
+    executed = []
+
+    def batch_recipe(items, _context):
+        executed.extend((item.row_id, item.spec.params["derived"]) for item in items)
+        _write_json(source, {"value": 2})
+        return [EvaluationRecipeResult() for _ in items]
+
+    _register_grouped_worker_recipe(monkeypatch, batch_recipe)
+    if drift_before_first_batch:
+        _write_json(source, {"value": 2})
+        match = "resolved matrix authority drifted"
+    else:
+        match = "authoring input changed after it was read"
+
+    with pytest.raises(ValueError, match=match):
+        _execute_evaluation_batch_partition_group(tasks, ())
+
+    assert executed == ([] if drift_before_first_batch else [("gain-00", 1)])
+    manifest_root = Path(tasks[0]["manifest_root"])
+    assert (manifest_root / "0000").is_dir() == (not drift_before_first_batch)
+    assert not (manifest_root / "0001").exists()
 
 
 def test_authored_matrix_compiles_ordered_batches_under_one_matrix_identity(

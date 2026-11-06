@@ -24,9 +24,13 @@ from feedbax.contracts.strict_json import (
 from feedbax.plugins.bootstrap import BootstrapState
 
 if TYPE_CHECKING:
+    from feedbax.analysis.evaluation import _EvaluationRunPlan
+    from feedbax.contracts.evaluation_lifecycle import EvaluationMatrixBatchPlan
+    from feedbax.orchestration.bundle import RunBundle
     from feedbax.plugins.application import ApplicationRegistryBundle
 
 from feedbax.analysis.rendering import render_markdown_note
+from feedbax.contracts._authoring_inputs import AuthoringInputs
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.contracts.base import (
     ArtifactMigrationRecord,
@@ -424,7 +428,13 @@ def _validate_evaluation_fragment_checkpoint(
 
 
 def _execute_evaluation_batch_partition(
-    task: Mapping[str, Any], registries: ApplicationRegistryBundle
+    task: Mapping[str, Any],
+    registries: ApplicationRegistryBundle,
+    *,
+    bundle: RunBundle,
+    batch_plan: EvaluationMatrixBatchPlan,
+    authoring_inputs: AuthoringInputs,
+    prepare_plan: Callable[[], _EvaluationRunPlan],
 ) -> dict[str, Any]:
     """Execute and compact one authenticated batch in a persistent worker."""
     timing_origin_ns = int(task["timing_origin_ns"])
@@ -435,35 +445,22 @@ def _execute_evaluation_batch_partition(
     )
     from feedbax.analysis.evaluation import (
         EvaluationBatchExecution,
-        execute_evaluation_run_matrix,
+        _execute_evaluation_run_plan,
         load_evaluation_states_cache,
     )
-    from feedbax.contracts.evaluation_lifecycle import (
-        EvaluationBatchConsumerDeclaration,
-        EvaluationLifecycleRowOutcome,
-        EvaluationMatrixBatchUnit,
-        EvaluationPayloadRetentionPolicy,
-    )
-    from feedbax.contracts.base import ArtifactRef
+    from feedbax.contracts.evaluation_lifecycle import EvaluationLifecycleRowOutcome
     from feedbax.contracts.base import (
         AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
         AUTHENTICATED_MANIFEST_REF_SCHEMA_VERSION,
-        ParentRef,
-        sha256_bytes,
     )
-    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.analysis.execution_context import (
         resolve_staged_execution_context,
         with_staged_repo_root,
     )
-    from feedbax.orchestration.bundle import RunBundle
     from feedbax.orchestration.input_materialization import (
         staged_execution_bindings_for_bundle,
     )
 
-    bundle = strict_model_validate_json(
-        RunBundle, Path(task["bundle_path"]).read_text(encoding="utf-8")
-    )
     projected = staged_execution_bindings_for_bundle(
         bundle,
         inputs_root=task["inputs_root"],
@@ -475,25 +472,25 @@ def _execute_evaluation_batch_partition(
         checkpoint_custody_bindings=projected.checkpoint_custody_bindings,
     )
     execution_context = with_staged_repo_root(execution_context, task["repo_root"])
-    payload = _read_json_object(task["payload_path"], description="evaluation matrix spec")
-    batch = EvaluationMatrixBatchUnit.model_validate(task["batch"])
-    retention_policy = EvaluationPayloadRetentionPolicy.model_validate(task["retention_policy"])
+    batch_index = task["batch_index"]
+    batch = batch_plan.batches[batch_index]
+    leaf_ids = batch.required_leaf_ids or ()
+    batch = batch.model_copy(update={"required_leaf_ids": leaf_ids})
+    declarations = tuple(item for item in batch_plan.consumers if item.leaf_id in leaf_ids)
     checkpoint_identity = {
-        "matrix_intent_hash": task["matrix_intent_hash"],
+        "matrix_intent_hash": batch_plan.matrix_intent_hash,
         "batch": batch.model_dump(mode="json", exclude_none=True),
-        "consumers": task["consumers"],
+        "consumers": [declaration.model_dump(mode="json") for declaration in declarations],
     }
     checkpoint = Path(task["compaction_root"]) / "fragment-checkpoints" / f"{batch.batch_id}.json"
     if checkpoint.is_file():
+        authoring_inputs.revalidate()
         cached = strict_json_loads(checkpoint.read_text(encoding="utf-8"))
         if canonical_json_bytes(cached.get("checkpoint_identity")) != canonical_json_bytes(
             checkpoint_identity
         ):
             raise ValueError("evaluation batch fragment checkpoint identity drifted")
         provider = ImmutableArtifactBlobProvider(Path(task["compaction_root"]))
-        declarations = [
-            EvaluationBatchConsumerDeclaration.model_validate(value) for value in task["consumers"]
-        ]
         for declaration, value in zip(
             declarations,
             cached.get("fragments", []),
@@ -504,7 +501,7 @@ def _execute_evaluation_batch_partition(
                 declaration,
                 batch,
                 fragment,
-                matrix_intent_hash=task["matrix_intent_hash"],
+                matrix_intent_hash=batch_plan.matrix_intent_hash,
             )
             provider.get_bytes(fragment)
         for value, authority_value in zip(
@@ -532,8 +529,10 @@ def _execute_evaluation_batch_partition(
             "completed_offset_ns": completed_offset_ns,
             "duration_ns": completed_offset_ns - started_offset_ns,
         }
-    result = execute_evaluation_run_matrix(
-        payload,
+    plan = prepare_plan()
+    authoring_inputs.revalidate()
+    result = _execute_evaluation_run_plan(
+        plan,
         registry=registries.evaluation_recipes,
         root=Path(task["manifest_root"]),
         repo_root=task["repo_root"],
@@ -575,20 +574,19 @@ def _execute_evaluation_batch_partition(
                 },
             )
         )
-        if task["consumers"]:
+        if declarations:
             cache_path = Path(row.result.metadata["cache"]["states_path"])
             row_states = load_evaluation_states_cache(cache_path, manifest=row.result)
             if row_states is None:
                 raise ValueError(f"Evaluation row {row.row_id!r} has no matching state cache")
             states.append(row_states)
     fragments = []
-    for value in task["consumers"]:
-        declaration = EvaluationBatchConsumerDeclaration.model_validate(value)
+    for declaration in declarations:
         fragments.append(
             compact_evaluation_batch(
                 declaration,
                 EvaluationBatchConsumerInput(
-                    matrix_intent_hash=task["matrix_intent_hash"],
+                    matrix_intent_hash=batch_plan.matrix_intent_hash,
                     batch=batch,
                     outcomes=tuple(outcomes),
                     manifests=tuple(manifests),
@@ -600,13 +598,13 @@ def _execute_evaluation_batch_partition(
                 ),
                 registry=registries.evaluation_batch_consumers,
                 custody_root=Path(task["compaction_root"]),
-                retention_policy=retention_policy,
+                retention_policy=batch_plan.retention,
             )
         )
     completed = {
         "pid": os.getpid(),
         "batch_id": batch.batch_id,
-        "batch_index": task["batch_index"],
+        "batch_index": batch_index,
         "outcomes": [item.model_dump(mode="json") for item in outcomes],
         "fragments": [item.model_dump(mode="json") for item in fragments],
         "parent_authorities": [item.model_dump(mode="json") for item in parent_authorities],
@@ -624,14 +622,113 @@ def _execute_evaluation_batch_partition(
     }
 
 
+def _evaluation_batch_plan(payload: Any) -> EvaluationMatrixBatchPlan:
+    from feedbax.contracts.evaluation_lifecycle import EvaluationMatrixBatchPlan
+    from feedbax.contracts.migrations import migrate_structured_spec_payload
+
+    return EvaluationMatrixBatchPlan.model_validate(
+        migrate_structured_spec_payload(
+            "EvaluationMatrixBatchPlan", payload, path="launch.metadata.batch_plan"
+        ).payload
+    )
+
+
 def _execute_evaluation_batch_partition_group(
     tasks: Sequence[Mapping[str, Any]], modules: tuple[str, ...]
 ) -> tuple[dict[str, Any], ...]:
-    """Bootstrap once at process-worker startup, then execute assigned batches."""
+    """Bootstrap and resolve authoring once, with fresh execution custody per batch."""
+    from feedbax.analysis.evaluation import _evaluation_matrix_run_plan, _resolve_evaluation_matrix
+    from feedbax.analysis.evaluation_orchestration import (
+        _evaluation_matrix_resolved_semantics,
+        _validate_evaluation_batch_plan,
+    )
+    from feedbax.contracts.spec_storage import build_resolved_semantics_snapshot
+    from feedbax.orchestration.bundle import RunBundle
     from feedbax.plugins.composition import compose_application
 
     state = asyncio.run(compose_application(modules=modules))
-    return tuple(_execute_evaluation_batch_partition(task, state.bundle) for task in tasks)
+    if not tasks:
+        return ()
+    first = tasks[0]
+    authority_fields = (
+        "bundle_path",
+        "bundle_sha256",
+        "orchestration_row_id",
+        "payload_path",
+        "repo_root",
+        "inputs_root",
+        "manifest_root",
+        "compaction_root",
+    )
+    if any(task[key] != first[key] for task in tasks for key in authority_fields):
+        raise ValueError("evaluation worker group tasks must share one matrix authority")
+
+    authoring_inputs = AuthoringInputs()
+    bundle_bytes = authoring_inputs.read_bytes(Path(first["bundle_path"]))
+    if sha256_bytes(bundle_bytes) != first["bundle_sha256"]:
+        raise ValueError("evaluation worker group bundle digest mismatch")
+    bundle = strict_model_validate_json(RunBundle, bundle_bytes)
+    if bundle.execution_family != "evaluation-matrix":
+        raise ValueError("orchestration bundle is not an evaluation-matrix family bundle")
+    (row,) = (row for row in bundle.rows if row.row_id == first["orchestration_row_id"])
+    plan_payload = row.launch.metadata.get("batch_plan")
+    batch_plan = _evaluation_batch_plan(plan_payload)
+    indexes = [task["batch_index"] for task in tasks]
+    if any(
+        type(index) is not int or not 0 <= index < len(batch_plan.batches) for index in indexes
+    ) or len(indexes) != len(set(indexes)):
+        raise ValueError("evaluation worker group has invalid batch indexes")
+
+    payload_bytes = authoring_inputs.read_bytes(Path(first["payload_path"]))
+    if sha256_bytes(payload_bytes) != row.execution.payload.sha256:
+        raise ValueError("evaluation worker group matrix payload digest mismatch")
+    payload = strict_json_loads(payload_bytes)
+    if not isinstance(payload, dict) or (
+        payload.get("schema_id"),
+        payload.get("schema_version"),
+    ) != (row.execution.payload.schema_id, row.execution.payload.schema_version):
+        raise ValueError("evaluation worker group matrix payload schema does not match custody")
+
+    plan: _EvaluationRunPlan | None = None
+
+    def prepare_plan() -> _EvaluationRunPlan:
+        nonlocal plan
+        if plan is None:
+            resolved = _resolve_evaluation_matrix(
+                payload,
+                registry=state.bundle.evaluation_recipes,
+                repo_root=first["repo_root"],
+                read_text=authoring_inputs.read_text,
+            )
+            _validate_evaluation_batch_plan(
+                batch_plan, row.execution.authored_intent.intent_hash, resolved.ordered_row_ids
+            )
+            semantics = _evaluation_matrix_resolved_semantics(
+                resolved,
+                authored=payload,
+                run_set_id=bundle.run_set_id,
+                content_bindings=bundle.content_bindings,
+                plan_payload=plan_payload,
+            )
+            if (
+                build_resolved_semantics_snapshot(semantics)["root_hash"]
+                != row.execution.resolved_snapshot.root_hash
+            ):
+                raise ValueError("evaluation worker group resolved matrix authority drifted")
+            plan = _evaluation_matrix_run_plan(resolved)
+        return plan
+
+    return tuple(
+        _execute_evaluation_batch_partition(
+            task,
+            state.bundle,
+            bundle=bundle,
+            batch_plan=batch_plan,
+            authoring_inputs=authoring_inputs,
+            prepare_plan=prepare_plan,
+        )
+        for task in tasks
+    )
 
 
 @dataclass(frozen=True)
@@ -998,12 +1095,10 @@ def main(
         EvaluationBatchTimingEvidence,
         EvaluationLifecycleEvidence,
         EvaluationLifecycleRowOutcome,
-        EvaluationMatrixBatchPlan,
         EvaluationReplayIdentity,
         EvaluationWorkerProcessEvidence,
         EvaluationWorkerTopologyEvidence,
     )
-    from feedbax.contracts.migrations import migrate_structured_spec_payload
     from feedbax.orchestration.bundle import RunBundle
     from feedbax.orchestration.input_materialization import (
         staged_execution_bindings_for_bundle,
@@ -1112,21 +1207,17 @@ def main(
                 "orchestration lifecycle bindings cannot be combined with caller-supplied "
                 "staged execution options"
             )
-        bundle = strict_model_validate_json(
-            RunBundle, Path(args.orchestration_bundle).read_text(encoding="utf-8")
-        )
+        bundle_bytes = Path(args.orchestration_bundle).read_bytes()
+        bundle = strict_model_validate_json(RunBundle, bundle_bytes)
         if bundle.execution_family != "evaluation-matrix":
             parser.error("orchestration bundle is not an evaluation-matrix family bundle")
         matching_rows = [row for row in bundle.rows if row.row_id == args.orchestration_row_id]
         if len(matching_rows) != 1:
             parser.error("orchestration row id is absent or ambiguous in the bundle")
         try:
-            batch_plan_payload = migrate_structured_spec_payload(
-                "EvaluationMatrixBatchPlan",
-                matching_rows[0].launch.metadata.get("batch_plan"),
-                path="launch.metadata.batch_plan",
-            ).payload
-            orchestration_batch_plan = EvaluationMatrixBatchPlan.model_validate(batch_plan_payload)
+            orchestration_batch_plan = _evaluation_batch_plan(
+                matching_rows[0].launch.metadata.get("batch_plan")
+            )
         except ValueError as exc:
             parser.error(f"orchestration evaluation row lacks an authenticated batch plan: {exc}")
         orchestration_worker_count = min(
@@ -1161,26 +1252,18 @@ def main(
                 and orchestration_batch_plan is not None
                 and orchestration_worker_count is not None
             ):
-                indexed_batches = [
-                    {
-                        "batch_id": batch.batch_id,
-                        "batch_index": index,
-                        "ordered_row_ids": list(batch.ordered_row_ids),
-                    }
-                    for index, batch in enumerate(orchestration_batch_plan.batches)
-                ]
                 compaction_root = Path(args.lifecycle_result).with_name(
                     "evaluation-batch-compaction"
                 )
                 common_task = {
                     "bundle_path": args.orchestration_bundle,
+                    "bundle_sha256": sha256_bytes(bundle_bytes),
+                    "orchestration_row_id": args.orchestration_row_id,
                     "inputs_root": args.orchestration_inputs_root,
                     "payload_path": args.spec,
                     "manifest_root": args.manifest_root,
                     "repo_root": args.repo_root,
-                    "matrix_intent_hash": orchestration_batch_plan.matrix_intent_hash,
                     "compaction_root": str(compaction_root),
-                    "retention_policy": orchestration_batch_plan.retention.model_dump(mode="json"),
                 }
                 from feedbax.analysis.evaluation_compaction import (
                     apply_evaluation_payload_retention,
@@ -1199,30 +1282,9 @@ def main(
                     {
                         **common_task,
                         "timing_origin_ns": timing_origin_ns,
-                        "batch": {
-                            "batch_id": item["batch_id"],
-                            "ordered_row_ids": item["ordered_row_ids"],
-                            "required_leaf_ids": (
-                                orchestration_batch_plan.batches[
-                                    item["batch_index"]
-                                ].required_leaf_ids
-                                or ()
-                            ),
-                        },
-                        "batch_index": item["batch_index"],
-                        "consumers": [
-                            declaration.model_dump(mode="json")
-                            for declaration in orchestration_batch_plan.consumers
-                            if declaration.leaf_id
-                            in (
-                                orchestration_batch_plan.batches[
-                                    item["batch_index"]
-                                ].required_leaf_ids
-                                or ()
-                            )
-                        ],
+                        "batch_index": index,
                     }
-                    for item in indexed_batches
+                    for index in range(len(orchestration_batch_plan.batches))
                 ]
                 with ProcessPoolExecutor(
                     max_workers=orchestration_worker_count,
@@ -1309,7 +1371,7 @@ def main(
                 )
                 topology = EvaluationWorkerTopologyEvidence(
                     requested_worker_count=orchestration_worker_count,
-                    batch_count=len(indexed_batches),
+                    batch_count=len(tasks),
                     processes=tuple(
                         EvaluationWorkerProcessEvidence(
                             pid=pid,
