@@ -67,7 +67,6 @@ from feedbax.contracts.manifest import (
     canonical_manifest_path,
     checkpoint_selection_manifest_id,
     evaluation_run_manifest_id,
-    evaluation_states_cache_path,
     load_manifest,
     planned_training_run_manifest_id,
     spec_payload,
@@ -1886,7 +1885,7 @@ def _evaluation_preview_from_plan(plan: dict[str, Any]) -> StudioEvaluationMatri
         )
         manifest = existing[0] if existing is not None else None
         status = manifest.status if isinstance(manifest, EvaluationRunManifest) else None
-        if status == "completed" or evaluation_states_cache_path(eval_id, root=root).exists():
+        if status == "completed":
             materialized += 1
         elif status in {"pending", "running"}:
             pending += 1

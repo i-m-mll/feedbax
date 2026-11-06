@@ -168,6 +168,7 @@ def authenticated_manifest_ref_from_read(
     expected_kind: str,
     expected_id: str,
     role: str,
+    expected_manifest: AnyManifest | None = None,
 ) -> ParentRef:
     """Authenticate one manifest by performing the read that profiles it.
 
@@ -182,6 +183,10 @@ def authenticated_manifest_ref_from_read(
     hands it over, the path is opened again, and the profile recorded as proof
     describes whatever is there on the second read. When a profile has already
     been established, restate it — do not mint a new one.
+
+    When supplied, ``expected_manifest`` guards the read against replacement by a
+    different receipt at the same logical address. The new profile still
+    describes the bytes read here.
     """
     manifest_path = Path(path)
     raw = manifest_path.read_bytes()
@@ -191,6 +196,8 @@ def authenticated_manifest_ref_from_read(
             f"Manifest bytes at {manifest_path} are {parsed.kind} {parsed.id!r}, not "
             f"{expected_kind} {expected_id!r}"
         )
+    if expected_manifest is not None and parsed != expected_manifest:
+        raise ValueError(f"Manifest bytes at {manifest_path} changed after execution")
     return ParentRef(
         kind=parsed.kind,
         id=parsed.id,

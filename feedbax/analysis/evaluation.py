@@ -29,12 +29,13 @@ from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from hashlib import file_digest
 import json
 from math import prod
 from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Sequence
+from typing import Any, BinaryIO, Sequence
 
 import jax.tree_util as jtu
 from pydantic import BaseModel, Field, model_validator
@@ -1021,15 +1022,9 @@ def _store_batched_evaluation_result(
     """
     manifest_id = evaluation_run_manifest_id(item.spec)
     states_path = evaluation_states_cache_path(manifest_id, root=store_root)
-    states_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_metadata: dict[str, Any] = {
-        "states_path": str(evaluation_states_cache_path(manifest_id, root=published_root)),
-        "states_cache_key": manifest_id,
-        "states_cache_hit": False,
-    }
-    if result.states is not None:
-        write_evaluation_states_cache(states_path, manifest_id=manifest_id, states=result.states)
-        cache_metadata["states_cache_saved"] = True
+    cache_metadata = _evaluation_cache_metadata(
+        manifest_id, evaluation_states_cache_path(manifest_id, root=published_root)
+    )
     if _states_custody_for_spec(item.spec) == "durable":
         result = _with_durable_states_artifact(
             result,
@@ -1048,6 +1043,8 @@ def _store_batched_evaluation_result(
     prov.entrypoint = EntrypointRef(
         kind="feedbax-evaluation-recipe", name=item.spec.evaluation_type
     )
+    if result.states is not None:
+        _save_evaluation_states(states_path, manifest_id, result.states, cache_metadata)
     manifest = _build_evaluation_manifest(
         manifest_id=manifest_id,
         run_spec=item.spec,
@@ -1262,12 +1259,39 @@ def _cache_corruption(path: Path, reason: str) -> EvaluationStatesCacheCorruptio
     )
 
 
-def load_evaluation_states_cache(path: Path, *, manifest_id: str) -> Any:
-    """Load a versioned evaluation-states cache payload."""
+def _matches_evaluation_cache(stream: BinaryIO, manifest: EvaluationRunManifest) -> bool:
+    claim = manifest.metadata.get("cache")
+    if manifest.status != "completed" or not isinstance(claim, Mapping):
+        return False
+    digest = claim.get("states_cache_sha256")
+    return isinstance(digest, str) and file_digest(stream, "sha256").hexdigest() == digest
+
+
+def evaluation_states_cache_matches(path: Path, manifest: EvaluationRunManifest) -> bool:
+    """Check whether the cache holds the exact bytes claimed by a completed receipt."""
+    try:
+        with path.open("rb") as stream:
+            return _matches_evaluation_cache(stream, manifest)
+    except FileNotFoundError:
+        return False
+
+
+def load_evaluation_states_cache(path: Path, *, manifest: EvaluationRunManifest) -> Any:
+    """Load states only from bytes claimed by the supplied completed receipt."""
     import dill as pickle
 
     try:
-        with path.open("rb") as stream:
+        stream = path.open("rb")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise _cache_corruption(path, str(exc)) from exc
+    try:
+        # The writer atomically replaces the path. Hash and decode the same inode.
+        with stream:
+            if not _matches_evaluation_cache(stream, manifest):
+                return None
+            stream.seek(0)
             payload = pickle.load(stream)
     except (OSError, EOFError, pickle.UnpicklingError, AttributeError, ImportError) as exc:
         raise _cache_corruption(path, str(exc)) from exc
@@ -1282,29 +1306,56 @@ def load_evaluation_states_cache(path: Path, *, manifest_id: str) -> Any:
             f"expected {EVALUATION_STATES_CACHE_SCHEMA_VERSION!r}",
         )
     cached_manifest_id = payload.get("manifest_id")
-    if cached_manifest_id != manifest_id:
+    if cached_manifest_id != manifest.id:
         raise _cache_corruption(
             path,
-            f"manifest_id={cached_manifest_id!r}, expected {manifest_id!r}",
+            f"manifest_id={cached_manifest_id!r}, expected {manifest.id!r}",
         )
     if "states" not in payload:
         raise _cache_corruption(path, "missing states payload")
     return payload["states"]
 
 
-def write_evaluation_states_cache(path: Path, *, manifest_id: str, states: Any) -> None:
-    """Write a versioned evaluation-states cache payload."""
+def write_evaluation_states_cache(path: Path, *, manifest_id: str, states: Any) -> str:
+    """Atomically replace an ephemeral states cache and return its byte digest."""
     import dill as pickle
 
-    with path.open("wb") as stream:
-        pickle.dump(
-            {
-                "schema_version": EVALUATION_STATES_CACHE_SCHEMA_VERSION,
-                "manifest_id": manifest_id,
-                "states": states,
-            },
-            stream,
-        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, mode="w+b", delete=False) as stream:
+        staged = Path(stream.name)
+        try:
+            pickle.dump(
+                {
+                    "schema_version": EVALUATION_STATES_CACHE_SCHEMA_VERSION,
+                    "manifest_id": manifest_id,
+                    "states": states,
+                },
+                stream,
+            )
+            stream.seek(0)
+            digest = file_digest(stream, "sha256").hexdigest()
+            stream.close()
+            staged.replace(path)
+        finally:
+            staged.unlink(missing_ok=True)
+    return digest
+
+
+def _evaluation_cache_metadata(manifest_id: str, path: Path) -> dict[str, Any]:
+    return {
+        "states_path": str(path),
+        "states_cache_key": manifest_id,
+        "states_cache_hit": False,
+    }
+
+
+def _save_evaluation_states(
+    path: Path, manifest_id: str, states: Any, cache_metadata: dict[str, Any]
+) -> None:
+    cache_metadata["states_cache_sha256"] = write_evaluation_states_cache(
+        path, manifest_id=manifest_id, states=states
+    )
+    cache_metadata["states_cache_saved"] = True
 
 
 def coerce_evaluation_run_spec(
@@ -1344,9 +1395,9 @@ def execute_evaluation_run_spec(
 ) -> tuple[EvaluationRunManifest, Path]:
     """Execute a serialized evaluation spec and write a truthful manifest.
 
-    The evaluated states cache is ephemeral and lives under
-    ``{FEEDBAX_RUNS_DIR}/cache/states`` keyed by the deterministic evaluation
-    manifest identifier, not by a Studio database hash.
+    The states cache is ephemeral and lives under ``{FEEDBAX_RUNS_DIR}/cache/states``
+    at the deterministic manifest ID. A completed receipt must claim the cached
+    bytes before they can be reused. A hit returns that receipt unchanged.
     """
     run_spec = coerce_evaluation_run_spec(spec)
     recipe = registry.get(run_spec.evaluation_type)
@@ -1383,43 +1434,23 @@ def execute_evaluation_run_spec(
 
     manifest_metadata = dict(metadata or {})
     states_custody = _states_custody_for_spec(run_spec)
-    cache_metadata: dict[str, Any] = {
-        "states_path": str(states_path),
-        "states_cache_key": manifest_id,
-        "states_cache_hit": False,
-    }
+    cache_metadata = _evaluation_cache_metadata(manifest_id, states_path)
     try:
-        cache_hit = False
         if use_cache and not force and states_path.exists():
-            states = load_evaluation_states_cache(states_path, manifest_id=manifest_id)
             previous_manifest = _load_completed_evaluation_manifest(manifest_path, manifest_id)
-            summary_metrics = dict(previous_manifest.summary_metrics) if previous_manifest else {}
-            artifacts = list(previous_manifest.artifacts) if previous_manifest else []
-            result_metadata = dict(previous_manifest.metadata) if previous_manifest else {}
-            result = EvaluationRecipeResult(
-                states=states,
-                summary_metrics=summary_metrics,
-                artifacts=artifacts,
-                metadata=result_metadata,
-            )
-            cache_metadata["states_cache_hit"] = True
-            cache_hit = True
-        else:
-            result = recipe(run_spec, root_path, states_path, execution_context)
-            if use_cache and result.states is not None:
-                write_evaluation_states_cache(
-                    states_path,
-                    manifest_id=manifest_id,
-                    states=result.states,
-                )
-                cache_metadata["states_cache_saved"] = True
+            if previous_manifest is not None and evaluation_states_cache_matches(
+                states_path, previous_manifest
+            ):
+                return previous_manifest, manifest_path
+        result = recipe(run_spec, root_path, states_path, execution_context)
         if states_custody == "durable":
             result = _with_durable_states_artifact(
                 result,
                 root=root_path,
                 manifest_id=manifest_id,
-                allow_existing=cache_hit,
             )
+        if use_cache and result.states is not None:
+            _save_evaluation_states(states_path, manifest_id, result.states, cache_metadata)
 
         summary_metrics = {
             "input_training_runs": len(run_spec.inputs),
@@ -1476,9 +1507,10 @@ def _load_completed_evaluation_manifest(
     path: Path,
     manifest_id: str,
 ) -> EvaluationRunManifest | None:
-    if not path.exists():
+    try:
+        manifest = load_manifest(path)
+    except FileNotFoundError:
         return None
-    manifest = load_manifest(path)
     if not isinstance(manifest, EvaluationRunManifest):
         return None
     if manifest.id != manifest_id or manifest.status != "completed":
@@ -1529,19 +1561,12 @@ def _with_durable_states_artifact(
     *,
     root: Path,
     manifest_id: str,
-    allow_existing: bool = False,
 ) -> EvaluationRecipeResult:
     existing = [
         artifact
         for artifact in result.artifacts
         if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
     ]
-    if existing and allow_existing:
-        if len(existing) > 1:
-            raise ValueError(
-                f"Evaluation manifest {manifest_id!r} has multiple evaluation_states artifacts."
-            )
-        return result
     if existing:
         raise ValueError(
             "Evaluation recipes must not emit evaluation_states artifacts directly; "
