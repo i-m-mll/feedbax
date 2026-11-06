@@ -68,9 +68,14 @@ def test_nested_noise_reset_keys_follow_producers() -> None:
         output_ports=list(outputs),
         output_bindings=outputs,
     )
-    graph = compile_graph(
+    compiled = compile_graph(
         GraphDocument(graph=spec), ComponentRegistry(load_user_components=False)
-    ).graph
+    )
+    # Both sides of the reset fix originally emitted this resolved identity.
+    assert compiled.resolved.resolved_sha256 != (
+        "49d8b3239b0a67763291f46017c5b5f95cf3fc8502cb59c0899e7f8806e27c5a"
+    )
+    graph = compiled.graph
     key = jax.random.key(17)
 
     def rollout():
@@ -198,11 +203,22 @@ def test_historical_compiler_evidence_requires_authored_document_recompilation()
     registry = ComponentRegistry(load_user_components=False)
     compiled = compile_graph(GraphDocument(graph=GraphSpec()), registry)
     for model, current in ((ResolvedGraph, compiled.resolved), (CompilationRecord, compiled.record)):
-        for version in range(1, int(current.schema_version)):
+        historical_versions = tuple(str(v) for v in range(1, int(current.schema_version)))
+        for version in (*historical_versions, "unknown"):
             payload = current.model_dump(mode="json")
-            payload["schema_version"] = str(version)
-            with pytest.raises(ValidationError, match="recompile the authored GraphDocument"):
+            payload["schema_version"] = version
+            with pytest.raises(
+                ValidationError,
+                match="migration_intentionally_absent=yes; recompile the authored GraphDocument",
+            ):
                 model.model_validate(payload)
+
+        payload = current.model_dump(mode="json")
+        payload["key_schedule"]["schedule_id"] = (
+            "feedbax.graph_key_schedule.canonical_topological_split.v2"
+        )
+        with pytest.raises(ValidationError, match="recompile the authored GraphDocument"):
+            model.model_validate(payload)
 
     with pytest.raises(GraphCompilationError) as caught:
         compile_graph(
@@ -212,8 +228,12 @@ def test_historical_compiler_evidence_requires_authored_document_recompilation()
         (CompilationRecord, compiled.record),
         (CompilationFailureRecord, caught.value.record),
     ):
-        for version in ("1", "2", "unknown"):
+        for version in ("1", "2", "3", "unknown"):
             payload = record.model_dump(mode="json")
             payload["compiler_version"] = version
             with pytest.raises(ValidationError, match="recompile the authored GraphDocument"):
                 model.model_validate(payload)
+
+    unversioned_failure = caught.value.record.model_dump(mode="json", exclude={"compiler_version"})
+    with pytest.raises(ValidationError, match="compiler_version"):
+        CompilationFailureRecord.model_validate(unversioned_failure)

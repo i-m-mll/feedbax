@@ -36,14 +36,14 @@ from feedbax.component_registry.declarations import ComponentParamValidationErro
 from feedbax.compiler.serialization import (
     _instantiate_graph,
 )
+from feedbax.runtime._graph_key_schedule import KEY_SCHEDULE_ID
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 
 
 GRAPH_COMPILER_ID = "feedbax.graph.compiler"
-GRAPH_COMPILER_VERSION = "3"
-KEY_SCHEDULE_ID = "feedbax.graph_key_schedule.canonical_topological_split.v2"
+GRAPH_COMPILER_VERSION = "4"
 
 
 class CompilerPhase(StrEnum):
@@ -134,12 +134,23 @@ class GraphSourceMap(BaseModel):
 
 
 class GraphKeySchedule(BaseModel):
-    """Split by node count in canonical topological order at every graph depth."""
+    """Identity of the step and recurrent reset key schedule, with root node order."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schedule_id: Literal[KEY_SCHEDULE_ID] = KEY_SCHEDULE_ID
+    schedule_id: Literal[KEY_SCHEDULE_ID]
     node_order: tuple[str, ...]
+
+    @field_validator("schedule_id", mode="before")
+    @classmethod
+    def reject_unsupported_schedule(cls, value: str) -> str:
+        if value != KEY_SCHEDULE_ID:
+            raise ValueError(
+                f"Unsupported graph key schedule: source_schedule={value!r}; "
+                f"current_schedule={KEY_SCHEDULE_ID!r}; "
+                "recompile the authored GraphDocument to obtain current compiler evidence"
+            )
+        return value
 
 
 class ResolvedGraph(BaseModel):
@@ -147,15 +158,15 @@ class ResolvedGraph(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal[RESOLVED_GRAPH_SCHEMA_ID] = RESOLVED_GRAPH_SCHEMA_ID
-    schema_version: str = RESOLVED_GRAPH_SCHEMA_VERSION
+    schema_id: Literal[RESOLVED_GRAPH_SCHEMA_ID]
+    schema_version: Literal[RESOLVED_GRAPH_SCHEMA_VERSION]
     graph: GraphSpec
     source_map: GraphSourceMap
     key_schedule: GraphKeySchedule
     document_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     resolved_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
-    @field_validator("schema_version")
+    @field_validator("schema_version", mode="before")
     @classmethod
     def reject_unsupported_version(cls, value: str) -> str:
         return _require_version("ResolvedGraph", value, RESOLVED_GRAPH_SCHEMA_VERSION)
@@ -175,10 +186,10 @@ class CompilationRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal[COMPILATION_RECORD_SCHEMA_ID] = COMPILATION_RECORD_SCHEMA_ID
-    schema_version: str = COMPILATION_RECORD_SCHEMA_VERSION
-    compiler_id: Literal[GRAPH_COMPILER_ID] = GRAPH_COMPILER_ID
-    compiler_version: Literal[GRAPH_COMPILER_VERSION] = GRAPH_COMPILER_VERSION
+    schema_id: Literal[COMPILATION_RECORD_SCHEMA_ID]
+    schema_version: Literal[COMPILATION_RECORD_SCHEMA_VERSION]
+    compiler_id: Literal[GRAPH_COMPILER_ID]
+    compiler_version: Literal[GRAPH_COMPILER_VERSION]
     document_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     resolved_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_map: GraphSourceMap
@@ -188,7 +199,7 @@ class CompilationRecord(BaseModel):
     migration_record_count: int = Field(ge=0)
     diagnostics: tuple[CompilerDiagnostic, ...] = ()
 
-    @field_validator("schema_version")
+    @field_validator("schema_version", mode="before")
     @classmethod
     def reject_unsupported_version(cls, value: str) -> str:
         return _require_version("CompilationRecord", value, COMPILATION_RECORD_SCHEMA_VERSION)
@@ -204,14 +215,14 @@ class CompilationFailureRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal[COMPILATION_FAILURE_SCHEMA_ID] = COMPILATION_FAILURE_SCHEMA_ID
-    schema_version: str = COMPILATION_FAILURE_SCHEMA_VERSION
-    compiler_id: Literal[GRAPH_COMPILER_ID] = GRAPH_COMPILER_ID
-    compiler_version: Literal[GRAPH_COMPILER_VERSION] = GRAPH_COMPILER_VERSION
+    schema_id: Literal[COMPILATION_FAILURE_SCHEMA_ID]
+    schema_version: Literal[COMPILATION_FAILURE_SCHEMA_VERSION]
+    compiler_id: Literal[GRAPH_COMPILER_ID]
+    compiler_version: Literal[GRAPH_COMPILER_VERSION]
     document_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     diagnostics: tuple[CompilerDiagnostic, ...] = Field(min_length=1)
 
-    @field_validator("schema_version")
+    @field_validator("schema_version", mode="before")
     @classmethod
     def reject_unsupported_version(cls, value: str) -> str:
         return _require_version(
@@ -315,6 +326,10 @@ def _compile_phase(
         )
         raise GraphCompilationError(
             CompilationFailureRecord(
+                schema_id=COMPILATION_FAILURE_SCHEMA_ID,
+                schema_version=COMPILATION_FAILURE_SCHEMA_VERSION,
+                compiler_id=GRAPH_COMPILER_ID,
+                compiler_version=GRAPH_COMPILER_VERSION,
                 document_sha256=document_sha256,
                 diagnostics=(diagnostic,),
             )
@@ -605,9 +620,11 @@ def compile_graph(
 
     def emit_resolved_ir() -> tuple[ResolvedGraph, CompilationRecord]:
         source_map = _source_map(document, authored_graph, graph, document_sha256)
-        key_schedule = GraphKeySchedule(node_order=node_order)
+        key_schedule = GraphKeySchedule(schedule_id=KEY_SCHEDULE_ID, node_order=node_order)
         resolved_sha256 = _resolved_digest(graph, source_map, key_schedule)
         resolved = ResolvedGraph(
+            schema_id=RESOLVED_GRAPH_SCHEMA_ID,
+            schema_version=RESOLVED_GRAPH_SCHEMA_VERSION,
             graph=graph,
             source_map=source_map,
             key_schedule=key_schedule,
@@ -615,6 +632,10 @@ def compile_graph(
             resolved_sha256=resolved_sha256,
         )
         record = CompilationRecord(
+            schema_id=COMPILATION_RECORD_SCHEMA_ID,
+            schema_version=COMPILATION_RECORD_SCHEMA_VERSION,
+            compiler_id=GRAPH_COMPILER_ID,
+            compiler_version=GRAPH_COMPILER_VERSION,
             document_sha256=document_sha256,
             resolved_sha256=resolved_sha256,
             source_map=source_map,
