@@ -1,6 +1,10 @@
+from operator import attrgetter
+from types import SimpleNamespace
+
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 import feedbax._vendor.jax_cookbook.tree as jtree
 
 from feedbax.runtime.mapping import WhereDict
@@ -100,3 +104,57 @@ def test_wheredict_string_and_callable_keys_match() -> None:
 
     assert spec["state.hidden"] == "hidden"
     assert spec[lambda item: item.state.hidden] == "hidden"
+
+
+
+def test_wheredict_jit_reuses_equivalent_selectors_and_evaluates_distinct_paths() -> None:
+    traced = []
+
+    @eqx.filter_jit
+    def apply_init(mapping, state):
+        traced.append(None)
+        where, value = next(iter(mapping.items()))
+        return eqx.tree_at(where, state, value)
+
+    state = _Pair(jnp.array(1), jnp.array(2))
+    first = apply_init(WhereDict({lambda item: item.left: jnp.array(3)}), state)
+    equivalent = apply_init(WhereDict({lambda pair: pair.left: jnp.array(4)}), state)
+    getter = apply_init(WhereDict({attrgetter("left"): jnp.array(6)}), state)
+
+    assert (first.left, first.right) == (3, 2)
+    assert (equivalent.left, equivalent.right) == (4, 2)
+    assert (getter.left, getter.right) == (6, 2)
+    assert len(traced) == 1
+
+    distinct = apply_init(WhereDict({lambda pair: pair.right: jnp.array(5)}), state)
+
+    assert (distinct.left, distinct.right) == (1, 5)
+    assert len(traced) == 2
+
+
+
+def test_wheredict_functional_update_preserves_tagged_indexed_selectors() -> None:
+    source = WhereDict({
+        (lambda item: item.nodes["net"], "first"): 1,
+        (lambda item: item.nodes["net"], "second"): 2,
+        "plain": 3,
+    })
+
+    updated = eqx.tree_at(lambda mapping: mapping["nodes['net']#first"], source, 4)
+
+    (where, tag), _, plain = updated
+    assert where(SimpleNamespace(nodes={"net": "selected"})) == "selected"
+    assert tag == "first"
+    assert plain == "plain"
+    assert source["nodes['net']#first"] == 1
+    assert updated[(lambda item: item.nodes["net"], "first")] == 4
+    assert updated["nodes['net']#second"] == 2
+
+
+def test_wheredict_rejects_a_conditional_selector_before_it_can_alias_a_path() -> None:
+    spec = WhereDict({lambda item: item.left: "left"})
+
+    with pytest.raises(ValueError, match="WhereDict selector.*path"):
+        spec[lambda item: item.left if item.flag else item.right] = "ambiguous"
+
+    assert spec["left"] == "left"

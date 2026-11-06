@@ -9,7 +9,9 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from feedbax.analysis.rollout import stack_trials
 from feedbax.objectives.loss import CompositeLoss, EpochMaskedLoss, StateDerivativeLoss
+from feedbax.runtime.batch import BatchInfo
 from feedbax.tasks import SimpleReaches, TaskTrialSpec
 from feedbax.tasks.timeline_masks import build_task_timeline_mask
 
@@ -302,3 +304,22 @@ def test_simple_reaches_fixed_endpoints_drive_train_and_single_validation_trial(
         validation.timeline.epoch_bounds,
         jnp.asarray([[0, task.n_steps - 1]], dtype=jnp.int32),
     )
+
+
+
+def test_stack_trials_from_separate_sampling_traces() -> None:
+    task = _make_default_task()
+    first = task.sample_trial(jax.random.key(0))
+    second = task.sample_trial(jax.random.key(1), BatchInfo(size=1, current=0, total=1))
+
+    stacked = stack_trials([first, second])
+
+    for index, trial in enumerate((first, second)):
+        assert jnp.array_equal(
+            stacked.inits["mechanics.effector"].pos[index],
+            trial.inits["mechanics.effector"].pos,
+        )
+        assert jnp.array_equal(
+            stacked.targets[lambda state: state.mechanics.effector.pos].value[index],
+            trial.targets["mechanics.effector.pos"].value,
+        )
