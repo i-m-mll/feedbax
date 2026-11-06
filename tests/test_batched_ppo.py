@@ -1,6 +1,5 @@
 """Tests for batched PPO training (train_ppo_batched, collect_rollouts_batched)."""
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
@@ -16,8 +15,6 @@ from feedbax.training.rl.ppo import (
     _stack_pytrees,
     collect_rollouts_batched,
     train_ppo_batched,
-    _collect_rollout,
-    _init_envs,
 )
 from feedbax.training.rl.rewards import RewardConfig
 from feedbax.training.rl.tasks import TASK_REACH, TASK_HOLD
@@ -110,46 +107,6 @@ class TestBuildBatch:
         for leaf in jt.leaves(batched_plant):
             if isinstance(leaf, jnp.ndarray):
                 assert jnp.all(jnp.isfinite(leaf)), "Non-finite values in batched plant"
-
-
-class TestBatchedCollect:
-    def test_shapes_and_finiteness(self, batched_plant, env_config, key):
-        """Batched rollout collection produces finite arrays with correct shapes."""
-        obs_dim = env_config.n_joints * 2 + env_config.n_muscles + 2 + 2 + 2 + 1
-        action_dim = env_config.n_muscles
-        n_steps = 16  # short rollout
-
-        # Create batched policy + states
-        key, pk, ek = jax.random.split(key, 3)
-        policies = [ActorCritic(obs_dim, action_dim, 32, 1, key=k) for k in jax.random.split(pk, B)]
-        batched_policy = _stack_pytrees(*policies)
-
-        env_keys = jax.random.split(ek, B)
-        batched_states = eqx.filter_vmap(
-            lambda plant, k: _init_envs(plant, env_config, k, N),
-        )(batched_plant, env_keys)
-
-        # Collect
-        keys = jax.random.split(key, B)
-        states, rollout, last_values, _ = eqx.filter_vmap(
-            lambda pl, pol, st, k: _collect_rollout(
-                pl,
-                env_config,
-                pol,
-                st,
-                k,
-                n_steps,
-                N,
-            ),
-        )(batched_plant, batched_policy, batched_states, keys)
-
-        assert rollout.obs.shape == (B, n_steps, N, obs_dim)
-        assert rollout.actions.shape == (B, n_steps, N, action_dim)
-        assert rollout.rewards.shape == (B, n_steps, N)
-        assert last_values.shape == (B, N)
-
-        for name in ("obs", "rewards"):
-            assert jnp.all(jnp.isfinite(getattr(rollout, name))), f"Non-finite rollout {name}"
 
 
 class TestBatchedUpdate:
