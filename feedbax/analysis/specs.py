@@ -13,7 +13,7 @@ import jax.tree_util as jtu
 from pydantic import ValidationError
 
 from feedbax.analysis.analysis import AbstractAnalysis
-from feedbax.analysis.context import AnalysisRunContext
+from feedbax.analysis.context import AnalysisRegenerationBuilder, AnalysisRunContext
 from feedbax.analysis.declared_versions import migrate_authored_document
 from feedbax.analysis.evaluation import (
     EvaluationStatesArtifactNotFound,
@@ -1031,6 +1031,7 @@ def execute_analysis_run_spec(
     use_cache: bool = True,
     force: bool = False,
     computation: AnalysisComputation | None = None,
+    build_regeneration_spec: AnalysisRegenerationBuilder | None = None,
 ) -> tuple[AnalysisRunManifest, Path]:
     """Execute a serialized analysis spec and write an ``AnalysisRunManifest``.
 
@@ -1041,6 +1042,8 @@ def execute_analysis_run_spec(
     cache reads and writes for the selected analyses and their dependencies.
     A recipe without a declared revision always runs uncached. An adapter can
     reserve the computation identity before execution via the registry.
+    The optional regeneration builder runs before publishing a newly completed
+    receipt. Reusing an existing receipt skips the builder.
     """
     run_spec, flattened = resolve_analysis_run_authoring(
         spec,
@@ -1107,6 +1110,7 @@ def execute_analysis_run_spec(
         experiment_registry=experiment_registry,
         use_result_cache=reuse,
         computation=computation,
+        build_regeneration_spec=build_regeneration_spec,
     )
     manifest_id = context.manifest_id
     if computation.execution_nonce is not None:
