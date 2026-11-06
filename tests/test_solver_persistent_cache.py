@@ -31,7 +31,7 @@ _PROBE = dedent(
             if 'Persistent compilation cache hit' in message:
                 module, key = record.args
                 self.modules.append(module)
-                if module == 'jit_ode_step':
+                if module == 'jit__solve_step':
                     self.solver_keys.append(key)
     hits = CacheHits()
     logger = logging.getLogger('jax._src.compiler')

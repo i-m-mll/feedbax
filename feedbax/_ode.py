@@ -28,7 +28,6 @@ def ode_init(solver: dfx.AbstractSolver, term: dfx.ODETerm, dt, y: PyTree[Array]
     return solver.init(term, jnp.zeros_like(t1), t1, working_y, args)
 
 
-@eqx.filter_jit
 def ode_step(
     solver: dfx.AbstractSolver,
     term: dfx.ODETerm,
@@ -39,7 +38,7 @@ def ode_step(
     *,
     storage_like=None,
 ):
-    """Integrate a sampled interval and restore each physical leaf's storage dtype.
+    """Integrate a sampled interval, requiring solver success before returning state.
 
     Diffrax Runge–Kutta tableaux promote across the whole state tree, so all
     numerical leaves must share a working dtype. Auxiliary solver state retains
@@ -48,8 +47,17 @@ def ode_step(
     invalidating any derivative cached by a stateful solver.
     """
     storage = y if storage_like is None else storage_like
+    next_state, result = _solve_step(solver, term, dt, y, args, solver_state, storage)
+    if result is None:
+        return next_state
+    return result.error_if(next_state, result != dfx.RESULTS.successful)
+
+
+@eqx.filter_jit
+def _solve_step(solver, term, dt, y, args, solver_state, storage):
+    """Keep the numerical kernel persistently cacheable apart from error callbacks."""
     working_y, t1 = _working_state(y, dt, storage)
-    next_y, _, _, next_solver_state, _ = solver.step(
+    next_y, _, _, next_solver_state, result = solver.step(
         term,
         jnp.zeros_like(t1),
         t1,
@@ -59,4 +67,5 @@ def ode_step(
         made_jump=True,
     )
     stored_y = restore_storage_dtypes(next_y, storage)
-    return stored_y, next_solver_state
+    # A literal success from the solver needs no runtime check in the enclosing JIT.
+    return (stored_y, next_solver_state), None if result is dfx.RESULTS.successful else result
