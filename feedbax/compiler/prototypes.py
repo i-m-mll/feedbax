@@ -67,6 +67,19 @@ def proto_from_value(value: Any) -> Any:
     return jt.map(lambda x: jnp.zeros_like(jnp.asarray(x)), value)
 
 
+def subgraph_input_prototypes(
+    node_name: str,
+    subgraph: GraphSpec,
+    parent_inputs: Mapping[tuple[str, str], Any],
+) -> dict[tuple[str, str], Any]:
+    """Map parent node ports to the child's external input prototypes."""
+    return {
+        ("__graph__", port): parent_inputs[(node_name, port)]
+        for port in subgraph.input_ports
+        if (node_name, port) in parent_inputs
+    }
+
+
 def _task_sample_shape(shape: Any) -> list[int] | None:
     if not isinstance(shape, (list, tuple)):
         return None
@@ -308,16 +321,11 @@ def output_prototypes_for_node(
             node_type=node_type,
             consumer="output_prototypes_for_node",
         )
-        nested_inputs = {
-            (node, port): input_prototypes[(node_name, graph_port)]
-            for graph_port, (node, port) in subgraph.input_bindings.items()
-            if (node_name, graph_port) in input_prototypes
-        }
         from feedbax.compiler.resolution import resolve_graph_parameters
 
         return resolve_graph_parameters(
             subgraph,
-            nested_inputs,
+            subgraph_input_prototypes(node_name, subgraph, input_prototypes),
             component_registry,
         ).graph_outputs
 
