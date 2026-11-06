@@ -48,6 +48,7 @@ from feedbax.web.worker.app import WorkerStatus
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
 from feedbax.web.worker.identity import require_worker_job_id
 from feedbax.web.worker.transport import WorkerEndpoint
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 def test_studio_training_assembly_spec_governs_worker_payload() -> None:

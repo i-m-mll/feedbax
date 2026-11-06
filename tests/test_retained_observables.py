@@ -46,6 +46,7 @@ from feedbax.contracts.training import (
     TimeAggregationSpec,
     TrainingSpec,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.graph_spec_contract]
 

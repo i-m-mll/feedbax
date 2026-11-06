@@ -60,6 +60,7 @@ from feedbax.contracts.staged_execution import (
     StagedExecutionDescriptor,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 def _figure_spec_payload(name: str):

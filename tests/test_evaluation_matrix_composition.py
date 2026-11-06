@@ -34,6 +34,7 @@ from feedbax.contracts.manifest import (
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 def _write(tmp_path: Path, name: str, payload: dict[str, Any]) -> str:

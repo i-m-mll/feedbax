@@ -92,6 +92,7 @@ from tests.support.fake_project_experiment import (
     write_repo,
 )
 from tests.support.fake_project_experiment.products import QuillonOutputs
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 #: One authenticated survey manifest per row, as a receipt layer would record.
 ROW_MANIFESTS = {

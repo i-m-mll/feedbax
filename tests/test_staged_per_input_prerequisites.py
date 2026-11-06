@@ -43,6 +43,7 @@ from feedbax.contracts.staged_execution import (
 from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
 from pydantic import ConfigDict
 from feedbax.contracts.selection import ManifestPredicate
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]

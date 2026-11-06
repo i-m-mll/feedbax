@@ -43,6 +43,7 @@ from feedbax.plot.constructors import (
     get_figure_constructor,
     register_figure_constructor,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [pytest.mark.feedbax_contract]
 

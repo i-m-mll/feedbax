@@ -35,6 +35,7 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.plot.constructors import register_figure_template
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [pytest.mark.feedbax_contract]
 

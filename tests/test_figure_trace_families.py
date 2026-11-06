@@ -34,6 +34,7 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.plot.colors import sample_colorscale_at, sample_colorscale_unique
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [pytest.mark.feedbax_contract]
 

@@ -52,6 +52,7 @@ from feedbax.training.spec_storage import (
     register_training_run_matrix_compiler,
 )
 from feedbax.orchestration.revision import resolve_feedbax_revision
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 def _write(tmp_path: Path, name: str, payload: dict[str, Any]) -> str:
