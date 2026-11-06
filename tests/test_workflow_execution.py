@@ -86,6 +86,7 @@ from feedbax.contracts.experiment_compile_lock import (
     ReportParentBinding,
 )
 from feedbax.contracts.figures import FIGURE_SPEC_SCHEMA_ID
+from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 from feedbax.contracts.base import (
     canonical_json_bytes,
     sha256_bytes,
@@ -298,6 +299,39 @@ def test_a_training_matrix_refuses_the_closure_before_any_node_executes(
     assert node["unblocks"] == ["evaluation:boundary-consumer"]
     assert calls.evaluation == 0
     assert not environment.root.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "substituted"),
+    [("effect", "pure"), ("type_id", "feedbax.operation.evaluate")],
+)
+def test_prepare_refuses_an_operation_changed_under_an_intact_training_lock(
+    outputs: QuillonOutputs, field: str, substituted: str
+) -> None:
+    matrix = TrainingRunMatrixSpec.model_validate(
+        {
+            "name": "locked-matrix",
+            "base": {"kind": "inline", "inline": {"schema_id": "feedbax.spec.training_run"}},
+            "rows": [{"row_id": "row_a", "overrides": []}],
+        }
+    )
+    outputs.emit(matrix.name, matrix.model_dump(mode="json"))
+    index = read_compiled_outputs(outputs.output_directory)
+    plan = derive_workflow_plan(index, target=matrix.name)
+    with pytest.raises(ExternalOperationError):
+        prepare_workflow(plan, index)
+
+    (node,) = plan.nodes
+    changed = replace(node, operation=replace(node.operation, **{field: substituted}))
+    altered_plan = workflow_plan_from_document(replace(plan, nodes=(changed,)).document())
+
+    with pytest.raises(PlanNodeDisagreementError) as caught:
+        prepare_workflow(altered_plan, index)
+
+    assert any(
+        difference.startswith(f"operation.{field}:")
+        for difference in caught.value.record()["differences"]
+    )
 
 
 def test_the_refusal_lists_every_branch_the_boundary_unblocks(
@@ -2387,7 +2421,8 @@ def test_a_node_fact_the_lock_does_not_determine_refuses_at_preflight(
         )
 
     differences = caught.value.record()["differences"]
-    assert any(difference.startswith(f"{field}:") for difference in differences)
+    compared_field = "operation.parameters" if field == "compiled_schema_id" else field
+    assert any(difference.startswith(f"{compared_field}:") for difference in differences)
     assert substituted in str(caught.value)
     assert calls.evaluation == before, "a refused closure never runs"
 

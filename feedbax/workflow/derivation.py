@@ -554,6 +554,16 @@ def _check_planned_product(
         )
 
 
+def lock_operation(compiled: CompiledEnvelope, edges: tuple[EdgeDeclaration, ...]) -> Operation:
+    """Project the operation for a compiled output and its lock's edge declarations."""
+    return lower_operation(
+        compiled.kind.layer,
+        compiled_schema_id=compiled.schema_id,
+        semantic_hash=compiled.content_hash,
+        input_types={".".join(edge.role_path): edge.input_type for edge in edges},
+    )
+
+
 def derive_workflow_plan(
     index: CompiledOutputIndex,
     *,
@@ -579,17 +589,11 @@ def derive_workflow_plan(
     def expand(source_ref: str) -> NodeDeclaration:
         compiled = by_ref[source_ref]
         edges = lock_edge_declarations(compiled, by_ref)
-        input_types = {".".join(edge.role_path): edge.input_type for edge in edges}
         return NodeDeclaration(
             node=PlanNode(
                 key=compiled.key,
                 source_ref=source_ref,
-                operation=lower_operation(
-                    compiled.kind.layer,
-                    compiled_schema_id=compiled.schema_id,
-                    semantic_hash=compiled.content_hash,
-                    input_types=input_types,
-                ),
+                operation=lock_operation(compiled, edges),
                 content_hash=compiled.content_hash,
                 execution_identity=compiled.execution_identity,
                 metadata={
@@ -699,6 +703,7 @@ __all__ = [
     "UnsupportedCompiledProductError",
     "derive_workflow_plan",
     "lock_edge_declarations",
+    "lock_operation",
     "lower_operation",
     "OPERATION_METADATA",
     "OperationMetadata",
