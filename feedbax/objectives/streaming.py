@@ -17,23 +17,28 @@ finite-difference order and consume a rolling window of recent states.
 from __future__ import annotations
 
 import functools as ft
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 
-import equinox as eqx
-import jax.tree as jt
+import jax
 import jax.numpy as jnp
+import jax.tree as jt
 from jaxtyping import Array
 
-from feedbax.runtime.streaming import current_state_from_window
 from feedbax.objectives.loss import (
     AbstractLoss,
     CompositeLoss,
-    CrossTimestepLoss,
     ModelLoss,
-    TargetSpec,
+    NthDifferenceLoss,
     TargetStateLoss,
+    _TARGET_FIRST_STEP,
+    _multiply_time_weights,
+    _prepare_time_weight,
+    _resolve_target_spec,
+    _target_density,
+    _target_weight_selectors,
 )
 from feedbax.runtime.graph import Component
+from feedbax.runtime.streaming import current_state_from_window
 
 
 def make_streaming_loss_fn(
@@ -45,7 +50,7 @@ def make_streaming_loss_fn(
     """Construct a per-step streaming loss function from a loss tree.
 
     The returned function normally has signature ``(state_view, t) -> scalar``.
-    If any term is a ``CrossTimestepLoss``, it advertises
+    If any term is an ``NthDifferenceLoss``, it advertises
     ``streaming_order > 0`` and expects a rolling state window with a leading
     time axis of length ``streaming_order + 1`` instead of a single state.
 
@@ -66,24 +71,24 @@ def make_streaming_loss_fn(
     Raises:
         NotImplementedError: If any leaf loss term does not support streaming.
     """
+    if n_steps < 1:
+        raise ValueError(f"Streaming loss requires positive n_steps, got {n_steps}.")
+
     # Collect (leaf_loss, cumulative_weight) pairs from the loss tree.
     terms = _collect_leaf_terms(loss_func, parent_weight=1.0)
 
     # Separate into per-step terms, cross-timestep terms, and constant terms
     # (ModelLoss — independent of state, evaluated once).
     step_term_closures: list[Callable] = []
-    constant_loss = jnp.float32(0.0)
+    model_terms: list[Array] = []
     streaming_order = 0
 
     for leaf_loss, cum_weight in terms:
         if isinstance(leaf_loss, ModelLoss):
-            # ModelLoss is state-independent; evaluate once and fold into the
-            # constant.  Divide by n_steps so the total matches what
-            # full-trajectory evaluation would produce (it calls .mean() over
-            # T timesteps, but the value is the same at every step).
-            constant_loss = constant_loss + cum_weight * leaf_loss.term(
-                None, None, model
-            )
+            value = jnp.asarray(cum_weight * leaf_loss.term(None, None, model))
+            if value.shape != ():
+                raise ValueError(f"ModelLoss '{leaf_loss.label}' must produce a scalar.")
+            model_terms.append(value)
             continue
 
         if isinstance(leaf_loss, TargetStateLoss):
@@ -93,7 +98,7 @@ def make_streaming_loss_fn(
             step_term_closures.append(closure)
             continue
 
-        if isinstance(leaf_loss, CrossTimestepLoss):
+        if isinstance(leaf_loss, NthDifferenceLoss):
             closure = _make_cross_timestep_closure(
                 leaf_loss, cum_weight, n_steps,
             )
@@ -107,10 +112,8 @@ def make_streaming_loss_fn(
             "Remove it from the loss function or use full-trajectory training."
         )
 
-    # Freeze the list so the closure captures a tuple (JIT-friendly).
-    _closures = tuple(step_term_closures)
-    _const = constant_loss
-    _streaming_order = streaming_order
+    step_terms = tuple(step_term_closures)
+    model_total = ft.reduce(jnp.add, model_terms) if model_terms else None
 
     def streaming_fn(state_or_window, t):
         """Per-step loss contribution.
@@ -124,15 +127,17 @@ def make_streaming_loss_fn(
         Returns:
             A scalar loss contribution for this timestep.
         """
-        total = _const
+        contributions = []
+        if model_total is not None:
+            contributions.append(jnp.where(t == 0, model_total, jnp.zeros_like(model_total)))
         current_state = (
             current_state_from_window(state_or_window)
-            if _streaming_order > 0
+            if streaming_order > 0
             else state_or_window
         )
-        for fn in _closures:
-            total = total + fn(state_or_window, current_state, t)
-        return total
+        for fn in step_terms:
+            contributions.append(fn(state_or_window, current_state, t))
+        return ft.reduce(jnp.add, contributions) if contributions else jnp.asarray(0.0)
 
     streaming_fn.streaming_order = streaming_order
     return streaming_fn
@@ -178,179 +183,98 @@ def _make_target_state_closure(
     The closure operates on a *single trial* (no batch dimension) because it
     is constructed inside ``filter_vmap``.
     """
-    # --- resolve target spec (mirrors TargetStateLoss.term logic) ---
-    task_target_spec = trial_specs.targets.get(loss.key, None)
-
-    if task_target_spec is None:
-        if loss.spec is None:
-            raise ValueError(
-                f"TargetSpec must be provided on construction of "
-                f"TargetStateLoss '{loss.label}', or as part of the trial "
-                f"specifications"
-            )
-        target_spec = loss.spec
-    elif isinstance(task_target_spec, TargetSpec):
-        target_spec = eqx.combine(loss.spec, task_target_spec)
-    elif isinstance(task_target_spec, Mapping):
-        target_spec = eqx.combine(loss.spec, task_target_spec[loss.label])
-    else:
-        raise ValueError(f"Invalid target spec type: {type(task_target_spec)}")
-
-    target_value = target_spec.value  # (features,), (T, features), or scalar
-
-    # --- precompute time weights as a (T,) vector ---
-    #
-    # The scan runs ``n_steps`` iterations (0 .. n_steps-1).  In
-    # full-trajectory mode, ``TargetStateLoss.term`` slices the state
-    # history with ``[:, 1:]``, discarding the first scan output (which is
-    # the state immediately after the initial step).  The resulting ``T-1``
-    # entries carry the loss weights.  In streaming mode, the scan still
-    # produces ``n_steps`` states, so we need ``n_steps`` weights with a
-    # leading zero to mirror the ``[:, 1:]`` exclusion.
-    #
-    # Mask/discount callables (``get_epoch_weights``, ``make_mid_period_ramp``,
-    # etc.) return ``(n_steps - 1,)`` arrays.  We compute these at that
-    # natural length, then prepend a zero to align with the scan index.
-    T = n_steps
-    T_loss = T - 1  # number of timesteps the full-trajectory loss covers
-
-    time_mask = target_spec.time_mask
-    if time_mask is None:
-        time_mask = target_spec.get_time_mask(T_loss)
-
-    masks = [x for x in [time_mask, target_spec.discount] if x is not None]
-
-    if masks:
-        time_weights_inner = _compute_single_trial_weights(
-            masks, trial_specs, T_loss,
-        )  # (T_loss,)
-    else:
-        time_weights_inner = jnp.ones((T_loss,), dtype=jnp.float32)
-
-    # Prepend a zero weight for scan step 0 (excluded by full-trajectory
-    # ``[:, 1:]``), giving a ``(T,)`` vector aligned with the scan index.
-    time_weights = jnp.concatenate(
-        [jnp.zeros((1,), dtype=jnp.float32), time_weights_inner],
-    )  # (T,)
-
-    # --- align time-varying targets with the scan index ---
-    #
-    # Tasks broadcast the target to ``(T_loss, features)`` for
-    # full-trajectory evaluation.  Prepend a dummy entry so that
-    # ``target_value[t]`` at scan step ``t`` matches full-trajectory
-    # index ``t - 1`` for ``t >= 1``.  The entry at ``t = 0`` is
-    # zero-weighted.
-    if (
-        isinstance(target_value, Array)
-        and target_value.ndim >= 2
-        and target_value.shape[0] == T_loss
-    ):
-        target_value = jnp.concatenate(
-            [target_value[:1], target_value], axis=0,
-        )  # (T, features)
-
-    # After possible padding, a (T, features) target is indexed per step.
-    target_is_time_varying = (
-        isinstance(target_value, Array)
-        and target_value.ndim >= 2
-        and target_value.shape[0] == T
+    target = _resolve_target_spec(loss, trial_specs)
+    value = jnp.asarray(target.value)
+    # The retained loss drops the first scan output. Its weights and targets
+    # are indexed by the remaining outputs, starting at scan step one.
+    target_steps = n_steps - _TARGET_FIRST_STEP
+    weights = tuple(
+        _prepare_time_weight(selector, trial_specs, target_steps)
+        for selector in _target_weight_selectors(target, target_steps)
     )
 
-    where_fn = loss.where
-    norm_fn = loss.norm
-    w = cum_weight
-
     def _step(state_window, current_state, t):
-        state_component = where_fn(current_state)  # (features,) — single trial
-        tv = target_value[t] if target_is_time_varying else target_value
-        error = norm_fn(state_component - tv)  # scalar
-        weight_t = time_weights[t]
-        return w * error * weight_t
+        state = loss.where(current_state)
+        time_varying = value.ndim == state.ndim + 1
+        if value.ndim > state.ndim and (
+            not time_varying or value.shape[0] not in (1, target_steps)
+        ):
+            raise ValueError(
+                f"TargetStateLoss '{loss.label}' target shape {value.shape} "
+                f"cannot broadcast to selected state shape {(target_steps, *state.shape)}."
+            )
+
+        def density_at(target_step):
+            density = _target_density(loss, state[None, None], target_step)
+            if density.shape != (1, 1):
+                raise ValueError(
+                    f"TargetStateLoss '{loss.label}' must produce one scalar per step."
+                )
+            return density[0, 0]
+
+        if target_steps == 0:
+            target_step = jnp.zeros(value.shape[1:], dtype=value.dtype) if time_varying else value
+            return jnp.zeros_like(cum_weight * density_at(target_step))
+
+        def contribution():
+            target_index = t - _TARGET_FIRST_STEP
+            target_step = value[target_index] if time_varying and value.shape[0] != 1 else value
+            density = density_at(target_step)
+            if weights:
+                density = density * _multiply_time_weights(
+                    [weight[target_index] for weight in weights], density.dtype
+                )
+            return cum_weight * density
+
+        return _when_valid(t >= _TARGET_FIRST_STEP, contribution)
 
     return _step
 
 
 def _make_cross_timestep_closure(
-    loss: CrossTimestepLoss,
+    loss: NthDifferenceLoss,
     cum_weight: float,
     n_steps: int,
 ) -> Callable:
     """Build a per-step closure for one cross-timestep finite-difference term."""
-    if loss.order < 1:
-        raise ValueError(f"{type(loss).__name__} order must be >= 1")
-    if n_steps <= loss.order:
-        raise ValueError(
-            f"{type(loss).__name__} order {loss.order} requires more than "
-            f"{loss.order} timesteps, got {n_steps}."
-        )
-
     order = loss.order
-    denominator = jnp.asarray(n_steps - order, dtype=jnp.float32)
-    where_fn = loss.where
-    norm_fn = loss.norm
-    w = cum_weight
+    loss._validate_length(n_steps)
 
     def _step(state_window, current_state, t):
-        substate = where_fn(state_window)
-
-        def _per_leaf(arr):
-            arr = arr[-(order + 1):]
-            d = jnp.diff(arr, n=order, axis=0)
-            d_norm = norm_fn(d)
-            return jnp.sum(d_norm, axis=0) / denominator
-
-        per_leaf = jt.map(_per_leaf, substate)
-        leaves = jt.leaves(per_leaf)
+        leaves = jt.leaves(loss.where(state_window))
         if not leaves:
             raise ValueError(
                 f"{type(loss).__name__}('{loss.label}'): `where` returned no "
                 "array leaves to penalise."
             )
-        value = ft.reduce(jnp.add, leaves)
-        return jnp.where(t >= order, w * value, jnp.asarray(0.0, dtype=value.dtype))
+
+        def contribution():
+            values = []
+            for arr in leaves:
+                # Reintroduce the singleton trial axis used by retained losses.
+                window = arr[None, -(order + 1):]
+                axis = loss.time_axis if loss.time_axis >= 0 else window.ndim + loss.time_axis
+                if axis != 1:
+                    raise ValueError(
+                        f"{type(loss).__name__}('{loss.label}') must use the "
+                        "rollout time axis for streaming loss."
+                    )
+                density = loss._difference_density(window, axis)
+                if density.shape != (1, 1):
+                    raise ValueError(
+                        f"{type(loss).__name__}('{loss.label}') must produce one "
+                        "scalar per step."
+                    )
+                values.append(density[0, 0] / (n_steps - order))
+            return cum_weight * ft.reduce(jnp.add, values)
+
+        return _when_valid(t >= order, contribution)
 
     return _step
 
 
-def _compute_single_trial_weights(
-    masks: list,
-    trial_specs,
-    T: int,
-) -> Array:
-    """Compute combined time weights for a single trial.
-
-    This mirrors ``_combine_weights`` from ``loss.py`` but for a single trial
-    (no batch dimension).
-
-    Args:
-        masks: List of ``WeightsSpec`` selectors (scalars, arrays, or
-            callables taking a single trial's spec).
-        trial_specs: A single trial's specification (no batch dim).
-        T: Number of timesteps.
-
-    Returns:
-        A ``(T,)`` array of combined time weights.
-    """
-    dtype = jnp.float32
-    w = jnp.ones((T,), dtype=dtype)
-
-    for selector in masks:
-        if callable(selector):
-            wi = selector(trial_specs)
-        else:
-            wi = selector
-
-        wi = jnp.asarray(wi, dtype=dtype)
-        if wi.ndim == 0:
-            wi = jnp.full((T,), wi, dtype=dtype)
-        elif wi.shape == (T - 1,):
-            # Common off-by-one: masks computed from epoch_bounds may have T-1
-            # elements (timeline n_steps includes init state). Pad with last value.
-            wi = jnp.concatenate([wi, wi[-1:]])
-        elif wi.shape != (T,):
-            raise ValueError(
-                f"Mask/discount must be scalar or shape ({T},) or ({T-1},), got {wi.shape}"
-            )
-        w = w * wi
-
-    return w
+def _when_valid(valid, contribution: Callable) -> Array:
+    # Skipping excluded samples also skips their norm derivatives. Multiplying
+    # by zero after evaluation would still propagate undefined derivatives.
+    dtype = jax.eval_shape(contribution).dtype
+    return jax.lax.cond(valid, contribution, lambda: jnp.zeros((), dtype=dtype))

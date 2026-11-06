@@ -67,7 +67,8 @@ U = TypeVar("U")
 def nan_safe_mse(input: Array, target: Array) -> Float[Array, ""]:
     """Mean squared error over finite target entries only."""
     finite = jnp.isfinite(target)
-    squared_error = jnp.where(finite, jnp.square(input - target), 0.0)
+    difference = jnp.where(finite, input, 0) - jnp.where(finite, target, 0)
+    squared_error = jnp.square(difference)
     count = jnp.maximum(jnp.sum(finite), 1)
     return jnp.sum(squared_error) / count
 
@@ -755,46 +756,66 @@ class TargetStateLoss(AbstractLoss):
             "TargetStateLoss requires trial_specs, but trial_specs is None"
         )
 
-        # TODO: Support PyTrees, not just single arrays
-        state = self.where(states)[:, 1:]
+        density, selectors = _retained_target_density(self, states, trial_specs)
+        return _sum_target_density(density, selectors, trial_specs)
 
-        if (task_target_spec := trial_specs.targets.get(self.key, None)) is None:
-            if self.spec is None:
-                raise ValueError(
-                    "`TargetSpec` must be provided on construction of "
-                    "`TargetStateLoss`, or as part of the trial "
-                    "specifications"
-                )
 
-            target_spec = self.spec
-        elif isinstance(task_target_spec, TargetSpec):
-            # Override default spec with trial-by-trial spec provided by the task, if any
-            target_spec: TargetSpec = eqx.combine(self.spec, task_target_spec)
-        elif isinstance(task_target_spec, Mapping):
-            target_spec: TargetSpec = eqx.combine(self.spec, task_target_spec[self.label])
-        else:
-            raise ValueError("Invalid target spec encountered ")
-
-        loss_over_time = self.norm(state - target_spec.value)
-
-        # https://chatgpt.com/share/68ec227e-052c-8006-86ac-ffc5dc490b4d
-
-        time_mask = target_spec.time_mask
-        if time_mask is None:
-            time_mask = target_spec.get_time_mask(loss_over_time.shape[-1])
-
-        masks = [x for x in [time_mask, target_spec.discount] if x is not None]
-
-        # ? Should we keep the weights?
-        return reduce_over_time_with_weights(
-            label=self.label,
-            arr=loss_over_time,
-            trial_specs=trial_specs,
-            time_axis=-1,
-            trial_axis=0,  #! Correct?
-            trial_axis_specs=0,  # in `trial_specs`
-            masks=masks,
+def _resolve_target_spec(loss: TargetStateLoss, trial_specs: "TaskTrialSpec") -> TargetSpec:
+    trial_target = trial_specs.targets.get(loss.key)
+    if isinstance(trial_target, Mapping):
+        trial_target = trial_target[loss.label]
+    if trial_target is not None and not isinstance(trial_target, TargetSpec):
+        raise ValueError(f"TargetStateLoss '{loss.label}' expected a TargetSpec.")
+    target = eqx.combine(trial_target, loss.spec)
+    if target is None or target.value is None:
+        raise ValueError(
+            f"TargetStateLoss '{loss.label}' requires a target value in its "
+            "defaults or trial specifications."
         )
+    return target
+
+
+def _target_weight_selectors(target: TargetSpec, n_steps: int) -> tuple["WeightsSpec", ...]:
+    mask = target.time_mask
+    if mask is None:
+        mask = target.get_time_mask(n_steps)
+    return tuple(weight for weight in (mask, target.discount) if weight is not None)
+
+
+def _target_density(loss: TargetStateLoss, state: Array, target: Array) -> Array:
+    if jnp.broadcast_shapes(state.shape, jnp.shape(target)) != state.shape:
+        raise ValueError(
+            f"TargetStateLoss '{loss.label}' target shape {jnp.shape(target)} "
+            f"cannot broadcast to selected state shape {state.shape}."
+        )
+    return loss.norm(state - target)
+
+
+_TARGET_FIRST_STEP = 1
+
+
+def _retained_target_density(
+    loss: TargetStateLoss, states: PyTree, trial_specs: "TaskTrialSpec"
+) -> tuple[Array, tuple["WeightsSpec", ...]]:
+    state = loss.where(states)[:, _TARGET_FIRST_STEP:]
+    target = _resolve_target_spec(loss, trial_specs)
+    density = _target_density(loss, state, target.value)
+    return density, _target_weight_selectors(target, state.shape[1])
+
+
+def _sum_target_density(
+    density: Array, selectors: Sequence["WeightsSpec"], trial_specs: "TaskTrialSpec"
+) -> Array:
+    if not selectors:
+        return density.sum(axis=-1)
+    return reduce_over_time_with_weights(
+        arr=density,
+        trial_specs=trial_specs,
+        time_axis=-1,
+        trial_axis=0,
+        trial_axis_specs=0,
+        masks=selectors,
+    )
 
 
 WeightsSpec = float | Array | Callable[[object], float | Array]
@@ -810,43 +831,38 @@ def _move_trial_axis_pytree(tree, trial_axis: int):
     return jt.map(_move, tree)
 
 
-def _per_trial_weights(selector: WeightsSpec, specs_T0, T: int, dtype) -> Array:
-    """Return (N, T) float weights from scalar/(T,) array OR callable(spec_i)->scalar/(T,)."""
-    leaves = jt.leaves(specs_T0)
-    N = leaves[0].shape[0] if leaves else 1
+def _prepare_time_weight(selector: WeightsSpec, trial_spec, n_steps: int) -> Array:
+    weight = jnp.asarray(selector(trial_spec) if callable(selector) else selector)
+    if weight.ndim != 0 and weight.shape != (n_steps,):
+        raise ValueError(
+            f"Time weight must be scalar or shape ({n_steps},), got {weight.shape}."
+        )
+    return jnp.broadcast_to(weight, (n_steps,))
 
-    def _as_T(wi):
-        wi = jnp.asarray(wi)
-        if wi.ndim == 0:
-            return jnp.full((T,), wi.astype(dtype), dtype=dtype)
-        if wi.shape == (T,):
-            return wi.astype(dtype)
-        raise ValueError(f"weight must be scalar or shape (T,), got {wi.shape}")
 
+def _multiply_time_weights(weights: Sequence[Array], dtype) -> Array:
+    return ft.reduce(jnp.multiply, (weight.astype(dtype) for weight in weights))
+
+
+def _per_trial_weights(selector: WeightsSpec, specs, N: int, T: int) -> Array:
     if not callable(selector):
-        w = _as_T(selector)
-        return jnp.broadcast_to(w, (N, T))
+        return jnp.broadcast_to(_prepare_time_weight(selector, specs, T), (N, T))
 
-    def one(spec_i):
-        return _as_T(selector(spec_i))
+    def one(spec):
+        return _prepare_time_weight(selector, spec, T)
 
-    return eqx.filter_vmap(one)(specs_T0)  # (N, T)
-
-
-def _combine_weights(
-    selectors: Sequence[WeightsSpec],
-    specs_T0,
-    T: int,
-    dtype,
-) -> Array:
-    """Multiply an arbitrary number of weight specs into a single (N,T) weight array."""
-    if not selectors:
-        N = jtu.tree_leaves(specs_T0)[0].shape[0] if jtu.tree_leaves(specs_T0) else 1
-        return jnp.ones((N, T), dtype=dtype)
-    w = _per_trial_weights(selectors[0], specs_T0, T, dtype)
-    for s in selectors[1:]:
-        w = w * _per_trial_weights(s, specs_T0, T, dtype)
-    return w
+    axes = getattr(specs, "batch_axes", None)
+    if axes is not None:
+        axes = jt.broadcast(axes, specs, is_leaf=lambda x: x is None)
+        axes = jt.map(
+            lambda axis, leaf: axis if eqx.is_array(leaf) and leaf.ndim else None,
+            axes,
+            specs,
+            is_leaf=lambda x: x is None,
+        )
+    else:
+        axes = jt.map(lambda leaf: 0 if eqx.is_array(leaf) and leaf.ndim else None, specs)
+    return eqx.filter_vmap(one, in_axes=(axes,), axis_size=N)(specs)
 
 
 def _trial_time_perm(ndim: int, trial_axis: int, time_axis: int):
@@ -870,7 +886,7 @@ def _inv_perm(perm):
 
 def reduce_over_time_with_weights(
     *,
-    label: str,
+    label: str = "",
     arr: Array,  # shape: (..., T, F?) pre-norm
     trial_specs,  # PyTree; each leaf has a trial axis
     time_axis: int,  # where T lives in `arr`
@@ -892,20 +908,15 @@ def reduce_over_time_with_weights(
     T = arr_rt.shape[-1]
     dtype = arr_rt.dtype
 
-    # Flatten non-time dims (except N) so (N, T) weights broadcast cleanly
     N = arr_rt.shape[0]
-    rest = arr_rt.shape[1:-1]
-    arr_flat = arr_rt.reshape((N, -1, T))  # (N, R, T)
-
-    # Combine all masks/discounts/etc. as multiplicative weights
-    W = _combine_weights(masks, specs_T0, T, dtype)  # (N, T)
-
-    # Print the indices of the first zero entry in each row (trial) of the weights
-    # jax.debug.print("{a}\n{b}\n\n", a=label, b=jnp.argmax(W == 0, axis=1))
-
-    # Weighted reduction over time
-    reduced_flat = (arr_flat * W[:, None, :]).sum(axis=-1)  # (N, R)
-    reduced = reduced_flat.reshape((N, *rest))  # (N, ...)
+    if masks:
+        weights = _multiply_time_weights(
+            [_per_trial_weights(selector, specs_T0, N, T) for selector in masks],
+            dtype,
+        )
+        weight_shape = (N,) + (1,) * (arr_rt.ndim - 2) + (T,)
+        arr_rt = arr_rt * weights.reshape(weight_shape)
+    reduced = arr_rt.sum(axis=-1)
 
     # Restore the trial axis to its original slot in the *output* (time removed)
     # inv_perm maps (trial, others..., time) -> original. Drop the 'time' entry,
@@ -1036,6 +1047,17 @@ class NthDifferenceLoss(CrossTimestepLoss):
         if self.order < 1:
             raise ValueError("NthDifferenceLoss order must be >= 1")
 
+    def _validate_length(self, n_steps: int) -> None:
+        if n_steps <= self.order:
+            raise ValueError(
+                f"{type(self).__name__} order {self.order} requires more than "
+                f"{self.order} timesteps, got {n_steps}."
+            )
+
+    def _difference_density(self, state: Array, time_axis: int) -> Array:
+        self._validate_length(state.shape[time_axis])
+        return self.norm(jnp.diff(state, n=self.order, axis=time_axis))
+
     def term(
         self,
         states: Optional[PyTree],
@@ -1047,9 +1069,9 @@ class NthDifferenceLoss(CrossTimestepLoss):
         substate = self.where(states)
 
         def _per_leaf(arr: Array) -> Array:
-            d = jnp.diff(arr, n=self.order, axis=self.time_axis)
-            d_norm = self.norm(d)
-            return jnp.mean(d_norm, axis=self.time_axis)
+            time_axis = self.time_axis if self.time_axis >= 0 else arr.ndim + self.time_axis
+            d_norm = self._difference_density(arr, time_axis)
+            return jnp.mean(d_norm, axis=time_axis)
 
         per_leaf = jt.map(_per_leaf, substate)
         leaves = jt.leaves(per_leaf)
@@ -1222,7 +1244,7 @@ class EpochMaskedLoss(AbstractLoss):
                 f"timesteps for a loss density with {expected_len} timesteps."
             )
         if mask_len > expected_len:
-            return mask[:, -expected_len:]
+            return mask[:, mask_len - expected_len:]
         return mask
 
     # ----------------------------------------------------------------------
@@ -1243,15 +1265,13 @@ class EpochMaskedLoss(AbstractLoss):
 
         if isinstance(base, TargetStateLoss):
             value = self._call_target_state(base, states, trial_specs, model)
-        elif isinstance(base, CrossTimestepLoss):
-            value = self._call_cross_timestep(
-                base, states, trial_specs, order=base.order
-            )
+        elif isinstance(base, NthDifferenceLoss):
+            value = self._call_cross_timestep(base, states, trial_specs)
         else:
             raise NotImplementedError(
                 f"EpochMaskedLoss does not yet support wrapping "
                 f"{type(base).__name__}. Supported base losses: "
-                "TargetStateLoss and CrossTimestepLoss."
+                "TargetStateLoss and NthDifferenceLoss."
             )
 
         return TermTree.leaf(self.label, value, originator=self)
@@ -1274,37 +1294,8 @@ class EpochMaskedLoss(AbstractLoss):
         assert states is not None
         assert trial_specs is not None
 
-        state = base.where(states)[:, 1:]  # mirror TargetStateLoss slicing
-
-        # Resolve target spec (mirrors TargetStateLoss.term).
-        task_target_spec = trial_specs.targets.get(base.key, None)
-        if task_target_spec is None:
-            if base.spec is None:
-                raise ValueError(
-                    "TargetSpec must be provided on construction of "
-                    "TargetStateLoss, or as part of the trial specifications"
-                )
-            target_spec = base.spec
-        elif isinstance(task_target_spec, TargetSpec):
-            target_spec = eqx.combine(base.spec, task_target_spec)
-        elif isinstance(task_target_spec, Mapping):
-            target_spec = eqx.combine(base.spec, task_target_spec[base.label])
-        else:
-            raise ValueError("Invalid target spec encountered")
-
-        loss_over_time = base.norm(state - target_spec.value)
-        T = loss_over_time.shape[-1]  # = (n_steps - 1) due to [:, 1:] slice
-
-        # Build the per-trial epoch mask and apply it directly to the density.
-        # Using the existing `reduce_over_time_with_weights` path for the mask
-        # is awkward because (a) `_per_trial_weights` only accepts
-        # scalar/(T,) selectors or per-trial callables, not pre-built (N, T)
-        # arrays, and (b) the empty-selectors fallback inspects leaf
-        # `.shape[0]` which fails on scalar targets. Multiplying the (N, T)
-        # mask into the density up-front sidesteps both issues and remains
-        # numerically equivalent because all subsequent reductions are linear.
-        # Full-rollout timelines right-align by dropping the initial sample;
-        # target-length timelines already match the post-initial target axis.
+        loss_over_time, selectors = _retained_target_density(base, states, trial_specs)
+        T = loss_over_time.shape[-1]
         n_steps = self._mask_n_steps(trial_specs, T + 1)
         epoch_mask = self._build_mask(trial_specs, n_steps)
         epoch_mask_inner = self._align_mask_to_loss_time_axis(epoch_mask, T).astype(
@@ -1315,38 +1306,15 @@ class EpochMaskedLoss(AbstractLoss):
         m_view_shape[0] = epoch_mask_inner.shape[0]
         m_view_shape[-1] = epoch_mask_inner.shape[1]
         loss_over_time = loss_over_time * epoch_mask_inner.reshape(m_view_shape)
-
-        time_mask = target_spec.time_mask
-        if time_mask is None:
-            time_mask = target_spec.get_time_mask(T)
-
-        masks = [x for x in [time_mask, target_spec.discount] if x is not None]
-
-        if masks:
-            return reduce_over_time_with_weights(
-                label=self.label,
-                arr=loss_over_time,
-                trial_specs=trial_specs,
-                time_axis=-1,
-                trial_axis=0,
-                trial_axis_specs=0,
-                masks=masks,
-            )
-        # No remaining masks/discounts: do the trivial sum over time, keeping
-        # the trial axis. This avoids the empty-selector fallback in
-        # `_combine_weights` which dereferences `leaves[0].shape[0]` and is
-        # unsafe in general.
-        return jnp.sum(loss_over_time, axis=-1)
+        return _sum_target_density(loss_over_time, selectors, trial_specs)
 
     # --- cross-timestep base losses ------------------------------------------
 
     def _call_cross_timestep(
         self,
-        base: AbstractLoss,
+        base: NthDifferenceLoss,
         states: PyTree,
         trial_specs: "TaskTrialSpec",
-        *,
-        order: int,
     ) -> Array:
         """Apply per-trial mask to a cross-timestep loss of given `order`.
 
@@ -1365,8 +1333,11 @@ class EpochMaskedLoss(AbstractLoss):
                 f"EpochMaskedLoss('{self.label}'): wrapped {type(base).__name__} "
                 "selected no array leaves to penalise."
             )
+        if time_axis < 0:
+            time_axis += leaves[0].ndim
         T_full = leaves[0].shape[time_axis]
-        T_diff = T_full - order
+        base._validate_length(T_full)
+        T_diff = T_full - base.order
         n_steps = self._mask_n_steps(trial_specs, T_full)
         epoch_mask = self._build_mask(trial_specs, n_steps)
         # Full-rollout timelines drop the consumed initial samples; target-length
@@ -1376,8 +1347,7 @@ class EpochMaskedLoss(AbstractLoss):
         )
 
         def _per_leaf(arr: Array) -> Array:
-            d = jnp.diff(arr, n=order, axis=time_axis)  # (N, T_full-order, ...)
-            d_norm = base.norm(d)                       # (N, T_full-order)
+            d_norm = base._difference_density(arr, time_axis)
             # Broadcast mask to match d_norm, masking trailing axes if any.
             # d_norm should have time at `time_axis` after `norm` reduces
             # the trailing feature axes.
@@ -1390,8 +1360,7 @@ class EpochMaskedLoss(AbstractLoss):
             # Time axis at base.time_axis (after norm collapses trailing dims,
             # time_axis index in d_norm is the same as in arr because we only
             # reduce trailing feature axes).
-            t_ax = time_axis if time_axis >= 0 else d_norm.ndim + time_axis
-            mask_view_shape[t_ax] = mask_aligned.shape[1]
+            mask_view_shape[time_axis] = mask_aligned.shape[1]
             m = mask_aligned.reshape(mask_view_shape)
             masked = d_norm * m
             return jnp.mean(masked, axis=time_axis)
