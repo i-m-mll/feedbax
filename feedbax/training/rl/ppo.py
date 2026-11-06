@@ -31,8 +31,9 @@ from feedbax.training.rl.env import (
 from feedbax.training.rl.obs_norm import (
     ObsNormState,
     init_obs_norm,
+    maybe_update_obs_norm,
+    merge_obs_norm,
     normalize_obs,
-    update_obs_norm,
 )
 from feedbax.training.rl.policy import (
     ActorCritic,
@@ -107,7 +108,7 @@ class Rollout(NamedTuple):
     """Collected rollout data with shape ``(n_steps, n_envs, ...)``.
 
     Attributes:
-        obs: Observations.
+        obs: Observations in the coordinates used by the collection policy.
         action_logits: Raw Beta draws in logit coordinates, before execution clipping.
         log_probs: Log densities of the draws in action coordinates.
         values: Value estimates.
@@ -404,6 +405,7 @@ def _collect_rollout_extended(
     LatticeNoiseState,
     _EpisodeCarry,
     _EpisodeTotals,
+    ObsNormState,
 ]:
     """Collect a batched rollout with optional enhancements.
 
@@ -419,7 +421,7 @@ def _collect_rollout_extended(
         key: PRNG key.
         n_steps: Number of steps to collect.
         n_envs: Number of parallel environments.
-        obs_norm_state: Running obs statistics for normalization.
+        obs_norm_state: Running statistics held fixed for policy inputs and bootstrap.
         lattice_state: LATTICE noise state.
         curriculum_state: Curriculum state for distance scaling.
         lattice_resample_interval: Steps between noise resamples.
@@ -431,7 +433,8 @@ def _collect_rollout_extended(
 
     Returns:
         Tuple of (final_states, rollout, last_values,
-        updated_lattice_state, unfinished_episodes, episode_totals).
+        updated_lattice_state, unfinished_episodes, episode_totals, updated_obs_norm).
+        The updated statistics include raw pre-action observations from this window.
     """
     v_get_obs = jax.vmap(rl_env_get_obs, in_axes=(None, None, 0))
     v_step = jax.vmap(
@@ -442,6 +445,9 @@ def _collect_rollout_extended(
     use_obs_norm = jnp.asarray(use_obs_norm)
     use_curriculum = jnp.asarray(use_curriculum)
 
+    def policy_obs(raw_obs):
+        return jnp.where(use_obs_norm, normalize_obs(obs_norm_state, raw_obs), raw_obs)
+
     max_target_distance = curriculum_state.max_target_fraction * curriculum_arm_reach
     v_auto_reset = jax.vmap(
         lambda state, completed, key: auto_reset(
@@ -451,16 +457,16 @@ def _collect_rollout_extended(
     )
 
     def scan_step(carry, _):
-        states, key, lat_state, episodes = carry
+        states, key, lat_state, episodes, window_obs_norm = carry
 
         if use_lattice:
             key, act_key, reset_key, noise_key = jax.random.split(key, 4)
         else:
             key, act_key, reset_key = jax.random.split(key, 3)
 
-        obs = v_get_obs(plant, cfg, states)
-        obs_normed = normalize_obs(obs_norm_state, obs)
-        obs = jnp.where(use_obs_norm, obs_normed, obs)
+        raw_obs = v_get_obs(plant, cfg, states)
+        window_obs_norm = maybe_update_obs_norm(window_obs_norm, raw_obs, use_obs_norm)
+        obs = policy_obs(raw_obs)
 
         act_keys = jax.random.split(act_key, n_envs)
         latent_noise = lat_state.noise if use_lattice else None
@@ -496,23 +502,26 @@ def _collect_rollout_extended(
             stage_eligible=jnp.sum(eligible & current_stage),
             stage_successes=jnp.sum(outcome.success & current_stage),
         )
-        return (states, key, lat_state, episodes), (rollout_step, episode_totals)
+        return (states, key, lat_state, episodes, window_obs_norm), (rollout_step, episode_totals)
 
-    (states, key, lattice_state, episodes), (rollout, episode_totals) = jax.lax.scan(
-        scan_step, (states, key, lattice_state, episodes), None, length=n_steps,
+    # Pool the window before adding to a potentially large float32 running count.
+    empty_obs_norm = jt.map(jnp.zeros_like, obs_norm_state)
+    initial = (states, key, lattice_state, episodes, empty_obs_norm)
+    final, (rollout, episode_totals) = jax.lax.scan(scan_step, initial, None, length=n_steps)
+    states, key, lattice_state, episodes, window_obs_norm = final
+    updated_obs_norm = jax.lax.cond(
+        use_obs_norm & (n_steps * n_envs > 0),
+        lambda: merge_obs_norm(obs_norm_state, window_obs_norm),
+        lambda: obs_norm_state,
     )
     episode_totals = jt.map(jnp.sum, episode_totals)
 
-    # Bootstrap last values
-    final_obs = v_get_obs(plant, cfg, states)
-    final_obs_normed = normalize_obs(obs_norm_state, final_obs)
-    final_obs = jnp.where(use_obs_norm, final_obs_normed, final_obs)
     _, _, last_values = jax.vmap(policy.sample_action)(
-        final_obs,
+        policy_obs(v_get_obs(plant, cfg, states)),
         jax.random.split(key, n_envs),
     )
 
-    return states, rollout, last_values, lattice_state, episodes, episode_totals
+    return states, rollout, last_values, lattice_state, episodes, episode_totals, updated_obs_norm
 
 
 @eqx.filter_jit
@@ -541,6 +550,7 @@ def _batched_collect_rollouts_extended(
     LatticeNoiseState,
     _EpisodeCarry,
     _EpisodeTotals,
+    ObsNormState,
 ]:
     """Vectorized rollout collection across bodies."""
     n_bodies = jt.leaves(batched_plant)[0].shape[0]
@@ -691,14 +701,6 @@ def _batched_update(
 
 
 @eqx.filter_jit
-def _update_obs_norm_batched(
-    obs_norm_st: ObsNormState,
-    obs_batch: Float[Array, "B S obs_dim"],
-) -> ObsNormState:
-    return eqx.filter_vmap(update_obs_norm)(obs_norm_st, obs_batch)
-
-
-@eqx.filter_jit
 def _update_curriculum_batched(
     curric_st: CurriculumState,
     success_rates: Float[Array, " B"],
@@ -746,7 +748,7 @@ def _run_ppo_updates(
         )
         key, collect_key, update_key = jax.random.split(carry.key, 3)
         policy = eqx.combine(carry.dynamic_policy, static_policy)
-        states, rollout, last_values, lattice, episodes, totals = (
+        states, rollout, last_values, lattice, episodes, totals, obs_norm = (
             _batched_collect_rollouts_extended(
                 batched_plant,
                 env_config,
@@ -782,16 +784,6 @@ def _run_ppo_updates(
             ent_coef,
             n_minibatches,
             n_train_iters,
-        )
-
-        n_bodies = rollout.obs.shape[0]
-        obs_dim = rollout.obs.shape[-1]
-        all_obs = rollout.obs.reshape(n_bodies, -1, obs_dim)
-        updated_obs_norm = _update_obs_norm_batched(carry.obs_norm, all_obs)
-        obs_norm = jt.map(
-            lambda old, new: jnp.where(use_obs_norm, new, old),
-            carry.obs_norm,
-            updated_obs_norm,
         )
 
         updated_curriculum = _update_curriculum_batched(

@@ -13,7 +13,7 @@ from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.state import CartesianState
 from feedbax.training.rl.env import RLEnvConfig, rl_env_reset, rl_env_step_with_outcome
-from feedbax.training.rl.obs_norm import init_obs_norm
+from feedbax.training.rl.obs_norm import ObsNormState, init_obs_norm
 from feedbax.training.rl.policy import ActorCritic, BetaParams, init_lattice_noise
 from feedbax.training.rl.ppo import (
     PPOConfig,
@@ -79,6 +79,15 @@ def _config():
         hold_threshold=0.1,
         default_task_type=TASK_REACH,
     )
+
+
+def _coasting_observations(x, phase, active_muscles):
+    raw = np.zeros((*x.shape, 13))
+    raw[..., 0] = raw[..., 6] = x
+    raw[..., 2] = 1.0
+    raw[..., 4:6] = np.where(phase[..., None] == 0, 0, active_muscles)
+    raw[..., -1] = phase
+    return raw
 
 
 def test_reach_uses_endpoint_even_when_the_effector_matches_the_reference():
@@ -156,8 +165,9 @@ def test_reward_annealing_changes_collected_distance_penalty():
     assert "distance_weight_schedule" not in default
 
 
-def test_mixed_lanes_use_distinct_return_and_success_denominators():
-    config = _config()
+def test_mixed_lanes_use_distinct_episode_denominators_and_pool_raw_observations(monkeypatch):
+    monkeypatch.setattr(BetaParams, "sample_logits", lambda self, key: jnp.zeros(2))
+    config = eqx.tree_at(lambda cfg: (cfg.tau_act, cfg.tau_deact), _config(), (1.0, 1.0))
     key = jax.random.PRNGKey(2)
     reach = reach_task_params(
         jnp.zeros(2), jnp.zeros(2), config.n_steps, config.dt,
@@ -181,18 +191,40 @@ def test_mixed_lanes_use_distinct_return_and_success_denominators():
         curriculum=_stack_pytrees(init_curriculum()),
     )
     # A reset at x=-10 cannot create a second completion within the window.
-    _, history = _run_ppo_updates(
+    final_carry, history = _run_ppo_updates(
         _stack_pytrees(_plant(-10.0)), config, carry, static_policy, optimizer,
-        total_updates=1, n_steps=3, n_envs=4, n_minibatches=1, n_train_iters=1,
+        total_updates=2, n_steps=3, n_envs=4, n_minibatches=1, n_train_iters=1,
         gamma=0.99, gae_lambda=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01,
         lattice_resample_interval=2, curriculum_arm_reach=0.5,
         reward_ramp_updates=jnp.array(0.0), use_obs_norm=jnp.array(True),
         use_lattice=True, use_curriculum=jnp.array(True),
     )
-    np.testing.assert_array_equal(history.per_body_completed_episodes, [[4]])
-    np.testing.assert_array_equal(history.per_body_eligible_episodes, [[3]])
-    np.testing.assert_allclose(history.per_body_success_rate, [[2 / 3]])
-    np.testing.assert_allclose(history.per_body_mean_return, [[-5.5]])
+    np.testing.assert_array_equal(history.per_body_completed_episodes[0], [4])
+    np.testing.assert_array_equal(history.per_body_eligible_episodes[0], [3])
+    np.testing.assert_allclose(history.per_body_success_rate[0], [2 / 3])
+    np.testing.assert_allclose(history.per_body_mean_return[0], [-5.5])
+
+    # Raw x before each action, including the immediate resets to x=-10.
+    x = np.array([
+        [-1, -2, -10, -3],
+        [-10, -1, -9, -2],
+        [-9, -10, -8, -1],
+        [-8, -9, -10, -10],
+        [-10, -8, -9, -9],
+        [-9, -10, -8, -8],
+    ])
+    phase = np.array([
+        [0, 0, 0, 0],
+        [0, 0.5, 0.5, 0.5],
+        [0.5, 0, 1, 1],
+        [1, 0.5, 0, 0],
+        [0, 1, 0.5, 0.5],
+        [0.5, 0, 1, 1],
+    ])
+    raw = _coasting_observations(x, phase, np.array([0.5, 0.5])).reshape(x.size, -1)
+    np.testing.assert_array_equal(final_carry.obs_norm.count, [len(raw)])
+    np.testing.assert_allclose(final_carry.obs_norm.mean[0], raw.mean(axis=0), atol=1e-6)
+    np.testing.assert_allclose(final_carry.obs_norm.var[0], raw.var(axis=0), atol=1e-6)
 
 
 @pytest.mark.parametrize("use_lattice", [False, True], ids=["ordinary", "lattice"])
@@ -208,7 +240,7 @@ def test_ppo_replays_tail_draws_with_their_sampling_distribution(use_lattice, mo
     task = reach_task_params(
         jnp.zeros(2), jnp.zeros(2), config.n_steps, config.dt,
     )._replace(task_type=jnp.array(TASK_REACH))
-    lane_starts = (-3.0, -5.0, -7.0)
+    lane_starts = (-3.0, -5.0, -12.0)
     n_envs = len(lane_starts)
     states = _stack_pytrees(*[
         rl_env_reset(_plant(x), config, task, key) for x in lane_starts
@@ -222,21 +254,39 @@ def test_ppo_replays_tail_draws_with_their_sampling_distribution(use_lattice, mo
     )
     collect = eqx.filter_jit(_collect_rollout_extended)
 
-    def collect_prefix(actor_critic, n_steps):
+    prior = ObsNormState(jnp.array(2.0), jnp.full(13, 0.25), jnp.full(13, 0.25))
+
+    def collect_prefix(n_steps, use_obs_norm):
         return collect(
-            plant, config, actor_critic, states, episodes, key, n_steps, n_envs,
-            init_obs_norm(13), lattice, init_curriculum(), 1, 0.5,
-            jnp.array(False), use_lattice, jnp.array(False), jnp.array(1.0),
+            plant, config, policy, states, episodes, key, n_steps, n_envs,
+            prior, lattice, init_curriculum(), 1, 0.5,
+            jnp.array(use_obs_norm), use_lattice, jnp.array(False), jnp.array(1.0),
         )
 
-    after_first, _, _, after_first_lattice, _, _ = collect_prefix(policy, 1)
-    _, rollout, last_values, _, _, _ = collect_prefix(policy, 2)
+    # The point mass moves one unit per step, with zero targets and no resets.
+    # With unit time constants, each action sets the next muscle activations.
+    clipped_tails = np.clip(tails, 1e-4, 1.0 - 1e-4)
+    x = np.arange(3)[:, None] + np.array(lane_starts)
+    phase = np.broadcast_to(np.arange(3)[:, None] / (config.n_steps - 1), x.shape)
+    raw = _coasting_observations(x, phase, clipped_tails)
+    scoring_obs = np.clip(
+        (raw - np.asarray(prior.mean)) / np.sqrt(np.asarray(prior.var) + 1e-8), -10, 10,
+    )
+    _, rollout, last_values, *_ = collect_prefix(2, True)
+    np.testing.assert_allclose(rollout.obs, scoring_obs[:2], atol=1e-6)
+    _, expected_bootstrap = policy.dist_and_value(jnp.asarray(scoring_obs[2]))
+    np.testing.assert_allclose(last_values, expected_bootstrap, atol=1e-6)
+
+    after_first, disabled, _, after_first_lattice, _, _, unchanged = collect_prefix(1, False)
+    np.testing.assert_array_equal(disabled.obs, raw[:1])
+    for actual, expected in zip(jax.tree.leaves(unchanged), jax.tree.leaves(prior), strict=True):
+        np.testing.assert_array_equal(actual, expected)
     np.testing.assert_array_equal(
         rollout.action_logits, np.broadcast_to(tail_logits, rollout.action_logits.shape),
     )
     np.testing.assert_allclose(
         after_first.muscle_activations,
-        np.broadcast_to(np.clip(tails, 1e-4, 1.0 - 1e-4), (n_envs, policy.action_dim)),
+        np.broadcast_to(clipped_tails, (n_envs, policy.action_dim)),
     )
     replay_noise = None
     expected_noise = None
