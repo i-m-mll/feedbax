@@ -322,9 +322,13 @@ class Ravel(Component):
     input_ports = ("input",)
     output_ports = ("output",)
 
+    @staticmethod
+    def flatten(value: PyTree) -> Array:
+        output, _ = ravel_pytree(value)
+        return output
+
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        output, _ = ravel_pytree(inputs["input"])
-        return {"output": output}, state
+        return {"output": self.flatten(inputs["input"])}, state
 
 
 class _StepSource(Component):

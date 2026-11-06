@@ -116,15 +116,7 @@ class FeedbackChannels(Component):
         specs_flat = jt.leaves(self.specs, is_leaf=lambda x: isinstance(x, ChannelSpec))
 
         for channel, spec in zip(channels_flat, specs_flat):
-            channel_state: ChannelState = state.get(channel.state_index)
-            value = spec.where(mechanics_state)
-            queue = channel.delay * (value,)
-            channel_state = eqx.tree_at(
-                lambda s: (s.queue, s.output),
-                channel_state,
-                (queue, value),
-            )
-            state = state.set(channel.state_index, channel_state)
+            state = channel.fill_history(state, spec.where(mechanics_state))
         return state
 
 
@@ -238,13 +230,10 @@ class SimpleFeedback(Graph):
 
     def state_consistency_update(self, state: eqx.nn.State) -> eqx.nn.State:
         mechanics = self.mechanics
-        mechanics_state = state.get(mechanics.state_index)
-        new_skeleton = mechanics.plant.skeleton.inverse_kinematics(mechanics_state.effector)
-        mechanics_state = eqx.tree_at(
-            lambda value: value.plant.skeleton, mechanics_state, new_skeleton
+        state = mechanics.replace_state_value(
+            state, ("effector",), mechanics.state_view(state).effector
         )
-        state = state.set(mechanics.state_index, mechanics_state)
-        state = self.feedback_channels.fill_queues(state, mechanics_state)
+        state = self.feedback_channels.fill_queues(state, mechanics.state_view(state))
         return super().state_consistency_update(state)
 
     @property

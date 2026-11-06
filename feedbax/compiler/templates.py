@@ -464,6 +464,7 @@ def simple_feedback_template_graph(params: dict[str, Any] | None = None) -> Grap
                 "scope": "trial",
                 "source": "state_initializer",
                 "state_slot": "effector",
+                "seed_channel_history": True,
             },
         )
     )

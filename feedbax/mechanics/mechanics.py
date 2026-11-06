@@ -14,6 +14,7 @@ Supports two execution paths:
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Optional, Type
 
 import diffrax as dfx  # type: ignore
@@ -149,6 +150,23 @@ class Mechanics(Component):
     @property
     def _term(self) -> dfx.AbstractTerm:
         return dfx.ODETerm(self.plant.vector_field)
+
+    def replace_state_value(self, state: State, path: tuple[str, ...], value: PyTree) -> State:
+        """Apply an explicit Cartesian pose to both the effector and the plant."""
+        if path not in (("effector",), ("effector", "pos"), ("effector", "vel")):
+            return super().replace_state_value(state, path, value)
+
+        mechanics_state = self.state_view(state)
+        effector = value
+        if len(path) == 2:
+            effector = replace(mechanics_state.effector, **{path[1]: value})
+        effector = restore_storage_dtypes(effector, mechanics_state.effector)
+        skeleton = self.plant.skeleton.inverse_kinematics(effector)
+        skeleton = restore_storage_dtypes(skeleton, mechanics_state.plant.skeleton)
+        plant_state = replace(mechanics_state.plant, skeleton=skeleton)
+        return state.set(
+            self.state_index, replace(mechanics_state, plant=plant_state, effector=effector)
+        )
 
     def __call__(
         self,

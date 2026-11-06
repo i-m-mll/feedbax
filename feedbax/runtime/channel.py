@@ -103,8 +103,16 @@ class Channel(Component):
     def _initial_state_value(self, input_proto: PyTree[Array]) -> ChannelState:
         input_init = jt.map(lambda x: jnp.full_like(x, self.init_value), input_proto)
         noise_init = jt.map(jnp.zeros_like, input_init) if self.noise_func is not None else None
-        queue = self.delay * (input_init,)
-        return ChannelState(output=input_init, queue=queue, noise=noise_init)
+        return self._state_with_history(input_init, noise_init)
+
+    def _state_with_history(self, value: PyTree, noise: PyTree | None) -> ChannelState:
+        return ChannelState(output=value, queue=self.delay * (value,), noise=noise)
+
+    def fill_history(self, state: State, value: PyTree) -> State:
+        """Use one sample for the channel output and every slot of its history."""
+        return state.set(
+            self.state_index, self._state_with_history(value, state.get(self.state_index).noise)
+        )
 
     def __call__(
         self,
