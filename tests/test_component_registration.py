@@ -19,8 +19,8 @@ from feedbax.component_registry import (
     component,
     ComponentMigration,
     ComponentMigrationPack,
-    register_cde_templates,
 )
+from feedbax.component_registry.cde_templates import cde_template_pack
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import Gain
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
@@ -401,7 +401,7 @@ def test_cde_templates_are_not_builtin_defaults() -> None:
 
 def test_caller_registered_cde_templates_are_executable_and_run_one_step() -> None:
     registry = ComponentRegistry(load_user_components=False)
-    registry.register_template_pack(register_cde_templates, provenance="test-cde-pack")
+    registry.ingest(cde_template_pack(), provenance="test-cde-pack")
 
     for template_name in ("CDE Standard", "CDE + Decay", "CDE + Anti-NF", "CDE Hybrid v9b"):
         meta = registry.get(template_name)
@@ -437,7 +437,7 @@ def test_executable_builtin_templates_have_complete_builders() -> None:
 
 def test_cde_standard_template_matches_recurrent_cde_first_step() -> None:
     registry = ComponentRegistry(load_user_components=False)
-    registry.register_template_pack(register_cde_templates, provenance="test-cde-pack")
+    registry.ingest(cde_template_pack(), provenance="test-cde-pack")
     meta = registry.get("CDE Standard")
     assert meta is not None
     graph = spec_to_graph(meta.template_graph, registry)

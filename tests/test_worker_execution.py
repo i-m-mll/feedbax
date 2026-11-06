@@ -16,7 +16,8 @@ from pydantic import TypeAdapter
 import feedbax.web.worker.execution as worker_execution
 import feedbax.web.worker.checkpoint as worker_checkpoint
 from feedbax.compiler import GraphDocument, compile_graph
-from feedbax.component_registry import ComponentRegistry, register_cde_templates
+from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry.cde_templates import cde_template_pack
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.compiler.templates import network_template_graph, recurrent_node_output_initializer
 from feedbax.compiler.normalization import normalize_task_binding_spec_for_studio_authoring
@@ -570,7 +571,7 @@ def test_worker_rollout_matches_runtime_for_task_seeded_noisy_cycle() -> None:
 
 def test_compile_training_run_dry_runs_cde_templates() -> None:
     registry = ComponentRegistry(load_user_components=False)
-    registry.register_template_pack(register_cde_templates, provenance="test-cde-pack")
+    registry.ingest(cde_template_pack(), provenance="test-cde-pack")
     training_spec = _training_spec(
         loss={
             "type": "TargetStateLoss",

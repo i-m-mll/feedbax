@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_VERSION
 from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.acausal_interface import derive_acausal_interface
 from feedbax.contracts.graph import ComponentSpec
 from feedbax.mechanics.body import default_2link_bounds
 from feedbax.mechanics.muscle_config import (
     default_6muscle_2link_moment_arms,
     default_6muscle_2link_reference_lengths,
 )
+
+
+if TYPE_CHECKING:
+    from feedbax.component_registry.declarations import DeclaredComponent
 
 
 def point_mass_template_graph(params: dict[str, Any] | None = None) -> AcausalGraphSpec:
@@ -283,3 +288,118 @@ __all__ = [
     "point_mass_with_muscles_template_graph",
     "two_link_arm_6muscle_template_graph",
 ]
+
+
+def mass_spring_damper_template_definition() -> DeclaredComponent:
+    from feedbax.component_registry.declarations import declare_component
+    from feedbax.contracts.component import PortType, PortTypeSpec
+    from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
+
+    graph = mass_spring_damper_template_graph()
+    interface = derive_acausal_interface(graph)
+    return declare_component(
+        name="MassSpringDamper",
+        category="Templates",
+        description="Executable mechanics mass-spring-damper template.",
+        param_schema=[],
+        input_ports=interface.input_ports,
+        output_ports=interface.output_ports,
+        icon="Waves",
+        domain=MECHANICS_DOMAIN_ID,
+        interior_domain=MECHANICS_DOMAIN_ID,
+        is_composite=True,
+        port_types=PortTypeSpec(
+            inputs={"force": PortType(dtype="scalar")},
+            outputs={
+                "position": PortType(dtype="scalar"),
+                "velocity": PortType(dtype="scalar"),
+            },
+        ),
+        template_graph=graph,
+        template_id="feedbax.templates.mechanics.mass_spring_damper",
+        template_kind="executable",
+    )
+
+
+def point_mass_with_muscles_template_definition() -> DeclaredComponent:
+    from feedbax.component_registry.declarations import declare_component
+    from feedbax.contracts.component import PortType, PortTypeSpec
+    from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
+
+    graph = point_mass_with_muscles_template_graph()
+    interface = derive_acausal_interface(graph)
+    return declare_component(
+        name="PointMassWithMuscles",
+        category="Templates",
+        description="Executable mechanics point mass with one antagonistic muscle pair.",
+        param_schema=[],
+        input_ports=interface.input_ports,
+        output_ports=interface.output_ports,
+        icon="Dumbbell",
+        domain=MECHANICS_DOMAIN_ID,
+        interior_domain=MECHANICS_DOMAIN_ID,
+        is_composite=True,
+        port_types=PortTypeSpec(
+            inputs={
+                "flexor": PortType(dtype="scalar"),
+                "extensor": PortType(dtype="scalar"),
+            },
+            outputs={
+                "position": PortType(dtype="scalar"),
+                "velocity": PortType(dtype="scalar"),
+            },
+        ),
+        template_graph=graph,
+        template_id="feedbax.templates.mechanics.point_mass_with_muscles",
+        template_kind="executable",
+    )
+
+
+def two_link_arm_6muscle_template_definition() -> DeclaredComponent:
+    from feedbax.component_registry.declarations import _template_ui_state, declare_component
+    from feedbax.contracts.component import PortType, PortTypeSpec
+    from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
+    from feedbax.contracts.acausal_interface import MUSCLE_EXCITATION_PAYLOAD
+
+    graph = two_link_arm_6muscle_template_graph()
+    interface = derive_acausal_interface(graph)
+    return declare_component(
+        name="TwoLinkArm6Muscle",
+        category="Templates",
+        description=("Editable planar multibody two-link arm with six rigid-tendon muscle paths."),
+        param_schema=[],
+        input_ports=interface.input_ports,
+        output_ports=interface.output_ports,
+        icon="Activity",
+        domain=MECHANICS_DOMAIN_ID,
+        interior_domain=MECHANICS_DOMAIN_ID,
+        is_composite=True,
+        port_types=PortTypeSpec(
+            inputs={"excitation": MUSCLE_EXCITATION_PAYLOAD.port_type()},
+            outputs={
+                "effector": PortType(dtype="state"),
+                "state": PortType(dtype="state"),
+            },
+        ),
+        template_graph=graph,
+        template_ui_state=_template_ui_state(
+            {
+                "world": (40, 140),
+                "anchor": (180, 140),
+                "shoulder": (320, 80),
+                "upper": (460, 80),
+                "elbow": (600, 80),
+                "forearm": (740, 80),
+                "excitation": (320, 300),
+                "effector": (900, 80),
+                "state": (900, 190),
+                "effector_marker": (900, 300),
+                **{
+                    f"muscle_{index}": (460 + (index % 3) * 140, 250 + (index // 3) * 90)
+                    for index in range(6)
+                },
+            }
+        ),
+        template_id="feedbax.templates.mechanics.two_link_arm_6muscle",
+        template_kind="executable",
+    )
