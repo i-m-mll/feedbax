@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -557,7 +559,7 @@ def test_segment_time_aggregation_lowers_fixed_task_timeline_mask() -> None:
     assert float(total) == pytest.approx((9.0 + 16.0) / 2.0)
 
 
-def test_segment_time_aggregation_supports_named_segment_groups() -> None:
+def test_compiled_segment_loss_aligns_support_and_ignores_inactive_nonfinite_samples() -> None:
     graph = _graph()
     training = _training(
         LossTermSpec(
@@ -565,22 +567,30 @@ def test_segment_time_aggregation_supports_named_segment_groups() -> None:
             label="Cue window",
             selector="graph_output:effector",
             target_value=[0.0, 0.0],
+            norm="l2",
             time_agg=TimeAggregationSpec(mode="segment", segment_name="cue_window"),
         )
     )
 
     plan = lower_retention_plan(graph, training, task_spec=_fixed_task_timeline())
-    total, _terms = evaluate_loss_plan(
-        plan.loss_terms,
-        {
-            "graph_output:effector": jnp.asarray(
-                [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [30.0, 0.0], [40.0, 0.0]]
-            ),
-        },
-    )
+    (term,) = plan.loss_terms
 
-    assert plan.loss_terms[0].metadata["time_mask"]["epoch_ids"] == ["epoch:0", "epoch:1"]
-    assert float(total) == pytest.approx((1.0 + 4.0 + 9.0) / 3.0)
+    def loss(trace, mask):
+        total, _ = evaluate_loss_plan(
+            (replace(term, time_mask=mask),), {"graph_output:effector": trace}
+        )
+        return total
+
+    score_and_grad = jax.jit(jax.value_and_grad(loss))
+    trace = jnp.array([[3.0, 4.0], [0.0, 1.0], [jnp.nan, jnp.inf], [jnp.inf, jnp.nan]])
+    total, grad = score_and_grad(trace, term.time_mask)
+
+    # The four-sample trace omits the first timestep of the five-step timeline.
+    assert float(total) == pytest.approx(3.0)
+    assert jnp.allclose(grad, jnp.array([[0.3, 0.4], [0.0, 0.5], [0.0, 0.0], [0.0, 0.0]]))
+
+    with pytest.raises((ValueError, RuntimeError), match="time_agg: .*selected no timesteps"):
+        jax.block_until_ready(score_and_grad(trace, jnp.array([True, False, False, False, False])))
 
 
 def test_segment_time_aggregation_rejects_unknown_segment_names() -> None:

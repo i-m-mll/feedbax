@@ -1490,55 +1490,74 @@ def test_compile_training_run_rejects_unsupported_task_data_function() -> None:
         )
 
 
-def test_compile_training_run_lowers_segment_aggregation_with_task_timeline() -> None:
-    training = _training_spec(
-        loss={
-            "type": "TargetStateLoss",
-            "label": "movement_segment",
-            "selector": "graph_output:output",
-            "target_value": [0.0],
-            "time_agg": {"mode": "segment", "segment_name": "movement"},
-        }
+def test_worker_trains_on_named_timeline_segment(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
+    cfg = _cfg(n_reach_steps=3, grad_clip=None)
+    graph_spec = _linear_graph_spec()
+    graph_spec["nodes"]["readout"]["params"].update(input_size=3, use_bias=False)
+    binding = _task_binding_spec()
+    model_input = binding["exposed_data"][0]
+    model_input["expected_shape"] = ["time", 3]
+    # Each epoch reads one weight, giving a squared error of 1, 4, or 9.
+    model_input["value_spec"].update(
+        value=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        shape=["time", 3],
     )
-    task = {
-        "type": "DelayedReaches",
-        "params": {"n_steps": 4},
-        "timeline": {
-            "schema_version": "feedbax.spec.studio.task_timeline.v1",
-            "epochs": [
-                {
-                    "id": "epoch:0",
-                    "label": "hold",
-                    "index": 0,
-                    "length": {"mode": "constant", "value": {"steps": 1}, "metadata": {}},
-                    "metadata": {},
-                },
-                {
-                    "id": "epoch:1",
-                    "label": "movement",
-                    "index": 1,
-                    "length": {
-                        "mode": "constant",
-                        "value": None,
-                        "metadata": {"inferred_from_remaining_steps": True},
-                    },
-                    "metadata": {},
-                },
-            ],
-            "metadata": {"n_steps": 4},
-        },
-    }
-
     compiled = compile_training_run(
         component_registry=ComponentRegistry(load_user_components=False),
-        graph_spec=_linear_graph_spec(),
-        training_spec=training,
-        task_spec=task,
-        task_binding_spec=_task_binding_spec(),
-        cfg=_cfg(n_reach_steps=4),
+        graph_spec=graph_spec,
+        training_spec=_training_spec(
+            n_batches=1,
+            loss={
+                **_training_spec()["loss"],
+                "time_agg": {"mode": "segment", "segment_name": "movement"},
+            },
+        ),
+        task_spec={
+            "type": "DelayedReaches",
+            "params": {"n_steps": 3},
+            "timeline": {
+                "epochs": [
+                    {
+                        "id": epoch,
+                        "label": epoch,
+                        "index": index,
+                        "length": {"mode": "constant", "value": length},
+                    }
+                    for index, (epoch, length) in enumerate(
+                        (("hold", {"steps": 1}), ("reach", {"steps": 1}), ("settle", None))
+                    )
+                ],
+                "segments": [
+                    {"id": "movement", "label": "Movement", "epoch_ids": ["reach"]},
+                ],
+            },
+        },
+        task_binding_spec=binding,
+        cfg=cfg,
+    )
+    compiled.graph = eqx.tree_at(
+        lambda graph: graph.nodes["readout"].layer.weight,
+        compiled.graph,
+        jnp.array([[1.0, 2.0, 3.0]]),
+    )
+    events: list[dict] = []
+    result = run_training_graph(
+        compiled,
+        job_id="segment-loss",
+        total_batches=1,
+        cfg=cfg,
+        stop_event=threading.Event(),
+        emit=events.append,
     )
 
-    assert compiled.loss_terms[0].metadata["time_mask"]["epoch_ids"] == ["epoch:1"]
+    (progress,) = [event for event in events if event["type"] == "training_progress"]
+    assert progress["loss"] == pytest.approx(4.0)
+    assert progress["grad_norm"] == pytest.approx(4.0)
+    weights = result.graph.nodes["readout"].layer.weight[0]
+    assert weights[0] == 1.0
+    assert weights[1] == pytest.approx(1.9)
+    assert weights[2] == 3.0
 
 
 def test_compile_training_run_rejects_bound_task_data_without_value_spec() -> None:
