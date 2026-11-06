@@ -42,18 +42,12 @@ def _normalize_constraint(constraint: ConstraintLike) -> ParameterConstraintSpec
     return ParameterConstraintSpec.model_validate(constraint)
 
 
-def _as_constraint_tuple(
-    constraints: Sequence[ConstraintLike] | None,
-) -> tuple[ParameterConstraintSpec, ...]:
-    return tuple(_normalize_constraint(constraint) for constraint in constraints or ())
-
-
 def normalize_parameter_constraints(
     constraints: Sequence[ConstraintLike] | None,
 ) -> tuple[ParameterConstraintSpec, ...]:
     """Return validated parameter constraint records."""
 
-    return _as_constraint_tuple(constraints)
+    return tuple(_normalize_constraint(constraint) for constraint in constraints or ())
 
 
 def linear_parameter_role(component: Component, role: str) -> tuple[Any, Callable[[Any], Any]]:
@@ -120,29 +114,38 @@ def apply_parameter_constraints(
     graph: Graph,
     constraints: Sequence[ConstraintLike] | None = None,
 ) -> Graph:
-    """Project graph parameters to satisfy structural constraints."""
+    """Project a graph and its nested graphs using their local node names.
 
-    normalized = _as_constraint_tuple(
+    An explicit ``constraints`` sequence overrides declarations on this graph only.
+    """
+
+    replacements: dict[str, Component] = {}
+    for name, node in graph.nodes.items():
+        if isinstance(node, Graph):
+            projected = apply_parameter_constraints(node)
+            if projected is not node:
+                replacements[name] = projected
+
+    normalized = normalize_parameter_constraints(
         constraints if constraints is not None else getattr(graph, "parameter_constraints", ())
     )
-    constrained = graph
     for constraint in normalized:
-        if constraint.node not in constrained.nodes:
-            raise ValueError(f"Parameter constraint references missing node {constraint.node!r}")
-        component = constrained.nodes[constraint.node]
+        name = constraint.node
+        if name not in graph.nodes:
+            raise ValueError(f"Parameter constraint references missing node {name!r}")
+        component = replacements.get(name, graph.nodes[name])
         array, role_getter = _resolve_role(component, constraint.role)
-        projected = _project_array(array, constraint.mask, constraint.value)
-        constrained = eqx.tree_at(
-            lambda g, node_name=constraint.node, get_role=role_getter: get_role(g.nodes[node_name]),
-            constrained,
-            projected,
-        )
-    return constrained
+        value = _project_array(array, constraint.mask, constraint.value)
+        replacements[name] = eqx.tree_at(role_getter, component, value)
+
+    if replacements:
+        return eqx.tree_at(lambda g: g.nodes, graph, graph.nodes | replacements)
+    return graph
 
 
 def project_component_parameters(model: Component) -> Component:
-    """Project model parameters when it carries graph parameter constraints."""
+    """Project parameters of a graph component, including its nested graphs."""
 
-    if isinstance(model, Graph) and getattr(model, "parameter_constraints", ()):
+    if isinstance(model, Graph):
         return apply_parameter_constraints(model)
     return model

@@ -31,6 +31,7 @@ from feedbax.compiler.serialization import (
 )
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
+from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 
 
 GRAPH_COMPILER_ID = "feedbax.graph.compiler"
@@ -564,7 +565,8 @@ def compile_graph(
     )
 
     def build_schedule() -> tuple[Graph, tuple[str, ...]]:
-        executable = _instantiate_graph(graph, component_registry).prepare()
+        instantiated = _instantiate_graph(graph, component_registry)
+        executable = apply_parameter_constraints(instantiated).prepare()
         return executable, tuple(executable._execution_order)
 
     executable, node_order = _compile_phase(
