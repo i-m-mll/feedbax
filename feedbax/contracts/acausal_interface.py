@@ -21,13 +21,74 @@ class AcausalInterfaceError(ValueError):
 
 
 @dataclass(frozen=True)
+class SourcePayload:
+    """Ordered scalar fields in a causal payload delivered to one acausal source."""
+
+    slots: tuple[str, ...]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return () if len(self.slots) == 1 else (len(self.slots),)
+
+    def accepts_shape(self, shape: tuple[int, ...] | None) -> bool:
+        # Scalar channels also accept the one-element arrays emitted by vector components.
+        return shape == self.shape or (self.shape == () and shape == (1,))
+
+    def port_type(self) -> PortType:
+        return (
+            PortType(dtype="vector", shape=list(self.shape), kind="signal")
+            if self.shape
+            else signal_port_type()
+        )
+
+    def shape_error(self, port: str, shape: tuple[int, ...] | None) -> str:
+        expected = "a scalar or a one-element vector"
+        if self.shape:
+            expected = f"shape {self.shape} with fields {self.slots}"
+        return f"Acausal source input {port!r} expects {expected}, got shape {shape}"
+
+
+FORCE_PAYLOAD = SourcePayload(("force",))
+TORQUE_PAYLOAD = SourcePayload(("torque",))
+PRESCRIBED_MOTION_PAYLOAD = SourcePayload(("pos", "vel"))
+ACTIVATION_PAYLOAD = SourcePayload(("activation",))
+MUSCLE_EXCITATION_PAYLOAD = SourcePayload((
+    "shoulder_flexor",
+    "shoulder_extensor",
+    "elbow_flexor",
+    "elbow_extensor",
+    "biarticular_flexor",
+    "biarticular_extensor",
+))
+ACTUATION_PAYLOADS = {
+    "force": FORCE_PAYLOAD,
+    "torque": TORQUE_PAYLOAD,
+    "prescribed_motion": PRESCRIBED_MOTION_PAYLOAD,
+    "muscle_excitation_vector": MUSCLE_EXCITATION_PAYLOAD,
+}
+SIGNAL_INPUT_PAYLOADS = {"RigidTendonHillMuscle": ACTIVATION_PAYLOAD}
+
+
+def actuation_source_payload(node: ComponentSpec) -> SourcePayload:
+    """Resolve the payload of an authored ActuationInput."""
+    kind = _param_string(node.params, "source_kind", "force")
+    if kind not in ACTUATION_PAYLOADS:
+        raise AcausalInterfaceError(f"Unknown ActuationInput source_kind {kind!r}")
+    return ACTUATION_PAYLOADS[kind]
+
+
+@dataclass(frozen=True)
 class DerivedAcausalInterface:
     """Causal and conserving ports derived from an acausal graph interior."""
 
-    input_ports: tuple[str, ...]
+    input_payloads: dict[str, SourcePayload]
     output_ports: tuple[str, ...]
     boundary_ports: tuple[str, ...]
     boundary_port_types: PortTypeSpec
+
+    @property
+    def input_ports(self) -> tuple[str, ...]:
+        return tuple(self.input_payloads)
 
 
 def signal_port_type() -> PortType:
@@ -73,7 +134,7 @@ def _adapter_ports(
     *,
     component_type: Literal["ActuationInput", "SensorOutput", "BoundaryPort"],
     default_port_name: str,
-) -> tuple[str, ...]:
+) -> dict[str, str]:
     entries: list[tuple[int, str, str]] = []
     for node_id, node in graph.nodes.items():
         if node.type != component_type:
@@ -84,7 +145,6 @@ def _adapter_ports(
     entries.sort(key=lambda item: (item[0], item[1]))
 
     seen: dict[str, str] = {}
-    ordered: list[str] = []
     for _order, port_name, node_id in entries:
         previous = seen.get(port_name)
         if previous is not None:
@@ -93,8 +153,7 @@ def _adapter_ports(
                 f"{previous!r} and {node_id!r}"
             )
         seen[port_name] = node_id
-        ordered.append(port_name)
-    return tuple(ordered)
+    return seen
 
 
 def derive_acausal_interface(graph: AcausalGraphSpec) -> DerivedAcausalInterface:
@@ -105,12 +164,15 @@ def derive_acausal_interface(graph: AcausalGraphSpec) -> DerivedAcausalInterface
         component_type=ACTUATION_INPUT_TYPE,
         default_port_name="u",
     )
-    signal_inputs = tuple(
-        node_id
-        for node_id, node in graph.nodes.items()
-        if node.type == "RigidTendonHillMuscle"
-    )
-    inputs = (*adapter_inputs, *signal_inputs)
+    input_payloads = {
+        port: actuation_source_payload(graph.nodes[node_id])
+        for port, node_id in adapter_inputs.items()
+    }
+    for node_id, node in graph.nodes.items():
+        if node.type in SIGNAL_INPUT_PAYLOADS:
+            if node_id in input_payloads:
+                raise AcausalInterfaceError(f"Duplicate acausal input port {node_id!r}")
+            input_payloads[node_id] = SIGNAL_INPUT_PAYLOADS[node.type]
     outputs = _adapter_ports(
         graph,
         component_type=SENSOR_OUTPUT_TYPE,
@@ -126,9 +188,9 @@ def derive_acausal_interface(graph: AcausalGraphSpec) -> DerivedAcausalInterface
         outputs={},
     )
     return DerivedAcausalInterface(
-        input_ports=inputs,
-        output_ports=outputs,
-        boundary_ports=boundary_ports,
+        input_payloads=input_payloads,
+        output_ports=tuple(outputs),
+        boundary_ports=tuple(boundary_ports),
         boundary_port_types=boundary_port_types,
     )
 

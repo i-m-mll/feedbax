@@ -23,7 +23,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
-from typing import Callable, Optional
+from typing import Callable, ClassVar, Optional
+
+from feedbax.contracts.acausal_interface import SourcePayload
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +132,8 @@ class AcausalElement:
         sensor_output: If this element is a sensor, the
             ``(port_name, slot_name)`` it reads.
     """
+    source_payload: ClassVar[SourcePayload | None] = None
+
     name: str
     ports: dict[str, AcausalPort] = dc_field(default_factory=dict)
     signal_inputs: tuple[str, ...] = ()

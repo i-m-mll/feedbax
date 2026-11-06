@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from feedbax.contracts.acausal_interface import MUSCLE_EXCITATION_PAYLOAD
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 from feedbax.compiler.templates import (
@@ -138,7 +139,7 @@ def register_builtin_graph_templates(registry: _Registry) -> None:
             interior_domain=MECHANICS_DOMAIN_ID,
             is_composite=True,
             port_types=PortTypeSpec(
-                inputs={"excitation": PortType(dtype="vector", shape=[6])},
+                inputs={"excitation": MUSCLE_EXCITATION_PAYLOAD.port_type()},
                 outputs={
                     "effector": PortType(dtype="state"),
                     "state": PortType(dtype="state"),

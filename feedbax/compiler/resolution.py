@@ -14,7 +14,12 @@ from feedbax.component_registry import (
     required_interior_domain,
 )
 from feedbax.component_registry.declarations import MissingPrototypeInput
-from feedbax.contracts.acausal_interface import normalize_acausal_interfaces_for_graph
+from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.acausal_interface import (
+    SourcePayload,
+    derive_acausal_interface,
+    normalize_acausal_interfaces_for_graph,
+)
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler.prototypes import (
@@ -151,6 +156,7 @@ class _Completion:
         self.published: set[str] = set()
         self.deferred: dict[str, ValueError] = {}
         self.children: dict[str, _Completion] = {}
+        self.acausal_payloads: dict[str, dict[str, SourcePayload]] = {}
         self.errors: dict[str, ParameterResolutionError] = {}
         for name, node in self.graph.nodes.items():
             try:
@@ -185,6 +191,8 @@ class _Completion:
                     f"{path}/subgraphs/{_token(name)}",
                     identities_resolved,
                 )
+            elif isinstance(subgraph, AcausalGraphSpec) and name in self.nodes:
+                self.acausal_payloads[name] = derive_acausal_interface(subgraph).input_payloads
 
     def fail(self, name: str, cause: Exception) -> None:
         self.errors[name] = (
@@ -194,6 +202,13 @@ class _Completion:
         )
 
     def put_input(self, key: tuple[str, str], proto: Any) -> bool:
+        node, port = key
+        payload = self.acausal_payloads.get(node, {}).get(port)
+        if payload is not None:
+            dims = shape_from_proto(proto)
+            shape = tuple(dims) if dims is not None else None
+            if not payload.accepts_shape(shape):
+                raise ValueError(payload.shape_error(f"{node}.{port}", shape))
         if key in self.inputs:
             if _prototype_signature(self.inputs[key]) != _prototype_signature(proto):
                 old_shape, new_shape = shape_from_proto(self.inputs[key]), shape_from_proto(proto)

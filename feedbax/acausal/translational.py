@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from feedbax.acausal._scalar_mechanics import TRANSLATIONAL
 from feedbax.acausal.base import AcausalElement
+from feedbax.contracts.acausal_interface import FORCE_PAYLOAD, PRESCRIBED_MOTION_PAYLOAD
 
 
 @dataclass
@@ -87,6 +88,8 @@ class ForceSource(AcausalElement):
         from the causal input array.
     """
 
+    source_payload = FORCE_PAYLOAD
+
     def __init__(self, name: str):
         super().__init__(name=name)
         TRANSLATIONAL.one_port(self, "force_source")
@@ -115,6 +118,8 @@ class PrescribedMotion(AcausalElement):
         across variables become causal inputs (removed from the state
         vector).
     """
+
+    source_payload = PRESCRIBED_MOTION_PAYLOAD
 
     def __init__(self, name: str):
         super().__init__(name=name)

@@ -20,6 +20,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
+from feedbax.contracts.acausal_interface import SourcePayload
 from feedbax.mechanics.dae import DAEComponent
 from feedbax.acausal.assembly import assemble_system
 from feedbax.acausal.base import (
@@ -79,9 +80,9 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
     _layout: StateLayout = field(static=True)
     _compiled_vf: Callable = field(static=True)
     _compiled_sensor_fn: Callable = field(static=True)
-    _input_bindings: dict[str, str] = field(static=True)
+    input_payloads: dict[str, SourcePayload] = field(static=True)
+    _input_slots: tuple[tuple[str, int], ...] = field(static=True)
     _output_bindings: dict[str, str] = field(static=True)
-    _input_size_val: int = field(static=True)
 
     def __init__(
         self,
@@ -127,24 +128,37 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         self.params = AcausalParams(values=param_values)
 
         # ---- Ports -------------------------------------------------------
-        element_input_names: list[str] = []
-        for vname, _idx in sorted(layout._inputs.items(), key=lambda item: item[1]):
-            label = layout._input_specs[vname][0]
-            if label not in element_input_names:
-                element_input_names.append(label)
-
+        element_slots: dict[str, list[str]] = {}
+        ordered_inputs = sorted(layout._inputs, key=layout._inputs.__getitem__)
+        for variable in ordered_inputs:
+            element_name, slot = layout._input_specs[variable]
+            slots = element_slots.setdefault(element_name, [])
+            if slot == len(slots):
+                slots.append(variable.rsplit(".", 1)[-1])
+        element_payloads = {
+            name: elements[name].source_payload or SourcePayload(tuple(slots))
+            for name, slots in element_slots.items()
+        }
         if input_bindings is None:
-            public_input_bindings = {name: name for name in element_input_names}
+            public_input_bindings = {name: name for name in element_payloads}
             include_default_input_port = not public_input_bindings
         else:
             public_input_bindings = dict(input_bindings)
             include_default_input_port = False
-            unknown_inputs = set(public_input_bindings.values()) - set(element_input_names)
+            bound_elements = set(public_input_bindings.values())
+            unknown_inputs = bound_elements - element_payloads.keys()
             if unknown_inputs:
                 raise ValueError(
                     "AcausalSystem input bindings reference unknown source elements: "
                     f"{sorted(unknown_inputs)!r}"
                 )
+            missing_inputs = element_payloads.keys() - bound_elements
+            if missing_inputs:
+                raise ValueError(
+                    f"AcausalSystem source elements have no input binding: {sorted(missing_inputs)!r}"
+                )
+            if len(bound_elements) != len(public_input_bindings):
+                raise ValueError("AcausalSystem requires one public input per source element")
         if output_bindings is None:
             public_output_bindings = {name: name for name in sorted(layout._outputs)}
             include_state_port = True
@@ -158,7 +172,16 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
                 )
             include_state_port = False
 
-        self._input_bindings = public_input_bindings
+        self.input_payloads = {
+            port: element_payloads[element] for port, element in public_input_bindings.items()
+        }
+        public_port_by_element = {
+            element: port for port, element in public_input_bindings.items()
+        }
+        self._input_slots = tuple(
+            (public_port_by_element[element], slot)
+            for element, slot in (layout._input_specs[variable] for variable in ordered_inputs)
+        )
         self._output_bindings = public_output_bindings
         self.input_ports = (
             tuple(public_input_bindings)
@@ -170,8 +193,6 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         self.output_ports = (
             output_port_names + ("state",) if include_state_port else output_port_names
         )
-
-        self._input_size_val = max(len(layout._inputs), 1)
 
         # ---- DAEComponent base init -------------------------------------
         super().__init__(
@@ -205,7 +226,7 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
     @property
     def input_size(self) -> int:
         """Number of scalar causal inputs."""
-        return self._input_size_val
+        return max(len(self._input_slots), 1)
 
     # -- Override __call__ for input routing --------------------------------
 
@@ -221,26 +242,21 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         Collects causal inputs into a flat array and delegates to the base
         ``DAEComponent.__call__``.
         """
-        # Build a flat input array from the causal input dict
-        n_inputs = len(self._layout._inputs)
-        element_to_public_input = {
-            element_name: port_name
-            for port_name, element_name in self._input_bindings.items()
-        }
-        if n_inputs > 0:
-            input_val = jnp.zeros((n_inputs,))
-            for vname, idx in sorted(
-                self._layout._inputs.items(), key=lambda item: item[1]
-            ):
-                elem_name, slot_idx = self._layout._input_specs[vname]
-                public_port = element_to_public_input.get(elem_name, elem_name)
-                val = inputs.get(public_port, None)
-                if val is None:
-                    val = inputs.get("input", jnp.zeros(1))
-                arr = jnp.atleast_1d(jnp.asarray(val)).ravel()
-                input_val = input_val.at[idx].set(arr[slot_idx])
-        else:
-            input_val = jnp.zeros(1)
+        dtype = jnp.zeros(()).dtype
+        payloads: dict[str, Array] = {}
+        for port, payload in self.input_payloads.items():
+            if port not in inputs or inputs[port] is None:
+                raise ValueError(f"Missing required acausal source input {port!r}")
+            value = jnp.asarray(inputs[port])
+            if not payload.accepts_shape(value.shape):
+                raise ValueError(payload.shape_error(port, value.shape))
+            payloads[port] = jnp.atleast_1d(value).astype(dtype)
+
+        input_val = (
+            jnp.stack([payloads[port][slot] for port, slot in self._input_slots])
+            if self._input_slots
+            else self._get_zero_input()
+        )
 
         modified_inputs = {"input": input_val}
         outputs, state = super().__call__(modified_inputs, state, key=key)
@@ -267,4 +283,4 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
 
     def _get_zero_input(self) -> Array:
         """Zero-valued input for solver initialisation."""
-        return jnp.zeros(max(len(self._layout._inputs), 1))
+        return jnp.zeros(self.input_size)
