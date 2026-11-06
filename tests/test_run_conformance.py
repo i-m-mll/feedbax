@@ -599,6 +599,8 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
 ) -> None:
     from feedbax.contracts.manifest import load_manifest
     from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError
+    from feedbax.contracts.worker import NATIVE_TRAINING_COLLECTION_OUTPUTS
+    from feedbax.orchestration.events import RunEvent
     from feedbax.orchestration.state import RunSetState, StageState, utc_now
     from feedbax.orchestration.stages import (
         OrchestrationStageError,
@@ -657,6 +659,7 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
     launch = row_spec.launch.model_copy(
         update={
             "command": ["python", "-m", "feedbax", "execute-training-run-spec"],
+            "collect": list(NATIVE_TRAINING_COLLECTION_OUTPUTS),
             "payload_routing": {"kind": "registered-execution-payload"},
         }
     )
@@ -699,6 +702,46 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
         },
     )
     state = _with_local_realized_proof(state, bundle)
+    if operator_stop:
+        remote = bundle.model_copy(
+            update={
+                "deployment_policy": bundle.deployment_policy.model_copy(
+                    update={"driver": "runpod", "venue": "remote"}
+                )
+            }
+        )
+        event_name = f"{row_spec.row_id}.events.jsonl"
+        event_path = remote.run_set_dir / "events" / event_name
+        event_path.parent.mkdir(parents=True, exist_ok=True)
+        remote_outputs = {**outputs, event_name: str(event_path)}
+        failed_row = state.rows[row_spec.row_id].model_copy(
+            update={"status": "failed", "error": None, "collected_outputs": {}}
+        )
+        failed_state = state.with_row(row_spec.row_id, failed_row).with_stage("COLLECT", StageState())
+
+        class CollectedStopDriver(FakeDriver):
+            def collect(self, bundle, row, state):
+                return remote_outputs
+
+        remote_engine = StageEngine(bundle=remote, driver=CollectedStopDriver())
+        event = RunEvent(
+            run_set_id=remote.run_set_id,
+            row_id=row_spec.row_id,
+            seq=0,
+            emitted_at_ms=int(GENERATED_AT.timestamp() * 1000),
+            type="failed",
+            payload={"run_id": manifest.id, "status": "failed"},
+        )
+        event_path.write_text(event.model_dump_json() + "\n")
+        with pytest.raises(OrchestrationStageError, match="executor reported failure"):
+            remote_engine._stage_collect(failed_state)
+        event = event.model_copy(
+            update={"type": "complete", "payload": {"run_id": manifest.id, "status": "cancelled"}}
+        )
+        event_path.write_text(event.model_dump_json() + "\n")
+        stopped, collected = remote_engine._stage_collect(failed_state)
+        assert stopped.rows[row_spec.row_id].status == "stopped"
+        assert collected["checkpoint_custody"][row_spec.row_id] == custody
     engine = StageEngine(
         bundle=bundle,
         driver=FakeDriver(),
