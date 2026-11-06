@@ -2243,6 +2243,15 @@ def test_declared_method_trace_uses_cancelled_batch_authority(
     assert [write.manifest.completed_training_batches for write in result.checkpoint_writes] == (
         checkpoint_batches
     )
+    if stop_before_update:
+        cadence = check_checkpoint_cadence(
+            ConformanceRowArtifacts(
+                row_id="cancelled-mapped-trace",
+                bundle_row_spec=result.manifest.training_spec.inline,
+                training_diagnostics=json.loads(result.diagnostics_path.read_bytes()),
+            )
+        )
+        assert cadence.status == "pass", cadence
     assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
         (batch, index) for batch in expected_batches for index in range(5)
     ]

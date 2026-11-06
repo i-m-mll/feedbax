@@ -1924,6 +1924,8 @@ def _expected_checkpoint_coordinates(
 ) -> list[int]:
     if interval <= 0:
         raise ValueError("checkpoint interval must be positive")
+    if completed_batches == 0:
+        return []
     first_relative_boundary = interval - origin % interval
     coordinates = list(range(first_relative_boundary, completed_batches + 1, interval))
     if not coordinates or coordinates[-1] != completed_batches:
