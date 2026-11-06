@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 import numpy as np
 
+from feedbax.contracts.checkpoints import PHASE_BOUNDARY_DECISION_METADATA_KEY
 from feedbax.contracts.worker import (
     MaterializedMappingLevelSpec,
     MaterializedSlotAxisBinding,
@@ -215,6 +216,26 @@ class PhaseBoundaryDecision:
 
     next_phase: str | None
 
+    @classmethod
+    def from_checkpoint_metadata(
+        cls, metadata: Mapping[str, Any]
+    ) -> PhaseBoundaryDecision | None:
+        if PHASE_BOUNDARY_DECISION_METADATA_KEY not in metadata:
+            return None
+        decision = metadata[PHASE_BOUNDARY_DECISION_METADATA_KEY]
+        path = "/checkpoint/phase_boundary_decision"
+        if (
+            not isinstance(decision, Mapping)
+            or set(decision) != {"schema_version", "next_phase"}
+            or type(decision["schema_version"]) is not int
+            or decision["schema_version"] != 1
+        ):
+            raise WorkerContractValidationError(path, "invalid or unsupported boundary decision")
+        target = decision["next_phase"]
+        if target is not None and (not isinstance(target, str) or not target):
+            raise WorkerContractValidationError(f"{path}/next_phase", "invalid next phase")
+        return cls(target)
+
 
 @dataclass
 class PhaseCheckpoint:
@@ -239,6 +260,7 @@ class PhaseExecutionResult:
     checkpoints: dict[str, PhaseCheckpoint] = field(default_factory=dict)
     checkpoint_visits: tuple[PhaseCheckpoint, ...] = ()
     interrupted: bool = False
+    resumed_terminal: bool = False
 
 
 @dataclass(frozen=True)
@@ -612,8 +634,11 @@ class PhaseProgramExecutor:
             resume_checkpoint = self._checkpoint_history.load(resume_from_barrier)
         if resume_checkpoint is not None:
             current_slots = self.merge_resume_slots(slots, resume_checkpoint)
-            start_phase, resume_inner_step = self._resume_position(
-                resume_checkpoint, extend_terminal_phase=extend_terminal_phase
+            start_phase, resume_inner_step = self.resume_position(
+                resume_checkpoint.barrier,
+                resume_checkpoint.coordinate,
+                resume_checkpoint.boundary_decision,
+                extend_terminal_phase=extend_terminal_phase,
             )
             resuming_within_phase = resume_inner_step > 0
             coordinate = resume_checkpoint.coordinate.model_copy(
@@ -884,6 +909,7 @@ class PhaseProgramExecutor:
             progress,
             start_completed_batches=initial_batch,
             interrupted=interrupted,
+            resumed_terminal=resume_checkpoint is not None and start_phase is None,
         )
 
     def _validate_destination_updates(
@@ -946,6 +972,7 @@ class PhaseProgramExecutor:
         *,
         start_completed_batches: int,
         interrupted: bool = False,
+        resumed_terminal: bool = False,
     ) -> PhaseExecutionResult:
         result = PhaseExecutionResult(
             slots=_copy_executor_mapping(slots),
@@ -954,6 +981,7 @@ class PhaseProgramExecutor:
             end_completed_batches=self._completed_training_batches(slots, coordinate),
             progress=progress,
             interrupted=interrupted,
+            resumed_terminal=resumed_terminal,
         )
         if self._checkpoint_history is not None:
             result.checkpoints = self._checkpoint_history.as_dict()
@@ -1149,13 +1177,18 @@ class PhaseProgramExecutor:
             slot: _copy_executor_value(slots[slot]) for slot in self._metric_slots if slot in slots
         }
 
-    def _resume_position(
-        self, checkpoint: PhaseCheckpoint, *, extend_terminal_phase: bool
+    def resume_position(
+        self,
+        barrier_name: str,
+        coordinate: ProgressCoordinate,
+        decision: PhaseBoundaryDecision | None,
+        *,
+        extend_terminal_phase: bool = False,
     ) -> tuple[str | None, int]:
-        barrier = self._barriers[checkpoint.barrier]
-        coordinate_phase = self._phases.get(checkpoint.coordinate.phase)
-        inner_step = checkpoint.coordinate.inner_step
-        decision = checkpoint.boundary_decision
+        """Resolve the resume point using the program and recorded checkpoint metadata."""
+        barrier = self._barriers[barrier_name]
+        coordinate_phase = self._phases.get(coordinate.phase)
+        inner_step = coordinate.inner_step
         next_inner_step = (
             inner_step + 1
             if coordinate_phase is not None
@@ -1164,7 +1197,7 @@ class PhaseProgramExecutor:
             else 0
         )
         if decision is None and next_inner_step:
-            return checkpoint.coordinate.phase, next_inner_step
+            return coordinate.phase, next_inner_step
         if barrier.resume_coordinate is not None:
             return barrier.resume_coordinate.phase, 0
         if decision is None:

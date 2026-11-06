@@ -1,5 +1,6 @@
 """Explicit synthetic training registrations for lifecycle and contract tests."""
 
+from functools import partial
 from typing import Any, Callable, Mapping
 
 import jax.numpy as jnp
@@ -13,7 +14,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_contract,
     standard_supervised_training_program,
 )
-from feedbax.contracts.worker import ProgressCoordinate
+from feedbax.contracts.worker import MethodContractSpec, ProgressCoordinate
 from feedbax.plugins import (
     TRAINING_PROGRAMS,
     FamilyRequirement,
@@ -72,6 +73,14 @@ def synthetic_training_program_registry() -> TrainingProgramRegistry:
 
 
 CLI_METHOD_REF = "tests/synthetic_supervised/v1"
+CLI_TWO_STEP_METHOD_REF = "tests/synthetic_supervised_two_step/v1"
+
+
+def cli_fixture_method_contract(method_ref: str) -> MethodContractSpec:
+    contract = standard_supervised_method_contract().model_copy(update={"method_ref": method_ref})
+    if method_ref == CLI_TWO_STEP_METHOD_REF:
+        contract.phase_program.phases[0].max_steps = 2
+    return contract
 
 
 def initial_training_slots() -> dict[str, Any]:
@@ -84,19 +93,21 @@ def initial_training_slots() -> dict[str, Any]:
 
 
 def _register_cli_fixture(context: RegistrationContext) -> None:
-    context.registry(TRAINING_PROGRAMS).register_program(
-        evolve_training_program(
-            synthetic_supervised_training_program(),
-            method_ref=CLI_METHOD_REF,
-            contract_compiler=lambda _payload: standard_supervised_method_contract().model_copy(
-                update={"method_ref": CLI_METHOD_REF}
-            ),
-            preparation_provider=lambda _request: ExecutionPreparationResult(
-                initial_slots=initial_training_slots()
-            ),
-            package="tests",
+    def compile_contract(method_ref: str, _payload: BaseModel) -> MethodContractSpec:
+        return cli_fixture_method_contract(method_ref)
+
+    for method_ref in (CLI_METHOD_REF, CLI_TWO_STEP_METHOD_REF):
+        context.registry(TRAINING_PROGRAMS).register_program(
+            evolve_training_program(
+                synthetic_supervised_training_program(),
+                method_ref=method_ref,
+                contract_compiler=partial(compile_contract, method_ref),
+                preparation_provider=lambda _request: ExecutionPreparationResult(
+                    initial_slots=initial_training_slots()
+                ),
+                package="tests",
+            )
         )
-    )
 
 
 PLUGIN_REGISTRATION = PluginRegistration(

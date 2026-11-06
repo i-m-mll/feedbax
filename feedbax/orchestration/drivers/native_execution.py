@@ -542,6 +542,7 @@ def inject_native_execution_context(
     row: RunRowSpec,
     environment_fingerprint: str,
     collection_root: Path | str,
+    run_set_id: str | None = None,
 ) -> list[str]:
     """Append one canonical inline producer context to a native row command.
 
@@ -576,6 +577,7 @@ def inject_native_execution_context(
     context = NativeExecutionProducerContext(
         execution=row.execution,
         environment_fingerprint=environment_fingerprint,
+        run_set_id=run_set_id,
         collection_root=str(collection_root),
     )
     payload = json.dumps(

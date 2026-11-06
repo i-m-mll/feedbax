@@ -22,6 +22,7 @@ from feedbax.contracts.base import (
     StrictModel,
     utc_now,
 )
+from feedbax.contracts.manifest import has_training_checkpoint_custody
 from feedbax.contracts.strict_json import strict_json_loads
 
 
@@ -525,8 +526,7 @@ def _source_set_id(row: ManifestIndexRow) -> str | None:
 
 
 def _has_checkpoint(row: ManifestIndexRow) -> bool:
-    custody = row.payload.get("checkpoint_custody")
-    if isinstance(custody, list) and len(custody) > 0:
+    if has_training_checkpoint_custody(row.payload):
         return True
     artifacts = row.payload.get("artifacts")
     if not isinstance(artifacts, list):

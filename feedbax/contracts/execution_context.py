@@ -64,6 +64,7 @@ class NativeExecutionProducerContext(StrictModel):
     )
     execution: ExecutionIdentityEnvelope
     environment_fingerprint: str = Field(min_length=1)
+    run_set_id: str | None = Field(default=None, min_length=1)
     collection_root: str | None = None
     diagnostics: NativeTrainingDiagnosticsInput = Field(
         default_factory=NativeTrainingDiagnosticsInput

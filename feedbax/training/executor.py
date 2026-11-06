@@ -63,6 +63,7 @@ from feedbax.contracts.manifest import (
     ManifestStatus,
     TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
     TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
+    InheritedTerminalCheckpoint,
     TrainingRunCertification,
     TrainingRunManifest,
     TrainingManifestMetadataProjectionCustody,
@@ -1043,6 +1044,7 @@ def execute_training_run_spec(
 
     parent_lineage: list[CheckpointLineageRef] = []
     loaded_resume_checkpoint: PhaseCheckpoint | None = None
+    legacy_resume_parent: ParentRef | None = None
     checkpoint_lineage_start = 0
     segment_batch_count: int | None = None
     segment_parent_transaction_id: str | None = None
@@ -1057,6 +1059,7 @@ def execute_training_run_spec(
             continuation_request=run_spec.checkpoint_progress.continuation,
             allow_new_lineage_override=(run_spec.checkpoint_progress.continuation is not None),
         )
+        legacy_resume_parent = loaded.parent_ref
         resolved_initialization = _ResolvedCheckpointInitialization(
             mode="continue_from",
             source=ParentRef(
@@ -1110,7 +1113,9 @@ def execute_training_run_spec(
                 coordinate=source_manifest.completed_coordinate,
                 slots=resolved_initialization.slots,
                 visit_ordinal=_checkpoint_visit_ordinal(source_manifest.metadata),
-                boundary_decision=_checkpoint_boundary_decision(source_manifest.metadata),
+                boundary_decision=PhaseBoundaryDecision.from_checkpoint_metadata(
+                    source_manifest.metadata
+                ),
             )
             if continuation is not None:
                 segment_batch_count = continuation.additional_batches
@@ -1395,6 +1400,17 @@ def execute_training_run_spec(
             records=method_trace.records if method_trace is not None else None,
             learning_rates=None if retain_history else learning_rates.ordered_rows(),
         )
+        inherited_terminal_checkpoint = (
+            InheritedTerminalCheckpoint(checkpoint=legacy_resume_parent)
+            if legacy_resume_parent is not None
+            and continuation is None
+            and resume_slot_transform is None
+            and execution.resumed_terminal
+            and status == "completed"
+            and execution.start_completed_batches == execution.end_completed_batches
+            and not checkpoint_writes
+            else None
+        )
         manifest = _build_manifest(
             run_spec,
             run_id=resolved_run_id,
@@ -1423,6 +1439,7 @@ def execute_training_run_spec(
             diagnostics_ref=staged_diagnostics.ref,
             completed_batches=diagnostics.completed_batches,
             projection_custody=projection_custody,
+            inherited_terminal_checkpoint=inherited_terminal_checkpoint,
         )
         manifest_output_path = (
             collection_root / "manifest.json" if collection_root is not None else None
@@ -3286,23 +3303,6 @@ def _checkpoint_root(
     return root_path / "checkpoints" / run_id
 
 
-def _checkpoint_boundary_decision(metadata: Mapping[str, Any]) -> PhaseBoundaryDecision | None:
-    if PHASE_BOUNDARY_DECISION_METADATA_KEY not in metadata:
-        return None
-    decision = metadata[PHASE_BOUNDARY_DECISION_METADATA_KEY]
-    if (
-        not isinstance(decision, Mapping)
-        or set(decision) != {"schema_version", "next_phase"}
-        or type(decision["schema_version"]) is not int
-        or decision["schema_version"] != 1
-    ):
-        raise TrainingRunExecutorError("invalid or unsupported checkpoint phase boundary decision")
-    target = decision["next_phase"]
-    if target is not None and (not isinstance(target, str) or not target):
-        raise TrainingRunExecutorError("checkpoint phase boundary decision has an invalid next_phase")
-    return PhaseBoundaryDecision(target)
-
-
 def _checkpoint_visit_ordinal(metadata: Mapping[str, Any]) -> int | None:
     value = metadata.get("barrier_visit_ordinal")
     return value if isinstance(value, int) and value >= 0 else None
@@ -4001,6 +4001,7 @@ def _build_manifest(
     diagnostics_ref: ArtifactRef,
     completed_batches: int,
     projection_custody: TrainingManifestMetadataProjectionCustody | None,
+    inherited_terminal_checkpoint: InheritedTerminalCheckpoint | None = None,
     extra_artifacts: Sequence[ArtifactRef] = (),
     failure_kind: Literal["nan_guard"] | None = None,
     stopped: bool = False,
@@ -4047,6 +4048,11 @@ def _build_manifest(
     )
     return TrainingRunManifest(
         id=manifest_id,
+        run_set_id=(
+            execution_context.run_set_id
+            if execution_context is not None and inherited_terminal_checkpoint is not None
+            else None
+        ),
         job_id=run_id,
         status=status,
         started_at=utc_now(),
@@ -4056,6 +4062,7 @@ def _build_manifest(
         task_spec=payloads.task_spec,
         task_binding_spec=payloads.task_binding_spec,
         checkpoint_custody=checkpoint_refs,
+        inherited_terminal_checkpoint=inherited_terminal_checkpoint,
         terminal_certification=TrainingRunCertification(
             schema_id=TRAINING_RUN_CERTIFICATION_SCHEMA_ID,
             schema_version=TRAINING_RUN_CERTIFICATION_SCHEMA_VERSION,
@@ -4068,7 +4075,11 @@ def _build_manifest(
                 if status == "failed"
                 else "completed"
             ),
-            certified_artifacts=checkpoint_refs,
+            certified_artifacts=(
+                [inherited_terminal_checkpoint.checkpoint]
+                if inherited_terminal_checkpoint is not None
+                else checkpoint_refs
+            ),
         ),
         completed_batches=completed_batches,
         stopped=stopped,

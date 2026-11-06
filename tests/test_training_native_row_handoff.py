@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -26,7 +27,6 @@ from feedbax import _atomic
 from feedbax.analysis.specs import find_manifest_by_id
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
-from feedbax.contracts.base import ParentRef
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
     load_manifest,
@@ -56,7 +56,6 @@ from feedbax.contracts.training import (
     TrainingRunSpec,
     WorkerExecutionSpec,
     standard_supervised_effective_phase_spec,
-    standard_supervised_method_contract,
     standard_supervised_method_payload,
 )
 from feedbax.contracts.worker import derive_consistency_predicate
@@ -79,8 +78,10 @@ from feedbax.orchestration.bundle import (
     CheckpointCustodyArchiveMaterializer,
     ResolvedAssemblyInput,
     RunBundle,
+    RunRowSpec,
     SchemaArtifactRef,
     StagedTrainingBinding,
+    mint_run_set_id,
 )
 from feedbax.orchestration.conformance import (
     ConformanceRowArtifacts,
@@ -123,6 +124,7 @@ from feedbax.training.diagnostics import (
     NativeExecutionProducerContext,
     NativeTrainingDiagnosticsInput,
     ScheduleContextDiagnostic,
+    TrainingDiagnostics,
 )
 from feedbax.training.executor import execute_training_run_spec
 from feedbax.training.runpod_smoke_fixture import METHOD_REF as SMOKE_METHOD_REF
@@ -132,12 +134,16 @@ from feedbax.plugins import bootstrap_application, new_registration_context
 from feedbax.plugins.application import ApplicationRegistryBundle
 from tests.support.training_fixtures import (
     CLI_METHOD_REF,
+    CLI_TWO_STEP_METHOD_REF,
     PLUGIN_REGISTRATION,
+    cli_fixture_method_contract,
     initial_training_slots as _initial_slots,
 )
 from tests.test_studio_execution import _graph, _workspace
 from feedbax.training.checkpoint_custody import (
+    CheckpointReferenceResolutionError,
     authenticate_published_checkpoint_custody,
+    load_checkpoint_set,
     produce_checkpoint_custody_archive,
 )
 from feedbax.training.run_matrix import _validate_training_payload
@@ -187,6 +193,7 @@ def _training_spec(
     progress_interval: int | None = None,
     controller_seed: int | None = None,
     batch_seed: int | None = None,
+    method_ref: str = CLI_METHOD_REF,
 ) -> TrainingRunSpec:
     method_payload = standard_supervised_method_payload()
     method_payload.payload = StandardSupervisedMethodPayload(
@@ -200,6 +207,8 @@ def _training_spec(
         task_params["controller"] = {"seed": controller_seed}
     if batch_seed is not None:
         task_params["training"] = {"batch_seed": batch_seed}
+    package, name, version = method_ref.split("/")
+    contract = cli_fixture_method_contract(method_ref)
     return TrainingRunSpec(
         graph={"inline": _minimal_graph(gain)},
         task=TaskSpec(type="ToyTask", params=task_params),
@@ -212,14 +221,16 @@ def _training_spec(
                 target_value=[0.0],
             )
         ),
-        method_ref=MethodRefSpec(package="tests", name="synthetic_supervised", version="v1"),
+        method_ref=MethodRefSpec(package=package, name=name, version=version),
         method_payload=method_payload,
         worker_execution=WorkerExecutionSpec(
-            method_contract=standard_supervised_method_contract().model_copy(
-                update={"method_ref": CLI_METHOD_REF}
-            ),
+            method_contract=contract,
             effective_phase=standard_supervised_effective_phase_spec().model_copy(
-                update={"method_ref": CLI_METHOD_REF}
+                update={
+                    "method_ref": method_ref,
+                    "phase_program": contract.phase_program,
+                    "consistency_predicate": derive_consistency_predicate(contract.phase_program),
+                }
             ),
         ),
         checkpoint_progress=CheckpointProgressPolicySpec(
@@ -238,12 +249,16 @@ def _assemble_lowered_bundle(
     continuation: CheckpointContinuationRequest | None = None,
     progress_interval: int | None = None,
     input_kind: str = "registered-artifact",
+    resolved_input: ResolvedAssemblyInput | None = None,
     orchestration_root: Path | None = None,
+    run_set_id: str | None = None,
+    row_id: str = "science-row",
     row_seed: int | None = None,
     controller_seed: int | None = None,
     batch_seed: int | None = None,
+    method_ref: str = CLI_METHOD_REF,
 ) -> RunBundle:
-    row_declaration: dict[str, Any] = {"row_id": "science-row", "overrides": []}
+    row_declaration: dict[str, Any] = {"row_id": row_id, "overrides": []}
     if row_seed is not None:
         row_declaration["seed"] = row_seed
     matrix = TrainingRunMatrixSpecV5.model_validate(
@@ -283,8 +298,8 @@ def _assemble_lowered_bundle(
         ),
         inputs=[
             AssemblyInputDeclaration(
-                role="dataset",
-                kind=input_kind,
+                role=resolved_input.identity.role if resolved_input is not None else "dataset",
+                kind=resolved_input.identity.kind if resolved_input is not None else input_kind,
                 locator="dataset:toy:v1",
             )
         ],
@@ -303,6 +318,7 @@ def _assemble_lowered_bundle(
                 progress_interval=progress_interval,
                 controller_seed=controller_seed,
                 batch_seed=batch_seed if authored_row.seed is None else authored_row.seed,
+                method_ref=method_ref,
             ).model_dump(mode="json", exclude_none=True),
             lowerer_identities=[
                 RowLowererIdentity(
@@ -334,6 +350,8 @@ def _assemble_lowered_bundle(
     )
 
     def resolve_input(declaration: AssemblyInputDeclaration) -> ResolvedAssemblyInput:
+        if resolved_input is not None:
+            return resolved_input
         media_type = "application/vnd.feedbax.training-checkpoint-custody.v1+tar+gzip"
         return ResolvedAssemblyInput.model_validate(
             {
@@ -378,7 +396,7 @@ def _assemble_lowered_bundle(
     request.inputs[0].locator = str(input_document)
     bundle = assemble_run_bundle(
         request,
-        run_set_id=f"run-set-{root.name}",
+        run_set_id=run_set_id or f"run-set-{root.name}",
         context=AssemblyContext(
             custody_root=root / "assembly-custody",
             repo_root=root,
@@ -872,7 +890,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
     collected_checkpoint_root = Path(collected["checkpoints"])
     assert (collected_checkpoint_root / "latest.json").is_file()
     assert (collected_checkpoint_root / "transactions").is_dir()
-    verification = _verify_collected_native_checkpoint_custody(row, collected)
+    verification = _verify_collected_native_checkpoint_custody(bundle, row, collected)
     assert verification["transaction_id"] == result.checkpoint_writes[-1].manifest.transaction_id
     assert set(verification["slot_names"]) == {
         "batch_counter",
@@ -893,7 +911,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         OrchestrationStageError,
         match="not the terminal training manifest authority",
     ):
-        _verify_collected_native_checkpoint_custody(row, collected)
+        _verify_collected_native_checkpoint_custody(bundle, row, collected)
     collected_manifest_path.write_bytes(collected_manifest_bytes)
 
     continuation = CheckpointContinuationRequest(
@@ -2261,147 +2279,293 @@ os.read = read_then_mutate
     )
 
 
-def test_local_driver_executes_authenticated_custody_continuation_with_parent_lineage(
-    tmp_path: Path,
-) -> None:
-    registries = _lifecycle_registries()
-    parent_bundle = _without_resolved_inputs(
-        _assemble_lowered_bundle(tmp_path / "authenticated-parent", gain=2)
+def _native_source_checkpoint(
+    root: Path, *, row_id: str, mid_phase: bool = False
+) -> Path:
+    bundle = _without_resolved_inputs(
+        _assemble_lowered_bundle(
+            root, gain=2, progress_interval=1, row_id=row_id,
+            completed_batches=2 if mid_phase else 1,
+            method_ref=CLI_TWO_STEP_METHOD_REF if mid_phase else CLI_METHOD_REF,
+        )
     )
-    parent_row = parent_bundle.rows[0]
-    parent_payload = json.loads(Path(parent_row.execution.payload.uri).read_text(encoding="utf-8"))
-    parent_result = execute_training_run_spec(
-        parent_payload,
+    row = bundle.rows[0]
+    checkpoint_root = root / "checkpoints"
+    execute_training_run_spec(
+        json.loads(Path(row.execution.payload.uri).read_bytes()),
         initial_slots=_initial_slots(),
-        manifest_root=tmp_path / "parent-manifests",
-        checkpoint_root=tmp_path / "parent-checkpoints",
+        manifest_root=root / "manifests",
+        checkpoint_root=checkpoint_root,
         execution_context=_native_context(
-            parent_bundle,
-            collection_root=parent_bundle.run_set_dir / "rows" / parent_row.row_id,
+            bundle,
+            collection_root=bundle.run_set_dir / "rows" / row.row_id,
         ),
-        registry=registries.training_programs,
+        registry=_lifecycle_registries().training_programs,
+        update_budget=1 if mid_phase else None,
     )
-    parent_write = parent_result.checkpoint_writes[0]
-    parent_ref = ParentRef(
-        kind="TrainingCheckpointTransactionManifest",
-        id=parent_write.manifest.transaction_id,
-        role="training_checkpoint_custody",
-        uri=parent_write.manifest_path.relative_to(parent_write.root).as_posix(),
-        metadata={"manifest_sha256": parent_write.latest_pointer.manifest_sha256},
-    )
-    provider_root = tmp_path / "checkpoint-provider"
-    artifact = produce_checkpoint_custody_archive(
-        parent_ref,
-        allowed_root=parent_write.root,
+    return checkpoint_root
+
+
+def _archive_checkpoint_input(source_root: Path, provider_root: Path) -> ResolvedAssemblyInput:
+    checkpoint = authenticate_published_checkpoint_custody(source_root)
+    archive = produce_checkpoint_custody_archive(
+        checkpoint.parent_ref,
+        allowed_root=source_root,
         artifact_provider=ImmutableArtifactBlobProvider(provider_root),
-    ).artifact_ref
-    identity = ImmutableInputIdentity(
-        role="checkpoint",
-        kind="checkpoint-custody-archive",
-        identifier=parent_ref.id,
-        digest={"value": artifact.sha256},
     )
-    resolved = ResolvedAssemblyInput(
-        identity=identity,
+    artifact = archive.artifact_ref
+    return ResolvedAssemblyInput(
+        identity=ImmutableInputIdentity(
+            role="checkpoint",
+            kind="checkpoint-custody-archive",
+            identifier=checkpoint.parent_ref.id,
+            digest={"value": artifact.sha256},
+        ),
         custody=InputCustodySource(
             target_role="checkpoint",
             provider=ImmutableArtifactBlobProviderSpec(),
             provider_binding="checkpoint.inputs",
             artifact=ImmutableInputArtifactRef(
                 **artifact.model_dump(
-                    include={
-                        "artifact_id",
-                        "sha256",
-                        "size_bytes",
-                        "media_type",
-                        "storage_backend",
-                    }
+                    include={"artifact_id", "sha256", "size_bytes", "media_type", "storage_backend"}
                 )
             ),
             format=InputFormatIdentity(
-                format_id="feedbax.archive.training_checkpoint_custody",
-                format_version="feedbax.archive.training_checkpoint_custody.v1",
-                media_type="application/vnd.feedbax.training-checkpoint-custody.v1+tar+gzip",
+                format_id=archive.evidence.schema_id,
+                format_version=archive.evidence.schema_version,
+                media_type=artifact.media_type,
             ),
             materializer=CheckpointCustodyArchiveMaterializer(
-                expected_parent_ref=parent_ref,
-                expected_transaction_root_sha256=(
-                    parent_write.manifest.content_integrity_digest.transaction_root_sha256
-                ),
+                expected_parent_ref=archive.evidence.parent_ref,
+                expected_transaction_root_sha256=archive.evidence.transaction_root_sha256,
             ),
         ),
     )
-    continuation = CheckpointContinuationRequest(
-        source_completed_batches=1,
-        additional_batches=1,
-        self_contained=False,
+
+
+def _checkpoint_snapshot(root: Path) -> dict[Path, bytes]:
+    return {
+        path.relative_to(root): path.read_bytes()
+        for path in [root / "latest.json", *(root / "transactions").rglob("*")]
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize(
+    "mode", ["inherited", "substituted", "replayed", "extra-transaction", "nonterminal", "additional"]
+)
+def test_local_native_resume_collects_and_admits_exact_terminal_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    manifest_root = tmp_path / "staged"
+    orchestration_root = tmp_path / "orchestration"
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(manifest_root))
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(orchestration_root))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv(
+        "PATH",
+        os.pathsep.join([str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
     )
-    resumed_bundle = _assemble_lowered_bundle(
-        tmp_path / "authenticated-child",
+
+    nonterminal = mode == "nonterminal"
+    source_root = _native_source_checkpoint(
+        tmp_path / "source",
+        row_id="source",
+        mid_phase=nonterminal,
+    )
+    source = authenticate_published_checkpoint_custody(source_root)
+    assert source.manifest.completed_training_batches == 1
+    source_bytes = _checkpoint_snapshot(source_root)
+    provider_root = tmp_path / "checkpoint-provider"
+    resolved = _archive_checkpoint_input(source_root, provider_root)
+    provider_binding = InputProviderRootBinding("checkpoint.inputs", provider_root)
+    additional = mode == "additional"
+    bundle = _assemble_lowered_bundle(
+        tmp_path / "resume",
         gain=2,
-        completed_batches=2,
-        continuation=continuation,
-        input_kind="checkpoint-custody-archive",
+        completed_batches=2 if additional or nonterminal else 1,
+        continuation=(
+            CheckpointContinuationRequest(source_completed_batches=1, additional_batches=1)
+            if additional
+            else None
+        ),
+        progress_interval=1,
+        resolved_input=resolved,
+        orchestration_root=orchestration_root,
+        run_set_id=mint_run_set_id(),
+        method_ref=CLI_TWO_STEP_METHOD_REF if nonterminal else CLI_METHOD_REF,
     )
-    payload = resumed_bundle.model_dump(mode="json")
-    canonical = canonicalize_immutable_input_identities([identity])
-    execution = payload["rows"][0]["execution"]
-    execution["immutable_inputs"] = canonical
-    execution["execution_capsule"]["execution_hash"] = training_run_execution_hash(
-        execution["resolved_snapshot"]["root_hash"], canonical
-    )
-    payload["resolved_inputs"] = [resolved.model_dump(mode="json")]
-    resumed_bundle = RunBundle.model_validate(payload)
-    resumed_row = resumed_bundle.rows[0]
-    schedule_failures, schedule_observed = _preflight_continuation_schedule_consistency(
-        resumed_bundle,
-        [InputProviderRootBinding("checkpoint.inputs", provider_root)],
-        training_method_registry=registries.training_programs,
-    )
-    assert schedule_failures == []
-    assert schedule_observed[resumed_row.row_id]["coordinates"] == [1, 2, 3]
-    state = RunSetState(
-        run_set_id=resumed_bundle.run_set_id,
-        environment_fingerprint="environment:authenticated-resume",
-        rows={resumed_row.row_id: RowState()},
-    )
+    row = bundle.rows[0]
+    if additional:
+        failures, observed = _preflight_continuation_schedule_consistency(
+            bundle,
+            [provider_binding],
+            training_method_registry=_lifecycle_registries().training_programs,
+        )
+        assert failures == []
+        assert observed[row.row_id]["coordinates"] == [1, 2, 3]
+    else:
+        row = row.model_copy(
+            update={
+                "launch": row.launch.model_copy(
+                    update={"command": [*row.launch.command, "--resume"]}
+                )
+            }
+        )
+        bundle = bundle.model_copy(update={"rows": [row]})
+    bundle, _ = _stage_local_training_receipt(bundle, manifest_root)
+    assert row.execution.row_provenance is not None
+    run_id = row.execution.row_provenance.planned_run_id
+    assert run_id != source.manifest.run_id
     driver = LocalOrchestrationDriver(
         cwd=tmp_path,
         freeze_lines=[],
-        input_provider_bindings=[InputProviderRootBinding("checkpoint.inputs", provider_root)],
+        input_provider_bindings=[provider_binding],
     )
-    driver.provision(resumed_bundle, state)
-    driver.stage_inputs(resumed_bundle, state)
-    row_dir = resumed_bundle.run_set_dir / "rows" / resumed_row.row_id
-    row_dir.mkdir(parents=True)
-    from feedbax.orchestration.drivers import local as local_driver_module
+    engine = StageEngine(bundle=bundle, driver=driver, poll_interval_seconds=0.01)
+    staged_checkpoint_root = bundle.run_set_dir / "inputs" / "checkpoint"
 
-    local_driver_module._seed_native_resume_checkpoint_root(
-        resumed_bundle.run_set_dir / "inputs" / "checkpoint",
-        row_dir,
-        resolved,
-    )
-    resumed_payload = json.loads(
-        Path(resumed_row.execution.payload.uri).read_text(encoding="utf-8")
-    )
-    resumed_result = execute_training_run_spec(
-        resumed_payload,
-        initial_slots=_initial_slots(),
-        manifest_root=tmp_path / "child-manifests",
-        checkpoint_root=row_dir / "checkpoints",
-        resume=True,
-        execution_context=_native_context(
-            resumed_bundle,
-            collection_root=row_dir,
-            current_step=1,
-        ),
-        registry=registries.training_programs,
-    )
+    if mode in {"substituted", "replayed", "extra-transaction", "nonterminal"}:
+        replacement_root = None
+        if mode in {"substituted", "extra-transaction"}:
+            replacement_root = _native_source_checkpoint(tmp_path / "other", row_id="other")
+        row_root = bundle.run_set_dir / "rows" / row.row_id
+        collect = driver.collect
+        tampered = False
 
-    assert resumed_result.checkpoint_writes[0].manifest.parent_lineage[0].transaction_id == (
-        parent_ref.id
+        def collect_with_tampered_result(
+            bundle: RunBundle,
+            row: RunRowSpec,
+            state: RunSetState,
+        ) -> Mapping[str, str]:
+            nonlocal tampered
+            if not tampered:
+                manifest_path = row_root / "manifest.json"
+                payload = json.loads(manifest_path.read_bytes())
+                if replacement_root is not None:
+                    replacement = authenticate_published_checkpoint_custody(replacement_root)
+                    assert replacement.manifest.completed_training_batches == 1
+                    assert replacement.parent_ref != source.parent_ref
+                    if mode == "substituted":
+                        shutil.rmtree(row_root / "checkpoints")
+                        shutil.copytree(replacement_root, row_root / "checkpoints")
+                        replacement_ref = replacement.parent_ref.model_dump(mode="json")
+                        payload["inherited_terminal_checkpoint"]["checkpoint"] = replacement_ref
+                        payload["terminal_certification"]["certified_artifacts"] = [replacement_ref]
+                    else:
+                        transaction = Path("transactions") / replacement.parent_ref.id
+                        shutil.copytree(
+                            replacement_root / transaction, row_root / "checkpoints" / transaction
+                        )
+                elif mode == "replayed":
+                    payload["run_set_id"] = mint_run_set_id()
+                else:
+                    shutil.rmtree(row_root / "checkpoints")
+                    shutil.copytree(staged_checkpoint_root, row_root / "checkpoints")
+                    source_ref = source.parent_ref.model_dump(mode="json")
+                    payload.update(
+                        run_set_id=bundle.run_set_id,
+                        completed_batches=1,
+                        checkpoint_custody=[],
+                        inherited_terminal_checkpoint={"checkpoint": source_ref},
+                    )
+                    payload["terminal_certification"]["certified_artifacts"] = [source_ref]
+                    diagnostics_path = row_root / "training-diagnostics.json"
+                    diagnostics = json.loads(diagnostics_path.read_bytes())
+                    diagnostics.update(
+                        completed_batches=1,
+                        cumulative_completed_batches=1,
+                        segment_completed_batches=0,
+                        checkpoint_coordinates=[],
+                        checkpoint_transactions=[],
+                    )
+                    diagnostics_bytes = json.dumps(diagnostics).encode()
+                    diagnostics_path.write_bytes(diagnostics_bytes)
+                    diagnostic_ref = next(
+                        ref for ref in payload["artifacts"] if ref["role"] == "training_diagnostics"
+                    )
+                    diagnostic_ref.update(
+                        sha256=hashlib.sha256(diagnostics_bytes).hexdigest(),
+                        size_bytes=len(diagnostics_bytes),
+                    )
+                manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+                tampered = True
+            return collect(bundle, row, state)
+
+        monkeypatch.setattr(driver, "collect", collect_with_tampered_result)
+        error_type, message = {
+            "substituted": (OrchestrationStageError, "does not match the bundle resume source"),
+            "replayed": (OrchestrationStageError, "does not certify the current attempt"),
+            "extra-transaction": (
+                CheckpointReferenceResolutionError, "must contain only the source transaction"
+            ),
+            "nonterminal": (
+                OrchestrationStageError, "requires a terminal resume without an authored continuation"
+            ),
+        }[mode]
+        with pytest.raises(error_type, match=message):
+            engine.run(certify_and_register=False)
+        assert engine.store.load().stage("COLLECT").status == "failed"
+        assert (
+            _checkpoint_snapshot(source_root)
+            == _checkpoint_snapshot(staged_checkpoint_root)
+            == source_bytes
+        )
+        with TestClient(create_app()) as client:
+            response = client.get(f"/api/runs/training/{run_id}")
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "failed"
+        assert response.json()["checkpoint_available"] is False
+        assert response.json()["result_manifest_id"] is None
+        return
+
+    state = engine.run(certify_and_register=False)
+    assert state.stage("COLLECT").status == "completed"
+    assert state.rows[row.row_id].status == "completed"
+    outputs = state.rows[row.row_id].collected_outputs
+    diagnostics = TrainingDiagnostics.model_validate_json(
+        Path(outputs["training-diagnostics.json"]).read_bytes()
     )
+    checkpoint_root = Path(outputs["checkpoints"])
+    checkpoint = authenticate_published_checkpoint_custody(checkpoint_root)
     assert (
-        resumed_result.checkpoint_writes[0].checkpoint_set.parent
-        == parent_write.checkpoint_set.exact_ref
+        _checkpoint_snapshot(source_root)
+        == _checkpoint_snapshot(staged_checkpoint_root)
+        == source_bytes
     )
+    with TestClient(create_app()) as client:
+        response = client.get(f"/api/runs/training/{run_id}")
+    assert response.status_code == 200, response.text
+    summary = response.json()
+    assert summary["status"] == "completed", summary
+    assert summary["result_manifest_id"] == run_id
+    assert summary["checkpoint_available"] is True
+    assert summary["result_manifest_uri"] == outputs["manifest.json"]
+    result = load_manifest(summary["result_manifest_uri"])
+    assert isinstance(result, TrainingRunManifest)
+    assert result.completed_batches == diagnostics.completed_batches
+    assert result.terminal_certification is not None
+    assert result.terminal_certification.certified_artifacts == [checkpoint.parent_ref]
+
+    if additional:
+        assert diagnostics.segment_completed_batches == 1
+        assert diagnostics.completed_batches == checkpoint.manifest.completed_training_batches == 2
+        assert checkpoint.parent_ref != source.parent_ref
+        assert checkpoint.manifest.run_id == run_id
+        assert result.inherited_terminal_checkpoint is None
+        assert result.checkpoint_custody == [checkpoint.parent_ref]
+        assert checkpoint.manifest.parent_lineage[0].transaction_id == source.parent_ref.id
+        assert load_checkpoint_set(checkpoint_root, checkpoint.parent_ref.id).parent == (
+            load_checkpoint_set(source_root, source.parent_ref.id).exact_ref
+        )
+    else:
+        assert diagnostics.segment_completed_batches == 0
+        assert diagnostics.completed_batches == 1
+        assert diagnostics.checkpoint_transactions == []
+        assert _checkpoint_snapshot(checkpoint_root) == source_bytes
+        assert checkpoint.parent_ref == source.parent_ref
+        assert result.checkpoint_custody == []
+        assert result.inherited_terminal_checkpoint is not None
+        assert result.inherited_terminal_checkpoint.checkpoint == source.parent_ref

@@ -24,6 +24,7 @@ from feedbax.contracts.manifest import (
     EvaluationRunSpec,
     TrainingRunManifest,
     evaluation_run_manifest_id,
+    has_training_checkpoint_custody,
     load_manifest,
     spec_payload,
     write_manifest,
@@ -301,8 +302,7 @@ def _training_name(payload: dict[str, Any]) -> str:
 
 
 def _checkpoint_available(payload: dict[str, Any]) -> bool:
-    checkpoint_custody = payload.get("checkpoint_custody")
-    if isinstance(checkpoint_custody, list) and checkpoint_custody:
+    if has_training_checkpoint_custody(payload):
         return True
     artifacts = payload.get("artifacts")
     if not isinstance(artifacts, list):
@@ -359,7 +359,10 @@ def _training_summary_from_row(row: dict[str, Any]) -> TrainingRunInfo:
         if isinstance(studio.get("scenario_id"), str)
         else None,
         planned=bool(metadata.get("planned")) if isinstance(metadata, dict) else False,
-        checkpoint_available=result is not None or _checkpoint_available(payload),
+        checkpoint_available=(
+            result.terminal_checkpoint is not None if result is not None
+            else _checkpoint_available(payload)
+        ),
         source_issue=_source_issue(payload),
         provenance_id=str(payload["id"]),
         superseded_by=metadata.get("superseded_by")

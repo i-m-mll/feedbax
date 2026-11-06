@@ -987,6 +987,7 @@ class CheckpointResumeResult(StrictModel):
     """Result of a resume load and validation pass."""
 
     manifest: CheckpointTransactionManifest
+    parent_ref: ParentRef
     slots: dict[str, Any]
     provenance_notices: list[CheckpointProvenanceNotice] = Field(default_factory=list)
     new_lineage_required: bool = False
