@@ -1283,7 +1283,9 @@ def test_staged_figure_resolves_prior_stage_output_through_executor_context(
     )
     bindings = [StagedArtifactProviderRootBinding("certificates", provider.root)]
     root = tmp_path / "outputs"
-    application_registry_bundle.analysis_recipes.register(_STAGED_PROVIDER_ANALYSIS_TYPE, recipe)
+    application_registry_bundle.analysis_recipes.register(
+        _STAGED_PROVIDER_ANALYSIS_TYPE, recipe, computation_revision="1"
+    )
     first_execution = execute_staged_analysis_bundle(
         AnalysisBundleSpec(
             name="authority-producer",

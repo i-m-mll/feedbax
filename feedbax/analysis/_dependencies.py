@@ -158,6 +158,21 @@ def build_dependency_graph(
     graph = defaultdict(set)  # Maps node_id -> set of dependency node_ids
     nodes = {}  # Maps md5 hash (str) -> (analysis_instance, params)
 
+    def _add_node(analysis: AbstractAnalysis, params: dict | None = None) -> bool:
+        node_id = analysis.md5_str
+        if node_id not in nodes:
+            nodes[node_id] = (analysis, params if params is not None else {})
+            return True
+        previous, _ = nodes[node_id]
+        if type(previous) is not type(analysis) and vars(type(previous)).get(
+            "computation_revision"
+        ) != vars(type(analysis)).get("computation_revision"):
+            raise ValueError(
+                f"Analysis {analysis.name!r} has conflicting computation revisions "
+                f"for logical node {node_id}"
+            )
+        return False
+
     def _validate_signature(func, required_names: list[str], func_label: str, analysis_name: str):
         """Check that *func* lists all *required_names* unless it has **kwargs."""
         sig = inspect.signature(func)
@@ -172,10 +187,7 @@ def build_dependency_graph(
 
     def _add_deps(analysis: AbstractAnalysis):
         """Recursively add analysis and its dependencies to the graph."""
-        md5_id = analysis.md5_str
-        if md5_id not in nodes:
-            nodes[md5_id] = (analysis, {})
-
+        if _add_node(analysis):
             # Validate that compute/make_figs accept required parameters
             deps_list = list(analysis.inputs.keys())
             _validate_signature(analysis.compute, deps_list, "compute", analysis.name)
@@ -187,9 +199,8 @@ def build_dependency_graph(
             for dep_name, dep_sources in analysis._flattened_inputs.items():
 
                 def add_dependency(dep_result):
-                    dep_node_id, params, dep_instance = dep_result
-                    if dep_instance.md5_str not in nodes:
-                        nodes[dep_instance.md5_str] = (dep_instance, params)
+                    _, params, dep_instance = dep_result
+                    if _add_node(dep_instance, params):
                         _add_deps(dep_instance)
 
                 _process_dependency_sources(
@@ -212,8 +223,7 @@ def build_dependency_graph(
                 dep_node_id = dep_instance.md5_str
                 graph[analysis_node_id].add(dep_node_id)
                 # Ensure every edge target is also present in `nodes`
-                if dep_node_id not in nodes:
-                    nodes[dep_node_id] = (dep_instance, {})
+                _add_node(dep_instance)
 
             _process_dependency_sources(
                 analysis, dep_name, dep_sources, dependency_lookup, add_edge
@@ -227,8 +237,7 @@ def build_dependency_graph(
                 _, _, sub_dep_instance = dep_result
                 sub_dep_id = sub_dep_instance.md5_str
                 graph[node_id].add(sub_dep_id)
-                if sub_dep_id not in nodes:
-                    nodes[sub_dep_id] = (sub_dep_instance, {})
+                _add_node(sub_dep_instance)
 
             _process_dependency_sources(
                 dep_instance, subdep_name, subdep_sources, dependency_lookup, add_transitive_edge

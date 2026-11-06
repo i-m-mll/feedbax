@@ -25,6 +25,7 @@ from feedbax.contracts.base import (
     ParentRef,
 )
 from feedbax.contracts.manifest import (
+    AnalysisComputation,
     AnalysisRunSpec,
     analysis_run_manifest_id,
     figure_manifest_id,
@@ -142,7 +143,10 @@ def _figure_spec_for_request(payload: GenerateAnalysisRequest) -> FigureSpec:
 
 
 def _run_analysis_sync(
-    spec: AnalysisRunSpec, registries: ApplicationRegistryBundle
+    spec: AnalysisRunSpec,
+    registries: ApplicationRegistryBundle,
+    *,
+    computation: AnalysisComputation,
 ) -> AnalysisJobResult:
     """Run the executable analysis spec synchronously inside the executor."""
     from feedbax.analysis.specs import execute_analysis_run_spec
@@ -150,6 +154,7 @@ def _run_analysis_sync(
     manifest, path = execute_analysis_run_spec(
         spec,
         registry=registries.analysis_recipes,
+        computation=computation,
         evaluation_registry=registries.evaluation_recipes,
         experiment_registry=registries.experiment_packages,
         fig_dump_formats=("json",),
@@ -214,8 +219,9 @@ async def generate_figure(
         work = partial(_run_figure_sync, figure_spec, registries)
     else:
         analysis_spec = _spec_for_analysis_request(payload)
-        manifest_id = analysis_run_manifest_id(analysis_spec)
-        work = partial(_run_analysis_sync, analysis_spec, registries)
+        computation = registries.analysis_recipes.new_computation(analysis_spec.analysis_type)
+        manifest_id = analysis_run_manifest_id(analysis_spec, computation=computation)
+        work = partial(_run_analysis_sync, analysis_spec, registries, computation=computation)
     try:
         request_id = request.app.state.analysis_jobs.submit(manifest_id, work)
     except AnalysisJobsUnavailable as exc:

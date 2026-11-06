@@ -23,8 +23,6 @@ execution order.
 
 from __future__ import annotations
 
-import hashlib
-
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,7 +31,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Union
 from feedbax.analysis.bundles import (
     AnalysisBundleSpec,
     BundleRootIdentity,
-    DuplicateBundleRootError,
     VerifiedBundleRoot,
     execute_analysis_bundle,
     execute_staged_analysis_bundle,
@@ -85,13 +82,12 @@ from feedbax.contracts.base import (
     ParentRef,
     Provenance,
     authenticated_manifest_ref_metadata,
-    authenticated_manifest_ref_profile,
 )
 from feedbax.contracts.manifest import (
+    AnalysisComputation,
     AnalysisRunSpec,
     EvaluationRunSpec,
     ReportSpec,
-    canonical_manifest_path,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -394,6 +390,7 @@ def admit_node(
     path: Path | None = None,
     manifest: Any | None = None,
     capture: AdmittedManifestBytes | None = None,
+    written_computation: AnalysisComputation | None = None,
 ) -> AdmissionOutcome:
     """Admit one node's receipt through the uniform per-kind validator.
 
@@ -411,6 +408,8 @@ def admit_node(
         capture: Collects the exact manifest bytes this admission read, so a
             caller that binds the admitted receipt forward binds the read that
             decided rather than opening the path a second time.
+        written_computation: The identity this invocation passed to analysis
+            execution. Used only to verify the receipt it just wrote.
     """
     if isinstance(request, EvaluationNodeRequest):
         return admit_evaluation_receipt(
@@ -424,6 +423,10 @@ def admit_node(
     if isinstance(request, AnalysisNodeRequest):
         return admit_analysis_receipt(
             request.spec,
+            computation=(
+                environment.registries.analysis_recipes.computation(request.spec.analysis_type)
+                or written_computation
+            ),
             root=environment.root,
             manifest=manifest,
             path=path,
@@ -466,17 +469,19 @@ def execute_node(
     request: NodeRequest,
     *,
     environment: FulfillmentEnvironment,
+    computation: AnalysisComputation | None = None,
 ) -> tuple[Any, Path]:
     """Execute one node unconditionally and return its manifest and path.
 
     Execution never consults an existing receipt. Reuse is the caller's
     decision, taken through :func:`admit_node`; custody operations execute into
-    a shadow root where reuse would defeat the purpose.
+    a shadow root where reuse would defeat the purpose. An analysis caller can
+    provide the computation it reserved to verify the written receipt.
     """
     if isinstance(request, EvaluationNodeRequest):
         return _execute_evaluation(request, environment)
     if isinstance(request, AnalysisNodeRequest):
-        return _execute_analysis(request, environment)
+        return _execute_analysis(request, environment, computation=computation)
     if isinstance(request, FigureNodeRequest):
         return _execute_figure(
             request,
@@ -519,14 +524,23 @@ def _fulfill_single(
         )
     if outcome.manifest_present:
         raise FulfillmentAdmissionError(outcome)
-    _manifest, path = execute_node(request, environment=environment)
+    computation = (
+        environment.registries.analysis_recipes.new_computation(request.spec.analysis_type)
+        if isinstance(request, AnalysisNodeRequest)
+        else None
+    )
+    _manifest, path = execute_node(request, environment=environment, computation=computation)
     # The receipt is the bytes re-admission read, not the executor's return
     # value and not a later reopening of the path. Re-admission is the moment
     # the written record was authenticated, so it is the moment whose bytes the
     # receipt may claim.
     written = AdmittedManifestBytes()
     verified = _reverify(
-        request, environment=environment, manifest_path=path, capture=written
+        request,
+        environment=environment,
+        manifest_path=path,
+        capture=written,
+        written_computation=computation,
     )
     return NodeFulfillment(
         node_key=request.node_key,
@@ -543,15 +557,20 @@ def _reverify(
     environment: FulfillmentEnvironment,
     manifest_path: Path,
     capture: AdmittedManifestBytes | None = None,
+    written_computation: AnalysisComputation | None = None,
 ) -> AdmissionOutcome:
     """Admit a just-written receipt through the same uniform validator.
 
-    A freshly executed node must satisfy exactly the criteria a cached one does.
-    Re-admitting closes the gap where a first run would accept a record that a
-    later run would refuse.
+    Fresh and cached receipts must meet the same integrity requirements. An
+    unversioned analysis receipt can be verified here using the computation
+    identity reserved for this execution.
     """
     outcome = admit_node(
-        request, environment=environment, path=manifest_path, capture=capture
+        request,
+        environment=environment,
+        path=manifest_path,
+        capture=capture,
+        written_computation=written_computation,
     )
     if not outcome.admitted:
         raise FulfillmentAdmissionError(outcome)
@@ -590,23 +609,15 @@ def _execute_evaluation(
 def _execute_analysis(
     request: AnalysisNodeRequest,
     environment: FulfillmentEnvironment,
+    *,
+    computation: AnalysisComputation | None,
 ):
-    """Execute one analysis node unconditionally.
-
-    ``execute_analysis_run_spec`` short-circuits by default on any completed
-    manifest carrying the same id anywhere beneath its root. That admission is
-    weaker than :func:`admit_node`'s — status and kind only — and it would fire
-    on the mirrored receipt when a rebuild executes into shadow custody, so the
-    node would return its own authoritative record instead of re-executing and
-    every rebuild would match vacuously. ``use_cache=False`` opts this call path
-    out of that cache entirely, which is what :func:`execute_node` promises:
-    execution never consults an existing receipt. Reuse remains the caller's
-    decision, taken through :func:`admit_node`.
-    """
+    """Execute one analysis node with receipt and result caching disabled."""
     provenance = Provenance(parents=list(request.spec.inputs))
     return execute_analysis_run_spec(
         request.spec,
         registry=environment.registries.analysis_recipes,
+        computation=computation,
         evaluation_registry=environment.registries.evaluation_recipes,
         experiment_registry=environment.registries.experiment_packages,
         root=environment.root,

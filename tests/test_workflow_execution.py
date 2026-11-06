@@ -28,14 +28,19 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 import numpy as np
 
 from feedbax.analysis.evaluation import EvaluationRecipeResult
-from feedbax.analysis.specs import AnalysisRecipeResult
-from feedbax.analysis.fulfillment import FulfillmentAdmissionError
+from feedbax.analysis.specs import (
+    AnalysisRecipeRegistry,
+    AnalysisRecipeResult,
+    execute_analysis_run_spec,
+    find_manifest_by_id,
+)
+from feedbax.analysis.fulfillment import FulfillmentAdmissionError, artifact_bytes_path
 from feedbax.analysis.fulfillment_adapters import FulfillmentEnvironment
 from feedbax.analysis.fulfillment_custody import FulfillmentDriftError
 from feedbax.workflow.derivation import (
@@ -93,8 +98,14 @@ from feedbax.contracts.base import (
 )
 from feedbax.contracts.artifact_store import store_bytes_artifact
 from feedbax.contracts.manifest import (
+    AnalysisRunManifest,
+    AnalysisRunSpec,
+    analysis_results_cache_dir,
+    analysis_run_manifest_id,
     canonical_manifest_path,
     load_manifest,
+    spec_payload,
+    write_manifest,
 )
 
 from tests.support.fake_project_experiment.products import (
@@ -104,7 +115,7 @@ from tests.support.fake_project_experiment.products import (
     QuillonOutputs,
     planned,
 )
-from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.analysis_fixtures import ToyAnalysis, ToyArtifactProducer, build_toy_analysis_data
 
 DIGEST = "b" * 64
 
@@ -185,7 +196,9 @@ def environment(tmp_path: Path, application_registry_bundle, calls: _Calls):
 
     application_registry_bundle.evaluation_recipes.register(PROBE_TYPE, evaluation_recipe)
     application_registry_bundle.evaluation_recipes.register(CONDENSE_TYPE, evaluation_recipe)
-    application_registry_bundle.analysis_recipes.register(CONDENSE_TYPE, analysis_recipe)
+    application_registry_bundle.analysis_recipes.register(
+        CONDENSE_TYPE, analysis_recipe, computation_revision="condensate-v1"
+    )
     application_registry_bundle.report_recipes.register(BULLETIN_TYPE, report_recipe)
     return FulfillmentEnvironment(
         root=tmp_path / "receipts",
@@ -450,6 +463,133 @@ def test_a_matrix_receipt_set_executes_analysis_in_row_order_and_rebuilds(
     rebuilt = rebuild_workflow(closure, environment=environment)
     assert rebuilt.drifted == ()
     assert rebuilt.verification_order[-1] == ("analysis:set-consumer")
+
+
+@pytest.mark.parametrize("entry_point", ["direct", "workflow"])
+@pytest.mark.parametrize("versioned", [True, False], ids=["versioned", "unversioned"])
+def test_analysis_recipe_revision_controls_reuse_and_preserves_exact_receipts(
+    outputs: QuillonOutputs,
+    environment: FulfillmentEnvironment,
+    entry_point: str,
+    versioned: bool,
+) -> None:
+    compiled = outputs.condensate("revision")
+    spec = AnalysisRunSpec.model_validate_json(compiled.document_path.read_bytes())
+    closure = _closure(outputs, "revision")
+    root = environment.root
+    calls: list[int] = []
+    computation_value = 0
+
+    class RecipeAnalysis(ToyArtifactProducer):
+        """Model a recipe changing behavior while prepared cache inputs stay equal."""
+
+        computation_revision: ClassVar[str] = "1"
+
+        def compute(self, _data, **kwargs):
+            return super().compute(build_toy_analysis_data(value=computation_value), **kwargs)
+
+    def registered(value: int) -> AnalysisRecipeRegistry:
+        registry = AnalysisRecipeRegistry()
+
+        def recipe(_spec, _root, _inputs, _execution_context):
+            nonlocal computation_value
+            computation_value = value
+            calls.append(value)
+            return AnalysisRecipeResult(
+                analyses={"toy": RecipeAnalysis(variant="toy", cache_result=True)},
+                data=build_toy_analysis_data(),
+            )
+
+        registry.register(
+            spec.analysis_type, recipe, computation_revision=f"recipe-{value}" if versioned else None
+        )
+        return registry
+
+    def run(
+        registry: AnalysisRecipeRegistry, **direct_execution_options
+    ) -> tuple[AnalysisRunManifest, Path]:
+        registries = replace(environment.registries, analysis_recipes=registry)
+        if entry_point == "direct":
+            return execute_analysis_run_spec(
+                spec,
+                root=root,
+                registry=registry,
+                evaluation_registry=registries.evaluation_recipes,
+                experiment_registry=registries.experiment_packages,
+                **direct_execution_options,
+            )
+        result = execute_workflow(closure, environment=replace(environment, registries=registries))
+        receipt = result.results[-1].receipt
+        assert isinstance(receipt.manifest, AnalysisRunManifest)
+        return receipt.manifest, receipt.path
+
+    def summary_bytes(manifest: AnalysisRunManifest) -> bytes:
+        artifact = next(
+            artifact for artifact in manifest.artifacts if artifact.role == "analysis_summary"
+        )
+        path = artifact_bytes_path(artifact, root=root)
+        assert path is not None
+        data = path.read_bytes()
+        assert sha256_bytes(data) == artifact.sha256
+        return data
+
+    historical_artifact = store_bytes_artifact(
+        b'{"value": 0}\n', root=root, role="analysis_summary", logical_name="toy/summary.json"
+    )
+    historical = AnalysisRunManifest(
+        id=analysis_run_manifest_id(spec),
+        status="completed",
+        analysis_spec=spec_payload("AnalysisRunSpec", spec.model_dump(mode="json")),
+        artifacts=[historical_artifact],
+    )
+    historical_path = write_manifest(historical, root=root)
+    historical_bytes = historical_path.read_bytes()
+
+    first_registry, second_registry = registered(10), registered(20)
+    first, first_path = run(first_registry)
+    first_bytes = first_path.read_bytes()
+    second, second_path = run(second_registry)
+    again, again_path = run(registered(20))
+
+    assert len({historical.id, first.id, second.id}) == 3
+    assert len({historical_path, first_path, second_path}) == 3
+    assert first.analysis_spec == second.analysis_spec == historical.analysis_spec
+    if versioned:
+        assert calls == [10, 20]
+        assert (again.id, again_path) == (second.id, second_path)
+        assert first.computation is not None and first.computation.recipe_revision == "recipe-10"
+        assert second.computation is not None and second.computation.recipe_revision == "recipe-20"
+        if entry_point == "direct":
+            assert list(analysis_results_cache_dir(first.id, root=root).glob("*.pkl"))
+            assert list(analysis_results_cache_dir(second.id, root=root).glob("*.pkl"))
+    else:
+        assert calls == [10, 20, 20]
+        assert again.id not in {historical.id, first.id, second.id}
+        assert again_path not in {historical_path, first_path, second_path}
+        assert again.computation is not None
+        assert again.computation.execution_nonce is not None
+        assert not list((root / "cache").rglob("*.pkl"))
+        if entry_point == "direct":
+            with pytest.raises(FileExistsError, match="identity is already published"):
+                run(first_registry, computation=first.computation)
+            assert calls == [10, 20, 20]
+            with pytest.raises(FileExistsError):
+                write_manifest(first.model_copy(update={"artifacts": []}), root=root)
+
+    assert historical_path.read_bytes() == historical_bytes
+    assert first_path.read_bytes() == first_bytes
+    for manifest, path, expected in [
+        (historical, historical_path, 0),
+        (first, first_path, 12),
+        (second, second_path, 22),
+        (again, again_path, 22),
+    ]:
+        exact, exact_path = find_manifest_by_id(
+            manifest.id, root=root, expected_kind="AnalysisRunManifest"
+        )
+        assert exact_path == path
+        assert isinstance(exact, AnalysisRunManifest)
+        assert json.loads(summary_bytes(exact))["value"] == expected
 
 
 def test_a_deserialized_plan_cannot_downgrade_a_receipt_set_binding(

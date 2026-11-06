@@ -2,6 +2,7 @@
 
 from dataclasses import field
 from pathlib import Path
+from typing import ClassVar
 
 import dill
 import jax.numpy as jnp
@@ -28,6 +29,8 @@ def constant_analysis():
     calls = []
 
     class Constant(AbstractAnalysis):
+        computation_revision: ClassVar[str] = "1"
+
         def compute(self, data):
             calls.append(None)
             return 7
@@ -45,10 +48,78 @@ def _run(analysis, context, *, data=None, **inputs):
     return results["probe"]
 
 
+def test_cache_reuses_only_the_declared_computation_revision(
+    context, constant_analysis, monkeypatch
+):
+    original, calls = constant_analysis
+    analysis_type = type(original)
+
+    assert _run(original, context) == 7
+    assert _run(analysis_type(cache_result=True), context) == 7
+    assert len(calls) == 1
+
+    def revised_compute(self, data):
+        calls.append(None)
+        return 8
+
+    monkeypatch.setattr(analysis_type, "compute", revised_compute)
+    monkeypatch.setattr(analysis_type, "computation_revision", "2")
+    revised = analysis_type(cache_result=True)
+
+    assert revised.md5_str == original.md5_str
+    assert _run(revised, context) == 8
+    assert _run(analysis_type(cache_result=True), context) == 8
+    assert len(calls) == 2
+
+
+def test_inherited_revision_does_not_authorize_cache(context, monkeypatch):
+    calls = []
+
+    class Parent(AbstractAnalysis):
+        computation_revision: ClassVar[str] = "1"
+
+        def compute(self, data):
+            calls.append(None)
+            return len(calls)
+
+    class Child(Parent):
+        computation_revision: ClassVar[str] = "1"
+
+    assert _run(Child(cache_result=True), context) == 1
+    (entry,) = context.results_cache_dir.glob("*.pkl")
+    original_bytes = entry.read_bytes()
+    monkeypatch.delattr(Child, "computation_revision")
+
+    assert _run(Child(cache_result=True), context) == 2
+    assert _run(Child(cache_result=True), context) == 3
+    assert list(context.results_cache_dir.glob("*.pkl")) == [entry]
+    assert entry.read_bytes() == original_bytes
+
+
+def test_one_graph_cannot_alias_two_computation_revisions(context):
+    def analysis(revision):
+        class Report(AbstractAnalysis):
+            computation_revision: ClassVar[str] = revision
+
+            def compute(self, data):
+                return revision
+
+        return Report()
+
+    first, second = analysis("1"), analysis("2")
+    assert first.md5_str == second.md5_str
+    with pytest.raises(ValueError, match="conflicting computation revisions"):
+        run_analyses_with_context(
+            {"first": first, "second": second}, build_toy_analysis_data(), context
+        )
+
+
 def test_cache_distinguishes_array_shapes_and_reuses_equal_input(context):
     calls = []
 
     class Shape(AbstractAnalysis):
+        computation_revision: ClassVar[str] = "1"
+
         def compute(self, data, *, value):
             calls.append(value.shape)
             return value.sum(axis=0)
@@ -64,6 +135,8 @@ def test_cache_distinguishes_array_shapes_and_reuses_equal_input(context):
 
 def test_cache_distinguishes_scalar_leaf_boundaries(context):
     class PairSum(AbstractAnalysis):
+        computation_revision: ClassVar[str] = "1"
+
         def compute(self, data, *, value):
             return sum(value)
 
@@ -74,6 +147,7 @@ def test_cache_distinguishes_scalar_leaf_boundaries(context):
 
 def test_cache_distinguishes_full_analysis_parameter_arrays(context):
     class Coefficient(AbstractAnalysis):
+        computation_revision: ClassVar[str] = "1"
         weights: np.ndarray = field(kw_only=True)
 
         def compute(self, data):
@@ -91,6 +165,8 @@ def test_cache_reuses_vmapped_dependency(context):
     calls = []
 
     class Double(AbstractAnalysis):
+        computation_revision: ClassVar[str] = "1"
+
         def compute(self, data, *, value):
             calls.append(None)
             return 2 * value
@@ -109,6 +185,8 @@ def test_cache_reuses_vmapped_dependency(context):
 
 def test_opaque_closure_inputs_compute_without_cache(context):
     class ApplyMeasure(AbstractAnalysis):
+        computation_revision: ClassVar[str] = "1"
+
         def compute(self, data, *, measure, value):
             return measure(value)
 
@@ -126,7 +204,7 @@ def test_cache_replaces_unsafe_payload_version(context, constant_analysis):
     assert _run(analysis, context) == 7
     (entry,) = context.results_cache_dir.glob("*.pkl")
     payload = dill.loads(entry.read_bytes())
-    payload.update(schema_version="feedbax.analysis.result-cache.v1", result=-1)
+    payload.update(schema_version="feedbax.analysis.result-cache.v2", result=-1)
     entry.write_bytes(dill.dumps(payload))
 
     assert _run(analysis, context) == 7
