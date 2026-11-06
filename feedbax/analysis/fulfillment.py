@@ -41,10 +41,16 @@ import os
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
+from jax.tree_util import PyTreeDef
 from pydantic import Field, model_validator
 
 from feedbax.analysis.figures import FigureExecutionPlan
 from feedbax.contracts.figures import FigureSpec
+from feedbax.contracts.evaluation_states import (
+    EVALUATION_STATES_ARTIFACT_ROLE,
+    EvaluationStatesContainerError,
+    load_authenticated_evaluation_states_artifact,
+)
 from feedbax.contracts.base import (
     ArtifactRef,
     ParentRef,
@@ -131,6 +137,8 @@ AdmissionFailureCode = Literal[
     "artifact_bytes_absent",
     "artifact_sha256_mismatch",
     "artifact_size_mismatch",
+    "evaluation_states_cardinality",
+    "evaluation_states_invalid",
 ]
 
 #: The named reasons an artifact's in-root byte location cannot be resolved.
@@ -761,9 +769,28 @@ def _check_artifacts(
     manifest: AnyManifest,
     *,
     root: Path,
+    states_structure: PyTreeDef | None = None,
 ) -> None:
     for index, artifact in enumerate(manifest.artifacts):
         label = f"artifacts[{index}] role={artifact.role!r} name={artifact.logical_name!r}"
+        if states_structure is not None and artifact.role == EVALUATION_STATES_ARTIFACT_ROLE:
+            resolution = resolve_artifact_bytes(artifact, root=root)
+            try:
+                if resolution.path is None:
+                    raise FileNotFoundError(resolution.describe())
+                load_authenticated_evaluation_states_artifact(
+                    artifact,
+                    manifest_id=manifest.id,
+                    data=resolution.path.read_bytes(),
+                    structure=states_structure,
+                )
+            except (OSError, EvaluationStatesContainerError) as exc:
+                collector.add(
+                    "artifacts_verified",
+                    "evaluation_states_invalid",
+                    f"{label} could not authenticate durable evaluation states: {exc}",
+                )
+            continue
         if not artifact.sha256:
             collector.add(
                 "artifacts_verified",
@@ -879,10 +906,11 @@ def admit_manifest_artifact_custody(
 def evaluation_expected_parents(spec: EvaluationRunSpec) -> list[ParentRef]:
     """Return the exact provenance parents one evaluation spec must produce.
 
-    This mirrors the executor exactly: declared inputs followed by the parents
-    of each staged prerequisite, in declaration order.
+    Declared inputs are followed by staged prerequisites in declaration order.
     """
-    staged = spec.params.get("staged_prerequisites") or {}
+    staged = spec.params.get("staged_prerequisites")
+    if staged is None:
+        return list(spec.inputs)
     if not isinstance(staged, Mapping):
         raise TypeError("evaluation params.staged_prerequisites must be a mapping or null")
     prerequisite_parents = [
@@ -900,6 +928,7 @@ def admit_evaluation_receipt(
     expected_parents: Sequence[ParentRef] | None = None,
     required_output_roles: Sequence[str] = (),
     capture: AdmittedManifestBytes | None = None,
+    states_structure: PyTreeDef | None = None,
 ) -> AdmissionOutcome:
     """Admit a cached ``EvaluationRunManifest`` as this spec's fulfillment receipt."""
     root_path = Path(root)
@@ -947,13 +976,23 @@ def admit_evaluation_receipt(
         collector,
         found,
         expected_parents=(
-            expected_parents
-            if expected_parents is not None
-            else evaluation_expected_parents(spec)
+            expected_parents if expected_parents is not None else evaluation_expected_parents(spec)
         ),
     )
     _check_output_roles(collector, found, required_output_roles=required_output_roles)
-    _check_artifacts(collector, found, root=root_path)
+    if states_structure is not None:
+        state_count = sum(
+            artifact.role == EVALUATION_STATES_ARTIFACT_ROLE for artifact in found.artifacts
+        )
+        if state_count != 1:
+            collector.add(
+                "output_roles_present",
+                "evaluation_states_cardinality",
+                f"required durable evaluation states need exactly one artifact, found {state_count}",
+                expected=1,
+                observed=state_count,
+            )
+    _check_artifacts(collector, found, root=root_path, states_structure=states_structure)
     return _outcome(
         collector,
         node_kind="evaluation",

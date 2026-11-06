@@ -26,8 +26,10 @@ from feedbax.studio.execution import (
     stage_studio_evaluation_matrix,
 )
 from feedbax.analysis.evaluation import (
+    EvaluationRecipeExecutionError,
     EvaluationRecipeResult,
 )
+from feedbax.analysis.fulfillment import FulfillmentAdmissionError
 from feedbax.analysis.specs import (
     AnalysisRecipeResult,
 )
@@ -40,6 +42,9 @@ from feedbax.orchestration.realization import (
 )
 from feedbax.contracts.base import utc_now
 from feedbax.contracts.artifact_store import store_json_artifact
+from feedbax.contracts.evaluation_states import (
+    EVALUATION_STATES_ARTIFACT_ROLE,
+)
 from feedbax.contracts.manifest import (
     CheckpointSelectionManifest,
     EvaluationRunManifest,
@@ -48,6 +53,7 @@ from feedbax.contracts.manifest import (
     TrainingRunManifest,
     TrainingRunSetManifest,
     canonical_manifest_path,
+    evaluation_states_cache_path,
     load_manifest,
     write_manifest,
 )
@@ -1002,6 +1008,59 @@ def test_studio_evaluation_run_local_preserves_skipped_failed_status(
     }
 
 
+def test_studio_evaluation_local_failed_reprocess_preserves_completed_receipt(
+    tmp_path: Path, registry_bundle
+) -> None:
+    workspace = _staged_training_workspace(
+        _workspace(), job_id="studio-reprocess", registry_bundle=registry_bundle
+    )
+    train_stage = next(stage for stage in workspace.stages if stage.kind == "train")
+    training_ref = next(ref for ref in train_stage.manifest_refs if ref.role == "training_run")
+    request = StudioEvaluationMatrixRequest(
+        workspace=workspace,
+        training_run_ids=[training_ref.id],
+        eval_params={"states_custody": "durable"},
+        checkpoint_policy=StudioEvaluationCheckpointPolicy(mode="last"),
+        root=str(tmp_path),
+    )
+    should_fail = False
+
+    def recipe(_spec, _root, _states_path, _execution_context):
+        if should_fail:
+            raise RuntimeError("Studio forced recipe failed")
+        return EvaluationRecipeResult(states={"generation": 1})
+
+    registry_bundle.evaluation_recipes.register("feedbax.studio.default_eval", recipe)
+    first = run_studio_evaluation_local_execution(request, registry_bundle=registry_bundle)
+    assert first.completed_count == 1, first.errors
+    path = Path(first.manifest_refs[0].uri)
+    completed = load_manifest(path)
+    receipt = path.read_bytes()
+    cache_path = evaluation_states_cache_path(completed.id, root=tmp_path)
+    cache = cache_path.read_bytes()
+
+    should_fail = True
+    forced = run_studio_evaluation_local_execution(
+        request.model_copy(update={"reprocess": "all"}), registry_bundle=registry_bundle
+    )
+
+    assert forced.completed_count == 0
+    assert forced.failed_count == 1
+    assert forced.errors == ["Studio forced recipe failed"]
+    assert path.read_bytes() == receipt
+    assert cache_path.read_bytes() == cache
+    ref = forced.manifest_refs[0]
+    assert ref.metadata["status"] == "completed"
+    assert ref.uri == str(path)
+    evaluation_stage = next(stage for stage in forced.workspace.stages if stage.kind == "eval")
+    evaluation_runs = next(
+        collection for collection in evaluation_stage.output_collections
+        if collection.kind == "evaluation_runs"
+    )
+    assert ref in evaluation_stage.manifest_refs
+    assert ref in evaluation_runs.item_refs
+
+
 def test_studio_evaluation_endpoints_preview_stage_and_run_local(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1336,6 +1395,63 @@ def test_materialize_studio_pipeline_carries_authored_evaluation_states_policy(
         "feedbax.ref.authenticated_manifest.v1"
     )
     assert source.evaluation_manifest_authority.uri is None
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_studio_scalar_evaluation_checks_durable_states_on_warm_reuse(
+    tmp_path: Path,
+    registry_bundle,
+    damage: str,
+) -> None:
+    workspace = _workspace_with_analysis_type(STUDIO_ANALYSIS_TYPE)
+    analysis_stage = next(stage for stage in workspace.stages if stage.kind == "analysis")
+    scenario = workspace.scenarios[analysis_stage.scenario_id]
+    scenario.analysis_spec["evaluation_states_policy"] = "require_durable"
+    workspace = _staged_training_workspace(
+        workspace,
+        job_id="studio-policy-train",
+        registry_bundle=registry_bundle,
+    )
+    calls = 0
+
+    def recipe(_spec, _root, _states_path, _execution_context):
+        nonlocal calls
+        calls += 1
+        return EvaluationRecipeResult(states={"generation": calls})
+
+    registry_bundle.evaluation_recipes.register("feedbax.studio.default_eval", recipe)
+    request = StudioPipelineMaterializationRequest(
+        workspace=workspace, job_id="studio-policy", root=str(tmp_path), stages=["eval"]
+    )
+    result = materialize_studio_pipeline(request, registry_bundle=registry_bundle)
+    path = Path(result.manifest_paths["stage:eval"])
+    receipt = path.read_bytes()
+    manifest = load_manifest(path)
+    states_ref = next(
+        artifact for artifact in manifest.artifacts if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+    )
+    states_path = tmp_path / states_ref.metadata["relative_path"]
+    cache_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
+    cache = cache_path.read_bytes()
+
+    materialize_studio_pipeline(request, registry_bundle=registry_bundle)
+    assert calls == 1
+    assert path.read_bytes() == receipt
+
+    if damage == "missing":
+        states_path.unlink()
+    else:
+        data = states_path.read_bytes()
+        states_path.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+
+    with pytest.raises(EvaluationRecipeExecutionError) as exc_info:
+        materialize_studio_pipeline(request, registry_bundle=registry_bundle)
+    refusal = exc_info.value.__cause__
+    assert isinstance(refusal, FulfillmentAdmissionError)
+    assert "evaluation_states_invalid" in refusal.outcome.codes
+    assert calls == 1
+    assert path.read_bytes() == receipt
+    assert cache_path.read_bytes() == cache
 
 
 def test_materialize_studio_pipeline_endpoint_returns_updated_workspace(

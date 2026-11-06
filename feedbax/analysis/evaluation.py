@@ -25,13 +25,14 @@ Producer contract:
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Mapping
-from contextlib import closing
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import closing, contextmanager, ExitStack
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import cached_property
 from hashlib import file_digest
 import json
+import os
 from math import prod
 from pathlib import Path
 import shutil
@@ -49,6 +50,12 @@ from feedbax.contracts.artifact_custody import (
     ContentRetentionTarget,
 )
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.persistence import manifest_index
+from feedbax.persistence.terminal_publication import (
+    manifest_publication_lock,
+    publish_terminal_manifest_locked,
+    read_publication_manifest,
+)
 
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
@@ -1450,11 +1457,11 @@ def _resolve_matrix_staged_parents(
 
 
 class EvaluationRecipeExecutionError(RuntimeError):
-    """Raised after a registered recipe fails and a failed manifest is written."""
+    """A failed evaluation attempt and the path to its diagnostic receipt."""
 
     def __init__(self, manifest: EvaluationRunManifest, path: Path, cause: BaseException):
         super().__init__(
-            f"Evaluation recipe for {manifest.id!r} failed; failed manifest written to {path}"
+            f"Evaluation attempt for {manifest.id!r} failed. Diagnostic receipt at {path}"
         )
         self.manifest = manifest
         self.path = path
@@ -1520,7 +1527,11 @@ def _matches_evaluation_cache(stream: BinaryIO, manifest: EvaluationRunManifest)
     if manifest.status != "completed" or not isinstance(claim, Mapping):
         return False
     digest = claim.get("states_cache_sha256")
-    return isinstance(digest, str) and file_digest(stream, "sha256").hexdigest() == digest
+    return (
+        claim.get("states_cache_key") == manifest.id
+        and isinstance(digest, str)
+        and file_digest(stream, "sha256").hexdigest() == digest
+    )
 
 
 def evaluation_states_cache_matches(path: Path, manifest: EvaluationRunManifest) -> bool:
@@ -1654,9 +1665,12 @@ def execute_evaluation_run_spec(
     """Execute a serialized evaluation spec and write a truthful manifest.
 
     The states cache is ephemeral and lives under ``{FEEDBAX_RUNS_DIR}/cache/states``
-    at the deterministic manifest ID. A completed receipt must claim the cached
-    bytes before they can be reused. A hit returns that receipt unchanged.
+    at the deterministic manifest ID. A hit authenticates the receipt and its
+    required outputs and returns that receipt unchanged. Forced runs bypass
+    reuse and replace a completed receipt only after successful publication.
     """
+    from feedbax.analysis.fulfillment import evaluation_expected_parents
+
     run_spec = coerce_evaluation_run_spec(spec)
     recipe = registry.get(run_spec.evaluation_type)
     root_path = Path(root) if root is not None else default_manifest_root()
@@ -1667,16 +1681,7 @@ def execute_evaluation_run_spec(
     states_path.parent.mkdir(parents=True, exist_ok=True)
 
     prov = provenance.model_copy(deep=True) if provenance is not None else collect_git_provenance()
-    staged_prerequisites = run_spec.params.get("staged_prerequisites")
-    if staged_prerequisites is None:
-        staged_prerequisites = {}
-    elif not isinstance(staged_prerequisites, Mapping):
-        raise TypeError("evaluation params.staged_prerequisites must be a mapping or null")
-    staged_prerequisite_parents = [
-        StagedEvaluationPrerequisite.model_validate(value).parent
-        for value in staged_prerequisites.values()
-    ]
-    expected_parents = [*run_spec.inputs, *staged_prerequisite_parents]
+    expected_parents = evaluation_expected_parents(run_spec)
     if provenance is not None and prov.parents and prov.parents != expected_parents:
         raise ValueError(
             "evaluation provenance parents disagree with inputs and staged prerequisites"
@@ -1693,87 +1698,151 @@ def execute_evaluation_run_spec(
     manifest_metadata = dict(metadata or {})
     states_custody = _states_custody_for_spec(run_spec)
     cache_metadata = _evaluation_cache_metadata(manifest_id, states_path)
-    try:
-        if use_cache and not force and states_path.exists():
-            previous_manifest = _load_completed_evaluation_manifest(manifest_path, manifest_id)
-            if previous_manifest is not None and evaluation_states_cache_matches(
-                states_path, previous_manifest
-            ):
-                return previous_manifest, manifest_path
-        result = recipe(run_spec, root_path, states_path, execution_context)
-        if states_custody == "durable":
-            result = _with_durable_states_artifact(
-                result,
-                root=root_path,
+    with manifest_publication_lock(manifest_path), ExitStack() as staging:
+        prior = read_publication_manifest(
+            manifest_path, kind="EvaluationRunManifest", manifest_id=manifest_id
+        )
+        assert prior is None or isinstance(prior, EvaluationRunManifest)
+
+        def failed_attempt(
+            cause: Exception, *, publish_failure: bool
+        ) -> EvaluationRecipeExecutionError:
+            failed = _build_evaluation_manifest(
                 manifest_id=manifest_id,
-            )
-        if use_cache and result.states is not None:
-            _save_evaluation_states(states_path, manifest_id, result.states, cache_metadata)
-
-        summary_metrics = {
-            "input_training_runs": len(run_spec.inputs),
-            **result.summary_metrics,
-        }
-        manifest = _build_evaluation_manifest(
-            manifest_id=manifest_id,
-            run_spec=run_spec,
-            status="completed",
-            provenance=prov,
-            summary_metrics=summary_metrics,
-            artifacts=result.artifacts,
-            metadata={
-                **manifest_metadata,
-                **result.metadata,
-                "cache": cache_metadata,
-            },
-        )
-        return manifest, write_manifest(manifest, root=root_path)
-    except Exception as exc:
-        error: dict[str, Any] = {
-            "type": type(exc).__name__,
-            "message": str(exc),
-        }
-        if isinstance(exc, EvaluationRecipeDiagnosticError):
-            error["diagnostics"] = {
-                **exc.diagnostics.model_dump(mode="json"),
-                "recipe": {
-                    "evaluation_type": run_spec.evaluation_type,
-                    "entrypoint": EntrypointRef(
-                        kind="feedbax-evaluation-recipe",
-                        name=run_spec.evaluation_type,
-                    ).model_dump(mode="json", exclude_none=True),
+                run_spec=run_spec,
+                status="failed",
+                provenance=prov,
+                summary_metrics={"input_training_runs": len(run_spec.inputs)},
+                artifacts=[],
+                metadata={
+                    **manifest_metadata,
+                    "cache": _evaluation_cache_metadata(manifest_id, states_path),
+                    "error": _evaluation_attempt_diagnostics(run_spec, cause),
                 },
-            }
-        manifest = _build_evaluation_manifest(
-            manifest_id=manifest_id,
-            run_spec=run_spec,
-            status="failed",
-            provenance=prov,
-            summary_metrics={"input_training_runs": len(run_spec.inputs)},
-            artifacts=[],
-            metadata={
-                **manifest_metadata,
-                "cache": cache_metadata,
-                "error": error,
+            )
+            path = (
+                publish_terminal_manifest_locked(failed, root=root_path, previous=prior)
+                if publish_failure
+                else None
+            )
+            if path is None:
+                attempts = root_path / ".evaluation-attempts"
+                attempts.mkdir(exist_ok=True)
+                attempt_root = Path(tempfile.mkdtemp(prefix="failed-", dir=attempts))
+                path = write_manifest(failed, root=attempt_root, index=False)
+            return EvaluationRecipeExecutionError(failed, path, cause)
+
+        try:
+            if prior is not None and prior.status == "completed" and use_cache and not force:
+                states = load_evaluation_states_cache(states_path, manifest=prior)
+                if states is not None:
+                    _require_scalar_evaluation_receipt(
+                        prior, run_spec, root=root_path, states=states
+                    )
+                    return prior, manifest_path
+
+            tmp = staging.enter_context(
+                tempfile.TemporaryDirectory(prefix=".evaluation-", dir=states_path.parent)
+            )
+            staged_cache = Path(tmp) / states_path.name
+            result = recipe(run_spec, root_path, staged_cache, execution_context)
+            if states_custody == "durable":
+                result = _with_durable_states_artifact(
+                    result, root=root_path, manifest_id=manifest_id
+                )
+            has_cache = use_cache and result.states is not None
+            if has_cache:
+                _save_evaluation_states(staged_cache, manifest_id, result.states, cache_metadata)
+            manifest = _build_evaluation_manifest(
+                manifest_id=manifest_id,
+                run_spec=run_spec,
+                status="completed",
+                provenance=prov,
+                summary_metrics={
+                    "input_training_runs": len(run_spec.inputs),
+                    **result.summary_metrics,
+                },
+                artifacts=result.artifacts,
+                metadata={**manifest_metadata, **result.metadata, "cache": cache_metadata},
+            )
+            _require_scalar_evaluation_receipt(
+                manifest, run_spec, root=root_path, states=result.states
+            )
+        except Exception as exc:
+            raise failed_attempt(exc, publish_failure=True) from exc
+
+        try:
+            index_path = manifest_index.default_index_path(root_path)
+            with closing(manifest_index.connect_index(index_path)) as index:
+                # An index rebuild must wait until the files are committed or restored.
+                index.execute("BEGIN IMMEDIATE")
+                with (
+                    _restore_evaluation_file_on_error(manifest_path),
+                    _restore_evaluation_file_on_error(states_path),
+                ):
+                    if has_cache:
+                        staged_cache.replace(states_path)
+                    else:
+                        states_path.unlink(missing_ok=True)
+                    path = publish_terminal_manifest_locked(
+                        manifest, root=root_path, previous=prior, index=False
+                    )
+                    assert path is not None
+                    manifest_index.index_manifest(index, load_manifest(path), path=path)
+                    index.commit()
+        except Exception as exc:
+            raise failed_attempt(exc, publish_failure=False) from exc
+        return manifest, path
+
+
+def _evaluation_attempt_diagnostics(spec: EvaluationRunSpec, cause: Exception) -> dict[str, Any]:
+    error: dict[str, Any] = {"type": type(cause).__name__, "message": str(cause)}
+    if isinstance(cause, EvaluationRecipeDiagnosticError):
+        error["diagnostics"] = {
+            **cause.diagnostics.model_dump(mode="json"),
+            "recipe": {
+                "evaluation_type": spec.evaluation_type,
+                "entrypoint": EntrypointRef(
+                    kind="feedbax-evaluation-recipe", name=spec.evaluation_type
+                ).model_dump(mode="json", exclude_none=True),
             },
-        )
-        path = write_manifest(manifest, root=root_path)
-        raise EvaluationRecipeExecutionError(manifest, path, exc) from exc
+        }
+    return error
 
 
-def _load_completed_evaluation_manifest(
-    path: Path,
-    manifest_id: str,
-) -> EvaluationRunManifest | None:
-    try:
-        manifest = load_manifest(path)
-    except FileNotFoundError:
-        return None
-    if not isinstance(manifest, EvaluationRunManifest):
-        return None
-    if manifest.id != manifest_id or manifest.status != "completed":
-        return None
-    return manifest
+@contextmanager
+def _restore_evaluation_file_on_error(path: Path) -> Iterator[None]:
+    """Keep the previous inode available through replacement and indexing."""
+    with tempfile.TemporaryDirectory(prefix=".previous-", dir=path.parent) as tmp:
+        previous = Path(tmp) / "backup"
+        try:
+            os.link(path, previous)
+        except FileNotFoundError:
+            pass
+        try:
+            yield
+        except BaseException:
+            if previous.exists():
+                previous.replace(path)
+            else:
+                path.unlink(missing_ok=True)
+            raise
+
+
+def _require_scalar_evaluation_receipt(
+    manifest: EvaluationRunManifest, spec: EvaluationRunSpec, *, root: Path, states: Any
+) -> None:
+    from feedbax.analysis.fulfillment import FulfillmentAdmissionError, admit_evaluation_receipt
+
+    durable = _states_custody_for_spec(spec) == "durable"
+    outcome = admit_evaluation_receipt(
+        spec,
+        root=root,
+        manifest=manifest,
+        states_structure=jtu.tree_structure(states) if durable else None,
+    )
+    if not outcome.admitted:
+        raise FulfillmentAdmissionError(outcome)
 
 
 def load_evaluation_states(
