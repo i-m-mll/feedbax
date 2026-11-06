@@ -265,12 +265,14 @@ def collect_rollouts_batched(
 
     Returns:
         Dict with arrays of shape ``(B, R, T, ...)``.
-        Keys: ``timestamps``, ``task_target``, ``joint_angles``,
+        Keys: ``timestamps`` (control sample times in seconds, starting at zero),
+        ``task_target``, ``joint_angles``,
         ``joint_velocities``, ``muscle_activations``, ``effector_pos``.
     """
     n_bodies = jt.leaves(batched_plant)[0].shape[0]
     n_rollouts = task_types.shape[0]
     n_steps = env_config.n_steps
+    control_dt = env_config.control_dt
 
     all_keys = jax.random.split(key, n_bodies * n_rollouts)
     all_keys = all_keys.reshape(n_bodies, n_rollouts, *all_keys.shape[1:])
@@ -284,8 +286,8 @@ def collect_rollouts_batched(
         task = sample_task_params_jax(
             task_key,
             task_type,
-            env_config.n_steps,
-            env_config.dt,
+            n_steps,
+            control_dt,
             segment_lengths=seg_lens,
             use_fk=use_fk,
             max_target_distance=0.0,
@@ -325,7 +327,7 @@ def collect_rollouts_batched(
         eff_pos = jnp.concatenate([eff0.pos[None], eff_rest])
 
         target_pos, _ = reconstruct_trajectory(task)
-        timestamps = jnp.arange(n_steps) * env_config.dt
+        timestamps = jnp.arange(n_steps) * control_dt
         return {
             "timestamps": timestamps,
             "task_target": target_pos,

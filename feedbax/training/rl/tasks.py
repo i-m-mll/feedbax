@@ -146,13 +146,13 @@ class TaskParams(NamedTuple):
         task_type: Integer task type (0=reach, 1=hold, 2=track, 3=swing).
         start_pos: Starting position, shape ``(2,)``.
         end_pos: Target endpoint, shape ``(2,)``.
-        perturb_time_idx: Timestep index for perturbation onset.
+        perturb_time_idx: Task sample index for perturbation onset.
         perturb_force: Perturbation force vector, shape ``(2,)``.
         control_points: Catmull-Rom control points, shape ``(6, 2)``.
-        t0: Start time.
-        tf: End time.
-        dt: Timestep.
-        n_steps: Total number of timesteps.
+        t0: First sample time in seconds.
+        tf: Last sample time in seconds.
+        dt: Seconds between task samples (control steps in PPO).
+        n_steps: Total number of task samples.
     """
 
     task_type: int
@@ -434,8 +434,8 @@ def sample_task_params_jax(
         key: PRNG key.
         task_type: Fixed task type (0-3) used when ``single_task`` is True.
             May be a traced integer (safe inside vmap).
-        n_steps: Number of timesteps per episode.
-        dt: Physics timestep in seconds.
+        n_steps: Number of task samples per episode.
+        dt: Seconds between task samples.
         segment_lengths: Segment lengths for FK-based reachable sampling.
             Shape ``(n_joints,)``.
         use_fk: Whether to use FK-based reachable sampling.

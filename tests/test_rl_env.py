@@ -1,5 +1,7 @@
 """Tests for feedbax.training.rl.env."""
 
+from dataclasses import replace
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -17,9 +19,18 @@ from feedbax.training.rl.env import (
     auto_reset,
     rl_env_get_obs,
     rl_env_reset,
+    rl_env_reset_sampled,
     rl_env_step,
 )
-from feedbax.training.rl.tasks import TASK_HOLD, TaskParams, sample_task_params_jax
+from feedbax.training.rl.tasks import (
+    TASK_HOLD,
+    TASK_REACH,
+    TASK_SWING,
+    TASK_TRACK,
+    TaskParams,
+    reconstruct_trajectory,
+    sample_task_params_jax,
+)
 
 
 @pytest.fixture
@@ -103,6 +114,61 @@ class TestRLEnvStep:
 
         _final_state, done_per_step = rollout(state)
         assert float(done_per_step[-1]) == 1.0
+
+    def test_frame_skip_matches_five_physics_steps(self, plant, config, task, key):
+        fine = replace(config, dt=0.002)
+        skipped = replace(fine, frame_skip=5)
+        initial = rl_env_reset(plant, fine, task, key)
+        action = jnp.full(config.n_muscles, 0.8)
+        step = eqx.filter_jit(rl_env_step)
+        expected = initial
+        for _ in range(5):
+            expected, _, _, _ = step(plant, fine, expected, action)
+
+        actual, _, _, _ = step(plant, skipped, initial, action)
+
+        assert actual.t_index == 1
+        np.testing.assert_allclose(actual.muscle_activations, expected.muscle_activations)
+        np.testing.assert_allclose(
+            actual.plant_state.skeleton.angle, expected.plant_state.skeleton.angle, atol=1e-7,
+        )
+        np.testing.assert_allclose(
+            actual.plant_state.skeleton.d_angle, expected.plant_state.skeleton.d_angle, atol=1e-7,
+        )
+
+
+@pytest.mark.parametrize(
+    "task_type", [TASK_REACH, TASK_HOLD, TASK_TRACK, TASK_SWING],
+    ids=["reach", "hold", "track", "swing"],
+)
+def test_sampled_task_schedule_uses_control_clock(plant, config, key, task_type):
+    def sample(dt, frame_skip):
+        sampling_config = replace(
+            config,
+            n_steps=101,
+            dt=dt,
+            frame_skip=frame_skip,
+            default_task_type=task_type,
+        )
+        return rl_env_reset_sampled(plant, sampling_config, key).task
+
+    fine = sample(0.002, 5)
+    coarse = sample(0.01, 1)
+    fine_pos, fine_vel = reconstruct_trajectory(fine)
+    coarse_pos, coarse_vel = reconstruct_trajectory(coarse)
+
+    np.testing.assert_allclose(fine_pos, coarse_pos, atol=1e-6)
+    np.testing.assert_allclose(fine_vel, coarse_vel, atol=1e-6)
+    assert float(fine.tf) == pytest.approx(1.0)
+    if task_type == TASK_HOLD:
+        assert fine.perturb_time_idx == coarse.perturb_time_idx
+        np.testing.assert_allclose(fine.perturb_force, coarse.perturb_force)
+    else:
+        assert jnp.max(jnp.linalg.norm(fine_vel, axis=-1)) > 0.1
+    if task_type == TASK_SWING:
+        angles = jnp.arctan2(fine_pos[:, 1], fine_pos[:, 0])
+        # At 0.5 Hz the swing peaks after 0.5 s and crosses zero again at 1 s.
+        np.testing.assert_allclose(angles[jnp.array([0, 50, 100])], [0.0, 0.6, 0.0], atol=1e-6)
 
 
 @pytest.mark.parametrize("arm_kind", ["direct", "analytical"])

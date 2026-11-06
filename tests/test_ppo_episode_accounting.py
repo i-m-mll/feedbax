@@ -1,5 +1,7 @@
 """Analytical acceptance for PPO's compiled rollout and update paths."""
 
+from dataclasses import replace
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -34,7 +36,13 @@ from feedbax.training.rl.ppo import (
     collect_rollouts_batched,
     train_ppo_batched,
 )
-from feedbax.training.rl.tasks import TASK_HOLD, TASK_REACH, init_curriculum, reach_task_params
+from feedbax.training.rl.tasks import (
+    TASK_HOLD,
+    TASK_REACH,
+    TASK_SWING,
+    init_curriculum,
+    reach_task_params,
+)
 
 
 class _PointState(CartesianState):
@@ -95,6 +103,27 @@ def _coasting_observations(x, phase, active_muscles):
     raw[..., 4:6] = np.where(phase[..., None] == 0, 0, active_muscles)
     raw[..., -1] = phase
     return raw
+
+
+def test_swing_rollout_uses_control_clock():
+    skeleton = _CoastingPointMass(mass=jnp.array(1.0), start_x=jnp.array(0.0))
+    plant = _stack_pytrees(DirectForceInput(skeleton, clip_states=False))
+    policy_key, rollout_key = jax.random.split(jax.random.key(42))
+    policy = _stack_pytrees(ActorCritic(13, 2, 4, 1, key=policy_key))
+    fine = replace(_config(), n_steps=6, dt=0.002, frame_skip=5)
+    coarse = replace(fine, dt=0.01, frame_skip=1)
+    task_types = jnp.array([TASK_SWING])
+
+    fine_result = collect_rollouts_batched(plant, fine, policy, rollout_key, task_types)
+    coarse_result = collect_rollouts_batched(plant, coarse, policy, rollout_key, task_types)
+
+    expected_seconds = [[[0.0, 0.01, 0.02, 0.03, 0.04, 0.05]]]
+    np.testing.assert_allclose(fine_result["timestamps"], expected_seconds)
+    np.testing.assert_allclose(fine_result["timestamps"], coarse_result["timestamps"])
+    np.testing.assert_allclose(
+        fine_result["effector_pos"][..., 0], fine_result["timestamps"], atol=1e-7,
+    )
+    np.testing.assert_allclose(fine_result["task_target"], coarse_result["task_target"], atol=1e-6)
 
 
 def test_reach_uses_endpoint_even_when_the_effector_matches_the_reference():
