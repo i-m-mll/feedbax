@@ -17,10 +17,10 @@ from feedbax.compiler.templates import (
     recurrent_controller_template_graph,
     simple_feedback_template_graph,
 )
-from feedbax.compiler import GraphCompilationError
+from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 from feedbax.models.feedback import SimpleFeedback
-from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork, VanillaRNN
+from feedbax.models.networks import LeakyRNNCell, VanillaRNN, recurrent_controller
 from feedbax.objectives import CompositeLoss
 from feedbax.tasks import SimpleReaches, prepare_trial
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
@@ -71,7 +71,6 @@ def test_spec_to_graph_controller_template_instantiates_explicit_nodes() -> None
         _network_controller_graph_spec(), ComponentRegistry(load_user_components=False)
     )
 
-    assert not any(isinstance(node, SimpleStagedNetwork) for node in graph.nodes.values())
     assert set(graph.nodes) == {"input_mux", "cell", "readout", "mechanics"}
 
 
@@ -755,8 +754,8 @@ def test_authoring_normalization_does_not_turn_unsupported_runtime_params_into_p
     assert "modulator_input" not in normalized.nodes["network"].params
 
 
-def test_opaque_runtime_network_serialization_requires_authored_subgraph_identity() -> None:
-    network = SimpleStagedNetwork(
+def test_nested_recurrent_graph_serialization_requires_authored_subgraph_identity() -> None:
+    network = recurrent_controller(
         input_size=4,
         hidden_size=3,
         out_size=2,
@@ -764,7 +763,7 @@ def test_opaque_runtime_network_serialization_requires_authored_subgraph_identit
     )
     with pytest.raises(
         ValueError,
-        match="Programmatic graph component reverse resolution must match exactly one",
+        match="Programmatic composite node.*has no declared component binding",
     ):
         graph_to_spec(
             Graph(
@@ -864,8 +863,18 @@ def test_generic_template_node_instantiates_persisted_subgraph() -> None:
         subgraphs={"controller": subgraph},
     )
 
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
-    assert isinstance(graph.nodes["controller"], Graph)
+    cell_key = jax.random.key(42)
+    graph = compile_graph(
+        GraphDocument(graph=spec),
+        ComponentRegistry(load_user_components=False),
+        initialization_keys={("controller", "cell"): cell_key},
+    ).graph
+    controller = graph.nodes["controller"]
+    assert isinstance(controller, Graph)
+    assert jnp.array_equal(
+        controller.nodes["cell"].cell.weight_ih,
+        eqx.nn.GRUCell(3, 4, key=cell_key).weight_ih,
+    )
 
     state = init_state_from_component(graph)
     outputs, _ = graph(
@@ -984,7 +993,7 @@ def test_delayed_feedback_template_starts_and_continues_like_legacy(start) -> No
     graph = spec_to_graph(graph_to_spec(compiled, registry), registry)
     net = eqx.tree_at(
         lambda net: (net.hidden, net.readout),
-        SimpleStagedNetwork(10, 5, out_size=2, key=key),
+        recurrent_controller(10, 5, out_size=2, key=key),
         (graph.nodes["cell"].cell, graph.nodes["readout"].layer),
     )
     legacy = SimpleFeedback(

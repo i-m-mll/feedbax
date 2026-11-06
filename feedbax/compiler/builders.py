@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from functools import partial
 from typing import Any, Callable, Mapping
 
-import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
@@ -12,7 +9,6 @@ import jax.tree as jt
 from feedbax.models.feedback import FeedbackChannels
 from feedbax.compiler.solver_config import DEFAULT_PLANAR_SOLVER, resolve_acausal_solver
 from feedbax.runtime.channel import Channel, ChannelSpec
-from feedbax.runtime.components import NAMED_ACTIVATIONS
 from feedbax.runtime.graph import Component
 from feedbax.intervene.intervene import (
     ThresholdLatchedForce,
@@ -32,12 +28,6 @@ from feedbax.mechanics.muscle_config import (
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.models.networks import (
-    LeakyRNNCell,
-    SimpleStagedNetwork,
-    population_structure_from_spec,
-)
-from feedbax.models.support import identity_func
 from feedbax.runtime.noise import Multiplicative, Normal
 from feedbax.components.penzai import (
     PENZAI_AVAILABLE,
@@ -52,101 +42,6 @@ from feedbax.tasks._delayed_timing import (
     DEFAULT_DELAYED_MOVE_EPOCHS,
 )
 from feedbax.tasks.presets import apply_delayed_reaches_preset, delayed_reaches_n_steps_from_params
-
-
-_HIDDEN_TYPES: dict[str, Callable[..., eqx.Module]] = {
-    "GRUCell": eqx.nn.GRUCell,
-    "LSTMCell": eqx.nn.LSTMCell,
-    "Linear": eqx.nn.Linear,
-    "GRU": eqx.nn.GRUCell,
-    "LSTM": eqx.nn.LSTMCell,
-    "VanillaRNN": LeakyRNNCell,
-    "VanillaRNNCell": LeakyRNNCell,
-    "RNN": LeakyRNNCell,
-    "RNNCell": LeakyRNNCell,
-    "LeakyRNNCell": LeakyRNNCell,
-}
-
-
-def resolve_nonlinearity(name: str | None) -> Callable[[jax.Array], jax.Array]:
-    if not name or name == "identity":
-        return identity_func
-    if name not in NAMED_ACTIVATIONS:
-        raise ValueError(
-            f"Unknown nonlinearity: {name!r}. Valid options: {list(NAMED_ACTIVATIONS)}"
-        )
-    return NAMED_ACTIVATIONS[name]
-
-
-def nonlinearity_name(fn: Callable[[jax.Array], jax.Array]) -> str:
-    for name, func in NAMED_ACTIVATIONS.items():
-        if fn is func:
-            return name
-    name = getattr(fn, "__name__", "")
-    return name if name in NAMED_ACTIVATIONS else "identity"
-
-
-def _hidden_type_vocabulary() -> str:
-    return ", ".join(_HIDDEN_TYPES)
-
-
-def _resolve_hidden_type(name: object, *, path: str) -> Callable[..., eqx.Module]:
-    hidden_type_name = str(name)
-    try:
-        return _HIDDEN_TYPES[hidden_type_name]
-    except KeyError as exc:
-        raise ValueError(
-            f"Unknown hidden_type at {path}: {hidden_type_name!r}. "
-            f"Supported values: {_hidden_type_vocabulary()}"
-        ) from exc
-
-
-def _compat_dtype(params: Mapping[str, Any]) -> object:
-    if "dtype" in params:
-        return params["dtype"]
-    return jnp.asarray(0.0).dtype
-
-
-def _build_network(params: Mapping[str, Any]) -> SimpleStagedNetwork:
-    hidden_type = _resolve_hidden_type(
-        params.get("hidden_type", "GRUCell"),
-        path="Network.params.hidden_type",
-    )
-    hidden_nonlinearity = resolve_nonlinearity(str(params.get("hidden_nonlinearity", "tanh")))
-    out_nonlinearity = resolve_nonlinearity(str(params.get("out_nonlinearity", "tanh")))
-    if hidden_type is LeakyRNNCell:
-        hidden_type = partial(LeakyRNNCell, nonlinearity=hidden_nonlinearity)
-        hidden_nonlinearity = identity_func
-    encoding_size = int(params.get("encoding_size", 0) or 0)
-    encoding_size = encoding_size if encoding_size > 0 else None
-    out_size = params.get("out_size", params.get("output_size"))
-    out_size = int(out_size) if out_size not in (None, "") else None
-    if out_size is not None and out_size <= 0:
-        out_size = None
-    hidden_noise_std = params.get("hidden_noise_std", 0.0)
-    if hidden_noise_std in (None, 0, 0.0):
-        hidden_noise_std = None
-    population_structure = None
-    raw_population_structure = params.get("population_structure")
-    if isinstance(raw_population_structure, Mapping):
-        population_structure = population_structure_from_spec(
-            int(params.get("hidden_size", 0)),
-            raw_population_structure,
-        )
-    return SimpleStagedNetwork(
-        input_size=int(params.get("input_size", 0)),
-        hidden_size=int(params.get("hidden_size", 0)),
-        out_size=out_size,
-        encoding_size=encoding_size,
-        hidden_type=hidden_type,
-        hidden_nonlinearity=hidden_nonlinearity,
-        out_nonlinearity=out_nonlinearity,
-        hidden_noise_std=hidden_noise_std,
-        population_structure=population_structure,
-        population_mask_mode=str(params.get("population_mask_mode", "legacy_masked")),
-        dtype=_compat_dtype(params),
-        key=jr.PRNGKey(0),
-    )
 
 
 def _build_mechanics(params: Mapping[str, Any]) -> Mechanics:

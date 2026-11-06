@@ -288,7 +288,7 @@ class _Completion:
             if initial is not None:
                 kind = initial.get("kind")
                 if kind == "zeros":
-                    proto = array_proto_from_shape(initial.get("shape"))
+                    proto = array_proto_from_shape(initial.get("shape"), dtype=initial.get("dtype"))
                 elif kind == "constant" and "value" in initial:
                     proto = jnp.zeros_like(
                         jnp.asarray(initial["value"], dtype=initial.get("dtype"))

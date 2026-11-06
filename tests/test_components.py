@@ -10,7 +10,6 @@ import feedbax.runtime.components as runtime_components
 import feedbax._vendor.jax_cookbook.tree as jtree
 from feedbax._vendor.jax_cookbook import load, save
 from feedbax._vendor.jax_cookbook.tree import filter_spec_leaves
-from feedbax.compiler.builders import _build_network
 from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.components import ElementwiseAffineModulator
 from feedbax.runtime.graph import init_state_from_component
@@ -23,7 +22,7 @@ from feedbax.runtime.where_selectors import (
     attr_str_tree_to_where_func,
     where_func_to_attr_str_tree,
 )
-from feedbax.models.networks import LeakyRNNCell, SimpleStagedNetwork
+from feedbax.models.networks import LeakyRNNCell, recurrent_controller
 from feedbax.models.feedback import SimpleFeedback
 
 
@@ -298,158 +297,113 @@ def test_runtime_linear_accepts_custom_activation_callable():
     assert jnp.allclose(outputs["output"], raw * raw)
 
 
-@pytest.mark.parametrize(
-    ("kwargs", "output_sign"),
-    [({}, 1), ({"out_nonlinearity": jnp.negative}, -1)],
-    ids=["default", "activated"],
-)
-def test_simplestagednetwork_emits_hidden_units_without_readout(kwargs, output_sign):
-    net = SimpleStagedNetwork(2, 3, key=jax.random.key(0), **kwargs)
-    state = init_state_from_component(net)
+@pytest.mark.parametrize("out_size", [None, 1])
+def test_recurrent_controller_activates_output(out_size):
+    net = recurrent_controller(
+        2, 3, out_size=out_size, out_nonlinearity="sigmoid", key=jax.random.key(0)
+    )
+    outputs, _ = net(
+        {"input": jnp.array([[1.0, -2.0]])},
+        init_state_from_component(net),
+        key=jax.random.key(1),
+    )
+    hidden = outputs["hidden"][0]
+    raw = hidden if out_size is None else net.nodes["readout"].layer(hidden)
 
-    outputs, _ = net({"input": jnp.array([1.0, -2.0])}, state, key=jax.random.key(1))
-
-    assert outputs["output"].shape == (3,)
-    assert jnp.allclose(outputs["output"], output_sign * outputs["hidden"])
+    assert outputs["output"].shape == (1, 3 if out_size is None else out_size)
+    assert jnp.allclose(outputs["output"][0], jax.nn.sigmoid(raw))
 
 
-def test_simplestagednetwork_activates_projected_output():
-    def readout_type(_input_size, out_size, *, key, dtype):
-        return eqx.nn.Lambda(lambda _: jnp.full((out_size,), 2.0, dtype=dtype))
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
+def test_recurrent_controller_preserves_dtype_with_noisy_carry(dtype):
+    with jax.experimental.enable_x64():
+        net = recurrent_controller(
+            2,
+            3,
+            out_size=1,
+            hidden_noise_std=0.1,
+            hidden_nonlinearity="relu",
+            dtype=dtype,
+            key=jax.random.key(0),
+        )
+        outputs, _ = net(
+            {"input": jnp.ones((2, 2), dtype=jnp.float64)},
+            init_state_from_component(net),
+            key=jax.random.key(1),
+        )
 
-    net = SimpleStagedNetwork(
+        assert net.nodes["cell"].cell.weight_ih.dtype == dtype
+        assert net.nodes["readout"].layer.weight.dtype == dtype
+        assert net.nodes["cell"].state_index.init.hidden.dtype == dtype
+        assert outputs["hidden"].dtype == outputs["output"].dtype == dtype
+
+
+def test_recurrent_controller_rejects_unregistered_hidden_factory():
+    with pytest.raises(TypeError, match="built-in recurrent cell"):
+        recurrent_controller(2, 3, hidden_type=eqx.nn.Lambda, key=jax.random.key(0))
+
+
+def test_recurrent_controller_threads_key_to_stochastic_hidden_cell():
+    net = recurrent_controller(
         2,
         3,
         out_size=1,
-        readout_type=readout_type,
-        out_nonlinearity=jnp.negative,
+        hidden_type=LeakyRNNCell,
+        cell_params={"use_noise": True, "noise_strength": 0.1},
         key=jax.random.key(0),
     )
     state = init_state_from_component(net)
+    inputs = {"input": jnp.ones((2, 2), dtype=jnp.float32)}
+    first, _ = net(inputs, state, key=jax.random.key(1))
+    repeated, _ = net(inputs, state, key=jax.random.key(1))
+    second, _ = net(inputs, state, key=jax.random.key(2))
 
-    outputs, _ = net({"input": jnp.array([1.0, -2.0])}, state, key=jax.random.key(1))
-
-    assert jnp.array_equal(outputs["output"], jnp.array([-2.0]))
-
-
-def test_simplestagednetwork_export_rebuilds_hidden_output():
-    net = SimpleStagedNetwork(2, 3, key=jax.random.key(0))
-    rebuilt = _build_network(net.to_params())
-    inputs = {"input": jnp.array([1.0, -2.0])}
-
-    outputs, _ = rebuilt(inputs, init_state_from_component(rebuilt), key=jax.random.key(1))
-
-    assert jnp.allclose(outputs["output"], outputs["hidden"])
+    assert jnp.array_equal(first["hidden"], repeated["hidden"])
+    assert not jnp.array_equal(first["hidden"], second["hidden"])
 
 
-def test_simplestagednetwork_defaults_trainable_leaves_to_float32_with_float64_inputs():
-    with jax.experimental.enable_x64():
-        net = SimpleStagedNetwork(
-            input_size=2,
-            hidden_size=3,
-            out_size=1,
-            key=jax.random.PRNGKey(0),
-        )
-        state = init_state_from_component(net)
-
-        outputs, state = net(
-            {
-                "input": jnp.ones((2,), dtype=jnp.float64),
-            },
-            state,
-            key=jax.random.PRNGKey(1),
-        )
-
-        assert net.hidden.weight_ih.dtype == jnp.float32
-        assert net.hidden.weight_hh.dtype == jnp.float32
-        assert net.readout.weight.dtype == jnp.float32
-        assert net.state_index.init.hidden.dtype == jnp.float32
-        assert outputs["output"].dtype == jnp.float32
-        assert outputs["output"].shape == (1,)
-
-
-def test_simplestagednetwork_preserves_explicit_float64_trainable_leaves():
-    with jax.experimental.enable_x64():
-        net = SimpleStagedNetwork(
-            input_size=2,
-            hidden_size=3,
-            out_size=1,
-            dtype=jnp.float64,
-            key=jax.random.PRNGKey(0),
-        )
-
-        assert net.hidden.weight_ih.dtype == jnp.float64
-        assert net.hidden.weight_hh.dtype == jnp.float64
-        assert net.readout.weight.dtype == jnp.float64
-        assert net.state_index.init.hidden.dtype == jnp.float64
-
-
-def test_simplestagednetwork_rejects_custom_factory_that_cannot_honor_dtype():
-    class NoDtypeCell(eqx.Module):
-        weight: jax.Array
-
-        def __init__(self, input_size, hidden_size, use_bias=True, *, key):
-            del use_bias
-            self.weight = jax.random.normal(key, (hidden_size, input_size))
-
-        def __call__(self, x, hidden):
-            return self.weight @ x + hidden
-
-    with jax.experimental.enable_x64():
-        with pytest.raises(TypeError, match="does not accept a dtype keyword"):
-            SimpleStagedNetwork(
-                input_size=2,
-                hidden_size=3,
-                out_size=1,
-                hidden_type=NoDtypeCell,
-                dtype=jnp.float64,
-                key=jax.random.PRNGKey(0),
-            )
-
-
-def test_simplestagednetwork_rejects_hidden_cell_with_no_input_argument():
-    class NoInputCell(eqx.Module):
-        def __init__(self, input_size, hidden_size, use_bias=True, *, key, dtype=jnp.float32):
-            del input_size, hidden_size, use_bias, key, dtype
-
-        def __call__(self):
-            return jnp.array([0.0], dtype=jnp.float32)
-
-    net = SimpleStagedNetwork(
-        input_size=2,
-        hidden_size=1,
-        out_size=1,
-        hidden_type=NoInputCell,
-        key=jax.random.PRNGKey(0),
+def test_recurrent_controller_lstm_matches_seeded_cell_encoder_and_readout():
+    key = jax.random.key(0)
+    key_cell, key_encoder, key_readout = jax.random.split(key, 3)
+    net = recurrent_controller(
+        2, 3, out_size=1, encoding_size=4, hidden_type=eqx.nn.LSTMCell,
+        use_bias=False, key=key,
     )
-    state = init_state_from_component(net)
-
-    with pytest.raises(TypeError, match="must accept either"):
-        net({"input": jnp.ones((2,), dtype=jnp.float32)}, state, key=jax.random.PRNGKey(1))
-
-
-def test_simplestagednetwork_threads_key_to_stochastic_hidden_cell() -> None:
-    net = SimpleStagedNetwork(
-        input_size=2,
-        hidden_size=3,
-        out_size=1,
-        hidden_type=lambda *args, **kwargs: LeakyRNNCell(
-            *args,
-            **kwargs,
-            use_noise=True,
-            noise_strength=0.1,
-        ),
-        key=jax.random.PRNGKey(0),
-    )
-    state = init_state_from_component(net)
-
-    outputs, _ = net(
-        {"input": jnp.ones((2,), dtype=jnp.float32)},
-        state,
-        key=jax.random.PRNGKey(1),
+    cell = eqx.nn.LSTMCell(4, 3, use_bias=False, key=key_cell)
+    encoder = eqx.nn.Linear(2, 4, key=key_encoder)
+    readout = eqx.nn.Linear(3, 1, key=key_readout)
+    signal = jnp.array([[1.0, -2.0], [0.5, 0.0]])
+    outputs, state = net(
+        {"input": {"task": signal[:, :1]}, "feedback": signal[:, 1:]},
+        init_state_from_component(net),
+        key=jax.random.key(1),
     )
 
-    assert outputs["output"].shape == (1,)
+    hidden, carry = jnp.zeros(3), jnp.zeros(3)
+    expected_hidden = []
+    for x in signal:
+        hidden, carry = cell(encoder(x), (hidden, carry))
+        expected_hidden.append(hidden)
+
+    expected_hidden = jnp.stack(expected_hidden)
+    assert jnp.allclose(outputs["hidden"], expected_hidden)
+    assert jnp.allclose(outputs["output"], expected_hidden @ readout.weight.T)
+    assert jnp.allclose(net.state_view(state).cell.cell, carry)
+
+
+def test_recurrent_controller_steps_with_post_activation_carry():
+    graph = recurrent_controller(2, 3, hidden_nonlinearity="relu", key=jax.random.key(0))
+    state = init_state_from_component(graph)
+    inputs = {"input": jnp.array([1.0, 2.0])}
+    cell = graph.nodes["cell"].cell
+
+    first, state, carry = graph.step(inputs, state, key=jax.random.key(1))
+    second, _, carry = graph.step(inputs, state, carry, key=jax.random.key(2))
+
+    assert jnp.array_equal(first["hidden"], jax.nn.relu(cell(inputs["input"], jnp.zeros(3))))
+    expected = jax.nn.relu(cell(inputs["input"], first["hidden"]))
+    assert jnp.array_equal(second["hidden"], expected)
+    assert jnp.array_equal(carry["cell", "hidden"], expected)
 
 
 def _call_modulator(component, signal, modulator):
@@ -532,30 +486,6 @@ def test_elementwise_affine_modulator_rejects_bad_shapes():
         _call_modulator(component, jnp.ones((3,)), jnp.ones((2,)))
 
 
-def test_elementwise_affine_modulator_matches_multiplicative_sisu_formula():
-    net = SimpleStagedNetwork(
-        input_size=3,
-        hidden_size=3,
-        out_size=2,
-        sisu_gating="multiplicative",
-        key=jax.random.PRNGKey(0),
-    )
-    alpha = jnp.array([0.2, -0.3, 0.5])
-    net = eqx.tree_at(lambda item: item.sisu_alpha, net, alpha)
-    component = ElementwiseAffineModulator(
-        signal_shape=(3,),
-        baseline=1.0,
-        gain_init=net.sisu_alpha,
-        bias_init=0.0,
-    )
-    hidden = jnp.array([1.0, 2.0, 3.0])
-
-    for sisu_value in (0.0, 0.5, 1.0):
-        output = _call_modulator(component, hidden, jnp.array(sisu_value))
-        expected = hidden * (1.0 + net.sisu_alpha * sisu_value)
-        assert jnp.allclose(output, expected)
-
-
 def test_channel_delay():
     channel = Channel(
         delay=2,
@@ -606,7 +536,7 @@ def _make_simplefeedback(key):
         noise_func=None,
     )
 
-    net = SimpleStagedNetwork(
+    net = recurrent_controller(
         input_size=3,  # 1 task input + 2 feedback
         hidden_size=4,
         out_size=2,
@@ -655,7 +585,7 @@ def test_simplefeedback_nodes_selector_round_trips_to_executable_graph_node():
 
 def test_simplefeedback_model_net_update_replaces_executable_graph_node():
     model = _make_simplefeedback(jax.random.PRNGKey(0))
-    replacement = SimpleStagedNetwork(
+    replacement = recurrent_controller(
         input_size=3,
         hidden_size=4,
         out_size=2,
