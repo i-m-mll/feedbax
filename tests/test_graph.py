@@ -5,9 +5,11 @@ import jax
 import jax.numpy as jnp
 
 from feedbax._vendor.jax_cookbook.tree import filter_spec_leaves
+from feedbax.runtime.components import Pulse
 from feedbax.runtime.graph import (
     Component,
     Graph,
+    GraphState,
     GraphTraceRequest,
     RolloutStepHookResult,
     Wire,
@@ -64,6 +66,112 @@ class Accumulator(Component):
         if state_value is None:
             return {}
         return {"total": state_value}
+
+
+@pytest.fixture
+def acyclic_pulse_graph():
+    return Graph(
+        nodes={"pulse": Pulse(dt=0.25), "acc": Accumulator(), "counter": Counter()},
+        wires=(
+            Wire("pulse", "output", "acc", "delta"),
+            Wire("counter", "output", "acc", "base"),
+        ),
+        input_ports=(),
+        output_ports=("pulse", "total"),
+        input_bindings={},
+        output_bindings={"pulse": ("pulse", "output"), "total": ("acc", "total")},
+    )
+
+
+@pytest.mark.parametrize("streaming", [False, True], ids=["filtered-history", "streaming-loss"])
+def test_acyclic_graph_explicit_rollout_matches_run_component(acyclic_pulse_graph, streaming):
+    graph = acyclic_pulse_graph
+    state_filter = GraphState({"acc": True, "counter": False})
+
+    def streaming_loss(state_view, t):
+        return state_view.acc + state_view.counter + t
+
+    options = dict(
+        key=jax.random.key(0),
+        n_steps=4,
+        state_filter=state_filter,
+        streaming_loss_fn=streaming_loss if streaming else None,
+    )
+    outputs, final_state, aux = graph(
+        {}, init_state_from_component(graph), return_state_history=True, **options
+    )
+    expected_outputs, expected_state, expected_aux = run_component(
+        graph, {}, init_state_from_component(graph), **options
+    )
+
+    assert eqx.tree_equal(outputs, expected_outputs)
+    assert eqx.tree_equal(final_state, expected_state)
+    assert eqx.tree_equal(aux, expected_aux)
+    assert jnp.array_equal(outputs["pulse"], jnp.array([1.0, 1.0, 0.0, 0.0]))
+    if streaming:
+        assert aux.shape == ()
+        assert aux == 23.0
+    else:
+        assert jnp.array_equal(aux.acc, jnp.array([0.0, 1.0, 2.0, 2.0, 2.0]))
+        assert aux.counter is None
+
+
+def test_acyclic_graph_omitted_length_takes_single_step(acyclic_pulse_graph):
+    graph = acyclic_pulse_graph
+
+    def set_delta_from_time(context):
+        if context.node_name == "acc":
+            delta = jnp.asarray(context.t, dtype=jnp.float32) + 3.0
+            return RolloutStepHookResult(
+                port_values={**context.port_values, ("acc", "delta"): delta}
+            )
+
+    options = dict(key=jax.random.key(0), rollout_step_hook=set_delta_from_time)
+    outputs, _ = graph({}, init_state_from_component(graph), t=2, **options)
+    scanned_outputs, _ = graph(
+        {},
+        init_state_from_component(graph),
+        n_steps=1,
+        return_state_history=True,
+        state_filter=False,
+        **options,
+    )
+
+    assert outputs["pulse"].shape == ()
+    assert outputs["total"] == 5.0
+    assert jnp.array_equal(scanned_outputs["pulse"], jnp.array([1.0]))
+    assert jnp.array_equal(scanned_outputs["total"], jnp.array([3.0]))
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        pytest.param(
+            {"streaming_loss_fn": lambda state, t: state.acc},
+            r"(?=.*streaming_loss_fn)(?=.*n_steps)",
+            id="streaming-without-length",
+        ),
+        pytest.param(
+            {"state_filter": False, "return_state_history": True},
+            r"(?=.*state_filter)(?=.*n_steps)",
+            id="state-filter-without-length",
+        ),
+        pytest.param(
+            {"n_steps": 4, "cycle_init": {("pulse", "output"): jnp.array(0.0)}},
+            r"(?=.*cycle_init)(?=.*recurrent)",
+            id="cycle-init-without-recurrent-wire",
+        ),
+        pytest.param(
+            {"n_steps": 4, "t": 2},
+            r"(?=.*\bt\b)(?=.*step)",
+            id="custom-time-with-rollout-length",
+        ),
+    ],
+)
+def test_acyclic_graph_rejects_incompatible_call_options(acyclic_pulse_graph, options, message):
+    graph = acyclic_pulse_graph
+    with pytest.raises(ValueError, match=message):
+        graph({}, init_state_from_component(graph), key=jax.random.key(0), **options)
 
 
 def test_graph_cycle_iteration():
