@@ -99,7 +99,7 @@ def perform_all_analyses(
         inputs: dict[str, Any],
     ) -> tuple[AbstractAnalysis, Any, PyTree[go.Figure] | None]:
         result = inputs.pop("result")
-        if "make_figs" not in analysis.__class__.__dict__:
+        if type(analysis).make_figs is AbstractAnalysis.make_figs:
             logger.debug(
                 "Skipping figure generation for %s (no make_figs implementation)",
                 analysis_key,

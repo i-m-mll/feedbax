@@ -130,6 +130,38 @@ def test_headless_analysis_context_writes_manifest_figures_and_rebuildable_index
     assert artifact_row == ("figure", "toy/toy_toy_analysis_0.json", "application/json")
 
 
+def test_analysis_context_publishes_inherited_figures(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("FEEDBAX_WEB_DATA", raising=False)
+
+    class InheritedToyAnalysis(ToyAnalysis):
+        pass
+
+    analyses = {
+        "direct": ToyAnalysis(variant="toy"),
+        "inherited": InheritedToyAnalysis(variant="toy"),
+        "compute_only": IdentityNode(inputs=SinglePort(input=AnalysisRef("inherited"))),
+    }
+    spec = AnalysisRunSpec(analysis_type="toy_analysis", params={"outputs": list(analyses)})
+    context = AnalysisRunContext(spec=spec, root=tmp_path)
+
+    _, results, figures = run_analyses_with_context(
+        analyses, build_toy_analysis_data(), context, fig_dump_formats=["json"]
+    )
+
+    assert results["compute_only"] == {"value": 3}
+    assert figures["compute_only"] is None
+    manifest = load_manifest(context.manifest_path)
+    assert manifest.id == analysis_run_manifest_id(spec)
+    assert manifest.status == "completed"
+    assert manifest.summary_metrics["figure_count"] == 2
+    artifacts = {ref.metadata["analysis_label"]: ref for ref in manifest.artifacts}
+    assert artifacts.keys() == {"direct", "inherited"}
+    for ref in artifacts.values():
+        assert ref.role == "figure"
+        payload = json.loads(Path(ref.uri).read_text(encoding="utf-8"))
+        assert payload["data"][0]["y"] == [2, 3]
+
+
 def test_analysis_result_cache_corruption_recomputes_with_versioned_payload(
     tmp_path: Path,
 ) -> None:
