@@ -16,8 +16,10 @@ from feedbax.acausal import (
     PositionSensor,
     PrescribedMotion,
 )
-from feedbax.component_registry import ComponentRegistry
+from feedbax.acausal._component import element_options
+from feedbax.component_registry import ComponentPack, ComponentRegistry, component
 from feedbax.contracts.acausal import AcausalGraphSpec, SolverConfigSpec
+from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.acausal_compiler import (
@@ -84,9 +86,13 @@ def test_conflicting_coordinate_owners_refuse_report_and_execution(grounded: boo
         )
 
 
-def test_spring_coupled_prescribed_coordinates_keep_independent_inputs() -> None:
+def test_registered_custom_mass_preserves_independent_prescribed_inputs() -> None:
+    @component("test.CustomMass", configure=element_options, domain=ACAUSAL_DOMAIN_ID)
+    class CustomMass(Mass):
+        pass
+
     nodes = {
-        "mass": ComponentSpec(type="Mass", params={"mass": 2.0}),
+        "mass": ComponentSpec(type="test.CustomMass", params={"mass": 2.0}),
         "velocity": ComponentSpec(type="SensorOutput", params={"quantity": "velocity"}),
     }
     connections = [{"a": ("velocity", "flange"), "b": ("mass", "flange")}]
@@ -108,6 +114,7 @@ def test_spring_coupled_prescribed_coordinates_keep_independent_inputs() -> None
         solver={"solver_type": "euler", "dt": 0.1},
     )
     registry = _registry()
+    registry.ingest(ComponentPack(components=(CustomMass,)))
     report = compile_acausal_authoring_report(
         spec, node_path=["plant"], component_registry=registry
     )
