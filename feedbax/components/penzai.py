@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any, Callable, Sequence, TYPE_CHECKING
 
 from equinox import Module, field
@@ -588,20 +589,62 @@ _PENZAI_MODEL_BUILDERS: dict[
 ] = {}
 
 
+def _snapshot_builder_data(data: Mapping[str, Any], field: str) -> dict[str, Any]:
+    """Copy an acyclic builder data tree, preserving list and tuple types."""
+    if not isinstance(data, Mapping):
+        raise TypeError(f"{field} must be a mapping")
+    active: set[int] = set()
+
+    def snapshot(value: Any, path: str) -> Any:
+        value_type = type(value)
+        if value is None or value_type in (str, bool, int):
+            return value
+        if value_type is float:
+            if not isfinite(value):
+                raise ValueError(f"{path} must be a finite number")
+            return value
+        if not (isinstance(value, Mapping) or value_type in (list, tuple)):
+            raise TypeError(f"{path} has unsupported Penzai builder data type {value_type.__name__}")
+
+        identity = id(value)
+        if identity in active:
+            raise ValueError(f"{path} contains a cycle")
+        active.add(identity)
+        try:
+            if isinstance(value, Mapping):
+                result = {}
+                for key, child in value.items():
+                    if type(key) is not str:
+                        raise TypeError(f"{path} must have string keys")
+                    result[key] = snapshot(child, f"{path}[{key!r}]")
+                return result
+            items = (snapshot(child, f"{path}[{i}]") for i, child in enumerate(value))
+            return list(items) if value_type is list else tuple(items)
+        finally:
+            active.remove(identity)
+
+    return snapshot(data, field)
+
+
 def register_penzai_builder(
     name: str,
     builder_fn: Callable[..., PyTree],
-    default_params: dict[str, Any] | None = None,
+    default_params: Mapping[str, Any] | None = None,
     *,
     description: str | None = None,
     input_shape: Sequence[int | str] | None = None,
     output_shape: Sequence[int | str] | None = None,
-    metadata: dict[str, Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> None:
     """Register a Penzai model builder for web UI serialization.
 
     This allows the web UI to reconstruct Penzai models from specifications
     without needing to serialize the model weights directly.
+
+    Defaults and metadata are snapshotted as acyclic data trees of string-keyed
+    mappings, lists, tuples, and scalar strings, booleans, finite numbers, or
+    None. Mappings become plain dicts. Builders can bind other resources in
+    their callable.
 
     Args:
         name: Unique name for the builder (e.g., "penzai_mlp").
@@ -627,7 +670,7 @@ def register_penzai_builder(
         ... )
     """
     _require_penzai()
-    builder_metadata = dict(metadata or {})
+    builder_metadata = _snapshot_builder_data(metadata if metadata is not None else {}, "metadata")
     builder_metadata.setdefault(
         "description",
         description or getattr(builder_fn, "__doc__", None) or f"Penzai builder {name}.",
@@ -636,7 +679,13 @@ def register_penzai_builder(
         builder_metadata["input_shape"] = [str(item) for item in input_shape]
     if output_shape is not None:
         builder_metadata["output_shape"] = [str(item) for item in output_shape]
-    _PENZAI_MODEL_BUILDERS[name] = (builder_fn, default_params or {}, builder_metadata)
+    _PENZAI_MODEL_BUILDERS[name] = (
+        builder_fn,
+        _snapshot_builder_data(
+            default_params if default_params is not None else {}, "default_params"
+        ),
+        builder_metadata,
+    )
 
 
 def get_penzai_builder(name: str) -> tuple[Callable[..., PyTree], dict[str, Any]] | None:
@@ -646,32 +695,29 @@ def get_penzai_builder(name: str) -> tuple[Callable[..., PyTree], dict[str, Any]
         name: Name of the registered builder.
 
     Returns:
-        Tuple of (builder_fn, default_params) or None if not found.
+        Tuple of (builder_fn, detached default_params) or None if not found.
     """
     builder_info = _PENZAI_MODEL_BUILDERS.get(name)
     if builder_info is None:
         return None
     builder_fn, default_params, _ = builder_info
-    return builder_fn, default_params
+    return builder_fn, _snapshot_builder_data(default_params, "default_params")
 
 
 def list_penzai_builder_info() -> list[dict[str, Any]]:
-    """Return registry-visible metadata for all Penzai builders."""
+    """Return detached registry-visible metadata for all Penzai builders."""
 
     builders: list[dict[str, Any]] = []
     for name, (_, default_params, metadata) in sorted(_PENZAI_MODEL_BUILDERS.items()):
+        snapshot = _snapshot_builder_data(metadata, "metadata")
         builders.append(
             {
                 "name": name,
-                "description": str(metadata.get("description") or f"Penzai builder {name}."),
-                "default_params": dict(default_params),
-                "input_shape": metadata.get("input_shape"),
-                "output_shape": metadata.get("output_shape"),
-                "metadata": {
-                    key: value
-                    for key, value in metadata.items()
-                    if key not in {"description", "input_shape", "output_shape"}
-                },
+                "description": str(snapshot.pop("description", None) or f"Penzai builder {name}."),
+                "default_params": _snapshot_builder_data(default_params, "default_params"),
+                "input_shape": snapshot.pop("input_shape", None),
+                "output_shape": snapshot.pop("output_shape", None),
+                "metadata": snapshot,
             }
         )
     return builders
@@ -777,15 +823,19 @@ def resolve_penzai_model(
     builder_name: str,
     params: Mapping[str, Any] | None = None,
 ) -> PyTree:
-    """Construct a registered model using defaults overridden by the caller."""
-    builder_info = get_penzai_builder(builder_name)
+    """Construct a model with a local parameter tree and top-level overrides.
+
+    Overrides use the same data-tree domain as registered defaults.
+    """
+    builder_info = _PENZAI_MODEL_BUILDERS.get(builder_name)
     if builder_info is None:
         raise UnknownPenzaiBuilderError(
             f"Unknown Penzai builder {builder_name!r}. Available builders: {list_penzai_builders()}"
         )
     _require_penzai()
-    builder_fn, default_params = builder_info
-    return builder_fn({**default_params, **(params or {})})
+    builder_fn, default_params, _ = builder_info
+    effective_params = {**default_params, **(params if params is not None else {})}
+    return builder_fn(_snapshot_builder_data(effective_params, "params"))
 
 
 def render_penzai_model_html(model: PyTree) -> str:

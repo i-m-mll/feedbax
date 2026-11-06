@@ -31,7 +31,7 @@ from feedbax.components.penzai import (
     build_penzai_subgraph,
 )
 from feedbax.compiler.builders import _build_penzai_adapter
-from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report
+from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report, inspect_penzai_model
 from feedbax.compiler.serialization import graph_to_spec
 
 
@@ -633,6 +633,76 @@ class TestFactoryRegistry:
             assert not isinstance(exc_info.value, NotImplementedError)
         finally:
             pc._PENZAI_MODEL_BUILDERS.pop("test_runtime_stateful", None)
+
+    @pytest.mark.skipif(
+        not (PENZAI_AVAILABLE and TREESCOPE_AVAILABLE), reason="penzai and treescope required"
+    )
+    def test_seeded_build_and_inspection_isolate_nested_params(self):
+        from penzai import pz
+
+        import feedbax.components.penzai as pc
+
+        @pz.pytree_dataclass
+        class Projection(pz.nn.Layer):
+            weight: jax.Array
+
+            def __call__(self, x, /, **side_inputs):
+                return x @ self.weight
+
+        def build_projection(params):
+            assert isinstance(params["projection"]["columns"], tuple)
+            (columns,) = params["projection"]["columns"]
+            width = len(columns)
+            columns.append(0)
+            scale = params["gain"]["values"].pop() + params["gain"].get("offset", 0)
+            key = jax.random.PRNGKey(params["seed"])
+            return Projection(weight=jax.random.uniform(key, (1, width)) * scale)
+
+        builder_name = "test_nested_projection"
+        defaults = {"projection": {"columns": ([0, 1],)}, "gain": {"offset": 100}}
+        authored = {"gain": {"values": [3.0]}, "seed": 17}
+        metadata = {"tags": ["projection"]}
+        register_penzai_builder(
+            builder_name, build_projection, defaults, input_shape=(1,), metadata=metadata
+        )
+
+        def builder_info():
+            return next(info for info in list_penzai_builder_info() if info["name"] == builder_name)
+
+        try:
+            defaults["projection"]["columns"][0].append(2)
+            metadata["tags"].append("caller edit")
+            registered = get_penzai_builder(builder_name)
+            assert registered is not None
+            _, retrieved_defaults = registered
+            retrieved_defaults["projection"]["columns"][0].append(3)
+            listed = builder_info()
+            listed["default_params"]["projection"]["columns"][0].append(4)
+            listed["metadata"]["tags"].append("listing edit")
+            listed["input_shape"].append("2")
+
+            key = jax.random.PRNGKey(17)
+            expected = jax.random.uniform(key, (1, 2))[0] * 3.0
+            reports = []
+            for _ in range(2):
+                component = build_penzai_subgraph(builder_name, authored)
+                outputs, _ = component(
+                    {"input": jnp.ones(1)}, init_state_from_component(component), key=key
+                )
+                assert jnp.array_equal(outputs["output"], expected)
+                report, html = inspect_penzai_model(builder_name=builder_name, params=authored)
+                assert report.status == "ok"
+                assert report.summary["parameter_count"] == 2
+                assert html
+                reports.append(report)
+
+            assert reports[0] == reports[1]
+            assert authored == {"gain": {"values": [3.0]}, "seed": 17}
+            fresh = builder_info()
+            assert fresh["metadata"] == {"tags": ["projection"]}
+            assert fresh["input_shape"] == ["1"]
+        finally:
+            pc._PENZAI_MODEL_BUILDERS.pop(builder_name, None)
 
     @pytest.mark.skipif(not PENZAI_AVAILABLE, reason="penzai not installed")
     def test_graph_executes_the_model_resolved_during_compilation(self):
