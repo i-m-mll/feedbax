@@ -26,28 +26,27 @@ def get_pos_endpoints(trial_specs):
     )
 
 
-def _get_eval_ensemble(models, task: AbstractTask):
-    def eval_ensemble(key):
-        return task.eval_ensemble(
-            models,
-            n_replicates=jtree.infer_batch_size(models, exclude=is_intervenor),
-            # Each member of the model ensemble will be evaluated on the same trials
-            ensemble_random_trials=False,
-            key=key,
-        )
-
-    return eval_ensemble
-
-
 @eqx.filter_jit
 def vmap_eval_ensemble(
     key: PRNGKeyArray,
     hps: TreeNamespace,
     models: eqx.Module,
     task: AbstractTask,
+    *,
+    model_axes: PyTree,
 ):
     """Evaluate an ensemble of models on `n` random repeats of a task's validation set."""
-    return eqx.filter_vmap(_get_eval_ensemble(models, task))(jr.split(key, hps.task.eval_n))
+
+    def evaluate(repeat_key):
+        return task.eval_ensemble(
+            models,
+            n_replicates=hps.model.n_replicates,
+            key=repeat_key,
+            ensemble_random_trials=False,
+            model_axes=model_axes,
+        )
+
+    return eqx.filter_vmap(evaluate)(jr.split(key, hps.task.eval_n))
 
 
 def _get_replicate_idxs_fn(replicate_info, key):
