@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from operator import index
 import time
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 import equinox as eqx
 import jax
@@ -240,14 +240,16 @@ class StepGuardResult:
     coordinate: ProgressCoordinate | None = None
 
 
-class PhaseCheckpointStore(Protocol):
-    """Minimal checkpoint-store contract consumed by ``PhaseProgramExecutor``."""
+class PhaseCheckpointWriter(Protocol):
+    """Accept checkpoint payloads captured by the phase executor."""
 
     def save(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
         """Persist one checkpoint visit and return the stored checkpoint."""
 
-    def remember(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
-        """Record a pre-existing checkpoint visit without publishing side effects."""
+
+@runtime_checkable
+class PhaseCheckpointStore(PhaseCheckpointWriter, Protocol):
+    """Checkpoint writer that also keeps payloads available in memory."""
 
     def load(self, barrier: str) -> PhaseCheckpoint:
         """Return the latest checkpoint visit for ``barrier``."""
@@ -257,6 +259,14 @@ class PhaseCheckpointStore(Protocol):
 
     def visits(self, barrier: str | None = None) -> tuple[PhaseCheckpoint, ...]:
         """Return stored checkpoint visits in append order."""
+
+
+def _next_checkpoint_visit_ordinal(
+    checkpoint: PhaseCheckpoint,
+    previous_ordinal: int | None,
+) -> int:
+    next_ordinal = 0 if previous_ordinal is None else previous_ordinal + 1
+    return max(next_ordinal, checkpoint.visit_ordinal or 0)
 
 
 class InMemoryCheckpointStore:
@@ -270,13 +280,15 @@ class InMemoryCheckpointStore:
     def __init__(self) -> None:
         self._checkpoints: dict[str, list[PhaseCheckpoint]] = {}
         self._visit_log: list[PhaseCheckpoint] = []
-        self._next_visit_ordinal: dict[str, int] = {}
 
     def save(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
         return self.remember(checkpoint)
 
     def remember(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
-        saved = self._checkpoint_with_visit_ordinal(checkpoint)
+        visits = self._checkpoints.get(checkpoint.barrier)
+        previous_ordinal = visits[-1].visit_ordinal if visits else None
+        ordinal = _next_checkpoint_visit_ordinal(checkpoint, previous_ordinal)
+        saved = _copy_phase_checkpoint(replace(checkpoint, visit_ordinal=ordinal))
         self._checkpoints.setdefault(saved.barrier, []).append(saved)
         self._visit_log.append(saved)
         return _copy_phase_checkpoint(saved)
@@ -307,23 +319,6 @@ class InMemoryCheckpointStore:
             visits = self._checkpoints.get(barrier, ())
         return tuple(_copy_phase_checkpoint(visit) for visit in visits)
 
-    def _checkpoint_with_visit_ordinal(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
-        next_ordinal = self._next_visit_ordinal.get(checkpoint.barrier, 0)
-        visit_ordinal = (
-            next_ordinal
-            if checkpoint.visit_ordinal is None
-            else max(checkpoint.visit_ordinal, next_ordinal)
-        )
-        self._next_visit_ordinal[checkpoint.barrier] = visit_ordinal + 1
-        return _copy_phase_checkpoint(
-            PhaseCheckpoint(
-                barrier=checkpoint.barrier,
-                coordinate=checkpoint.coordinate,
-                slots=checkpoint.slots,
-                visit_ordinal=visit_ordinal,
-            )
-        )
-
 
 class PhaseProgramExecutor:
     """Execute a validated phase program through fixed-signature kernels."""
@@ -334,7 +329,7 @@ class PhaseProgramExecutor:
         kernels: Mapping[str, UpdateKernel],
         *,
         guard_predicates: Mapping[str, UpdateKernel] | None = None,
-        checkpoint_store: PhaseCheckpointStore | None = None,
+        checkpoint_store: PhaseCheckpointWriter | None = None,
         state_slots: Sequence[StateSlotSpec] = (),
         mapping_levels: Sequence[MaterializedMappingLevelSpec] = (),
         slot_axis_bindings: Mapping[str, Sequence[MaterializedSlotAxisBinding]] | None = None,
@@ -344,7 +339,14 @@ class PhaseProgramExecutor:
         self._prepared_numerical: dict[str, _PreparedNumericalUpdate] = {}
         self.preparation_telemetry: dict[str, Any] = {}
         self.guard_predicates = dict(guard_predicates or {})
-        self.checkpoint_store = checkpoint_store or InMemoryCheckpointStore()
+        self.checkpoint_store = (
+            InMemoryCheckpointStore() if checkpoint_store is None else checkpoint_store
+        )
+        self._checkpoint_history = (
+            self.checkpoint_store
+            if isinstance(self.checkpoint_store, PhaseCheckpointStore)
+            else None
+        )
         self._metric_slots = tuple(slot.name for slot in state_slots if slot.role == "metric")
         self.mapping_levels = tuple(mapping_levels)
         self.slot_axis_bindings = {
@@ -537,6 +539,7 @@ class PhaseProgramExecutor:
         *,
         run_id: str,
         resume_from_barrier: str | None = None,
+        resume_checkpoint: PhaseCheckpoint | None = None,
         stop_after_barrier: str | None = None,
         stop_after_next_barrier: Callable[[str], bool] | None = None,
         context: Mapping[str, Any] | None = None,
@@ -555,6 +558,9 @@ class PhaseProgramExecutor:
         visit ordinals. ``update_budget`` uses the same authority as a delta
         from the entry counter and may end naturally before the budget is used.
         A terminal partial interval is always emitted.
+
+        A checkpoint restored by external custody can be passed directly as
+        ``resume_checkpoint``. ``resume_from_barrier`` selects a stored in-memory visit.
         """
         self._validate_interval(checkpoint_interval, name="checkpoint_interval")
         self._validate_interval(progress_interval, name="progress_interval")
@@ -575,15 +581,22 @@ class PhaseProgramExecutor:
         resume_inner_step = 0
         resuming_within_phase = False
         if resume_from_barrier is not None:
-            checkpoint = self.checkpoint_store.load(resume_from_barrier)
-            current_slots = self.merge_resume_slots(slots, checkpoint)
-            start_phase, resume_inner_step = self._resume_position(checkpoint)
+            if resume_checkpoint is not None or self._checkpoint_history is None:
+                raise WorkerContractValidationError(
+                    "/checkpoint_store",
+                    "resume_from_barrier requires an in-memory checkpoint store "
+                    "and cannot be used with resume_checkpoint",
+                )
+            resume_checkpoint = self._checkpoint_history.load(resume_from_barrier)
+        if resume_checkpoint is not None:
+            current_slots = self.merge_resume_slots(slots, resume_checkpoint)
+            start_phase, resume_inner_step = self._resume_position(resume_checkpoint)
             resuming_within_phase = resume_inner_step > 0
-            coordinate = checkpoint.coordinate.model_copy(
+            coordinate = resume_checkpoint.coordinate.model_copy(
                 update={
                     "run_id": run_id,
                     "phase": start_phase,
-                    "completed_barrier": resume_from_barrier,
+                    "completed_barrier": resume_checkpoint.barrier,
                 }
             )
         else:
@@ -685,16 +698,11 @@ class PhaseProgramExecutor:
                             current_slots if guard_result.slots is None else guard_result.slots
                         )
                         halted_coordinate = guard_result.coordinate or coordinate
-                        return PhaseExecutionResult(
-                            slots=_copy_executor_mapping(halted_slots),
-                            coordinate=halted_coordinate,
+                        return self._result(
+                            halted_slots,
+                            halted_coordinate,
+                            progress,
                             start_completed_batches=initial_batch,
-                            end_completed_batches=self._completed_training_batches(
-                                halted_slots, halted_coordinate
-                            ),
-                            progress=progress,
-                            checkpoints=self.checkpoint_store.as_dict(),
-                            checkpoint_visits=self.checkpoint_store.visits(),
                         )
                 completed_batches = observation.completed_batches()
                 if completed_batches < previous_completed_batch:
@@ -737,13 +745,13 @@ class PhaseProgramExecutor:
                         f"budget={update_budget}",
                     )
                 if update_budget is not None and completed_batch_delta == update_budget:
-                    saved_checkpoint = self._save_phase_barrier(
+                    saved_barrier = self._save_phase_barrier(
                         phase.name,
                         coordinate,
                         current_slots,
                     )
                     coordinate = coordinate.model_copy(
-                        update={"completed_barrier": saved_checkpoint.barrier}
+                        update={"completed_barrier": saved_barrier}
                     )
                     return self._result(
                         current_slots,
@@ -756,17 +764,17 @@ class PhaseProgramExecutor:
                     checkpoint_interval,
                     last_checkpoint_batch,
                 ):
-                    saved_checkpoint = self._save_phase_barrier(
+                    saved_barrier = self._save_phase_barrier(
                         phase.name,
                         coordinate,
                         current_slots,
                     )
                     last_checkpoint_batch = completed_batches
                     coordinate = coordinate.model_copy(
-                        update={"completed_barrier": saved_checkpoint.barrier}
+                        update={"completed_barrier": saved_barrier}
                     )
                     if self._should_stop_at_barrier(
-                        saved_checkpoint.barrier,
+                        saved_barrier,
                         stop_after_barrier=stop_after_barrier,
                         stop_after_next_barrier=stop_after_next_barrier,
                     ):
@@ -799,9 +807,9 @@ class PhaseProgramExecutor:
                 if progress_callback is not None:
                     progress_callback(_copy_progress_coordinate(observed_coordinate))
 
-            saved_checkpoint: PhaseCheckpoint | None = None
+            saved_barrier: str | None = None
             if checkpoint_interval is None and phase.checkpoint_barrier is not None:
-                saved_checkpoint = self._save_barrier(
+                saved_barrier = self._save_barrier(
                     phase.checkpoint_barrier,
                     coordinate,
                     current_slots,
@@ -811,18 +819,18 @@ class PhaseProgramExecutor:
                 and next_phase is None
                 and completed_batches != last_checkpoint_batch
             ):
-                saved_checkpoint = self._save_phase_barrier(
+                saved_barrier = self._save_phase_barrier(
                     phase.name,
                     coordinate,
                     current_slots,
                 )
                 last_checkpoint_batch = completed_batches
-            if saved_checkpoint is not None:
+            if saved_barrier is not None:
                 coordinate = coordinate.model_copy(
-                    update={"completed_barrier": saved_checkpoint.barrier}
+                    update={"completed_barrier": saved_barrier}
                 )
                 if self._should_stop_at_barrier(
-                    saved_checkpoint.barrier,
+                    saved_barrier,
                     stop_after_barrier=stop_after_barrier,
                     stop_after_next_barrier=stop_after_next_barrier,
                 ):
@@ -904,16 +912,17 @@ class PhaseProgramExecutor:
         *,
         start_completed_batches: int,
     ) -> PhaseExecutionResult:
-        end_completed_batches = self._completed_training_batches(slots, coordinate)
-        return PhaseExecutionResult(
+        result = PhaseExecutionResult(
             slots=_copy_executor_mapping(slots),
             coordinate=coordinate,
             start_completed_batches=start_completed_batches,
-            end_completed_batches=end_completed_batches,
+            end_completed_batches=self._completed_training_batches(slots, coordinate),
             progress=progress,
-            checkpoints=self.checkpoint_store.as_dict(),
-            checkpoint_visits=self.checkpoint_store.visits(),
         )
+        if self._checkpoint_history is not None:
+            result.checkpoints = self._checkpoint_history.as_dict()
+            result.checkpoint_visits = self._checkpoint_history.visits()
+        return result
 
     @staticmethod
     def _validate_interval(value: int | None, *, name: str) -> None:
@@ -1035,7 +1044,7 @@ class PhaseProgramExecutor:
         phase_name: str,
         coordinate: ProgressCoordinate,
         slots: Mapping[str, Any],
-    ) -> PhaseCheckpoint:
+    ) -> str:
         barrier_name = self._phases[phase_name].checkpoint_barrier
         if barrier_name is None:
             raise WorkerContractValidationError(
@@ -1060,7 +1069,7 @@ class PhaseProgramExecutor:
         barrier_name: str,
         coordinate: ProgressCoordinate,
         slots: Mapping[str, Any],
-    ) -> PhaseCheckpoint:
+    ) -> str:
         barrier = self._barriers[barrier_name]
         capture_slots = [slot.slot for slot in barrier.slots]
         capture_slots.extend(
@@ -1087,13 +1096,14 @@ class PhaseProgramExecutor:
                 f"/checkpoint_barriers/{barrier_name}/artifact_sinks",
                 f"missing required artifact sink slots {missing_artifact_sinks!r}",
             )
-        return self.checkpoint_store.save(
+        saved = self.checkpoint_store.save(
             PhaseCheckpoint(
                 barrier=barrier_name,
                 coordinate=coordinate.model_copy(update={"completed_barrier": barrier_name}),
                 slots=captured,
             )
         )
+        return saved.barrier
 
     def _progress_metrics(self, slots: Mapping[str, Any]) -> dict[str, Any]:
         return {

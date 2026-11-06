@@ -18,6 +18,7 @@ from feedbax.component_registry import ComponentRegistry, register_cde_templates
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.compiler.templates import network_template_graph
 from feedbax.compiler.normalization import normalize_task_binding_spec_for_studio_authoring
+from feedbax.contracts.base import ParentRef
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
@@ -33,6 +34,7 @@ from feedbax.web.worker.execution import (
 )
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
 from feedbax.web.worker.app import _Job, _require_worker_specs
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
 from feedbax.web.worker.diagnostics import GraphCompilationError
@@ -865,6 +867,15 @@ def test_studio_update_preserves_seeded_training(fixture, expected_losses, expec
         kernel({**slots, "batch_counter": jnp.zeros((2,), dtype=jnp.int32)})
 
 
+def _checkpoint_steps(manifest_payload: dict, root: Path) -> list[int]:
+    return [
+        authenticate_checkpoint_custody_ref(
+            ParentRef.model_validate(receipt), allowed_root=root
+        ).manifest.completed_coordinate.program_step
+        for receipt in manifest_payload["checkpoint_custody"]
+    ]
+
+
 def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
     compiled = compile_training_run(
@@ -897,6 +908,10 @@ def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, m
     assert progress_steps == [1, 2, 3, 4, 5]
     assert log_steps == [1, 2, 3, 4, 5]
     assert trajectory_steps == [3, 5]
+    assert result.manifest_payload is not None
+    assert _checkpoint_steps(
+        result.manifest_payload, tmp_path / "runs" / "checkpoints" / "test-job"
+    ) == [3, 5]
     assert all("batch" not in event for event in events)
 
     assert compiled.graph is result.graph
@@ -956,14 +971,6 @@ def test_run_training_graph_stopped_run_returns_latest_batch_loss(
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "runs"))
 
-    class StopAfterTwoChecks:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def is_set(self) -> bool:
-            self.calls += 1
-            return self.calls > 2
-
     compiled = compile_training_run(
         component_registry=ComponentRegistry(load_user_components=False),
         graph_spec=_linear_graph_spec(),
@@ -973,20 +980,29 @@ def test_run_training_graph_stopped_run_returns_latest_batch_loss(
         cfg=_cfg(),
     )
     events: list[dict] = []
+    stop_event = threading.Event()
+
+    def emit(event: dict) -> None:
+        events.append(event)
+        if event["type"] == "training_progress" and event["program_step"] == 3:
+            stop_event.set()
 
     result = run_training_graph(
         compiled,
         job_id="test-job",
         total_batches=5,
         cfg=_cfg(snapshot_interval=5),
-        stop_event=StopAfterTwoChecks(),
-        emit=events.append,
+        stop_event=stop_event,
+        emit=emit,
     )
 
     progress_losses = [event["loss"] for event in events if event["type"] == "training_progress"]
-    assert progress_losses
+    assert len(progress_losses) == result.final_batch == 3
     assert result.final_loss == pytest.approx(progress_losses[-1])
-    assert result.final_batch == len(progress_losses)
+    assert result.manifest_payload is not None
+    assert _checkpoint_steps(
+        result.manifest_payload, tmp_path / "runs" / "checkpoints" / "test-job"
+    ) == [3]
 
 
 def test_run_training_graph_projects_parameter_constraints_after_update(

@@ -141,7 +141,7 @@ from feedbax.training.checkpoint_transform import (
 from feedbax.training.phase_executor import (
     _StepObservation,
     _metric_nan_flags,
-    InMemoryCheckpointStore,
+    _next_checkpoint_visit_ordinal,
     PhaseCheckpoint,
     PhaseProgramExecutor,
     StepGuardResult,
@@ -487,8 +487,8 @@ class _ResolvedCheckpointInitialization:
         }
 
 
-class StreamingCheckpointStore(InMemoryCheckpointStore):
-    """Checkpoint store that writes custody transactions at barrier time."""
+class StreamingCheckpointStore:
+    """Publish checkpoints to custody and retain their receipts in visit order."""
 
     def __init__(
         self,
@@ -507,8 +507,8 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         run_event_emitter: RunEventEmitter | None = None,
         checkpoint_initialization: Mapping[str, Any] | None = None,
         content_provider: ArtifactBlobProvider | None = None,
+        resume_checkpoint: PhaseCheckpoint | None = None,
     ) -> None:
-        super().__init__()
         self.root = Path(root)
         self.artifact_root = Path(artifact_root)
         self.run_spec = run_spec
@@ -529,6 +529,11 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
         self._writes: list[CheckpointWriteResult] = []
         self._barrier_artifacts: list[ArtifactRef] = []
         self._before_save: Callable[[ProgressCoordinate], None] | None = None
+        self._visit_ordinals: dict[str, int] = {}
+        if resume_checkpoint is not None:
+            self._visit_ordinals[resume_checkpoint.barrier] = _next_checkpoint_visit_ordinal(
+                resume_checkpoint, None
+            )
 
     def set_before_save(self, callback: Callable[[ProgressCoordinate], None] | None) -> None:
         """Install an executor-local validation hook before checkpoint publication."""
@@ -547,7 +552,10 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
     def save(self, checkpoint: PhaseCheckpoint) -> PhaseCheckpoint:
         if self._before_save is not None:
             self._before_save(checkpoint.coordinate)
-        saved = super().save(checkpoint)
+        ordinal = _next_checkpoint_visit_ordinal(
+            checkpoint, self._visit_ordinals.get(checkpoint.barrier)
+        )
+        saved = replace(checkpoint, visit_ordinal=ordinal)
         barrier_spec = self._barrier_specs[saved.barrier]
         prepared_artifacts = _prepare_barrier_artifacts(
             saved,
@@ -604,6 +612,7 @@ class StreamingCheckpointStore(InMemoryCheckpointStore):
             content_provider=self.content_provider,
         )
         self._writes.append(write)
+        self._visit_ordinals[saved.barrier] = ordinal
         if self.run_event_emitter is not None:
             coordinate_payload, checkpoint_metrics = normalize_serialized_metrics(
                 saved.coordinate,
@@ -1017,7 +1026,6 @@ def execute_training_run_spec(
                 )
         slots.update(resolved_initialization.slots)
 
-    resume_barrier: str | None = None
     parent_lineage: list[CheckpointLineageRef] = []
     loaded_resume_checkpoint: PhaseCheckpoint | None = None
     segment_start_batch = 0
@@ -1088,7 +1096,6 @@ def execute_training_run_spec(
                 slots=resolved_initialization.slots,
                 visit_ordinal=_checkpoint_visit_ordinal(source_manifest.metadata),
             )
-            resume_barrier = source_manifest.barrier
             if continuation is not None:
                 segment_batch_count = continuation.additional_batches
             if continuation is not None or segment_start_batch > 0:
@@ -1119,6 +1126,7 @@ def execute_training_run_spec(
             else None
         ),
         content_provider=checkpoint_content_provider,
+        resume_checkpoint=loaded_resume_checkpoint,
     )
     resolved_checkpoint_parents = (
         [resolved_initialization.source] if resolved_initialization is not None else []
@@ -1163,8 +1171,6 @@ def execute_training_run_spec(
         )
     except ValueError as exc:
         raise TrainingRunExecutorError(f"kernel preparation preflight failed: {exc}") from exc
-    if loaded_resume_checkpoint is not None:
-        checkpoint_store.remember(loaded_resume_checkpoint)
     live_history_events: list[dict[str, Any]] = []
     method_observations: list[dict[str, Any]] = []
     method_observation_buffer = (
@@ -1222,7 +1228,7 @@ def execute_training_run_spec(
         execution = executor.run(
             slots,
             run_id=resolved_run_id,
-            resume_from_barrier=resume_barrier,
+            resume_checkpoint=loaded_resume_checkpoint,
             stop_after_barrier=stop_after_barrier,
             stop_after_next_barrier=lambda _barrier: cancellation is not None,
             context=executor_context,
