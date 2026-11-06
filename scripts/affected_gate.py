@@ -41,8 +41,21 @@ def selection(base: str, env: dict[str, str]) -> dict:
         raise RuntimeError("affected-test selection returned invalid JSON") from exc
     if not isinstance(report, dict):
         raise RuntimeError("affected-test selection returned an invalid report")
-    if report.get("mode") not in {"candidate", "full"}:
-        raise RuntimeError("affected-test selection returned an unknown mode")
+    for name in ("python", "studio"):
+        gate = report.get(name)
+        if (
+            not isinstance(gate, dict)
+            or gate.get("scope") not in {"none", "selected", "all"}
+            or not isinstance(gate.get("tests"), list)
+            or any(not isinstance(path, str) for path in gate["tests"])
+            or not isinstance(gate.get("reason"), str)
+        ):
+            raise RuntimeError(f"affected-test selection returned an invalid {name} gate")
+    if any(
+        not isinstance(report.get(name), bool)
+        for name in ("browser", "build", "contracts", "clean_wheel")
+    ):
+        raise RuntimeError("affected-test selection returned invalid auxiliary gates")
     return report
 
 
@@ -91,31 +104,41 @@ def affected(
 ) -> None:
     report = selection(base, env)
     print(json.dumps(report, indent=2, sort_keys=True), flush=True)
-    if report["mode"] == "full":
-        reference(env, profile_json, python_junit)
-        return
-    python_tests = report.get("python_tests")
-    studio_tests = report.get("studio_unit_tests")
-    browser = report.get("studio_build_and_browser")
-    if (
-        not isinstance(python_tests, list)
-        or not isinstance(studio_tests, list)
-        or not isinstance(browser, bool)
-    ):
-        raise RuntimeError("candidate affected-test report has an invalid shape")
-    if python_tests:
-        python = ["scripts/full_suite.sh", "--affected-base", base, "--no-memo"]
+    python_gate = report["python"]
+    studio_gate = report["studio"]
+    if python_gate["scope"] != "none":
+        python = ["scripts/full_suite.sh", "--no-memo"]
+        if python_gate["scope"] == "selected":
+            python.extend(["--affected-tests", *python_gate["tests"]])
         if profile_json is not None:
             python.extend(["--profile-json", str(profile_json)])
         if python_junit is not None:
             python.append(f"--junitxml={python_junit}")
         run(python, env=env, timeout=420)
-    if studio_tests:
-        files = [str(Path(path).relative_to("web")) for path in studio_tests]
+    if studio_gate["scope"] == "all":
+        run(["bun", "run", "test"], cwd=ROOT / "web", env=env)
+    elif studio_gate["scope"] == "selected":
+        files = [str(Path(path).relative_to("web")) for path in studio_gate["tests"]]
         run(["bun", "--bun", "vitest", "run", *files], cwd=ROOT / "web", env=env)
-    if browser:
+    if report["contracts"]:
+        run(
+            [
+                "uv",
+                "run",
+                "--no-sync",
+                "python",
+                "-c",
+                "from scripts.generate_studio_contracts import OUTPUT, generate; "
+                "import sys; sys.exit(0 if OUTPUT.read_text(encoding='utf-8') == generate() else 1)",
+            ],
+            env=env,
+        )
+    if report["browser"]:
         run(["bun", "run", "test:e2e"], cwd=ROOT / "web", env=env)
+    if report["build"]:
         run(["bun", "run", "build"], cwd=ROOT / "web", env=env)
+    if report["clean_wheel"]:
+        print("Pending committed-candidate obligation: clean-wheel conformance", flush=True)
 
 
 def main() -> int:
@@ -134,7 +157,7 @@ def main() -> int:
     env.setdefault("FEEDBAX_TEST_NATIVE_THREADS", "1")
     if args.plan:
         report = (
-            {"mode": "full", "reason": "complete reference requested"}
+            {"reference": "complete", "requires_clean_checkout": True}
             if args.reference
             else selection(args.base, env)
         )

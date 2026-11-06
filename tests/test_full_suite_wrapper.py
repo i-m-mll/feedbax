@@ -38,9 +38,8 @@ def test_affected_collection_omits_an_unrelated_failing_test(tmp_path: Path) -> 
     scripts = root / "scripts"
     scripts.mkdir()
     (scripts / "affected_tests.py").write_text(
-        'print(\'{"mode": "candidate", "python_tests": '
-        '["tests/test_placeholder.py"], "studio_unit_tests": [], '
-        '"studio_build_and_browser": false}\')\n',
+        'print(\'{"python": {"scope": "selected", '
+        '"tests": ["tests/test_placeholder.py"], "reason": ""}}\')\n',
         encoding="utf-8",
     )
     command = [

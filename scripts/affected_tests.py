@@ -1,4 +1,4 @@
-"""Report candidate test files against the working tree without changing the full gate."""
+"""Plan independently affected checks against the working tree."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from typing import Literal, TypedDict
 from urllib.request import urlopen
 
 
-PPO_SOURCE = "feedbax/training/rl/ppo.py"
 PYTHON_ROOTS = {"feedbax", "scripts", "tests"}
 STUDIO_TEST = re.compile(r"\.test\.[tj]sx?$")
 SHARED_STUDIO_SOURCES = (
@@ -54,16 +53,19 @@ class Change:
     status: str
 
 
-class FullSelection(TypedDict):
-    mode: Literal["full"]
+class TestGate(TypedDict):
+    scope: Literal["none", "selected", "all"]
+    tests: list[str]
     reason: str
 
 
-class CandidateSelection(TypedDict):
-    mode: Literal["candidate"]
-    python_tests: list[str]
-    studio_unit_tests: list[str]
-    studio_build_and_browser: bool
+class GatePlan(TypedDict):
+    python: TestGate
+    studio: TestGate
+    browser: bool
+    build: bool
+    contracts: bool
+    clean_wheel: bool
 
 
 def _git(root: Path, *args: str) -> bytes:
@@ -231,39 +233,37 @@ def _studio_related(root: Path, paths: set[str]) -> list[str]:
     return sorted(set(files))
 
 
-def _selection(
-    root: Path, changes: list[Change], *, external: bool
-) -> FullSelection | CandidateSelection:
-    if external:
-        return {"mode": "full", "reason": "external project or plugin source changed"}
-    if any(
-        change.path.startswith(
-            (
-                "feedbax/compiler/",
-                "feedbax/component_registry/",
-                "feedbax/contracts/",
-                "feedbax/plugins/",
-                "feedbax/runtime/",
-                "web/src/generated/",
-            )
-        )
-        for change in changes
-    ):
-        return {"mode": "full", "reason": "shared graph, registry or generated contract changed"}
-    if any(
-        change.path.startswith(SHARED_STUDIO_SOURCES) and not _studio_test(change.path)
-        for change in changes
-    ):
-        return {"mode": "full", "reason": "shared Studio graph, schema or wire contract changed"}
+def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan:
     python, studio = set(), set()
+    python_reason = ""
+    studio_reason = ""
+    browser = build = contracts = clean_wheel = False
+    if external:
+        python_reason = studio_reason = "external project or plugin source changed"
+        browser = build = contracts = clean_wheel = True
     for path, status in ((change.path, change.status) for change in changes):
         if (
             status not in {"A", "M", "?"}
             or not (root / path).is_file()
             or (root / path).is_symlink()
         ):
-            return {"mode": "full", "reason": f"missing, removed or replaced path: {path}"}
-        if path == PPO_SOURCE or _python_test(path):
+            python_reason = studio_reason = f"missing, removed or replaced path: {path}"
+            browser = build = contracts = clean_wheel = True
+        elif path.startswith("feedbax/") and path.endswith(".py"):
+            python.add(path)
+            clean_wheel = True
+            if path.startswith(
+                (
+                    "feedbax/compiler/",
+                    "feedbax/component_registry/",
+                    "feedbax/contracts/",
+                    "feedbax/plugins/",
+                    "feedbax/runtime/",
+                )
+            ):
+                python_reason = studio_reason = f"shared Python contract: {path}"
+                browser = build = contracts = True
+        elif _python_test(path):
             python.add(path)
         elif (
             path.startswith("web/src/")
@@ -272,20 +272,36 @@ def _selection(
             and not path.endswith(".d.ts")
         ):
             studio.add(path)
+            browser = build = True
+            if path.startswith(SHARED_STUDIO_SOURCES) and not _studio_test(path):
+                python_reason = studio_reason = f"shared Studio contract: {path}"
+                contracts = True
+        elif path.startswith("docs/") or path.endswith(".md"):
+            continue
         else:
-            return {"mode": "full", "reason": f"shared or unproved dependency: {path}"}
-    try:
-        python_tests = _python_related(root, python) if python else []
-        studio_tests = _studio_related(root, studio) if studio else []
-    except (KeyError, OSError, ValueError, subprocess.SubprocessError) as exc:
-        return {"mode": "full", "reason": f"dependency inference failed: {exc}"}
-    if (python and not python_tests) or (studio and not studio_tests):
-        return {"mode": "full", "reason": "changed source has no known test witness"}
+            python_reason = studio_reason = f"shared or unproved dependency: {path}"
+            browser = build = contracts = clean_wheel = True
+    python_tests = _python_related(root, python) if python and not python_reason else []
+    studio_tests = _studio_related(root, studio) if studio and not studio_reason else []
+    if python and not python_tests and not python_reason:
+        python_reason = "changed Python source has no known test witness"
+    if studio and not studio_tests and not studio_reason:
+        studio_reason = "changed Studio source has no known test witness"
     return {
-        "mode": "candidate",
-        "python_tests": python_tests,
-        "studio_unit_tests": studio_tests,
-        "studio_build_and_browser": bool(studio),
+        "python": {
+            "scope": "all" if python_reason else "selected" if python_tests else "none",
+            "tests": python_tests,
+            "reason": python_reason,
+        },
+        "studio": {
+            "scope": "all" if studio_reason else "selected" if studio_tests else "none",
+            "tests": studio_tests,
+            "reason": studio_reason,
+        },
+        "browser": browser,
+        "build": build,
+        "contracts": contracts,
+        "clean_wheel": clean_wheel,
     }
 
 
@@ -310,18 +326,14 @@ def main() -> int:
         parser.error("--replay-repo and --source-only require --replay")
     root = Path(__file__).resolve().parents[1]
     input_root = args.replay_repo.resolve() if args.replay_repo else root
-    changes: list[Change] = []
-    try:
-        changes = _changes(input_root, args.replay or args.base, replay=bool(args.replay))
-        if args.source_only:
-            changes = [
-                change
-                for change in changes
-                if not (_python_test(change.path) or _studio_test(change.path))
-            ]
-        decision = _selection(root, changes, external=input_root != root)
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        decision = {"mode": "full", "reason": f"change inventory unavailable: {exc}"}
+    changes = _changes(input_root, args.replay or args.base, replay=bool(args.replay))
+    if args.source_only:
+        changes = [
+            change
+            for change in changes
+            if not (_python_test(change.path) or _studio_test(change.path))
+        ]
+    decision = _selection(root, changes, external=input_root != root)
     print(
         json.dumps(
             {

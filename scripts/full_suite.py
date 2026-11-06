@@ -593,21 +593,18 @@ def affected_test_selection(repo_root: Path, base: str) -> dict[str, Any]:
         raise RuntimeError("affected-test selection returned invalid JSON") from exc
     if not isinstance(selection, dict):
         raise RuntimeError("affected-test selection returned an invalid report")
-    if selection.get("mode") == "full":
-        if not isinstance(selection.get("reason"), str):
-            raise RuntimeError("full affected-test selection has no reason")
-    elif selection.get("mode") == "candidate":
-        tests = selection.get("python_tests")
-        if not isinstance(tests, list) or any(
-            not isinstance(path, str)
-            or not path.startswith("tests/")
-            or ".." in Path(path).parts
-            or not (repo_root / path).is_file()
-            for path in tests
-        ):
-            raise RuntimeError("affected-test selection returned invalid Python tests")
-    else:
-        raise RuntimeError("affected-test selection returned an unknown mode")
+    gate = selection.get("python")
+    if not isinstance(gate, dict) or gate.get("scope") not in {"none", "selected", "all"}:
+        raise RuntimeError("affected-test selection returned an invalid Python gate")
+    tests = gate.get("tests")
+    if not isinstance(tests, list) or any(
+        not isinstance(path, str)
+        or not path.startswith("tests/")
+        or ".." in Path(path).parts
+        or not (repo_root / path).is_file()
+        for path in tests
+    ):
+        raise RuntimeError("affected-test selection returned invalid Python tests")
     return selection
 
 
@@ -631,6 +628,11 @@ def parse_args(argv: Sequence[str] | None) -> tuple[argparse.Namespace, list[str
     parser.add_argument(
         "--affected-base",
         help="Run Python test files affected since this Git commit.",
+    )
+    parser.add_argument(
+        "--affected-tests",
+        nargs="+",
+        help="Run these already selected Python test files without selecting again.",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the computed command and memo state."
@@ -684,13 +686,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     configure_native_threads()
 
-    if args.affected_base and args.suite_profile != "core":
+    if args.affected_base and args.affected_tests:
+        raise ValueError("use either --affected-base or --affected-tests")
+    if (args.affected_base or args.affected_tests) and args.suite_profile != "core":
         raise ValueError("affected selection uses the core capability profile")
     selection = (
         affected_test_selection(repo_root, args.affected_base) if args.affected_base else None
     )
-    candidate = selection is not None and selection["mode"] == "candidate"
-    collection_roots = selection["python_tests"] if candidate else ["tests"]
+    if args.affected_tests:
+        selection = {"python": {"scope": "selected", "tests": args.affected_tests, "reason": ""}}
+    scope = selection["python"]["scope"] if selection is not None else "all"
+    candidate = selection is not None and scope != "all"
+    collection_roots = selection["python"]["tests"] if candidate else ["tests"]
     if selection is not None:
         selection = {"base": args.affected_base, **selection}
 
