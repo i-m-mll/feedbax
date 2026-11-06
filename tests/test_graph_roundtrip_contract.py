@@ -53,26 +53,42 @@ _SCALAR_CONTROL_TYPES = (
     "ZeroOrderHold",
 )
 
+_SHAPED_SIGNAL_TYPES = (
+    "BandPassFilter",
+    "Channel",
+    "DelayLine",
+    "FirstOrderFilter",
+    "HighPassFilter",
+    "RateLimiter",
+)
+
 
 _NONE_VALUES: dict[tuple[str, str], Any] = {
     **{
         (kind, "input_dtype"): "float16"
-        for kind in ("Channel", "DelayLine", "FirstOrderFilter", *_SCALAR_CONTROL_TYPES)
+        for kind in (*_SHAPED_SIGNAL_TYPES, *_SCALAR_CONTROL_TYPES)
     },
+    **{(kind, "input_shape"): [3] for kind in _SHAPED_SIGNAL_TYPES},
     ("AffineFeedbackController", "bias"): [0.25],
     ("AffineFeedbackController", "feedforward"): [0.5],
-    ("Channel", "input_shape"): [3],
     ("Channel", "noise_role"): "motor_command",
     ("Channel", "noise_timing"): "post_controller",
-    ("DelayLine", "input_shape"): [3],
     ("DelayedReaches", "n_control_stages"): 49,
     ("DelayedReaches", "go_cue_event_name"): "go",
     ("DynamicsMatrixPerturb", "mass"): 1.25,
-    ("FirstOrderFilter", "input_shape"): [3],
     ("LinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
     ("StructuralLinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
     ("StateFeedbackSelector", "expected_state_dim"): 4,
     ("StateFeedbackSelector", "output_size"): 4,
+    ("ConstantInput", "arrays"): [0.25, -0.5],
+    ("NetworkClamp", "unit_spec"): [0.25, None],
+    ("NetworkConstantInput", "unit_spec"): [0.25, None],
+}
+
+_INTERVENTION_PAYLOAD_FIELDS = {
+    "ConstantInput": "arrays",
+    "NetworkClamp": "unit_spec",
+    "NetworkConstantInput": "unit_spec",
 }
 
 
@@ -173,6 +189,11 @@ def _contextualize_params(
         params["hold_epochs"] = [0]
     elif component_type == "DynamicsMatrixPerturb":
         params.setdefault("mass", 1.0)
+    elif (
+        param_name in {"active", "payload_dtype"} and component_type in _INTERVENTION_PAYLOAD_FIELDS
+    ):
+        payload_field = _INTERVENTION_PAYLOAD_FIELDS[component_type]
+        params[payload_field] = deepcopy(_NONE_VALUES[component_type, payload_field])
     elif component_type == "StateFeedbackSelector" and param_name == "output_size":
         params["channels"] = [{"slice": "position", "transform": "identity"}]
         params["output_size"] = 2
@@ -196,7 +217,7 @@ def _single_node_spec(
         }
     )
     prototype_shape = (2,)
-    if component_type in {"Channel", "DelayLine", "FirstOrderFilter"} and isinstance(
+    if component_type in _SHAPED_SIGNAL_TYPES and isinstance(
         params.get("input_shape"), list
     ):
         prototype_shape = tuple(int(dim) for dim in params["input_shape"])
@@ -274,8 +295,15 @@ def test_registered_buildable_component_param_round_trips(
         emitted = serialized.nodes["node"]
         assert emitted.type == component_type, witness
 
-        if component_type == "DelayedReaches" and param_name == "move_epochs":
-            assert emitted.params["move_epochs"] == params["move_epochs"], witness
+        if param_name is not None and (
+            (component_type, param_name) == ("DelayedReaches", "move_epochs")
+            or (
+                component_type in _SHAPED_SIGNAL_TYPES
+                and param_name in {"input_shape", "input_dtype"}
+            )
+            or component_type in _INTERVENTION_PAYLOAD_FIELDS
+        ):
+            assert emitted.params[param_name] == params[param_name], witness
         if param_name is not None and param_name != "schema_version":
             assert emitted.params != baseline.nodes["node"].params, (
                 f"{witness} did not affect the canonical GraphSpec"
