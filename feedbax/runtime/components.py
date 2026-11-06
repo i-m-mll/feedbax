@@ -307,7 +307,7 @@ class Constant(Component):
 
     output_ports = ("output",)
 
-    value: PyTree = field(static=True)
+    value: PyTree
 
     def __init__(self, value: PyTree = 0.0):
         self.value = jt.map(jnp.asarray, value)
@@ -348,8 +348,8 @@ class Ramp(_StepSource):
 
     output_ports = ("output",)
 
-    slope: PyTree = field(static=True)
-    intercept: PyTree = field(static=True)
+    slope: PyTree
+    intercept: PyTree
 
     def __init__(self, slope: PyTree = 1.0, intercept: PyTree = 0.0, dt: float = 0.01):
         super().__init__(dt=dt)
@@ -368,10 +368,10 @@ class Sine(_StepSource):
 
     output_ports = ("output",)
 
-    amplitude: PyTree = field(static=True)
+    amplitude: PyTree
     frequency: float
     phase: float
-    offset: PyTree = field(static=True)
+    offset: PyTree
 
     def __init__(
         self,
@@ -404,10 +404,10 @@ class Pulse(_StepSource):
 
     output_ports = ("output",)
 
-    amplitude: PyTree = field(static=True)
+    amplitude: PyTree
     period: float
     duty_cycle: float
-    offset: PyTree = field(static=True)
+    offset: PyTree
 
     def __init__(
         self,
