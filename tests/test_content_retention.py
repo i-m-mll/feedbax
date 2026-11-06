@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,9 +12,11 @@ import pytest
 
 import feedbax.persistence.content_retention as retention_module
 from feedbax.contracts.artifact_custody import (
+    ContentGcReceipt,
     ContentGcRequest,
     ContentHoldRecord,
     ContentLeaseRecord,
+    ContentRetentionIndex,
     ContentRetentionTarget,
     ContentRootRecord,
 )
@@ -109,6 +112,34 @@ def test_dry_run_does_not_mutate_store(tmp_path: Path) -> None:
     }
     assert report.stage == "reported"
     assert before == after
+
+
+def test_destructive_gc_streams_retained_and_collectible_blobs(tmp_path: Path) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "store")
+    retained = provider.store_object(b"x" * (16 * 1024 * 1024))
+    candidate = provider.store_object(b"y" * retained.size_bytes)
+    provider.register_root(
+        ContentRootRecord(
+            root_id="export:retained",
+            root_kind="export",
+            targets=(_object_target(retained),),
+        )
+    )
+    report = provider.collect_garbage()
+
+    tracemalloc.start()
+    try:
+        result = provider.collect_garbage(
+            ContentGcRequest(destructive=True, expected_generation=report.generation)
+        )
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert result.stage == "swept"
+    assert [item.sha256 for item in result.decisions] == [candidate.sha256]
+    assert _path(provider, retained.sha256).stat().st_size == retained.size_bytes
+    assert peak_bytes < retained.size_bytes // 2
 
 
 def test_lease_mutation_invalidates_a_reported_generation_and_preserves_content(
@@ -436,7 +467,7 @@ def test_holds_and_remote_cache_non_authority_are_explicit(tmp_path: Path) -> No
 
 @pytest.mark.parametrize(
     "damage",
-    ["corrupt-index", "hard-link", "symlink", "missing-live-object"],
+    ["corrupt-index", "hard-link", "symlink", "missing-live-object", "corrupt-orphan"],
 )
 def test_uncertain_store_state_makes_destructive_gc_a_no_op(
     tmp_path: Path,
@@ -461,6 +492,11 @@ def test_uncertain_store_state_makes_destructive_gc_a_no_op(
     elif damage == "symlink":
         object_path.unlink()
         object_path.symlink_to(tmp_path / "outside")
+    elif damage == "corrupt-orphan":
+        corrupt = provider.store_object(b"bad")
+        corrupt_path = _path(provider, corrupt.sha256)
+        corrupt_path.chmod(0o600)
+        corrupt_path.write_bytes(b"new")
     else:
         object_path.unlink()
 
@@ -502,32 +538,125 @@ def test_mark_and_quarantine_recover_after_interrupted_move(
     assert provider.recover_garbage_collection() is None
 
 
+@pytest.mark.parametrize("interruption", ["receipt-replace", "receipt-sync", "index-replace"])
 def test_final_sweep_recovery_is_idempotent_after_deleted_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    interruption: str,
 ) -> None:
     provider = ImmutableArtifactBlobProvider(tmp_path / "store")
     reference = provider.store_object(b"recover-after-unlink")
-    _initialize(provider, reference)
-    report = provider.collect_garbage()
-    original_write = retention_module._write_index
-    interrupted = False
-
-    def fail_completed_index(current_provider, index):
-        nonlocal interrupted
-        if index.pending_gc is None and index.generation > report.generation and not interrupted:
-            interrupted = True
-            raise OSError("simulated crash before final index commit")
-        original_write(current_provider, index)
-
-    monkeypatch.setattr(retention_module, "_write_index", fail_completed_index)
-    first = provider.collect_garbage(
-        ContentGcRequest(destructive=True, expected_generation=report.generation)
+    now = datetime.now(timezone.utc)
+    provider.acquire_lease(
+        ContentLeaseRecord(
+            lease_id="expiring",
+            owner="test",
+            expires_at=now + timedelta(seconds=1),
+            expiry_disposition="release",
+            targets=(_object_target(reference),),
+        )
     )
+    now += timedelta(seconds=2)
+    request = ContentGcRequest(release_lease_ids=("expiring",))
+    report = provider.collect_garbage(request, now=now)
+    index_path = provider.root / "retention" / "index.json"
+    original_replace = os.replace
+    original_fsync = os.fsync
+    swept_path: Path | None = None
+
+    def replace(source, destination):
+        nonlocal swept_path
+        destination = Path(destination)
+        if destination.name == "swept.json":
+            swept_path = destination
+            if interruption == "receipt-replace":
+                raise OSError("interrupted before swept receipt replacement")
+        if (
+            interruption == "index-replace"
+            and destination == index_path
+            and ContentRetentionIndex.model_validate_json(Path(source).read_bytes()).pending_gc
+            is None
+        ):
+            raise OSError("interrupted before final index replacement")
+        original_replace(source, destination)
+
+    def fsync(descriptor):
+        if (
+            interruption == "receipt-sync"
+            and swept_path is not None
+            and os.path.samestat(os.fstat(descriptor), swept_path.parent.stat())
+        ):
+            raise OSError("interrupted during swept receipt directory sync")
+        original_fsync(descriptor)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(retention_module.os, "replace", replace)
+        fault.setattr(retention_module.os, "fsync", fsync)
+        first = provider.collect_garbage(
+            request.model_copy(update={"destructive": True, "expected_generation": report.generation}),
+            now=now,
+        )
     assert first.stage == "no-op"
+    assert first.errors and "interrupted" in first.errors[0]
     assert not _path(provider, reference.sha256).exists()
-    monkeypatch.setattr(retention_module, "_write_index", original_write)
+    pending = ContentRetentionIndex.model_validate_json(index_path.read_bytes())
+    assert pending.pending_gc is not None
+    assert not pending.leases[0].released
+
+    provider = ImmutableArtifactBlobProvider(provider.root)
+    provider.store_object(b"recover-after-unlink")
+    if interruption == "receipt-sync":
+        with monkeypatch.context() as fault:
+            fault.setattr(retention_module.os, "fsync", fsync)
+            retry = provider.recover_garbage_collection()
+        assert retry is not None and retry.stage == "no-op"
+        assert ContentRetentionIndex.model_validate_json(index_path.read_bytes()) == pending
 
     recovered = provider.recover_garbage_collection()
     assert recovered is not None and recovered.stage == "swept"
     assert recovered.receipt_id == first.receipt_id
+    assert recovered.generation == report.generation + 1
+    assert [item.object_id for item in recovered.decisions if item.decision == "deleted"] == [
+        reference.object_id
+    ]
+    receipt_path = provider.root / "retention" / "receipts" / recovered.receipt_id / "swept.json"
+    assert ContentGcReceipt.model_validate_json(receipt_path.read_bytes()) == recovered
+    completed = ContentRetentionIndex.model_validate_json(index_path.read_bytes())
+    assert completed.generation == recovered.generation
+    assert completed.leases[0].released
+    assert provider.recover_garbage_collection() is None
+    assert provider.get_object(reference) == b"recover-after-unlink"
+
+
+def test_sweep_refuses_quarantine_damage_during_receipt_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = ImmutableArtifactBlobProvider(tmp_path / "store")
+    first, second = sorted(
+        (provider.store_object(payload) for payload in (b"one", b"two")),
+        key=lambda reference: reference.sha256,
+    )
+    _initialize(provider, first)
+    report = provider.collect_garbage()
+    original_replace = os.replace
+
+    def replace(source, destination):
+        original_replace(source, destination)
+        destination = Path(destination)
+        if destination.name == "quarantined.json":
+            quarantine = provider.root / "retention" / "quarantine" / "canonical"
+            damaged = quarantine / destination.parent.name / second.sha256
+            damaged.unlink()
+            damaged.symlink_to(tmp_path / "missing")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(retention_module.os, "replace", replace)
+        result = provider.collect_garbage(
+            ContentGcRequest(destructive=True, expected_generation=report.generation)
+        )
+    assert result.stage == "no-op"
+    quarantine = provider.root / "retention" / "quarantine" / "canonical" / result.receipt_id
+    damaged = quarantine / second.sha256
+    assert (quarantine / first.sha256).is_file()
+    assert damaged.is_symlink()
