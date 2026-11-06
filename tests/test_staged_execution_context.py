@@ -66,6 +66,10 @@ from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_pr
 from feedbax.training.checkpoint_custody import write_checkpoint_transaction
 from tests.test_checkpoint_custody import _coordinate, _minimax_slots, _run_spec
 from tests.test_staged_exact_parents import _exact_document, _write_exact_parent
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
+from tests.support.evaluation_registry import (
+    evaluation_registry_fixture as evaluation_registry_fixture,
+)
 
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]

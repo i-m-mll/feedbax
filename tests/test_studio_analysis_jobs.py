@@ -39,6 +39,7 @@ from feedbax.web.api.analysis import _run_analysis_sync, _spec_for_analysis_requ
 from feedbax.web.app import create_app
 from feedbax.plugins.bootstrap import BootstrapState
 from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 TOY_JOB_EVAL_TYPE = "feedbax.test.studio_job_eval"

@@ -29,6 +29,7 @@ from feedbax.tasks import (
     TrialSpecDependency,
     eval_ensemble_on_trials,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 class DummyLoss(AbstractLoss):

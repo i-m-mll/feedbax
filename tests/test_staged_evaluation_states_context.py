@@ -61,6 +61,9 @@ from feedbax.persistence.artifact_custody import (
     ImmutableArtifactBlobProviderSpec,
     open_immutable_artifact_blob_provider,
 )
+from tests.support.evaluation_registry import (
+    evaluation_registry_fixture as evaluation_registry_fixture,
+)
 
 
 def _manifest(artifact, *, status="completed") -> EvaluationRunManifest:

@@ -52,6 +52,7 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]
 

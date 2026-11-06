@@ -21,6 +21,7 @@ from feedbax.analysis.specs import (
 )
 from feedbax.contracts.manifest import AnalysisRunSpec
 from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 @pytest.fixture

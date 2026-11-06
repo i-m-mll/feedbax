@@ -117,6 +117,7 @@ from tests.support.fake_project_experiment.products import (
     planned,
 )
 from tests.support.analysis_fixtures import ToyAnalysis, ToyArtifactProducer, build_toy_analysis_data
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 DIGEST = "b" * 64
 

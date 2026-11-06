@@ -45,6 +45,7 @@ from feedbax.contracts.manifest import (
     spec_payload,
     write_manifest,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 AUTHORED_FIGURE = {
