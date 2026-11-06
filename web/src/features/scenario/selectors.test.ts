@@ -256,6 +256,18 @@ describe('scenario selector options', () => {
     ).toEqual(['Decoder readout']);
   });
 
+  it('keeps a provider recurrent carry distinct from an instantaneous edge', () => {
+    const schema = schemaRegistry();
+    const edge = schema.selector_targets.find((target) => target.kind === 'edge')!;
+    edge.kind = 'recurrent_carry';
+
+    const options = selectorOptionsForRegistry({ registry: registry(), schemaRegistry: schema });
+    const option = options.find((candidate) => candidate.schema_target_id === edge.id);
+
+    expect(option?.selector.namespace).toBe('recurrent_carry');
+    expect(option?.selector.compact).toBe(edge.selector);
+  });
+
   it('represents graph structural selector target kinds from provider schema', () => {
     const options = selectorOptionsForRegistry({
       registry: registry(),

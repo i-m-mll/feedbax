@@ -35,6 +35,7 @@ from feedbax.compiler.prototypes import (
     prototypes_from_task_bindings,
 )
 from feedbax.compiler.resolution import GraphParameterResolution, resolve_graph_parameters
+from feedbax.compiler.studio_taps import TapLoweringError, lower_studio_taps
 from feedbax.runtime.task_bindings import COMPONENT_PARAMETER_ROLE, task_data_temporality
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
@@ -1703,6 +1704,16 @@ def validate_intervention_schema(
     """Validate typed intervention tap semantics against selector target schemas."""
 
     issues: list[SchemaValidationIssue] = []
+    try:
+        lower_studio_taps(graph, base_path)
+    except TapLoweringError as exc:
+        issues.append(
+            SchemaValidationIssue(
+                type="intervention_lowering_unsupported",
+                message=str(exc),
+                location={"path": exc.authored_path},
+            )
+        )
     by_selector = {target.selector: target for target in selector_targets}
     by_id = {target.id: target for target in selector_targets}
     for index, tap in enumerate(graph.taps or []):
