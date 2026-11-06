@@ -15,6 +15,7 @@ from feedbax.acausal import (
     LinearSpring,
     Mass,
     PositionSensor,
+    PrescribedMotion,
 )
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec
@@ -33,6 +34,93 @@ pytestmark = [pytest.mark.usefixtures("enable_jax_x64"), pytest.mark.feedbax_con
 
 def _registry() -> ComponentRegistry:
     return ComponentRegistry(load_user_components=False)
+
+
+@pytest.mark.parametrize("grounded", [True, False], ids=["ground", "second-motion-source"])
+def test_conflicting_coordinate_owners_refuse_report_and_execution(grounded: bool) -> None:
+    motion = ComponentSpec(type="ActuationInput", params={"source_kind": "prescribed_motion"})
+    other = (
+        ComponentSpec(type="Ground")
+        if grounded
+        else ComponentSpec(
+            type="ActuationInput",
+            params={"source_kind": "prescribed_motion", "port_name": "other"},
+        )
+    )
+    connections = [
+        (("motion", "flange"), ("sense", "flange")),
+        (("other", "flange"), ("sense", "flange")),
+    ]
+    spec = AcausalGraphSpec(
+        physical_domain="translational",
+        nodes={
+            "motion": motion,
+            "other": other,
+            "sense": ComponentSpec(type="SensorOutput", params={"quantity": "position"}),
+        },
+        connections=[{"a": a, "b": b} for a, b in connections],
+        solver={"solver_type": "euler", "dt": 0.01},
+    )
+    registry = _registry()
+    report = compile_acausal_authoring_report(
+        spec, node_path=["plant"], component_registry=registry
+    )
+    assert report.status == "error"
+    code = "acausal.grounded_prescribed_coordinate" if grounded else "acausal.parallel_across_sources"
+    diagnostic = next(d for d in report.diagnostics if d.code == code)
+    assert diagnostic.severity == "error"
+    assert set(diagnostic.node_ids) == {"motion", "other"}
+
+    message = "grounded by" if grounded else "multiple prescribed motion sources"
+    with pytest.raises(ValueError, match=message):
+        compile_acausal_graph(spec, "plant", registry)
+    with pytest.raises(ValueError, match=message):
+        AcausalSystem(
+            elements={
+                "motion": PrescribedMotion("motion"),
+                "other": Ground("other") if grounded else PrescribedMotion("other"),
+                "sense": PositionSensor("sense"),
+            },
+            connections=[AcausalConnection(a, b) for a, b in connections],
+        )
+
+
+def test_spring_coupled_prescribed_coordinates_keep_independent_inputs() -> None:
+    nodes = {
+        "mass": ComponentSpec(type="Mass", params={"mass": 2.0}),
+        "velocity": ComponentSpec(type="SensorOutput", params={"quantity": "velocity"}),
+    }
+    connections = [{"a": ("velocity", "flange"), "b": ("mass", "flange")}]
+    for side, stiffness in (("left", 2.0), ("right", 3.0)):
+        spring = f"{side}_spring"
+        nodes[side] = ComponentSpec(
+            type="ActuationInput",
+            params={"source_kind": "prescribed_motion", "port_name": side},
+        )
+        nodes[spring] = ComponentSpec(type="LinearSpring", params={"stiffness": stiffness})
+        connections.extend([
+            {"a": (side, "flange"), "b": (spring, "flange_a")},
+            {"a": (spring, "flange_b"), "b": ("mass", "flange")},
+        ])
+    spec = AcausalGraphSpec(
+        physical_domain="translational",
+        nodes=nodes,
+        connections=connections,
+        solver={"solver_type": "euler", "dt": 0.1},
+    )
+    registry = _registry()
+    report = compile_acausal_authoring_report(
+        spec, node_path=["plant"], component_registry=registry
+    )
+    assert report.status == "ok", report.diagnostics
+    system = compile_acausal_graph(spec, "plant", registry)
+    outputs, _ = system(
+        {"left": jnp.array([1.0, 0.0]), "right": jnp.array([-2.0, 0.0])},
+        system.init_state(key=jax.random.PRNGKey(0)),
+        key=jax.random.PRNGKey(1),
+    )
+    # From rest, Euler advances velocity by dt * (2 * 1 + 3 * -2) / 2.
+    assert outputs["y"] == pytest.approx(-0.2)
 
 
 def _msd_interior(*, solver_type: str = "euler") -> AcausalGraphSpec:
