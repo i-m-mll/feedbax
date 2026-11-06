@@ -15,10 +15,12 @@ from pydantic import TypeAdapter
 
 import feedbax.web.worker.execution as worker_execution
 import feedbax.web.worker.checkpoint as worker_checkpoint
+from feedbax.compiler import GraphDocument, compile_graph
 from feedbax.component_registry import ComponentRegistry, register_cde_templates
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.compiler.templates import network_template_graph, recurrent_node_output_initializer
 from feedbax.compiler.normalization import normalize_task_binding_spec_for_studio_authoring
+from feedbax.compiler.serialization import graph_to_spec, prototypes_from_task_bindings
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.graph import (
     ComponentSpec,
@@ -36,7 +38,10 @@ from feedbax.web.worker.execution import (
 )
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.plugins.bootstrap import BootstrapState
-from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
+from feedbax.training.checkpoint_custody import (
+    authenticate_checkpoint_custody_ref,
+    structural_abi_fingerprint,
+)
 from feedbax.web.worker.app import _Job, _require_worker_specs
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
 from feedbax.web.worker.diagnostics import GraphCompilationError
@@ -1179,13 +1184,13 @@ def test_nested_trainability_matches_flat_training(
     )
     nested_spec = GraphSpec(
         nodes={
+            "readout": linear(),
             "wrapper": ComponentSpec(
                 type=wrapper_type,
                 params={"trainable": False} if freeze_wrapper else {},
                 input_ports=["input"],
                 output_ports=["output"],
             ),
-            "readout": linear(),
         },
         wires=[wire("wrapper", "readout")],
         output_ports=flat_spec.output_ports,
@@ -1202,16 +1207,32 @@ def test_nested_trainability_matches_flat_training(
         },
     )
 
-    for nested, spec in [(False, flat_spec), (True, nested_spec)]:
-        target = "wrapper" if nested else "first"
+    def task_bindings(target: str) -> dict:
         bindings = _task_binding_spec()
         bindings["bindings"][0].update(
             id=f"task:model_input->{target}:input",
             target_node_id=target,
         )
-        cfg = _cfg(grad_clip=None, snapshot_interval=1)
+        return bindings
+
+    registry = ComponentRegistry(load_user_components=False)
+    nested_bindings = task_bindings("wrapper")
+    authored = compile_graph(
+        GraphDocument(graph=nested_spec),
+        registry,
+        input_prototypes=prototypes_from_task_bindings(nested_bindings),
+    )
+    serialized = graph_to_spec(authored.graph, registry)
+    cfg = _cfg(grad_clip=None, snapshot_interval=1)
+    nested_fingerprints = []
+    for variant, spec, bindings in (
+        ("flat", flat_spec, task_bindings("first")),
+        ("nested", nested_spec, nested_bindings),
+        ("serialized", serialized, nested_bindings),
+    ):
+        nested = variant != "flat"
         compiled = compile_training_run(
-            component_registry=ComponentRegistry(load_user_components=False),
+            component_registry=registry,
             graph_spec=spec,
             training_spec=_training_spec(
                 optimizer={"type": "sgd", "params": {"learning_rate": cfg.learning_rate}},
@@ -1221,6 +1242,17 @@ def test_nested_trainability_matches_flat_training(
             task_binding_spec=bindings,
             cfg=cfg,
         )
+
+        prefix = "wrapper." if nested else ""
+        expected_paths = {"readout"}
+        if not freeze_wrapper:
+            expected_paths.add(f"{prefix}second")
+            if not freeze_child:
+                expected_paths.add(f"{prefix}first")
+        if nested:
+            nested_fingerprints.append(
+                structural_abi_fingerprint(compiled.graph).fingerprint_sha256
+            )
 
         def weights(graph):
             interior = graph.nodes["wrapper"] if nested else graph
@@ -1240,7 +1272,7 @@ def test_nested_trainability_matches_flat_training(
 
         result = run_training_graph(
             compiled,
-            job_id=f"trainability-{'nested' if nested else 'flat'}",
+            job_id=f"trainability-{variant}",
             total_batches=1,
             cfg=cfg,
             stop_event=threading.Event(),
@@ -1257,13 +1289,24 @@ def test_nested_trainability_matches_flat_training(
         final = rollout_graph(result.graph, compiled, key=key)["outputs"]["output"]
         assert jnp.allclose(final, expected_weights[0] * expected_weights[1] * expected_weights[2])
 
-        prefix = "wrapper." if nested else ""
-        expected_paths = {"readout"}
-        if not freeze_wrapper:
-            expected_paths.add(f"{prefix}second")
-            if not freeze_child:
-                expected_paths.add(f"{prefix}first")
         assert set(result.execution_metadata["trainable_nodes"]) == expected_paths
+
+    authored_fingerprint, restored_fingerprint = nested_fingerprints
+    assert restored_fingerprint == authored_fingerprint
+
+    for original, restored in (
+        (nested_spec.nodes, serialized.nodes),
+        (nested_spec.subgraphs["wrapper"].nodes, serialized.subgraphs["wrapper"].nodes),
+    ):
+        assert {
+            name: node.params["trainable"]
+            for name, node in restored.items()
+            if "trainable" in node.params
+        } == {
+            name: node.params["trainable"]
+            for name, node in original.items()
+            if "trainable" in node.params
+        }
 
 
 def test_compile_training_run_fails_unsupported_display_only_component() -> None:
