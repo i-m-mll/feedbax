@@ -9,7 +9,7 @@ from __future__ import annotations
 from abc import abstractmethod
 import dataclasses
 from operator import attrgetter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from copy import copy
 from typing import ClassVar, Literal, Optional, Self
 import warnings
@@ -31,6 +31,16 @@ _NESTED_CYCLE_NODE = "__nested__"
 _INITIALIZER_KEY_SALT = 0xFFFF_FFFF
 _MISSING_RESET_INPUT = object()
 _ResetInputLookup = Callable[[str], PyTree]
+
+
+def _keyed_nodes(
+    execution_order: tuple[str, ...], key: PRNGKeyArray | None
+) -> Iterator[tuple[str, PRNGKeyArray]]:
+    if not execution_order:
+        return iter(())
+    if key is None:
+        key = jax.random.PRNGKey(0)
+    return zip(execution_order, jax.random.split(key, len(execution_order)))
 
 
 def _nested_cycle_key(node_name: str) -> tuple[str, str]:
@@ -868,14 +878,13 @@ class Graph(Component):
         execution_order, cycle_wires = self._cycle_analysis
         cycle_wire_set = set(cycle_wires)
         outgoing_wires = self._outgoing_wires
-        keys = jax.random.split(key, len(execution_order)) if execution_order else ()
         nested_cycle_values: dict[str, dict[tuple[str, str], PyTree]] = {}
         for port_key in tuple(port_values):
             if _is_nested_cycle_key(port_key):
                 nested_cycle_values[port_key[1]] = port_values.pop(port_key)
         next_nested_cycle_values: dict[str, dict[tuple[str, str], PyTree]] = {}
 
-        for node_name, node_key in zip(execution_order, keys):
+        for node_name, node_key in _keyed_nodes(execution_order, key):
             node = self.nodes[node_name]
             node_inputs = {
                 port_name: port_values[(node_name, port_name)]
@@ -1081,7 +1090,7 @@ class Graph(Component):
             inputs: Optional external graph inputs used by trial-scope
                 recurrent initializers. Keys match this graph's
                 ``input_ports``.
-            key: Optional PRNG key for evaluating reset dependencies.
+            key: Reset-phase PRNG key. When omitted, uses a deterministic seed.
 
         Returns:
             Dict keyed by ``(target_node, target_port)`` suitable as the
@@ -1217,11 +1226,14 @@ class Graph(Component):
                 reset_outputs[source] = outputs[source]
             return reset_outputs[source]
 
+        node_keys = dict(_keyed_nodes(self._execution_order, key)) if nested_nodes else {}
         for node_name, node in nested_nodes.items():
+            # Keep a child's carry seed separate from executing it as a parent reset dependency.
+            child_reset_key = jax.random.fold_in(node_keys[node_name], _INITIALIZER_KEY_SALT)
             init_values[_nested_cycle_key(node_name)] = node._get_initial_cycle_values(
                 state,
                 input_value=lambda port, name=node_name: nested_input_value((name, port)),
-                key=key,
+                key=child_reset_key,
             )
 
         missing = [
@@ -1367,12 +1379,8 @@ class Graph(Component):
         # leave the reset state available to the live rollout.
         eval_state = jt.map(lambda value: value, state)
         outputs: dict[tuple[str, str], PyTree] = {}
-        execution_order = self._execution_order
         outgoing_wires = self._outgoing_wires
-        if key is None:
-            key = jax.random.PRNGKey(0)
-        keys = jax.random.split(key, len(execution_order))
-        for node_name, node_key in zip(execution_order, keys):
+        for node_name, node_key in _keyed_nodes(self._execution_order, key):
             if node_name not in upstream_nodes:
                 continue
             node = self.nodes[node_name]
