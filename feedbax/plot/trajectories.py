@@ -27,7 +27,7 @@ from feedbax.plot.misc import (
     tree_of_2d_timeseries_to_df,
     unshare_axes,
 )
-from feedbax._vendor.jax_cookbook import MaskedArray
+from feedbax._vendor.jax_cookbook import MaskedArray, is_type
 
 if TYPE_CHECKING:
     from feedbax.tasks import TaskTrialSpec
@@ -362,7 +362,7 @@ def _normalize_collection_arg[S](
 
 
 def trajectories[T](
-    subplots_data: SeqOfT[Float[Array, "... time dims"] | np.ndarray, T],
+    subplots_data: SeqOfT[Float[Array, "... time dims"] | np.ndarray | MaskedArray, T],
     colorscale_axis: int = 0,  # which batch axis forms color groups
     scatter_kws: (StrMapping | SeqOfT[StrMapping, T]) = TRAJ_SCATTER_KWS_DEFAULT,
     subplot_titles: Optional[SeqOfT[str, T]] = None,
@@ -387,7 +387,7 @@ def trajectories[T](
 ):
     """Unified 2D/3D trajectory plotting with subplot-per-leaf.
 
-    - `vars_` can be any (possibly nested) Collection; we traverse with `jax.tree.map`/`leaves` so dicts yield values.
+    - Each element of the flat `subplots_data` sequence supplies one subplot.
     - Detects 2D vs 3D per subplot from the last axis size (2 or 3).
     - Supports multiple batch dims; one is selected by `colorscale_axis` to define legend/color groups.
     - Other batch dims are aggregated into individual curves per group, with optional subsampling via `n_curves_max`.
@@ -395,11 +395,9 @@ def trajectories[T](
     - Optional mean trajectories per color group (works for 2D & 3D), with axis-exclusion control.
     - `axes_labels` and `scatter_kws` accept either single values or a Collection matching the number of leaves.
 
-    Supports MaskedArray leaves (duck-typed via .data/.mask attributes), which are
-    converted to NaN-masked arrays.
+    Invalid coordinates in `MaskedArray` inputs become NaN.
     """
-    # Unwrap any MaskedArray instances to NaN-masked regular arrays
-    subplots_data = jt.map(_unwrap_masked_array, subplots_data)
+    subplots_data = jt.map(_unwrap_masked_array, subplots_data, is_leaf=is_type(MaskedArray))
 
     default_start_marker_kws = dict(
         symbol=None,
