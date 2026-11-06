@@ -12,13 +12,13 @@ import equinox as eqx
 from equinox import field
 import jax
 import jax.numpy as jnp
-import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray, Scalar
 import numpy as np
 
+from feedbax.mechanics.geometry import corners_2d
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
+from feedbax.mechanics.skeleton._planar import distal_state, effector_jacobian, link_kinematics
 from feedbax.runtime.state import CartesianState, StateBounds
-from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS, corners_2d
 
 
 
@@ -253,17 +253,7 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         Arguments:
             angle: The joint angles.
         """
-        jac, _ = jax.jacfwd(self._forward_pos, has_aux=True)(angle)
-        return jac[-1]
-
-    def _forward_pos(self, angle):
-        """Separated from `forward_kinematics` for use in `effector_jac`."""
-        angle_sum = jnp.cumsum(angle)  # links
-        length_components = self.l * jnp.array(
-            [jnp.cos(angle_sum), jnp.sin(angle_sum)]
-        )  # xy, links
-        xy_pos = jnp.cumsum(length_components, axis=1)  # xy, links
-        return xy_pos.T, length_components
+        return effector_jacobian(self.l, angle)
 
     @jax.named_scope("fbx.TwoLinkArm.forward_kinematics")
     def forward_kinematics(self, state: TwoLinkArmState) -> CartesianState:
@@ -273,12 +263,7 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         Arguments:
             state: The configuration state of the arm.
         """
-        xy_pos, length_components = self._forward_pos(state.angle)
-
-        ang_vel_sum = jnp.cumsum(state.d_angle)  # links
-        xy_vel = jnp.cumsum(
-            SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] * ang_vel_sum, axis=1
-        ).T  # xy, links
+        xy_pos, xy_vel = link_kinematics(self.l, state.angle, state.d_angle)
 
         # TODO: add force conversion?
         # It might be very important NOT to convert force here.
@@ -298,10 +283,7 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         Arguments:
             state: The configuration state of the arm.
         """
-        return jt.map(
-            lambda x: x[-1],  # last link
-            self.forward_kinematics(state),
-        )
+        return distal_state(self.forward_kinematics(state))
 
     @property
     def bounds(self) -> StateBounds[TwoLinkArmState]:

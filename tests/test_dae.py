@@ -238,7 +238,7 @@ class TestTwoLinkArmDAE:
         angles = jnp.array([0.5, 0.8])
         state = TwoLinkArmState(
             angle=angles,
-            d_angle=jnp.zeros(2),
+            d_angle=jnp.array([0.7, -1.2]),
             torque=jnp.zeros(2),
         )
 
@@ -249,6 +249,7 @@ class TestTwoLinkArmDAE:
         recovered_state = arm_dae.inverse_kinematics(effector)
 
         assert jnp.allclose(recovered_state.angle, angles, atol=1e-4)
+        assert jnp.allclose(recovered_state.d_angle, state.d_angle, atol=1e-4)
 
     def test_energy_methods(self, arm_dae):
         """Test energy computation methods."""

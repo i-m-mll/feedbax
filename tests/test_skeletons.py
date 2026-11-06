@@ -61,7 +61,9 @@ def two_link_arm() -> TwoLinkArmSkeleton:
 
 def test_TwoLinkArm_forward_consistency(two_link_arm):
 
-    skeleton_state = TwoLinkArmState(angle=jnp.array([0.2, 0.3]))
+    skeleton_state = TwoLinkArmState(
+        angle=jnp.array([0.2, 0.3]), d_angle=jnp.array([0.7, -1.2])
+    )
     skeleton_state_cycle = forward_cycle(two_link_arm, skeleton_state)
 
     if not all(jtu.tree_leaves(jt.map(

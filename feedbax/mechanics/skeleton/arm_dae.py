@@ -18,14 +18,13 @@ from equinox import Module, field
 from equinox.nn import State
 import jax
 import jax.numpy as jnp
-import jax.tree as jt
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
 from feedbax.mechanics.dae import DAEComponent, DAEParams
+from feedbax.mechanics.skeleton._planar import distal_state, effector_jacobian, link_kinematics
 from feedbax.mechanics.skeleton.arm import TwoLinkArmState
 from feedbax.runtime.state import CartesianState
-from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS
 
 
 
@@ -194,10 +193,9 @@ class TwoLinkArmDAE(DAEComponent[TwoLinkArmState]):
 
     def extract_outputs(self, state: TwoLinkArmState) -> dict[str, PyTree]:
         """Extract effector and joint states from arm state."""
-        effector = self.effector(state)
         joints = self.forward_kinematics(state)
         return {
-            "effector": effector,
+            "effector": distal_state(joints),
             "joints": joints,
         }
 
@@ -224,23 +222,6 @@ class TwoLinkArmDAE(DAEComponent[TwoLinkArmState]):
 
     # === Kinematics Methods ===
 
-    def _forward_pos(self, angle: Array) -> tuple[Array, Array]:
-        """Compute forward kinematics positions.
-
-        Args:
-            angle: Joint angles [2].
-
-        Returns:
-            Tuple of (xy positions [2, 2], length components [2, 2]).
-        """
-        angle_sum = jnp.cumsum(angle)
-        length_components = self.params.l * jnp.array([
-            jnp.cos(angle_sum),
-            jnp.sin(angle_sum),
-        ])  # [2, 2]: (xy, links)
-        xy_pos = jnp.cumsum(length_components, axis=1)  # [2, 2]: (xy, links)
-        return xy_pos.T, length_components
-
     def forward_kinematics(self, state: TwoLinkArmState) -> CartesianState:
         """Compute Cartesian state of joints from configuration state.
 
@@ -250,13 +231,7 @@ class TwoLinkArmDAE(DAEComponent[TwoLinkArmState]):
         Returns:
             Cartesian state with positions and velocities of both joints.
         """
-        xy_pos, length_components = self._forward_pos(state.angle)
-
-        ang_vel_sum = jnp.cumsum(state.d_angle)
-        xy_vel = jnp.cumsum(
-            SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] * ang_vel_sum,
-            axis=1,
-        ).T  # [2, 2]: (links, xy)
+        xy_pos, xy_vel = link_kinematics(self.params.l, state.angle, state.d_angle)
 
         return CartesianState(
             pos=xy_pos,
@@ -273,10 +248,7 @@ class TwoLinkArmDAE(DAEComponent[TwoLinkArmState]):
         Returns:
             Cartesian state of the end effector (distal joint).
         """
-        return jt.map(
-            lambda x: x[-1],
-            self.forward_kinematics(state),
-        )
+        return distal_state(self.forward_kinematics(state))
 
     def effector_jac(self, angle: Array) -> Array:
         """Compute Jacobian of effector position w.r.t. joint angles.
@@ -287,8 +259,7 @@ class TwoLinkArmDAE(DAEComponent[TwoLinkArmState]):
         Returns:
             Jacobian matrix [2, 2].
         """
-        jac, _ = jax.jacfwd(self._forward_pos, has_aux=True)(angle)
-        return jac[-1]
+        return effector_jacobian(self.params.l, angle)
 
     def effector_force_to_torques(
         self,

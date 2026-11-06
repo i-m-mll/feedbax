@@ -37,6 +37,7 @@ from feedbax.mechanics.hill_muscles import (
     ForceVelocityCurve,
     TendonForceLengthCurve,
 )
+from feedbax.mechanics.skeleton._planar import link_kinematics
 from feedbax.mechanics.skeleton.arm import TwoLinkArmState
 from feedbax.mechanics.units import (
     DEFAULT_MUSCLE_VMAX,
@@ -49,6 +50,11 @@ from feedbax.runtime.state import CartesianState
 
 
 logger = logging.getLogger(__name__)
+
+
+def _arm_effector(lengths: Array, arm_state: TwoLinkArmState) -> CartesianState:
+    pos, vel = link_kinematics(lengths, arm_state.angle, arm_state.d_angle)
+    return CartesianState(pos=pos[-1], vel=vel[-1])
 
 
 # ============================================================================
@@ -426,33 +432,9 @@ class RigidTendonMusculoskeletalArm(Component):
 
         return outputs, state
 
-    def _forward_pos(self, angle: Array) -> tuple[Array, Array]:
-        """Forward kinematics position computation."""
-        angle_sum = jnp.cumsum(angle)
-        length_components = self.arm_l * jnp.array([
-            jnp.cos(angle_sum),
-            jnp.sin(angle_sum),
-        ])
-        xy_pos = jnp.cumsum(length_components, axis=1)
-        return xy_pos.T, length_components
-
     def _effector(self, arm_state: TwoLinkArmState) -> CartesianState:
         """Compute effector Cartesian state."""
-        xy_pos, length_components = self._forward_pos(arm_state.angle)
-
-        from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS
-        ang_vel_sum = jnp.cumsum(arm_state.d_angle)
-        xy_vel = jnp.cumsum(
-            SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] * ang_vel_sum,
-            axis=1,
-        ).T
-
-        effector = CartesianState(
-            pos=xy_pos[-1],
-            vel=xy_vel[-1],
-            force=jnp.zeros(2),
-        )
-        return effector
+        return _arm_effector(self.arm_l, arm_state)
 
     def state_view(self, state: State) -> MusculoskeletalState:
         """Return the musculoskeletal state."""
@@ -827,27 +809,5 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
 
         return outputs, state
 
-    def _forward_pos(self, angle: Array) -> tuple[Array, Array]:
-        angle_sum = jnp.cumsum(angle)
-        length_components = self.arm_l * jnp.array([
-            jnp.cos(angle_sum),
-            jnp.sin(angle_sum),
-        ])
-        xy_pos = jnp.cumsum(length_components, axis=1)
-        return xy_pos.T, length_components
-
     def _effector(self, arm_state: TwoLinkArmState) -> CartesianState:
-        xy_pos, length_components = self._forward_pos(arm_state.angle)
-
-        from feedbax.mechanics.geometry import SINCOS_GRAD_SIGNS
-        ang_vel_sum = jnp.cumsum(arm_state.d_angle)
-        xy_vel = jnp.cumsum(
-            SINCOS_GRAD_SIGNS[1] * length_components[:, ::-1] * ang_vel_sum,
-            axis=1,
-        ).T
-
-        return CartesianState(
-            pos=xy_pos[-1],
-            vel=xy_vel[-1],
-            force=jnp.zeros(2),
-        )
+        return _arm_effector(self.arm_l, arm_state)
