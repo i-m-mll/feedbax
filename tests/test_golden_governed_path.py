@@ -146,7 +146,7 @@ def _write_plugin(path: Path) -> None:
         from feedbax.contracts.run_matrix import RowLowererIdentity, TrainingRowLoweringResult
         from tests.support.training_fixtures import synthetic_supervised_update_kernels
         from feedbax.contracts.training import ScheduleProjection, DeclaredTrainingProgram, TrainingMethodScheduleProjector, declare_training_program, standard_supervised_method_contract
-        from feedbax.plugins import FamilyRequirement, PluginDeclaration, PluginRegistration, TRAINING_PROGRAMS
+        from feedbax.plugins import DOWNSTREAM_PROTOCOL_CURRENT, FamilyRequirement, PluginDeclaration, PluginRegistration, TRAINING_PROGRAMS
         from feedbax.training.preparation import ExecutionPreparationResult
         from feedbax.training.row_lowering import TrainingRowLowererRegistration, training_row_lowerer_implementation_sha256
 
@@ -183,7 +183,7 @@ def _write_plugin(path: Path) -> None:
             PluginDeclaration(
                 "tests.golden",
                 "1.0",
-                1,
+                DOWNSTREAM_PROTOCOL_CURRENT,
                 families=(FamilyRequirement("training_programs"),),
             ),
             register,
