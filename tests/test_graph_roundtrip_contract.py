@@ -25,7 +25,11 @@ def _registry_cases() -> list[pytest.ParameterSet]:
             continue
         meta = registry.get(component_type)
         assert meta is not None
-        param_names = [schema.name for schema in meta.param_schema] or [None]
+        param_names = [
+            schema.name
+            for schema in meta.param_schema
+            if (component_type, schema.name) != ("FeedbackChannels", "input_shape")
+        ] or [None]
         cases.append(pytest.param(component_type, param_names, id=component_type))
     return cases
 
@@ -71,7 +75,6 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
     ("DelayedReaches", "n_control_stages"): 49,
     ("DelayedReaches", "go_cue_event_name"): "go",
     ("DynamicsMatrixPerturb", "mass"): 1.25,
-    ("FeedbackChannels", "input_shape"): [[3], [3]],
     ("FirstOrderFilter", "input_shape"): [3],
     ("LinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
     ("StructuralLinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
@@ -86,6 +89,7 @@ _VALUES: dict[tuple[str, str], Any] = {
     ("Channel", "add_noise"): False,
     ("DelayedReaches", "target_visible_from_start"): True,
     ("DelayedReaches", "target_on_epochs"): [0, 2],
+    ("FeedbackChannels", "paths"): ["effector.force"],
     ("StateFeedbackSelector", "state_slices"): {
         "position": {"start": 1, "stop": 3},
         "velocity": {"start": 3, "stop": 5},
@@ -203,7 +207,11 @@ def _single_node_spec(
         ("node", port): jnp.zeros(prototype_shape, dtype=params.get("input_dtype"))
         for port in input_ports
     }
-    if component_type == "Demux":
+    if component_type == "FeedbackChannels":
+        point_mass = registry.get("PointMass")
+        assert point_mass is not None and point_mass.builder is not None
+        prototypes[("node", "mechanics")] = point_mass.builder({"dt": 0.01}).state_index.init
+    elif component_type == "Demux":
         prototypes[("node", "input")] = jnp.zeros(sum(params["sizes"]))
     elif component_type == "AffineValueComposer":
         block_size = int(params["output_block_size"])

@@ -27,6 +27,7 @@ from feedbax.contracts.scientific_compiler_schema import (
     RESOLVED_GRAPH_SCHEMA_VERSION,
 )
 from feedbax.compiler.resolution import (
+    GraphParameterResolution,
     ParameterResolutionError,
     resolve_component_node,
     resolve_graph_parameters,
@@ -552,15 +553,15 @@ def compile_graph(
         operation=lower_graph,
     )
 
-    def solve_constraints() -> GraphSpec:
+    def solve_constraints() -> GraphParameterResolution:
         return resolve_graph_parameters(
             graph,
             input_prototypes or {},
             component_registry,
             identities_resolved=True,
-        ).graph
+        )
 
-    graph = _compile_phase(
+    resolution = _compile_phase(
         phase=CompilerPhase.CONSTRAINT_SOLVING,
         code="compiler.constraint_solving.inconsistent_graph_constraints",
         anchor=graph_anchor,
@@ -577,12 +578,12 @@ def compile_graph(
         expected="the lowered graph satisfies every cross-reference and semantic invariant",
         action="correct the authored semantic reference named by the diagnostic",
         operation=lambda: GraphSpec.model_validate(
-            graph.model_dump(mode="json", exclude_none=True)
+            resolution.graph.model_dump(mode="json", exclude_none=True)
         ),
     )
 
     def build_schedule() -> tuple[Graph, tuple[str, ...]]:
-        instantiated = _instantiate_graph(graph, component_registry)
+        instantiated = _instantiate_graph(graph, component_registry, resolution)
         executable = apply_parameter_constraints(instantiated).prepare()
         return executable, tuple(executable._execution_order)
 

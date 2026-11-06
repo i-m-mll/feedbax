@@ -8,6 +8,7 @@ import diffrax as dfx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import jax.tree as jt
 
 from feedbax.models.feedback import FeedbackChannels
 from feedbax.runtime.channel import Channel, ChannelSpec
@@ -326,25 +327,6 @@ def _build_channel(params: Mapping[str, Any]) -> Channel:
     )
 
 
-def _path_selector(paths: tuple[str, ...]):
-    def _select(mechanics_state):
-        values = []
-        for path in paths:
-            value = mechanics_state
-            for part in path.split("."):
-                if not hasattr(value, part):
-                    raise AttributeError(
-                        f"Mechanics feedback selector path {path!r} has no {part!r}"
-                    )
-                value = getattr(value, part)
-            values.append(value)
-        return values[0] if len(values) == 1 else tuple(values)
-
-    _select._feedbax_feedback_selector = "paths"  # type: ignore[attr-defined]
-    _select._feedbax_feedback_paths = paths  # type: ignore[attr-defined]
-    return _select
-
-
 def _feedback_selector(params: Mapping[str, Any]):
     selector = str(params.get("selector", "point_mass_pos_vel"))
     raw_paths = params.get("paths")
@@ -369,38 +351,60 @@ def _feedback_selector(params: Mapping[str, Any]):
     )
 
 
-def _proto_from_shape_spec(shape: Any):
-    if not isinstance(shape, (list, tuple)):
-        return None
-    if shape and all(isinstance(item, (list, tuple)) for item in shape):
-        return tuple(jnp.zeros(tuple(int(dim) for dim in item)) for item in shape)
-    return jnp.zeros(tuple(int(dim) for dim in shape))
+def _feedback_where(
+    params: Mapping[str, Any], *, validate: bool = False
+) -> Callable[[Any], Any]:
+    selector, paths = _feedback_selector(params)
+
+    def select(mechanics_state):
+        values = []
+        for path in paths:
+            value = mechanics_state
+            for part in path.split("."):
+                try:
+                    value = getattr(value, part)
+                except AttributeError as exc:
+                    raise ValueError(
+                        f"FeedbackChannels selector {selector!r} path {path!r} has no "
+                        f"attribute {part!r} on {type(value).__name__}"
+                    ) from exc
+            if value is None:
+                raise ValueError(
+                    f"FeedbackChannels selector {selector!r} path {path!r} selects None"
+                )
+            if validate:
+                leaves = jt.leaves(value)
+                if not leaves or not all(
+                    hasattr(leaf, "shape") and hasattr(leaf, "dtype") for leaf in leaves
+                ):
+                    raise ValueError(
+                        f"FeedbackChannels selector {selector!r} path {path!r} "
+                        "must select a state or signal containing array leaves"
+                    )
+            values.append(value)
+        return values[0] if len(values) == 1 else tuple(values)
+
+    select._feedbax_feedback_selector = selector  # type: ignore[attr-defined]
+    select._feedbax_feedback_paths = paths  # type: ignore[attr-defined]
+    return select
 
 
-def _feedback_input_proto(params: Mapping[str, Any], paths: tuple[str, ...]):
-    proto = _proto_from_shape_spec(params.get("input_shape"))
-    if proto is not None:
-        return proto
-    if paths == ("plant.skeleton.pos", "plant.skeleton.vel") or paths == (
-        "effector.pos",
-        "effector.vel",
-    ):
-        return (jnp.zeros(2), jnp.zeros(2))
-    return jnp.zeros(1)
+def _feedback_prototype(params: Mapping[str, Any], mechanics_proto: Any) -> Any:
+    return _feedback_where(params, validate=True)(mechanics_proto)
 
 
 def _build_feedback_channels(params: Mapping[str, Any]) -> FeedbackChannels:
+    if "feedback_proto" not in params:
+        raise ValueError("FeedbackChannels requires a resolved prototype for port 'mechanics'")
     delay = int(params.get("delay", 0))
-    selector, paths = _feedback_selector(params)
     noise = _noise_params(params)
     noise_func = _build_noise_func(noise)
-    where = _path_selector(paths)
-    where._feedbax_feedback_selector = selector  # type: ignore[attr-defined]
+    where = _feedback_where(params)
     channel = Channel(
         delay=delay,
         noise_func=noise_func,
         add_noise=bool(noise["add_noise"]),
-        input_proto=_feedback_input_proto(params, paths),
+        input_proto=params["feedback_proto"],
         init_value=float(params.get("init_value", 0.0)),
         noise_model=str(noise["model"]),
         noise_role=None if noise["role"] is None else str(noise["role"]),

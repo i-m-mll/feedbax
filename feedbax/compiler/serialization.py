@@ -27,6 +27,7 @@ from feedbax.compiler.builders import (
     build_component,
 )
 from feedbax.compiler.domain_compilers import get_domain_compiler
+from feedbax.compiler.resolution import GraphParameterResolution
 from feedbax.compiler.prototypes import (
     prototypes_from_task_bindings,
 )
@@ -192,6 +193,7 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
 def _instantiate_graph(
     spec: GraphSpec,
     component_registry: Any,
+    resolution: GraphParameterResolution,
 ) -> Graph:
     """Instantiate a resolved graph for the graph compiler."""
     execution_registry = component_registry
@@ -285,7 +287,9 @@ def _instantiate_graph(
                 node_type=node_type,
                 consumer="compile_graph",
             )
-            nodes[node_name] = _instantiate_graph(causal_subgraph, metadata_registry)
+            nodes[node_name] = _instantiate_graph(
+                causal_subgraph, metadata_registry, resolution.subgraphs[node_name]
+            )
             continue
         if spec.subgraphs and node_name in spec.subgraphs:
             causal_subgraph = require_causal_subgraph(
@@ -294,8 +298,19 @@ def _instantiate_graph(
                 node_type=node_type,
                 consumer="compile_graph",
             )
-            nodes[node_name] = _instantiate_graph(causal_subgraph, metadata_registry)
+            nodes[node_name] = _instantiate_graph(
+                causal_subgraph, metadata_registry, resolution.subgraphs[node_name]
+            )
             continue
+        meta = metadata_registry.get(node_type)
+        if meta is not None and meta.compiler.build_output_prototypes:
+            params = {
+                **params,
+                **{
+                    parameter: resolution.node_outputs[(node_name, port)]
+                    for parameter, port in meta.compiler.build_output_prototypes.items()
+                },
+            }
         delta_A_declaration = authored_array_values.get(node_name, {}).get(("delta_A",))
         if node_type == "StructuralLinearStateSpace" and delta_A_declaration is not None:
             params = {**params, "_authored_delta_A_value_spec": delta_A_declaration}
@@ -310,7 +325,6 @@ def _instantiate_graph(
             tuple(component.input_ports) != declared_input_ports
             or tuple(component.output_ports) != declared_output_ports
         ):
-            meta = metadata_registry.get(node_type)
             if meta is not None and meta.dynamic_port_policy is not None:
                 raise DynamicPortPolicyError(
                     f"{node_type} node {node_name!r} runtime ports do not match its "
