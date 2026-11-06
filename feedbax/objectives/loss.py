@@ -747,7 +747,8 @@ class TargetStateLoss(AbstractLoss):
             "TargetStateLoss requires trial_specs, but trial_specs is None"
         )
 
-        density, selectors = _retained_target_density(self, states, trial_specs)
+        state, target, selectors = _retained_target_inputs(self, states, trial_specs)
+        density = _target_density(self, state, target)
         return _sum_target_density(density, selectors, trial_specs)
 
 
@@ -797,13 +798,38 @@ def _target_weight_selectors(target: TargetSpec, n_steps: int) -> tuple["Weights
     return tuple(weight for weight in (mask, target.discount) if weight is not None)
 
 
-def _target_density(loss: TargetStateLoss, state: Array, target: Array) -> Array:
+def _norm_on_support(
+    norm: Callable,
+    residual: Array,
+    support: Array | None,
+    *,
+    time_axis: int,
+    density_time_axis: int,
+) -> Array:
+    if support is None:
+        return norm(residual)
+
+    def mask_along_time(ndim: int, axis: int) -> Array:
+        shape = [1] * ndim
+        shape[0] = support.shape[0]
+        shape[axis] = support.shape[1]
+        return support.reshape(shape)
+
+    # A nonzero residual keeps Euclidean norm derivatives defined at inactive steps.
+    residual = jnp.where(mask_along_time(residual.ndim, time_axis), residual, 1)
+    density = norm(residual)
+    return jnp.where(mask_along_time(density.ndim, density_time_axis), density, 0)
+
+
+def _target_density(
+    loss: TargetStateLoss, state: Array, target: Array, *, support: Array | None = None
+) -> Array:
     if jnp.broadcast_shapes(state.shape, jnp.shape(target)) != state.shape:
         raise ValueError(
             f"TargetStateLoss '{loss.label}' target shape {jnp.shape(target)} "
             f"cannot broadcast to selected state shape {state.shape}."
         )
-    return loss.norm(state - target)
+    return _norm_on_support(loss.norm, state - target, support, time_axis=1, density_time_axis=-1)
 
 
 _LEGACY_TARGET_START_STEP = 1
@@ -814,9 +840,9 @@ def _target_start_step(trial_specs: "TaskTrialSpec") -> int:
     return getattr(timeline, "target_start_step", _LEGACY_TARGET_START_STEP)
 
 
-def _retained_target_density(
+def _retained_target_inputs(
     loss: TargetStateLoss, states: PyTree, trial_specs: "TaskTrialSpec"
-) -> tuple[Array, tuple["WeightsSpec", ...]]:
+) -> tuple[Array, Array, tuple["WeightsSpec", ...]]:
     state = loss.where(states)[:, _target_start_step(trial_specs):]
     target, trial_axis = _resolve_target_spec(loss, trial_specs)
     value = jnp.asarray(target.value)
@@ -827,12 +853,15 @@ def _retained_target_density(
         )
     else:
         value = value.reshape(_align_target_shape(value.shape, state.shape[1:]))
-    density = _target_density(loss, state, value)
-    return density, _target_weight_selectors(target, state.shape[1])
+    return state, value, _target_weight_selectors(target, state.shape[1])
 
 
 def _sum_target_density(
-    density: Array, selectors: Sequence["WeightsSpec"], trial_specs: "TaskTrialSpec"
+    density: Array,
+    selectors: Sequence["WeightsSpec"],
+    trial_specs: "TaskTrialSpec",
+    *,
+    support: Array | None = None,
 ) -> Array:
     if not selectors:
         return density.sum(axis=-1)
@@ -843,6 +872,7 @@ def _sum_target_density(
         trial_axis=0,
         trial_axis_specs=0,
         masks=selectors,
+        support=support,
     )
 
 
@@ -921,11 +951,15 @@ def reduce_over_time_with_weights(
     trial_axis: int,  # where trial axis lives in `arr`
     trial_axis_specs: int,  # where trial axis lives in `trial_specs` leaves
     masks: Sequence[WeightsSpec],  # any number of scalar/(T,) or callable(spec_i)->scalar/(T,)
+    support: Array | None = None,  # Boolean (trial, time) support of the input density.
 ) -> Array:
     """
     1) Transpose so: (trial, ..., time).
     2) Build combined per-trial weights W (N, T) by multiplying all masks.
     3) Weighted sum over time, restore trial axis, drop time axis.
+
+    If provided, support zeros each weight before multiplication. The caller
+    supplies an input density that is already zero outside that support.
     """
     # Put trial at 0 and time at -1 in one explicit transpose
     perm = _trial_time_perm(arr.ndim, trial_axis, time_axis)
@@ -938,10 +972,10 @@ def reduce_over_time_with_weights(
 
     N = arr_rt.shape[0]
     if masks:
-        weights = _multiply_time_weights(
-            [_per_trial_weights(selector, specs_T0, N, T) for selector in masks],
-            dtype,
-        )
+        prepared = [_per_trial_weights(selector, specs_T0, N, T) for selector in masks]
+        if support is not None:
+            prepared = [jnp.where(support, weight, 0) for weight in prepared]
+        weights = _multiply_time_weights(prepared, dtype)
         weight_shape = (N,) + (1,) * (arr_rt.ndim - 2) + (T,)
         arr_rt = arr_rt * weights.reshape(weight_shape)
     reduced = arr_rt.sum(axis=-1)
@@ -1082,9 +1116,14 @@ class NthDifferenceLoss(CrossTimestepLoss):
                 f"{self.order} timesteps, got {n_steps}."
             )
 
-    def _difference_density(self, state: Array, time_axis: int) -> Array:
+    def _difference_density(
+        self, state: Array, time_axis: int, *, support: Array | None = None
+    ) -> Array:
         self._validate_length(state.shape[time_axis])
-        return self.norm(jnp.diff(state, n=self.order, axis=time_axis))
+        difference = jnp.diff(state, n=self.order, axis=time_axis)
+        return _norm_on_support(
+            self.norm, difference, support, time_axis=time_axis, density_time_axis=time_axis
+        )
 
     def term(
         self,
@@ -1173,12 +1212,11 @@ class OutputJerkLoss(NthDifferenceLoss):
 class EpochMaskedLoss(AbstractLoss):
     """Compositional time-mask wrapper that restricts a base loss to specified epochs.
 
-    Wraps an existing :class:`AbstractLoss` so its per-(trial, time) contribution
-    is multiplied by a per-trial mask of shape ``(n_trials, n_steps)`` *before*
-    the time-axis aggregation. Outside the mask, the contribution is exactly
-    zero. The mask is constructed from ``trial_specs.timeline.epoch_bounds``
-    and the configured ``epoch_indices`` — the mask is true at timestep ``t``
-    iff ``t`` falls within one of the listed epochs.
+    The mask selects per-(trial, time) contributions from
+    ``trial_specs.timeline.epoch_bounds`` and the configured ``epoch_indices``.
+    Inactive contributions are zero. The wrapped norm acts independently on
+    each trial and timestep and should have a finite value and derivative on
+    the all-ones residual used at inactive steps.
 
     For example, to penalise pre-go controller output on a `DelayedReaches`
     task with ``epoch_names=("hold", "target_on", "movement")``, wrap a
@@ -1286,13 +1324,10 @@ class EpochMaskedLoss(AbstractLoss):
         trial_specs: "TaskTrialSpec",
         model: Component,
     ) -> TermTree["AbstractLoss"]:
-        # Support nested wrapping: unwrap to the innermost concrete loss.
-        # (Composing two EpochMaskedLoss layers is not a typical use case, but
-        # this guards against confusing failures.)
         base = self.base_loss
 
         if isinstance(base, TargetStateLoss):
-            value = self._call_target_state(base, states, trial_specs, model)
+            value = self._call_target_state(base, states, trial_specs)
         elif isinstance(base, NthDifferenceLoss):
             value = self._call_cross_timestep(base, states, trial_specs)
         else:
@@ -1314,27 +1349,16 @@ class EpochMaskedLoss(AbstractLoss):
         base: "TargetStateLoss",
         states: PyTree,
         trial_specs: "TaskTrialSpec",
-        model: Component,
     ) -> Array:
-        """Reuse `TargetStateLoss.term` machinery, but inject our epoch mask
-        into the list of weight selectors used by `reduce_over_time_with_weights`.
-        """
         assert states is not None
         assert trial_specs is not None
 
-        loss_over_time, selectors = _retained_target_density(base, states, trial_specs)
-        T = loss_over_time.shape[-1]
+        state, target, selectors = _retained_target_inputs(base, states, trial_specs)
+        T = state.shape[1]
         n_steps = self._mask_n_steps(trial_specs, T + _target_start_step(trial_specs))
-        epoch_mask = self._build_mask(trial_specs, n_steps)
-        epoch_mask_inner = self._align_mask_to_loss_time_axis(epoch_mask, T).astype(
-            loss_over_time.dtype
-        )
-
-        m_view_shape = [1] * loss_over_time.ndim
-        m_view_shape[0] = epoch_mask_inner.shape[0]
-        m_view_shape[-1] = epoch_mask_inner.shape[1]
-        loss_over_time = loss_over_time * epoch_mask_inner.reshape(m_view_shape)
-        return _sum_target_density(loss_over_time, selectors, trial_specs)
+        support = self._align_mask_to_loss_time_axis(self._build_mask(trial_specs, n_steps), T)
+        density = _target_density(base, state, target, support=support)
+        return _sum_target_density(density, selectors, trial_specs, support=support)
 
     # --- cross-timestep base losses ------------------------------------------
 
@@ -1370,28 +1394,11 @@ class EpochMaskedLoss(AbstractLoss):
         epoch_mask = self._build_mask(trial_specs, n_steps)
         # Full-rollout timelines drop the consumed initial samples; target-length
         # timelines already share the right edge with first-difference densities.
-        mask_aligned = self._align_mask_to_loss_time_axis(epoch_mask, T_diff).astype(
-            leaves[0].dtype
-        )
+        support = self._align_mask_to_loss_time_axis(epoch_mask, T_diff)
 
         def _per_leaf(arr: Array) -> Array:
-            d_norm = base._difference_density(arr, time_axis)
-            # Broadcast mask to match d_norm, masking trailing axes if any.
-            # d_norm should have time at `time_axis` after `norm` reduces
-            # the trailing feature axes.
-            # We need to multiply (N, T_full-order) by mask_aligned along
-            # the appropriate axes. After `norm`, `time_axis` is preserved.
-            # Build a broadcast view of the mask.
-            mask_view_shape = [1] * d_norm.ndim
-            # Trial axis 0 (per feedbax convention).
-            mask_view_shape[0] = mask_aligned.shape[0]
-            # Time axis at base.time_axis (after norm collapses trailing dims,
-            # time_axis index in d_norm is the same as in arr because we only
-            # reduce trailing feature axes).
-            mask_view_shape[time_axis] = mask_aligned.shape[1]
-            m = mask_aligned.reshape(mask_view_shape)
-            masked = d_norm * m
-            return jnp.mean(masked, axis=time_axis)
+            density = base._difference_density(arr, time_axis, support=support)
+            return jnp.mean(density, axis=time_axis)
 
         per_leaf = jt.map(_per_leaf, substate)
         leaves_out = jt.leaves(per_leaf)
