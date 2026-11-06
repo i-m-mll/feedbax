@@ -9,7 +9,6 @@ useful for stiff dynamics or when coupled with muscle models.
 
 from __future__ import annotations
 
-from functools import cached_property
 from typing import Optional, Type
 
 import diffrax as dfx
@@ -21,7 +20,13 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
 from feedbax.mechanics.dae import DAEComponent, DAEParams
-from feedbax.mechanics.skeleton._planar import distal_state, effector_jacobian, link_kinematics
+from feedbax.mechanics.skeleton._planar import (
+    distal_state,
+    effector_jacobian,
+    link_kinematics,
+    two_link_angular_acceleration,
+    two_link_inertia,
+)
 from feedbax.mechanics.skeleton.arm import TwoLinkArmState
 from feedbax.runtime.state import CartesianState
 
@@ -117,15 +122,6 @@ class TwoLinkArmDAE(DAEComponent[TwoLinkArmState]):
             key=key,
         )
 
-    @cached_property
-    def _a(self) -> tuple[Array, Array, Array]:
-        """Precomputed inertia-related constants."""
-        return (
-            self.params.I[0] + self.params.I[1] + self.params.m[1] * self.params.l[0] ** 2,
-            self.params.m[1] * self.params.l[0] * self.params.s[1],
-            self.params.I[1],
-        )
-
     @jax.named_scope("fbx.TwoLinkArmDAE.vector_field")
     def vector_field(
         self,
@@ -151,30 +147,12 @@ class TwoLinkArmDAE(DAEComponent[TwoLinkArmState]):
         """
         angle, d_angle = state.angle, state.d_angle
 
-        # Centripetal and Coriolis torques
-        c_vec = (
-            jnp.array((-d_angle[1] * (2 * d_angle[0] + d_angle[1]), d_angle[0] ** 2))
-            * self._a[1]
-            * jnp.sin(angle[1])
-        )
-
-        # Inertia matrix
-        cs1 = jnp.cos(angle[1])
-        tmp = self._a[2] + self._a[1] * cs1
-        inertia_mat = jnp.array([
-            [self._a[0] + 2 * self._a[1] * cs1, tmp],
-            [tmp, self._a[2] * jnp.ones_like(cs1)],
-        ])
-
         load_torque = self.effector_force_to_torques(angle, state.effector_force)
-        net_torque = (
-            state.torque + input + load_torque
-            - c_vec.T
-            - jnp.matmul(d_angle, self.params.B.T)
+        params = self.params
+        dd_angle = two_link_angular_acceleration(
+            params.l, params.m, params.I, params.s, params.B,
+            angle, d_angle, state.torque + input + load_torque,
         )
-
-        # Angular acceleration via inverse dynamics
-        dd_angle = jnp.linalg.solve(inertia_mat, net_torque)
 
         return TwoLinkArmState(
             angle=d_angle,
@@ -332,12 +310,8 @@ class TwoLinkArmDAE(DAEComponent[TwoLinkArmState]):
         Returns:
             Total kinetic energy.
         """
-        cs1 = jnp.cos(state.angle[1])
-        tmp = self._a[2] + self._a[1] * cs1
-        inertia_mat = jnp.array([
-            [self._a[0] + 2 * self._a[1] * cs1, tmp],
-            [tmp, self._a[2]],
-        ])
+        params = self.params
+        inertia_mat, _ = two_link_inertia(params.l, params.m, params.I, params.s, state.angle[1])
         return 0.5 * state.d_angle @ inertia_mat @ state.d_angle
 
     def compute_potential_energy(

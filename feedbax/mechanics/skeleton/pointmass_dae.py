@@ -9,7 +9,6 @@ the implicit solver infrastructure before moving to more complex systems.
 
 from __future__ import annotations
 
-from functools import cached_property
 from typing import Optional, Type
 
 import diffrax as dfx

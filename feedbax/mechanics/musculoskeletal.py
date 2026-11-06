@@ -14,7 +14,6 @@ motor control studies and neural network training.
 
 from __future__ import annotations
 
-from functools import cached_property
 import logging
 from typing import Optional, Type
 
@@ -37,7 +36,7 @@ from feedbax.mechanics.hill_muscles import (
     ForceVelocityCurve,
     TendonForceLengthCurve,
 )
-from feedbax.mechanics.skeleton._planar import link_kinematics
+from feedbax.mechanics.skeleton._planar import link_kinematics, two_link_angular_acceleration
 from feedbax.mechanics.skeleton.arm import TwoLinkArmState
 from feedbax.mechanics.units import (
     DEFAULT_MUSCLE_VMAX,
@@ -235,15 +234,6 @@ class RigidTendonMusculoskeletalArm(Component):
         )
         self.state_index = StateIndex(initial_state)
 
-    @cached_property
-    def _arm_a(self) -> tuple[Array, Array, Array]:
-        """Precomputed arm inertia constants."""
-        return (
-            self.arm_I[0] + self.arm_I[1] + self.arm_m[1] * self.arm_l[0] ** 2,
-            self.arm_m[1] * self.arm_l[0] * self.arm_s[1],
-            self.arm_I[1],
-        )
-
     @property
     def n_muscles(self) -> int:
         """Number of muscles."""
@@ -338,22 +328,10 @@ class RigidTendonMusculoskeletalArm(Component):
         # Muscle forces to joint torques
         torques = moment_arms.T @ forces  # [n_joints]
 
-        # Arm dynamics
-        c_vec = (
-            jnp.array((-d_angle[1] * (2 * d_angle[0] + d_angle[1]), d_angle[0] ** 2))
-            * self._arm_a[1]
-            * jnp.sin(angle[1])
+        dd_angle = two_link_angular_acceleration(
+            self.arm_l, self.arm_m, self.arm_I, self.arm_s, self.arm_B,
+            angle, d_angle, torques,
         )
-
-        cs1 = jnp.cos(angle[1])
-        tmp = self._arm_a[2] + self._arm_a[1] * cs1
-        inertia_mat = jnp.array([
-            [self._arm_a[0] + 2 * self._arm_a[1] * cs1, tmp],
-            [tmp, self._arm_a[2] * jnp.ones_like(cs1)],
-        ])
-
-        net_torque = torques - c_vec.T - jnp.matmul(d_angle, self.arm_B.T)
-        dd_angle = jnp.linalg.solve(inertia_mat, net_torque)
 
         d_arm = TwoLinkArmState(
             angle=d_angle,
@@ -565,14 +543,6 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
     def n_muscles(self) -> int:
         return self.geometry.n_muscles
 
-    @cached_property
-    def _arm_a(self) -> tuple[Array, Array, Array]:
-        return (
-            self.arm_I[0] + self.arm_I[1] + self.arm_m[1] * self.arm_l[0] ** 2,
-            self.arm_m[1] * self.arm_l[0] * self.arm_s[1],
-            self.arm_I[1],
-        )
-
     def _compute_tendon_force(self, fiber_length: Array, mt_length: Array, mp: HillMuscleParams) -> Array:
         """Compute tendon force from fiber and MT lengths."""
         # Clamp fiber length to reasonable range
@@ -660,22 +630,10 @@ class CompliantTendonMusculoskeletalArm(DAEComponent[MusculoskeletalState]):
             for i in range(self.n_muscles)
         ])
 
-        # Arm dynamics
-        c_vec = (
-            jnp.array((-d_angle[1] * (2 * d_angle[0] + d_angle[1]), d_angle[0] ** 2))
-            * self._arm_a[1]
-            * jnp.sin(angle[1])
+        dd_angle = two_link_angular_acceleration(
+            self.arm_l, self.arm_m, self.arm_I, self.arm_s, self.arm_B,
+            angle, d_angle, torques,
         )
-
-        cs1 = jnp.cos(angle[1])
-        tmp = self._arm_a[2] + self._arm_a[1] * cs1
-        inertia_mat = jnp.array([
-            [self._arm_a[0] + 2 * self._arm_a[1] * cs1, tmp],
-            [tmp, self._arm_a[2] * jnp.ones_like(cs1)],
-        ])
-
-        net_torque = torques - c_vec.T - jnp.matmul(d_angle, self.arm_B.T)
-        dd_angle = jnp.linalg.solve(inertia_mat, net_torque)
 
         d_arm = TwoLinkArmState(
             angle=d_angle,
