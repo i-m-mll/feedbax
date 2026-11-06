@@ -545,6 +545,7 @@ class PhaseProgramExecutor:
         stop_after_next_barrier: Callable[[str], bool] | None = None,
         context: Mapping[str, Any] | None = None,
         progress_callback: ProgressCallback | None = None,
+        retain_progress: bool = True,
         method_observation_callback: MethodObservationCallback | None = None,
         step_guard: StepGuard | None = None,
         checkpoint_interval: int | None = None,
@@ -562,6 +563,8 @@ class PhaseProgramExecutor:
         A terminal partial interval is always emitted. A stop observed before
         an update saves any unsaved progress at the last committed coordinate
         through that phase's authored barrier, even without a checkpoint interval.
+        Set `retain_progress=False` to omit the observations from the result
+        while still delivering them to `progress_callback`.
 
         A checkpoint restored by external custody can be passed directly as
         ``resume_checkpoint``. ``resume_from_barrier`` selects a stored in-memory visit.
@@ -743,7 +746,8 @@ class PhaseProgramExecutor:
                         completed_batches,
                         include_completed_batches=include_completed_batches_in_progress,
                     )
-                    progress.append(observed_coordinate)
+                    if retain_progress:
+                        progress.append(observed_coordinate)
                     last_progress_batch = completed_batches
                     if progress_callback is not None:
                         progress_callback(_copy_progress_coordinate(observed_coordinate))
@@ -813,7 +817,8 @@ class PhaseProgramExecutor:
                     completed_batches,
                     include_completed_batches=include_completed_batches_in_progress,
                 )
-                progress.append(observed_coordinate)
+                if retain_progress:
+                    progress.append(observed_coordinate)
                 last_progress_batch = completed_batches
                 if progress_callback is not None:
                     progress_callback(_copy_progress_coordinate(observed_coordinate))

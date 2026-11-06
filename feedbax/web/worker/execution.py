@@ -404,6 +404,7 @@ def run_training_graph(
         task_binding_spec=compiled.task_binding_spec.model_dump(mode="json", exclude_none=True),
         manifest_conflict_policy="reuse-identical",
         progress_callback=_emit_executor_progress,
+        retain_history=False,
         stop_before_update=stop_event.is_set,
     )
 
