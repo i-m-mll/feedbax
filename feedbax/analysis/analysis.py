@@ -354,6 +354,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             result-cache reads or writes.
 
     Treat node parameters as read-only once used in an analysis graph.
+    Registering a caller-supplied operation callback separately creates a distinct live node.
     """
 
     _exclude_fields = (
@@ -1142,8 +1143,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             name="after_indexing",
             dep_name=dependency_name,
             fn=index_fn,
-            params=dict(axis=axis, idxs=idxs),
+            params=dict(axis=axis) if callable(idxs) else dict(axis=axis, idxs=idxs),
             metadata=final_metadata,
+            uses_callback=callable(idxs),
         )
 
     def after_map(
@@ -1171,6 +1173,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             dep_name=dependency_name,
             fn=map_fn,
             metadata=final_metadata,
+            uses_callback=True,
         )
 
     def after_transform_states(
@@ -1257,6 +1260,27 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             metadata: Optional metadata containing descriptions and labels.
         """
 
+        return self._after_transform(
+            fn,
+            level,
+            dependency_names,
+            metadata,
+            name="after_transform",
+            params={},
+            uses_callback=True,
+        )
+
+    def _after_transform(
+        self,
+        fn: Callable[..., Any],
+        level: str | Sequence[str] | None,
+        dependency_names: str | Sequence[str] | None,
+        metadata: dict[str, Any] | None,
+        *,
+        name: str,
+        params: dict[str, Any],
+        uses_callback: bool = False,
+    ) -> Self:
         dep_str = f"{dependency_names}" if dependency_names else "dependencies"
 
         if level is None:
@@ -1292,11 +1316,12 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
 
         return self._add_prep_op(
-            name="after_transform",
+            name=name,
             dep_name=dependency_names,
             fn=transform_fn,
-            params=dict(level=level),
+            params=dict(level=level, **params),
             metadata=final_metadata,
+            uses_callback=uses_callback,
         )
 
     def after_unstacking(
@@ -1373,6 +1398,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             fn=unpack_axis,
             params=dict(axis=axis, level_label=level_label, above_level=above_level, keys=keys),
             metadata=final_metadata,
+            uses_callback=False,
         )
 
     def after_stacking(
@@ -1434,6 +1460,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             fn=stack_dependency,
             params=dict(level=level),
             metadata=final_metadata,
+            uses_callback=False,
         )
 
     def after_rearrange_levels(
@@ -1472,8 +1499,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             name="after_rearrange_levels",
             dep_name=dependency_name,
             fn=transpose_dependency,
-            params=dict(spec=spec, is_leaf=is_leaf_),
+            params=dict(spec=spec),
             metadata=final_metadata,
+            uses_callback=is_leaf is not None,
         )
 
     def after_level_to_top(
@@ -1564,11 +1592,13 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         # Build metadata with our description
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
 
-        return self.after_transform(
-            fn=select_fn,
-            level=level,
-            dependency_names=dependency_name,
-            metadata=final_metadata,
+        return self._after_transform(
+            select_fn,
+            level,
+            dependency_name,
+            final_metadata,
+            name="after_subdict_at_level",
+            params=dict(keys=keys, idxs=idxs),
         )
 
     def after_getitem_at_level(
@@ -1599,11 +1629,13 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         # Build metadata with our description
         final_metadata = _merge_metadata(metadata, dict(descriptions=[description], labels=[label]))
 
-        return self.after_transform(
-            fn=getitem,
-            level=level,
-            dependency_names=dependency_name,
-            metadata=final_metadata,
+        return self._after_transform(
+            getitem,
+            level,
+            dependency_name,
+            final_metadata,
+            name="after_getitem_at_level",
+            params=dict(key=key),
         )
 
     def vmap(self, in_axes: Mapping[str, AxisSpec]) -> Self:
@@ -1966,6 +1998,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 params=dict(level=level_to_tuple_arg),
                 is_leaf=lambda _: True,
                 metadata=final_metadata,
+                uses_callback=True,
             )
 
         if level_to_tuple_arg is not None:
@@ -2004,6 +2037,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 params=dict(level=level_to_tuple_arg),
                 is_leaf=LDict.is_of(level_to_tuple_arg),
                 metadata=final_metadata,
+                uses_callback=True,
             )
         else:
             final_metadata = _merge_metadata(
@@ -2015,6 +2049,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 fn=fn,
                 is_leaf=is_leaf,
                 metadata=final_metadata,
+                uses_callback=True,
             )
 
     def _add_prep_op(
@@ -2024,6 +2059,8 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         fn: Callable,
         params: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        uses_callback: bool,
     ) -> Self:
         # If the transform consumes extra dependencies, ensure the analysis
         # instance knows about them so the graph builder evaluates them.
@@ -2056,6 +2093,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                     fn=fn,
                     params=params or {},
                     metadata=metadata or {},
+                    callback_token=object() if uses_callback else None,
                 ),
             ),
         )
@@ -2074,7 +2112,12 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             wrapped_fig_params_fn = wrap_to_accept_var_kwargs(fig_params_fn)
         else:
             wrapped_fig_params_fn = None
-        new_op = _FigOp(metadata=metadata or {}, fig_params_fn=wrapped_fig_params_fn, **kwargs)
+        new_op = _FigOp(
+            metadata=metadata or {},
+            fig_params_fn=wrapped_fig_params_fn,
+            callback_token=object() if fig_params_fn is not None else None,
+            **kwargs,
+        )
         return eqx.tree_at(lambda a: a._fig_ops, self, self._fig_ops + (new_op,))
 
     def _add_final_op(
@@ -2085,6 +2128,8 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         params: Optional[Dict[str, Any]] = None,
         is_leaf: Optional[Callable[[Any], bool]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        *,
+        uses_callback: bool,
     ) -> Self:
         # Log the most specific description if available
         if metadata and "descriptions" in metadata and metadata["descriptions"]:
@@ -2100,6 +2145,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             params=params or {},
             is_leaf=is_leaf,
             metadata=metadata or {},
+            callback_token=object() if uses_callback else None,
         )
         updated_ops_for_type = current_ops + (new_op,)
 
@@ -2177,10 +2223,16 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             opaque_leaves.append(value)
             return id(value)
 
-        prep_params = tuple((op.name, op.dep_name, op.params) for op in self._prep_ops)
-        fig_params = tuple((op.name, op.dep_name, op.params) for op in self._fig_ops)
+        # A caller callback is opaque. Only copies of the same registration
+        # share its live identity, even if two registrations use the same callable.
+        prep_params = tuple(
+            (op.name, op.dep_name, op.params, op.callback_token) for op in self._prep_ops
+        )
+        fig_params = tuple(
+            (op.name, op.dep_name, op.params, op.callback_token) for op in self._fig_ops
+        )
         final_params = {
-            kind: tuple((op.name, op.params) for op in ops)
+            kind: tuple((op.name, op.params, op.callback_token) for op in ops)
             for kind, ops in self._final_ops_by_type.items()
         }
         cls = type(self)
@@ -2426,6 +2478,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 fn=align_fn,
                 params=dict(output_spec=output_spec, map_type=map_type),
                 metadata=dict(descriptions=[description]),
+                uses_callback=False,
             )
 
         return modified
@@ -2490,8 +2543,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 name="align_with_ellipsis",
                 dep_name=dep_name,
                 fn=align_fn,
-                params=dict(output_spec=output_spec, is_leaf=is_leaf, map_type=map_type),
+                params=dict(output_spec=output_spec, map_type=map_type),
                 metadata=dict(descriptions=[description]),
+                uses_callback=True,
             )
 
         return modified
@@ -2550,8 +2604,9 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 name="infer_and_align",
                 dep_name=dep_name,
                 fn=align_fn,
-                params=dict(is_leaf=is_leaf, map_type=map_type),
+                params=dict(map_type=map_type),
                 metadata=dict(descriptions=[description]),
+                uses_callback=True,
             )
 
         return modified

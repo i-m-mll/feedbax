@@ -277,13 +277,25 @@ def get_aligned_trajectories_node(
     for transform_fn in pre_transform_fns:
         node = node.after_transform(transform_fn)
     if align_epoch is not None:
-        node = node.after_transform(
-            lambda vars, *, data: get_align_epoch_start(align_epoch)(vars, data=data)
+        node = node._add_prep_op(
+            name="align_epoch_start",
+            dep_name=None,
+            fn=get_align_epoch_start(align_epoch),
+            params=dict(epoch=align_epoch),
+            uses_callback=False,
         )
     if colorscale_key is not None:
         node = node.after_stacking(colorscale_key)
     if pos_endpoints:
-        node = node.then_transform_figs(add_aligned_position_endpoints)
+        import plotly.graph_objects as go
+
+        node = node._add_final_op(
+            op_type="figs",
+            name="add_aligned_position_endpoints",
+            fn=add_aligned_position_endpoints,
+            is_leaf=is_type(go.Figure),
+            uses_callback=False,
+        )
     return node
 
 

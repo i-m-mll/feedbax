@@ -49,6 +49,7 @@ class _PrepOp(NamedTuple):
     wrapped_fn: Callable[..., Any]
     params: Optional[dict[str, Any]] = None
     metadata: Optional[dict[str, Any]] = None
+    callback_token: object | None = None
 
 
 class _FigOp(NamedTuple):
@@ -65,6 +66,7 @@ class _FigOp(NamedTuple):
     metadata: Optional[dict[str, Any]] = None
     pre_slice_hook: Optional[Callable] = None
     post_agg_hook: Optional[Callable] = None
+    callback_token: object | None = None
 
 
 class _FinalOp(NamedTuple):
@@ -74,6 +76,7 @@ class _FinalOp(NamedTuple):
     params: Optional[dict[str, Any]] = None
     is_leaf: Optional[Callable[[Any], bool]] = None
     metadata: Optional[dict[str, Any]] = None
+    callback_token: object | None = None
 
 
 class _AnalysisVmapSpec(eqx.Module):

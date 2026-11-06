@@ -28,7 +28,7 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
 import numpy as np
@@ -480,25 +480,18 @@ def test_analysis_computation_revision_controls_reuse_and_preserves_exact_receip
     closure = _closure(outputs, "revision")
     root = environment.root
     calls: list[int] = []
-    computation_value = 0
-
-    class RecipeAnalysis(ToyArtifactProducer):
-        """Model a recipe changing behavior while prepared cache inputs stay equal."""
-
-        computation_revision: ClassVar[str] = "1"
-
-        def compute(self, _data, **kwargs):
-            return super().compute(build_toy_analysis_data(value=computation_value), **kwargs)
 
     def registered(value: int, revision: str | None) -> AnalysisRecipeRegistry:
         registry = AnalysisRecipeRegistry()
 
+        def transform(result):
+            return {"value": result["value"] + value, "values": result["values"] + value}
+
         def recipe(_spec, _root, _inputs, _execution_context):
-            nonlocal computation_value
-            computation_value = value
             calls.append(value)
+            analysis = ToyArtifactProducer(variant="toy", cache_result=True)
             return AnalysisRecipeResult(
-                analyses={"toy": RecipeAnalysis(variant="toy", cache_result=True)},
+                analyses={"toy": analysis.then_transform_result(transform)},
                 data=build_toy_analysis_data(),
             )
 
@@ -549,7 +542,7 @@ def test_analysis_computation_revision_controls_reuse_and_preserves_exact_receip
     second_revision = "recipe-20" if scenario == "recipe-revision" else first_revision
     with monkeypatch.context() as prior_engine:
         if scenario == "engine-revision":
-            prior_engine.setattr(analysis_specs, "ANALYSIS_ENGINE_REVISION", "4")
+            prior_engine.setattr(analysis_specs, "ANALYSIS_ENGINE_REVISION", "5")
         first_registry = registered(10, first_revision)
         first, first_path = run(first_registry)
     first_bytes = first_path.read_bytes()
@@ -567,7 +560,7 @@ def test_analysis_computation_revision_controls_reuse_and_preserves_exact_receip
             second.computation is not None and second.computation.recipe_revision == second_revision
         )
         if scenario == "engine-revision":
-            assert first.computation.engine_revision == "4"
+            assert first.computation.engine_revision == "5"
             assert second.computation.engine_revision == analysis_specs.ANALYSIS_ENGINE_REVISION
         if entry_point == "direct":
             assert list(analysis_results_cache_dir(first.id, root=root).glob("*.pkl"))
@@ -590,9 +583,9 @@ def test_analysis_computation_revision_controls_reuse_and_preserves_exact_receip
     assert first_path.read_bytes() == first_bytes
     for manifest, path, expected in [
         (historical, historical_path, 0),
-        (first, first_path, 12),
-        (second, second_path, 22),
-        (again, again_path, 22),
+        (first, first_path, 14),
+        (second, second_path, 24),
+        (again, again_path, 24),
     ]:
         exact, exact_path = find_manifest_by_id(
             manifest.id, root=root, expected_kind="AnalysisRunManifest"

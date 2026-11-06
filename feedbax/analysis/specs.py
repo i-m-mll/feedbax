@@ -288,7 +288,8 @@ class AnalysisRecipeRegistry:
 
         Bump the revision whenever changes to the recipe, its structure
         provider, or any transitive computation or materialization can change
-        its results for the same spec. Omitted revisions allow execution only.
+        its results for the same spec. This includes caller-supplied callbacks
+        and the state they capture. Omitted revisions allow execution only.
         """
         if self._sealed:
             raise RuntimeError("analysis recipe registry is sealed")
