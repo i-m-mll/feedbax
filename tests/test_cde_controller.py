@@ -167,6 +167,7 @@ def test_full_model_builder():
         hidden_dim=8,
         vf_width=16,
         vf_depth=1,
+        motor_noise_std=0.02,
         key=model_key,
     )
     assert isinstance(model, Graph)
@@ -181,6 +182,7 @@ def test_full_model_builder():
         trace=(
             GraphTraceRequest(kind="port", selector="hidden", node="net", port="hidden"),
             GraphTraceRequest(kind="port", selector="command", node="net", port="output"),
+            GraphTraceRequest(kind="state_path", selector="hidden_history", path="net.hidden"),
         ),
     )
     assert all(jnp.all(jnp.isfinite(x)) for x in jax.tree.leaves(outputs))
@@ -195,6 +197,7 @@ def test_full_model_builder():
     )
     assert jnp.array_equal(history.net.hidden[0], model.net.nodes["h0"].value)
     assert jnp.array_equal(history.net.hidden[1:], trace["hidden"])
+    assert jnp.array_equal(history.net.hidden[1:], trace["hidden_history"])
     assert jnp.allclose(DEFAULT_VARSET[ResponseVar.COMMAND].where(history)[1:], trace["command"])
     states, losses = task.eval_with_loss(model, run_key)
     assert states.net.hidden.shape == (2, prepared.n_steps, 8)

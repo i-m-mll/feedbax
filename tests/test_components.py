@@ -326,9 +326,14 @@ def test_recurrent_controller_preserves_dtype_with_noisy_carry(dtype):
             dtype=dtype,
             key=jax.random.key(0),
         )
+        hidden = jnp.arange(1, 4, dtype=dtype)
+        state = net.nodes["cell"].replace_state_value(
+            init_state_from_component(net), ("hidden",), hidden
+        )
+        assert jnp.array_equal(net.initial_cycle_port_values(state)["cell", "hidden"], hidden)
         outputs, _ = net(
             {"input": jnp.ones((2, 2), dtype=jnp.float64)},
-            init_state_from_component(net),
+            state,
             key=jax.random.key(1),
         )
 
@@ -393,14 +398,17 @@ def test_recurrent_controller_lstm_matches_seeded_cell_encoder_and_readout():
 
 def test_recurrent_controller_steps_with_post_activation_carry():
     graph = recurrent_controller(2, 3, hidden_nonlinearity="relu", key=jax.random.key(0))
-    state = init_state_from_component(graph)
+    initial = jnp.arange(1, 4, dtype=jnp.float32)
+    state = graph.nodes["cell"].replace_state_value(
+        init_state_from_component(graph), ("hidden",), initial
+    )
     inputs = {"input": jnp.array([1.0, 2.0])}
     cell = graph.nodes["cell"].cell
 
     first, state, carry = graph.step(inputs, state, key=jax.random.key(1))
     second, _, carry = graph.step(inputs, state, carry, key=jax.random.key(2))
 
-    assert jnp.array_equal(first["hidden"], jax.nn.relu(cell(inputs["input"], jnp.zeros(3))))
+    assert jnp.array_equal(first["hidden"], jax.nn.relu(cell(inputs["input"], initial)))
     expected = jax.nn.relu(cell(inputs["input"], first["hidden"]))
     assert jnp.array_equal(second["hidden"], expected)
     assert jnp.array_equal(carry["cell", "hidden"], expected)

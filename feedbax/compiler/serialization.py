@@ -408,7 +408,9 @@ def _instantiate_graph(
         parameter_constraints=normalize_parameter_constraints(spec.parameter_constraints),
         component_bindings=component_bindings,
         state_consistency_fn=trial_history_plan(nodes, wires),
-        state_view_fn=feedback_state_view(nodes, wires),
+        state_view_fn=feedback_state_view(
+            nodes, wires, input_bindings=input_bindings, output_bindings=output_bindings
+        ),
     )
 
 

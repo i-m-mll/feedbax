@@ -555,7 +555,7 @@ def compile_graph(
         document_sha256=document_sha256,
         expected="legacy feedback nodes declare recoverable mechanics selector paths",
         action="replace the legacy wrapper with SelectState and Channel nodes",
-        operation=lambda: lower_legacy_feedback(authored_graph, resolved_inputs),
+        operation=lambda: lower_legacy_feedback(authored_graph),
     )
     typed_graph = _map_component_nodes(
         feedback_graph,

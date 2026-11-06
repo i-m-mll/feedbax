@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import UnionType
-from typing import TYPE_CHECKING, Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+import jax.numpy as jnp
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, create_model
 
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.component import (
@@ -128,6 +129,13 @@ class ParameterField(ParamSchema):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+def _dtype_name(value: Any) -> str:
+    try:
+        return jnp.dtype(value).name
+    except TypeError as exc:
+        raise ValueError(f"Invalid dtype {value!r}") from exc
+
+
 def _field_annotation(parameter: ParamSchema) -> Any:
     annotation: Any
     if parameter.type == "bool":
@@ -137,7 +145,7 @@ def _field_annotation(parameter: ParamSchema) -> Any:
     elif parameter.type == "float":
         annotation = float
     elif parameter.type == "str":
-        annotation = str
+        annotation = Annotated[str, BeforeValidator(_dtype_name)] if parameter.name == "dtype" else str
     elif parameter.type == "enum" and parameter.options:
         annotation = Literal.__getitem__(tuple(parameter.options))
     elif parameter.type == "bounds2d":

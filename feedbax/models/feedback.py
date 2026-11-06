@@ -189,16 +189,32 @@ class SimpleFeedback(Graph):
 def feedback_state_view(
     nodes: Mapping[str, Component],
     wires: Sequence[Wire],
-) -> Callable[[dict[str, PyTree]], SimpleFeedbackState] | None:
+    *,
+    input_bindings: Mapping[str, tuple[str, str]] | None = None,
+    output_bindings: Mapping[str, tuple[str, str]] | None = None,
+) -> Callable[[dict[str, PyTree]], PyTree] | None:
     """Expose the state projection of the canonical feedback graph."""
     assembly = nodes.get("feedback_values")
     if not isinstance(assembly, AssembleFeedback):
+        if (
+            set(nodes) == {"select", "channel"}
+            and isinstance(nodes["select"], SelectState)
+            and isinstance(nodes["channel"], Channel)
+            and tuple(wires) == (Wire("select", "output", "channel", "input"),)
+            and input_bindings == {"mechanics": ("select", "state")}
+            and output_bindings == {"feedback": ("channel", "output")}
+        ):
+            return _selected_channel_state
         return None
     channel_names = tuple(channel for _, channel in feedback_node_names(len(assembly.input_ports)))
     expected = feedback_wires(len(channel_names), force_filter="force_filter" in nodes)
     if not set(expected).issubset(wires):
         return None
     return _FeedbackStateView(assembly.structure, channel_names)
+
+
+def _selected_channel_state(node_states: dict[str, PyTree]) -> PyTree:
+    return node_states["channel"]
 
 
 @dataclass(frozen=True)

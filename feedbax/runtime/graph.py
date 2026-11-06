@@ -1110,7 +1110,9 @@ class Graph(Component):
 
             if request.kind == "state_path":
                 path = request.path or request.selector.removeprefix("state_path:")
-                values[request.selector] = _select_state_path(self.state_view(state), path)
+                values[request.selector] = _select_state_path(
+                    self._rollout_state_view(state, cycle_port_values), path
+                )
                 continue
 
             raise ValueError(f"Unsupported trace request kind {request.kind!r}")
@@ -1194,6 +1196,19 @@ class Graph(Component):
         for wire in cycle_wires:
             target_key = (wire.target_node, wire.target_port)
             if target_key in init_values:
+                continue
+            initializer = wire.recurrent_initializer or {}
+            if initializer.get("kind") == "state_output" and (
+                "source_node" in initializer or "source_port" in initializer
+            ):
+                reset_node = initializer.get("source_node")
+                reset_port = initializer.get("source_port")
+                if not isinstance(reset_node, str) or reset_node not in self.nodes:
+                    raise ValueError(f"{wire} state_output initializer has an unknown source node")
+                reset_outputs = self.nodes[reset_node].initial_outputs(node_states.get(reset_node))
+                if not isinstance(reset_port, str) or reset_port not in reset_outputs:
+                    raise ValueError(f"{wire} state_output initializer has no initial source port")
+                init_values[target_key] = reset_outputs[reset_port]
                 continue
             source_state = node_states.get(wire.source_node, None)
             if source_state is None:

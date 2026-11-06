@@ -101,6 +101,16 @@ def network_recurrent_wires(
 ) -> list[WireSpec]:
     """Return recurrent carry wires for a Network cell subgraph."""
 
+    hidden_initializer = recurrent_zero_initializer(hidden_size, state_slot="hidden", dtype=dtype)
+    if (hidden_source_node, hidden_source_port) != ("cell", "hidden"):
+        hidden_initializer = {
+            "kind": "state_output",
+            "scope": "trial",
+            "source": "state_initializer",
+            "source_node": "cell",
+            "source_port": "hidden",
+            "state_slot": "hidden",
+        }
     wires = [
         WireSpec(
             source_node=hidden_source_node,
@@ -108,11 +118,7 @@ def network_recurrent_wires(
             target_node="cell",
             target_port="hidden",
             temporality="recurrent",
-            recurrent_initializer=recurrent_zero_initializer(
-                hidden_size,
-                state_slot="hidden",
-                dtype=dtype,
-            ),
+            recurrent_initializer=hidden_initializer,
         )
     ]
     normalized_cell_type = normalize_recurrent_cell_type(

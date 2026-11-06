@@ -73,6 +73,7 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
     ("AffineFeedbackController", "feedforward"): [0.5],
     ("Channel", "noise_role"): "motor_command",
     ("Channel", "noise_timing"): "post_controller",
+    ("Linear", "bias_init"): 0.125,
     ("DelayedReaches", "n_control_stages"): 49,
     ("DelayedReaches", "go_cue_event_name"): "go",
     ("DynamicsMatrixPerturb", "mass"): 1.25,
@@ -128,6 +129,10 @@ def _non_default_value(component_type: str, schema: ParamSchema) -> Any:
     key = (component_type, schema.name)
     if key in _VALUES:
         return deepcopy(_VALUES[key])
+    if key == ("JointMuscleGeometry", "paths"):
+        paths = deepcopy(schema.default)
+        paths[0]["params"]["reference_length"] *= 1.1
+        return paths
     if schema.name == "dtype":
         return "float16"
     if schema.default is None:
@@ -228,6 +233,8 @@ def _single_node_spec(
         prototype_shape = tuple(int(dim) for dim in params["input_shape"])
     elif component_type in _SCALAR_CONTROL_TYPES:
         prototype_shape = (params["n_dims"],)
+    elif component_type == "VectorElements":
+        prototype_shape = (params["size"],)
     elif component_type == "RigidTendonHillMuscleThelen":
         count = params["n_muscles"]
         prototype_shape = () if count == 1 else (count,)
