@@ -5,17 +5,17 @@
 """
 
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from functools import wraps
 from typing import Optional, Tuple
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 import jax.tree as jt
 import optax  # type: ignore
 from equinox import field
 from feedbax._vendor.jax_cookbook.misc import mse
-from feedbax._vendor.jax_cookbook.progress import piter
+from feedbax._vendor.jax_cookbook.progress import progress_piter
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
 from feedbax.objectives.loss import AbstractLoss, TermTree
@@ -84,7 +84,10 @@ def grad_wrap_simple_loss_func(
 
 
 class SimpleTrainer(eqx.Module):
-    """Train a model on a whole in-memory dataset for a fixed iteration count."""
+    """Train a model on a whole in-memory dataset for a fixed iteration count.
+
+    Only floating-point and complex array leaves are optimized.
+    """
 
     loss_func: Callable[[eqx.Module, Array, Array], Float] = field(
         default=grad_wrap_simple_loss_func(mse),
@@ -94,29 +97,29 @@ class SimpleTrainer(eqx.Module):
     )
 
     def __call__(self, model, x, y, n_iter=100, progress_bar=True):
-        opt_state = self.optimizer.init(model)
+        trainable, frozen = eqx.partition(model, eqx.is_inexact_array)
+        opt_state = self.optimizer.init(trainable)
 
-        def train_step(current_model, current_opt_state, x_batch, y_batch):
-            loss_value, grads = jax.value_and_grad(self.loss_func)(
-                current_model,
-                x_batch,
-                y_batch,
-            )
-            updates, new_opt_state = self.optimizer.update(grads, current_opt_state)
-            new_model = eqx.apply_updates(current_model, updates)
-            return new_model, new_opt_state, loss_value
+        def loss_from_trainable(candidate):
+            return self.loss_func(eqx.combine(candidate, frozen), x, y)
 
-        if progress_bar:
-            train_iter = piter(range(n_iter), description="Training")
-        else:
-            train_iter = range(n_iter)
+        value_and_grad = eqx.filter_value_and_grad(loss_from_trainable)
 
-        for _ in train_iter:
-            model, opt_state, loss = train_step(model, opt_state, x, y)
-            if progress_bar:
-                train_iter.set_postfix(loss=f"{loss:.4f}")
+        iterations = range(n_iter)
+        progress = (
+            progress_piter(iterations, description="Training")
+            if progress_bar
+            else nullcontext((iterations, None))
+        )
+        with progress as (train_iter, progress_update):
+            for _ in train_iter:
+                loss, grads = value_and_grad(trainable)
+                updates, opt_state = self.optimizer.update(grads, opt_state, trainable)
+                trainable = eqx.apply_updates(trainable, updates)
+                if progress_update is not None:
+                    progress_update.subdescription(f"loss={loss:.4f}")
 
-        return model
+        return eqx.combine(trainable, frozen)
 
 
 def _extract_intervene_inputs(
