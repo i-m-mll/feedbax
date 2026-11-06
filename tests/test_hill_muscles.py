@@ -270,6 +270,19 @@ class TestCompliantTendonMuscle:
         assert muscle.muscle_params.max_isometric_force == 500.0
         assert muscle.dt == 0.001
 
+    def test_pennation_tracks_replaced_parameter(self, muscle_params):
+        original = CompliantTendonHillMuscle(replace(muscle_params, pennation_angle=0.1))
+        fresh = CompliantTendonHillMuscle(replace(muscle_params, pennation_angle=0.3))
+        optimal_length = jnp.asarray(muscle_params.optimal_fiber_length)
+
+        def pennation(angle):
+            updated = eqx.tree_at(lambda model: model.muscle_params.pennation_angle, original, angle)
+            return updated.compute_pennation_angle(optimal_length)
+
+        value, derivative = jax.jit(jax.value_and_grad(pennation))(jnp.asarray(0.3))
+        assert float(value) == pytest.approx(float(fresh.compute_pennation_angle(optimal_length)))
+        assert float(derivative) == pytest.approx(1.0)
+
     def test_single_step(self, muscle):
         """Test single integration step works."""
         state = init_state_from_component(muscle)

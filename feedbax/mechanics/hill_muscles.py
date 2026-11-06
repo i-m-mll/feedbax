@@ -544,10 +544,6 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
     force_velocity: ForceVelocityCurve
     tendon_force_length: TendonForceLengthCurve
 
-    # Cached geometry
-    _sin_pennation: float = field(static=True)
-    _cos_pennation: float = field(static=True)
-
     def __init__(
         self,
         muscle_params: HillMuscleParams,
@@ -573,9 +569,6 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
         self.force_velocity = ForceVelocityCurve()
         self.tendon_force_length = TendonForceLengthCurve()
 
-        self._sin_pennation = float(jnp.sin(muscle_params.pennation_angle))
-        self._cos_pennation = float(jnp.cos(muscle_params.pennation_angle))
-
         super().__init__(
             dt=dt,
             solver_type=solver_type,
@@ -585,7 +578,8 @@ class CompliantTendonHillMuscle(DAEComponent[CompliantTendonState]):
 
     def compute_pennation_angle(self, fiber_length: Array) -> Array:
         """Compute current pennation angle."""
-        h = self.muscle_params.optimal_fiber_length * self._sin_pennation
+        params = self.muscle_params
+        h = params.optimal_fiber_length * jnp.sin(params.pennation_angle)
         sin_alpha = jnp.clip(h / fiber_length, 0.0, 1.0)
         return jnp.arcsin(sin_alpha)
 
