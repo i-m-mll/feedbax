@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence, cast
 
 from equinox.nn import State
+from jaxtyping import PRNGKeyArray
 
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import Ravel
@@ -201,12 +202,25 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
     )
 
 
+def _subgraph_leaf_keys(
+    node_name: str, keys: dict[tuple[str, ...], PRNGKeyArray]
+) -> dict[tuple[str, ...], PRNGKeyArray]:
+    if () in keys:
+        raise ValueError(f"Initialization key for composite node {node_name!r} must name a leaf")
+    return keys
+
+
 def _instantiate_graph(
     spec: GraphSpec,
     component_registry: Any,
     resolution: GraphParameterResolution,
+    *,
+    initialization_keys: Mapping[tuple[str, ...], PRNGKeyArray] | None = None,
 ) -> Graph:
     """Instantiate a resolved graph for the graph compiler."""
+    keys_by_node: dict[str, dict[tuple[str, ...], PRNGKeyArray]] = {}
+    for (node_name, *path), key in (initialization_keys or {}).items():
+        keys_by_node.setdefault(node_name, {})[tuple(path)] = key
     execution_registry = component_registry
     metadata_registry = component_registry
     spec, authored_array_values = _materialize_graph_component_params(spec)
@@ -214,6 +228,7 @@ def _instantiate_graph(
     nodes: dict[str, Component] = {}
     component_bindings: dict[str, ComponentBinding] = {}
     for node_name, node_spec in spec.nodes.items():
+        node_keys = keys_by_node.pop(node_name, {})
         node_type = node_spec.type
         node_params, lowering_metadata = _split_lowering_metadata(node_spec, metadata_registry)
         if node_spec.param_schema_version is not None:
@@ -268,6 +283,8 @@ def _instantiate_graph(
                 consumer="compile_graph",
             )
             if required_domain != CAUSAL_DOMAIN_ID:
+                if node_keys:
+                    raise ValueError(f"Cannot supply initialization keys to acausal node {node_name!r}")
                 domain = builtin_domain_registry().get(required_domain)
                 if domain is None:
                     raise ValueError(
@@ -298,7 +315,10 @@ def _instantiate_graph(
                 consumer="compile_graph",
             )
             nodes[node_name] = _instantiate_graph(
-                causal_subgraph, metadata_registry, resolution.subgraphs[node_name]
+                causal_subgraph,
+                metadata_registry,
+                resolution.subgraphs[node_name],
+                initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
             )
             continue
         if spec.subgraphs and node_name in spec.subgraphs:
@@ -309,7 +329,10 @@ def _instantiate_graph(
                 consumer="compile_graph",
             )
             nodes[node_name] = _instantiate_graph(
-                causal_subgraph, metadata_registry, resolution.subgraphs[node_name]
+                causal_subgraph,
+                metadata_registry,
+                resolution.subgraphs[node_name],
+                initialization_keys=_subgraph_leaf_keys(node_name, node_keys),
             )
             continue
         meta = metadata_registry.get(node_type)
@@ -324,6 +347,16 @@ def _instantiate_graph(
         delta_A_declaration = authored_array_values.get(node_name, {}).get(("delta_A",))
         if node_type == "StructuralLinearStateSpace" and delta_A_declaration is not None:
             params = {**params, "_authored_delta_A_value_spec": delta_A_declaration}
+        if node_keys:
+            if (
+                node_keys.keys() != {()}
+                or meta is None
+                or "key" not in meta.params.build_context_fields
+            ):
+                raise ValueError(
+                    f"Initialization keys at {node_name!r} must address a leaf accepting a key"
+                )
+            params = {**params, "key": node_keys[()]}
         component = build_component(
             node_name,
             node_type,
@@ -344,6 +377,9 @@ def _instantiate_graph(
                     f"spec inputs={declared_input_ports!r}, outputs={declared_output_ports!r}"
                 )
         nodes[node_name] = component
+
+    if keys_by_node:
+        raise ValueError(f"Initialization keys name unknown nodes: {sorted(keys_by_node)}")
 
     wires = tuple(
         Wire(

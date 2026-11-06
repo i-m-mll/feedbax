@@ -13,8 +13,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParamSchema
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
-from feedbax.models.networks import PopulationStructure, SimpleStagedNetwork
-from feedbax.runtime.graph import Graph
+from feedbax.models.networks import PopulationStructure, recurrent_controller
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 
@@ -404,14 +403,14 @@ def test_channel_rejects_noncanonical_noise_spellings(params: dict[str, Any]) ->
         spec_to_graph(spec, registry)
 
 
-def test_opaque_programmatic_composite_is_not_guessed() -> None:
+def test_programmatic_recurrent_controller_graph_round_trips() -> None:
     population = PopulationStructure.from_indices(
         input_only_indices=[0],
         readout_only_indices=[1],
         recurrent_only_indices=[2],
         input_readout_indices=[3],
     )
-    network = SimpleStagedNetwork(
+    network = recurrent_controller(
         input_size=5,
         hidden_size=4,
         out_size=2,
@@ -420,14 +419,13 @@ def test_opaque_programmatic_composite_is_not_guessed() -> None:
         out_nonlinearity=jax.nn.sigmoid,
         hidden_noise_std=0.2,
         population_structure=population,
-        population_mask_mode="plain_all_ones",
         dtype=jnp.float16,
         key=jax.random.PRNGKey(0),
     )
-    graph = Graph(nodes={"net": network})
+    spec = graph_to_spec(network)
+    roundtrip = graph_to_spec(spec_to_graph(spec, ComponentRegistry(load_user_components=False)))
 
-    with pytest.raises(
-        ValueError,
-        match="Programmatic graph component reverse resolution must match exactly one",
-    ):
-        graph_to_spec(graph)
+    assert roundtrip == spec
+    assert roundtrip.nodes["cell"].params["dtype"] == "float16"
+    assert roundtrip.nodes["readout"].params["initialization"] == "zero_bias"
+    assert roundtrip.nodes["hidden_noise"].params["input_dtype"] == "float16"

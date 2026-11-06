@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable, Literal, Mapping, TypeVar
 
+from jaxtyping import PRNGKeyArray
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from feedbax.contracts._causal_inputs import InputDriverConflict
@@ -514,8 +515,15 @@ def compile_graph(
     document: GraphDocument,
     component_registry: Any,
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
+    *,
+    initialization_keys: Mapping[str | tuple[str, ...], PRNGKeyArray] | None = None,
 ) -> ExecutableGraph:
-    """Compile one exact graph document through resolution and realization."""
+    """Compile one exact graph document through resolution and realization.
+
+    Optional initialization keys seed leaf parameter construction. Use a node
+    name for a top-level leaf, or a tuple of node names for a nested leaf.
+    These keys do not change the resolved topology.
+    """
     document_sha256 = canonical_sha256(document.model_dump(mode="json", exclude_none=True))
     graph_anchor = SemanticAnchor(
         semantic_document_sha256=document_sha256,
@@ -598,7 +606,15 @@ def compile_graph(
     )
 
     def build_schedule() -> tuple[Graph, tuple[str, ...]]:
-        instantiated = _instantiate_graph(graph, component_registry, resolution)
+        leaf_keys = {}
+        for name, key in (initialization_keys or {}).items():
+            path = (name,) if isinstance(name, str) else name
+            if not path or path in leaf_keys:
+                raise ValueError(f"Invalid or duplicate initialization key path {path!r}")
+            leaf_keys[path] = key
+        instantiated = _instantiate_graph(
+            graph, component_registry, resolution, initialization_keys=leaf_keys
+        )
         executable = apply_parameter_constraints(instantiated).prepare()
         return executable, tuple(executable._execution_order)
 

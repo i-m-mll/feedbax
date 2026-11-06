@@ -39,11 +39,15 @@ def sigmoid(x: Array) -> Array:
     return jax.nn.sigmoid(x)
 
 
+def softmax(x: Array) -> Array:
+    return jax.nn.softmax(x)
+
+
 NAMED_ACTIVATIONS: dict[str, Callable] = {
     "relu": relu,
     "tanh": tanh,
     "sigmoid": sigmoid,
-    "softmax": jax.nn.softmax,
+    "softmax": softmax,
     "identity": identity_activation,
 }
 
@@ -64,6 +68,16 @@ def resolve_activation(activation: str | Callable) -> tuple[str, Callable]:
     if callable(activation):
         return _callable_name(activation), activation
     raise TypeError("activation must be a string name or callable")
+
+
+def named_activation(activation: str | Callable) -> str:
+    """Resolve a portable activation name from a built-in name or callable."""
+    if isinstance(activation, str):
+        return resolve_activation(activation)[0]
+    for name, function in NAMED_ACTIVATIONS.items():
+        if activation is function or activation is getattr(jax.nn, name, function):
+            return name
+    raise ValueError(f"Expected a built-in activation, got {activation!r}")
 
 
 class Gain(Component):
@@ -536,7 +550,7 @@ class Linear(Component):
     input_size: int = field(static=True)
     output_size: int = field(static=True)
     use_bias: bool = field(static=True)
-    initialization: Literal["random", "zeros"] = field(static=True)
+    initialization: Literal["random", "zero_bias", "zeros"] = field(static=True)
     dtype: Any = field(static=True)
 
     def __init__(
@@ -545,7 +559,7 @@ class Linear(Component):
         output_size: int,
         use_bias: bool = True,
         activation: str | Callable = "identity",
-        initialization: Literal["random", "zeros"] = "random",
+        initialization: Literal["random", "zero_bias", "zeros"] = "random",
         dtype: Any = jnp.float32,
         *,
         key: PRNGKeyArray,
@@ -553,13 +567,13 @@ class Linear(Component):
         self.input_size = int(input_size)
         self.output_size = int(output_size)
         self.use_bias = bool(use_bias)
-        if initialization not in ("random", "zeros"):
+        if initialization not in ("random", "zero_bias", "zeros"):
             raise ValueError(
-                "Linear initialization must be 'random' or 'zeros'; "
+                "Linear initialization must be 'random', 'zero_bias', or 'zeros'; "
                 f"got {initialization!r}"
             )
         self.initialization = initialization
-        self.dtype = dtype
+        self.dtype = jnp.dtype(dtype).name
         self.activation_name, self.activation = resolve_activation(activation)
         layer = eqx.nn.Linear(
             self.input_size,
@@ -570,8 +584,8 @@ class Linear(Component):
         )
         if self.initialization == "zeros":
             layer = eqx.tree_at(lambda item: item.weight, layer, jnp.zeros_like(layer.weight))
-            if layer.bias is not None:
-                layer = eqx.tree_at(lambda item: item.bias, layer, jnp.zeros_like(layer.bias))
+        if self.initialization in ("zero_bias", "zeros") and layer.bias is not None:
+            layer = eqx.tree_at(lambda item: item.bias, layer, jnp.zeros_like(layer.bias))
         self.layer = layer
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -654,12 +668,15 @@ class GRU(Component):
         hidden_size: int,
         dtype: Any = jnp.float32,
         *,
+        use_bias: bool = True,
         key: PRNGKeyArray,
     ):
         self.input_size = int(input_size)
         self.hidden_size = int(hidden_size)
-        self.dtype = dtype
-        self.cell = eqx.nn.GRUCell(self.input_size, self.hidden_size, dtype=dtype, key=key)
+        self.dtype = jnp.dtype(dtype).name
+        self.cell = eqx.nn.GRUCell(
+            self.input_size, self.hidden_size, use_bias=use_bias, dtype=dtype, key=key
+        )
         hidden = jnp.zeros(self.hidden_size, dtype=dtype)
         initial_state = GRUState(hidden=hidden, output=hidden)
         self.state_index = StateIndex(initial_state)
@@ -698,12 +715,15 @@ class LSTM(Component):
         hidden_size: int,
         dtype: Any = jnp.float32,
         *,
+        use_bias: bool = True,
         key: PRNGKeyArray,
     ):
         self.input_size = int(input_size)
         self.hidden_size = int(hidden_size)
-        self.dtype = dtype
-        self.cell = eqx.nn.LSTMCell(self.input_size, self.hidden_size, dtype=dtype, key=key)
+        self.dtype = jnp.dtype(dtype).name
+        self.cell = eqx.nn.LSTMCell(
+            self.input_size, self.hidden_size, use_bias=use_bias, dtype=dtype, key=key
+        )
         hidden = jnp.zeros(self.hidden_size, dtype=dtype)
         cell = jnp.zeros(self.hidden_size, dtype=dtype)
         initial_state = LSTMState(hidden=hidden, cell=cell, output=hidden)
@@ -735,8 +755,10 @@ class Mux(Component):
 
     n_inputs: int = field(static=True)
     input_ports: tuple[str, ...]
+    dtype: Any = field(static=True)
 
-    def __init__(self, n_inputs: int = 2):
+    def __init__(self, n_inputs: int = 2, *, dtype: Any = None):
+        self.dtype = jnp.dtype(dtype).name if dtype is not None else None
         self.n_inputs = int(n_inputs)
         self.input_ports = tuple(f"in_{i}" for i in range(self.n_inputs))
 
@@ -750,10 +772,10 @@ class Mux(Component):
         parts = []
         for i in range(self.n_inputs):
             port = f"in_{i}"
-            if port not in inputs:
+            if inputs.get(port) is None:
                 continue
             flat, _ = ravel_pytree(inputs[port])
-            parts.append(jnp.atleast_1d(flat))
+            parts.append(jnp.asarray(flat, dtype=self.dtype))
         if not parts:
             raise ValueError("Mux requires at least one connected input")
         output = jnp.concatenate(parts, axis=-1)

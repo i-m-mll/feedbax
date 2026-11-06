@@ -13,6 +13,8 @@ from datetime import datetime
 from collections.abc import Mapping
 from typing import Any, Literal
 
+import jax.numpy as jnp
+
 from feedbax.contracts.graph import ComponentSpec, GraphMetadata, GraphSpec, WireSpec
 from feedbax.models.networks import (
     PopulationStructure,
@@ -37,7 +39,9 @@ class GraphTemplateMetadata:
     component_type: str | None = None
 
 
-def recurrent_zero_initializer(width: int | None = None, *, state_slot: str) -> dict[str, Any]:
+def recurrent_zero_initializer(
+    width: int | None = None, *, state_slot: str, dtype: str | None = None
+) -> dict[str, Any]:
     """Return the canonical zero initializer for a recurrent edge."""
 
     initializer: dict[str, Any] = {
@@ -48,6 +52,8 @@ def recurrent_zero_initializer(width: int | None = None, *, state_slot: str) -> 
     }
     if width is not None:
         initializer["shape"] = [int(width)]
+    if dtype is not None:
+        initializer["dtype"] = dtype
     return initializer
 
 
@@ -85,6 +91,7 @@ def network_recurrent_wires(
     *,
     hidden_source_node: str = "cell",
     hidden_source_port: str = "hidden",
+    dtype: str | None = None,
 ) -> list[WireSpec]:
     """Return recurrent carry wires for a Network cell subgraph."""
 
@@ -98,6 +105,7 @@ def network_recurrent_wires(
             recurrent_initializer=recurrent_zero_initializer(
                 hidden_size,
                 state_slot="hidden",
+                dtype=dtype,
             ),
         )
     ]
@@ -116,6 +124,7 @@ def network_recurrent_wires(
                 recurrent_initializer=recurrent_zero_initializer(
                     hidden_size,
                     state_slot="cell",
+                    dtype=dtype,
                 ),
             )
         )
@@ -126,12 +135,15 @@ def recurrent_controller_template_graph(
     *,
     input_size: int,
     hidden_size: int,
-    out_size: int,
+    out_size: int | None,
     cell_type: str = "GRU",
     cell_params: Mapping[str, Any] | None = None,
     encoding_size: int | None = None,
     hidden_nonlinearity: str = "identity",
     hidden_noise_std: float | None = None,
+    encoder_use_bias: bool = True,
+    readout_use_bias: bool = True,
+    readout_initialization: str = "random",
     out_nonlinearity: str = "identity",
     dtype: object = "float32",
     population_structure: PopulationStructure | Mapping[str, object] | None = None,
@@ -144,6 +156,7 @@ def recurrent_controller_template_graph(
         cell_type,
         path="Recurrent Controller.params.cell_type",
     )
+    dtype_name = jnp.dtype(dtype).name
     hidden_input_size = int(encoding_size) if encoding_size is not None else int(input_size)
     parameter_constraints = []
     if population_structure is not None:
@@ -152,21 +165,21 @@ def recurrent_controller_template_graph(
                 population_structure,
                 hidden_size=int(hidden_size),
                 input_size=hidden_input_size,
-                out_size=int(out_size),
+                out_size=out_size,
                 cell_type=normalized_cell_type,
             )
         )
     now = datetime.now().isoformat()
     resolved_cell_params = {
+        **dict(cell_params or {}),
         "input_size": hidden_input_size,
         "hidden_size": int(hidden_size),
-        "dtype": dtype,
-        **dict(cell_params or {}),
+        "dtype": dtype_name,
     }
     nodes = {
         "input_mux": ComponentSpec(
             type="Mux",
-            params={"n_inputs": 2},
+            params={"n_inputs": 2, "dtype": dtype_name},
             input_ports=["in_0", "in_1"],
             output_ports=["output"],
         ),
@@ -180,18 +193,6 @@ def recurrent_controller_template_graph(
             if normalized_cell_type == "LSTM"
             else ["output", "hidden"],
         ),
-        "readout": ComponentSpec(
-            type="Linear",
-            params={
-                "input_size": int(hidden_size),
-                "output_size": int(out_size),
-                "use_bias": True,
-                "activation": out_nonlinearity,
-                "dtype": dtype,
-            },
-            input_ports=["input"],
-            output_ports=["output"],
-        ),
     }
     wires = []
     cell_input_node = "input_mux"
@@ -201,9 +202,9 @@ def recurrent_controller_template_graph(
             params={
                 "input_size": int(input_size),
                 "output_size": int(encoding_size),
-                "use_bias": True,
+                "use_bias": encoder_use_bias,
                 "activation": "identity",
-                "dtype": dtype,
+                "dtype": dtype_name,
             },
             input_ports=["input"],
             output_ports=["output"],
@@ -255,6 +256,7 @@ def recurrent_controller_template_graph(
                 "noise_std": float(hidden_noise_std),
                 "add_noise": True,
                 "input_shape": [int(hidden_size)],
+                "input_dtype": dtype_name,
             },
             input_ports=["input"],
             output_ports=["output"],
@@ -269,21 +271,47 @@ def recurrent_controller_template_graph(
         )
         hidden_node = "hidden_noise"
         hidden_port = "output"
-    wires.extend(
-        [
+    output_node, output_port = hidden_node, hidden_port
+    if out_size is not None:
+        output_node, output_port = "readout", "output"
+        nodes[output_node] = ComponentSpec(
+            type="Linear",
+            params={
+                "input_size": int(hidden_size),
+                "output_size": int(out_size),
+                "use_bias": readout_use_bias,
+                "activation": out_nonlinearity,
+                "initialization": readout_initialization,
+                "dtype": dtype_name,
+            },
+            input_ports=["input"],
+            output_ports=["output"],
+        )
+    elif out_nonlinearity != "identity":
+        output_node, output_port = "output_activation", "output"
+        nodes[output_node] = ComponentSpec(
+            type="Activation",
+            params={"activation": out_nonlinearity},
+            input_ports=["input"],
+            output_ports=["output"],
+        )
+    if output_node != hidden_node:
+        wires.append(
             WireSpec(
                 source_node=hidden_node,
                 source_port=hidden_port,
-                target_node="readout",
+                target_node=output_node,
                 target_port="input",
-            ),
-            *network_recurrent_wires(
-                normalized_cell_type,
-                int(hidden_size),
-                hidden_source_node=hidden_node,
-                hidden_source_port=hidden_port,
-            ),
-        ]
+            )
+        )
+    wires.extend(
+        network_recurrent_wires(
+            normalized_cell_type,
+            int(hidden_size),
+            hidden_source_node=hidden_node,
+            hidden_source_port=hidden_port,
+            dtype=dtype_name,
+        )
     )
     return GraphSpec(
         nodes=nodes,
@@ -292,7 +320,7 @@ def recurrent_controller_template_graph(
         output_ports=["output", "hidden"],
         input_bindings=input_bindings,
         output_bindings={
-            "output": ("readout", "output"),
+            "output": (output_node, output_port),
             "hidden": (hidden_node, hidden_port),
         },
         parameter_constraints=parameter_constraints,

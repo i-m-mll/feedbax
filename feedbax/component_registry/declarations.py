@@ -410,7 +410,9 @@ class ComponentParamContract:
                     for name in names
                 }
             )
-        constructor_values.update(self.constructor.injections)
+        for name, value in self.constructor.injections.items():
+            if name not in self.build_context_fields or name not in constructor_values:
+                constructor_values[name] = value
         return self.runtime_type(**constructor_values)
 
     def extract(self, component: "Component") -> BaseModel:

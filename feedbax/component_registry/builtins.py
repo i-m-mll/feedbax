@@ -1156,7 +1156,7 @@ def linear_output_prototype(
 ) -> dict[str, Any]:
     """Return a dense-layer output prototype from ``output_size``."""
 
-    return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
+    return {"output": jnp.zeros((int(params.get("output_size", 1)),), dtype=params.get("dtype"))}
 
 
 def recurrent_output_prototype(
@@ -1165,7 +1165,7 @@ def recurrent_output_prototype(
 ) -> dict[str, Any]:
     """Return GRU output and hidden prototypes from ``hidden_size``."""
 
-    hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
+    hidden = jnp.zeros((int(params.get("hidden_size", 1)),), dtype=params.get("dtype"))
     return {"output": hidden, "hidden": hidden}
 
 
@@ -1175,7 +1175,7 @@ def lstm_output_prototype(
 ) -> dict[str, Any]:
     """Return LSTM output, hidden, and cell prototypes from ``hidden_size``."""
 
-    hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
+    hidden = jnp.zeros((int(params.get("hidden_size", 1)),), dtype=params.get("dtype"))
     return {"output": hidden, "hidden": hidden, "cell": hidden}
 
 
@@ -1204,7 +1204,7 @@ def mux_output_prototype(
             + ", ".join(repr(port) for port in missing)
         )
     widths = [_ravel_width(inputs[port], component="Mux", port=port) for port in ports]
-    return {"output": jnp.zeros((sum(widths),))}
+    return {"output": jnp.zeros((sum(widths),), dtype=params.get("dtype"))}
 
 
 def demux_output_prototype(
@@ -1885,7 +1885,7 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="MLP",
             runtime_type=MLP,
-            build_context_fields=("dtype",),
+            build_context_fields=("dtype", "key"),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
             attribute_paths={
                 "activation": "activation_name",
@@ -1927,26 +1927,27 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="Linear",
             runtime_type=Linear,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
             attribute_paths={"activation": "activation_name"},
             category="Neural Networks",
             description="Linear layer.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=1, min=1, required=True),
                 ParameterField(name="output_size", type="int", default=1, min=1, required=True),
                 ParameterField(name="use_bias", type="bool", default=True, required=False),
                 ParameterField(
                     name="initialization",
                     type="enum",
-                    options=["random", "zeros"],
+                    options=["random", "zero_bias", "zeros"],
                     default="random",
                     required=False,
                 ),
                 ParameterField(
                     name="activation",
                     type="enum",
-                    options=["identity", "tanh", "relu", "sigmoid"],
+                    options=["identity", "tanh", "relu", "sigmoid", "softmax"],
                     default="identity",
                     required=False,
                 ),
@@ -1979,13 +1980,16 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="GRU",
             runtime_type=GRU,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+            attribute_paths={"use_bias": "cell.use_bias"},
             category="Neural Networks",
             description="GRU cell.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
+                ParameterField(name="use_bias", type="bool", default=True, required=False),
             ],
             input_ports=["input", "hidden"],
             output_ports=["output", "hidden"],
@@ -2002,7 +2006,7 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="VanillaRNN",
             runtime_type=VanillaRNN,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(renames={"activation": "activation_name"}),
             attribute_paths={
                 "activation": "activation_name",
@@ -2015,6 +2019,7 @@ def register_builtin_components(registry: _Registry) -> None:
             category="Neural Networks",
             description="Vanilla recurrent cell.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="use_bias", type="bool", default=True, required=False),
@@ -2027,7 +2032,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(
                     name="activation",
                     type="enum",
-                    options=["tanh", "relu", "identity"],
+                    options=["tanh", "relu", "identity", "sigmoid", "softmax"],
                     default="tanh",
                     required=False,
                 ),
@@ -2047,13 +2052,16 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="LSTM",
             runtime_type=LSTM,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+            attribute_paths={"use_bias": "cell.use_bias"},
             category="Neural Networks",
             description="LSTM cell.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
+                ParameterField(name="use_bias", type="bool", default=True, required=False),
             ],
             input_ports=["input", "hidden", "cell"],
             output_ports=["output", "hidden", "cell"],
@@ -3600,6 +3608,7 @@ def register_builtin_components(registry: _Registry) -> None:
             category="Signal Processing",
             description="Concatenate inputs into single vector.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default=None, required=False),
                 ParameterField(name="n_inputs", type="int", default=2, min=1, required=True),
             ],
             input_ports=["in_0", "in_1"],

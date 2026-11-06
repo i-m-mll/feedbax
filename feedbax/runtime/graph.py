@@ -1294,12 +1294,12 @@ class Graph(Component):
                     "kind 'zeros' requires 'shape'"
                 )
             try:
-                return jnp.zeros(tuple(int(dim) for dim in shape))
+                return jnp.zeros(tuple(int(dim) for dim in shape), dtype=initializer.get("dtype"))
             except (TypeError, ValueError) as exc:
                 raise ValueError(
                     f"Wire {wire.source_node}.{wire.source_port} -> "
                     f"{wire.target_node}.{wire.target_port} recurrent_initializer "
-                    f"has invalid shape {shape!r}"
+                    f"has invalid shape {shape!r} or dtype {initializer.get('dtype')!r}"
                 ) from exc
         if kind == "constant":
             if "value" not in initializer:

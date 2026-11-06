@@ -55,11 +55,11 @@ class DerivedDimensionConflict(DerivedDimensionError):
     """Raised when a declared builder dimension contradicts the derived value."""
 
 
-def array_proto_from_shape(shape: Any) -> jax.Array | None:
+def array_proto_from_shape(shape: Any, *, dtype: Any = None) -> jax.Array | None:
     if not isinstance(shape, (list, tuple)):
         return None
     try:
-        return jnp.zeros(tuple(int(dim) for dim in shape))
+        return jnp.zeros(tuple(int(dim) for dim in shape), dtype=dtype)
     except (TypeError, ValueError):
         return None
 
