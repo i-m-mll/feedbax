@@ -16,7 +16,12 @@ import numpy as np
 
 from feedbax.mechanics.geometry import corners_2d
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
-from feedbax.mechanics.skeleton._planar import distal_state, effector_jacobian, link_kinematics
+from feedbax.mechanics.skeleton._planar import (
+    distal_state,
+    effector_jacobian,
+    link_kinematics,
+    two_link_angular_acceleration,
+)
 from feedbax.runtime.state import CartesianState, StateBounds
 
 
@@ -93,30 +98,11 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
             input: The torques on the joints.
         """
         angle, d_angle = state.angle, state.d_angle
-        base_inertia = self.I[0] + self.I[1] + self.m[1] * self.l[0] ** 2
-        coupling = self.m[1] * self.l[0] * self.s[1]
-        distal_inertia = self.I[1]
-
-        # centripetal and coriolis torques
-        c_vec = (
-            jnp.array((-d_angle[1] * (2 * d_angle[0] + d_angle[1]), d_angle[0] ** 2))
-            * coupling
-            * jnp.sin(angle[1])
-        )
-
-        # inertia matrix that maps torques -> angular accelerations
-        cs1 = jnp.cos(angle[1])
-        cross_inertia = distal_inertia + coupling * cs1
-        inertia_mat = jnp.array(
-            (
-                (base_inertia + 2 * coupling * cs1, cross_inertia),
-                (cross_inertia, distal_inertia * jnp.ones_like(cs1)),
-            )
-        )
-
         load_torque = self.effector_force_to_torques(angle, state.effector_force)
-        net_torque = state.torque + input + load_torque - c_vec - self.B @ d_angle
-        dd_angle = jnp.linalg.solve(inertia_mat, net_torque)
+        dd_angle = two_link_angular_acceleration(
+            self.l, self.m, self.I, self.s, self.B,
+            angle, d_angle, state.torque + input + load_torque,
+        )
 
         return TwoLinkArmState(
             angle=d_angle,

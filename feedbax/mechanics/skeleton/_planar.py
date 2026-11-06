@@ -1,4 +1,4 @@
-"""Kinematics for a planar serial arm with relative joint angles."""
+"""Mechanics of planar arms with relative joint angles."""
 
 import jax
 import jax.numpy as jnp
@@ -37,3 +37,46 @@ def effector_jacobian(lengths: Array, angle: Array) -> Array:
 def distal_state(links: CartesianState) -> CartesianState:
     """Select the Cartesian state of the last link endpoint."""
     return CartesianState(pos=links.pos[-1], vel=links.vel[-1], force=links.force[-1])
+
+
+def two_link_inertia(
+    lengths: Array,
+    masses: Array,
+    inertias: Array,
+    center_offsets: Array,
+    elbow_angle: Array,
+) -> tuple[Array, Array]:
+    """Return the joint-space inertia matrix and inertial coupling coefficient."""
+    distal_inertia = inertias[1]
+    base_inertia = inertias[0] + distal_inertia + masses[1] * lengths[0] ** 2
+    coupling = masses[1] * lengths[0] * center_offsets[1]
+    cross_term = coupling * jnp.cos(elbow_angle)
+    cross_inertia = distal_inertia + cross_term
+    matrix = jnp.array(
+        (
+            (base_inertia + 2 * cross_term, cross_inertia),
+            (cross_inertia, distal_inertia),
+        )
+    )
+    return matrix, coupling
+
+
+def two_link_angular_acceleration(
+    lengths: Array,
+    masses: Array,
+    inertias: Array,
+    center_offsets: Array,
+    friction: Array,
+    angle: Array,
+    d_angle: Array,
+    torque: Array,
+) -> Array:
+    """Solve for angular acceleration from the applied joint torques."""
+    matrix, coupling = two_link_inertia(lengths, masses, inertias, center_offsets, angle[1])
+    shoulder_rate, elbow_rate = d_angle
+    coriolis = (
+        jnp.array((-elbow_rate * (2 * shoulder_rate + elbow_rate), shoulder_rate ** 2))
+        * coupling
+        * jnp.sin(angle[1])
+    )
+    return jnp.linalg.solve(matrix, torque - coriolis - friction @ d_angle)
