@@ -33,7 +33,7 @@ from feedbax.mechanics.hill_muscles import (
 )
 from feedbax.mechanics.muscle_config import default_muscle_config
 from feedbax.mechanics.plant import AbstractPlant, DynamicsComponent, PlantState
-from feedbax.mechanics.skeleton.arm import TwoLinkArm, TwoLinkArmState
+from feedbax.mechanics.skeleton.arm import TwoLinkArm
 from feedbax.mechanics.units import (
     DEFAULT_MUSCLE_VMAX,
     ECCENTRIC_VELOCITY_LIMIT_FRACTION,
@@ -355,58 +355,6 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         return jnp.maximum(force, 0.0)
 
     # ------------------------------------------------------------------
-    # Lagrangian dynamics
-    # ------------------------------------------------------------------
-
-    def _lagrangian_dynamics(
-        self,
-        angles: Float[Array, "2"],
-        d_angles: Float[Array, "2"],
-        torques: Float[Array, "2"],
-    ) -> Float[Array, "2"]:
-        """Compute angular accelerations via Lagrangian dynamics.
-
-        Implements ``M(q) * ddq = tau - C(q, dq) - B * dq`` where M is the
-        configuration-dependent mass matrix, C encodes Coriolis and centripetal
-        effects, and B is the joint friction matrix.
-
-        Args:
-            angles: Joint angles, shape ``(2,)``.
-            d_angles: Angular velocities, shape ``(2,)``.
-            torques: Net joint torques, shape ``(2,)``.
-
-        Returns:
-            Angular accelerations, shape ``(2,)``.
-        """
-        # Reuse the precomputed inertia constants from the TwoLinkArm skeleton.
-        # TwoLinkArm eagerly initializes _a in __init__, so this is safe.
-        a0, a1, a2 = self.skeleton._a
-
-        # Coriolis and centripetal torques.
-        c_vec = (
-            jnp.array((
-                -d_angles[1] * (2 * d_angles[0] + d_angles[1]),
-                d_angles[0] ** 2,
-            ))
-            * a1
-            * jnp.sin(angles[1])
-        )
-
-        # Configuration-dependent mass matrix.
-        cs1 = jnp.cos(angles[1])
-        tmp = a2 + a1 * cs1
-        M = jnp.array([
-            [a0 + 2 * a1 * cs1, tmp],
-            [tmp, a2 * jnp.ones_like(cs1)],
-        ])
-
-        # Net torque after subtracting Coriolis and friction.
-        net_torque = torques - c_vec - self.skeleton.B @ d_angles
-
-        # Angular acceleration via linear solve (more stable than inversion).
-        return jnp.linalg.solve(M, net_torque)
-
-    # ------------------------------------------------------------------
     # AbstractPlant interface
     # ------------------------------------------------------------------
 
@@ -465,18 +413,16 @@ class AnalyticalMusculoskeletalPlant(AbstractPlant):
         joint_torques = self.moment_arms.T @ forces
 
         # --- Lagrangian dynamics ---
-        dd_angles = self._lagrangian_dynamics(angles, d_angles, joint_torques)
-        # Safety clamp: prevent extreme accelerations that blow up ODE integration.
-        dd_angles = jnp.clip(
-            dd_angles, -self.max_acceleration, self.max_acceleration,
+        skeleton = eqx.tree_at(lambda s: s.d_angle, state.skeleton, d_angles)
+        d_skeleton = self.skeleton.vector_field(t, skeleton, joint_torques)
+        d_skeleton = eqx.tree_at(
+            lambda s: s.d_angle,
+            d_skeleton,
+            jnp.clip(d_skeleton.d_angle, -self.max_acceleration, self.max_acceleration),
         )
 
         return PlantState(
-            skeleton=TwoLinkArmState(
-                angle=d_angles,
-                d_angle=dd_angles,
-                torque=jnp.zeros(2),
-            ),
+            skeleton=d_skeleton,
             muscles=AnalyticalMuscleState(activations=d_activations),
         )
 

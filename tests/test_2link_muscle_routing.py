@@ -34,6 +34,7 @@ from feedbax.mechanics.muscle_config import (
     default_muscle_config,
 )
 from feedbax.mechanics.plant import MuscledArm, PlantState
+from feedbax.mechanics.skeleton.arm import TwoLinkArm
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +255,36 @@ class TestCanonicalSixMuscleDefaults:
             plant.current_muscle_activations(state),
             jnp.zeros(6),
         )
+
+
+def test_analytical_isometric_actuation_survives_load_release(key):
+    arm = TwoLinkArm()
+    angle = jnp.array([0.6, 0.9])
+    moment_arms = jnp.array([[0.03, -0.02]])
+    optimal_length, slack_length = jnp.array([0.1]), jnp.array([0.15])
+    plant = AnalyticalMusculoskeletalPlant(
+        skeleton=arm,
+        segment_lengths=arm.l,
+        moment_arms=moment_arms,
+        muscle_gear=jnp.array([200.0]),
+        optimal_fiber_length=optimal_length,
+        tendon_slack_length=slack_length,
+        mt_reference_length=optimal_length + slack_length + moment_arms @ angle,
+        vmax=jnp.array([10.0]),
+    )
+    state = eqx.tree_at(
+        lambda s: (s.skeleton.angle, s.muscles.activations),
+        plant.init(key=key),
+        (angle, jnp.array([0.25])),
+    )
+    # At optimal length and zero velocity, 25% activation gives 50 N.
+    muscle_torque = 50.0 * moment_arms[0]
+    for force in (jnp.array([4.0, -2.0]), jnp.zeros(2)):
+        loaded = arm.update_state_given_effector_force(force, state.skeleton)
+        state = eqx.tree_at(lambda s: s.skeleton, state, loaded)
+        actual = plant.vector_field(0.0, state, jnp.zeros(1)).skeleton.d_angle
+        expected = arm.vector_field(0.0, loaded, muscle_torque).d_angle
+        assert jnp.allclose(actual, expected, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
