@@ -1834,6 +1834,14 @@ def test_method_diagnostics_progress_observes_completed_batch_without_custody_le
         event["coordinate"]["program_step"] for event in result.history_events
     ] == expected_steps
     assert result.diagnostics.segment_completed_batches == 4
+    cadence = check_checkpoint_cadence(
+        ConformanceRowArtifacts(
+            row_id="mapped-diagnostics-observation",
+            bundle_row_spec=result.manifest.training_spec.inline,
+            training_diagnostics=json.loads(result.diagnostics_path.read_bytes()),
+        )
+    )
+    assert cadence.status == "pass", cadence
     trace = result.diagnostics.method_trace
     assert trace is not None
     assert [(row.completed_batch, row.replica_index) for row in trace.records] == [
@@ -2049,7 +2057,7 @@ def test_buffered_method_observations_resume_from_partial_checkpoint(
         manifest_root=tmp_path / "partial-manifest",
         checkpoint_root=checkpoint_root,
         run_id="buffered-partial",
-        stop_after_barrier="after_train_batch",
+        update_budget=1,
     )
     resumed = execute_training_run_spec(
         spec,
@@ -2066,17 +2074,26 @@ def test_buffered_method_observations_resume_from_partial_checkpoint(
     assert partial_trace is not None
     assert resumed_trace is not None
     assert [(row.completed_batch, row.replica_index) for row in partial_trace.records] == [
-        (batch, replica) for batch in (11, 12) for replica in range(5)
+        (11, replica) for replica in range(5)
     ]
     assert [(row.completed_batch, row.replica_index) for row in resumed_trace.records] == [
-        (batch, replica) for batch in range(13, 18) for replica in range(5)
+        (batch, replica) for batch in range(12, 18) for replica in range(5)
     ]
-    assert (resumed.start_completed_batches, resumed.end_completed_batches) == (12, 17)
-    assert resumed.diagnostics.segment_completed_batches == 5
+    assert (resumed.start_completed_batches, resumed.end_completed_batches) == (11, 17)
+    assert resumed.diagnostics.segment_completed_batches == 6
     assert [write.manifest.completed_training_batches for write in resumed.checkpoint_writes] == [
+        12,
         15,
         17,
     ]
+    cadence = check_checkpoint_cadence(
+        ConformanceRowArtifacts(
+            row_id="buffered-resumed",
+            bundle_row_spec=resumed.manifest.training_spec.inline,
+            training_diagnostics=json.loads(resumed.diagnostics_path.read_bytes()),
+        )
+    )
+    assert cadence.status == "pass", cadence
 
 
 def test_durable_history_preserves_progress_bytes_and_typed_trace(tmp_path: Path) -> None:

@@ -1238,15 +1238,14 @@ def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
         _path(row.bundle_row_spec, "checkpoint_progress", "checkpoint_interval"),
     )
     segment_completed = _path(row.training_diagnostics, "segment_completed_batches")
+    cumulative_completed = _path(row.training_diagnostics, "cumulative_completed_batches")
+    legacy_completed = _path(row.training_diagnostics, "completed_batches")
     if segment_completed is not _MISSING:
         completed = segment_completed
         completed_source = "training_diagnostics.segment_completed_batches"
     else:
         completed_candidates = (
-            (
-                _path(row.training_diagnostics, "completed_batches"),
-                "training_diagnostics.completed_batches",
-            ),
+            (legacy_completed, "training_diagnostics.completed_batches"),
             (
                 _path(row.training_diagnostics, "summary", "completed_batches"),
                 "training_diagnostics.summary.completed_batches",
@@ -1264,6 +1263,8 @@ def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
     coordinates = _checkpoint_coordinates(row)
     if interval is _MISSING:
         return missing_input_check(check_id, "bundle_row_spec.checkpoint_interval")
+    if cumulative_completed is not _MISSING and segment_completed is _MISSING:
+        return missing_input_check(check_id, "training_diagnostics.segment_completed_batches")
     if completed is _MISSING:
         return missing_input_check(check_id, "completed batch count")
     if coordinates is None:
@@ -1271,7 +1272,17 @@ def check_checkpoint_cadence(row: ConformanceRowArtifacts) -> CheckEntry:
 
     interval_int = int(interval)
     completed_int = int(completed)
-    expected = _expected_checkpoint_coordinates(interval_int, completed_int)
+    origin = 0
+    if segment_completed is not _MISSING:
+        cumulative = _first_present(cumulative_completed, legacy_completed)
+        if cumulative is not _MISSING:
+            origin = int(cumulative) - completed_int
+        if origin < 0 or completed_int < 0:
+            raise ValueError(
+                "invalid checkpoint cadence frame: expected "
+                "0 <= segment_completed_batches <= cumulative completed batches"
+            )
+    expected = _expected_checkpoint_coordinates(interval_int, completed_int, origin=origin)
     observed = sorted(int(coordinate) for coordinate in coordinates)
     if observed == expected:
         return pass_check(
@@ -1905,11 +1916,17 @@ def _checkpoint_completed_batches(row: ConformanceRowArtifacts) -> list[int] | N
     return completed
 
 
-def _expected_checkpoint_coordinates(interval: int, completed_batches: int) -> list[int]:
+def _expected_checkpoint_coordinates(
+    interval: int,
+    completed_batches: int,
+    *,
+    origin: int,
+) -> list[int]:
     if interval <= 0:
         raise ValueError("checkpoint interval must be positive")
-    coordinates = list(range(interval, completed_batches + 1, interval))
-    if completed_batches not in coordinates:
+    first_relative_boundary = interval - origin % interval
+    coordinates = list(range(first_relative_boundary, completed_batches + 1, interval))
+    if not coordinates or coordinates[-1] != completed_batches:
         coordinates.append(completed_batches)
     return coordinates
 
