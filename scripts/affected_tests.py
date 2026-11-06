@@ -24,9 +24,18 @@ STUDIO_TEST = re.compile(r"\.test\.[tj]sx?$")
 PANTS_VERSION = "2.33.0"
 PANTS_LAUNCHER_VERSION = "v0.13.2"
 PANTS_LAUNCHERS = {
-    ("Darwin", "arm64"): ("macos-aarch64", "a6f3231413ca1f793caffa621171a4b1a0158e7488cd0b5bb3e742cb99cc72a8"),
-    ("Linux", "x86_64"): ("linux-x86_64", "74a1e53bc50d6ef6ce1bc67bd9f7b48e549505e0a2453ad4d5ccbc72b0bea874"),
-    ("Linux", "aarch64"): ("linux-aarch64", "b40b60e50e9cb69e13029e100be995fbfdb3b3799ef1ccff60a81177f78e6b82"),
+    ("Darwin", "arm64"): (
+        "macos-aarch64",
+        "a6f3231413ca1f793caffa621171a4b1a0158e7488cd0b5bb3e742cb99cc72a8",
+    ),
+    ("Linux", "x86_64"): (
+        "linux-x86_64",
+        "74a1e53bc50d6ef6ce1bc67bd9f7b48e549505e0a2453ad4d5ccbc72b0bea874",
+    ),
+    ("Linux", "aarch64"): (
+        "linux-aarch64",
+        "b40b60e50e9cb69e13029e100be995fbfdb3b3799ef1ccff60a81177f78e6b82",
+    ),
 }
 
 
@@ -86,7 +95,10 @@ def _pants_launcher() -> str:
         Path.home() / ".cache" / "feedbax" / "pants-launcher" / PANTS_LAUNCHER_VERSION / "pants"
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.is_file() and hashlib.sha256(destination.read_bytes()).hexdigest() == expected_sha256:
+    if (
+        destination.is_file()
+        and hashlib.sha256(destination.read_bytes()).hexdigest() == expected_sha256
+    ):
         return str(destination)
     url = (
         f"https://github.com/pantsbuild/scie-pants/releases/download/"

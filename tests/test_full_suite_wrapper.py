@@ -43,7 +43,10 @@ def test_affected_collection_omits_an_unrelated_failing_test(tmp_path: Path) -> 
         '"studio_build_and_browser": false}\')\n',
         encoding="utf-8",
     )
-    command = [sys.executable, str(Path(__file__).resolve().parents[1] / "scripts" / "full_suite.py")]
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve().parents[1] / "scripts" / "full_suite.py"),
+    ]
     environment = {
         **os.environ,
         "FEEDBAX_FULL_SUITE_DISABLE_XDIST": "1",

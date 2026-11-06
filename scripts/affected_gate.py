@@ -50,14 +50,22 @@ def reference(env: dict[str, str], profile_json: Path | None) -> None:
     with TemporaryDirectory(prefix="feedbax-reference-") as directory:
         run(
             [
-                "uv", "run", "--no-sync", "python", "scripts/run_external_conformance.py",
-                "--result-out", str(Path(directory) / "downstream-conformance.json"),
+                "uv",
+                "run",
+                "--no-sync",
+                "python",
+                "scripts/run_external_conformance.py",
+                "--result-out",
+                str(Path(directory) / "downstream-conformance.json"),
             ],
             env=env,
             timeout=120,
         )
         run(["uv", "run", "--no-sync", "python", "scripts/generate_studio_contracts.py"], env=env)
-        run(["git", "diff", "HEAD", "--exit-code", "--", "web/src/generated/studioContracts.ts"], env=env)
+        run(
+            ["git", "diff", "HEAD", "--exit-code", "--", "web/src/generated/studioContracts.ts"],
+            env=env,
+        )
         python = ["scripts/full_suite.sh", "--no-memo"]
         if profile_json is not None:
             python.extend(["--profile-json", str(profile_json)])

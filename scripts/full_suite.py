@@ -686,7 +686,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.affected_base and args.suite_profile != "core":
         raise ValueError("affected selection uses the core capability profile")
-    selection = affected_test_selection(repo_root, args.affected_base) if args.affected_base else None
+    selection = (
+        affected_test_selection(repo_root, args.affected_base) if args.affected_base else None
+    )
     candidate = selection is not None and selection["mode"] == "candidate"
     collection_roots = selection["python_tests"] if candidate else ["tests"]
     if selection is not None:
@@ -784,10 +786,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
 
             if candidate:
-                print(
-                    "Running affected Python suite:"
-                    f" {len(collection_roots)} related test files"
-                )
+                print(f"Running affected Python suite: {len(collection_roots)} related test files")
             else:
                 print("Running:", " ".join(command))
             started = time.perf_counter()
