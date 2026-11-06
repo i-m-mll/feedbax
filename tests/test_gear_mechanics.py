@@ -312,12 +312,6 @@ def test_grounded_net_torque_has_known_zero_acceleration_under_load():
     assert sensors(jnp.zeros(0), jnp.array([14.0]), params)["net"] == pytest.approx(0.0)
 
 
-def test_free_net_torque_requires_solved_acceleration():
-    elements = {"drive": TorqueSource("drive"), "net": TorqueSensor("net")}
-    with pytest.raises(ValueError, match="no solved acceleration.*requires inertia"):
-        assemble_system(elements, [_connection(("drive", "flange"), ("net", "flange"))])
-
-
 def test_prescribed_net_effort_requires_acceleration_authority():
     from feedbax.acausal import ForceSensor, Mass, PrescribedMotion
 

@@ -21,6 +21,7 @@ class StructuralNetwork:
     elements: tuple[str, ...]
     variables: tuple[str, ...]
     differential_variables: tuple[str, ...]
+    massless_variables: tuple[str, ...]
     equations: tuple[str, ...]
     has_coordinate_reference: bool
     source_elements: tuple[str, ...]
@@ -42,6 +43,8 @@ class StructuralAnalysis:
     params_dict: dict[str, float]
     physical_aliases: dict[str, str]
     coordinate_map: dict[str, tuple[str, tuple[tuple[str, int], ...]]]
+    node_masses: dict[str, list[str]]
+    free_inertial_pairs: tuple[tuple[str, str], ...]
     networks: tuple[StructuralNetwork, ...]
     through_equation_cycle: tuple[str, ...] | None = None
 
@@ -316,6 +319,27 @@ def analyze_system(
         total_size=len(differential),
     )
 
+    node_masses: dict[str, list[str]] = {}
+    free_variables = set(differential)
+    free_inertial_pairs: set[tuple[str, str]] = set()
+    for elem in elements.values():
+        if elem.element_type != "mass" or not elem.ports:
+            continue
+        mass_key = next(
+            (key for key in elem.params if key.endswith((".mass", ".inertia"))), None
+        )
+        if mass_key is None:
+            raise ValueError(f"Mass element {elem.name!r} has no mass/inertia parameter")
+        for port in elem.ports.values():
+            position = f"{elem.name}.{port.name}.{port.across_vars[0]}"
+            velocity = f"{elem.name}.{port.name}.{port.across_vars[1]}"
+            node = _resolve(position, physical_aliases)
+            node_masses.setdefault(node, []).append(mass_key)
+            root_pos, _ = coordinate_map[position]
+            root_vel, _ = coordinate_map[velocity]
+            if root_pos in free_variables and root_vel in free_variables:
+                free_inertial_pairs.add((root_pos, root_vel))
+
     through_equations = [
         eq for elem in elements.values() for eq in elem.equations if eq.is_through_def
     ]
@@ -326,7 +350,16 @@ def analyze_system(
         params_dict=params_dict,
         physical_aliases=physical_aliases,
         coordinate_map=coordinate_map,
-        networks=_build_networks(elements, connections, layout, variable_owners, reduced_owners),
+        node_masses=node_masses,
+        free_inertial_pairs=tuple(sorted(free_inertial_pairs)),
+        networks=_build_networks(
+            elements,
+            connections,
+            layout,
+            variable_owners,
+            reduced_owners,
+            {name for pair in free_inertial_pairs for name in pair},
+        ),
         through_equation_cycle=through_equation_cycle,
     )
 
@@ -348,6 +381,7 @@ def _build_networks(
     layout: StateLayout,
     variable_owners: dict[str, str],
     coordinate_owners: dict[str, list[str]],
+    inertial_roots: set[str],
 ) -> tuple[StructuralNetwork, ...]:
     element_groups: dict[str, set[str]] = {name: {name} for name in elements}
 
@@ -392,6 +426,9 @@ def _build_networks(
                 elements=network_elements,
                 variables=variables,
                 differential_variables=differential_variables,
+                massless_variables=tuple(
+                    name for name in differential_variables if name not in inertial_roots
+                ),
                 equations=equation_lhs,
                 has_coordinate_reference=not coordinate_owners.keys().isdisjoint(variables),
                 source_elements=tuple(
