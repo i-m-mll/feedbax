@@ -21,10 +21,7 @@ from feedbax.contracts.array_values import (
     materialize_array_value,
 )
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
-from feedbax.runtime.parameter_constraints import (
-    apply_parameter_constraints,
-    normalize_parameter_constraints,
-)
+from feedbax.runtime.parameter_constraints import normalize_parameter_constraints
 from feedbax.compiler.builders import (
     _unsupported_component_message,
     build_component,
@@ -343,7 +340,7 @@ def _instantiate_graph(
         name: (binding[0], binding[1]) for name, binding in spec.output_bindings.items()
     }
 
-    graph = Graph(
+    return Graph(
         nodes=nodes,
         wires=wires,
         input_ports=tuple(spec.input_ports),
@@ -353,7 +350,6 @@ def _instantiate_graph(
         parameter_constraints=normalize_parameter_constraints(spec.parameter_constraints),
         component_bindings=component_bindings,
     )
-    return apply_parameter_constraints(graph)
 
 
 def _split_lowering_metadata(
