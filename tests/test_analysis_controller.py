@@ -11,7 +11,7 @@ from feedbax.compiler.templates import (
     recurrent_node_output_initializer,
 )
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
-from feedbax.intervene import (
+from feedbax.mechanics.force_fields import (
     PlanarTargetRelativeSelector,
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,

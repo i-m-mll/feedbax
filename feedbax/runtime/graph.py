@@ -12,7 +12,6 @@ from operator import attrgetter
 from collections.abc import Callable
 from copy import copy
 from typing import ClassVar, Literal, Optional, Self
-import warnings
 
 import equinox as eqx
 from equinox import Module, field
@@ -92,12 +91,29 @@ class Component(Module):
         return None
 
     def replace_state_value(self, state: State, path: tuple[str, ...], value: PyTree) -> State:
-        """Replace the stored state value or an attribute within it."""
-        idx = getattr(self, "state_index", None)
+        """Replace an owned StateIndex value or an attribute within it.
+
+        An explicit StateIndex attribute selects that slot. Other paths are
+        relative to the component's primary ``state_index``.
+        """
+        from feedbax.runtime.state_indices import cast_to_state_dtypes
+
+        idx = getattr(self, path[0], None) if path else None
+        explicit_slot = isinstance(idx, StateIndex)
+        if explicit_slot:
+            path = path[1:]
+        else:
+            idx = getattr(self, "state_index", None)
         if not isinstance(idx, StateIndex):
-            raise ValueError(f"{type(self).__name__} has no state_index for explicit initialization")
+            raise ValueError(f"{type(self).__name__} has no StateIndex for path {path!r}")
+        current = state.get(idx)
         if path:
-            value = eqx.tree_at(attrgetter(".".join(path)), state.get(idx), value)
+            where = attrgetter(".".join(path))
+            if explicit_slot:
+                value = cast_to_state_dtypes(value, where(current))
+            value = eqx.tree_at(where, current, value)
+        elif explicit_slot:
+            value = cast_to_state_dtypes(value, current)
         return state.set(idx, value)
 
     def initial_outputs(self, state_value: PyTree | None) -> dict[str, PyTree]:
@@ -110,28 +126,6 @@ class Component(Module):
                 outputs[port] = attrgetter(port)(state_value)
         return outputs
 
-    def task_parameter_state_indices(self) -> dict[str, StateIndex]:
-        """Return task-parameter labels mapped to StateIndex values."""
-        legacy = type(self).__dict__.get("intervention_state_indices")
-        if legacy is not None and legacy is not Component.intervention_state_indices:
-            warnings.warn(
-                "Overriding intervention_state_indices() is deprecated; override "
-                "task_parameter_state_indices().",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            return legacy(self)
-        return {}
-
-    def intervention_state_indices(self) -> dict[str, StateIndex]:
-        """Deprecated alias for task_parameter_state_indices()."""
-        warnings.warn(
-            "intervention_state_indices() is deprecated; use "
-            "task_parameter_state_indices().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.task_parameter_state_indices()
 
 
 class RolloutStepContext(Module):
@@ -622,29 +616,6 @@ class Graph(Component):
         if self.state_view_fn is None:
             return GraphState(node_states)
         return self.state_view_fn(node_states)
-
-    def task_parameter_state_indices(self) -> dict[str, StateIndex]:
-        indices: dict[str, StateIndex] = {}
-        for name, node in self.nodes.items():
-            node_indices = node.task_parameter_state_indices()
-            for label, idx in node_indices.items():
-                if label in indices:
-                    raise ValueError(
-                        f"Duplicate task-parameter label '{label}' in graph nodes "
-                        f"('{name}' conflicts with another node)."
-                    )
-                indices[label] = idx
-        return indices
-
-    def intervention_state_indices(self) -> dict[str, StateIndex]:
-        """Deprecated alias for task_parameter_state_indices()."""
-        warnings.warn(
-            "Graph.intervention_state_indices() is deprecated; use "
-            "Graph.task_parameter_state_indices().",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.task_parameter_state_indices()
 
     def state_consistency_update(self, state: State) -> State:
         if self.state_consistency_fn is None:

@@ -555,7 +555,7 @@ export interface StudioTaskBinding {
 }
 
 export interface StudioTaskBindingSpec {
-  schema_version?: "feedbax.spec.studio.task_bindings.v2";
+  schema_version?: "feedbax.spec.studio.task_bindings.v3";
   exposed_data?: StudioTaskDataSpec[];
   bindings?: StudioTaskBinding[];
   metadata?: Record<string, unknown>;
@@ -3117,7 +3117,7 @@ export const StudioTaskBindingSchema: z.ZodType<StudioTaskBinding> = z.lazy(() =
 export const StudioTaskBindingSpecSchema: z.ZodType<StudioTaskBindingSpec> = z.lazy(() =>
   z
     .object({
-      "schema_version": z.literal("feedbax.spec.studio.task_bindings.v2").optional(),
+      "schema_version": z.literal("feedbax.spec.studio.task_bindings.v3").optional(),
       "exposed_data": z.array(StudioTaskDataSpecSchema).optional(),
       "bindings": z.array(StudioTaskBindingSchema).optional(),
       "metadata": z.record(z.string(), z.unknown()).optional(),

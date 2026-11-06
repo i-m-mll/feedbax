@@ -532,7 +532,7 @@ def _worker_task_binding_spec(
     if value_spec is not None:
         exposed["value_spec"] = value_spec
     return {
-        "schema_version": "feedbax.spec.studio.task_bindings.v2",
+        "schema_version": "feedbax.spec.studio.task_bindings.v3",
         "exposed_data": [exposed],
         "bindings": [
             {

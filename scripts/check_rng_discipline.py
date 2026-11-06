@@ -21,7 +21,7 @@ CHECKS = (
     Check(
         "feedbax/tasks/task.py",
         "key_trials, key_dependencies = jr.split(key)",
-        "validation_trials must split trial/intervenor/dependency streams explicitly",
+        "validation_trials must split trial and dependency streams explicitly",
     ),
     Check(
         "feedbax/tasks/task.py",
@@ -39,14 +39,9 @@ CHECKS = (
         "HOLD raw target sampling must not reuse the REACH target key",
     ),
     Check(
-        "feedbax/intervene/intervene.py",
+        "feedbax/runtime/signal_transforms.py",
         "lambda x: self.noise_func(key, x)",
         "AddNoise must split the call key per PyTree signal leaf",
-    ),
-    Check(
-        "feedbax/intervene/schedule.py",
-        "key=key)",
-        "intervenor parameter callable leaves must receive split keys",
     ),
     Check(
         "feedbax/analysis/grad.py",

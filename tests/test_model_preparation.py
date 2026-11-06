@@ -173,7 +173,7 @@ def test_eager_point_mass_rebuild_consistency_and_custom_callbacks_use_current_n
 
     key = jax.random.PRNGKey(0)
     task = SimpleNamespace(
-        get_train_trial_with_intervenor_params=lambda **kwargs: SimpleNamespace(inputs=jnp.zeros(1))
+        sample_trial=lambda **kwargs: SimpleNamespace(inputs=jnp.zeros(1))
     )
 
     def build():
@@ -231,7 +231,7 @@ def test_eager_point_mass_rebuild_consistency_and_custom_callbacks_use_current_n
 
 
 def test_preparation_keeps_task_parameter_and_latch_slots_independent():
-    from feedbax.intervene import StateSelector, ThresholdLatchedForce, ThresholdLatchedForceParams
+    from feedbax.mechanics.force_fields import StateSelector, ThresholdLatchedForce, ThresholdLatchedForceParams
 
     def build():
         return ThresholdLatchedForce(
@@ -253,7 +253,6 @@ def test_preparation_keeps_task_parameter_and_latch_slots_independent():
     assert bool(state.get(right.params_index).active)
     assert bool(state.get(left.latch_index).latched)
     assert not bool(state.get(right.latch_index).latched)
-    assert left.task_parameter_state_indices()[left.label].marker == left.params_index.marker
     assert state.get(right.params_index).scale.dtype == jnp.float32
 
 

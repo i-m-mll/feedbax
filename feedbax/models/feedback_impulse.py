@@ -8,8 +8,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from feedbax.intervene.intervene import ConstantInput, ConstantInputParams
-from feedbax.intervene.schedule import TimeSeriesParam, params_at_step
+from feedbax.runtime.signal_transforms import ConstantInput, ConstantInputParams
 from feedbax.runtime.graph import Component, Graph
 
 
@@ -61,14 +60,11 @@ class _FeedbackOffset(ConstantInput):
         output = eqx.tree_at(lambda value: value[self.feedback_var], feedback, updated)
         return {"output": output}, state
 
-    def task_parameter_state_indices(self):
-        return {}
-
 
 class _FeedbackImpulse(Graph):
-    active_schedule: TimeSeriesParam
+    active_schedule: jax.Array
 
-    def __init__(self, offset: _FeedbackOffset, active_schedule: TimeSeriesParam):
+    def __init__(self, offset: _FeedbackOffset, active_schedule: jax.Array):
         super().__init__(
             nodes={"offset": offset},
             input_ports=("input",),
@@ -80,11 +76,9 @@ class _FeedbackImpulse(Graph):
 
     def _execute_step(self, port_values, state, *, t, **kwargs):
         # The final entry is an inactive sentinel for times outside the schedule.
-        end = self.active_schedule.value.shape[0] - 1
+        end = self.active_schedule.shape[0] - 1
         schedule_step = jnp.where((0 <= t) & (t < end), t, end)
-        port_values[("offset", "scheduled_active")] = params_at_step(
-            self.active_schedule, schedule_step
-        )
+        port_values[("offset", "scheduled_active")] = self.active_schedule[schedule_step]
         return super()._execute_step(port_values, state, t=t, **kwargs)
 
     def state_view(self, state):
@@ -128,4 +122,4 @@ def feedback_impulse(
         feedback_dim,
         sample_direction=feedback_dim is None and max(start_timestep, 0) < end,
     )
-    return _FeedbackImpulse(offset, TimeSeriesParam(active))
+    return _FeedbackImpulse(offset, active)

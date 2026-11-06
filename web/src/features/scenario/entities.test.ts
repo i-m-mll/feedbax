@@ -93,7 +93,7 @@ const scenario: StudioScenarioSpec = {
   training_spec: null,
   task_spec: { type: 'ReachingTask', params: { n_targets: 8 } },
   task_binding_spec: {
-    schema_version: 'feedbax.spec.studio.task_bindings.v2',
+    schema_version: 'feedbax.spec.studio.task_bindings.v3',
     exposed_data: [
       {
         id: 'inputs',

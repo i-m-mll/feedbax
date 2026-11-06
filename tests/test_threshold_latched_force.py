@@ -14,11 +14,11 @@ import pytest
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler import GraphCompilationError
 from feedbax.compiler.builders import build_component
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec
+from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.migrations import UnsupportedComponentMigration
-from feedbax.intervene import (
+from feedbax.mechanics.force_fields import (
     PlanarTargetRelativeSelector,
     StateSelector,
     THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
@@ -26,12 +26,8 @@ from feedbax.intervene import (
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,
 )
-from feedbax.runtime.graph import init_state_from_component
 from feedbax.runtime.state import CartesianState
-from feedbax.runtime.task_bindings import (
-    apply_task_parameter_state_inits,
-    expose_task_bindings,
-)
+from feedbax.tasks import TaskTrialSpec, TrialTimeline, prepare_trial
 
 
 SCHEMA_VERSION = THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION
@@ -56,7 +52,6 @@ def _component(
             scale=scale,
             active=active,
         ),
-        label="step_load",
     )
 
 
@@ -99,7 +94,7 @@ def _graph_spec(*, param_schema_version: str = SCHEMA_VERSION) -> GraphSpec:
                     "scale": 1.0,
                     "active": True,
                     "dt": 0.1,
-                    "label": "step_load",
+
                 },
                 param_schema_version=param_schema_version,
                 input_ports=input_ports,
@@ -134,7 +129,6 @@ def _target_relative_component(
             scale=scale,
             active=active,
         ),
-        label="lateral_step",
     )
 
 
@@ -180,7 +174,7 @@ def _target_relative_graph_spec() -> GraphSpec:
                     "scale": 1.0,
                     "active": True,
                     "dt": 0.1,
-                    "label": "lateral_step",
+
                 },
                 param_schema_version=SCHEMA_VERSION,
                 input_ports=input_ports,
@@ -329,7 +323,6 @@ def test_graphspec_round_trip_preserves_trigger_latch_ramp_and_selector_identity
     assert component.state_selector == StateSelector(("pos", 0))
     assert component.direction == "increasing"
     assert component.dt == pytest.approx(0.1)
-    assert set(component.task_parameter_state_indices()) == {"step_load"}
 
     roundtrip = graph_to_spec(graph)
     node = roundtrip.nodes["load"]
@@ -345,7 +338,7 @@ def test_graphspec_round_trip_preserves_trigger_latch_ramp_and_selector_identity
         "scale": 1.0,
         "active": True,
         "dt": pytest.approx(0.1),
-        "label": "step_load",
+
     }
 
 
@@ -458,41 +451,9 @@ def test_native_graph_materialization_runs_runtime_state_trigger() -> None:
 
 def test_task_authored_trial_variant_initializes_native_component_state() -> None:
     graph = spec_to_graph(_graph_spec(), ComponentRegistry(load_user_components=False))
-    binding_spec = StudioTaskBindingSpec.model_validate(
-        {
-            "exposed_data": [
-                {
-                    "id": "step_variant",
-                    "label": "Step variant",
-                    "kind": "intervention",
-                    "role": "component_parameter",
-                    "path": "intervene.step_load",
-                    "bindable": True,
-                    "metadata": {
-                        "temporality": "per_trial",
-                        "task_parameter_label": "step_load",
-                    },
-                }
-            ],
-            "bindings": [
-                {
-                    "id": "task:step_variant->load:params_override",
-                    "source_data_id": "step_variant",
-                    "target_node_id": "load",
-                    "target_port": "params_override",
-                    "role": "component_parameter",
-                    "metadata": {"task_parameter_label": "step_load"},
-                }
-            ],
-        }
-    )
-    exposure = expose_task_bindings(graph, binding_spec)
-    state = apply_task_parameter_state_inits(
-        init_state_from_component(exposure.graph),
-        exposure.graph,
-        exposure.state_init_plans,
-        {
-            "step_variant": ThresholdLatchedForceParams(
+    trial = TaskTrialSpec(
+        inits={
+            "load.params_index": ThresholdLatchedForceParams(
                 threshold=0.0,
                 force=jnp.array([2.0, -1.0]),
                 lateral_force=0.0,
@@ -501,8 +462,12 @@ def test_task_authored_trial_variant_initializes_native_component_state() -> Non
                 active=True,
             )
         },
+        targets={},
+        inputs={},
+        timeline=TrialTimeline(n_steps=1),
     )
-    component = exposure.graph.nodes["load"]
+    state = prepare_trial(graph, trial).init_state
+    component = graph.nodes["load"]
     initialized = state.get(component.params_index)
 
     assert initialized.active
@@ -513,6 +478,7 @@ def test_task_authored_trial_variant_initializes_native_component_state() -> Non
 def test_v1_fixed_selector_migrates_to_v2() -> None:
     spec = _graph_spec(param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1)
     node = spec.nodes["load"]
+    node.params["label"] = "historical label"
     node.params.pop("lateral_force")
     node.params["state_selector"] = {"path": ["pos", 0]}
     node.input_ports.remove("target")

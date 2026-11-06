@@ -123,7 +123,7 @@ def _workspace():
     }
     scenario.task_binding_spec = StudioTaskBindingSpec.model_validate(
         {
-            "schema_version": "feedbax.spec.studio.task_bindings.v2",
+            "schema_version": "feedbax.spec.studio.task_bindings.v3",
             "exposed_data": [
                 {
                     "id": "inputs",
@@ -1165,7 +1165,7 @@ def test_task_binding_spec_rejects_source_output_id():
     with pytest.raises(ValueError, match="source_output_id.*source_data_id"):
         StudioTaskBindingSpec.model_validate(
             {
-                "schema_version": "feedbax.spec.studio.task_bindings.v2",
+                "schema_version": "feedbax.spec.studio.task_bindings.v3",
                 "exposed_data": [
                     {
                         "id": "inputs",

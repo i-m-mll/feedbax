@@ -130,7 +130,7 @@ nav:
     - Models:
       - Base classes: 'api/model.md'
       - 'api/staged.md'
-      - 'api/intervene.md'
+      - 'api/transforms.md'
       - 'api/iterate.md'
       - 'api/bodies.md'
       - 'api/channel.md'

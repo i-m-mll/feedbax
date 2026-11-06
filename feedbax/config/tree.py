@@ -11,7 +11,6 @@ import jax.numpy as jnp
 import jax.tree as jt
 import jax.tree_util as jtu
 import feedbax._vendor.jax_cookbook.tree as jtree
-from feedbax.intervene import is_intervenor
 from feedbax._vendor.jax_cookbook import (
     LDict,
     LDictConstructor,
@@ -584,24 +583,6 @@ def hash_callable_leaves(
         treedef,
         [hash_callable(leaf, ignore=ignore) if callable(leaf) else leaf for leaf in leaves],
     )
-
-
-def take_replicate(i, tree: PyTree[Array, "T"]) -> PyTree[Array, "T"]:
-    """"""
-    # TODO: Wrap non-batched array leaves in a `Module`?
-    # e.g. `WithoutBatches[0]` means the wrapped array is missing axis 0 relative to the "full" state;
-    # for ensembled models, this is the ensemble (or model replicate) axis. So in this function, we should
-    # be able to check for `WithoutBatches[0]`, given that the model is ensembled.
-    # Need to partition since there are non-vmapped *arrays* in the intervenors...
-    intervenors, other = eqx.partition(
-        tree,
-        jt.map(
-            is_intervenor,
-            tree,
-            is_leaf=is_intervenor,
-        ),
-    )
-    return eqx.combine(intervenors, jtree.take(other, i))
 
 
 def deep_update(d1, d2):

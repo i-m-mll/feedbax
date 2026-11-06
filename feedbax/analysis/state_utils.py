@@ -1,13 +1,11 @@
-from functools import cache, partial
+from functools import cache
 
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
 import numpy as np
-import feedbax._vendor.jax_cookbook.tree as jtree
 from equinox import filter_vmap as vmap
-from feedbax.intervene import is_intervenor
 from feedbax.tasks import AbstractTask
 from feedbax._vendor.jax_cookbook import LDict, MaskedArray, is_module, is_type
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
@@ -15,6 +13,8 @@ from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 from feedbax.analysis.analysis import get_validation_trial_specs
 from feedbax.config.namespace import TreeNamespace
 from feedbax.config.defaults import REPLICATE_CRITERION
+
+
 def get_pos_endpoints(trial_specs):
     """Given a set of `SimpleReaches` trial specifications, return the stacked start and end positions."""
     return jnp.stack(
@@ -89,17 +89,6 @@ def get_best_replicate(tree, *, replicate_info, axis: int = 1, keep_axis: bool =
         tree,
         is_leaf=LDict.is_of("train__pert__std"),
     )
-
-
-get_best_model_replicate = jtree.filter_wrap(
-    lambda x: not is_intervenor(x),
-    is_leaf=is_intervenor,
-)(partial(get_best_replicate, axis=0, keep_axis=True))
-get_best_model_replicate.__doc__ = """Variant of `get_best_replicate` that filters out intervenors from the tree.
-    
-    This is necessary when getting the best replicate from a tree of models, rather than states,
-    since intervention parameters generally do not have a replicate batch axis. 
-    """
 
 
 def get_align_epoch_start(

@@ -17,7 +17,6 @@ from feedbax.runtime.graph import (
     Wire,
     init_state_from_component,
 )
-from feedbax.intervene import InterventionSpec, TimeSeriesParam
 from feedbax.objectives.loss import AbstractLoss
 from feedbax.compiler.builders import build_component
 from feedbax.tasks.presets import delayed_center_out_reaches_params
@@ -26,7 +25,6 @@ from feedbax.tasks import (
     AbstractTask,
     DelayedReaches,
     TaskComponent,
-    TaskInterventionSpecs,
     TaskTrialSpec,
     TrialSpecDependency,
     eval_ensemble_on_trials,
@@ -44,7 +42,6 @@ class DummyTask(AbstractTask):
     loss_func: AbstractLoss = DummyLoss()
     n_steps: int = 3
     seed_validation: int = 0
-    intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
     input_dependencies: dict[str, TrialSpecDependency] = eqx.field(default_factory=dict)
 
     def get_train_trial(self, key, batch_info=None):
@@ -67,14 +64,10 @@ class DummyTask(AbstractTask):
 
 class ValidationRngTask(DummyTask):
     seed_validation: int = 123
-    intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs(
-        validation={
-            "rng": InterventionSpec(
-                {
-                    "sample": lambda trial_spec, batch_info, *, key: jax.random.uniform(key, ()),
-                }
-            )
-        }
+    input_dependencies: dict[str, TrialSpecDependency] = eqx.field(
+        default_factory=lambda: {
+            "rng": TrialSpecDependency(lambda trial, key: jax.random.uniform(key, ())),
+        },
     )
 
     def get_validation_trials(self, key):
@@ -151,12 +144,10 @@ def _eval_hook(context):
 def test_task_component_open_loop_steps():
     task = DummyTask()
     inputs = jnp.array([[1.0], [2.0], [3.0]])
-    intervene = {"foo": TimeSeriesParam(jnp.array([10.0, 20.0, 30.0]))}
     trial_spec = TaskTrialSpec(
         inits=WhereDict(),
         targets=WhereDict(),
-        inputs=inputs,
-        intervene=intervene,
+        inputs={"observation": inputs, "force": jnp.array([10.0, 20.0, 30.0])},
     )
 
     component = TaskComponent(task=task, trial_spec=trial_spec)
@@ -166,12 +157,12 @@ def test_task_component_open_loop_steps():
     out2, state = component({}, state, key=jax.random.PRNGKey(1))
     out3, _ = component({}, state, key=jax.random.PRNGKey(2))
 
-    assert (out1["inputs"] == inputs[0]).all()
-    assert (out2["inputs"] == inputs[1]).all()
-    assert (out3["inputs"] == inputs[2]).all()
-    assert out1["intervene"]["foo"] == intervene["foo"].value[0]
-    assert out2["intervene"]["foo"] == intervene["foo"].value[1]
-    assert out3["intervene"]["foo"] == intervene["foo"].value[2]
+    assert (out1["inputs"]["observation"] == inputs[0]).all()
+    assert (out2["inputs"]["observation"] == inputs[1]).all()
+    assert (out3["inputs"]["observation"] == inputs[2]).all()
+    assert out1["inputs"]["force"] == 10.0
+    assert out2["inputs"]["force"] == 20.0
+    assert out3["inputs"]["force"] == 30.0
 
 
 def test_validation_trials_use_separate_rng_streams() -> None:
@@ -180,9 +171,9 @@ def test_validation_trials_use_separate_rng_streams() -> None:
 
     trial_specs = task.validation_trials
 
-    assert jnp.allclose(trial_specs.inputs, jax.random.uniform(key_trials, (1,)))
-    assert trial_specs.intervene["rng"]["sample"].shape == (1,)
-    assert not jnp.allclose(trial_specs.intervene["rng"]["sample"], trial_specs.inputs)
+    assert jnp.allclose(trial_specs.inputs["task"], jax.random.uniform(key_trials, (1,)))
+    assert trial_specs.inputs["rng"].shape == (1,)
+    assert not jnp.allclose(trial_specs.inputs["rng"], trial_specs.inputs["task"])
 
 
 def test_eval_trials_rollout_step_hook_runs_inside_rollout():
