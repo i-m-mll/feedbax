@@ -104,7 +104,11 @@ from feedbax.intervene.intervene import (
     FixedFieldParams,
 )
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
-from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
+from feedbax.mechanics.muscles.thelen_muscle import (
+    RigidTendonHillMuscleThelen,
+    require_thelen_input_shape,
+    thelen_muscle_shape,
+)
 from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
 from feedbax.models.networks import VanillaRNN
 from feedbax.runtime.state import CartesianState
@@ -1333,6 +1337,18 @@ def scalar_muscle_output_prototype(
 
     proto = jnp.zeros(())
     return {"force": proto, "activation": proto}
+
+
+def thelen_muscle_output_prototype(
+    params: Mapping[str, Any], inputs: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Publish all four Thelen port shapes from the declared muscle count."""
+    shape = thelen_muscle_shape(params["n_muscles"])
+    for port in RigidTendonHillMuscleThelen.input_ports:
+        if port in inputs:
+            require_thelen_input_shape(inputs[port], shape, port=port)
+    proto = jnp.zeros(shape)
+    return dict.fromkeys(RigidTendonHillMuscleThelen.output_ports, proto)
 
 
 def input_or_n_dims_output_prototype(
@@ -2991,9 +3007,11 @@ def register_builtin_components(registry: _Registry) -> None:
         declare_component(
             name="RigidTendonHillMuscleThelen",
             runtime_type=RigidTendonHillMuscleThelen,
-            attribute_paths={"initial_activation": "state_index.init"},
             category="Muscles",
-            description="Hill-type muscle with rigid tendon assumption. Vectorized for multiple muscles.",
+            description=(
+                "Rigid-tendon Hill muscle with scalar signals for one muscle "
+                "and vectors for multiple muscles."
+            ),
             parameter_fields=[
                 ParameterField(name="n_muscles", type="int", default=6, min=1, required=True),
                 ParameterField(name="dt", type="float", default=0.01, min=0.001, required=True),
@@ -3020,22 +3038,20 @@ def register_builtin_components(registry: _Registry) -> None:
                     name="initial_activation", type="float", default=0.001, min=0.0, required=False
                 ),
             ],
-            input_ports=["excitation", "musculotendon_length", "musculotendon_velocity"],
-            output_ports=["force", "activation", "fiber_length", "fiber_velocity"],
+            input_ports=RigidTendonHillMuscleThelen.input_ports,
+            output_ports=RigidTendonHillMuscleThelen.output_ports,
             icon="Dumbbell",
             port_types=PortTypeSpec(
                 inputs={
-                    "excitation": PortType(dtype="vector"),
-                    "musculotendon_length": PortType(dtype="vector"),
-                    "musculotendon_velocity": PortType(dtype="vector"),
+                    port: PortType(dtype="any")
+                    for port in RigidTendonHillMuscleThelen.input_ports
                 },
                 outputs={
-                    "force": PortType(dtype="vector"),
-                    "activation": PortType(dtype="vector"),
-                    "fiber_length": PortType(dtype="vector"),
-                    "fiber_velocity": PortType(dtype="vector"),
+                    port: PortType(dtype="any")
+                    for port in RigidTendonHillMuscleThelen.output_ports
                 },
             ),
+            output_prototype_fn=thelen_muscle_output_prototype,
         )
     )
     registry.register(

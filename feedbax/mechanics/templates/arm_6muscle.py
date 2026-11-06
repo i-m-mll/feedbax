@@ -11,11 +11,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-import equinox as eqx
-from equinox import Module, field
 from equinox.nn import State
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
 from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry
@@ -78,6 +76,7 @@ class Arm6MuscleRigidTendon(Component):
                 optimal_muscle_length=optimal_muscle_length,
                 tendon_slack_length=tendon_slack_length,
                 dt=dt,
+                n_muscles=1,
             )
             for _ in range(n_muscles)
         )
