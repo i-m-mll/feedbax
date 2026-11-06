@@ -68,6 +68,7 @@ def store_artifact(
     logical_name: Optional[str] = None,
     media_type: str = "application/octet-stream",
     metadata: Optional[dict[str, Any]] = None,
+    include_original_uri: bool = True,
 ) -> ArtifactRef:
     """Copy an artifact into the local content-addressed store and return its ref.
 
@@ -76,6 +77,9 @@ def store_artifact(
     size always describe the bytes actually stored. A source that changes during
     the copy, or a canonical destination that already holds different bytes,
     fails closed without overwriting the existing canonical file.
+
+    Set `include_original_uri=False` when the source is a temporary staging
+    file and its location is not artifact provenance.
     """
     source = Path(source_path)
     if not source.exists():
@@ -85,18 +89,15 @@ def store_artifact(
 
     object_ref = ImmutableArtifactBlobProvider(root_path.absolute())._store_file(source)
     artifact_metadata = dict(metadata or {})
-    artifact_metadata.setdefault("original_uri", str(source))
-    dest = _artifact_path(root_path, object_ref.sha256)
-    artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
-    return ArtifactRef(
+    if include_original_uri:
+        artifact_metadata.setdefault("original_uri", str(source))
+    return _stored_artifact_ref(
+        object_ref,
+        root_path=root_path,
         role=role,
         logical_name=logical_name or source.name,
         media_type=media_type,
         metadata=artifact_metadata,
-        artifact_id=f"artifact://sha256/{object_ref.sha256}",
-        sha256=object_ref.sha256,
-        size_bytes=object_ref.size_bytes,
-        uri=str(dest),
     )
 
 
@@ -146,6 +147,25 @@ def store_bytes_artifact(
 
     root_path = Path(root) if root is not None else default_manifest_root()
     object_ref = ImmutableArtifactBlobProvider(Path(root_path).absolute()).store_object(data)
+    return _stored_artifact_ref(
+        object_ref,
+        root_path=root_path,
+        role=role,
+        logical_name=logical_name,
+        media_type=media_type,
+        metadata=metadata,
+    )
+
+
+def _stored_artifact_ref(
+    object_ref: ContentObjectRef,
+    *,
+    root_path: Path,
+    role: str,
+    logical_name: str,
+    media_type: str,
+    metadata: dict[str, Any] | None,
+) -> ArtifactRef:
     dest = _artifact_path(root_path, object_ref.sha256)
     artifact_metadata = dict(metadata or {})
     artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))

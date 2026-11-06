@@ -987,6 +987,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         None if args.no_progress else _console_progress_printer(started_at)
                     ),
                     run_event_emitter=emitter,
+                    retain_history=False,
                     cancellation_probe=lambda _coordinate: interruption.poll(),
                     execution_started_at_monotonic=command_started_at,
                     execution_start_semantics="worker_command_entry",
