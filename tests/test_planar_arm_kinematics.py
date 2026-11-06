@@ -1,4 +1,5 @@
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -53,3 +54,29 @@ def test_effector_force_preserves_virtual_work(arm_type, moving_arm):
     np.testing.assert_allclose(
         torque @ moving_arm.d_angle, force @ effector_motion, atol=1e-4, rtol=3e-4
     )
+
+
+def test_inverse_kinematics_reuses_arm_across_jit_traces(moving_arm):
+    arm = TwoLinkArm()
+    target = arm.effector(moving_arm)
+
+    with jax.checking_leaks():
+        first = jax.jit(lambda x: arm.inverse_kinematics(x))(target)
+        eager = arm.inverse_kinematics(target)
+        second = jax.jit(lambda x: arm.inverse_kinematics(x))(target)
+
+    for result in (first, eager, second):
+        np.testing.assert_allclose(result.angle, moving_arm.angle, atol=1e-6)
+        np.testing.assert_allclose(result.d_angle, moving_arm.d_angle, atol=1e-6)
+
+
+def test_vector_field_jit_uses_replaced_arm_mass(moving_arm):
+    masses = jnp.array([1.4, 1.7])
+    arm = eqx.tree_at(lambda arm: arm.m, TwoLinkArm(), masses)
+    torque = jnp.array([0.4, -0.3])
+
+    with jax.checking_leaks():
+        actual = jax.jit(lambda u: arm.vector_field(0.0, moving_arm, u))(torque)
+
+    expected = TwoLinkArm(m=masses).vector_field(0.0, moving_arm, torque)
+    np.testing.assert_allclose(actual.d_angle, expected.d_angle, rtol=1e-6)

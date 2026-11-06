@@ -5,7 +5,6 @@
 :license: Apache 2.0, see LICENSE for details.
 """
 
-from functools import cached_property
 from typing import Optional
 
 import equinox as eqx
@@ -75,10 +74,6 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         self.B = B
         self.inertia_gain = 1.0
 
-        #! initialize cached properties used by JAX operations
-        # otherwise their initialization is a side effect
-        self._a
-
     def to_params(self) -> dict[str, list[float]]:
         """Return the authored GraphSpec parameters represented by this arm."""
         return {"link_lengths": [float(value) for value in self.l]}
@@ -98,21 +93,24 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
             input: The torques on the joints.
         """
         angle, d_angle = state.angle, state.d_angle
+        base_inertia = self.I[0] + self.I[1] + self.m[1] * self.l[0] ** 2
+        coupling = self.m[1] * self.l[0] * self.s[1]
+        distal_inertia = self.I[1]
 
         # centripetal and coriolis torques
         c_vec = (
             jnp.array((-d_angle[1] * (2 * d_angle[0] + d_angle[1]), d_angle[0] ** 2))
-            * self._a[1]
+            * coupling
             * jnp.sin(angle[1])
         )
 
         # inertia matrix that maps torques -> angular accelerations
         cs1 = jnp.cos(angle[1])
-        tmp = self._a[2] + self._a[1] * cs1
+        cross_inertia = distal_inertia + coupling * cs1
         inertia_mat = jnp.array(
             (
-                (self._a[0] + 2 * self._a[1] * cs1, tmp),
-                (tmp, self._a[2] * jnp.ones_like(cs1)),
+                (base_inertia + 2 * coupling * cs1, cross_inertia),
+                (cross_inertia, distal_inertia * jnp.ones_like(cs1)),
             )
         )
 
@@ -134,23 +132,6 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
     ) -> TwoLinkArmState:
         """Return a default state for the arm."""
         return TwoLinkArmState()
-
-    @cached_property
-    def _a(self):
-        # this is a cached_property to avoid polluting the module's fields with private attributes
-        return (
-            # + m[1]*s[1]**2 + m[0]*s[0]**2
-            self.I[0] + self.I[1] + self.m[1] * self.l[0] ** 2,
-            #
-            self.m[1] * self.l[0] * self.s[1],
-            # + m[1] * s[1] ** 2
-            self.I[1],
-        )
-
-    @cached_property
-    def _lsqpm(self):
-        lsq = self.l**2
-        return (lsq[0] - lsq[1], lsq[0] + lsq[1])
 
     @property
     def input_size(self) -> int:
@@ -181,16 +162,17 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
             effector_state: The state of the end effector.
         """
         pos = effector_state.pos
-        l, lsqpm = self.l, self._lsqpm
+        l = self.l
+        lsq = l**2
         dsq = jnp.sum(pos**2)
         # No solution exists if `dsq` is outside of:
         #   `(l[0] - l[1], l[0] + l[1])`
 
-        alpha = jnp.arccos((lsqpm[0] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
+        alpha = jnp.arccos((lsq[0] - lsq[1] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
         gamma = jnp.arctan2(pos[1], pos[0])
         theta0 = gamma - alpha
 
-        beta = jnp.arccos((lsqpm[1] - dsq) / (2 * l[0] * l[1]))
+        beta = jnp.arccos((lsq[0] + lsq[1] - dsq) / (2 * l[0] * l[1]))
         theta1 = np.pi - beta
         # The "elbow up" or "lefty" solution is given by:
         #   `theta0 = gamma + alpha`
