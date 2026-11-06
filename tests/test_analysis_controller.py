@@ -5,14 +5,20 @@ import jax.numpy as jnp
 
 from feedbax.analysis import feedbax_graph_controller, graph_controller
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.templates import (
+    recurrent_graph_input_initializer,
+    recurrent_node_output_initializer,
+)
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.intervene import (
     PlanarTargetRelativeSelector,
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,
 )
+from feedbax.runtime.components import Noise, Sum
 from feedbax.runtime.graph import Component, Graph, GraphTraceRequest, Wire
 from feedbax.runtime.state import CartesianState
+from tests.support.graph_compiler_test_support import spec_to_graph
 
 
 class _StatefulGain(Component):
@@ -311,3 +317,142 @@ def test_graph_controller_accepts_recurrent_graph_spec():
     assert float(output1[0]) == pytest.approx(3.0)
     assert float(output2[0]) == pytest.approx(6.0)
     assert float(h2[0]) == pytest.approx(6.0)
+
+
+@pytest.mark.parametrize("entry", ["nested-spec", "nested-graph", "explicit"])
+def test_graph_controller_resets_from_static_inputs(entry):
+    spec = GraphSpec(
+        nodes={
+            "sum": ComponentSpec(type="Sum", input_ports=["a", "b"], output_ports=["output"]),
+            "filter": ComponentSpec(
+                type="FirstOrderFilter",
+                params={"tau_rise": 0.05, "tau_decay": 0.05, "dt": 0.001},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="sum",
+                source_port="output",
+                target_node="sum",
+                target_port="b",
+                temporality="recurrent",
+                recurrent_initializer=recurrent_graph_input_initializer("seed", state_slot="b"),
+            ),
+            WireSpec(
+                source_node="sum", source_port="output", target_node="filter", target_port="input"
+            ),
+        ],
+        input_ports=["input", "seed"],
+        output_ports=["output", "filtered"],
+        input_bindings={"input": ("sum", "a")},
+        output_bindings={"output": ("sum", "output"), "filtered": ("filter", "output")},
+    )
+    registry = ComponentRegistry(load_user_components=False)
+    key = jax.random.key(2)
+    seed = jnp.array([3.0, 4.0], dtype=jnp.float32)
+    static_inputs = {"seed": seed}
+    native = spec_to_graph(spec, registry, {("sum", "b"): seed})
+    if entry.startswith("nested"):
+        input_bindings = {name: ("child", name) for name in spec.input_ports}
+        output_bindings = {name: ("child", name) for name in spec.output_ports}
+        native = Graph(
+            nodes={"child": native},
+            wires=(),
+            input_ports=tuple(spec.input_ports),
+            output_ports=tuple(spec.output_ports),
+            input_bindings=input_bindings,
+            output_bindings=output_bindings,
+        )
+        spec = GraphSpec(
+            nodes={
+                "child": ComponentSpec(
+                    type="Subgraph", input_ports=spec.input_ports, output_ports=spec.output_ports
+                )
+            },
+            subgraphs={"child": spec},
+            input_ports=spec.input_ports,
+            output_ports=spec.output_ports,
+            input_bindings=input_bindings,
+            output_bindings=output_bindings,
+        )
+
+    cycle_init = {("sum", "b"): -seed} if entry == "explicit" else None
+    controller = graph_controller(
+        spec if entry == "nested-spec" else native,
+        key=key,
+        component_registry=registry if entry == "nested-spec" else None,
+        static_inputs=static_inputs,
+        cycle_init=cycle_init,
+        dtype=jnp.float32,
+    )
+    h0 = controller.initial_state()
+    _, carry = controller.unpack_state(h0)
+    (reset_value,) = jax.tree.leaves(carry)
+    assert jnp.array_equal(reset_value, -seed if entry == "explicit" else seed)
+
+    value = jnp.array([1.0, 2.0], dtype=jnp.float32)
+    inputs = {**static_inputs, "input": value}
+    native_state = native.init_state(key=key)
+    native_carry = (
+        None
+        if cycle_init is None
+        else native.initial_cycle_port_values(native_state, cycle_init, inputs=inputs)
+    )
+    native_outputs, _, native_next_carry = native.step(
+        inputs, native_state, native_carry, key=jax.random.fold_in(key, 0)
+    )
+    result = controller.step_with_trace(h0, value, 0)
+    _, adapted_next_carry = controller.unpack_state(result.state)
+    assert jax.tree.all(jax.tree.map(jnp.array_equal, result.graph_outputs, native_outputs))
+    assert jax.tree.all(jax.tree.map(jnp.array_equal, adapted_next_carry, native_next_carry))
+
+
+def test_graph_controller_seeds_noise_reset_from_first_transition_key():
+    graph = Graph(
+        nodes={"noise": Noise(shape=(4,)), "sum": Sum()},
+        wires=(
+            Wire(
+                "sum",
+                "output",
+                "sum",
+                "b",
+                temporality="recurrent",
+                recurrent_initializer=recurrent_node_output_initializer(
+                    "noise", "output", state_slot="b"
+                ),
+            ),
+        ),
+        input_ports=("input",),
+        output_ports=("output", "live_noise"),
+        input_bindings={"input": ("sum", "a")},
+        output_bindings={"output": ("sum", "output"), "live_noise": ("noise", "output")},
+    )
+    value = jnp.zeros(4, dtype=jnp.float32)
+    first_key = jax.random.key(21)
+    second_key = jax.random.key(34)
+
+    def custom_policy(key, t):
+        return jax.random.fold_in(key, t + 17)
+
+    def check_reset(key, *, custom=False):
+        controller = graph_controller(
+            graph,
+            key=key,
+            dtype=jnp.float32,
+            **({"key_policy": custom_policy} if custom else {}),
+        )
+        h0 = controller.initial_state()
+        _, carry = controller.unpack_state(h0)
+        key_t = custom_policy(key, 0) if custom else jax.random.fold_in(key, 0)
+        native_outputs, _, _ = graph.step({"input": value}, graph.init_state(key=key), key=key_t)
+        result = controller.step_with_trace(h0, value, 0)
+        assert jnp.array_equal(carry["sum", "b"], native_outputs["output"])
+        assert jax.tree.all(jax.tree.map(jnp.array_equal, result.graph_outputs, native_outputs))
+        return carry["sum", "b"]
+
+    first = check_reset(first_key)
+    assert jnp.array_equal(first, check_reset(first_key))
+    assert not jnp.array_equal(first, check_reset(second_key))
+    assert not jnp.array_equal(first, check_reset(first_key, custom=True))

@@ -33,6 +33,7 @@ from feedbax.compiler.prototypes import (
     array_proto_from_shape,
     explicit_proto,
     shape_from_proto,
+    subgraph_input_prototypes,
     validate_or_add_input_shape,
     _lookup_output_prototype_fn,
 )
@@ -469,12 +470,8 @@ class _Completion:
                 changed = self.complete(name) or changed
                 if name in self.children:
                     child = self.children[name]
-                    nested = {
-                        (node, port): self.inputs[(name, graph_port)]
-                        for graph_port, (node, port) in child.graph.input_bindings.items()
-                        if (name, graph_port) in self.inputs
-                    }
-                    changed = child.advance(nested) or changed
+                    nested_inputs = subgraph_input_prototypes(name, child.graph, self.inputs)
+                    changed = child.advance(nested_inputs) or changed
                 changed = self.publish(name) or changed
             except (KeyError, TypeError, ValueError) as exc:
                 self.fail(name, exc)

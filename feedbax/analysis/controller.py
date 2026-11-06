@@ -12,6 +12,7 @@ import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.contracts.graph import GraphSpec
+from feedbax.runtime._graph_key_schedule import reset_key
 from feedbax.runtime.graph import Graph, GraphTraceRequest
 
 if TYPE_CHECKING:
@@ -225,9 +226,13 @@ def graph_controller(
 ) -> GraphControllerAdapter:
     """Wrap an executable graph or ``GraphSpec`` as an analysis controller.
 
-    ``static_inputs`` and ``input_builder`` cover task-input handling without
-    baking a task schema into the adapter. ``trace`` exposes retained graph
-    boundary values through :meth:`GraphControllerAdapter.step_with_trace`.
+    Supply trial-scope recurrent initializer inputs through ``static_inputs``.
+    These inputs also provide external input prototypes when compiling a
+    ``GraphSpec``. Explicit ``cycle_init`` values take precedence over inferred
+    carry. Reset uses the native reset stream derived from ``key_policy(key, 0)``,
+    the key of the first controller transition. ``input_builder`` supplies step
+    inputs. ``trace`` exposes retained graph boundary values through
+    :meth:`GraphControllerAdapter.step_with_trace`.
     ``dtype`` is the dtype of the flat coordinates. Graph execution uses the
     native leaf dtypes. Discrete state and carry are unsupported in flat analysis.
     """
@@ -236,6 +241,7 @@ def graph_controller(
             f"Graph controller coordinates require a real floating dtype, got {dtype}."
         )
 
+    reset_inputs = dict(static_inputs) if static_inputs is not None else {}
     if isinstance(graph, GraphSpec):
         if component_registry is None:
             raise ValueError(
@@ -244,7 +250,11 @@ def graph_controller(
             )
         from feedbax.compiler import GraphDocument, compile_graph
 
-        executable = compile_graph(GraphDocument(graph=graph), component_registry).graph
+        executable = compile_graph(
+            GraphDocument(graph=graph),
+            component_registry,
+            input_prototypes={("__graph__", name): value for name, value in reset_inputs.items()},
+        ).graph
     else:
         executable = graph
     if input_builder is None and input_port not in executable.input_ports:
@@ -258,7 +268,12 @@ def graph_controller(
 
     init_state = executable.init_state(key=key)
     state_flat, state_spec = _flatten_pytree_to_array(init_state, dtype=dtype, source="graph state")
-    cycle_port_values = executable.initial_cycle_port_values(init_state, dict(cycle_init or {}))
+    cycle_port_values = executable.initial_cycle_port_values(
+        init_state,
+        dict(cycle_init) if cycle_init is not None else None,
+        inputs=reset_inputs,
+        key=reset_key(key_policy(key, 0)),
+    )
     cycle_flat, cycle_spec = _flatten_pytree_to_array(
         cycle_port_values, dtype=dtype, source="recurrent carry"
     )
