@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import type { WorkspaceDocument } from '../src/generated/studioContracts';
+import type { StudioWorkspaceSpec, WorkspaceDocument } from '../src/generated/studioContracts';
 
 const TRANSPORT_SCHEMA = 'feedbax.spec.studio.api_transport';
 const TRANSPORT_VERSION = 'feedbax.spec.studio.api_transport.v3';
@@ -70,7 +70,7 @@ function graphFixture(hiddenSize: number) {
   };
 }
 
-async function installMockApi(page: Page) {
+async function installMockApi(page: Page, initialWorkspace: StudioWorkspaceSpec | null = null) {
   page.on('console', (message) => {
     if (message.type() === 'error') console.error(message.text());
   });
@@ -97,7 +97,7 @@ async function installMockApi(page: Page) {
       },
     },
   };
-  let savedWorkspace: any = null;
+  let savedWorkspace = initialWorkspace;
   let savedDocument: WorkspaceDocument = {
     schema_id: 'feedbax.workspace_document',
     schema_version: '1',
@@ -253,13 +253,16 @@ async function installMockApi(page: Page) {
     }
 
     if (route.request().method() === 'PUT') {
-      const payload = route.request().postDataJSON() as { graph?: typeof savedGraph };
+      const payload = route.request().postDataJSON() as {
+        graph?: typeof savedGraph;
+        workspace?: StudioWorkspaceSpec;
+        workspace_document?: WorkspaceDocument;
+      };
       if (payload.graph) {
         savedGraph = payload.graph;
       }
-      savedWorkspace = (payload as { workspace?: any }).workspace ?? savedWorkspace;
-      savedDocument = (payload as { workspace_document?: WorkspaceDocument }).workspace_document
-        ?? savedDocument;
+      savedWorkspace = payload.workspace ?? savedWorkspace;
+      savedDocument = payload.workspace_document ?? savedDocument;
       savedGraph.metadata.save_revision += 1;
       await route.fulfill({
         contentType: 'application/json',
@@ -270,6 +273,8 @@ async function installMockApi(page: Page) {
 
     await route.fallback();
   });
+
+  return () => ({ graph: savedGraph, workspace: savedWorkspace });
 }
 
 test('parameter editing preserves geometry and survives save/reload', async ({ page }) => {
@@ -339,6 +344,108 @@ test('parameter editing preserves geometry and survives save/reload', async ({ p
     .toBe(128);
   await page.locator('.react-flow__node[data-id="cell"]').click();
   await expect(page.getByRole('textbox', { name: /^hidden size$/i })).toHaveValue('128');
+});
+
+test('keyboard history restores a deleted model node and its task binding together', async ({ page }) => {
+  const scenarioId = 'scenario:train';
+  const binding = {
+    id: 'task:inputs->cell:hidden',
+    source_data_id: 'inputs',
+    target_node_id: 'cell',
+    target_port: 'hidden',
+    role: 'model_input',
+    metadata: { label: 'Recurrent input' },
+  };
+  const savedProject = await installMockApi(page, {
+    id: 'workspace-1',
+    schema_id: 'feedbax.spec.studio.workspace',
+    schema_version: 'feedbax.spec.studio.workspace.v2',
+    label: 'Bound node history',
+    active_stage_id: 'stage:train',
+    stages: [],
+    metadata: {},
+    collections: [],
+    manifest_refs: [],
+    artifact_refs: [],
+    scenarios: {
+      [scenarioId]: {
+        id: scenarioId,
+        label: 'Training scenario',
+        stage_id: 'stage:train',
+        task_binding_spec: { exposed_data: [], bindings: [binding] },
+      },
+    },
+  });
+  await page.addInitScript(
+    ({ localTabsKey, lastProjectKey }) => {
+      localStorage.removeItem(localTabsKey);
+      localStorage.setItem(lastProjectKey, 'graph-1');
+    },
+    { localTabsKey: LOCAL_TABS_KEY, lastProjectKey: LAST_PROJECT_KEY },
+  );
+
+  await page.goto('/');
+  const node = page.locator('.react-flow__node[data-id="cell"]');
+  const task = page.getByRole('button', { name: 'Task', exact: true });
+  const model = page.getByRole('button', { name: 'Model', exact: true });
+  const bindingSource = page.locator(`[data-task-data-port-id="${binding.source_data_id}"]`);
+  const bindingPath = page.locator(`[data-task-binding-visual-id="${binding.id}"]`).last();
+  await expect(node).toBeVisible();
+  await task.click();
+  await expect(bindingPath).toHaveAttribute('d', /^M /);
+  await model.click();
+  await node.click();
+
+  const deleteWithConfirmation = async (key: 'Backspace' | 'Delete', accept: boolean) => {
+    const confirmDeletion = page.waitForEvent('dialog').then(async (dialog) => {
+      if (accept) await dialog.accept();
+      else await dialog.dismiss();
+      expect(dialog.message()).toContain('1 task binding');
+    });
+    await Promise.all([page.keyboard.press(key), confirmDeletion]);
+  };
+
+  await deleteWithConfirmation('Backspace', false);
+  await expect(node).toBeVisible();
+  await deleteWithConfirmation('Delete', true);
+  await expect(node).toHaveCount(0);
+  await task.click();
+  await expect(bindingSource).toBeVisible();
+  await expect(bindingPath).toHaveCount(0);
+
+  const savedNodeAndBindings = () => {
+    const { graph, workspace } = savedProject();
+    return {
+      node: graph.nodes.cell,
+      bindings: workspace?.scenarios?.[scenarioId]?.task_binding_spec?.bindings,
+    };
+  };
+  const save = page.getByTitle('Save', { exact: true });
+  const deleted = { node: undefined, bindings: [] };
+  await save.click();
+  await expect.poll(savedNodeAndBindings).toEqual(deleted);
+
+  await page.keyboard.press('ControlOrMeta+z');
+  await expect(node).toBeVisible();
+  await expect(bindingPath).toHaveAttribute('d', /^M /);
+  await save.click();
+  await expect.poll(savedNodeAndBindings).toEqual({
+    node: graphFixture(100).nodes.cell,
+    bindings: [binding],
+  });
+
+  await page.keyboard.press('ControlOrMeta+Shift+z');
+  await expect(node).toHaveCount(0);
+  await expect(bindingPath).toHaveCount(0);
+  await save.click();
+  await expect.poll(savedNodeAndBindings).toEqual(deleted);
+
+  await page.reload();
+  await expect(page.locator('.react-flow__node[data-id="system"]')).toBeVisible();
+  await task.click();
+  await expect(bindingSource).toBeVisible();
+  await expect(node).toHaveCount(0);
+  await expect(bindingPath).toHaveCount(0);
 });
 
 test('reload restores acausal domain context and rejects causal subgraph drops', async ({ page }) => {

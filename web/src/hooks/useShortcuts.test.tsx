@@ -3,10 +3,11 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAppShortcuts, FIT_VIEW_SHORTCUT_EVENT } from '@/hooks/useShortcuts';
-import { ensureTaskBindingSpec } from '@/features/scenario/taskBindings';
+import { ensureTaskBindingSpec, taskBindingId } from '@/features/scenario/taskBindings';
 import { useGraphStore } from '@/stores/graphStore';
 import {
   buildWorkspaceSnapshot,
+  getStageByKind,
   getTrainingScenario,
   useWorkspaceStore,
 } from '@/stores/workspaceStore';
@@ -174,5 +175,89 @@ describe('useAppShortcuts', () => {
 
     expect(getTrainingScenario(useWorkspaceStore.getState().workspace)?.task_binding_spec?.bindings)
       .toEqual([expect.objectContaining({ id: bindingId })]);
+  });
+
+  it('replays node deletion against its original training scenario after reassignment', () => {
+    const mux = {
+      type: 'Mux',
+      params: { n_inputs: 2 },
+      input_ports: ['in_0', 'in_1'],
+      output_ports: ['output'],
+    };
+    const boundGraph = { ...graph, nodes: { ...graph.nodes, a: mux } };
+    const editor = useGraphStore.getState();
+    editor.hydrateGraph(boundGraph, uiState);
+
+    const store = useWorkspaceStore.getState();
+    const workspace = store.workspace!;
+    const stage = getStageByKind(workspace, 'train')!;
+    const scenario = getTrainingScenario(workspace)!;
+    const spec = ensureTaskBindingSpec(scenario.task_binding_spec, boundGraph, taskSpec);
+    const source = spec.exposed_data[0].id;
+    const removed = {
+      id: taskBindingId(source, 'a', 'in_2'),
+      source_data_id: source,
+      target_node_id: 'a',
+      target_port: 'in_2',
+      role: 'model_input',
+      metadata: { label: 'Original binding' },
+    } as const;
+    const other = {
+      ...removed,
+      id: taskBindingId(source, 'b', 'input'),
+      target_node_id: 'b',
+      target_port: 'input',
+      metadata: { label: 'Independent binding' },
+    };
+    const alternateId = 'alternate-training';
+    const alternateSpec = { ...spec, bindings: [other] };
+    const originalSpec = { ...spec, bindings: [removed, other] };
+    store.setWorkspace({
+      ...workspace,
+      scenarios: {
+        ...workspace.scenarios,
+        [scenario.id]: { ...scenario, task_binding_spec: originalSpec },
+        [alternateId]: { ...scenario, id: alternateId, task_binding_spec: alternateSpec },
+      },
+    });
+    editor.updateNodeParams('a', 'n_inputs', 3, originalSpec);
+    editor.toggleNodeCollapse('b');
+
+    const getSpec = (scenarioId: string) =>
+      useWorkspaceStore.getState().workspace?.scenarios[scenarioId]?.task_binding_spec;
+    const press = (key: string, modifiers: KeyboardEventInit = {}) => {
+      act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key, ...modifiers })); });
+    };
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    try {
+      editor.setSelectedNode('a');
+      render(<ShortcutHarness />);
+      press('Delete');
+      const edited = { ...other, metadata: { label: 'Edited while the node was deleted' } };
+      act(() => {
+        store.updateScenarioDraft(scenario.id, {
+          task_binding_spec: { ...getSpec(scenario.id)!, bindings: [edited] },
+        });
+        store.updateStageDraft(stage.id, { scenario_id: alternateId });
+      });
+
+      press('z', { metaKey: true });
+      expect(getSpec(scenario.id)?.bindings).toEqual([removed, edited]);
+      expect(getSpec(alternateId)).toEqual(alternateSpec);
+
+      press('z', { metaKey: true });
+      expect(useGraphStore.getState().uiState.node_states.b.collapsed).toBe(false);
+      expect(useGraphStore.getState().graph.nodes.a.input_ports).toContain('in_2');
+
+      press('z', { metaKey: true, shiftKey: true });
+      expect(useGraphStore.getState().uiState.node_states.b.collapsed).toBe(true);
+      expect(getSpec(scenario.id)?.bindings).toEqual([removed, edited]);
+
+      press('z', { metaKey: true, shiftKey: true });
+      expect(getSpec(scenario.id)?.bindings).toEqual([edited]);
+      expect(getSpec(alternateId)).toEqual(alternateSpec);
+    } finally {
+      confirm.mockRestore();
+    }
   });
 });

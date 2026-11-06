@@ -1,8 +1,9 @@
-import { useGraphStore } from '@/stores/graphStore';
+import { useGraphStore, type GraphHistoryEdit } from '@/stores/graphStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import {
   canAuthorTaskBindings,
   ensureTaskBindingSpec,
+  removeTaskBindingsForTargetNodes,
   ROOT_TASK_BINDING_MESSAGE,
   taskBindingId,
   targetInputOccupied,
@@ -20,6 +21,54 @@ type TaskBindingOutcome =
       graph: GraphSpec;
       created: boolean;
     };
+
+export function prepareRootTaskBindingRemoval(
+  nodeIds: string[]
+): { bindingCount: number; edit?: GraphHistoryEdit } | undefined {
+  const { graph, graphStack } = useGraphStore.getState();
+  if (nodeIds.length === 0 || !canAuthorTaskBindings(graph, graphStack.length)) return;
+  const { workspace } = useWorkspaceStore.getState();
+  const scenario = getTrainingScenario(workspace);
+  if (!workspace || !scenario) return;
+
+  const workspaceId = workspace.id;
+  const scenarioId = scenario.id;
+  const spec = scenario.task_binding_spec;
+  const visibleSpec = ensureTaskBindingSpec(spec, graph, scenario.task_spec);
+  const bindingCount =
+    visibleSpec.bindings.length - removeTaskBindingsForTargetNodes(visibleSpec, nodeIds).bindings.length;
+  if (!spec) return { bindingCount };
+  const pruned = removeTaskBindingsForTargetNodes(spec, nodeIds);
+  if (pruned === spec) return { bindingCount };
+  const retained = new Set(pruned.bindings);
+  const removed = spec.bindings
+    .map((binding, index) => ({ binding, index }))
+    .filter(({ binding }) => !retained.has(binding));
+  const removedIds = new Set(removed.map(({ binding }) => binding.id));
+
+  const apply = (restore: boolean) => {
+    const { workspace: currentWorkspace, updateScenarioDraft } = useWorkspaceStore.getState();
+    if (currentWorkspace?.id !== workspaceId) return;
+    const currentSpec = currentWorkspace.scenarios[scenarioId]?.task_binding_spec;
+    if (!currentSpec) return;
+    const bindings = currentSpec.bindings.filter((binding) => !removedIds.has(binding.id));
+    if (restore) {
+      for (const { binding, index } of removed) bindings.splice(index, 0, binding);
+    } else if (bindings.length === currentSpec.bindings.length) {
+      return;
+    }
+    updateScenarioDraft(
+      scenarioId,
+      { task_binding_spec: { ...currentSpec, bindings }, metadata: { draft_owner: 'studio_workspace' } },
+      'task_binding_spec_updated',
+    );
+  };
+
+  return {
+    bindingCount,
+    edit: { undo: () => apply(true), redo: () => apply(false) },
+  };
+}
 
 export function upsertRootTaskBinding(
   dataId: string,

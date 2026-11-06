@@ -217,10 +217,11 @@ describe('projectsStore local restore state', () => {
     expect(useWorkspaceStore.getState().workspaceDocument).toEqual(workspaceDocument);
   });
 
-  it('reopens a saved project inside its persisted subgraph path', async () => {
+  it('reopens nested views and retains root undo when switching tabs from inside them', async () => {
     vi.resetModules();
     vi.stubGlobal('window', { localStorage: makeStorage() });
-    vi.stubGlobal('crypto', { randomUUID: vi.fn(() => 'generated-tab') });
+    let nextId = 0;
+    vi.stubGlobal('crypto', { randomUUID: () => `generated-${nextId++}` });
 
     const { useProjectsStore } = await import('@/stores/projectsStore');
     const { useGraphStore } = await import('@/stores/graphStore');
@@ -315,7 +316,8 @@ describe('projectsStore local restore state', () => {
       graphStackPath: ['network', 'inner'],
     });
 
-    useProjectsStore.getState().openProjectInTab(
+    const projects = useProjectsStore.getState();
+    const tabId = projects.openProjectInTab(
       'nested-project',
       graph,
       uiState,
@@ -332,6 +334,30 @@ describe('projectsStore local restore state', () => {
     ]);
     expect(useGraphStore.getState().currentGraphLabel).toBe('inner');
     expect(useGraphStore.getState().graph.nodes.core.params).toEqual({ gain: 2 });
+
+    const editor = useGraphStore.getState();
+    editor.setComponentRegistry([{
+      name: 'Network',
+      category: 'Networks',
+      description: 'Composite network',
+      param_schema: [],
+      default_params: {},
+      input_ports: ['input'],
+      output_ports: ['output'],
+      is_composite: true,
+      interior_domain: 'feedbax.domain.causal',
+    }]);
+    editor.exitToBreadcrumb(0);
+    editor.updateNodeParams('network', 'gain', 3);
+    editor.enterSubgraph('network');
+    expect(useGraphStore.getState().currentGraphLabel).toBe('network');
+
+    projects.openNewTab('Other project');
+    projects.switchTab(tabId);
+    editor.exitToBreadcrumb(0);
+    expect(useGraphStore.getState().graph.nodes.network.params.gain).toBe(3);
+    editor.undo();
+    expect(useGraphStore.getState().graph.nodes.network.params.gain).toBeUndefined();
   });
 
   it('drops restored clean startup placeholders when a saved project tab exists', async () => {
@@ -487,6 +513,7 @@ describe('projectsStore local restore state', () => {
       return {
         past: [historyEntry],
         future: [historyEntry],
+        graphHistory: { '["subgraph"]': { past: [historyEntry], future: [] } },
       };
     });
 
