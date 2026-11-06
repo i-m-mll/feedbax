@@ -41,6 +41,12 @@ from feedbax.contracts.selection import (
     preview_selection_spec,
     refresh_selection_spec,
 )
+from feedbax.orchestration.staged_training import (
+    require_unclaimed_training_receipt,
+    staged_training_display_status,
+    training_receipt_lock,
+    withdraw_staged_training,
+)
 from feedbax.persistence.manifest_discovery import (
     find_manifest_at_address,
     find_manifest_by_id,
@@ -320,7 +326,9 @@ def _training_summary_from_row(row: dict[str, Any]) -> TrainingRunInfo:
         id=str(payload["id"]),
         name=_training_name(payload),
         created_at=str(payload.get("created_at") or row["created_at"]),
-        status=str(payload.get("status") or row["status"] or "unknown"),
+        status=staged_training_display_status(payload.get("status"), metadata)
+        or row["status"]
+        or "unknown",
         hyperparams=_training_hyperparams(payload),
         metrics=metrics,
         uri=str(row["path"]),
@@ -766,40 +774,30 @@ async def get_evaluation_run_manifest(eval_run_id: str) -> dict[str, Any]:
 
 
 @router.post("/training/{training_run_id}/cancel", response_model=TrainingRunInfo)
-async def cancel_training_run(training_run_id: str) -> TrainingRunInfo:
-    """Mark a pending or running training manifest as cancelled."""
-    manifest, _path = _load_training_manifest(training_run_id)
-    if manifest.status not in {"pending", "running"}:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Training run {training_run_id!r} cannot be cancelled from {manifest.status!r}",
-        )
-    updated = manifest.model_copy(
-        update={
-            "status": "cancelled",
-            "completed_at": utc_now(),
-            "metadata": {
-                **manifest.metadata,
-                "cancelled_at": utc_now().isoformat(),
-            },
-        }
-    )
-    path = write_manifest(updated, root=default_manifest_root())
+def cancel_training_run(training_run_id: str) -> TrainingRunInfo:
+    """Withdraw an unclaimed pending intent."""
+    try:
+        updated, path = withdraw_staged_training(default_manifest_root(), training_run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _training_summary_from_row(manifest_record(updated, path))
 
 
 @router.delete("/training/{training_run_id}", response_model=TrainingRunInfo)
-async def delete_training_run(training_run_id: str) -> TrainingRunInfo:
-    """Delete a pending training manifest; completed runs must be superseded."""
-    manifest, path = _load_training_manifest(training_run_id)
-    summary = _training_summary_from_row(manifest_record(manifest, path))
-    if manifest.status != "pending":
-        raise HTTPException(
-            status_code=409,
-            detail="Only pending training manifests may be deleted; supersede completed runs instead.",
-        )
-    path.unlink(missing_ok=True)
-    remove_manifest_from_index(training_run_id)
+def delete_training_run(training_run_id: str) -> TrainingRunInfo:
+    """Delete an unclaimed pending intent."""
+    root = default_manifest_root()
+    with training_receipt_lock(root, training_run_id):
+        manifest, path = _load_training_manifest(training_run_id)
+        try:
+            require_unclaimed_training_receipt(manifest)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        summary = _training_summary_from_row(manifest_record(manifest, path))
+        path.unlink()
+        remove_manifest_from_index(training_run_id, root=root)
     return summary
 
 

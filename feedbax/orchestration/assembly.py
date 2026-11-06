@@ -51,6 +51,7 @@ from feedbax.orchestration.bundle import (
     RunBundle,
     RunRowSpec,
     SchemaArtifactRef,
+    StagedTrainingBinding,
     canonical_orchestration_root,
     default_orchestration_root,
     orchestration_run_set_dir,
@@ -135,6 +136,7 @@ class RunAssemblyRequest(StrictModel):
     inputs: list[AssemblyInputDeclaration] = Field(default_factory=list)
     training_row_parents: list[GovernedTrainingRowParentDeclaration] = Field(default_factory=list)
     content_bindings: list[ContentBinding] = Field(default_factory=list)
+    staged_training: StagedTrainingBinding | None = None
     evaluation_batch_plan: EvaluationMatrixBatchPlan | None = None
     evaluation_output_preflight: EvaluationOutputPreflightPolicy | None = None
     deployment_policy: DeploymentPolicy
@@ -574,6 +576,7 @@ def _persist_prepared_run_bundle(
         budget=request.budget,
         resolved_inputs=resolved_input_records,
         content_bindings=request.content_bindings,
+        staged_training=request.staged_training,
         evaluation_output_preflight=prepared.evaluation_output_preflight,
         orchestration_root=(
             str(canonical_orchestration_root(request.orchestration_root))
