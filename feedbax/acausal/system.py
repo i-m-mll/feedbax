@@ -248,8 +248,7 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
             if port not in inputs or inputs[port] is None:
                 raise ValueError(f"Missing required acausal source input {port!r}")
             value = jnp.asarray(inputs[port])
-            if not payload.accepts_shape(value.shape):
-                raise ValueError(payload.shape_error(port, value.shape))
+            payload.validate_shape(port, value.shape)
             payloads[port] = jnp.atleast_1d(value).astype(dtype)
 
         input_val = (

@@ -24,7 +24,7 @@ from feedbax.compiler.acausal_compiler import (
     compile_acausal_authoring_report,
     compile_acausal_graph,
 )
-from feedbax.runtime.graph import RolloutStepContext, RolloutStepHookResult
+from feedbax.runtime.graph import Graph, RolloutStepContext, RolloutStepHookResult
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 
@@ -197,6 +197,59 @@ def test_rollout_hook_can_supply_unbound_prescribed_motion() -> None:
     )
 
     assert jnp.array_equal(outputs["velocity"], jnp.ones(3))
+
+
+@pytest.fixture
+def planar_arm_graph() -> Graph:
+    registry = _registry()
+    template = registry.get("TwoLinkArm6Muscle")
+    assert template is not None
+    spec = GraphSpec(
+        nodes={
+            "arm": ComponentSpec(
+                type="AcausalSystem",
+                input_ports=["excitation"],
+                output_ports=["state"],
+            ),
+        },
+        output_ports=["state"],
+        output_bindings={"state": ("arm", "state")},
+        subgraphs={"arm": template.template_graph},
+    )
+    return compile_graph(GraphDocument(graph=spec), registry).graph
+
+
+@pytest.mark.parametrize("shape", [(), (1, 6)], ids=["scalar", "extra-axis"])
+def test_planar_arm_rejects_invalid_late_excitation(
+    planar_arm_graph: Graph, shape: tuple[int, ...]
+) -> None:
+    def supply_excitation(context: RolloutStepContext) -> RolloutStepHookResult:
+        return RolloutStepHookResult(
+            port_values={**context.port_values, ("arm", "excitation"): jnp.full(shape, 0.5)},
+        )
+
+    key = jax.random.PRNGKey(0)
+    state = planar_arm_graph.init_state(key=key)
+    with pytest.raises(ValueError, match=r"(?=.*excitation)(?=.*shape)(?=.*\(6,\))"):
+        planar_arm_graph.step({}, state, key=key, rollout_step_hook=supply_excitation)
+
+
+def test_planar_arm_accepts_late_excitation(planar_arm_graph: Graph) -> None:
+    def supply_excitation(context: RolloutStepContext) -> RolloutStepHookResult:
+        return RolloutStepHookResult(
+            port_values={
+                **context.port_values,
+                ("arm", "excitation"): jnp.array([0.5, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            },
+        )
+
+    key = jax.random.PRNGKey(0)
+    state = planar_arm_graph.init_state(key=key)
+    driven, _, _ = planar_arm_graph.step({}, state, key=key, rollout_step_hook=supply_excitation)
+
+    activations = driven["state"].plant.muscles.activations
+    assert activations[0] > 0
+    assert jnp.array_equal(activations[1:], jnp.zeros(5))
 
 
 def test_authoring_report_exposes_prescribed_motion_pair() -> None:
