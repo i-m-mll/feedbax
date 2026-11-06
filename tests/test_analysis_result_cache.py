@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from feedbax import _atomic
+from feedbax._vendor.jax_cookbook import LDict
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.execution import run_analyses_with_context
@@ -72,16 +73,37 @@ def test_cache_reuses_only_the_declared_computation_revision(
     assert len(calls) == 2
 
 
-def test_nodes_with_different_final_operations_share_the_raw_result(context, constant_analysis):
+def test_distinct_final_callbacks_share_only_the_raw_result(context, constant_analysis):
     analysis, calls = constant_analysis
     doubled = analysis.then_transform_result(lambda result: 2 * result)
+    tripled = analysis.then_transform_result(lambda result: 3 * result)
 
     _, results, _ = run_analyses_with_context(
-        {"raw": analysis, "doubled": doubled}, build_toy_analysis_data(), context
+        {"doubled": doubled, "tripled": tripled}, build_toy_analysis_data(), context
     )
 
-    assert results == {"raw": 7, "doubled": 14}
+    assert results == {"doubled": 14, "tripled": 21}
     assert len(calls) == 1
+
+
+def test_framework_selections_deduplicate_by_key(context):
+    calls = []
+
+    class ReadStates(AbstractAnalysis):
+        def compute(self, data):
+            calls.append(None)
+            return data.states
+
+    def select(key):
+        return ReadStates().after_getitem_at_level("condition", key)
+
+    data = build_toy_analysis_data(LDict.of("condition")({"a": 14, "b": 21}))
+    _, results, _ = run_analyses_with_context(
+        {"a": select("a"), "b": select("b"), "also_a": select("a")}, data, context
+    )
+
+    assert results == {"a": {"value": 14}, "b": {"value": 21}, "also_a": {"value": 14}}
+    assert len(calls) == 2
 
 
 def test_inherited_revision_does_not_authorize_cache(context, monkeypatch):
