@@ -308,7 +308,6 @@ def run_training_graph(
     raw_grad_clip = getattr(cfg, "grad_clip", 1.0)
     grad_clip = None if raw_grad_clip is None else float(raw_grad_clip)
     optimizer = _build_optimizer(learning_rate, grad_clip)
-    snapshot_interval = max(1, int(getattr(cfg, "snapshot_interval", 100)))
     trainable, _static = eqx.partition(compiled.graph, compiled.trainable_filter)
     opt_state = optimizer.init(trainable)
     started_at = time.perf_counter()
@@ -319,6 +318,7 @@ def run_training_graph(
         cfg=cfg,
         grad_clip=grad_clip,
     )
+    snapshot_interval = run_spec.training_config.snapshot_interval
     current_graph = compiled.graph
 
     def observe_model(graph: Graph) -> None:
@@ -457,6 +457,7 @@ def _training_run_spec_for_compiled(
     grad_clip: float | None,
 ) -> TrainingRunSpec:
     method_contract = executor_method_contract(total_batches=total_batches)
+    snapshot_interval = max(1, int(getattr(cfg, "snapshot_interval", 100)))
     effective_phase = standard_supervised_effective_phase_spec().model_copy(
         update={
             "phase_program": method_contract.phase_program,
@@ -477,7 +478,7 @@ def _training_run_spec_for_compiled(
             learning_rate=float(getattr(cfg, "learning_rate", 1e-3)),
             grad_clip=grad_clip,
             n_reach_steps=compiled.n_steps,
-            snapshot_interval=max(1, int(getattr(cfg, "snapshot_interval", 100))),
+            snapshot_interval=snapshot_interval,
         ),
         objective={"loss": compiled.training_spec.loss.model_dump(mode="json", exclude_none=True)},
         method_ref=standard_supervised_method_ref(),
@@ -488,7 +489,7 @@ def _training_run_spec_for_compiled(
         ),
         artifacts={},
         checkpoint_progress={
-            "checkpoint_interval": 1,
+            "checkpoint_interval": snapshot_interval,
             "progress_interval": 1,
         },
         metadata={

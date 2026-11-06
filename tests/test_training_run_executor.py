@@ -10,6 +10,7 @@ from copy import copy, deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from weakref import ref
 
 import equinox as eqx
 import jax
@@ -144,6 +145,7 @@ from feedbax.training.checkpoint_custody import (
     fork_checkpoint_transaction,
     derive_checkpoint_fork_compatibility_projection,
     load_latest_checkpoint,
+    resolve_checkpoint_custody_ref,
     structural_abi_fingerprint,
     write_checkpoint_transaction,
 )
@@ -2835,6 +2837,7 @@ def _chunked_registry(
         if fail_on_program_step is not None and coordinate.program_step >= fail_on_program_step:
             raise RuntimeError("simulated preemption after durable checkpoint")
         updates = dict(base_kernel(slots, coordinate, context))
+        updates["prng"] = slots["prng"] + 1
         if barrier_artifact_sink:
             updates["history_chunk"] = bytes([0, 255, coordinate.program_step])
         return updates
@@ -5686,10 +5689,26 @@ def test_nan_manifest_conflict_uses_linked_failure_fallback(
 
 
 def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry, program = _chunked_registry(stop_after_program_step=3)
     checkpoint_root = tmp_path / "checkpoint-custody"
+    saved_models = []
+    phase_runs = []
+    save = training_executor.StreamingCheckpointStore.save
+    run = training_executor.PhaseProgramExecutor.run
+
+    def observe_save(store, checkpoint):
+        saved_models.append(ref(checkpoint.slots["model"]))
+        return save(store, checkpoint)
+
+    def retain_phase_run(executor, *args, **kwargs):
+        phase_result = run(executor, *args, **kwargs)
+        phase_runs.append((executor.checkpoint_store, phase_result))
+        return phase_result
+
+    monkeypatch.setattr(training_executor.StreamingCheckpointStore, "save", observe_save)
+    monkeypatch.setattr(training_executor.PhaseProgramExecutor, "run", retain_phase_run)
 
     result = execute_training_run_spec(
         _run_spec(),
@@ -5710,6 +5729,20 @@ def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
     assert len({write.manifest.transaction_id for write in result.checkpoint_writes}) == 3
     assert len(list((checkpoint_root / "transactions").glob("tx-*"))) == 3
 
+    for step, write in enumerate(result.checkpoint_writes, start=1):
+        custody_ref = ParentRef(
+            kind="TrainingCheckpointTransactionManifest",
+            id=write.manifest.transaction_id,
+            role="training_checkpoint_custody",
+            uri=write.manifest_path.relative_to(checkpoint_root).as_posix(),
+            metadata={"manifest_sha256": write.latest_pointer.manifest_sha256},
+        )
+        resolved = resolve_checkpoint_custody_ref(custody_ref, allowed_root=checkpoint_root)
+        assert resolved.manifest.completed_coordinate.program_step == step
+        assert resolved.slots["model"].tolist() == [step * (step + 1) / 2]
+        assert resolved.slots["optimizer"]["count"].tolist() == [step + 1]
+        assert resolved.slots["prng"].tolist() == [step, step + 1]
+
     loaded = load_latest_checkpoint(
         checkpoint_root,
         expected_run_spec=_run_spec(),
@@ -5719,6 +5752,10 @@ def test_repeated_barrier_visits_are_durable_and_latest_is_recoverable(
     assert loaded.manifest.transaction_id == result.checkpoint_writes[-1].manifest.transaction_id
     assert loaded.manifest.completed_coordinate.program_step == 3
     assert loaded.slots["model"].tolist() == result.final_slots["model"].tolist()
+
+    assert len(phase_runs) == 1
+    assert len(saved_models) == 3
+    assert all(model_ref() is None for model_ref in saved_models[:-1])
 
 
 def test_repeated_barrier_visits_capture_binary_artifact_sinks(
