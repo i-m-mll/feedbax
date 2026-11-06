@@ -391,6 +391,21 @@ def test_recurrent_controller_lstm_matches_seeded_cell_encoder_and_readout():
     assert jnp.allclose(net.state_view(state).cell.cell, carry)
 
 
+def test_recurrent_controller_steps_with_post_activation_carry():
+    graph = recurrent_controller(2, 3, hidden_nonlinearity="relu", key=jax.random.key(0))
+    state = init_state_from_component(graph)
+    inputs = {"input": jnp.array([1.0, 2.0])}
+    cell = graph.nodes["cell"].cell
+
+    first, state, carry = graph.step(inputs, state, key=jax.random.key(1))
+    second, _, carry = graph.step(inputs, state, carry, key=jax.random.key(2))
+
+    assert jnp.array_equal(first["hidden"], jax.nn.relu(cell(inputs["input"], jnp.zeros(3))))
+    expected = jax.nn.relu(cell(inputs["input"], first["hidden"]))
+    assert jnp.array_equal(second["hidden"], expected)
+    assert jnp.array_equal(carry["cell", "hidden"], expected)
+
+
 def _call_modulator(component, signal, modulator):
     state = init_state_from_component(component)
     outputs, _ = component(

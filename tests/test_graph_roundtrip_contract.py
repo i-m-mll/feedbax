@@ -126,6 +126,8 @@ def _non_default_value(component_type: str, schema: ParamSchema) -> Any:
     key = (component_type, schema.name)
     if key in _VALUES:
         return deepcopy(_VALUES[key])
+    if schema.name == "dtype":
+        return "float16"
     if schema.default is None:
         return deepcopy(_NONE_VALUES[key])
     if schema.type == "bool":

@@ -494,7 +494,9 @@ def recurrent_controller(
     Choose a built-in cell by name or pass the GRU, LSTM, or LeakyRNNCell
     constructor. Supply cell options through ``cell_params``. Omitting
     ``out_size`` binds the controller output directly to the hidden signal,
-    with the requested output activation.
+    with the requested output activation. For manual stepping, pass the
+    recurrent carry returned by :meth:`Graph.step` to the next step.
+    The carry includes the hidden signal after any activation and noise.
     """
     from feedbax.compiler.graph import GraphDocument, compile_graph
     from feedbax.compiler.templates import recurrent_controller_template_graph
