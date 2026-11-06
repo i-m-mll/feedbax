@@ -13,7 +13,7 @@ from typing import Any, Iterable, Literal, Mapping, Optional
 
 import jax.numpy as jnp
 
-from feedbax._numerics import sqrt_with_zero_grad
+from feedbax._numerics import broadcast_vector, sqrt_with_zero_grad
 from feedbax.contracts.graph import (
     AnalysisInputRequirement,
     GraphSpec,
@@ -320,7 +320,7 @@ def evaluate_loss_term(term: LossTermPlan, trace: Mapping[str, Any]) -> Any:
             raise RetentionPlanError(str(exc), path=exc.path) from exc
         # Mask before nonlinear operations so inactive NaNs cannot enter their
         # derivatives.
-        diff = jnp.where(_broadcast_time_mask(mask, diff), diff, 0)
+        diff = jnp.where(broadcast_vector(mask, diff.ndim, axis=0), diff, 0)
 
     if matrix_quadratic:
         per_step = _matrix_quadratic_values(diff, term.matrix, term.matrix_kind)
@@ -329,7 +329,7 @@ def evaluate_loss_term(term: LossTermPlan, trace: Mapping[str, Any]) -> Any:
     if mask is not None:
         if per_step.ndim == 0:
             raise RetentionPlanError("Segment time aggregation requires a time dimension", path=path)
-        return jnp.mean(per_step, where=_broadcast_time_mask(mask, per_step))
+        return jnp.mean(per_step, where=broadcast_vector(mask, per_step.ndim, axis=0))
     return _aggregate_time(per_step, term.time_agg, path)
 
 
@@ -1020,10 +1020,6 @@ def _matrix_quadratic_values(
         f"Unsupported matrix kind {matrix_kind!r}",
         path="/loss/matrix_kind",
     )
-
-
-def _broadcast_time_mask(mask: Any, values: Any) -> Any:
-    return mask.reshape((mask.shape[0],) + (1,) * (values.ndim - 1))
 
 
 def _aggregate_time(values: Any, time_agg: TimeAggregationSpec, path: str) -> Any:

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import jax.numpy as jnp
 
-from feedbax._numerics import sqrt_with_zero_grad
+from feedbax._numerics import broadcast_vector, sqrt_with_zero_grad
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.training import LossTermSpec, ObjectiveSlotSpec, TimeAggregationSpec
 from feedbax.objectives.loss import AbstractLoss, CompositeLoss
@@ -156,6 +156,13 @@ class SelectorObjectiveLoss(AbstractLoss):
         diff = jnp.asarray(source) - jnp.asarray(target)
         if self.difference_order:
             diff = jnp.diff(diff, n=self.difference_order, axis=1)
+        support = None
+        if self.mask is not None:
+            # Matrix metrics consume the last axis as features.
+            if diff.ndim < (3 if self.matrix is not None else 2):
+                raise ObjectiveLoweringError(self.path, "time masks and schedules require a time axis")
+            support = _timeline_mask(self.mask, self.timeline, diff.shape[1], path=f"{self.path}/mask")
+            diff = jnp.where(broadcast_vector(support, diff.ndim, axis=1), diff, 0)
         values = _metric_values(
             diff,
             norm=self.norm,
@@ -164,13 +171,14 @@ class SelectorObjectiveLoss(AbstractLoss):
             matrix_kind=self.matrix_kind,
             path=self.path,
         )
-        values = _apply_time_weights(
-            values,
-            mask=self.mask,
-            schedule=self.schedule,
-            timeline=self.timeline,
-            path=self.path,
-        )
+        if self.schedule is not None:
+            values = _apply_time_schedule(
+                values,
+                schedule=self.schedule,
+                timeline=self.timeline,
+                support=support,
+                path=self.path,
+            )
         return _reduce_objective_values(
             values,
             self.reduction,
@@ -1005,27 +1013,22 @@ def _validate_matrix_payload(matrix: Any, matrix_kind: str | None, *, path: str)
         raise ObjectiveLoweringError(f"{path}/matrix_kind", f"unsupported matrix kind {kind!r}")
 
 
-def _apply_time_weights(
+def _apply_time_schedule(
     values: Any,
     *,
-    mask: EpochMaskSpec | None,
-    schedule: ConstantScheduleSpec | PowerLawScheduleSpec | MovementEpochRampScheduleSpec | None,
+    schedule: ConstantScheduleSpec | PowerLawScheduleSpec | MovementEpochRampScheduleSpec,
     timeline: TaskTimelineSpec | None,
+    support: Any | None,
     path: str,
 ) -> Any:
-    arr = jnp.asarray(values)
-    if arr.ndim < 2:
-        if mask is not None or not isinstance(schedule, (type(None), ConstantScheduleSpec)):
+    if values.ndim < 2:
+        if not isinstance(schedule, ConstantScheduleSpec):
             raise ObjectiveLoweringError(path, "time masks and schedules require a time axis")
-        return arr
-    weights = jnp.ones((arr.shape[1],), dtype=arr.dtype)
-    if mask is not None:
-        weights = weights * _timeline_mask(mask, timeline, arr.shape[1], path=f"{path}/mask")
-    if schedule is not None:
-        weights = weights * _schedule_weights(schedule, timeline, arr.shape[1], path=f"{path}/schedule")
-    shape = [1] * arr.ndim
-    shape[1] = arr.shape[1]
-    return arr * weights.reshape(shape)
+        return values
+    weights = _schedule_weights(schedule, timeline, values.shape[1], path=f"{path}/schedule")
+    if support is not None:
+        weights = jnp.where(support, weights, 0)
+    return values * broadcast_vector(weights, values.ndim, axis=1)
 
 
 def _timeline_mask(

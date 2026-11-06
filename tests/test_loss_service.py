@@ -25,6 +25,7 @@ from feedbax.objectives.service import (
     loss_term_spec_to_objective_spec,
 )
 from feedbax.objectives.spec import (
+    ConstantScheduleSpec,
     EpochMaskSpec,
     MatrixPayloadSpec,
     MatrixQuadraticLossSpec,
@@ -642,6 +643,75 @@ class TestExecutableLowering:
         assert float(value) == 2.5
         assert jnp.allclose(grad[0, 0], jnp.array([0.3, 0.4]))
         assert jnp.array_equal(grad[0, 1], jnp.zeros(2))
+
+    @pytest.mark.parametrize(
+        ("metric", "time", "mask", "weight", "schedule_weight", "expected", "expected_gradient"),
+        [
+            pytest.param(
+                "l2", "sum", EpochMaskSpec(epochs=["movement"]), 1.0, 1.0,
+                15.0, [[0.0, 0.0], [0.6, 0.8], [0.6, 0.8]],
+                id="l2-sum",
+            ),
+            pytest.param(
+                "squared_l2", "sum", EpochMaskSpec(epochs=["movement"]), 1.0, 1.0,
+                125.0, [[0.0, 0.0], [6.0, 8.0], [12.0, 16.0]],
+                id="squared-l2-sum",
+            ),
+            pytest.param(
+                "l2", "mean", EpochMaskSpec(epochs=["movement"]),
+                3.0, 0.25,
+                7.5, [[0.0, 0.0], [0.3, 0.4], [0.3, 0.4]],
+                id="full-time-mean",
+            ),
+            pytest.param(
+                "l2", "mean", EpochMaskSpec(epochs=["hold", "movement"], mode="exclude"),
+                2.0, 0.25,
+                0.0, [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+                id="empty-support",
+            ),
+            pytest.param(
+                "l2", "sum", EpochMaskSpec(epochs=["hold"]), 1.0, 0.0,
+                float("nan"), None,
+                id="active-nan",
+            ),
+        ],
+    )
+    def test_objective_spec_epoch_mask_applies_to_loss_and_gradient(
+        self,
+        metric: str,
+        time: str,
+        mask: EpochMaskSpec,
+        weight: float,
+        schedule_weight: float,
+        expected: float,
+        expected_gradient: list[list[float]] | None,
+    ) -> None:
+        spec = ObjectiveSpec(
+            timeline=_timeline(),
+            terms=[
+                TargetStateLossSpec(
+                    label="masked_output",
+                    selector=_state_selector("state.output"),
+                    target=TargetValueSpec(kind="constant", value=[0.0, 0.0]),
+                    metric={"kind": metric},
+                    mask=mask,
+                    weight=weight,
+                    schedule=ConstantScheduleSpec(value=schedule_weight),
+                    reduction=ReductionSpec(time=time, trial="mean", feature="sum"),
+                )
+            ],
+        )
+        lowered = LossService().lower_objective_spec(spec)
+
+        def loss(output):
+            return lowered.loss(SimpleNamespace(output=output), SimpleNamespace(), None).total
+
+        output = jnp.array([[[jnp.nan, 0.0], [3.0, 4.0], [6.0, 8.0]]])
+        value, gradient = jax.jit(jax.value_and_grad(loss))(output)
+
+        assert float(value) == pytest.approx(expected, nan_ok=True)
+        if expected_gradient is not None:
+            assert jnp.allclose(gradient[0], jnp.array(expected_gradient), atol=0.0)
 
     def test_objective_spec_lowers_matrix_mask_and_schedule_terms(self) -> None:
         spec = ObjectiveSpec(
