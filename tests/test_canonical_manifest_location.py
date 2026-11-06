@@ -156,7 +156,8 @@ def test_stale_index_entry_falls_back_to_the_canonical_path(tmp_path: Path) -> N
 
     conn = connect_index(default_index_path(tmp_path))
     try:
-        index_manifest(conn, manifest, path=stale)
+        with conn:
+            index_manifest(conn, manifest, path=stale)
     finally:
         conn.close()
     assert find_manifest_paths_by_id(manifest.id, root=tmp_path) == [stale]
@@ -176,7 +177,7 @@ def test_canonical_resolution_does_not_pay_for_a_full_scan(
     def _refuse(*_args, **_kwargs):
         raise AssertionError("canonical resolution must not fall through to a full scan")
 
-    monkeypatch.setattr("feedbax.analysis.specs.iter_manifest_files", _refuse)
+    monkeypatch.setattr("feedbax.persistence.manifest_discovery.iter_manifest_files", _refuse)
     assert find_manifest_by_id(manifest.id, root=tmp_path)[1] == path
 
 
@@ -188,7 +189,8 @@ def test_stale_index_entry_naming_other_bytes_is_ignored(tmp_path: Path) -> None
 
     conn = connect_index(default_index_path(tmp_path))
     try:
-        index_manifest(conn, wanted, path=other_path)
+        with conn:
+            index_manifest(conn, wanted, path=other_path)
     finally:
         conn.close()
     assert find_manifest_paths_by_id(wanted.id, root=tmp_path) == [other_path]

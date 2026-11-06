@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Optional
 
@@ -17,7 +19,7 @@ from feedbax.contracts.base import (
     utc_now,
 )
 from feedbax.contracts.manifest import (
-    BaseManifest,
+    AnyManifest,
     EvaluationRunManifest,
     EvaluationRunSpec,
     TrainingRunManifest,
@@ -39,12 +41,21 @@ from feedbax.contracts.selection import (
     preview_selection_spec,
     refresh_selection_spec,
 )
+from feedbax.persistence.manifest_discovery import (
+    find_manifest_at_address,
+    find_manifest_by_id,
+    iter_manifests_by_kind,
+    manifest_record,
+    manifest_records_by_kind,
+    manifest_records_for_predicate,
+)
 from feedbax.persistence.manifest_index import (
-    get_indexed_manifest_record,
+    connect_index,
+    default_index_path,
+    index_manifest,
     iter_manifest_files,
-    iter_indexed_manifest_records_by_kind,
-    remove_manifest_from_index,
     rebuild_manifest_index,
+    remove_manifest_from_index,
 )
 from feedbax.web.services.training_service import RunStateCorruptionError, training_service
 
@@ -109,14 +120,14 @@ class SupersedeTrainingRunRequest(BaseModel):
 
 
 class SelectionPreviewRequest(BaseModel):
-    """Body for previewing a SelectionSpec over indexed manifests."""
+    """Body for previewing a SelectionSpec over manifest files."""
 
     selection_spec: SelectionSpec
     limit: int = Field(default=50, ge=0)
 
 
 class SelectionRefreshRequest(BaseModel):
-    """Body for comparing a frozen SelectionSpec with current index matches."""
+    """Body for comparing a frozen SelectionSpec with current manifest matches."""
 
     selection_spec: SelectionSpec
     failed_parent_ids: list[str] = Field(default_factory=list)
@@ -298,7 +309,7 @@ def _local_path_from_uri(uri: Any) -> Path | None:
     return Path(uri)
 
 
-def _training_summary_from_index_row(row: dict[str, Any]) -> TrainingRunInfo:
+def _training_summary_from_row(row: dict[str, Any]) -> TrainingRunInfo:
     payload = row["payload"]
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
     studio = _studio_metadata(payload)
@@ -326,7 +337,7 @@ def _training_summary_from_index_row(row: dict[str, Any]) -> TrainingRunInfo:
     )
 
 
-def _compare_row_from_index_row(
+def _compare_row_from_row(
     row: dict[str, Any],
     *,
     param_fields: list[str],
@@ -350,7 +361,7 @@ def _compare_row_from_index_row(
     )
 
 
-def _eval_summary_from_index_row(row: dict[str, Any]) -> EvalRunInfo:
+def _eval_summary_from_row(row: dict[str, Any]) -> EvalRunInfo:
     payload = row["payload"]
     spec = _payload_inline(payload, "evaluation_spec")
     input_runs = [
@@ -373,35 +384,43 @@ def _eval_summary_from_index_row(row: dict[str, Any]) -> EvalRunInfo:
     )
 
 
-def _load_training_manifest_from_index(training_run_id: str) -> tuple[TrainingRunManifest, Path]:
-    row = get_indexed_manifest_record(training_run_id)
-    if row is None:
+def _find_run_manifest(run_id: str) -> tuple[AnyManifest, Path] | None:
+    try:
+        return find_manifest_by_id(run_id)
+    except FileNotFoundError:
+        return None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _load_training_manifest(training_run_id: str) -> tuple[TrainingRunManifest, Path]:
+    match = _find_run_manifest(training_run_id)
+    if match is None:
         raise HTTPException(status_code=404, detail=f"Training run {training_run_id!r} not found")
-    path = Path(row["path"])
-    manifest = load_manifest(path)
+    manifest, path = match
     if not isinstance(manifest, TrainingRunManifest):
         raise HTTPException(
             status_code=409,
-            detail=f"Manifest {training_run_id!r} is {type(manifest).__name__}, not TrainingRunManifest",
+            detail=f"Manifest {training_run_id!r} is {manifest.kind}, not TrainingRunManifest",
         )
     return manifest, path
 
 
 def _selection_index_rows(spec: SelectionSpec):
-    manifest_kind = spec.query.manifest_kind if spec.query is not None else spec.manifest_kind
-    return manifest_index_rows_from_records(iter_indexed_manifest_records_by_kind(manifest_kind))
+    if spec.query is None:
+        return []
+    return manifest_index_rows_from_records(manifest_records_for_predicate(spec.query))
 
 
-def _load_evaluation_manifest_from_index(eval_run_id: str) -> tuple[EvaluationRunManifest, Path]:
-    row = get_indexed_manifest_record(eval_run_id)
-    if row is None:
+def _load_evaluation_manifest(eval_run_id: str) -> tuple[EvaluationRunManifest, Path]:
+    match = _find_run_manifest(eval_run_id)
+    if match is None:
         raise HTTPException(status_code=404, detail=f"Evaluation run {eval_run_id!r} not found")
-    path = Path(row["path"])
-    manifest = load_manifest(path)
+    manifest, path = match
     if not isinstance(manifest, EvaluationRunManifest):
         raise HTTPException(
             status_code=409,
-            detail=f"Manifest {eval_run_id!r} is {type(manifest).__name__}, not EvaluationRunManifest",
+            detail=f"Manifest {eval_run_id!r} is {manifest.kind}, not EvaluationRunManifest",
         )
     return manifest, path
 
@@ -413,11 +432,10 @@ def _mark_dependent_evaluations_stale(
     reason: str | None,
     superseded_at: str,
 ) -> int:
-    """Mark indexed evaluations derived from a superseded training run stale."""
+    """Mark evaluations derived from a superseded training run stale."""
 
     updated_count = 0
-    for row in iter_indexed_manifest_records_by_kind("EvaluationRunManifest"):
-        manifest = load_manifest(row["path"])
+    for manifest, _path in iter_manifests_by_kind("EvaluationRunManifest"):
         if not isinstance(manifest, EvaluationRunManifest):
             continue
         if not any(parent.id == training_run_id for parent in manifest.input_training_runs):
@@ -467,22 +485,22 @@ def _mark_dependent_evaluations_stale(
     return updated_count
 
 
-def _summaries_for_manifest_ids(
-    manifest_ids: set[str],
-    *,
-    root: Path | str | None = None,
+def _run_summaries(
+    matches: Iterable[tuple[AnyManifest, Path]],
 ) -> tuple[list[TrainingRunInfo], list[EvalRunInfo]]:
-    training_runs = [
-        _training_summary_from_index_row(row)
-        for row in iter_indexed_manifest_records_by_kind("TrainingRunManifest", root=root)
-        if row["id"] in manifest_ids
-    ]
-    eval_runs = [
-        _eval_summary_from_index_row(row)
-        for row in iter_indexed_manifest_records_by_kind("EvaluationRunManifest", root=root)
-        if row["id"] in manifest_ids
-    ]
-    return training_runs, eval_runs
+    records = sorted(
+        (
+            manifest_record(manifest, path)
+            for manifest, path in matches
+            if isinstance(manifest, (TrainingRunManifest, EvaluationRunManifest))
+        ),
+        key=lambda row: (row["created_at"], row["path"]),
+        reverse=True,
+    )
+    return (
+        [_training_summary_from_row(row) for row in records if row["kind"] == "TrainingRunManifest"],
+        [_eval_summary_from_row(row) for row in records if row["kind"] == "EvaluationRunManifest"],
+    )
 
 
 def _resolved_import_paths(request: ManifestImportRequest) -> tuple[Path, Path]:
@@ -492,11 +510,11 @@ def _resolved_import_paths(request: ManifestImportRequest) -> tuple[Path, Path]:
 
 
 def _manifest_with_import_metadata(
-    manifest: BaseManifest,
+    manifest: AnyManifest,
     *,
     source_root: Path,
     source_path: Path,
-) -> BaseManifest:
+) -> AnyManifest:
     return manifest.model_copy(
         update={
             "metadata": {
@@ -520,18 +538,14 @@ def _import_runs_dir(source_root: Path, target_root: Path) -> ManifestImportResp
         )
     if source_root.resolve() == target_root.resolve():
         index_path = rebuild_manifest_index(target_root)
-        all_ids = {
-            row["id"]
-            for kind in ("TrainingRunManifest", "EvaluationRunManifest")
-            for row in iter_indexed_manifest_records_by_kind(kind, root=target_root)
-        }
-        training_runs, eval_runs = _summaries_for_manifest_ids(all_ids, root=target_root)
+        paths = iter_manifest_files(target_root)
+        training_runs, eval_runs = _run_summaries((load_manifest(path), path) for path in paths)
         return ManifestImportResponse(
             root=str(target_root),
             source_path=str(source_root),
             imported_manifest_ids=[],
             skipped_manifest_ids=[],
-            manifest_count=len(iter_manifest_files(target_root)),
+            manifest_count=len(paths),
             index_path=str(index_path),
             training_runs=training_runs,
             eval_runs=eval_runs,
@@ -539,12 +553,15 @@ def _import_runs_dir(source_root: Path, target_root: Path) -> ManifestImportResp
 
     imported_ids: list[str] = []
     skipped_ids: list[str] = []
+    matches: dict[str, tuple[AnyManifest, Path]] = {}
     manifest_paths = iter_manifest_files(source_root)
-    if iter_manifest_files(target_root):
-        rebuild_manifest_index(target_root)
     for manifest_path in manifest_paths:
         manifest = load_manifest(manifest_path)
-        if get_indexed_manifest_record(manifest.id, root=target_root) is not None:
+        existing = matches.get(manifest.id) or find_manifest_at_address(
+            manifest.id, root=target_root
+        )
+        if existing is not None:
+            matches[manifest.id] = existing
             skipped_ids.append(manifest.id)
             continue
         imported = _manifest_with_import_metadata(
@@ -552,14 +569,22 @@ def _import_runs_dir(source_root: Path, target_root: Path) -> ManifestImportResp
             source_root=source_root,
             source_path=manifest_path,
         )
-        write_manifest(imported, root=target_root)
+        path = write_manifest(imported, root=target_root, index=False)
+        matches[manifest.id] = imported, path
         imported_ids.append(manifest.id)
 
-    index_path = rebuild_manifest_index(target_root)
-    training_runs, eval_runs = _summaries_for_manifest_ids(
-        set(imported_ids + skipped_ids),
-        root=target_root,
-    )
+    index_path = default_index_path(target_root)
+    with closing(connect_index(index_path)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for manifest_id, (_manifest, path) in matches.items():
+            current = load_manifest(path)
+            if current.id != manifest_id:
+                raise ValueError(
+                    f"Manifest {manifest_id!r} changed identity at {path}: {current.id!r}"
+                )
+            index_manifest(conn, current, path=path)
+            matches[manifest_id] = current, path
+    training_runs, eval_runs = _run_summaries(matches.values())
     return ManifestImportResponse(
         root=str(target_root),
         source_path=str(source_root),
@@ -579,12 +604,12 @@ def _import_runs_dir(source_root: Path, target_root: Path) -> ManifestImportResp
 
 @router.get("/training")
 async def list_training_runs() -> list[TrainingRunInfo]:
-    """List training runs from the durable manifest index."""
-    indexed = [
-        _training_summary_from_index_row(row)
-        for row in iter_indexed_manifest_records_by_kind("TrainingRunManifest")
+    """List training runs from durable manifest files and live Studio runs."""
+    stored = [
+        _training_summary_from_row(row)
+        for row in manifest_records_by_kind("TrainingRunManifest")
     ]
-    by_id = {row.id: row for row in indexed}
+    by_id = {row.id: row for row in stored}
     try:
         live_runs = training_service.list_live_training_runs()
     except RunStateCorruptionError as exc:
@@ -604,15 +629,15 @@ async def list_training_runs() -> list[TrainingRunInfo]:
 
 @router.post("/selection/preview", response_model=SelectionPreview)
 async def preview_selection(request: SelectionPreviewRequest) -> SelectionPreview:
-    """Preview the current manifest-index matches for a selection spec."""
+    """Preview the current manifest matches for a selection spec."""
 
-    rows = _selection_index_rows(request.selection_spec)
+    rows = _selection_index_rows(request.selection_spec) if request.selection_spec.mode == "query" else []
     return preview_selection_spec(request.selection_spec, rows, limit=request.limit)
 
 
 @router.post("/selection/refresh", response_model=SelectionRefreshDiff)
 async def refresh_selection(request: SelectionRefreshRequest) -> SelectionRefreshDiff:
-    """Compare a frozen selection snapshot with current manifest-index matches."""
+    """Compare a frozen selection snapshot with current manifest matches."""
 
     rows = _selection_index_rows(request.selection_spec)
     return refresh_selection_spec(
@@ -632,18 +657,19 @@ async def compare_training_runs(
     rows: list[TrainingRunCompareRow] = []
     missing: list[str] = []
     for run_id in request.run_ids:
-        row = get_indexed_manifest_record(run_id)
-        if row is None:
+        match = _find_run_manifest(run_id)
+        if match is None:
             missing.append(run_id)
             continue
-        if row["kind"] != "TrainingRunManifest":
+        manifest, path = match
+        if not isinstance(manifest, TrainingRunManifest):
             raise HTTPException(
                 status_code=409,
-                detail=f"Manifest {run_id!r} is {row['kind']}, not TrainingRunManifest",
+                detail=f"Manifest {run_id!r} is {manifest.kind}, not TrainingRunManifest",
             )
         rows.append(
-            _compare_row_from_index_row(
-                row,
+            _compare_row_from_row(
+                manifest_record(manifest, path),
                 param_fields=request.param_fields,
                 metric_fields=request.metric_fields,
             )
@@ -668,7 +694,8 @@ async def import_manifest_packet_route(
     except (ManifestPacketConflictError, ManifestPacketValidationError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     imported_ids = set(result.imported_manifest_ids + result.skipped_manifest_ids)
-    training_runs, eval_runs = _summaries_for_manifest_ids(imported_ids, root=root)
+    matches = (find_manifest_at_address(id_, root=root) for id_ in imported_ids)
+    training_runs, eval_runs = _run_summaries(match for match in matches if match is not None)
     return ManifestImportResponse(
         root=result.root,
         source_path=str(source),
@@ -701,29 +728,22 @@ async def import_runs_dir_route(
 async def list_eval_runs(training_run_id: str) -> list[EvalRunInfo]:
     """List evaluation runs associated with a training run."""
     manifest_rows = [
-        _eval_summary_from_index_row(row)
-        for row in iter_indexed_manifest_records_by_kind("EvaluationRunManifest")
+        _eval_summary_from_row(row)
+        for row in manifest_records_by_kind("EvaluationRunManifest")
     ]
     manifest_matches = [row for row in manifest_rows if training_run_id in row.training_run_ids]
     if manifest_matches:
         return manifest_matches
 
-    indexed_training_row = get_indexed_manifest_record(training_run_id)
-    if indexed_training_row is not None:
-        _load_training_manifest_from_index(training_run_id)
-        return []
-
-    raise HTTPException(
-        status_code=404,
-        detail=f"Training run '{training_run_id}' not found",
-    )
+    _load_training_manifest(training_run_id)
+    return []
 
 
 @router.get("/training/{training_run_id}/manifest")
 async def get_training_run_manifest(training_run_id: str) -> dict[str, Any]:
     """Return the durable training manifest payload for a Studio run row."""
 
-    manifest, _path = _load_training_manifest_from_index(training_run_id)
+    manifest, _path = _load_training_manifest(training_run_id)
     return manifest.model_dump(mode="json", exclude_none=True)
 
 
@@ -731,14 +751,14 @@ async def get_training_run_manifest(training_run_id: str) -> dict[str, Any]:
 async def get_evaluation_run_manifest(eval_run_id: str) -> dict[str, Any]:
     """Return the durable evaluation manifest payload for a Studio run row."""
 
-    manifest, _path = _load_evaluation_manifest_from_index(eval_run_id)
+    manifest, _path = _load_evaluation_manifest(eval_run_id)
     return manifest.model_dump(mode="json", exclude_none=True)
 
 
 @router.post("/training/{training_run_id}/cancel", response_model=TrainingRunInfo)
 async def cancel_training_run(training_run_id: str) -> TrainingRunInfo:
     """Mark a pending or running training manifest as cancelled."""
-    manifest, _path = _load_training_manifest_from_index(training_run_id)
+    manifest, _path = _load_training_manifest(training_run_id)
     if manifest.status not in {"pending", "running"}:
         raise HTTPException(
             status_code=409,
@@ -754,21 +774,15 @@ async def cancel_training_run(training_run_id: str) -> TrainingRunInfo:
             },
         }
     )
-    write_manifest(updated, root=default_manifest_root())
-    row = get_indexed_manifest_record(training_run_id)
-    if row is None:
-        raise HTTPException(status_code=500, detail="Cancelled manifest was not re-indexed")
-    return _training_summary_from_index_row(row)
+    path = write_manifest(updated, root=default_manifest_root())
+    return _training_summary_from_row(manifest_record(updated, path))
 
 
 @router.delete("/training/{training_run_id}", response_model=TrainingRunInfo)
 async def delete_training_run(training_run_id: str) -> TrainingRunInfo:
     """Delete a pending training manifest; completed runs must be superseded."""
-    manifest, path = _load_training_manifest_from_index(training_run_id)
-    summary_row = get_indexed_manifest_record(training_run_id)
-    if summary_row is None:
-        raise HTTPException(status_code=404, detail=f"Training run {training_run_id!r} not found")
-    summary = _training_summary_from_index_row(summary_row)
+    manifest, path = _load_training_manifest(training_run_id)
+    summary = _training_summary_from_row(manifest_record(manifest, path))
     if manifest.status != "pending":
         raise HTTPException(
             status_code=409,
@@ -785,7 +799,7 @@ async def supersede_training_run(
     payload: SupersedeTrainingRunRequest,
 ) -> TrainingRunInfo:
     """Mark a completed training manifest as superseded without deleting it."""
-    manifest, _path = _load_training_manifest_from_index(training_run_id)
+    manifest, path = _load_training_manifest(training_run_id)
     if manifest.status != "completed":
         raise HTTPException(
             status_code=409,
@@ -809,7 +823,7 @@ async def supersede_training_run(
         superseded_at = str(manifest.metadata["superseded_at"])
     else:
         superseded_at = utc_now().isoformat()
-        updated = manifest.model_copy(
+        manifest = manifest.model_copy(
             update={
                 "metadata": {
                     **manifest.metadata,
@@ -819,7 +833,7 @@ async def supersede_training_run(
                 }
             }
         )
-        write_manifest(updated, root=default_manifest_root())
+        path = write_manifest(manifest, root=default_manifest_root())
 
     _mark_dependent_evaluations_stale(
         training_run_id,
@@ -827,10 +841,7 @@ async def supersede_training_run(
         reason=payload.reason,
         superseded_at=superseded_at,
     )
-    row = get_indexed_manifest_record(training_run_id)
-    if row is None:
-        raise HTTPException(status_code=500, detail="Superseded manifest was not re-indexed")
-    return _training_summary_from_index_row(row)
+    return _training_summary_from_row(manifest_record(manifest, path))
 
 
 @router.post("/evaluation", response_model=EvalRunInfo)
@@ -841,7 +852,7 @@ async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
     given parameters.  The actual evaluation computation is triggered
     separately (via ``POST /api/analyses/jobs``).
     """
-    _load_training_manifest_from_index(payload.training_run_id)
+    _load_training_manifest(payload.training_run_id)
     training_ref = ParentRef(
         kind="TrainingRunManifest",
         id=payload.training_run_id,
@@ -854,14 +865,15 @@ async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
         params={**payload.eval_params, "label": payload.name},
     )
     run_id = evaluation_run_manifest_id(run_spec)
-    existing_row = get_indexed_manifest_record(run_id)
-    if existing_row is not None:
-        if existing_row["kind"] != "EvaluationRunManifest":
+    existing = _find_run_manifest(run_id)
+    if existing is not None:
+        manifest, path = existing
+        if not isinstance(manifest, EvaluationRunManifest):
             raise HTTPException(
                 status_code=409,
                 detail=f"Manifest {run_id!r} is not an EvaluationRunManifest",
             )
-        return _eval_summary_from_index_row(existing_row)
+        return _eval_summary_from_row(manifest_record(manifest, path))
     manifest = EvaluationRunManifest(
         id=run_id,
         status="pending",
@@ -881,10 +893,7 @@ async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
     )
 
     try:
-        write_manifest(manifest, root=default_manifest_root())
-        row = get_indexed_manifest_record(run_id)
-        if row is None:
-            raise RuntimeError("evaluation manifest was not indexed")
+        path = write_manifest(manifest, root=default_manifest_root())
         logger.info(
             "Created evaluation manifest %s for training run %s",
             run_id,
@@ -897,4 +906,4 @@ async def create_eval_run(payload: CreateEvalRunRequest) -> EvalRunInfo:
             detail=f"Could not persist evaluation manifest {run_id!r}",
         ) from exc
 
-    return _eval_summary_from_index_row(row)
+    return _eval_summary_from_row(manifest_record(manifest, path))

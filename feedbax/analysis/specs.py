@@ -68,7 +68,6 @@ from feedbax.contracts.base import (
     default_manifest_root,
 )
 from feedbax.contracts.manifest import (
-    MANIFEST_KIND_DIRECTORIES,
     AnalysisEvaluationStateResolutionCode,
     AnalysisEvaluationStateResolutionDiagnostic,
     AnalysisEvaluationStateSource,
@@ -77,10 +76,8 @@ from feedbax.contracts.manifest import (
     AnyManifest,
     EvaluationRunManifest,
     EvaluationRunSpec,
-    canonical_manifest_candidate_paths,
     analysis_run_manifest_id,
     evaluation_states_cache_path,
-    load_manifest,
     load_manifest_bytes,
 )
 from feedbax.contracts.analysis_composition import (
@@ -95,7 +92,11 @@ from feedbax.contracts.run_aliases import RunAliasCatalog, resolve_run_aliases
 from feedbax.contracts.staged_execution import StagedExecutionDescriptor
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence.artifact_custody import ArtifactBlobCustodyError
-from feedbax.persistence.manifest_index import find_manifest_paths_by_id, iter_manifest_files
+from feedbax.persistence.manifest_discovery import (
+    ManifestKindMismatch as ManifestKindMismatch,
+    ManifestLocationError as ManifestLocationError,
+    find_manifest_by_id as find_manifest_by_id,
+)
 from feedbax.analysis.types import AnalysisInputData
 
 
@@ -361,142 +362,6 @@ def coerce_analysis_run_spec(
         repo_root=repo_root,
         run_alias_catalogs=run_alias_catalogs,
     )[0]
-
-
-class ManifestLocationError(ValueError):
-    """Raised when a manifest candidate's bytes contradict where they are stored.
-
-    A locator that cannot be resolved and bytes filed under another kind's
-    canonical directory are both custody failures, not cache misses: skipping
-    either would let a different record answer for the requested identifier.
-    """
-
-
-class ManifestKindMismatch(ValueError):
-    """Raised when the manifest holding a requested identifier is the wrong kind."""
-
-
-def find_manifest_by_id(
-    manifest_id: str,
-    *,
-    root: Path | str | None = None,
-    expected_kind: str | None = None,
-) -> tuple[AnyManifest, Path]:
-    """Find one manifest by ID under a manifest root.
-
-    Resolution is tiered and the canonical `(kind, id, root)` layout is
-    authoritative. The SQLite manifest index is derived acceleration only: an
-    absent index, a stale entry naming a path that no longer exists, and an
-    entry naming bytes that now hold a different identifier all fall through to
-    the canonical location and then to a full scan instead of raising.
-
-    Tiers resolve in order — canonical paths, indexed paths, full scan — and the
-    first tier yielding any match decides the answer. Duplicate matches inside a
-    tier refuse, because one identifier must name one record.
-
-    Args:
-        manifest_id: The deterministic identifier one record must hold.
-        root: Manifest root; defaults to :func:`default_manifest_root`.
-        expected_kind: The ``BaseManifest.kind`` the caller requires. A caller
-            that knows the kind states it, because an identifier alone does not:
-            a same-identifier record of another kind is a corrupted or forged
-            answer, and it refuses rather than being returned or silently
-            skipped in favour of a lower tier.
-    """
-    root_path = Path(root) if root is not None else default_manifest_root()
-    # Tiers are evaluated lazily: the full scan must not run when a cheaper tier
-    # already resolves the identifier.
-    tiers: tuple[Callable[[], Sequence[Path]], ...] = (
-        lambda: canonical_manifest_candidate_paths(manifest_id, root=root_path),
-        lambda: find_manifest_paths_by_id(manifest_id, root=root_path),
-        lambda: iter_manifest_files(root_path),
-    )
-    for candidates in tiers:
-        matches = _manifest_matches(manifest_id, candidates(), expected_kind=expected_kind)
-        if matches:
-            return _single_manifest_match(manifest_id, root_path, matches)
-    return _single_manifest_match(manifest_id, root_path, [])
-
-
-#: Canonical manifest-root subdirectory name to the single kind it durably stores.
-_MANIFEST_KIND_BY_DIRECTORY: dict[str, str] = {
-    directory: kind for kind, directory in MANIFEST_KIND_DIRECTORIES.items()
-}
-
-
-def _check_manifest_location(manifest: AnyManifest, manifest_path: Path) -> None:
-    """Refuse bytes filed directly under another kind's canonical directory.
-
-    The canonical `(kind, id, root)` layout is authoritative, so the directory a
-    record sits in is a claim about what it is. Bytes whose own ``kind``
-    contradicts that claim are misfiled or substituted, and admitting them would
-    let one kind's canonical location answer for another's. Locations that are
-    not a declared kind directory carry no such claim and are left to the
-    caller's own kind check.
-    """
-    declared = _MANIFEST_KIND_BY_DIRECTORY.get(manifest_path.parent.name)
-    if declared is None or manifest.kind == declared:
-        return
-    raise ManifestLocationError(
-        f"Manifest {manifest.id!r} of kind {manifest.kind!r} is stored at {manifest_path}, "
-        f"the canonical directory for {declared!r}"
-    )
-
-
-def _manifest_matches(
-    manifest_id: str,
-    candidate_paths: Sequence[Path],
-    *,
-    expected_kind: str | None = None,
-) -> list[tuple[AnyManifest, Path]]:
-    """Load candidate paths that actually hold *manifest_id*, skipping absent bytes.
-
-    Absent bytes are a stale locator, not a custody failure, so they are skipped.
-    Bytes that exist but cannot be parsed as a known manifest are a real custody
-    failure and propagate. So is a locator that cannot be resolved: resolution
-    is what proves two candidates are not the same file, and continuing past a
-    failure would drop a candidate that may be the only true record — or admit
-    the same one twice.
-    """
-    matches: list[tuple[AnyManifest, Path]] = []
-    seen: set[Path] = set()
-    for manifest_path in candidate_paths:
-        try:
-            resolved = manifest_path.resolve()
-        except OSError as exc:
-            raise ManifestLocationError(
-                f"Manifest candidate {manifest_path} for {manifest_id!r} could not be "
-                f"resolved, so it can be neither read nor ruled out: {exc}"
-            ) from exc
-        if resolved in seen:
-            continue
-        if not manifest_path.is_file():
-            continue
-        seen.add(resolved)
-        manifest = load_manifest(manifest_path)
-        if manifest.id != manifest_id:
-            continue
-        _check_manifest_location(manifest, manifest_path)
-        if expected_kind is not None and manifest.kind != expected_kind:
-            raise ManifestKindMismatch(
-                f"Manifest {manifest_id!r} at {manifest_path} is a {manifest.kind!r}, "
-                f"not the required {expected_kind!r}"
-            )
-        matches.append((manifest, manifest_path))
-    return matches
-
-
-def _single_manifest_match(
-    manifest_id: str,
-    root_path: Path,
-    matches: list[tuple[AnyManifest, Path]],
-) -> tuple[AnyManifest, Path]:
-    if not matches:
-        raise FileNotFoundError(f"Manifest {manifest_id!r} not found under {root_path}")
-    if len(matches) > 1:
-        paths = ", ".join(str(path) for _manifest, path in matches)
-        raise ValueError(f"Manifest {manifest_id!r} is duplicated under {root_path}: {paths}")
-    return matches[0]
 
 
 def _analysis_input_authentication(

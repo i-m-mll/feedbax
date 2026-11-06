@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -25,60 +26,72 @@ def connect_index(path: Path | str) -> sqlite3.Connection:
     db_path = Path(path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys = ON")
-    ensure_schema(conn)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        ensure_schema(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS manifests (
-            id TEXT PRIMARY KEY,
-            kind TEXT NOT NULL,
-            schema_version TEXT NOT NULL,
-            provider_version TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            status TEXT,
-            path TEXT NOT NULL,
-            source_repo TEXT,
-            source_branch TEXT,
-            source_commit TEXT,
-            dirty INTEGER
-        );
-
-        CREATE TABLE IF NOT EXISTS artifacts (
-            manifest_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            logical_name TEXT NOT NULL,
-            artifact_id TEXT,
-            sha256 TEXT,
-            media_type TEXT NOT NULL,
-            size_bytes INTEGER,
-            storage_backend TEXT NOT NULL,
-            uri TEXT,
-            PRIMARY KEY (manifest_id, role, logical_name, artifact_id, uri),
-            FOREIGN KEY (manifest_id) REFERENCES manifests(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS lineage_edges (
-            child_id TEXT NOT NULL,
-            parent_kind TEXT NOT NULL,
-            parent_id TEXT NOT NULL,
-            role TEXT,
-            PRIMARY KEY (child_id, parent_kind, parent_id, role),
-            FOREIGN KEY (child_id) REFERENCES manifests(id) ON DELETE CASCADE
-        );
-        """
-    )
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(manifests)")}
-    migrated = "payload_json" in columns
-    if migrated:
-        conn.execute("ALTER TABLE manifests DROP COLUMN payload_json")
-    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if migrated or current_version < 2:
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= 2:
+        return
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 2:
+            return
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS manifests (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                provider_version TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                status TEXT,
+                path TEXT NOT NULL,
+                source_repo TEXT,
+                source_branch TEXT,
+                source_commit TEXT,
+                dirty INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS artifacts (
+                manifest_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                logical_name TEXT NOT NULL,
+                artifact_id TEXT,
+                sha256 TEXT,
+                media_type TEXT NOT NULL,
+                size_bytes INTEGER,
+                storage_backend TEXT NOT NULL,
+                uri TEXT,
+                PRIMARY KEY (manifest_id, role, logical_name, artifact_id, uri),
+                FOREIGN KEY (manifest_id) REFERENCES manifests(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lineage_edges (
+                child_id TEXT NOT NULL,
+                parent_kind TEXT NOT NULL,
+                parent_id TEXT NOT NULL,
+                role TEXT,
+                PRIMARY KEY (child_id, parent_kind, parent_id, role),
+                FOREIGN KEY (child_id) REFERENCES manifests(id) ON DELETE CASCADE
+            )
+            """
+        )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(manifests)")}
+        if "payload_json" in columns:
+            conn.execute("ALTER TABLE manifests DROP COLUMN payload_json")
         conn.execute("PRAGMA user_version = 2")
-    conn.commit()
 
 
 def _artifact_tuple(manifest_id: str, artifact: ArtifactRef) -> tuple:
@@ -101,51 +114,51 @@ def index_manifest(
     *,
     path: Path | str,
 ) -> None:
+    """Update one manifest projection in the caller's transaction."""
     prov = manifest.provenance
-    with conn:
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO manifests (
-                id, kind, schema_version, provider_version, created_at, status, path,
-                source_repo, source_branch, source_commit, dirty
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                manifest.id,
-                manifest.kind,
-                manifest.schema_version,
-                manifest.provider_version,
-                manifest.created_at.isoformat(),
-                manifest.status,
-                str(path),
-                prov.source_repo,
-                prov.source_branch,
-                prov.source_commit,
-                int(prov.dirty) if prov.dirty is not None else None,
-            ),
-        )
-        conn.execute("DELETE FROM artifacts WHERE manifest_id = ?", (manifest.id,))
-        conn.execute("DELETE FROM lineage_edges WHERE child_id = ?", (manifest.id,))
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO artifacts (
-                manifest_id, role, logical_name, artifact_id, sha256, media_type,
-                size_bytes, storage_backend, uri
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [_artifact_tuple(manifest.id, artifact) for artifact in manifest.artifacts],
-        )
-        conn.executemany(
-            """
-            INSERT OR REPLACE INTO lineage_edges (
-                child_id, parent_kind, parent_id, role
-            ) VALUES (?, ?, ?, ?)
-            """,
-            [
-                (manifest.id, parent.kind, parent.id, parent.role)
-                for parent in manifest.provenance.parents
-            ],
-        )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO manifests (
+            id, kind, schema_version, provider_version, created_at, status, path,
+            source_repo, source_branch, source_commit, dirty
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            manifest.id,
+            manifest.kind,
+            manifest.schema_version,
+            manifest.provider_version,
+            manifest.created_at.isoformat(),
+            manifest.status,
+            str(path),
+            prov.source_repo,
+            prov.source_branch,
+            prov.source_commit,
+            int(prov.dirty) if prov.dirty is not None else None,
+        ),
+    )
+    conn.execute("DELETE FROM artifacts WHERE manifest_id = ?", (manifest.id,))
+    conn.execute("DELETE FROM lineage_edges WHERE child_id = ?", (manifest.id,))
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO artifacts (
+            manifest_id, role, logical_name, artifact_id, sha256, media_type,
+            size_bytes, storage_backend, uri
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [_artifact_tuple(manifest.id, artifact) for artifact in manifest.artifacts],
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO lineage_edges (
+            child_id, parent_kind, parent_id, role
+        ) VALUES (?, ?, ?, ?)
+        """,
+        [
+            (manifest.id, parent.kind, parent.id, parent.role)
+            for parent in manifest.provenance.parents
+        ],
+    )
 
 
 def index_manifest_file(
@@ -155,13 +168,10 @@ def index_manifest_file(
     db_path: Path | str | None = None,
 ) -> None:
     path = Path(manifest_path)
-    manifest = load_manifest(path)
     conn_path = Path(db_path) if db_path is not None else default_index_path(root)
-    conn = connect_index(conn_path)
-    try:
-        index_manifest(conn, manifest, path=path)
-    finally:
-        conn.close()
+    with closing(connect_index(conn_path)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        index_manifest(conn, load_manifest(path), path=path)
 
 
 def find_manifest_paths_by_id(
@@ -175,33 +185,35 @@ def find_manifest_paths_by_id(
     conn_path = Path(db_path) if db_path is not None else default_index_path(root_path)
     if not conn_path.exists():
         return []
-    conn = connect_index(conn_path)
-    try:
-        rows = conn.execute(
-            "SELECT path FROM manifests WHERE id = ? ORDER BY path",
-            (manifest_id,),
-        ).fetchall()
-    finally:
-        conn.close()
+    with closing(connect_index(conn_path)) as conn:
+        return query_manifest_paths_by_id(conn, manifest_id)
+
+
+def query_manifest_paths_by_id(conn: sqlite3.Connection, manifest_id: str) -> list[Path]:
+    """Return locator paths using the caller's connection and snapshot."""
+    rows = conn.execute(
+        "SELECT path FROM manifests WHERE id = ? ORDER BY path",
+        (manifest_id,),
+    ).fetchall()
     return [Path(row[0]) for row in rows]
 
 
-def _record_with_payload(row: tuple[Any, ...]) -> dict[str, Any]:
-    path = Path(row[6])
-    manifest = load_manifest(path)
-    if (manifest.id, manifest.kind) != (row[0], row[1]):
+def _record_with_payload(row: tuple[str, str, str]) -> dict[str, Any]:
+    manifest_id, kind, path = row
+    manifest = load_manifest(Path(path))
+    if (manifest.id, manifest.kind) != (manifest_id, kind):
         raise ValueError(
             "manifest index identity disagrees with canonical file: "
-            f"index={(row[1], row[0])!r}, file={(manifest.kind, manifest.id)!r}, path={path}"
+            f"index={(kind, manifest_id)!r}, file={(manifest.kind, manifest.id)!r}, path={path}"
         )
     return {
-        "id": row[0],
-        "kind": row[1],
-        "schema_version": row[2],
-        "provider_version": row[3],
-        "created_at": row[4],
-        "status": row[5],
-        "path": row[6],
+        "id": manifest.id,
+        "kind": manifest.kind,
+        "schema_version": manifest.schema_version,
+        "provider_version": manifest.provider_version,
+        "created_at": manifest.created_at.isoformat(),
+        "status": manifest.status,
+        "path": path,
         "payload": manifest.model_dump(mode="json", exclude_none=True),
     }
 
@@ -221,8 +233,7 @@ def get_indexed_manifest_record(
     try:
         row = conn.execute(
             """
-            SELECT id, kind, schema_version, provider_version, created_at, status,
-                   path
+            SELECT id, kind, path
             FROM manifests
             WHERE id = ?
             """,
@@ -250,17 +261,19 @@ def iter_indexed_manifest_records_by_kind(
     try:
         rows = conn.execute(
             """
-            SELECT id, kind, schema_version, provider_version, created_at, status,
-                   path
+            SELECT id, kind, path
             FROM manifests
             WHERE kind = ?
-            ORDER BY created_at DESC, path DESC
             """,
             (manifest_kind,),
         ).fetchall()
     finally:
         conn.close()
-    return [_record_with_payload(row) for row in rows]
+    return sorted(
+        (_record_with_payload(row) for row in rows),
+        key=lambda record: (record["created_at"], record["path"]),
+        reverse=True,
+    )
 
 
 def remove_manifest_from_index(
@@ -319,12 +332,16 @@ def rebuild_manifest_index(
 ) -> Path:
     root_path = Path(root) if root is not None else default_manifest_root()
     conn_path = Path(db_path) if db_path is not None else default_index_path(root_path)
-    if conn_path.exists():
-        conn_path.unlink()
-    conn = connect_index(conn_path)
-    try:
-        for manifest_path in iter_manifest_files(root_path):
-            index_manifest(conn, load_manifest(manifest_path), path=manifest_path)
-    finally:
-        conn.close()
+    with closing(connect_index(conn_path)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM manifests")
+        seen: dict[str, Path] = {}
+        for path in iter_manifest_files(root_path):
+            manifest = load_manifest(path)
+            if manifest.id in seen:
+                raise ValueError(
+                    f"duplicate manifest ID {manifest.id!r}: {seen[manifest.id]} and {path}"
+                )
+            seen[manifest.id] = path
+            index_manifest(conn, manifest, path=path)
     return conn_path
