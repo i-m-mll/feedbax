@@ -49,6 +49,7 @@ from feedbax._delayed_reaches import (
 from feedbax._vendor.jax_cookbook import is_module, is_none, is_type
 from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
+from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.mapping import WhereDict
 from feedbax.runtime.graph import Component, Graph, RolloutStepHook, init_state_from_component
 from feedbax.runtime.iteration import run_component
@@ -780,7 +781,14 @@ class AbstractTask(Module):
             if isinstance(value, TrialSpecDependency) or (
                 path[0] == jax.tree_util.GetAttrKey("inputs") and isinstance(value, Callable)
             ):
-                return value(trial_spec, key=key_dependencies)
+                # PyTree key kinds distinguish attributes, mapping keys and
+                # indices in sequence-valued task data.
+                scope = tuple(
+                    token for entry in path for token in (type(entry).__name__, str(entry))
+                )
+                return value(
+                    trial_spec, key=derive_key(key_dependencies, "trial-dependency", *scope)
+                )
             return value
 
         trial_spec = jt.map_with_path(
@@ -795,7 +803,8 @@ class AbstractTask(Module):
             trial_spec = replace(trial_spec, inputs=inputs)
         for name, dependency in self.input_dependencies.items():
             if name not in inputs:
-                inputs = {**inputs, name: dependency(trial_spec, key_dependencies)}
+                dependency_key = derive_key(key_dependencies, "named-trial-input", name)
+                inputs = {**inputs, name: dependency(trial_spec, dependency_key)}
                 trial_spec = replace(trial_spec, inputs=inputs)
         return trial_spec
 

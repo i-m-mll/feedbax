@@ -78,8 +78,8 @@ def _unflatten_array_to_pytree(flat: Array, spec: _FlatTreeSpec) -> PyTree:
     return jt.unflatten(spec.treedef, leaves)
 
 
-def _default_key_policy(key: PRNGKeyArray, t: int) -> PRNGKeyArray:
-    return jax.random.fold_in(key, t)
+def _default_key_policy(key: PRNGKeyArray, _t: int) -> PRNGKeyArray:
+    return key
 
 
 @dataclass(frozen=True)
@@ -203,6 +203,7 @@ class GraphControllerAdapter:
             state,
             cycle_port_values,
             key=key_t,
+            t=t,
             trace=self.trace,
         )
         h_next = self.pack_state(state_next, cycle_next)
@@ -234,8 +235,10 @@ def graph_controller(
     Supply trial-scope recurrent initializer inputs through ``static_inputs``.
     These inputs also provide external input prototypes when compiling a
     ``GraphSpec``. Explicit ``cycle_init`` values take precedence over inferred
-    carry. Reset uses the native reset stream derived from ``key_policy(key, 0)``,
-    the key of the first controller transition. ``input_builder`` supplies step
+    carry. By default the controller uses the native graph schedule for the
+    supplied trial key. A custom ``key_policy(key, t)`` selects the key supplied
+    to the graph at each timestep. Reset derives from ``key_policy(key, 0)``.
+    ``input_builder`` supplies step
     inputs. ``trace`` exposes retained graph boundary values through
     :meth:`GraphControllerAdapter.step_with_trace`.
     ``dtype`` is the dtype of the flat coordinates. Graph execution uses the

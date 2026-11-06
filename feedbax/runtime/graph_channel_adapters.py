@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import re
+from hashlib import sha256
 
 from feedbax.contracts.graph import (
     AdditiveGraphChannelAdapterSpec,
@@ -161,14 +161,16 @@ def _adapter_node_name(
     adapter: AdditiveGraphChannelAdapterSpec,
     nodes: dict[str, ComponentSpec],
 ) -> str:
-    base = adapter.adapter_node or f"{adapter.label}_additive"
-    candidate = re.sub(r"[^0-9A-Za-z_]+", "_", base).strip("_") or "additive_channel"
-    if candidate not in nodes:
-        return candidate
-    suffix = 2
-    while f"{candidate}_{suffix}" in nodes:
-        suffix += 1
-    return f"{candidate}_{suffix}"
+    candidate = adapter.adapter_node
+    if candidate is None:
+        input_digest = sha256(adapter.input_key.encode("utf-8")).hexdigest()
+        candidate = f"additive_{input_digest}"
+    if candidate in nodes:
+        raise ValueError(
+            f"Additive channel adapter input {adapter.input_key!r} would reuse "
+            f"node ID {candidate!r}"
+        )
+    return candidate
 
 
 def _sum_node_spec(adapter: AdditiveGraphChannelAdapterSpec) -> ComponentSpec:

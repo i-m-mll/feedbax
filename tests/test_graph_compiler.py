@@ -237,15 +237,16 @@ def test_compiler_generated_adapter_has_truthful_source_map_origin() -> None:
         ComponentRegistry(load_user_components=False),
     )
 
+    adapter_id, _ = compiled.resolved.graph.input_bindings["disturbance"]
     entry = next(
         item
         for item in compiled.record.source_map.entries
-        if item.resolved_path == "/graph/nodes/disturbance_additive"
+        if item.resolved_path == f"/graph/nodes/{adapter_id}"
     )
     assert entry.origin == "compiler-generated"
     assert entry.authored_path == "/graph"
-    adapter = compiled.resolved.graph.nodes["disturbance_additive"]
-    binding = compiled.graph.component_bindings["disturbance_additive"]
+    adapter = compiled.resolved.graph.nodes[adapter_id]
+    binding = compiled.graph.component_bindings[adapter_id]
     assert adapter.param_schema_version == binding.param_schema_version == "1"
 
 

@@ -100,7 +100,7 @@ def _canonical_key(key: WhereKey) -> _CanonicalKey:
     raise ValueError("Each WhereDict key must be a string, a callable, or a (callable, string) pair")
 
 
-@jtu.register_pytree_node_class
+@jtu.register_pytree_with_keys_class
 class WhereDict(AbstractTransformedOrderedDict[str, WhereKey, T]):
     """An `OrderedDict` that allows use of where-functions as keys.
 
@@ -153,6 +153,12 @@ class WhereDict(AbstractTransformedOrderedDict[str, WhereKey, T]):
         keys = tuple(_canonical_key(key) for key, _ in self.store.values())
         values = tuple(value for _, value in self.store.values())
         return values, keys
+
+    def tree_flatten_with_keys(self):
+        values, auxiliary = self.tree_flatten()
+        return tuple(
+            (jtu.DictKey(address), value) for address, value in zip(self.store, values, strict=True)
+        ), auxiliary
 
     def __setstate__(self, state):
         """Restore mappings whose persisted addresses predate escaped indices."""

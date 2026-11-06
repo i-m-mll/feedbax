@@ -210,6 +210,27 @@ class _ReachesWithNativeDependency(SimpleReaches):
         )
 
 
+def test_trial_dependency_follows_canonical_where_selector() -> None:
+    class SelectorDependencyReaches(SimpleReaches):
+        add_unrelated: bool = eqx.field(static=True, default=False)
+
+        def get_train_trial(self, key, batch_info=None):
+            trial = super().get_train_trial(key, batch_info)
+            dependency = TrialSpecDependency(lambda _, key: jr.normal(key, (4,)))
+            entries = {"state.z": dependency} if self.add_unrelated else {}
+            entries[lambda state: state.state.a] = dependency
+            return replace(trial, inits=WhereDict(entries))
+
+    task = SelectorDependencyReaches(
+        n_steps=5, loss_func=CompositeLoss(()), workspace=((-1.0, -1.0), (1.0, 1.0)),
+    )
+    key = jr.key(31)
+    original = task.sample_trial(key)
+    edited = replace(task, add_unrelated=True).sample_trial(key)
+    np.testing.assert_array_equal(original.inits["state.a"], edited.inits["state.a"])
+    assert not np.array_equal(edited.inits["state.a"], edited.inits["state.z"])
+
+
 def test_simple_reaches_realizes_added_inputs_per_validation_trial():
     intervention = {
         "offset": InterventionSpec(
@@ -231,12 +252,18 @@ def test_simple_reaches_realizes_added_inputs_per_validation_trial():
     def drive(trial, key):
         return trial.inputs["z_noise"] + noise(trial, key) + trial.extra["offset"]
 
+    edited_task = task.add_input("a_unrelated", noise)
     task = task.add_input("z_noise", noise).add_input("drive", drive)
     sampled = task.sample_trial(jr.key(0))
     assert sampled.inputs["drive"].shape == (4, 2)
-    np.testing.assert_allclose(
-        sampled.inputs["drive"], 2 * sampled.inputs["z_noise"] + sampled.intervene["offset"]
+    drive_noise = sampled.inputs["drive"] - sampled.inputs["z_noise"] - sampled.extra["offset"]
+    assert not np.allclose(drive_noise, sampled.inputs["z_noise"])
+
+    edited_sample = edited_task.add_input("z_noise", noise).add_input("drive", drive).sample_trial(
+        jr.key(0)
     )
+    for name in ("z_noise", "drive"):
+        np.testing.assert_array_equal(edited_sample.inputs[name], sampled.inputs[name])
 
     trials = task.validation_trials
     drives = np.asarray(trials.inputs["drive"])
@@ -246,9 +273,8 @@ def test_simple_reaches_realizes_added_inputs_per_validation_trial():
     np.testing.assert_array_equal(
         trials.intervene["offset"], trials.inputs["effector_target"].pos[:, 0]
     )
-    np.testing.assert_allclose(
-        drives, 2 * trials.inputs["z_noise"] + trials.intervene["offset"][:, None, :]
-    )
+    drive_noise = drives - trials.inputs["z_noise"] - trials.extra["offset"][:, None, :]
+    assert not np.allclose(drive_noise, trials.inputs["z_noise"])
     np.testing.assert_array_equal(
         trials.targets[_POSITION].value, jnp.swapaxes(trials.inputs["effector_target"].pos, 0, 1)
     )
