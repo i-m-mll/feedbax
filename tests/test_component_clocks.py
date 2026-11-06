@@ -1,21 +1,55 @@
 from functools import partial
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.serialization import graph_to_spec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
-from feedbax.runtime.components import Pulse, Ramp, Sine
+from feedbax.runtime.components import Constant, Pulse, Ramp, Sine
 from feedbax.runtime.graph import init_state_from_component
+from feedbax.runtime.iteration import run_component
+from feedbax.web.worker.execution import _compile_trainability
 from tests.support.graph_compiler_test_support import spec_to_graph
+
+
+@pytest.mark.parametrize(
+    ("source", "fields", "timing", "expected"),
+    [
+        (Constant, ("value",), {}, [[1, 2], [1, 2], [1, 2]]),
+        (Ramp, ("slope", "intercept"), {"dt": 0.5}, [[1, 2], [1.5, 3], [2, 4]]),
+        (Sine, ("amplitude", "offset"), {"dt": 0.25}, [[1, 2], [2, 4], [1, 2]]),
+        (Pulse, ("amplitude", "offset"), {"dt": 0.25}, [[2, 4], [2, 4], [1, 2]]),
+    ],
+)
+def test_vector_signal_values_change_without_retracing(source, fields, timing, expected) -> None:
+    @eqx.filter_jit
+    @eqx.debug.assert_max_traces(max_traces=1)
+    def rollout(component, state, key):
+        outputs, _, _ = run_component(component, {}, state, key=key, n_steps=3)
+        return outputs["output"]
+
+    key = jax.random.key(0)
+    for scale in (1, 3):
+        value = jnp.array([scale, 2 * scale], dtype=jnp.float32)
+        component = source(**dict.fromkeys(fields, value), **timing).prepare()
+        output = rollout(component, component.init_state(key=key), key)
+        np.testing.assert_allclose(output, np.asarray(expected) * scale, atol=1e-6)
+        assert output.dtype == value.dtype
 
 
 @pytest.mark.parametrize("x64", [False, True])
 def test_waveforms_keep_their_own_clocks_across_scanned_rollouts(x64: bool) -> None:
     with jax.experimental.enable_x64(x64):
         nodes = {
+            "constant": ComponentSpec(
+                type="Constant",
+                params={"value": 0.5},
+                output_ports=["output"],
+            ),
             "ramp": ComponentSpec(
                 type="Ramp",
                 params={"slope": 4.0, "intercept": -1.0, "dt": 0.125},
@@ -43,9 +77,20 @@ def test_waveforms_keep_their_own_clocks_across_scanned_rollouts(x64: bool) -> N
             output_ports=list(nodes),
             output_bindings={name: (name, "output") for name in nodes},
         )
-        graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+        registry = ComponentRegistry(load_user_components=False)
+        graph = spec_to_graph(spec, registry)
+        serialized = graph_to_spec(graph, registry)
+        for name, node in nodes.items():
+            actual = serialized.nodes[name]
+            assert actual.type == node.type
+            assert {field: actual.params[field] for field in node.params} == node.params
+        graph = spec_to_graph(serialized, registry)
+        _, trainable_filter = _compile_trainability(serialized, graph, registry)
+        assert not jax.tree.leaves(eqx.filter(graph, trainable_filter))
+
         key = jax.random.key(0)
         expected = {
+            "constant": [0.5] * 11,
             "ramp": [-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
             "sine": [3.0, 5.0, 3.0, 1.0, 3.0, 5.0, 3.0, 1.0, 3.0, 5.0, 3.0],
             "pulse": [2.0] * 5 + [-1.0] * 5 + [2.0],
@@ -65,6 +110,7 @@ def test_waveforms_keep_their_own_clocks_across_scanned_rollouts(x64: bool) -> N
             np.testing.assert_allclose(first[name], samples[:2], atol=2e-6)
             np.testing.assert_allclose(resumed[name], samples[2:], atol=2e-6)
             assert first[name].dtype == resumed[name].dtype == jnp.asarray(0.0).dtype
+        for name in ("ramp", "sine", "pulse"):
             step = state.get(graph.nodes[name].step_index)
             assert step.shape == ()
             assert jnp.issubdtype(step.dtype, jnp.integer)
