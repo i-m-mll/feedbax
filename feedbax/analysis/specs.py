@@ -21,7 +21,6 @@ from feedbax.analysis.evaluation import (
     execute_evaluation_run_spec,
     load_evaluation_states,
     load_evaluation_states_cache,
-    write_evaluation_states_cache,
 )
 from feedbax.contracts.evaluation_states import (
     EVALUATION_STATES_ARTIFACT_ROLE,
@@ -501,70 +500,36 @@ def resolve_analysis_inputs(
                 )
                 continue
             states_path = evaluation_states_cache_path(ref.id, root=root_path)
-            if states_path.exists():
-                states = load_evaluation_states_cache(states_path, manifest_id=ref.id)
+            if not isinstance(manifest, EvaluationRunManifest):
+                raise TypeError(
+                    f"Expected EvaluationRunManifest {ref.id!r}, got {type(manifest).__name__}"
+                )
+            states = load_evaluation_states_cache(states_path, manifest=manifest)
+            if states is not None:
                 state_source = AnalysisEvaluationStateSource(
                     source_kind="evaluation_cache",
                     requested_evaluation_manifest_id=ref.id,
-                    evaluation_manifest_authority=_portable_manifest_authority(ref),
-                    supplying_evaluation_manifest_id=(
-                        manifest.id if isinstance(manifest, EvaluationRunManifest) else None
+                    evaluation_manifest_authority=_evaluation_state_receipt_authority(
+                        ref, manifest, manifest_path=manifest_path
                     ),
+                    supplying_evaluation_manifest_id=manifest.id,
                     cache_schema_version=EVALUATION_STATES_CACHE_SCHEMA_VERSION,
                     cache_key=ref.id,
                 )
             else:
-                if isinstance(manifest, EvaluationRunManifest):
-                    try:
-                        structure = None
-                        if any(
-                            artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
-                            for artifact in manifest.artifacts
-                        ):
-                            structure = _evaluation_states_structure(
-                                ref,
-                                manifest,
-                                registry.structure_provider(spec.analysis_type),
-                            )
-                        states = load_evaluation_states(
-                            manifest, root=root_path, structure=structure
-                        )
-                    except EvaluationStatesArtifactNotFound:
-                        rederived, rederived_path = _rederive_evaluation_states(
-                            ref.id,
-                            manifest,
-                            root=root_path,
-                            execution_context=execution_context,
-                            registry=evaluation_registry,
-                        )
-                        state_source = AnalysisEvaluationStateSource(
-                            source_kind="analysis_time_recompute",
-                            requested_evaluation_manifest_id=ref.id,
-                            evaluation_manifest_authority=_portable_manifest_authority(ref),
-                            supplying_evaluation_manifest_id=manifest.id,
-                            resulting_evaluation_manifest_id=rederived.id,
-                            resulting_evaluation_manifest_authority=(
-                                authenticated_manifest_ref_from_read(
-                                    rederived_path,
-                                    expected_kind=rederived.kind,
-                                    expected_id=rederived.id,
-                                    role="evaluation_run",
-                                )
-                            ),
-                        )
-                    else:
-                        states_path.parent.mkdir(parents=True, exist_ok=True)
-                        write_evaluation_states_cache(
-                            states_path,
-                            manifest_id=ref.id,
-                            states=states,
-                        )
-                        state_source = _durable_state_source(
+                try:
+                    structure = None
+                    if any(
+                        artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
+                        for artifact in manifest.artifacts
+                    ):
+                        structure = _evaluation_states_structure(
                             ref,
                             manifest,
-                            manifest_path=manifest_path,
+                            registry.structure_provider(spec.analysis_type),
                         )
-                else:
+                    states = load_evaluation_states(manifest, root=root_path, structure=structure)
+                except EvaluationStatesArtifactNotFound:
                     rederived, rederived_path = _rederive_evaluation_states(
                         ref.id,
                         manifest,
@@ -572,10 +537,16 @@ def resolve_analysis_inputs(
                         execution_context=execution_context,
                         registry=evaluation_registry,
                     )
+                    states = load_evaluation_states_cache(states_path, manifest=rederived)
+                    if states is None:
+                        raise ValueError(
+                            f"Re-derived evaluation {ref.id!r} has no matching state cache"
+                        )
                     state_source = AnalysisEvaluationStateSource(
                         source_kind="analysis_time_recompute",
                         requested_evaluation_manifest_id=ref.id,
                         evaluation_manifest_authority=_portable_manifest_authority(ref),
+                        supplying_evaluation_manifest_id=manifest.id,
                         resulting_evaluation_manifest_id=rederived.id,
                         resulting_evaluation_manifest_authority=(
                             authenticated_manifest_ref_from_read(
@@ -583,11 +554,12 @@ def resolve_analysis_inputs(
                                 expected_kind=rederived.kind,
                                 expected_id=rederived.id,
                                 role="evaluation_run",
+                                expected_manifest=rederived,
                             )
                         ),
                     )
-            if states is None:
-                states = load_evaluation_states_cache(states_path, manifest_id=ref.id)
+                else:
+                    state_source = _durable_state_source(ref, manifest, manifest_path=manifest_path)
         resolved.append(
             ResolvedAnalysisInput(
                 ref=ref,
@@ -609,6 +581,26 @@ def resolve_analysis_inputs(
 def _portable_manifest_authority(ref: ParentRef) -> ParentRef:
     """Preserve authored authority fields without persisting a machine-local locator."""
     return ref.model_copy(update={"uri": None})
+
+
+def _evaluation_state_receipt_authority(
+    ref: ParentRef,
+    manifest: EvaluationRunManifest,
+    *,
+    manifest_path: Path | None,
+) -> ParentRef:
+    authority = _portable_manifest_authority(ref)
+    if is_authenticated_manifest_ref(authority):
+        return authority
+    if manifest_path is None:
+        raise ValueError("Evaluation-state provenance requires the supplying manifest path")
+    return authenticated_manifest_ref_from_read(
+        manifest_path,
+        expected_kind=manifest.kind,
+        expected_id=manifest.id,
+        role="evaluation_run",
+        expected_manifest=manifest,
+    )
 
 
 def _authenticated_manifest_resolution_error(
@@ -753,22 +745,12 @@ def _durable_state_source(
             details={"artifact_count": len(artifacts)},
         )
     artifact = artifacts[0]
-    authority = _portable_manifest_authority(ref)
-    if not is_authenticated_manifest_ref(authority):
-        if manifest_path is None:
-            raise ValueError(
-                "durable evaluation-state provenance requires the supplying manifest path"
-            )
-        authority = authenticated_manifest_ref_from_read(
-            manifest_path,
-            expected_kind=manifest.kind,
-            expected_id=manifest.id,
-            role="evaluation_run",
-        )
     return AnalysisEvaluationStateSource(
         source_kind="durable",
         requested_evaluation_manifest_id=ref.id,
-        evaluation_manifest_authority=authority,
+        evaluation_manifest_authority=_evaluation_state_receipt_authority(
+            ref, manifest, manifest_path=manifest_path
+        ),
         supplying_evaluation_manifest_id=manifest.id,
         artifact_id=artifact.artifact_id,
         artifact_sha256=artifact.sha256,
@@ -860,16 +842,12 @@ def _evaluation_states_structure(
 
 def _rederive_evaluation_states(
     manifest_id: str,
-    manifest: AnyManifest | None,
+    manifest: EvaluationRunManifest,
     *,
     root: Path,
     execution_context: StagedExecutionContext,
     registry: Any,
 ) -> tuple[EvaluationRunManifest, Path]:
-    if not isinstance(manifest, EvaluationRunManifest):
-        raise TypeError(
-            f"Expected EvaluationRunManifest {manifest_id!r}, got {type(manifest).__name__}"
-        )
     if manifest.status != "completed":
         raise ValueError(
             f"Cannot re-derive states for evaluation manifest {manifest_id!r} "
@@ -884,6 +862,7 @@ def _rederive_evaluation_states(
         provenance=manifest.provenance,
         metadata=metadata,
         execution_context=execution_context,
+        force=True,
     )
     if rederived.id != manifest_id:
         raise ValueError(

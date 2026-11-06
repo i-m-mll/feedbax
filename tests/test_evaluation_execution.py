@@ -131,18 +131,16 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(
         if artifact.role == EVALUATION_STATES_ARTIFACT_ROLE
     ]
 
+    receipt_bytes = path.read_bytes()
     loaded = load_manifest(path)
     assert loaded.id == manifest.id
 
     rerun_manifest, rerun_path = execute_evaluation_run_spec(
-        spec, registry=evaluation_registry, root=tmp_path
+        spec, registry=evaluation_registry, root=tmp_path, issues=["another-issue"]
     )
     assert rerun_path == path
-    assert rerun_manifest.id == manifest.id
-    assert rerun_manifest.summary_metrics["n_trials"] == 3
-    assert rerun_manifest.summary_metrics["input_training_runs"] == 1
-    assert "states_cache_hit" not in rerun_manifest.summary_metrics
-    assert rerun_manifest.metadata["cache"]["states_cache_hit"] is True
+    assert rerun_manifest == loaded
+    assert rerun_path.read_bytes() == receipt_bytes
     assert calls == [str(tmp_path)]
 
     index_path = rebuild_manifest_index(tmp_path)
@@ -161,6 +159,43 @@ def test_evaluation_run_spec_executes_headless_and_reuses_manifest_cache(
         ).fetchone()
     assert row == ("EvaluationRunManifest", "completed")
     assert edge == ("TrainingRunManifest", parent.id, "training_run")
+
+
+@pytest.mark.parametrize("restore_receipt", [False, True], ids=["orphan", "older-receipt"])
+def test_evaluation_executes_when_cache_has_no_matching_receipt(
+    tmp_path: Path, evaluation_registry, restore_receipt: bool
+) -> None:
+    spec = EvaluationRunSpec(evaluation_type="testpkg.toy_eval", inputs=[])
+    generations = iter([1, 2, 3])
+
+    def recipe(_spec, _root, _states_path, _execution_context):
+        generation = next(generations)
+        return EvaluationRecipeResult(
+            states={"generation": generation},
+            summary_metrics={"generation": generation},
+        )
+
+    evaluation_registry.register(spec.evaluation_type, recipe)
+    first, path = execute_evaluation_run_spec(spec, registry=evaluation_registry, root=tmp_path)
+    first_receipt = path.read_bytes()
+    second, _ = execute_evaluation_run_spec(
+        spec, registry=evaluation_registry, root=tmp_path, force=True
+    )
+    assert first.id == second.id
+    assert second.summary_metrics["generation"] == 2
+    assert evaluation_states_cache_path(first.id, root=tmp_path).is_file()
+    if restore_receipt:
+        path.write_bytes(first_receipt)
+    else:
+        path.unlink()
+
+    resumed, resumed_path = execute_evaluation_run_spec(
+        spec, registry=evaluation_registry, root=tmp_path
+    )
+
+    assert resumed.status == "completed"
+    assert resumed.summary_metrics["generation"] == 3
+    assert load_manifest(resumed_path) == resumed
 
 
 def test_evaluation_recipe_receives_explicit_repo_root_outside_repository_cwd(

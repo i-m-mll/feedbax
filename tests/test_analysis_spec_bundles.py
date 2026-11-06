@@ -4,6 +4,7 @@ import ast
 import importlib
 import inspect
 import json
+import pickle
 import sys
 from pathlib import Path
 from textwrap import dedent
@@ -33,9 +34,7 @@ from feedbax.analysis.bundles import (
 )
 from feedbax.analysis.context import AnalysisRunContext
 from feedbax.analysis.evaluation import (
-    EvaluationRecipeExecutionError as EvaluationRunExecutionError,
     EvaluationRecipeResult,
-    EvaluationStatesCacheCorruption,
     execute_evaluation_run_spec,
 )
 from feedbax.analysis.reports import BUNDLE_SUMMARY_REPORT_TYPE, REPORT_RENDER_ROLE
@@ -630,7 +629,7 @@ def test_analysis_run_spec_rederives_missing_evaluation_states_cache(
     assert load_manifest(eval_path).summary_metrics["n_trials"] == 5
 
 
-def test_evaluation_states_cache_corruption_fails_closed(
+def test_evaluation_rebuilds_tampered_states_cache_without_unpickling_it(
     tmp_path: Path, application_registry_bundle
 ):
     _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
@@ -648,17 +647,24 @@ def test_evaluation_states_cache_corruption_fails_closed(
         spec, root=tmp_path, registry=application_registry_bundle.evaluation_recipes
     )
     states_path = evaluation_states_cache_path(manifest.id, root=tmp_path)
-    states_path.write_bytes(b"not a pickle payload")
+    marker = tmp_path / "unpickled"
 
-    with pytest.raises(EvaluationRunExecutionError) as excinfo:
-        execute_evaluation_run_spec(
-            spec, root=tmp_path, registry=application_registry_bundle.evaluation_recipes
-        )
+    class UntrustedCache:
+        def __reduce__(self):
+            return Path.touch, (marker,)
 
-    assert isinstance(excinfo.value.__cause__, EvaluationStatesCacheCorruption)
-    failed = load_manifest(excinfo.value.path)
-    assert failed.status == "failed"
-    assert "EvaluationStatesCacheCorruption" in failed.metadata["error"]["type"]
+    tampered = pickle.dumps(UntrustedCache())
+    states_path.write_bytes(tampered)
+
+    rebuilt, path = execute_evaluation_run_spec(
+        spec, root=tmp_path, registry=application_registry_bundle.evaluation_recipes
+    )
+
+    assert rebuilt.status == "completed"
+    assert rebuilt.summary_metrics["n_trials"] == 4
+    assert not marker.exists()
+    assert states_path.read_bytes() != tampered
+    assert load_manifest(path) == rebuilt
 
 
 def test_analysis_run_spec_prefers_durable_states_on_cache_miss(
@@ -723,7 +729,7 @@ def test_analysis_run_spec_prefers_durable_states_on_cache_miss(
 
     assert manifest.status == "completed"
     assert calls == [6]
-    assert states_path.exists()
+    assert manifest.evaluation_state_sources[0].source_kind == "durable"
 
 
 def test_analysis_run_spec_records_failed_manifest_for_unknown_requested_output(

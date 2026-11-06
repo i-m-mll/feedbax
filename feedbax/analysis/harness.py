@@ -577,7 +577,10 @@ def _execute_evaluation_batch_partition(
         )
         if task["consumers"]:
             cache_path = Path(row.result.metadata["cache"]["states_path"])
-            states.append(load_evaluation_states_cache(cache_path, manifest_id=row.result.id))
+            row_states = load_evaluation_states_cache(cache_path, manifest=row.result)
+            if row_states is None:
+                raise ValueError(f"Evaluation row {row.row_id!r} has no matching state cache")
+            states.append(row_states)
     fragments = []
     for value in task["consumers"]:
         declaration = EvaluationBatchConsumerDeclaration.model_validate(value)
