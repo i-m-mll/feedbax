@@ -130,27 +130,6 @@ describe('graph authoring normalization', () => {
     expect(normalized.barnacles).toBeUndefined();
   });
 
-  it('normalizes dynamic mux ports after task-data binding ingress', () => {
-    const normalized = normalizeGraphForStudioAuthoring(runtimeGraph, {
-      schema_version: 'feedbax.spec.studio.task_bindings.v3',
-      exposed_data: [],
-      bindings: [
-        {
-          id: 'task:target_on->task_mux:in_2',
-          source_data_id: 'target_on',
-          target_node_id: 'task_mux',
-          target_port: 'in_2',
-          role: 'model_input',
-          metadata: {},
-        },
-      ],
-      metadata: {},
-    });
-
-    expect(normalized.nodes.task_mux.input_ports).toEqual(['in_0', 'in_1', 'in_2']);
-    expect(normalized.nodes.task_mux.params.n_inputs).toBe(3);
-  });
-
   it('does not turn unsupported runtime params into generated graph ports', () => {
     const graph: GraphSpec = {
       nodes: {

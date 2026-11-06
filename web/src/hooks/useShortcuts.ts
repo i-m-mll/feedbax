@@ -57,7 +57,7 @@ export function useAppShortcuts() {
   }, []);
 
   const deleteSelection = useCallback(() => {
-    const { nodes, deleteSelected, markDirty, capturePersistedGraph } = useGraphStore.getState();
+    const { nodes, graphStack, deleteSelected, markDirty, capturePersistedGraph, resizeDynamicInputs } = useGraphStore.getState();
     const { workspace, updateActiveScenarioTaskBindingSpec } = useWorkspaceStore.getState();
     const selectedNodeIds = nodes
       .filter((node) => node.selected && !node.id.startsWith('tap:'))
@@ -71,14 +71,15 @@ export function useAppShortcuts() {
       const taskBindingSpec = ensureTaskBindingSpec(
         trainingScenario.task_binding_spec, capturePersistedGraph().graph, trainingScenario.task_spec
       );
-      updateActiveScenarioTaskBindingSpec({
+      const nextSpec = {
         ...taskBindingSpec,
         bindings: taskBindingSpec.bindings.filter(
           (binding) => binding.id !== selectedTaskBindingId
         ),
-      });
+      };
+      updateActiveScenarioTaskBindingSpec(nextSpec);
       selectTopPaneEntity(null);
-      markDirty();
+      if (graphStack.length > 0 || !resizeDynamicInputs(nextSpec)) markDirty();
       return;
     }
     const bindingRemoval = prepareRootTaskBindingRemoval(selectedNodeIds);

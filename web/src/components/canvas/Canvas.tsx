@@ -59,7 +59,7 @@ import {
   deriveDimensionConstraints,
   deriveSubgraphBoundaryOverrides,
 } from '@/features/schema/dimensions';
-import { expandMuxForPort, isNextMuxInputPort, normalizeDynamicPorts } from '@/features/graph/dynamicPorts';
+import { visibleDynamicInputPorts } from '@/features/graph/dynamicPorts';
 import { findCausalInputDriver, findWireConnectionDriver, inputDriverConflict } from '@/features/graph/inputDrivers';
 import { CustomNode } from './CustomNode';
 import { SubgraphNode } from './SubgraphNode';
@@ -216,9 +216,7 @@ function graphWithConnection(graph: GraphSpec, connection: Connection): GraphSpe
       item.target_node !== wire.target_node ||
       item.target_port !== wire.target_port
   );
-  return normalizeDynamicPorts(
-    expandMuxForPort({ ...graph, wires: [...wires, wire] }, connection.target, connection.targetHandle)
-  );
+  return { ...graph, wires: [...wires, wire] };
 }
 
 function dimensionParamUpdates(
@@ -1414,13 +1412,10 @@ export function Canvas() {
           connection.target,
           connection.targetHandle
         );
-        const dynamicMuxTarget = isNextMuxInputPort(
-          graph,
-          connection.target,
-          connection.targetHandle,
-          taskBindingSpec
-        );
-        const filteredIssues = dynamicMuxTarget
+        const dynamicTarget = visibleDynamicInputPorts(
+          graph, connection.target, componentRegistry, taskBindingSpec
+        )?.nextPort === connection.targetHandle;
+        const filteredIssues = dynamicTarget
           ? issues.filter((issue) => issue.type !== 'unknown_target_port')
           : issues;
         return feedbackFromIssues(filteredIssues, 'Task Data can bind here', signature);
@@ -1463,13 +1458,10 @@ export function Canvas() {
         connection.target,
         connection.targetHandle
       );
-      const dynamicMuxTarget = isNextMuxInputPort(
-        graph,
-        connection.target,
-        connection.targetHandle,
-        taskBindingSpec
-      );
-      const filteredIssues = dynamicMuxTarget
+      const dynamicTarget = visibleDynamicInputPorts(
+        graph, connection.target, componentRegistry, taskBindingSpec
+      )?.nextPort === connection.targetHandle;
+      const filteredIssues = dynamicTarget
         ? issues.filter((issue) => issue.type !== 'unknown_target_port')
         : issues;
       return feedbackFromIssues(filteredIssues, 'Ports are compatible', signature);
@@ -1523,7 +1515,7 @@ export function Canvas() {
         taskBindingSpec,
         parentBoundaryOverrides
       );
-      onConnect(connection, undefined, paramUpdates);
+      onConnect(connection, undefined, paramUpdates, undefined, taskBindingSpec);
     },
     [
       components,
@@ -1545,27 +1537,6 @@ export function Canvas() {
       if (graphChanges.length > 0) onNodesChange(graphChanges);
     },
     [onNodesChange]
-  );
-
-  const removeTaskBindings = useCallback(
-    (bindingIds: Set<string>) => {
-      if (bindingIds.size === 0) return;
-      updateTaskBindingSpec({
-        ...allTaskBindingSpec,
-        bindings: allTaskBindingSpec.bindings.filter((binding) => !bindingIds.has(binding.id)),
-      });
-      markDirty();
-      if (selectedTaskBindingId && bindingIds.has(selectedTaskBindingId)) {
-        selectTopPaneEntity(null);
-      }
-    },
-    [
-      allTaskBindingSpec,
-      markDirty,
-      selectTopPaneEntity,
-      selectedTaskBindingId,
-      updateTaskBindingSpec,
-    ]
   );
 
   const handleEdgesChange = useCallback(
@@ -1592,12 +1563,30 @@ export function Canvas() {
           }
         }
       }
-      removeTaskBindings(removedTaskBindingIds);
-      if (graphChanges.length > 0) onEdgesChange(graphChanges);
+      let remainingTaskBindings = taskBindingSpec;
+      if (removedTaskBindingIds.size > 0) {
+        const withoutRemoved = (binding: { id: string }) => !removedTaskBindingIds.has(binding.id);
+        updateTaskBindingSpec({
+          ...allTaskBindingSpec,
+          bindings: allTaskBindingSpec.bindings.filter(withoutRemoved),
+        });
+        remainingTaskBindings = {
+          ...taskBindingSpec,
+          bindings: taskBindingSpec.bindings.filter(withoutRemoved),
+        };
+        if (!useGraphStore.getState().resizeDynamicInputs(remainingTaskBindings)) markDirty();
+        if (selectedTaskBindingId && removedTaskBindingIds.has(selectedTaskBindingId)) {
+          selectTopPaneEntity(null);
+        }
+      }
+      if (graphChanges.length > 0) onEdgesChange(graphChanges, remainingTaskBindings);
     },
     [
       onEdgesChange,
-      removeTaskBindings,
+      allTaskBindingSpec,
+      markDirty,
+      taskBindingSpec,
+      updateTaskBindingSpec,
       selectTopPaneEntity,
       selectedTaskBindingId,
       setSelectedEdge,

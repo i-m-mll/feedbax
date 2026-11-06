@@ -48,6 +48,16 @@ const components: ComponentDefinition[] = [
     output_ports: ['output'],
     icon: 'GitMerge',
     default_params: { n_inputs: 2 },
+    dynamic_port_policy: {
+      count_param: 'n_inputs',
+      count_mode: 'integer',
+      direction: 'input',
+      fixed_output_ports: ['output'],
+      generated_name_template: 'in_{index}',
+      auto_resize_minimum: 2,
+      concatenate_to_output: 'output',
+      dynamic_port_type: { dtype: 'vector' },
+    },
     port_types: {
       inputs: { in_0: { dtype: 'vector' }, in_1: { dtype: 'vector' } },
       outputs: { output: { dtype: 'vector' } },
@@ -566,7 +576,7 @@ describe('projectStudioSchema', () => {
 
     const muxOutput = registry.ports.find((port) => port.id === 'port:mux.output:output');
     expect(muxOutput?.value_schema.shape).toEqual([5]);
-    expect(muxOutput?.value_schema.metadata.dimension_source).toBe('mux_concat_inputs');
+    expect(muxOutput?.value_schema.metadata.dimension_source).toBe('concatenated_inputs');
   });
 
   it('derives network size constraints from task muxes and mechanics consumers', () => {
