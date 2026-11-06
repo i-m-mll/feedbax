@@ -4,8 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import UnionType
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Literal,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 import jax.numpy as jnp
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, create_model
@@ -145,7 +155,9 @@ def _field_annotation(parameter: ParamSchema) -> Any:
     elif parameter.type == "float":
         annotation = float
     elif parameter.type == "str":
-        annotation = Annotated[str, BeforeValidator(_dtype_name)] if parameter.name == "dtype" else str
+        annotation = (
+            Annotated[str, BeforeValidator(_dtype_name)] if parameter.name == "dtype" else str
+        )
     elif parameter.type == "enum" and parameter.options:
         annotation = Literal.__getitem__(tuple(parameter.options))
     elif parameter.type == "bounds2d":
@@ -547,6 +559,9 @@ class DeclaredComponent:
     training: ComponentTrainingFacet | None = None
     provenance: str | None = None
     identity: ComponentIdentity | None = None
+    source_paths: tuple[Path | None, ...] = ()
+    owner_class: type | None = None
+    alias_of: str | None = None
 
     @property
     def name(self) -> str:
@@ -757,6 +772,8 @@ def declare_component(
         capabilities=frozenset(capabilities),
         owner=owner or provenance or "local",
     )
+    from .discovery import source_path
+
     return DeclaredComponent(
         declaration=declaration,
         params=param_contract,
@@ -797,6 +814,7 @@ def declare_component(
         training=(ComponentTrainingFacet(True) if trainable_by_default else None),
         provenance=provenance,
         identity=identity,
+        source_paths=(source_path(param_model),) if param_model is not None else (),
     )
 
 
