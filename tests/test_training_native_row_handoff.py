@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import json
 import os
@@ -9,18 +10,28 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import jax.numpy as jnp
 import pytest
+from fastapi.testclient import TestClient
 
 from feedbax.analysis.specs import find_manifest_by_id
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.base import ParentRef
+from feedbax.contracts.manifest import (
+    TrainingRunManifest,
+    load_manifest,
+    spec_payload,
+    write_manifest,
+)
 from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 from feedbax.contracts.run_matrix import (
     RowLowererIdentity,
@@ -67,6 +78,7 @@ from feedbax.orchestration.bundle import (
     ResolvedAssemblyInput,
     RunBundle,
     SchemaArtifactRef,
+    StagedTrainingBinding,
 )
 from feedbax.orchestration.conformance import (
     ConformanceRowArtifacts,
@@ -97,6 +109,7 @@ from feedbax.orchestration.drivers.runpod import (
     runpod_row_workdir,
 )
 from feedbax.orchestration.input_materialization import InputProviderRootBinding
+from feedbax.orchestration import staged_training
 from feedbax.orchestration.state import RowState, RunSetState
 from feedbax.orchestration.stages import (
     OrchestrationStageError,
@@ -123,6 +136,7 @@ from feedbax.training.spec_storage import (
     register_training_run_matrix_compiler,
 )
 from feedbax.orchestration.revision import resolve_feedbax_revision
+from feedbax.web.app import create_app
 
 
 def _lifecycle_registries() -> ApplicationRegistryBundle:
@@ -1072,9 +1086,11 @@ def test_local_shadow_runtime_binding_adds_update_budget_without_mutating_bundle
     assert row.launch.command.count("--update-budget") == 0
 
 
-def test_one_update_shadow_collects_discoverable_run_manifest(
+@pytest.mark.parametrize("winner", ["withdrawal", "admission"])
+def test_staged_training_withdrawal_races_local_admission(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    winner: str,
 ) -> None:
     monkeypatch.setenv(
         "PATH",
@@ -1116,16 +1132,115 @@ def test_one_update_shadow_collects_discoverable_run_manifest(
     )
     bundle = bundle.model_copy(update={"rows": [row]})
 
-    state = StageEngine(
-        bundle=bundle,
-        driver=LocalOrchestrationDriver(
-            cwd=tmp_path,
-            freeze_lines=[],
-            update_budget=1,
+    manifest_root = tmp_path / "staged"
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(manifest_root))
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "studio-orchestration"))
+    provenance = row.execution.row_provenance
+    assert provenance is not None
+    run_id = provenance.planned_run_id
+    generation = "race-generation"
+    receipt_path = write_manifest(
+        TrainingRunManifest(
+            id=run_id,
+            status="pending",
+            training_spec=spec_payload(
+                "TrainingRunSpec",
+                json.loads(Path(row.execution.payload.uri).read_bytes()),
+            ),
+            metadata={"execution_target": "local", "staging_generation": generation},
         ),
-        poll_interval_seconds=0.01,
-    ).run(stop_after_stage="COLLECT")
+        root=manifest_root,
+    )
+    bundle = bundle.model_copy(
+        update={
+            "staged_training": StagedTrainingBinding(
+                manifest_root=str(manifest_root), manifest_id=run_id, generation=generation
+            ),
+        }
+    )
 
+    winner_holds_lock = threading.Event()
+    loser_observed_lock = threading.Event()
+    engine_thread = threading.get_ident()
+    receipt_lock = staged_training.training_receipt_lock
+
+    @contextmanager
+    def contend_for_receipt(root: Path, manifest_id: str) -> Iterator[None]:
+        if loser_observed_lock.is_set():
+            with receipt_lock(root, manifest_id):
+                yield
+            return
+        actor = "admission" if threading.get_ident() == engine_thread else "withdrawal"
+        if actor == winner:
+            with receipt_lock(root, manifest_id):
+                winner_holds_lock.set()
+                assert loser_observed_lock.wait(timeout=10)
+                yield
+            return
+        assert winner_holds_lock.wait(timeout=10)
+        # Confirm actual contention on the receipt lock before letting the winner commit.
+        with receipt_path.with_suffix(".lock").open("a+b") as probe:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        loser_observed_lock.set()
+        with receipt_lock(root, manifest_id):
+            yield
+
+    monkeypatch.setattr(staged_training, "training_receipt_lock", contend_for_receipt)
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[], update_budget=1)
+    provision = Mock(wraps=driver.provision)
+    launch = Mock(wraps=driver.launch_row)
+    monkeypatch.setattr(driver, "provision", provision)
+    monkeypatch.setattr(driver, "launch_row", launch)
+    engine = StageEngine(bundle=bundle, driver=driver, poll_interval_seconds=0.01)
+
+    with TestClient(create_app()) as client, ThreadPoolExecutor(max_workers=1) as threads:
+        request = threads.submit(client.post, f"/api/runs/training/{run_id}/cancel")
+        if winner == "withdrawal":
+            with pytest.raises(
+                staged_training.StagedTrainingConflict, match="no unclaimed pending"
+            ):
+                engine.run(stop_after_stage="COLLECT")
+            response = request.result(timeout=10)
+            assert response.status_code == 200
+            assert response.json()["status"] == "cancelled"
+            assert load_manifest(receipt_path).status == "cancelled"
+            withdrawn = load_manifest(receipt_path)
+            write_manifest(
+                withdrawn.model_copy(
+                    update={
+                        "status": "pending",
+                        "completed_at": None,
+                        "metadata": {**withdrawn.metadata, "staging_generation": "fresh-stage"},
+                    }
+                ),
+                root=manifest_root,
+            )
+            with pytest.raises(
+                staged_training.StagedTrainingConflict, match="different staging generation"
+            ):
+                engine.run(stop_after_stage="COLLECT")
+            provision.assert_not_called()
+            launch.assert_not_called()
+            return
+        state = engine.run(stop_after_stage="COLLECT")
+        response = request.result(timeout=10)
+        listed = client.get("/api/runs/training")
+        assert [(item["id"], item["status"]) for item in listed.json()] == [(run_id, "claimed")]
+
+    assert response.status_code == 409
+    receipt = load_manifest(receipt_path)
+    assert receipt.status == "pending"
+    assert receipt.metadata["staged_attempt"]["run_set_id"] == bundle.run_set_id
+    claimed_bytes = receipt_path.read_bytes()
+    staged_training.claim_staged_training(bundle)
+    with pytest.raises(staged_training.StagedTrainingConflict, match="no unclaimed pending"):
+        staged_training.claim_staged_training(
+            bundle.model_copy(update={"run_set_id": "different-owner"})
+        )
+    assert receipt_path.read_bytes() == claimed_bytes
+    provision.assert_called_once()
+    launch.assert_called_once()
     assert state.stage("COLLECT").status == "completed"
     collected = state.rows[row.row_id].collected_outputs
     assert set(collected) == {

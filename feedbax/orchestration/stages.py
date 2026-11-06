@@ -115,6 +115,11 @@ from feedbax.orchestration.revision import (
     resolve_science_repo_import_revisions,
 )
 from feedbax.orchestration import schedule_eval
+from feedbax.orchestration.staged_training import (
+    StagedTrainingConflict,
+    claim_staged_training,
+    require_staged_training_owner,
+)
 from feedbax.orchestration.state import (
     AcquisitionIntent,
     EmergencyProviderIdentity,
@@ -894,7 +899,7 @@ class StageEngine:
                     self.driver.realized_capabilities.facts.retry is RetrySemantics.DRIVER_GOVERNED
                 )
                 if (
-                    isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded))
+                    isinstance(exc, (_PrimaryExecutorFailure, BudgetExceeded, StagedTrainingConflict))
                     or governed_provision
                     or attempts >= limit
                 ):
@@ -1532,6 +1537,7 @@ class StageEngine:
     def _stage_provision(self, state: RunSetState) -> tuple[RunSetState, Mapping[str, Any]]:
         """Provision RunPod through one durable, budget-governed retry authority."""
         self._assert_provisioning_open(state)
+        claim_staged_training(self.bundle)
         if self.driver.realized_capabilities.facts.retry is not RetrySemantics.DRIVER_GOVERNED:
             outputs = dict(self.driver.provision(self.bundle, state))
             state = state.model_copy(update={"provision_record": outputs, "updated_at": utc_now()})
@@ -3042,6 +3048,7 @@ class StageEngine:
             assert_feedbax_revision_exact(self.bundle.feedbax_revision)
         except FeedbaxRevisionError as exc:
             raise OrchestrationStageError(str(exc)) from exc
+        require_staged_training_owner(self.bundle, row)
         row_state = state.rows[row.row_id].model_copy(
             update={"started_at": state.rows[row.row_id].started_at or utc_now()}
         )

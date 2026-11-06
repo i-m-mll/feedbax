@@ -535,6 +535,21 @@ class ResolvedAssemblyInput(StrictModel):
         return self
 
 
+class StagedTrainingBinding(StrictModel):
+    """One exact staged generation selected for a native local run set."""
+
+    manifest_root: str
+    manifest_id: str = Field(min_length=1)
+    generation: str = Field(min_length=1)
+
+    @field_validator("manifest_root")
+    @classmethod
+    def _require_absolute_root(cls, value: str) -> str:
+        if not Path(value).is_absolute():
+            raise ValueError("staged training manifest_root must be absolute")
+        return value
+
+
 class RunBundle(StrictModel):
     """Schema-versioned orchestration request for a run set.
 
@@ -558,6 +573,7 @@ class RunBundle(StrictModel):
     budget: BudgetPolicy
     resolved_inputs: list[ResolvedAssemblyInput] = Field(default_factory=list)
     content_bindings: list[ContentBinding] = Field(default_factory=list)
+    staged_training: StagedTrainingBinding | None = None
     evaluation_output_preflight: EvaluationOutputPreflightEvidence | None = None
     orchestration_root: str | None = None
     keep_alive: bool = False

@@ -2070,9 +2070,9 @@ function QueueProjectionPanel({
             type="button"
             disabled
             className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 px-2 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
-            title="Cancel uses the per-run lifecycle action when available"
+            title="Withdraw staged runs using the per-run action"
           >
-            Cancel
+            Withdraw
           </button>
         </div>
       </div>
@@ -3194,7 +3194,7 @@ function TrainingRunRow({
                 onLifecycleAction('cancel', row);
               }}
               className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 hover:bg-amber-50 hover:text-amber-700"
-              title="Cancel pending run"
+              title="Withdraw staged run"
             >
               <X className="h-4 w-4" />
             </button>

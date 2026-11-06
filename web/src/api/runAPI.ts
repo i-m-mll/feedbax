@@ -281,7 +281,7 @@ export async function createTrainingRun(name: string): Promise<TrainingRun> {
   }
 }
 
-/** Cancel a pending or running training run. */
+/** Withdraw a staged training run before a runner claims it. */
 export async function cancelTrainingRun(trainingRunId: string): Promise<TrainingRun> {
   const path = `/api/runs/training/${encodeURIComponent(trainingRunId)}/cancel`;
   const result = await requestJson(path, { method: 'POST' });

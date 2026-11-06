@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from feedbax.contracts.base import ParentRef
+from feedbax.contracts.base import ParentRef, utc_now
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     TrainingRunManifest,
@@ -20,6 +20,11 @@ from feedbax.web.api import runs
 from feedbax.web.app import create_app
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.no_silent_substitution_contract]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_live_run_state(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
 
 
 def _training_manifest(run_id: str, status: str) -> TrainingRunManifest:
@@ -393,3 +398,28 @@ def test_pending_training_manifest_delete_removes_only_pending(
     assert deleted.json()["status"] == "pending"
     assert not pending_path.exists()
     assert client.get("/api/runs/training").json() == []
+
+
+@pytest.mark.parametrize("status", ["pending", "running"])
+def test_owned_training_receipt_refuses_withdrawal_and_deletion(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+) -> None:
+    monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path))
+    run_id = "feedbax-training-run:owned"
+    receipt = _training_manifest(run_id, status).model_copy(
+        update={"job_id": "worker-job-1", "started_at": utc_now()}
+    )
+    receipt_path = write_manifest(receipt, root=tmp_path)
+    original_bytes = receipt_path.read_bytes()
+    client = TestClient(create_app())
+    url = f"/api/runs/training/{run_id}"
+
+    withdrawn = client.post(f"{url}/cancel")
+    assert withdrawn.status_code == 409
+    assert receipt_path.read_bytes() == original_bytes
+
+    deleted = client.delete(url)
+    assert deleted.status_code == 409
+    assert receipt_path.read_bytes() == original_bytes
