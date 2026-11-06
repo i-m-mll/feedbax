@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import jax.numpy as jnp
 
+from feedbax._numerics import sqrt_with_zero_grad
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.training import LossTermSpec, ObjectiveSlotSpec, TimeAggregationSpec
 from feedbax.objectives.loss import AbstractLoss, CompositeLoss
@@ -941,12 +942,10 @@ def _metric_values(
     arr = jnp.asarray(values)
     if matrix is not None:
         return _matrix_quadratic_values(arr, matrix, matrix_kind or "dense", path=f"{path}/matrix")
-    if norm in {"squared_l2", "squared"}:
+    if norm in {"squared_l2", "squared", "l2"}:
         return jnp.square(arr)
     if norm in {"l1", "absolute"}:
         return jnp.abs(arr)
-    if norm == "l2":
-        return jnp.square(arr)
     if norm == "huber":
         if huber_delta is None:
             raise ObjectiveLoweringError(f"{path}/metric", "huber metric requires huber_delta")
@@ -1112,10 +1111,8 @@ def _reduce_objective_values(
             tail_fraction=reduction.tail_fraction,
             path=f"{path}/feature",
         )
-        if norm == "l2":
-            arr = jnp.sqrt(arr)
-    elif norm == "l2":
-        arr = jnp.sqrt(arr)
+    if norm == "l2":
+        arr = sqrt_with_zero_grad(arr)
     if arr.ndim >= 2:
         if reduction.time == "final":
             arr = jnp.take(arr, -1, axis=1)

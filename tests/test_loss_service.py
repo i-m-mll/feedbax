@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -619,25 +620,28 @@ class TestExecutableLowering:
         expected = jnp.mean(jnp.mean(jnp.sum(jnp.square(diff), axis=-1), axis=1))
         assert jnp.allclose(value, expected)
 
-    def test_objective_spec_l2_uses_euclidean_feature_norm(self) -> None:
+    def test_objective_spec_l2_has_zero_gradient_at_an_exact_match(self) -> None:
         spec = ObjectiveSpec(
             terms=[
                 TargetStateLossSpec(
                     label="output_l2",
                     selector=_state_selector("state.output"),
-                    target=TargetValueSpec(kind="constant", value=[1.0, 0.0]),
+                    target=TargetValueSpec(kind="constant", value=[0.0, 0.0]),
                     metric={"kind": "l2"},
-                    reduction=ReductionSpec(time="sum", trial="mean", feature="sum"),
+                    reduction=ReductionSpec(time="mean", trial="mean", feature="sum"),
                 )
             ],
         )
-
         lowered = LossService().lower_objective_spec(spec)
-        value = lowered.loss(_runtime_state(), SimpleNamespace(), None).total
 
-        diff = _runtime_state().output - jnp.asarray([1.0, 0.0])
-        expected = jnp.mean(jnp.sum(jnp.sqrt(jnp.sum(jnp.square(diff), axis=-1)), axis=1))
-        assert jnp.allclose(value, expected)
+        def loss(output):
+            return lowered.loss(SimpleNamespace(output=output), SimpleNamespace(), None).total
+
+        value, grad = jax.jit(jax.value_and_grad(loss))(jnp.array([[[3.0, 4.0], [0.0, 0.0]]]))
+
+        assert float(value) == 2.5
+        assert jnp.allclose(grad[0, 0], jnp.array([0.3, 0.4]))
+        assert jnp.array_equal(grad[0, 1], jnp.zeros(2))
 
     def test_objective_spec_lowers_matrix_mask_and_schedule_terms(self) -> None:
         spec = ObjectiveSpec(
