@@ -1188,16 +1188,15 @@ def _portable_value(value: Any) -> Any:
     return value
 
 
-def _route_assembler_params(
+def _route_panel_params(
     assembler_params: Mapping[str, Any],
     *,
     panel_registration: FigureConstructorRegistration,
-    figure_registration: FigureConstructorRegistration,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Route authored assembler params to their owning strict constructor models."""
+    figure_fields: set[str],
+) -> dict[str, Any]:
+    """Extract panel params and reject fields without a single owner."""
     authored_fields = set(assembler_params)
     panel_fields = set(panel_registration.params_model.model_fields)
-    figure_fields = set(figure_registration.params_model.model_fields)
 
     ambiguous_fields = sorted(authored_fields & panel_fields & figure_fields)
     if ambiguous_fields:
@@ -1213,10 +1212,7 @@ def _route_assembler_params(
             f"parameter model: {unknown_fields}"
         )
 
-    return (
-        {key: value for key, value in assembler_params.items() if key in panel_fields},
-        {key: value for key, value in assembler_params.items() if key in figure_fields},
-    )
+    return {key: value for key, value in assembler_params.items() if key in panel_fields}
 
 
 def _panel_grid_declarations(spec: FigureSpec) -> list[str]:
@@ -1349,11 +1345,35 @@ def _build_figures(
         ]
 
     trace_bindings = resolve_figure_trace_bindings(spec, template, registry=registry)
-    panel_constructor_key = assembler_params.get("panel_constructor", "feedbax.comparison_grid")
+    figure_registration = get_figure_constructor(assembler_key, registry=registry, tier="figure")
+    exec_trace.constructor_versions[figure_registration.key] = figure_registration.version
+    figure_fields = set(figure_registration.params_model.model_fields)
+    figure_values = {key: value for key, value in assembler_params.items() if key in figure_fields}
+    colorbar = resolve_figure_colorbar(spec)
+    if colorbar is not None:
+        if "colorbar" not in figure_fields:
+            raise ValueError(
+                "FigureSpec declares a colorbar, which requires a figure assembler that "
+                f"renders one; {assembler_key!r} declares no colorbar parameter"
+            )
+        figure_values["colorbar"] = colorbar
+    if spec.semantic_range_policy is not None:
+        if "semantic_range_policy" not in figure_fields:
+            raise ValueError(
+                "FigureSpec declares semantic_range_policy, which requires a figure "
+                f"assembler that lowers it; {assembler_key!r} declares no such parameter"
+            )
+        figure_values["semantic_range_policy"] = spec.semantic_range_policy
+    figure_params = figure_registration.params(figure_values)
+
+    if "panel_constructor" in figure_fields:
+        panel_constructor_key = getattr(figure_params, "panel_constructor")
+    else:
+        panel_constructor_key = assembler_params.get("panel_constructor", "feedbax.comparison_grid")
     panel_registration = get_figure_constructor(
         panel_constructor_key, registry=registry, tier="panel"
     )
-    exec_trace.constructor_versions[panel_constructor_key] = panel_registration.version
+    exec_trace.constructor_versions[panel_registration.key] = panel_registration.version
     if (
         any(panel.equal_data_aspect is not None for panel in spec.panels)
         and panel_registration.key != "feedbax.comparison_grid"
@@ -1368,8 +1388,6 @@ def _build_figures(
             f"FigureSpec declares {declared}, but panel assembler "
             f"{panel_registration.key!r} does not support it"
         )
-    figure_registration = get_figure_constructor(assembler_key, registry=registry, tier="figure")
-    exec_trace.constructor_versions[assembler_key] = figure_registration.version
     if _declares_data_derived_axis_range(spec) and (
         panel_registration.key != "feedbax.comparison_grid"
         or figure_registration.key != "feedbax.grid_figure"
@@ -1379,40 +1397,21 @@ def _build_figures(
             "feedbax.comparison_grid/feedbax.grid_figure assembler pair; got "
             f"{panel_registration.key!r}/{figure_registration.key!r}"
         )
-    panel_values, figure_values = _route_assembler_params(
+    panel_values = _route_panel_params(
         assembler_params,
         panel_registration=panel_registration,
-        figure_registration=figure_registration,
+        figure_fields=figure_fields,
     )
-    colorbar = resolve_figure_colorbar(spec)
-    if colorbar is not None:
-        if "colorbar" not in figure_registration.params_model.model_fields:
-            raise ValueError(
-                "FigureSpec declares a colorbar, which requires a figure assembler that "
-                f"renders one; {assembler_key!r} declares no colorbar parameter"
-            )
-        if colorbar.placement is not None and (
-            figure_registration.key != "feedbax.grid_figure"
-            or panel_registration.key != "feedbax.comparison_grid"
-        ):
-            raise ValueError(
-                "FigureSpec colorbar panel placement requires the "
-                "feedbax.comparison_grid/feedbax.grid_figure assembler pair; got "
-                f"{panel_registration.key!r}/{figure_registration.key!r}"
-            )
-        figure_values = {**figure_values, "colorbar": colorbar}
-    if spec.semantic_range_policy is not None:
-        if "semantic_range_policy" not in figure_registration.params_model.model_fields:
-            raise ValueError(
-                "FigureSpec declares semantic_range_policy, which requires a figure "
-                f"assembler that lowers it; {assembler_key!r} declares no such parameter"
-            )
-        figure_values = {
-            **figure_values,
-            "semantic_range_policy": spec.semantic_range_policy,
-        }
+    if colorbar is not None and colorbar.placement is not None and (
+        figure_registration.key != "feedbax.grid_figure"
+        or panel_registration.key != "feedbax.comparison_grid"
+    ):
+        raise ValueError(
+            "FigureSpec colorbar panel placement requires the "
+            "feedbax.comparison_grid/feedbax.grid_figure assembler pair; got "
+            f"{panel_registration.key!r}/{figure_registration.key!r}"
+        )
     panel_params = panel_registration.params(panel_values)
-    figure_params = figure_registration.params(figure_values)
 
     if facet_combinations and template.facet_target == "panels":
         panel_contents = _facet_panel_contents(

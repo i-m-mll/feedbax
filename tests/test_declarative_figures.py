@@ -1525,6 +1525,82 @@ def test_equal_data_aspect_rejects_unsupported_assembler(tmp_path: Path, figure_
     assert not (tmp_path / "figures").exists()
 
 
+@pytest.mark.parametrize(
+    ("use_template", "authored_panel", "expected_panel", "expected_width"),
+    [
+        (False, None, "reviewer.alternate_panel", 400),
+        (True, None, "feedbax.comparison_grid", None),
+        (True, "reviewer.explicit_panel", "reviewer.explicit_panel", 600),
+    ],
+    ids=["figure-default", "template-over-default", "authored-over-template"],
+)
+def test_registered_figure_resolves_panel_constructor(
+    tmp_path: Path,
+    figure_registry: FigureRegistry,
+    use_template: bool,
+    authored_panel: str | None,
+    expected_panel: str,
+    expected_width: int | None,
+) -> None:
+    class FigureParams(StrictModel):
+        panel_constructor: str = "reviewer.alternate_panel"
+
+    register_figure_constructor(
+        "reviewer.alternate_panel",
+        tier="panel",
+        constructor=lambda panels, params: go.Figure(layout={"width": 400}),
+        description="Alternate panel renderer.",
+        version="v2",
+        registry=figure_registry,
+    )
+    register_figure_constructor(
+        "reviewer.explicit_panel",
+        tier="panel",
+        constructor=lambda panels, params: go.Figure(layout={"width": 600}),
+        description="Explicit panel renderer.",
+        version="v3",
+        registry=figure_registry,
+    )
+    register_figure_constructor(
+        "reviewer.figure",
+        tier="figure",
+        constructor=lambda fig, panels, params: fig,
+        params_model=FigureParams,
+        description="Whole-figure constructor with a registered panel default.",
+        registry=figure_registry,
+    )
+    register_figure_template(
+        FigureTemplate(
+            name="reviewer.template",
+            description="Template with its own panel selection.",
+            assembler="reviewer.figure",
+            assembler_params={"panel_constructor": "feedbax.comparison_grid"},
+        ),
+        registry=figure_registry,
+    )
+    spec = FigureSpec(
+        name="registered-panel-selection",
+        assembler=None if use_template else "reviewer.figure",
+        template="reviewer.template" if use_template else None,
+        assembler_params={"panel_constructor": authored_panel} if authored_panel else {},
+        panels=[{"name": "main"}],
+    )
+
+    manifest, _ = execute_figure_spec(spec, root=tmp_path, registry=figure_registry)
+    rendered = figure_manifest_plotly_json(manifest)
+
+    registration = get_figure_constructor(expected_panel, tier="panel", registry=figure_registry)
+    assert manifest.constructor_versions == {
+        "reviewer.figure": "v1",
+        expected_panel: registration.version,
+    }
+    assert rendered is not None
+    if expected_width is None:
+        assert "xaxis" in rendered["layout"]
+    else:
+        assert rendered["layout"]["width"] == expected_width
+
+
 def test_panel_only_assembler_params_preserve_constructor_payload(
     tmp_path: Path, figure_registry
 ) -> None:
