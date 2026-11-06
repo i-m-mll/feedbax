@@ -20,10 +20,72 @@ from feedbax.compiler import (
     ResolvedGraph,
     compile_graph,
 )
+from feedbax.compiler.templates import recurrent_node_output_initializer
 from feedbax.component_registry import ComponentRegistry
-from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.runtime.components import Noise
 from feedbax.runtime.graph import Graph, init_state_from_component
+
+
+def test_nested_noise_reset_keys_follow_producers() -> None:
+    gains = ("first", "second")
+    child = GraphSpec(
+        nodes={
+            "noise": ComponentSpec(
+                type="Noise", params={"std": 1.0, "shape": [4]}, output_ports=["output"]
+            ),
+            **{
+                name: ComponentSpec(
+                    type="Gain",
+                    params={"gain": 1.0},
+                    input_ports=["input"],
+                    output_ports=["output"],
+                )
+                for name in gains
+            },
+        },
+        wires=[
+            WireSpec(
+                source_node=name,
+                source_port="output",
+                target_node=name,
+                target_port="input",
+                temporality="recurrent",
+                recurrent_initializer=recurrent_node_output_initializer(
+                    "noise", "output", state_slot="input"
+                ),
+            )
+            for name in gains
+        ],
+        output_ports=list(gains),
+        output_bindings={name: (name, "output") for name in gains},
+    )
+    siblings = ("left", "right")
+    outputs = {f"{node}_{port}": (node, port) for node in siblings for port in gains}
+    spec = GraphSpec(
+        nodes={name: ComponentSpec(type="Subgraph", output_ports=list(gains)) for name in siblings},
+        subgraphs=dict.fromkeys(siblings, child),
+        output_ports=list(outputs),
+        output_bindings=outputs,
+    )
+    graph = compile_graph(
+        GraphDocument(graph=spec), ComponentRegistry(load_user_components=False)
+    ).graph
+    key = jax.random.key(17)
+
+    def rollout():
+        return graph({}, init_state_from_component(graph), key=key, n_steps=2)[0]
+
+    scanned = rollout()
+    assert not jnp.array_equal(scanned["left_first"][0], scanned["right_first"][0])
+    for node in siblings:
+        assert jnp.array_equal(scanned[f"{node}_first"], scanned[f"{node}_second"])
+
+    replayed = rollout()
+    stepped, _, _ = graph.step({}, init_state_from_component(graph), key=key)
+    for name in outputs:
+        assert jnp.array_equal(scanned[name], replayed[name])
+        assert jnp.array_equal(scanned[name][0], stepped[name])
 
 
 @pytest.mark.parametrize("depth", [0, 2])
