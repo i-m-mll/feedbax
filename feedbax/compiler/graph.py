@@ -34,6 +34,7 @@ from feedbax.compiler.resolution import (
     resolve_component_node,
     resolve_graph_parameters,
 )
+from feedbax.compiler.studio_taps import lower_studio_taps
 from feedbax.component_registry.declarations import ComponentParamValidationError
 from feedbax.compiler.serialization import (
     _instantiate_graph,
@@ -347,73 +348,60 @@ def _source_map(
     authored_graph: GraphSpec,
     graph: GraphSpec,
     document_sha256: str,
+    tap_origins: Mapping[tuple[str, str], str],
+    graph_path: str = "/graph",
 ) -> GraphSourceMap:
     authored_wires = [
         wire.model_dump(mode="json", exclude_none=True) for wire in authored_graph.wires
     ]
-    entries = [
-        GraphSourceMapEntry(
-            resolved_path="/graph",
-            authored_path="/graph",
+
+    def entry(resolved_path: str, authored_path: str, *, generated: bool) -> GraphSourceMapEntry:
+        return GraphSourceMapEntry(
+            resolved_path=resolved_path,
+            authored_path=authored_path,
+            origin="compiler-generated" if generated else "authored",
             authored_anchor=SemanticAnchor(
-                semantic_document_sha256=document_sha256,
-                authored_path="/graph",
+                semantic_document_sha256=document_sha256, authored_path=authored_path
             ),
-        ),
-        *(
-            GraphSourceMapEntry(
-                resolved_path=f"/graph/nodes/{_json_pointer_token(node_id)}",
-                authored_path=(
-                    f"/graph/nodes/{_json_pointer_token(node_id)}"
-                    if node_id in authored_graph.nodes
-                    else "/graph"
-                ),
-                origin=("authored" if node_id in authored_graph.nodes else "compiler-generated"),
-                authored_anchor=SemanticAnchor(
-                    semantic_document_sha256=document_sha256,
-                    authored_path=(
-                        f"/graph/nodes/{_json_pointer_token(node_id)}"
-                        if node_id in authored_graph.nodes
-                        else "/graph"
-                    ),
-                ),
-            )
-            for node_id in sorted(graph.nodes)
-        ),
-        *(
-            GraphSourceMapEntry(
-                resolved_path=f"/graph/wires/{index}",
-                authored_path=(
-                    f"/graph/wires/{authored_wires.index(wire_payload)}"
-                    if wire_payload in authored_wires
-                    else "/graph"
-                ),
-                origin=("authored" if wire_payload in authored_wires else "compiler-generated"),
-                authored_anchor=SemanticAnchor(
-                    semantic_document_sha256=document_sha256,
-                    authored_path=(
-                        f"/graph/wires/{authored_wires.index(wire_payload)}"
-                        if wire_payload in authored_wires
-                        else "/graph"
-                    ),
-                ),
-            )
-            for index, wire_payload in enumerate(
-                wire.model_dump(mode="json", exclude_none=True) for wire in graph.wires
-            )
-        ),
-    ]
+        )
+
+    def tap_path(node_id: str) -> str | None:
+        origin = tap_origins.get((graph_path, node_id))
+        return "/graph" + origin.removeprefix(graph_path) if origin else None
+
+    entries = [entry("/graph", "/graph", generated=False)]
+    for node_id in sorted(graph.nodes):
+        path = f"/graph/nodes/{_json_pointer_token(node_id)}"
+        authored = node_id in authored_graph.nodes
+        entries.append(
+            entry(path, path if authored else tap_path(node_id) or "/graph", generated=not authored)
+        )
+    for index, wire in enumerate(graph.wires):
+        wire_payload = wire.model_dump(mode="json", exclude_none=True)
+        authored_index = (
+            authored_wires.index(wire_payload) if wire_payload in authored_wires else None
+        )
+        authored_path = (
+            f"/graph/wires/{authored_index}"
+            if authored_index is not None
+            else tap_path(wire.source_node) or tap_path(wire.target_node) or "/graph"
+        )
+        entries.append(
+            entry(f"/graph/wires/{index}", authored_path, generated=authored_index is None)
+        )
     for node_id, subgraph in sorted((graph.subgraphs or {}).items()):
         authored_subgraph = (authored_graph.subgraphs or {}).get(node_id)
         if not isinstance(subgraph, GraphSpec) or not isinstance(authored_subgraph, GraphSpec):
             continue
+        prefix = f"/graph/subgraphs/{_json_pointer_token(node_id)}"
         nested_map = _source_map(
             GraphDocument(graph=authored_subgraph),
             authored_subgraph,
             subgraph,
             document_sha256,
+            tap_origins,
+            graph_path + prefix.removeprefix("/graph"),
         )
-        prefix = f"/graph/subgraphs/{_json_pointer_token(node_id)}"
         for entry in nested_map.entries:
             authored_path = prefix + entry.authored_path.removeprefix("/graph")
             entries.append(
@@ -563,11 +551,12 @@ def compile_graph(
         document_sha256=document_sha256,
     )
 
-    def lower_graph() -> GraphSpec:
-        lowered = materialize_additive_channel_adapters(typed_graph)
+    def lower_graph() -> tuple[GraphSpec, dict[tuple[str, str], str]]:
+        lowered, tap_origins = lower_studio_taps(typed_graph)
+        lowered = materialize_additive_channel_adapters(lowered)
         if conflict := next(graph_input_driver_conflicts(lowered, "/graph"), None):
             raise conflict
-        return _map_component_nodes(
+        graph = _map_component_nodes(
             lowered,
             lambda node_id, node: (
                 resolve_component_node(node, component_registry)
@@ -577,13 +566,15 @@ def compile_graph(
             document_sha256=document_sha256,
         )
 
-    graph = _compile_phase(
+        return graph, tap_origins
+
+    graph, tap_origins = _compile_phase(
         phase=CompilerPhase.COMPOSITE_AND_ACAUSAL_LOWERING,
         code="compiler.composite_and_acausal_lowering.invalid_lowering",
         anchor=graph_anchor,
         document_sha256=document_sha256,
         expected="every authored lowering rule produces one valid literal semantic graph",
-        action="correct the authored composite, acausal, or channel-adapter declaration",
+        action="correct the authored composite, acausal, channel-adapter, or intervention tap declaration",
         operation=lower_graph,
     )
 
@@ -646,7 +637,7 @@ def compile_graph(
     )
 
     def emit_resolved_ir() -> tuple[ResolvedGraph, CompilationRecord]:
-        source_map = _source_map(document, authored_graph, graph, document_sha256)
+        source_map = _source_map(document, authored_graph, graph, document_sha256, tap_origins)
         key_schedule = GraphKeySchedule(schedule_id=KEY_SCHEDULE_ID, node_order=node_order)
         resolved_sha256 = _resolved_digest(graph, source_map, key_schedule)
         resolved = ResolvedGraph(
