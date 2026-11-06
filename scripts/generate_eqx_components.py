@@ -527,6 +527,7 @@ import equinox as eqx
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
+from feedbax._checkpoint_errors import _LegacyWrapperLayoutError
 from feedbax.runtime.components import identity_activation, relu
 from feedbax.runtime.graph import Component
 
@@ -568,10 +569,6 @@ EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
     )
 
     helpers = '''
-
-class _LegacyWrapperLayoutError(ValueError):
-    """Pickled wrapper state predates layer-owned trainable parameters."""
-
 
 _PickleState = dict[str, Any] | tuple[dict[str, Any] | None, dict[str, Any]]
 

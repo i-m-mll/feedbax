@@ -40,6 +40,12 @@ import jax.random as jr
 import jax.tree as jt
 import numpy as np
 from equinox import AbstractVar, Module, field
+from feedbax._delayed_reaches import (
+    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
+    DEFAULT_DELAYED_MOVE_EPOCHS,
+    delayed_center_out_reaches_params,
+    delayed_timing_issues,
+)
 from feedbax._vendor.jax_cookbook import is_module, is_none, is_type
 from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
@@ -64,12 +70,6 @@ from feedbax.objectives.loss import (
 )
 from feedbax.runtime.batch import BatchInfo
 from feedbax.runtime.state import CartesianState, StateT
-from feedbax.tasks._delayed_timing import (
-    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
-    DEFAULT_DELAYED_MOVE_EPOCHS,
-    delayed_timing_issues,
-)
-from feedbax.tasks.presets import delayed_center_out_reaches_params
 
 if TYPE_CHECKING:
     import plotly.graph_objs as go  # pyright: ignore [reportMissingTypeStubs]

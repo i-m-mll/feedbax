@@ -41,7 +41,7 @@ from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from feedbax._atomic import write_bytes_atomic as _write_bytes_atomic
-from feedbax.components.equinox import _LegacyWrapperLayoutError
+from feedbax._checkpoint_errors import _LegacyWrapperLayoutError
 from feedbax._secure_fs import (
     SecurePathRigor,
     directory_open_flags,

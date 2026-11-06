@@ -9,6 +9,12 @@ import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
 
+from feedbax._delayed_reaches import (
+    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
+    DEFAULT_DELAYED_MOVE_EPOCHS,
+    apply_delayed_reaches_preset,
+    delayed_reaches_n_steps_from_params,
+)
 from feedbax.models.feedback import FeedbackChannels
 from feedbax.compiler.solver_config import DEFAULT_PLANAR_SOLVER, resolve_acausal_solver
 from feedbax.runtime.channel import Channel, ChannelSpec
@@ -47,11 +53,6 @@ from feedbax.components.penzai import (
 from feedbax.contracts.acausal_interface import MUSCLE_EXCITATION_PAYLOAD
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
-from feedbax.tasks._delayed_timing import (
-    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
-    DEFAULT_DELAYED_MOVE_EPOCHS,
-)
-from feedbax.tasks.presets import apply_delayed_reaches_preset, delayed_reaches_n_steps_from_params
 
 
 _HIDDEN_TYPES: dict[str, Callable[..., eqx.Module]] = {

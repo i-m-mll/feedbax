@@ -28,7 +28,7 @@ from feedbax.acausal.base import (
     AcausalPort,
     Domain,
 )
-from feedbax.contracts.acausal_interface import TORQUE_PAYLOAD
+from feedbax._acausal_payload import TORQUE_PAYLOAD
 
 
 @dataclass

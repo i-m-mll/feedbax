@@ -20,7 +20,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
-from feedbax.contracts.acausal_interface import SourcePayload
+from feedbax._acausal_payload import SourcePayload
 from feedbax.mechanics.dae import DAEComponent
 from feedbax.acausal.assembly import assemble_system
 from feedbax.acausal.base import (

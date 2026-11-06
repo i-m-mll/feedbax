@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from feedbax.acausal._scalar_mechanics import TRANSLATIONAL
 from feedbax.acausal.base import AcausalElement
-from feedbax.contracts.acausal_interface import FORCE_PAYLOAD, PRESCRIBED_MOTION_PAYLOAD
+from feedbax._acausal_payload import FORCE_PAYLOAD, PRESCRIBED_MOTION_PAYLOAD
 
 
 @dataclass
