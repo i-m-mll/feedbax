@@ -17,6 +17,7 @@ from .declarations import (
     ParameterField,
     declare_component,
 )
+from .discovery import ComponentPack, component
 from .registry import (
     ComponentRegistry,
     ComponentResolution,
@@ -30,6 +31,8 @@ from feedbax.contracts.migrations import ComponentMigration, ComponentMigrationP
 
 __all__ = [
     "ComponentBuilder",
+    "ComponentPack",
+    "component",
     "ComponentMigration",
     "ComponentMigrationPack",
     "ComponentAuthoringFacet",

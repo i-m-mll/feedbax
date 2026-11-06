@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import textwrap
 from pathlib import Path
-from typing import Any
+from types import ModuleType
+from typing import Annotated, Any
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from feedbax.component_registry import (
     ComponentRegistry,
+    ComponentPack,
+    component,
     ComponentMigration,
     ComponentMigrationPack,
     register_cde_templates,
@@ -188,18 +192,31 @@ def test_unsupported_builtin_builder_contract_fails_clearly() -> None:
         build_component("projection", "MomentArmProjection", {}, component_registry=registry)
 
 
+@component("TestEntryPointGain", category="Test")
+class _PluginGain(Component):
+    input_ports = ("input",)
+    output_ports = ("output",)
+    gain: float
+
+    def __init__(self, gain: Annotated[float, Field(gt=0)] = 2.0):
+        self.gain = gain
+
+    def __call__(self, inputs, state, *, key):
+        return {"output": self.gain * inputs["input"]}, state
+
+
+class _UnmarkedPluginGain(_PluginGain):
+    pass
+
+
 def test_entry_point_component_registration_records_package_provenance() -> None:
     def registrar(context) -> None:
         component_registry = context.registry(COMPONENTS)
-        component_registry.register_component_type(
-            "TestEntryPointGain",
-            lambda params: Gain(gain=float(params.get("gain", 1.0))),
-            category="Test",
-            param_schema=[{"name": "gain", "type": "float", "default": 2.0}],
-            input_ports=["input"],
-            output_ports=["output"],
-            provenance="package:feedbax-test-plugin",
-        )
+        reexport = ModuleType("feedbax_test_plugin.reexport")
+        reexport.PluginGain = _PluginGain
+        assert not component_registry.discover_modules(reexport).components
+        pack = component_registry.discover_modules(sys.modules[__name__])
+        component_registry.ingest(pack, provenance="package:feedbax-test-plugin")
 
     class FakeDist:
         metadata = {"Name": "feedbax-test-plugin"}
@@ -239,8 +256,30 @@ def test_entry_point_component_registration_records_package_provenance() -> None
     assert definition.provenance == "package:feedbax-test-plugin"
 
     graph = spec_to_graph(_single_node_spec("TestEntryPointGain", {"gain": 5.0}), registry)
-    assert isinstance(graph.nodes["component"], Gain)
-    assert graph.nodes["component"].gain == 5.0
+    leaf = graph.nodes["component"]
+    assert leaf({"input": 3.0}, None, key=None)[0] == {"output": 15.0}
+    assert graph_to_spec(graph, registry).nodes["component"].params == {"gain": 5.0}
+    assert registry.serialize_component(_PluginGain())[0] == "TestEntryPointGain"
+    root = Path(__file__).resolve().parents[1]
+    assert registry.component_source_paths(root)["TestEntryPointGain"] == (
+        "tests/test_component_registration.py",
+    )
+    with pytest.raises(ValueError, match="greater than 0"):
+        registry.resolve_component_spec("TestEntryPointGain", {"gain": 0.0})
+
+
+def test_component_pack_collision_leaves_no_partial_registration() -> None:
+    @component("Gain")
+    class CollidingGain(_PluginGain):
+        pass
+
+    registry = ComponentRegistry(load_user_components=False)
+    with pytest.raises(ValueError, match="component type already registered: 'Gain'"):
+        registry.ingest(ComponentPack(components=(_PluginGain, CollidingGain)))
+
+    assert registry.get("TestEntryPointGain") is None
+    registry.ingest(ComponentPack(components=(_PluginGain,)))
+    assert registry.get("TestEntryPointGain") is not None
 
 
 def test_user_component_file_registers_palette_metadata_and_builder(

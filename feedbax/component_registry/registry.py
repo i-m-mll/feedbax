@@ -34,7 +34,6 @@ from feedbax.contracts.representation import (
     validate_representation_against_component,
 )
 
-from .builtins import register_builtin_components
 from .declarations import (
     ComponentBuilder,
     ComponentParamExtractor,
@@ -42,6 +41,7 @@ from .declarations import (
     OutputPrototypeFn,
     declare_component,
 )
+from .discovery import ComponentPack, compile_owner, discover_modules, source_path
 
 
 logger = logging.getLogger(__name__)
@@ -90,6 +90,20 @@ def _current_provenance() -> str | None:
     return _REGISTRATION_PROVENANCE[-1] if _REGISTRATION_PROVENANCE else None
 
 
+class _BuiltinBatch:
+    """Collect the existing builtin producers into one ingestion transaction."""
+
+    def __init__(self) -> None:
+        self.components: list[DeclaredComponent] = []
+        self.migrations: list[ComponentMigration] = []
+
+    def register(self, meta: DeclaredComponent) -> None:
+        self.components.append(meta)
+
+    def register_migration(self, migration: ComponentMigration) -> None:
+        self.migrations.append(migration)
+
+
 class ComponentRegistry:
     def __init__(
         self,
@@ -108,8 +122,20 @@ class ComponentRegistry:
             self.load_user_components(Path.home() / ".feedbax" / "components")
 
     def _register_builtins(self) -> None:
-        with _registration_provenance("feedbax"):
-            register_builtin_components(self)
+        from .builtins import register_builtin_components
+
+        batch = _BuiltinBatch()
+        register_builtin_components(batch)
+        self.ingest(
+            ComponentPack(
+                tuple(batch.components),
+                tuple(batch.migrations),
+                sources=(Path(__file__).with_name("builtins.py").resolve(),),
+            ),
+            provenance="feedbax",
+        )
+
+    discover_modules = staticmethod(discover_modules)
 
     def register_template_pack(
         self,
@@ -123,16 +149,112 @@ class ComponentRegistry:
             template_pack(self)
 
     def register(self, meta: DeclaredComponent) -> None:
+        self.ingest(ComponentPack(components=(meta,)))
+
+    def ingest(self, pack: ComponentPack, *, provenance: str | None = None) -> None:
+        """Compile and validate a complete batch before publishing its entries."""
         self._require_mutable()
-        meta = deepcopy(meta)
-        if meta.provenance is None:
-            meta = replace(meta, provenance=_current_provenance())
-        meta = self._complete_identity(meta)
-        meta = self._with_migrations(meta, self._migration_infos_for_target(meta.name))
-        self._validate_representation(meta)
-        if meta.name in self._components:
-            raise ValueError(f"component type already registered: {meta.name!r}")
-        self._components[meta.name] = meta
+        components = dict(self._components)
+        migrations = dict(self._component_migrations)
+        migration_owners = {owner: set(types) for owner, types in self._migration_owners.items()}
+        edges = list(pack.migrations)
+        for definition in pack.components:
+            definition_sources: tuple[Path | None, ...] = ()
+            owner_class = None
+            if isinstance(definition, type):
+                owner_class = definition
+                definitions, definition_sources, owner_edges = compile_owner(definition)
+                edges.extend(owner_edges)
+            elif isinstance(definition, DeclaredComponent):
+                definitions = (definition,)
+            else:
+                definitions = (definition(),)
+                definition_sources = (source_path(definition),)
+            for declared in definitions:
+                meta = deepcopy(declared)
+                if meta.provenance is None:
+                    origin = provenance or _current_provenance()
+                    if origin is None and owner_class is not None:
+                        origin = f"package:{owner_class.__module__.split('.')[0]}"
+                    meta = replace(meta, provenance=origin)
+                meta = self._complete_identity(meta)
+                component_sources = (
+                    *definition_sources,
+                    *pack.sources,
+                    *_declared_source_paths(meta),
+                )
+                if meta.name in components:
+                    existing = components[meta.name]
+                    raise ValueError(
+                        f"component type already registered: {meta.name!r} "
+                        f"({existing.owner!r} from {existing.source_paths!r}; "
+                        f"{meta.owner!r} from {component_sources!r})"
+                    )
+                runtime_type = meta.params.runtime_type
+                if runtime_type is not None and meta.alias_of is None:
+                    conflict = next(
+                        (
+                            item
+                            for item in components.values()
+                            if item.alias_of is None
+                            and item.params.runtime_type is runtime_type
+                            and (meta.owner_class is not None or item.owner_class is not None)
+                        ),
+                        None,
+                    )
+                    if conflict is not None:
+                        raise ValueError(
+                            f"component runtime type already registered: {runtime_type!r} "
+                            f"({conflict.name!r}, {meta.name!r})"
+                        )
+                self._validate_representation(meta)
+                components[meta.name] = replace(meta, source_paths=component_sources)
+        changed_targets = set(components) - self._components.keys()
+        for migration in edges:
+            if not migration.owner:
+                raise ValueError("Component migration owner must be non-empty")
+            key = (migration.source_type, migration.source_param_schema_version)
+            if key in migrations:
+                existing = migrations[key]
+                raise ValueError(
+                    "Component migration already registered: "
+                    f"{key!r} ({existing.migration_id!r}, {migration.migration_id!r})"
+                )
+            migrations[key] = migration
+            migration_owners.setdefault(migration.owner, set()).add(migration.source_type)
+            changed_targets.add(migration.target_type)
+        for target in changed_targets & components.keys():
+            components[target] = self._with_migrations(
+                components[target], self._migration_infos_for_target(target, migrations.values())
+            )
+        self._components = components
+        self._component_migrations = migrations
+        self._migration_owners = migration_owners
+
+    def component_source_paths(self, root: Path) -> dict[str, tuple[str, ...] | None]:
+        """Project owner sources inside a checkout; None denotes incomplete coverage."""
+        root = root.resolve()
+        result: dict[str, tuple[str, ...] | None] = {}
+        migration_sources: dict[str, list[Path | None]] = {}
+        for edge in self._component_migrations.values():
+            if edge.migrate_params is not None:
+                origin = source_path(edge.migrate_params)
+                for type_id in {edge.source_type, edge.target_type}:
+                    migration_sources.setdefault(type_id, []).append(origin)
+        for name, meta in sorted(self._components.items()):
+            sources = (*meta.source_paths, *migration_sources.get(name, ()))
+            if not sources or any(
+                path is None or not path.is_absolute() or not path.is_relative_to(root)
+                for path in sources
+            ):
+                result[name] = None
+            else:
+                result[name] = tuple(
+                    sorted(
+                        {path.relative_to(root).as_posix() for path in sources if path is not None}
+                    )
+                )
+        return result
 
     def seal(self) -> None:
         self._sealed = True
@@ -284,26 +406,10 @@ class ComponentRegistry:
         return registered
 
     def register_migration(self, migration: ComponentMigration) -> None:
-        self._require_mutable()
-        if not migration.owner:
-            raise ValueError("Component migration owner must be non-empty")
-        key = (migration.source_type, migration.source_param_schema_version)
-        if key in self._component_migrations:
-            existing = self._component_migrations[key]
-            raise ValueError(
-                "Component migration already registered: "
-                f"{existing.source_type!r} {existing.source_param_schema_version!r}"
-            )
-        self._component_migrations[key] = migration
-        self._migration_owners.setdefault(migration.owner, set()).add(migration.source_type)
-        target_meta = self._components.get(migration.target_type)
-        if target_meta is not None:
-            self._components[target_meta.name] = self._with_migrations(
-                target_meta, self._migration_infos_for_target(target_meta.name)
-            )
+        self.ingest(ComponentPack(migrations=(migration,)))
 
     def register_migration_pack(self, pack: ComponentMigrationPack) -> None:
-        self._require_mutable()
+        """Register migrations declared by an owning downstream package."""
         if not pack.owner:
             raise ValueError("Component migration pack owner must be non-empty")
         for migration in pack.migrations:
@@ -312,7 +418,7 @@ class ComponentRegistry:
                     "Component migration pack owner mismatch: "
                     f"pack={pack.owner!r}, migration={migration.owner!r}"
                 )
-            self.register_migration(migration)
+        self.ingest(ComponentPack(migrations=pack.migrations))
 
     def resolve_component_spec(
         self,
@@ -450,8 +556,7 @@ class ComponentRegistry:
             matches = [
                 candidate
                 for candidate in self._components.values()
-                if candidate.params.runtime_type is not None
-                and type(component) is candidate.params.runtime_type
+                if candidate.alias_of is None and type(component) is candidate.params.runtime_type
             ]
             if len(matches) != 1:
                 names = sorted(candidate.name for candidate in matches)
@@ -658,7 +763,11 @@ class ComponentRegistry:
         details = _identity_from_provenance(meta.name, meta.provenance)
         declaration = meta.declaration
         if declaration.owner == "local" and details.owner is not None:
-            declaration = replace(declaration, owner=details.owner)
+            declaration = replace(
+                declaration,
+                owner=details.owner,
+                schema_id=f"{details.owner}.component.{meta.name}",
+            )
         identity = meta.identity or details.model_copy(update={"owner": declaration.owner})
         return replace(meta, declaration=declaration, identity=identity)
 
@@ -715,11 +824,13 @@ class ComponentRegistry:
                 f"Invalid representation contract for component {meta.name!r}: {formatted}"
             )
 
-    def _migration_infos_for_target(self, target_type: str) -> list[ComponentMigrationInfo]:
+    def _migration_infos_for_target(
+        self, target_type: str, migrations: Iterable[ComponentMigration]
+    ) -> list[ComponentMigrationInfo]:
         return [
             self._migration_info(migration)
             for migration in sorted(
-                self._component_migrations.values(),
+                migrations,
                 key=lambda item: (
                     item.owner,
                     item.source_type,
@@ -762,6 +873,27 @@ class ComponentRegistry:
             any(meta.owner == owner for meta in self._components.values())
             or owner in self._migration_owners
         )
+
+
+def _declared_source_paths(meta: DeclaredComponent) -> tuple[Path | None, ...]:
+    params = meta.params
+    rules = (
+        params.runtime_type,
+        params.builder,
+        params.extractor,
+        params.projection,
+        meta.output_prototype_fn,
+        *(group for group, _ in params.constructor.groups.values()),
+        *(
+            ()
+            if meta.compiler.input_prototype_parameter is None
+            else (meta.compiler.input_prototype_parameter.resolve,)
+        ),
+    )
+    return (
+        *meta.source_paths,
+        *(source_path(rule) for rule in rules if rule is not None),
+    )
 
 
 def _identity_from_provenance(type_id: str, provenance: str | None) -> ComponentIdentity:
