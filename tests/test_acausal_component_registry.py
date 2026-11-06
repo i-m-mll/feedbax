@@ -122,7 +122,7 @@ def test_api_components_include_acausal_elements_and_boundary_adapters() -> None
 
 @pytest.mark.parametrize("element_type", ELEMENT_TYPES)
 def test_acausal_element_param_schemas_match_constructors(element_type: type[Any]) -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     meta = registry.get(element_type.__name__)
 
     assert meta is not None
@@ -259,7 +259,7 @@ def test_nested_acausal_composite_exposes_boundary_port_names() -> None:
 
 
 def test_non_causal_domain_component_cannot_be_built_by_causal_builder() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
 
     with pytest.raises(ValueError, match=ACAUSAL_DOMAIN_ID):
         build_component("mass", "Mass", {}, component_registry=registry)

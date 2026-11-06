@@ -725,100 +725,7 @@ app = create_app()
 
 ### 6.3 Component Registry
 
-```python
-# feedbax/web/services/component_registry.py
-
-from dataclasses import dataclass
-from typing import Type, Callable
-from pathlib import Path
-import importlib.util
-
-from feedbax.runtime.graph import Component
-from feedbax.models.networks import SimpleStagedNetwork
-from feedbax.mechanics import Mechanics
-from feedbax.runtime.channel import FeedbackChannel
-# ... other built-in components
-
-@dataclass
-class ComponentDefinition:
-    """Metadata about a registered component type."""
-    name: str
-    cls: Type[Component]
-    category: str
-    description: str
-    param_schema: list[dict]  # Parameter definitions
-    input_ports: tuple[str, ...]
-    output_ports: tuple[str, ...]
-    icon: str = "box"  # Lucide icon name
-
-
-class ComponentRegistry:
-    """Registry of available component types."""
-
-    def __init__(self):
-        self._components: dict[str, ComponentDefinition] = {}
-        self._register_builtins()
-
-    def _register_builtins(self):
-        """Register all built-in Feedbax components."""
-        self.register(
-            name="SimpleStagedNetwork",
-            cls=SimpleStagedNetwork,
-            category="Neural Networks",
-            description="Recurrent neural network with encoder/decoder stages",
-            param_schema=[
-                {"name": "hidden_size", "type": "int", "default": 100, "min": 1, "required": True},
-                {"name": "input_size", "type": "int", "default": 6, "min": 1, "required": True},
-                {"name": "output_size", "type": "int", "default": 2, "min": 1, "required": True},
-                {"name": "hidden_type", "type": "enum", "options": ["GRUCell", "LSTMCell", "Linear"], "default": "GRUCell"},
-                {"name": "out_nonlinearity", "type": "enum", "options": ["tanh", "relu", "identity"], "default": "tanh"},
-                # ... more params
-            ],
-        )
-        # ... register other built-ins
-
-    def register(self, name: str, cls: Type[Component], **kwargs):
-        """Register a component type."""
-        self._components[name] = ComponentDefinition(
-            name=name,
-            cls=cls,
-            input_ports=cls.input_ports,
-            output_ports=cls.output_ports,
-            **kwargs
-        )
-
-    def load_user_components(self, path: Path):
-        """Load user-defined components from a directory."""
-        if not path.exists():
-            return
-
-        for py_file in path.glob("*.py"):
-            spec = importlib.util.spec_from_file_location(py_file.stem, py_file)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-
-            # Look for Component subclasses with @register_component decorator
-            for name in dir(module):
-                obj = getattr(module, name)
-                if (isinstance(obj, type) and
-                    issubclass(obj, Component) and
-                    obj is not Component and
-                    hasattr(obj, '_feedbax_component_meta')):
-                    meta = obj._feedbax_component_meta
-                    self.register(name=meta.get('name', name), cls=obj, **meta)
-
-    def get(self, name: str) -> ComponentDefinition | None:
-        return self._components.get(name)
-
-    def list_all(self) -> list[ComponentDefinition]:
-        return list(self._components.values())
-
-    def list_by_category(self) -> dict[str, list[ComponentDefinition]]:
-        by_category: dict[str, list[ComponentDefinition]] = {}
-        for comp in self._components.values():
-            by_category.setdefault(comp.category, []).append(comp)
-        return by_category
-```
+Studio reads catalogue entries from the application’s `ComponentRegistry`. Built-in components and plugin packs use `ComponentRegistry.ingest`. The API projects the same owner definitions that the graph compiler uses.
 
 ### 6.4 Training Service
 
@@ -1505,42 +1412,29 @@ function ComponentCard({ component }: { component: ComponentDefinition }) {
 
 ### 9.3 Custom Component Definition
 
-User-defined components live in `~/.feedbax/components/`:
+A protocol 2 plugin can opt a concrete component into Studio through its existing `feedbax.plugins` entry point.
 
 ```python
-# ~/.feedbax/components/my_custom_network.py
+from feedbax import Component
+from feedbax.component_registry import ComponentPack, component
+from feedbax.plugins import COMPONENTS, RegistrationContext
 
-from feedbax.runtime.graph import Component
-from feedbax.web.decorators import register_component
-from equinox.nn import State
-from jaxtyping import PRNGKeyArray, PyTree
 
-@register_component(
-    name="MyCustomNetwork",
-    category="Custom",
-    description="A custom neural network with special architecture",
-    param_schema=[
-        {"name": "layer_sizes", "type": "array", "default": [64, 64], "required": True},
-        {"name": "activation", "type": "enum", "options": ["relu", "tanh", "gelu"], "default": "relu"},
-    ],
-)
-class MyCustomNetwork(Component):
+@component("example.Scale", category="Custom")
+class Scale(Component):
     input_ports = ("input",)
-    output_ports = ("output", "hidden")
+    output_ports = ("output",)
+    factor: float
 
-    layer_sizes: list[int]
-    activation: str
-    # ... internal weights, etc.
+    def __init__(self, factor: float = 1.0):
+        self.factor = factor
 
-    def __call__(
-        self,
-        inputs: dict[str, PyTree],
-        state: State,
-        *,
-        key: PRNGKeyArray,
-    ) -> tuple[dict[str, PyTree], State]:
-        # Implementation...
-        pass
+    def __call__(self, inputs, state, *, key):
+        return {"output": self.factor * inputs["input"]}, state
+
+
+def register(context: RegistrationContext) -> None:
+    context.registry(COMPONENTS).ingest(ComponentPack(components=(Scale,)))
 ```
 
 ### 9.4 Component Properties Panel

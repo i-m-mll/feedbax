@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry
 from feedbax.mechanics.muscle_graph import (
@@ -12,6 +14,10 @@ from feedbax.mechanics.muscle_graph import (
 from feedbax.mechanics.muscles.relu_muscle import ReluMuscle
 from feedbax.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
 from feedbax.runtime.components import MatMul
+
+
+if TYPE_CHECKING:
+    from feedbax.component_registry.declarations import DeclaredComponent
 
 
 def arm_6muscle_rigid_tendon_graph(
@@ -177,4 +183,127 @@ def _muscle_force_graph(
             "forces": ("forces", "output"),
             "activations": ("activations", "output"),
         },
+    )
+
+
+def arm_6muscle_rigid_tendon_template_definition() -> DeclaredComponent:
+    from feedbax.component_registry.declarations import ParameterField, declare_component
+    from feedbax.contracts.component import PortType, PortTypeSpec
+    from feedbax.mechanics.muscle_representation import (
+        _default_two_link_muscle_path_geometry,
+        _two_link_muscle_representation,
+    )
+
+    graph = arm_6muscle_rigid_tendon_graph()
+    return declare_component(
+        name="Arm6MuscleRigidTendon",
+        template_graph=graph,
+        template_id="feedbax.templates.mechanics.arm_6muscle_rigid_tendon",
+        template_kind="executable",
+        category="Mechanics",
+        description="6-muscle arm with Thelen rigid tendon.",
+        parameter_fields=[
+            ParameterField(
+                name="dt",
+                type="float",
+                default=0.01,
+                min=0.001,
+                required=True,
+            ),
+            ParameterField(
+                name="max_isometric_force",
+                type="float",
+                default=500.0,
+                min=0.0,
+                required=False,
+            ),
+            ParameterField(
+                name="optimal_muscle_length",
+                type="float",
+                default=0.1,
+                min=0.001,
+                required=False,
+            ),
+            ParameterField(
+                name="tendon_slack_length",
+                type="float",
+                default=0.1,
+                min=0.0,
+                required=False,
+            ),
+        ],
+        input_ports=graph.input_ports,
+        output_ports=graph.output_ports,
+        icon="Activity",
+        is_composite=True,
+        port_types=PortTypeSpec(
+            inputs={
+                "excitation": PortType(dtype="vector"),
+                "angles": PortType(dtype="vector"),
+                "angular_velocities": PortType(dtype="vector"),
+            },
+            outputs={
+                "torques": PortType(dtype="vector"),
+                "forces": PortType(dtype="vector"),
+                "activations": PortType(dtype="vector"),
+            },
+        ),
+        representation=_two_link_muscle_representation(
+            source="feedbax.mechanics.geometry.TwoLinkArmMuscleGeometry.default_six_muscle",
+            composite=True,
+            muscle_path_geometry=_default_two_link_muscle_path_geometry(),
+            frame_input_port="angles",
+        ),
+    )
+
+
+def point_mass_8muscle_relu_template_definition() -> DeclaredComponent:
+    from feedbax.component_registry.declarations import ParameterField, declare_component
+    from feedbax.contracts.component import PortType, PortTypeSpec
+    from feedbax.mechanics.muscle_representation import _point_mass_muscle_representation
+
+    graph = point_mass_8muscle_relu_graph()
+    return declare_component(
+        name="PointMass8MuscleRelu",
+        template_graph=graph,
+        template_id="feedbax.templates.mechanics.point_mass_8muscle_relu",
+        template_kind="executable",
+        category="Mechanics",
+        description="8-muscle point mass with ReLU actuators.",
+        parameter_fields=[
+            ParameterField(
+                name="n_pairs",
+                type="int",
+                default=4,
+                min=1,
+                required=False,
+            ),
+            ParameterField(
+                name="max_isometric_force",
+                type="float",
+                default=500.0,
+                min=0.0,
+                required=False,
+            ),
+            ParameterField(
+                name="dt",
+                type="float",
+                default=0.01,
+                min=0.001,
+                required=True,
+            ),
+        ],
+        input_ports=graph.input_ports,
+        output_ports=graph.output_ports,
+        icon="Activity",
+        is_composite=True,
+        port_types=PortTypeSpec(
+            inputs={"excitation": PortType(dtype="vector")},
+            outputs={
+                "force_2d": PortType(dtype="vector"),
+                "forces": PortType(dtype="vector"),
+                "activations": PortType(dtype="vector"),
+            },
+        ),
+        representation=_point_mass_muscle_representation(),
     )

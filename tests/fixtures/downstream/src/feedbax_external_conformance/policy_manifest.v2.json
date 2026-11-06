@@ -4,8 +4,8 @@
   "policy_id": "feedbax.downstream-interface-stability.v1",
   "effective_release": "0.2.0",
   "protocol": {
-    "current": 1,
-    "minimum": 1
+    "current": 2,
+    "minimum": 2
   },
   "guaranteed_rows": [
     {
@@ -509,7 +509,8 @@
               "ComponentResolution",
               "ComponentRegistry",
               "ComponentMigration",
-              "ComponentMigrationPack"
+              "ComponentPack",
+              "component"
             ]
           }
         ],
@@ -807,7 +808,7 @@
       ],
       "schemas": {
         "current": [
-          "feedbax.external_conformance.result.v14"
+          "feedbax.external_conformance.result.v15"
         ],
         "migrated": [
           "feedbax.external_conformance.result.v1 to v2 normalization before rejection"

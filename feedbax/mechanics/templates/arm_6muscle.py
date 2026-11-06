@@ -31,5 +31,5 @@ def Arm6MuscleRigidTendon(
     )
     return compile_graph(
         GraphDocument(graph=spec),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
     ).graph

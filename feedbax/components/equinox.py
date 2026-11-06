@@ -9,14 +9,21 @@ To regenerate:
 
 from __future__ import annotations
 
-from collections.abc import Hashable
-from typing import Any, Callable, Literal, Optional, Sequence, Union
+from collections.abc import Hashable, Mapping
+from functools import partial
+from pathlib import Path
+from typing import Annotated, Any, Callable, Literal, Optional, Sequence, Union
 
 import equinox as eqx
+import jax
+import jax.numpy as jnp
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from pydantic import BaseModel, Field
 
 from feedbax._checkpoint_errors import _LegacyWrapperLayoutError
+from feedbax.component_registry import component
+from feedbax.component_registry.declarations import MissingPrototypeInput
 from feedbax.runtime.components import identity_activation, relu
 from feedbax.runtime.graph import Component
 
@@ -24,6 +31,7 @@ from feedbax.runtime.graph import Component
 EQUINOX_WRAPPER_SCHEMA_VERSION = "feedbax.equinox_wrappers.v3"
 EQUINOX_WRAPPER_GENERATOR = "scripts/generate_eqx_components.py"
 EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
+_GENERATOR_SOURCE = Path(__file__).resolve().parents[2] / EQUINOX_WRAPPER_GENERATOR
 
 
 __all__ = [
@@ -220,6 +228,52 @@ EQUINOX_WRAPPER_CONTRACTS = {
 }
 
 
+_SpatialDimensions = list[int]
+_PaddingPair = Annotated[list[int], Field(min_length=2, max_length=2)]
+_PaddingPairs = list[_PaddingPair]
+
+
+def _spatial_tuple(value: Any) -> Any:
+    return tuple(map(_spatial_tuple, value)) if isinstance(value, list) else value
+
+
+def _owner_options(
+    cls: type[Component],
+    *,
+    has_key: bool = False,
+    spatial_settings: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    def build(params: Mapping[str, Any]) -> Component:
+        settings = dict(params)
+        for name in spatial_settings:
+            if name in settings:
+                settings[name] = _spatial_tuple(settings[name])
+        return cls(**settings)
+
+    def output_prototype(params: Mapping[str, Any], inputs: Mapping[str, Any]) -> dict[str, Any]:
+        missing = set(cls.input_ports) - inputs.keys()
+        if missing:
+            raise MissingPrototypeInput(f"Missing input prototypes for {sorted(missing)}")
+        settings = {name: value for name, value in params.items() if name != "trainable"}
+        key = jax.random.key(0)
+        if has_key:
+            settings["key"] = key
+
+        def forward(values):
+            layer, state = eqx.nn.make_with_state(build)(settings)
+            return layer(values, state, key=key)[0]
+
+        return jax.eval_shape(forward, dict(inputs))
+
+    options = {
+        "output_prototype_fn": output_prototype,
+        "prototype_depends_on_connected_inputs": True,
+    }
+    if spatial_settings:
+        options.update(builder=build, override_reason="Convert JSON dimensions to Equinox tuples")
+    return options
+
+
 _PickleState = dict[str, Any] | tuple[dict[str, Any] | None, dict[str, Any]]
 
 
@@ -319,6 +373,23 @@ def _call_multihead_attention_layer(
 # ============================================================
 
 
+class _LinearParams(BaseModel):
+    in_features: Union[int, Literal["scalar"]]
+    out_features: Union[int, Literal["scalar"]]
+    use_bias: bool = True
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.Linear",
+    category="Equinox",
+    configure=partial(_owner_options, has_key=True),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_LinearParams,
+    build_context_fields=("key",),
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class Linear(Component):
     """Linear transformation layer."""
 
@@ -359,6 +430,10 @@ class Linear(Component):
             key=key,
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -369,6 +444,12 @@ class Linear(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+@component(
+    "feedbax.equinox.Identity",
+    category="Equinox",
+    configure=_owner_options,
+    sources=(_GENERATOR_SOURCE,),
+)
 class Identity(Component):
     """Identity layer (passes input through unchanged)."""
 
@@ -485,6 +566,33 @@ class MLP(Component):
 # ============================================================
 
 
+class _Conv1dParams(BaseModel):
+    in_channels: int
+    out_channels: int
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = 1
+    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = 0
+    dilation: Union[int, _SpatialDimensions] = 1
+    groups: int = 1
+    use_bias: bool = True
+    padding_mode: str = "ZEROS"
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.Conv1d",
+    category="Equinox",
+    configure=partial(
+        _owner_options,
+        spatial_settings=("kernel_size", "stride", "padding", "dilation"),
+        has_key=True,
+    ),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_Conv1dParams,
+    build_context_fields=("key",),
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class Conv1d(Component):
     """1D convolution layer."""
 
@@ -549,6 +657,10 @@ class Conv1d(Component):
             key=key,
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -559,6 +671,33 @@ class Conv1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _Conv2dParams(BaseModel):
+    in_channels: int
+    out_channels: int
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = [1, 1]
+    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = [0, 0]
+    dilation: Union[int, _SpatialDimensions] = [1, 1]
+    groups: int = 1
+    use_bias: bool = True
+    padding_mode: str = "ZEROS"
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.Conv2d",
+    category="Equinox",
+    configure=partial(
+        _owner_options,
+        spatial_settings=("kernel_size", "stride", "padding", "dilation"),
+        has_key=True,
+    ),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_Conv2dParams,
+    build_context_fields=("key",),
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class Conv2d(Component):
     """2D convolution layer."""
 
@@ -623,6 +762,10 @@ class Conv2d(Component):
             key=key,
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -633,6 +776,33 @@ class Conv2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _Conv3dParams(BaseModel):
+    in_channels: int
+    out_channels: int
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = [1, 1, 1]
+    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = [0, 0, 0]
+    dilation: Union[int, _SpatialDimensions] = [1, 1, 1]
+    groups: int = 1
+    use_bias: bool = True
+    padding_mode: str = "ZEROS"
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.Conv3d",
+    category="Equinox",
+    configure=partial(
+        _owner_options,
+        spatial_settings=("kernel_size", "stride", "padding", "dilation"),
+        has_key=True,
+    ),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_Conv3dParams,
+    build_context_fields=("key",),
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class Conv3d(Component):
     """3D convolution layer."""
 
@@ -697,6 +867,10 @@ class Conv3d(Component):
             key=key,
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -707,6 +881,34 @@ class Conv3d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _ConvTranspose1dParams(BaseModel):
+    in_channels: int
+    out_channels: int
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = 1
+    output_padding: Union[int, _SpatialDimensions] = 0
+    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = 0
+    dilation: Union[int, _SpatialDimensions] = 1
+    groups: int = 1
+    use_bias: bool = True
+    padding_mode: str = "ZEROS"
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.ConvTranspose1d",
+    category="Equinox",
+    configure=partial(
+        _owner_options,
+        spatial_settings=("kernel_size", "stride", "output_padding", "padding", "dilation"),
+        has_key=True,
+    ),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_ConvTranspose1dParams,
+    build_context_fields=("key",),
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class ConvTranspose1d(Component):
     """1D transposed convolution (deconvolution) layer."""
 
@@ -775,6 +977,10 @@ class ConvTranspose1d(Component):
             key=key,
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -785,6 +991,34 @@ class ConvTranspose1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _ConvTranspose2dParams(BaseModel):
+    in_channels: int
+    out_channels: int
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = [1, 1]
+    output_padding: Union[int, _SpatialDimensions] = [0, 0]
+    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = [0, 0]
+    dilation: Union[int, _SpatialDimensions] = [1, 1]
+    groups: int = 1
+    use_bias: bool = True
+    padding_mode: str = "ZEROS"
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.ConvTranspose2d",
+    category="Equinox",
+    configure=partial(
+        _owner_options,
+        spatial_settings=("kernel_size", "stride", "output_padding", "padding", "dilation"),
+        has_key=True,
+    ),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_ConvTranspose2dParams,
+    build_context_fields=("key",),
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class ConvTranspose2d(Component):
     """2D transposed convolution (deconvolution) layer."""
 
@@ -853,6 +1087,10 @@ class ConvTranspose2d(Component):
             key=key,
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -863,6 +1101,34 @@ class ConvTranspose2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _ConvTranspose3dParams(BaseModel):
+    in_channels: int
+    out_channels: int
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = [1, 1, 1]
+    output_padding: Union[int, _SpatialDimensions] = [0, 0, 0]
+    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = [0, 0, 0]
+    dilation: Union[int, _SpatialDimensions] = [1, 1, 1]
+    groups: int = 1
+    use_bias: bool = True
+    padding_mode: str = "ZEROS"
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.ConvTranspose3d",
+    category="Equinox",
+    configure=partial(
+        _owner_options,
+        spatial_settings=("kernel_size", "stride", "output_padding", "padding", "dilation"),
+        has_key=True,
+    ),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_ConvTranspose3dParams,
+    build_context_fields=("key",),
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class ConvTranspose3d(Component):
     """3D transposed convolution (deconvolution) layer."""
 
@@ -931,6 +1197,10 @@ class ConvTranspose3d(Component):
             key=key,
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -946,6 +1216,23 @@ class ConvTranspose3d(Component):
 # ============================================================
 
 
+class _GRUCellParams(BaseModel):
+    input_size: int
+    hidden_size: int
+    use_bias: bool = True
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.GRUCell",
+    category="Equinox",
+    configure=partial(_owner_options, has_key=True),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_GRUCellParams,
+    build_context_fields=("key",),
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class GRUCell(Component):
     """Gated Recurrent Unit cell."""
 
@@ -982,6 +1269,10 @@ class GRUCell(Component):
             input_size=input_size, hidden_size=hidden_size, use_bias=use_bias, dtype=dtype, key=key
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -992,6 +1283,23 @@ class GRUCell(Component):
         return _call_gru_cell_layer(self, inputs, state, key=key)
 
 
+class _LSTMCellParams(BaseModel):
+    input_size: int
+    hidden_size: int
+    use_bias: bool = True
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.LSTMCell",
+    category="Equinox",
+    configure=partial(_owner_options, has_key=True),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_LSTMCellParams,
+    build_context_fields=("key",),
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class LSTMCell(Component):
     """Long Short-Term Memory cell."""
 
@@ -1028,6 +1336,10 @@ class LSTMCell(Component):
             input_size=input_size, hidden_size=hidden_size, use_bias=use_bias, dtype=dtype, key=key
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -1043,6 +1355,24 @@ class LSTMCell(Component):
 # ============================================================
 
 
+class _LayerNormParams(BaseModel):
+    shape: Union[int, _SpatialDimensions]
+    eps: float = 1e-05
+    use_weight: bool = True
+    use_bias: bool = True
+    dtype: str | None = "float32"
+    elementwise_affine: Optional[bool] = None
+
+
+@component(
+    "feedbax.equinox.LayerNorm",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("shape",)),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_LayerNormParams,
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class LayerNorm(Component):
     """Layer normalization."""
 
@@ -1088,6 +1418,10 @@ class LayerNorm(Component):
             elementwise_affine=elementwise_affine,
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -1098,6 +1432,23 @@ class LayerNorm(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _RMSNormParams(BaseModel):
+    shape: Union[int, _SpatialDimensions]
+    eps: float = 1e-05
+    use_weight: bool = True
+    use_bias: bool = True
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.RMSNorm",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("shape",)),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_RMSNormParams,
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class RMSNorm(Component):
     """Root Mean Square normalization."""
 
@@ -1135,6 +1486,10 @@ class RMSNorm(Component):
             shape=shape, eps=eps, use_weight=use_weight, use_bias=use_bias, dtype=dtype
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -1145,6 +1500,23 @@ class RMSNorm(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _GroupNormParams(BaseModel):
+    groups: int
+    channels: Optional[int] = None
+    eps: float = 1e-05
+    channelwise_affine: bool = True
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.GroupNorm",
+    category="Equinox",
+    configure=_owner_options,
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_GroupNormParams,
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class GroupNorm(Component):
     """Group normalization."""
 
@@ -1185,6 +1557,10 @@ class GroupNorm(Component):
             channelwise_affine=channelwise_affine,
             dtype=dtype,
         )
+
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
 
     def __call__(
         self,
@@ -1260,6 +1636,20 @@ class BatchNorm(Component):
 # ============================================================
 
 
+class _MaxPool1dParams(BaseModel):
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = 1
+    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
+    use_ceil: bool = False
+
+
+@component(
+    "feedbax.equinox.MaxPool1d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_MaxPool1dParams,
+)
 class MaxPool1d(Component):
     """1D max pooling."""
 
@@ -1304,6 +1694,20 @@ class MaxPool1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _MaxPool2dParams(BaseModel):
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = 1
+    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
+    use_ceil: bool = False
+
+
+@component(
+    "feedbax.equinox.MaxPool2d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_MaxPool2dParams,
+)
 class MaxPool2d(Component):
     """2D max pooling."""
 
@@ -1348,6 +1752,20 @@ class MaxPool2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _MaxPool3dParams(BaseModel):
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = 1
+    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
+    use_ceil: bool = False
+
+
+@component(
+    "feedbax.equinox.MaxPool3d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_MaxPool3dParams,
+)
 class MaxPool3d(Component):
     """3D max pooling."""
 
@@ -1392,6 +1810,20 @@ class MaxPool3d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _AvgPool1dParams(BaseModel):
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = 1
+    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
+    use_ceil: bool = False
+
+
+@component(
+    "feedbax.equinox.AvgPool1d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_AvgPool1dParams,
+)
 class AvgPool1d(Component):
     """1D average pooling."""
 
@@ -1436,6 +1868,20 @@ class AvgPool1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _AvgPool2dParams(BaseModel):
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = 1
+    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
+    use_ceil: bool = False
+
+
+@component(
+    "feedbax.equinox.AvgPool2d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_AvgPool2dParams,
+)
 class AvgPool2d(Component):
     """2D average pooling."""
 
@@ -1480,6 +1926,20 @@ class AvgPool2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _AvgPool3dParams(BaseModel):
+    kernel_size: Union[int, _SpatialDimensions]
+    stride: Union[int, _SpatialDimensions] = 1
+    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
+    use_ceil: bool = False
+
+
+@component(
+    "feedbax.equinox.AvgPool3d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_AvgPool3dParams,
+)
 class AvgPool3d(Component):
     """3D average pooling."""
 
@@ -1524,6 +1984,17 @@ class AvgPool3d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _AdaptiveMaxPool1dParams(BaseModel):
+    target_shape: Union[int, _SpatialDimensions]
+
+
+@component(
+    "feedbax.equinox.AdaptiveMaxPool1d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("target_shape",)),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_AdaptiveMaxPool1dParams,
+)
 class AdaptiveMaxPool1d(Component):
     """1D adaptive max pooling."""
 
@@ -1554,6 +2025,17 @@ class AdaptiveMaxPool1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _AdaptiveMaxPool2dParams(BaseModel):
+    target_shape: Union[int, _SpatialDimensions]
+
+
+@component(
+    "feedbax.equinox.AdaptiveMaxPool2d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("target_shape",)),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_AdaptiveMaxPool2dParams,
+)
 class AdaptiveMaxPool2d(Component):
     """2D adaptive max pooling."""
 
@@ -1584,6 +2066,17 @@ class AdaptiveMaxPool2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _AdaptiveMaxPool3dParams(BaseModel):
+    target_shape: Union[int, _SpatialDimensions]
+
+
+@component(
+    "feedbax.equinox.AdaptiveMaxPool3d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("target_shape",)),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_AdaptiveMaxPool3dParams,
+)
 class AdaptiveMaxPool3d(Component):
     """3D adaptive max pooling."""
 
@@ -1614,6 +2107,17 @@ class AdaptiveMaxPool3d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _AdaptiveAvgPool1dParams(BaseModel):
+    target_shape: Union[int, _SpatialDimensions]
+
+
+@component(
+    "feedbax.equinox.AdaptiveAvgPool1d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("target_shape",)),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_AdaptiveAvgPool1dParams,
+)
 class AdaptiveAvgPool1d(Component):
     """1D adaptive average pooling."""
 
@@ -1644,6 +2148,17 @@ class AdaptiveAvgPool1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _AdaptiveAvgPool2dParams(BaseModel):
+    target_shape: Union[int, _SpatialDimensions]
+
+
+@component(
+    "feedbax.equinox.AdaptiveAvgPool2d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("target_shape",)),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_AdaptiveAvgPool2dParams,
+)
 class AdaptiveAvgPool2d(Component):
     """2D adaptive average pooling."""
 
@@ -1674,6 +2189,17 @@ class AdaptiveAvgPool2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+class _AdaptiveAvgPool3dParams(BaseModel):
+    target_shape: Union[int, _SpatialDimensions]
+
+
+@component(
+    "feedbax.equinox.AdaptiveAvgPool3d",
+    category="Equinox",
+    configure=partial(_owner_options, spatial_settings=("target_shape",)),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_AdaptiveAvgPool3dParams,
+)
 class AdaptiveAvgPool3d(Component):
     """3D adaptive average pooling."""
 
@@ -1709,6 +2235,33 @@ class AdaptiveAvgPool3d(Component):
 # ============================================================
 
 
+class _MultiheadAttentionParams(BaseModel):
+    num_heads: int
+    query_size: int
+    key_size: Optional[int] = None
+    value_size: Optional[int] = None
+    output_size: Optional[int] = None
+    qk_size: Optional[int] = None
+    vo_size: Optional[int] = None
+    use_query_bias: bool = False
+    use_key_bias: bool = False
+    use_value_bias: bool = False
+    use_output_bias: bool = False
+    dropout_p: float = 0.0
+    inference: bool = False
+    dtype: str | None = "float32"
+
+
+@component(
+    "feedbax.equinox.MultiheadAttention",
+    category="Equinox",
+    configure=partial(_owner_options, has_key=True),
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_MultiheadAttentionParams,
+    build_context_fields=("key",),
+    attribute_paths={"dtype": "_graph_dtype"},
+    trainable_by_default=True,
+)
 class MultiheadAttention(Component):
     """Multi-head attention layer."""
 
@@ -1789,6 +2342,10 @@ class MultiheadAttention(Component):
             key=key,
         )
 
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
+
     def __call__(
         self,
         inputs: dict[str, PyTree],
@@ -1799,6 +2356,20 @@ class MultiheadAttention(Component):
         return _call_multihead_attention_layer(self, inputs, state, key=key)
 
 
+class _RotaryPositionalEmbeddingParams(BaseModel):
+    embedding_size: int
+    theta: float = 10000.0
+    dtype: str | None = None
+
+
+@component(
+    "feedbax.equinox.RotaryPositionalEmbedding",
+    category="Equinox",
+    configure=_owner_options,
+    sources=(_GENERATOR_SOURCE,),
+    param_model=_RotaryPositionalEmbeddingParams,
+    attribute_paths={"dtype": "_graph_dtype"},
+)
 class RotaryPositionalEmbedding(Component):
     """Rotary positional embedding for attention."""
 
@@ -1824,6 +2395,10 @@ class RotaryPositionalEmbedding(Component):
         self.layer = eqx.nn.RotaryPositionalEmbedding(
             embedding_size=embedding_size, theta=theta, dtype=dtype
         )
+
+    @property
+    def _graph_dtype(self) -> str | None:
+        return None if self.dtype is None else jnp.dtype(self.dtype).name
 
     def __call__(
         self,
@@ -1899,6 +2474,12 @@ class Embedding(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+@component(
+    "feedbax.equinox.Dropout",
+    category="Equinox",
+    configure=_owner_options,
+    sources=(_GENERATOR_SOURCE,),
+)
 class Dropout(Component):
     """Dropout layer that honors its configured inference/deterministic settings."""
 

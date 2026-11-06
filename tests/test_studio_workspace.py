@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.mechanics_templates import point_mass_template_graph
 from feedbax.contracts.graph import (
     ANALYSIS_CANVAS_LAYOUT_SCHEMA_ID,
     ANALYSIS_CANVAS_LAYOUT_SCHEMA_VERSION,
@@ -149,7 +150,7 @@ def test_create_graph_persists_default_workspace(tmp_path):
 
 def test_studio_save_load_materializes_dynamic_ports_with_explicit_registry(tmp_path):
     service = GraphService(storage_dir=tmp_path)
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     graph = GraphSpec(
         nodes={
             "mux": ComponentSpec(type="Mux", params={"n_inputs": 3}),
@@ -176,6 +177,30 @@ def test_studio_save_load_materializes_dynamic_ports_with_explicit_registry(tmp_
     scenario = reloaded.project.workspace.scenarios[train_stage.scenario_id]
     assert "graph" not in scenario.model_fields_set
     assert "/graph/nodes/mux" in reloaded.project.workspace_document.semantic_anchors
+
+
+def test_studio_save_stamps_nested_mechanics_without_completing_params(tmp_path):
+    service = GraphService(storage_dir=tmp_path)
+    registry = ComponentRegistry()
+    interior = point_mass_template_graph()
+    interior.nodes["mass"].params.clear()
+    graph = GraphSpec(
+        nodes={"plant": ComponentSpec(type="AcausalSystem")},
+        subgraphs={"plant": interior},
+    )
+
+    record = service.create_graph(graph, component_registry=registry)
+    saved = json.loads((tmp_path / f"{record.graph_id}.json").read_text())
+    saved_nodes = saved["graph"]["subgraphs"]["plant"]["nodes"]
+    assert saved_nodes["mass"]["type"] == "MechanicsMass"
+    assert saved_nodes["mass"]["param_schema_version"] == "1"
+    assert saved_nodes["mass"]["params"] == {}
+    assert saved_nodes["force"]["param_schema_version"] == "1"
+    reloaded = service.get_graph(record.graph_id, component_registry=registry)
+    assert reloaded.project.graph == record.project.graph
+    assert reloaded.project.workspace_document.semantic_root == (
+        record.project.workspace_document.semantic_root
+    )
 
 
 def test_studio_save_load_preserves_read_only_array_value_envelopes(tmp_path):

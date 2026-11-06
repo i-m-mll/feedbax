@@ -340,7 +340,7 @@ def test_parsing_records_the_stated_source_verbatim() -> None:
 
 
 def test_the_bootstrap_has_no_project_declaration_family() -> None:
-    state = asyncio.run(compose_application(modules=(), local_component_source=None))
+    state = asyncio.run(compose_application(modules=()))
 
     assert not hasattr(state.bundle, "project_experiments")
     families = {key.family for key in plugins.APPLICATION_REGISTRY_KEYS}

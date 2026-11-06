@@ -20,17 +20,27 @@ from equinox import Module, field
 from equinox.nn import State, StateIndex
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
-from feedbax.runtime.components import GRU, LSTM, named_activation, resolve_activation, tanh
+from feedbax.component_registry import component
+from feedbax.component_registry.declarations import ComponentConstructorPlan, ParameterField
+from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.graph import ParameterConstraintSpec
+from feedbax.models.support import (
+    identity_func,
+    interleave_unequal,
+)
+from feedbax.runtime.components import (
+    GRU,
+    LSTM,
+    named_activation,
+    recurrent_output_prototype,
+    resolve_activation,
+    tanh,
+)
 from feedbax.runtime.graph import Component, Graph
 from feedbax.runtime.parameter_constraints import (
     recurrent_parameter_role,
     register_parameter_role_resolver,
 )
-from feedbax.models.support import (
-    identity_func,
-    interleave_unequal,
-)
-from feedbax.contracts.graph import ParameterConstraintSpec
 
 logger = logging.getLogger(__name__)
 
@@ -537,7 +547,7 @@ def recurrent_controller(
         dtype=jnp.dtype(dtype if dtype is not None else jnp.float32).name,
     )
     keys = dict(zip(("cell", "encoder", "readout"), jr.split(key, 3), strict=True))
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     return compile_graph(
         GraphDocument(graph=spec),
         registry,
@@ -679,6 +689,45 @@ class VanillaRNNState(Module):
     output: Array
 
 
+@component(
+    "VanillaRNN",
+    build_context_fields=("key",),
+    constructor=ComponentConstructorPlan(renames={"activation": "activation_name"}),
+    attribute_paths={
+        "activation": "activation_name",
+        "use_bias": "cell.use_bias",
+        "use_noise": "cell.use_noise",
+        "noise_strength": "cell.noise_strength",
+        "dt": "cell.dt",
+        "tau": "cell.tau",
+    },
+    category="Neural Networks",
+    description="Vanilla recurrent cell.",
+    parameter_fields=[
+        ParameterField(name="dtype", type="str", default="float32", required=False),
+        ParameterField(name="input_size", type="int", default=4, min=1, required=True),
+        ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
+        ParameterField(name="use_bias", type="bool", default=True, required=False),
+        ParameterField(name="use_noise", type="bool", default=False, required=False),
+        ParameterField(name="noise_strength", type="float", default=0.01, min=0, required=False),
+        ParameterField(name="dt", type="float", default=1.0, min=0, required=False),
+        ParameterField(name="tau", type="float", default=1.0, min=0, required=False),
+        ParameterField(
+            name="activation",
+            type="enum",
+            options=["tanh", "relu", "identity", "sigmoid", "softmax"],
+            default="tanh",
+            required=False,
+        ),
+    ],
+    icon="BrainCircuit",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=recurrent_output_prototype,
+    trainable_by_default=True,
+)
 class VanillaRNN(Component):
     """Standalone vanilla RNN cell."""
 

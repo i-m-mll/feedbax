@@ -80,6 +80,7 @@ from feedbax.contracts.parameter_contracts import (
 from feedbax.contracts.selection import SelectionSpec
 from feedbax.contracts.training_matrix_composition import TrainingRunMatrixDeltaSpec
 from feedbax.contracts.migrations import (
+    UnsupportedComponentMigration,
     UnsupportedSpecVersion,
     default_spec_registry,
     migrate_graph_spec,
@@ -1099,7 +1100,10 @@ def _schema_issues_to_provider(
 
 
 def validate_graph_spec(
-    payload: dict[str, Any] | GraphSpec, *, component_registry: Any
+    payload: dict[str, Any] | GraphSpec,
+    *,
+    component_registry: Any,
+    historical_unversioned: bool = False,
 ) -> ProviderValidationResult:
     from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 
@@ -1112,6 +1116,20 @@ def validate_graph_spec(
         spec = normalize_graph_for_studio_authoring(
             materialize_additive_channel_adapters(parsed),
             component_registry=component_registry,
+            component_versions="historical" if historical_unversioned else None,
+        )
+    except UnsupportedComponentMigration as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[
+                ValidationIssue(
+                    type="unsupported_component_migration",
+                    message=str(exc),
+                    location={"path": "/nodes"},
+                )
+            ],
+            migration_status="rejected",
+            migration_records=migration_records,
         )
     except UnsupportedSpecVersion as exc:
         return ProviderValidationResult(
@@ -1321,8 +1339,14 @@ def validate_graph_spec_manifest(
             migration_status="rejected",
         )
 
-    result = validate_graph_spec(load_result.payload, component_registry=component_registry)
-    if load_result.applied_migration_records:
+    result = validate_graph_spec(
+        load_result.payload,
+        component_registry=component_registry,
+        historical_unversioned=True,
+    )
+    if result.migration_status == "rejected":
+        migration_status = "rejected"
+    elif load_result.applied_migration_records:
         migration_status = "feedbax_migrated"
     elif load_result.downstream_migration_records:
         migration_status = "downstream_migrated"

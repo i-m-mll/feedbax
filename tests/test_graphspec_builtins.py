@@ -53,7 +53,7 @@ from feedbax.runtime.retained_observables import lower_retention_plan
 
 
 def _components() -> ComponentRegistry:
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 def _single_node_spec(
@@ -99,14 +99,12 @@ def _force_field_cases():
                     field=jnp.array([0.4, -0.6]),
                     active=True,
                 ),
-
             ),
             {
                 "scale": 2.0,
                 "amplitude": 1.5,
                 "field": [0.4, -0.6],
                 "active": True,
-
             },
             {"force": force},
             ["force", "params_override"],
@@ -115,13 +113,11 @@ def _force_field_cases():
             "CurlField",
             CurlField(
                 params=CurlFieldParams(scale=1.25, amplitude=0.75, active=True),
-
             ),
             {
                 "scale": 1.25,
                 "amplitude": 0.75,
                 "active": True,
-
             },
             {"effector": effector, "force": force},
             ["effector", "force", "params_override"],
@@ -134,14 +130,12 @@ def _force_field_cases():
                     delta_A=jnp.asarray(delta_A),
                     active=True,
                 ),
-
                 mass=1.75,
             ),
             {
                 "scale": 0.5,
                 "delta_A": delta_A,
                 "active": True,
-
                 "mass": 1.75,
             },
             {"effector": effector, "force": force},
@@ -194,7 +188,10 @@ def test_registered_intervention_rollout_preserves_signal_dtype_and_gradients(
                 output_ports=metadata.output_ports,
             ),
             registry,
-            {("field", port): jax.tree.map(lambda x: x[0], value) for port, value in inputs.items()},
+            {
+                ("field", port): jax.tree.map(lambda x: x[0], value)
+                for port, value in inputs.items()
+            },
         )
         params_index = graph.nodes["field"].params_index
         key = jr.key(7)
@@ -751,9 +748,7 @@ def test_point_mass_feedback_rollout_preserves_selected_state_and_delay(
         assert isinstance(feedback, CartesianState)
         expected = effector
 
-    for actual, undelayed in zip(
-        jax.tree.leaves(feedback), jax.tree.leaves(expected), strict=True
-    ):
+    for actual, undelayed in zip(jax.tree.leaves(feedback), jax.tree.leaves(expected), strict=True):
         assert actual.shape == undelayed.shape
         assert actual.dtype == undelayed.dtype
         assert jnp.all(actual[:3] == 0)
@@ -793,7 +788,9 @@ def test_nested_feedback_rollout_preserves_mixed_state_dtypes() -> None:
     )
     mechanics = MechanicsState(PlantState(skeleton), CartesianState(), None)
     graph = spec_to_graph(
-        spec, component_registry=_components(), input_prototypes={("nested", "mechanics"): mechanics}
+        spec,
+        component_registry=_components(),
+        input_prototypes={("nested", "mechanics"): mechanics},
     )
     trajectory = jax.tree.map(lambda x: jnp.stack((x + 1, x + 2, x + 3)), mechanics)
     outputs, _, _ = graph.rollout_with_trace(
@@ -806,7 +803,9 @@ def test_nested_feedback_rollout_preserves_mixed_state_dtypes() -> None:
 
     assert isinstance(outputs["feedback"], CartesianState)
     for actual, source in zip(
-        jax.tree.leaves(outputs["feedback"]), jax.tree.leaves(trajectory.plant.skeleton), strict=True
+        jax.tree.leaves(outputs["feedback"]),
+        jax.tree.leaves(trajectory.plant.skeleton),
+        strict=True,
     ):
         assert actual.dtype == source.dtype
         assert jnp.array_equal(actual, jnp.concatenate((jnp.zeros_like(source[:1]), source[:-1])))
@@ -942,7 +941,7 @@ def test_force_field_graphspec_builders_preserve_contract_and_runtime(
 
 
 def test_force_field_registry_exposes_params_override_ports_and_builders() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
 
     expected = {
         "FixedField": {"force", "params_override"},
@@ -972,7 +971,7 @@ def test_force_field_output_prototypes_passthrough_force(
     component_type: str,
     input_ports: list[str],
 ) -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     force_proto = jnp.zeros((2,), dtype=jnp.float32)
     node_spec = ComponentSpec(
         type=component_type,
@@ -1004,7 +1003,7 @@ def test_force_field_output_prototypes_require_force_input(
     component_type: str,
     input_ports: list[str],
 ) -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     node_spec = ComponentSpec(
         type=component_type,
         params={},
@@ -1028,7 +1027,7 @@ def _registered_outputs(
     input_ports: list[str],
     output_ports: list[str],
 ) -> dict[str, Any]:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     node_spec = ComponentSpec(
         type=component_type,
         params=dict(params),
@@ -1347,7 +1346,9 @@ def test_registered_builtin_output_prototypes(case: dict[str, Any]) -> None:
         assert _tree_shapes(outputs[port]) == expected_shapes
 
 
-@pytest.mark.parametrize(("component_type", "skeleton_leaves"), [("TwoLinkArm", 4), ("PointMass", 3)])
+@pytest.mark.parametrize(
+    ("component_type", "skeleton_leaves"), [("TwoLinkArm", 4), ("PointMass", 3)]
+)
 def test_registered_mechanics_state_output_prototypes(
     component_type: str, skeleton_leaves: int
 ) -> None:
@@ -1423,7 +1424,7 @@ def test_demux_output_prototype_rejects_width_mismatch() -> None:
 
 
 def test_demux_output_prototype_infers_through_graph_with_deferred_input() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     spec = GraphSpec(
         nodes={
             "join": ComponentSpec(
@@ -1498,7 +1499,6 @@ def test_fixed_field_graphspec_preserves_params_override_semantics() -> None:
                 "amplitude": 1.0,
                 "field": [0.0, 0.0],
                 "active": False,
-
             },
             input_ports=["force", "params_override"],
             output_ports=["force"],
@@ -1573,7 +1573,6 @@ def _affine_composer_params() -> dict[str, Any]:
         "gain_init": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 1.0, 0.0]],
         "bias_init": [0.5, -0.5],
         "use_bias": True,
-
     }
 
 
@@ -1593,7 +1592,6 @@ def test_affine_value_composer_runtime_and_trainable_defaults() -> None:
         gain_init=params["gain_init"],
         bias_init=params["bias_init"],
         use_bias=True,
-
     )
 
     outputs = _call_component(component, _affine_composer_inputs())
@@ -1638,7 +1636,8 @@ def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides(
     roundtrip = graph_to_spec(graph)
     node = roundtrip.nodes["field"]
     assert node.type == "AffineValueComposer"
-    assert node.param_schema_version == "feedbax.component.affine_value_composer.v2"
+    assert node.param_schema_version == "feedbax.component.affine_value_composer.v3"
+    assert "schema_version" not in node.params
     assert node.params["output_block_size"] == 2
     assert node.params["feature_rules"] == _affine_composer_params()["feature_rules"]
     assert jnp.allclose(
@@ -1652,7 +1651,7 @@ def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides(
 
 
 def test_affine_value_composer_output_prototypes_and_negative_validation() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     node_spec = ComponentSpec(
         type="AffineValueComposer",
         params=_affine_composer_params(),
@@ -1713,15 +1712,15 @@ def test_affine_value_composer_output_prototypes_and_negative_validation() -> No
 
 
 def test_affine_value_composer_registry_metadata() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     meta = registry.get("AffineValueComposer")
 
     assert meta is not None
     assert meta.output_prototype_fn is not None
-    assert meta.param_schema_version == "feedbax.component.affine_value_composer.v2"
+    assert meta.param_schema_version == "feedbax.component.affine_value_composer.v3"
     assert set(meta.input_ports) == {"base", "state", "target", "gain", "bias"}
     assert meta.output_ports == ["value"]
-    assert meta.default_params["schema_version"] == "feedbax.component.affine_value_composer.v2"
+    assert "schema_version" not in meta.default_params
 
 
 def test_channel_rejects_unknown_noise_model() -> None:

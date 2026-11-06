@@ -25,7 +25,7 @@ _OUTPUT_PORT = {"output": ("intervention", "output")}
 
 @pytest.fixture(scope="module")
 def registry():
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 def _compile(registry, spec, signal=_INPUT):

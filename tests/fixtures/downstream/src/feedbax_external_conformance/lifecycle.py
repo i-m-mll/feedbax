@@ -288,7 +288,7 @@ def check_public_lifecycle_recovery() -> bool:
                 )
             }
         )
-        registries = new_application_registry_bundle(local_component_source=None)
+        registries = new_application_registry_bundle()
         initial_engine = StageEngine.from_request(
             request,
             context=context,

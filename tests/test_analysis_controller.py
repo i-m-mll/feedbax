@@ -344,7 +344,7 @@ def test_graph_controller_accepts_recurrent_graph_spec():
     controller = graph_controller(
         spec,
         key=jax.random.PRNGKey(0),
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
         dtype=jnp.float32,
     )
     h1, output1 = controller.step(
@@ -390,7 +390,7 @@ def test_graph_controller_resets_from_static_inputs(entry):
         input_bindings={"input": ("sum", "a")},
         output_bindings={"output": ("sum", "output"), "filtered": ("filter", "output")},
     )
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     key = jax.random.key(2)
     seed = jnp.array([3.0, 4.0], dtype=jnp.float32)
     static_inputs = {"seed": seed}

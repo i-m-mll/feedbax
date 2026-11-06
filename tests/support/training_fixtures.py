@@ -126,7 +126,9 @@ def _register_cli_fixture(context: RegistrationContext) -> None:
     for method_ref in (CLI_METHOD_REF, CLI_TWO_STEP_METHOD_REF, CLI_LR_METHOD_REF):
         program = synthetic_supervised_training_program()
         if method_ref == CLI_LR_METHOD_REF:
-            program = evolve_training_program(program, update_kernels_factory=_cli_lr_update_kernels)
+            program = evolve_training_program(
+                program, update_kernels_factory=_cli_lr_update_kernels
+            )
         context.registry(TRAINING_PROGRAMS).register_program(
             evolve_training_program(
                 program,
@@ -142,7 +144,7 @@ def _register_cli_fixture(context: RegistrationContext) -> None:
 
 PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
-        "tests.synthetic_training", "1", 1, families=(FamilyRequirement("training_programs"),)
+        "tests.synthetic_training", "1", 2, families=(FamilyRequirement("training_programs"),)
     ),
     _register_cli_fixture,
 )

@@ -5,11 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+import jax.numpy as jnp
 from equinox import field
 from equinox.nn import State
-import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.component_registry import component
+from feedbax.component_registry.declarations import ParameterField
+from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.runtime.graph import Component
 
 
@@ -95,6 +98,47 @@ _DEFAULT_CHANNELS = (
 )
 
 
+def _selector_declaration(cls):
+    selector_defaults = cls().to_params()
+    return {
+        "parameter_fields": [
+            ParameterField(
+                name="state_slices",
+                type="object",
+                default=selector_defaults["state_slices"],
+                required=False,
+            ),
+            ParameterField(
+                name="channels",
+                type="array",
+                default=selector_defaults["channels"],
+                required=False,
+            ),
+            ParameterField(name="expected_state_dim", type="int", default=None, required=False),
+            ParameterField(name="output_size", type="int", default=None, required=False),
+        ],
+        "output_prototype_fn": state_feedback_output_prototype,
+    }
+
+
+@component(
+    "StateFeedbackSelector",
+    configure=_selector_declaration,
+    attribute_paths={
+        "state_slices": "state_slices_param",
+        "channels": "channels_param",
+    },
+    category="Mechanics",
+    description="Select named state-vector slices and optional target-relative feedback.",
+    icon="Route",
+    port_types=PortTypeSpec(
+        inputs={
+            "state": PortType(dtype="vector"),
+            "target": PortType(dtype="vector"),
+        },
+        outputs={"feedback": PortType(dtype="vector")},
+    ),
+)
 class StateFeedbackSelector(Component):
     """Select and transform named slices from a vector state.
 

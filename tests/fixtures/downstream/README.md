@@ -28,7 +28,7 @@ therefore authenticates installed-wheel provenance at both execution
 boundaries. The deployment policy is explicitly local and cloud-unauthorized;
 all custody, orchestration, and cache paths are unique temporary directories.
 
-The result schema is `feedbax.external_conformance.result.v14`. Its evidence map
+The result schema is `feedbax.external_conformance.result.v15`. Its evidence map
 has exactly fourteen strict-boolean cases, in this order:
 
 1. `ordered_registration`
@@ -64,7 +64,7 @@ proves the installed public row index, row-set selector, and figure role
 reference contract, including digest-pinned expansion and fail-closed selector
 rejection.
 
-Every earlier shipped version rejects rather than acquiring synthetic evidence.
+V14 remains readable as historical evidence with roles 1 and 1. Earlier incomplete versions reject.
 V2 remains the protected exact six-case foundation and rejects rather than
 pretending it measured later cases. Unshipped v3-v6 results reject explicitly;
 shipped v7 lacks the array-value case, shipped v8 lacks the unified-bootstrap
@@ -83,5 +83,5 @@ inventing a case for them. Nested terminal certification stays in the training
 lifecycle contract with focused in-repo migration and rejection evidence.
 
 The required `current` and `minimum` protocol role members are both the strict
-numeric value `1`. Version 1 retains its v2 normalization-before-rejection
+numeric value `2` in v15. Result version 1 retains its v2 normalization-before-rejection
 behavior. Unknown, ambiguous, versionless, and future versions reject.

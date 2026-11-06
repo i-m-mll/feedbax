@@ -121,11 +121,23 @@ class DynamicPortPolicy(BaseModel):
     generated_index_origin: int = 0
     minimum_count: int = Field(default=1, ge=0)
     dynamic_port_type: PortType
+    auto_resize_minimum: int | None = Field(default=None, ge=0)
+    concatenate_to_output: str | None = None
 
     @model_validator(mode="after")
     def validate_port_namespace(self) -> "DynamicPortPolicy":
         _validate_fixed_port_names(self.fixed_input_ports, direction="input")
         _validate_fixed_port_names(self.fixed_output_ports, direction="output")
+        if self.auto_resize_minimum is not None and (
+            self.direction != "input"
+            or self.count_mode != "integer"
+            or self.auto_resize_minimum < self.minimum_count
+        ):
+            raise ValueError("auto resize requires integer input arity and a valid minimum")
+        if self.concatenate_to_output is not None and (
+            self.direction != "input" or self.concatenate_to_output not in self.fixed_output_ports
+        ):
+            raise ValueError("concatenation requires dynamic inputs and a fixed output port")
         template = self.generated_name_template
         non_tokens = template.replace("{index}", "")
         if "{" in non_tokens or "}" in non_tokens:

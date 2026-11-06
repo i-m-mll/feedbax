@@ -180,8 +180,8 @@ describe('useAppShortcuts', () => {
   it('replays node deletion against its original training scenario after reassignment', () => {
     const mux = {
       type: 'Mux',
-      params: { n_inputs: 2 },
-      input_ports: ['in_0', 'in_1'],
+      params: { n_inputs: 3 },
+      input_ports: ['in_0', 'in_1', 'in_2'],
       output_ports: ['output'],
     };
     const boundGraph = { ...graph, nodes: { ...graph.nodes, a: mux } };
@@ -220,7 +220,6 @@ describe('useAppShortcuts', () => {
         [alternateId]: { ...scenario, id: alternateId, task_binding_spec: alternateSpec },
       },
     });
-    editor.updateNodeParams('a', 'n_inputs', 3, originalSpec);
     editor.toggleNodeCollapse('b');
 
     const getSpec = (scenarioId: string) =>

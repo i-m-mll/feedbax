@@ -10,19 +10,90 @@ with first-order activation dynamics integrated via Euler step.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from typing import Any
 
-import equinox as eqx
-from equinox import Module, field
-from equinox.nn import State, StateIndex
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from equinox.nn import State, StateIndex
+from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.component_registry.declarations import ParameterField
+from feedbax.component_registry.discovery import component
+from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.runtime.graph import Component
-
 
 logger = logging.getLogger(__name__)
 
 
+def scalar_muscle_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return scalar muscle force and activation prototypes."""
+
+    proto = jnp.zeros(())
+    return {"force": proto, "activation": proto}
+
+
+@component(
+    "ReluMuscle",
+    attribute_paths={"initial_activation": "state_index.init"},
+    category="Muscles",
+    description="Simple muscle: force = activation * F_max.",
+    parameter_fields=[
+        ParameterField(
+            name="max_isometric_force",
+            type="float",
+            default=500.0,
+            min=0.0,
+            required=True,
+        ),
+        ParameterField(
+            name="tau_activation",
+            type="float",
+            default=0.015,
+            min=0.0,
+            required=False,
+        ),
+        ParameterField(
+            name="tau_deactivation",
+            type="float",
+            default=0.05,
+            min=0.0,
+            required=False,
+        ),
+        ParameterField(
+            name="min_activation",
+            type="float",
+            default=0.0,
+            min=0.0,
+            required=False,
+        ),
+        ParameterField(
+            name="dt",
+            type="float",
+            default=0.01,
+            min=0.0,
+            required=True,
+        ),
+        ParameterField(
+            name="initial_activation",
+            type="float",
+            default=0.0,
+            min=0.0,
+            required=False,
+        ),
+    ],
+    icon="Zap",
+    port_types=PortTypeSpec(
+        inputs={"excitation": PortType(dtype="scalar")},
+        outputs={
+            "force": PortType(dtype="scalar"),
+            "activation": PortType(dtype="scalar"),
+        },
+    ),
+    output_prototype_fn=scalar_muscle_output_prototype,
+)
 class ReluMuscle(Component):
     """Simple muscle where force = clip(activation) * max_isometric_force.
 

@@ -218,7 +218,7 @@ def _workspace_with_analysis_type(analysis_type: str):
 
 @pytest.fixture
 def registry_bundle():
-    return new_application_registry_bundle(local_component_source=None)
+    return new_application_registry_bundle()
 
 
 @pytest.fixture

@@ -89,7 +89,7 @@ def test_linear_state_space_graph_spec_round_trips() -> None:
         output_bindings={"state": ("mechanics", "state")},
     )
 
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
     assert isinstance(graph.nodes["mechanics"], LinearStateSpace)
 
     state = init_state_from_component(graph)
@@ -189,7 +189,7 @@ def _delayed_feedback_graph_spec(*, target_relative: bool = False) -> GraphSpec:
 
 def test_state_feedback_selector_materializes_delayed_lss_state_slice() -> None:
     graph = spec_to_graph(
-        _delayed_feedback_graph_spec(), ComponentRegistry(load_user_components=False)
+        _delayed_feedback_graph_spec(), ComponentRegistry()
     )
 
     assert isinstance(graph.nodes["selector"], StateFeedbackSelector)
@@ -207,7 +207,7 @@ def test_state_feedback_selector_materializes_delayed_lss_state_slice() -> None:
 def test_state_feedback_selector_materializes_target_relative_lss_feedback() -> None:
     graph = spec_to_graph(
         _delayed_feedback_graph_spec(target_relative=True),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
     )
     state = init_state_from_component(graph)
 
@@ -241,7 +241,7 @@ def test_state_feedback_selector_prototype_feeds_stateful_materialization() -> N
     )
     spec.output_bindings = {"feedback": ("delay", "output")}
 
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
 
     assert graph.nodes["delay"].input_proto.shape == (4,)
 
@@ -249,7 +249,7 @@ def test_state_feedback_selector_prototype_feeds_stateful_materialization() -> N
 def test_state_feedback_selector_graph_spec_round_trips() -> None:
     graph = spec_to_graph(
         _delayed_feedback_graph_spec(target_relative=True),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
     )
     restored = graph_to_spec(graph)
 
@@ -307,7 +307,7 @@ def test_state_feedback_selector_detaches_configuration_and_graph_exports() -> N
     assert selector.to_params()["channels"] == params["channels"]
     assert params["output_size"] == 6
 
-    compiled = spec_to_graph(restored, ComponentRegistry(load_user_components=False))
+    compiled = spec_to_graph(restored, ComponentRegistry())
     inputs = {
         "state": jnp.array([[1, 2, 3, 4, 10, 20, 30], [2, 4, 6, 8, 20, 40, 60]]),
         "target": jnp.array([[1, 24, 35, 9, 13], [2, 42, 67, 18, 26]]),

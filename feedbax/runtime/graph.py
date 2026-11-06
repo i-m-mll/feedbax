@@ -16,11 +16,11 @@ from typing import ClassVar, Literal, Optional, Self
 import equinox as eqx
 from equinox import Module, field
 from equinox.nn import State, StateIndex
-import jax
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.contracts.array_values import ArrayValueSpec
 from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.runtime._graph import detect_cycles_and_sort
 from feedbax.runtime._graph_key_schedule import (
@@ -245,6 +245,15 @@ class GraphTraceRequest:
 
 
 @dataclasses.dataclass(frozen=True)
+class AuthoredArrayEncoding:
+    """An authored array encoding paired with its serialized construction value."""
+
+    path: tuple[str, ...]
+    declaration: ArrayValueSpec
+    baseline_sha256: bytes
+
+
+@dataclasses.dataclass(frozen=True)
 class ComponentBinding:
     """Registry identity and explicit graph-owned controls for one node."""
 
@@ -252,6 +261,7 @@ class ComponentBinding:
     param_schema_version: str
     # Checkpoint slot fingerprints include the binding's repr via the PyTree definition.
     trainable_override: bool | None = dataclasses.field(default=None, repr=False)
+    authored_arrays: tuple[AuthoredArrayEncoding, ...] = dataclasses.field(default=(), repr=False)
 
 
 class Graph(Component):
@@ -1708,3 +1718,19 @@ class Graph(Component):
             return isinstance(x, types)
 
         return select(self).at(lambda g: g.nodes).at_instances_of(*types)
+
+
+def subgraph_definition():
+    """The authored nested graph contract owned by Graph."""
+    from feedbax.component_registry.declarations import declare_component
+
+    return declare_component(
+        name="Subgraph",
+        category="Structure",
+        description="Nested graph container.",
+        parameter_fields=[],
+        input_ports=[],
+        output_ports=[],
+        icon="Layers",
+        is_composite=True,
+    )

@@ -1,7 +1,6 @@
 import {
   isAcausalGraphSpec,
   isCausalGraphSpec,
-  type AcausalGraphSpec,
   type ComponentSpec,
   type GraphSpec,
   type GraphSubgraphSpec,
@@ -9,7 +8,7 @@ import {
 } from '@/types/graph';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
 import { taskBindingId } from '@/features/scenario/taskBindings';
-import { normalizeDynamicPorts } from '@/features/graph/dynamicPorts';
+import { normalizeDynamicPorts, type ComponentCatalogue } from '@/features/graph/dynamicPorts';
 
 function createTapId() {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -165,24 +164,14 @@ export function normalizeGraphAuthoringTypes(graph: GraphSpec): GraphSpec {
   return normalized;
 }
 
-export function normalizeGraphForStudioAuthoring(
-  graph: GraphSpec,
+export function normalizeGraphForStudioAuthoring<T extends GraphSubgraphSpec>(
+  graph: T,
+  components?: ComponentCatalogue,
   taskBindingSpec?: StudioTaskBindingSpec | null
-): GraphSpec;
-export function normalizeGraphForStudioAuthoring(
-  graph: AcausalGraphSpec,
-  taskBindingSpec?: StudioTaskBindingSpec | null
-): AcausalGraphSpec;
-export function normalizeGraphForStudioAuthoring(
-  graph: GraphSubgraphSpec,
-  taskBindingSpec?: StudioTaskBindingSpec | null
-): GraphSubgraphSpec;
-export function normalizeGraphForStudioAuthoring(
-  graph: GraphSubgraphSpec,
-  taskBindingSpec?: StudioTaskBindingSpec | null
-): GraphSubgraphSpec {
+): T {
   if (isAcausalGraphSpec(graph)) return graph;
-  return normalizeDynamicPorts(normalizeGraphAuthoringTypes(graph), taskBindingSpec);
+  const normalized = normalizeGraphAuthoringTypes(graph) as T;
+  return components ? normalizeDynamicPorts(normalized, components, taskBindingSpec) : normalized;
 }
 
 export function normalizeTaskBindingSpecForStudioAuthoring(

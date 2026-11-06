@@ -16,7 +16,7 @@ import {
 import { graphPortEntityId } from '@/features/scenario/entities';
 import { objectiveGraphPortTarget } from '@/features/scenario/objectives';
 import { ensureTaskBindingSpec, scopedTaskBindingSpec } from '@/features/scenario/taskBindings';
-import { visibleMuxInputPorts } from '@/features/graph/dynamicPorts';
+import { visibleDynamicInputPorts } from '@/features/graph/dynamicPorts';
 import { ArrowLeftRight, ExternalLink, Crosshair } from 'lucide-react';
 import { Fragment, memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { PortContextMenu } from './PortContextMenu';
@@ -118,12 +118,12 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
     compositeTypes.has(spec.type) ||
     hasSubgraph ||
     hasInspectorInterior(componentRegistry.get(spec.type));
-  const muxInputs = useMemo(
-    () => visibleMuxInputPorts(graph, label, taskBindingSpec),
-    [graph, label, taskBindingSpec]
+  const dynamicInputs = useMemo(
+    () => visibleDynamicInputPorts(graph, label, componentRegistry, taskBindingSpec),
+    [graph, label, componentRegistry, taskBindingSpec]
   );
-  const inputPorts = muxInputs?.ports ?? spec.input_ports;
-  const nextMuxPort = muxInputs?.nextPort ?? null;
+  const inputPorts = dynamicInputs?.ports ?? spec.input_ports;
+  const nextDynamicPort = dynamicInputs?.nextPort ?? null;
   const taskHintEntries = useMemo(
     () =>
       inputPorts.flatMap((port) => {
@@ -184,7 +184,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
   const updateNodeInternals = useUpdateNodeInternals();
   useEffect(() => {
     updateNodeInternals(id);
-  }, [collapsedEffective, height, id, inputPorts, reversed, updateNodeInternals, width]);
+  }, [collapsedEffective, height, id, inputPorts, reversed, spec.output_ports, updateNodeInternals, width]);
 
   // Check if this node has any highlighted ports
   const highlightedPorts = useMemo(() => {
@@ -442,7 +442,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
       {collapsedEffective ? null : (
         <div className="relative text-xs text-slate-600" style={{ height: bodyHeight, padding: BODY_PADDING }}>
           {inputPorts.map((port, index) => {
-            const isDynamicMuxPort = port === nextMuxPort;
+            const isNextDynamicPort = port === nextDynamicPort;
             const conserving = isConservingPort(port);
             return (
               <Fragment key={`handle-in-group-${port}`}>
@@ -466,7 +466,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
                           ? 'objective'
                           : taskBoundInputs.has(port)
                             ? 'task'
-                            : isDynamicMuxPort
+                            : isNextDynamicPort
                               ? 'dynamic'
                               : 'model'
                   }
@@ -583,7 +583,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
             );
           })}
           {inputPorts.map((port, index) => {
-            const isDynamicMuxPort = port === nextMuxPort;
+            const isNextDynamicPort = port === nextDynamicPort;
             return (
               <button
                 key={`label-in-${port}`}
@@ -593,7 +593,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
                 onMouseLeave={() => hoverTopPaneEntity(null)}
                 className={clsx(
                   'nodrag nopan absolute flex items-center gap-2 rounded px-1 py-0.5 text-slate-600 hover:bg-brand-50 hover:text-brand-700',
-                  isDynamicMuxPort && 'text-slate-400',
+                  isNextDynamicPort && 'text-slate-400',
                   objectivePorts.has(`input:${port}`) && 'font-semibold text-violet-700',
                   topPane.selected_entity_id === graphPortEntityId(label, 'input', port) &&
                     'bg-brand-100 font-semibold text-brand-800 ring-[3px] ring-brand-300 shadow-sm',
@@ -605,7 +605,7 @@ function CustomNodeComponent({ id, data, selected }: NodeProps) {
                   transform: 'translateY(-50%)',
                 }}
                 title={
-                  isDynamicMuxPort
+                  isNextDynamicPort
                     ? `Connect to add ${label}.${port}. Right-click for objectives and probes.`
                     : `Select ${label}.${port}. Right-click for objectives and probes.`
                 }

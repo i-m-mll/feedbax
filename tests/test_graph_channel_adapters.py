@@ -139,7 +139,7 @@ def test_edge_additive_channel_adapter_materializes_sum_and_runs() -> None:
         (adapter_id, "output", "readout", "input"),
     }
 
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
     state = init_state_from_component(graph)
     outputs, _ = graph(
         {"perturbation.feedback": jnp.asarray(3.0)},
@@ -150,7 +150,7 @@ def test_edge_additive_channel_adapter_materializes_sum_and_runs() -> None:
     assert jnp.array_equal(outputs["output"], jnp.asarray(8.0))
     assert validate_graph_spec(
         spec,
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
     ).valid
 
 
@@ -182,7 +182,7 @@ def test_input_additive_channel_adapter_wraps_existing_input_binding() -> None:
         output_bindings={"output": ("readout", "output")},
     )
 
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
     state = init_state_from_component(graph)
     outputs, _ = graph(
         {
@@ -199,7 +199,7 @@ def test_input_additive_channel_adapter_wraps_existing_input_binding() -> None:
     assert jnp.array_equal(outputs["output"], jnp.asarray([4.0, 7.0]))
     assert validate_graph_spec(
         spec,
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
     ).valid
 
 
@@ -239,7 +239,7 @@ def test_input_additive_channel_adapter_binds_direct_model_input() -> None:
         output_bindings={"state": ("mechanics", "state")},
     )
 
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
     state = init_state_from_component(graph)
     outputs, _ = graph(
         {
@@ -254,5 +254,5 @@ def test_input_additive_channel_adapter_binds_direct_model_input() -> None:
     assert jnp.array_equal(outputs["state"], jnp.asarray([3.0, 8.0]))
     assert validate_graph_spec(
         spec,
-        component_registry=ComponentRegistry(load_user_components=False),
+        component_registry=ComponentRegistry(),
     ).valid

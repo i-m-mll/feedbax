@@ -8,16 +8,45 @@ Provides discrete-time accumulators, unit delays, and zero-order holds.
 
 from __future__ import annotations
 
+from functools import partial
+
+import jax.numpy as jnp
 from equinox import field
 from equinox.nn import State, StateIndex
-import jax.numpy as jnp
 from jax.typing import DTypeLike
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax.control._vector import initial_control_vector, require_control_vector
+from feedbax.component_registry import component
+from feedbax.component_registry.declarations import ParameterField
+from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.control._vector import (
+    _CONTROL_INPUT_DTYPE,
+    _CONTROL_INPUT_PROTOTYPE,
+    _control_output_prototype,
+    initial_control_vector,
+    require_control_vector,
+)
 from feedbax.runtime.graph import Component
 
 
+@component(
+    "IntegratorDiscrete",
+    category="Discrete",
+    description="Discrete-time accumulator.",
+    parameter_fields=[
+        ParameterField(name="dt", type="float", default=1.0, min=0.0, required=True),
+        ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+        ParameterField(name="initial_value", type="float", default=0.0, required=False),
+        _CONTROL_INPUT_DTYPE,
+    ],
+    icon="PlusSquare",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=partial(_control_output_prototype, port="input"),
+    input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
+)
 class IntegratorDiscrete(Component):
     """Discrete-time accumulator (summation).
 
@@ -68,6 +97,23 @@ class IntegratorDiscrete(Component):
         return {"output": y_new}, state
 
 
+@component(
+    "UnitDelay",
+    category="Discrete",
+    description="Unit delay (z^-1).",
+    parameter_fields=[
+        ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+        ParameterField(name="initial_value", type="float", default=0.0, required=False),
+        _CONTROL_INPUT_DTYPE,
+    ],
+    icon="Clock",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=partial(_control_output_prototype, port="input"),
+    input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
+)
 class UnitDelay(Component):
     """Unit delay (z^{-1}): output is the previous input.
 
@@ -113,6 +159,24 @@ class UnitDelay(Component):
         return {"output": prev}, state
 
 
+@component(
+    "ZeroOrderHold",
+    category="Discrete",
+    description="Sample and hold every N steps.",
+    parameter_fields=[
+        ParameterField(name="hold_steps", type="int", default=1, min=1, required=True),
+        ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+        ParameterField(name="initial_value", type="float", default=0.0, required=False),
+        _CONTROL_INPUT_DTYPE,
+    ],
+    icon="Pause",
+    port_types=PortTypeSpec(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=partial(_control_output_prototype, port="input"),
+    input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
+)
 class ZeroOrderHold(Component):
     """Zero-order hold: sample input every N steps, hold between samples.
 

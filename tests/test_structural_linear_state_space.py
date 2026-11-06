@@ -187,7 +187,7 @@ def test_structural_transition_requires_floating_point_nominal_matrix(dtype) -> 
 
 
 def test_structural_registry_advertises_sparse_delta_a_authoring() -> None:
-    meta = ComponentRegistry(load_user_components=False).get("StructuralLinearStateSpace")
+    meta = ComponentRegistry().get("StructuralLinearStateSpace")
     assert meta is not None
     delta_A_schema = next(schema for schema in meta.param_schema if schema.name == "delta_A")
 
@@ -248,7 +248,7 @@ def test_signed_and_nominal_structural_variants(
 
 
 def test_task_trial_selects_one_constant_structural_variant() -> None:
-    graph = spec_to_graph(_spec(), ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(_spec(), ComponentRegistry())
     component = graph.nodes["plant"]
     trial = TaskTrialSpec(
         inits=WhereDict({
@@ -277,7 +277,7 @@ def test_task_trial_selects_one_constant_structural_variant() -> None:
 
 
 def test_graphspec_round_trip_preserves_structural_identity() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     graph = spec_to_graph(_spec(active=True), registry)
     round_tripped = graph_to_spec(graph)
     node = round_tripped.nodes["plant"]
@@ -289,19 +289,25 @@ def test_graphspec_round_trip_preserves_structural_identity() -> None:
 
 
 def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     graph = spec_to_graph(_sparse_spec(), registry)
     component = graph.nodes["plant"]
+    assert isinstance(component, StructuralLinearStateSpace)
+    edited_delta = jnp.zeros((4, 4)).at[3, 2].set(0.75)
+    trial_state = init_state_from_component(component).set(
+        component.structural_params_index,
+        StructuralLinearDynamicsPerturbation(edited_delta, active=True),
+    )
     outputs, _ = component(
         {"force": jnp.zeros((1,)), "epsilon": jnp.zeros((1,))},
-        init_state_from_component(component),
+        trial_state,
         key=jr.PRNGKey(0),
     )
 
     round_tripped = graph_to_spec(graph)
     node = round_tripped.nodes["plant"]
 
-    assert jnp.allclose(outputs["state"], jnp.asarray([0.0, 0.0, 1.0, -0.5]))
+    assert jnp.allclose(outputs["state"], jnp.asarray([0.0, 0.0, 1.0, 0.75]))
     assert node.params["delta_A"] == {
         "schema_id": ARRAY_VALUE_SCHEMA_ID,
         "schema_version": ARRAY_VALUE_SCHEMA_VERSION,
@@ -319,6 +325,25 @@ def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> Non
         .nodes["plant"]
         .params["delta_A"]
         == node.params["delta_A"]
+    )
+
+    edited_A = component.A.at[0, 0].set(2.0)
+    edited_model = eqx.tree_at(lambda model: model.nodes["plant"].A, graph, edited_A)
+    edited_model_spec = graph_to_spec(edited_model).nodes["plant"]
+    assert edited_model_spec.params["A"] == edited_A.tolist()
+    assert edited_model_spec.params["delta_A"] == node.params["delta_A"]
+
+    edited = eqx.tree_at(
+        lambda model: model.nodes["plant"].structural_params_index.init.delta_A,
+        graph,
+        edited_delta,
+    )
+    edited_spec = graph_to_spec(edited)
+    assert edited_spec.nodes["plant"].params["delta_A"] == edited_delta.tolist()
+    reloaded = spec_to_graph(edited_spec, registry).nodes["plant"]
+    assert jnp.array_equal(
+        init_state_from_component(reloaded).get(reloaded.structural_params_index).delta_A,
+        edited_delta,
     )
 
 
@@ -373,11 +398,18 @@ def test_nested_v4_sparse_migration_materializes_losslessly_and_preserves_envelo
     with jax.experimental.enable_x64():
         graph = spec_to_graph(
             GraphSpec.model_validate(migration.payload),
-            ComponentRegistry(load_user_components=False),
+            ComponentRegistry(),
         )
         component = graph.nodes["wrapper"].nodes["plant"]
 
-    assert component.initial_delta_A[0][1] == high_precision
+    assert (
+        float(
+            init_state_from_component(component)
+            .get(component.structural_params_index)
+            .delta_A[0, 1]
+        )
+        == high_precision
+    )
     round_tripped = graph_to_spec(graph)
     round_trip_delta = round_tripped.subgraphs["wrapper"].nodes["plant"].params["delta_A"]
     assert round_trip_delta == nested_delta
@@ -445,7 +477,7 @@ def test_sparse_graphspec_rejects_invalid_entries(
     )
 
     with pytest.raises(ValueError, match=match):
-        spec_to_graph(invalid, ComponentRegistry(load_user_components=False))
+        spec_to_graph(invalid, ComponentRegistry())
 
 
 def test_structural_component_rejects_unknown_parameter_schema_version() -> None:
@@ -456,6 +488,6 @@ def test_structural_component_rejects_unknown_parameter_schema_version() -> None
     incompatible = spec.model_copy(update={"nodes": {"plant": node}})
 
     with pytest.raises(GraphCompilationError, match="No component migration registered") as exc:
-        spec_to_graph(incompatible, ComponentRegistry(load_user_components=False))
+        spec_to_graph(incompatible, ComponentRegistry())
 
     assert isinstance(exc.value.__cause__, UnsupportedComponentMigration)

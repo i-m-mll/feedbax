@@ -10,13 +10,74 @@ from equinox.nn import State
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax.component_registry import ParameterField, component
+from feedbax.component_registry.prototypes import _required_input
+from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.migrations import ComponentMigration, UnsupportedComponentMigration
 from feedbax.runtime.graph import Component
 
 
 AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1 = "feedbax.component.affine_value_composer.v1"
-AFFINE_VALUE_COMPOSER_SCHEMA_VERSION = "feedbax.component.affine_value_composer.v2"
+AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2 = "feedbax.component.affine_value_composer.v2"
+AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V3 = "feedbax.component.affine_value_composer.v3"
+AFFINE_VALUE_COMPOSER_SCHEMA_VERSION = AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V3
 AFFINE_VALUE_COMPOSER_FEATURE_RULES = frozenset(
     {"identity", "target_relative_difference"}
+)
+
+
+def _affine_v1_evidence(params: Mapping[str, Any]) -> bool:
+    return params.get("schema_version") == AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1 or (
+        "schema_version" not in params and "label" in params
+    )
+
+
+def _affine_v2_evidence(params: Mapping[str, Any]) -> bool:
+    return params.get("schema_version") == AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2
+
+
+def _migrate_affine_v1(params: dict[str, Any]) -> dict[str, Any]:
+    if "schema_version" in params and not _affine_v1_evidence(params):
+        raise UnsupportedComponentMigration(
+            f"Conflicting AffineValueComposer v1 marker: {params['schema_version']!r}"
+        )
+    return {
+        **{name: value for name, value in params.items() if name != "label"},
+        "schema_version": AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2,
+    }
+
+
+def _migrate_affine_v2(params: dict[str, Any]) -> dict[str, Any]:
+    if "schema_version" in params and not _affine_v2_evidence(params):
+        raise UnsupportedComponentMigration(
+            f"Conflicting AffineValueComposer v2 marker: {params['schema_version']!r}"
+        )
+    return {name: value for name, value in params.items() if name != "schema_version"}
+
+
+AFFINE_VALUE_COMPOSER_MIGRATIONS = (
+    ComponentMigration(
+        source_type="AffineValueComposer",
+        target_type="AffineValueComposer",
+        owner="feedbax",
+        source_param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1,
+        target_param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2,
+        migration_id="feedbax.component.AffineValueComposer.drop-label",
+        migrate_params=_migrate_affine_v1,
+        description="Use the graph node identity in place of the legacy parameter label.",
+        matches_unversioned=_affine_v1_evidence,
+    ),
+    ComponentMigration(
+        source_type="AffineValueComposer",
+        target_type="AffineValueComposer",
+        owner="feedbax",
+        source_param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2,
+        target_param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V3,
+        migration_id="feedbax.component.AffineValueComposer.params.v2-to-v3",
+        migrate_params=_migrate_affine_v2,
+        description="Use the outer parameter schema version as the sole version marker.",
+        matches_unversioned=_affine_v2_evidence,
+    ),
 )
 
 
@@ -235,6 +296,49 @@ def affine_value_composer_output_prototype(
     return {"value": base}
 
 
+def affine_composer_output_prototype(
+    params: Mapping[str, Any], inputs: Mapping[str, Any]
+) -> dict[str, Any]:
+    for port in ("base", "state"):
+        _required_input(inputs, port, component="AffineValueComposer")
+    return affine_value_composer_output_prototype(params, inputs)
+
+
+@component(
+    "AffineValueComposer",
+    category="Control",
+    description="State/target-conditioned affine value composer.",
+    parameter_fields=[
+        ParameterField(name="output_block_size", type="int", default=1, min=1, required=True),
+        ParameterField(
+            name="feature_rules",
+            type="object",
+            default=[{"kind": "identity", "state_slice": [0, 1]}],
+            required=True,
+            description="Ordered identity and target-relative difference rules.",
+        ),
+        ParameterField(name="gain_init", type="array", default=[[0.0]], required=False),
+        ParameterField(name="bias_init", type="array", default=[0.0], required=False),
+        ParameterField(name="use_bias", type="bool", default=True, required=False),
+    ],
+    attribute_paths={"gain_init": "gain", "bias_init": "bias"},
+    input_ports=["base", "state", "target", "gain", "bias"],
+    output_ports=["value"],
+    icon="Blend",
+    port_types=PortTypeSpec(
+        inputs={
+            "base": PortType(dtype="vector"),
+            "state": PortType(dtype="vector"),
+            "target": PortType(dtype="vector"),
+            "gain": PortType(dtype="array"),
+            "bias": PortType(dtype="vector"),
+        },
+        outputs={"value": PortType(dtype="vector")},
+    ),
+    output_prototype_fn=affine_composer_output_prototype,
+    param_schema_version=AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
+    migrations=AFFINE_VALUE_COMPOSER_MIGRATIONS,
+)
 class AffineValueComposer(Component):
     """Compose ``base + gain @ features(state, target) + bias``.
 

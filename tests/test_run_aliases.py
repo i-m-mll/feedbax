@@ -62,13 +62,13 @@ def _analysis_state(analysis_type: str, recipe):
 
     return asyncio.run(
         bootstrap_application(
-            new_registration_context(local_component_source=None),
+            new_registration_context(),
             registrations=(
                 PluginRegistration(
                     PluginDeclaration(
                         "tests.run_aliases",
                         "1",
-                        1,
+                        2,
                         families=(FamilyRequirement("analysis_recipes"),),
                     ),
                     register,

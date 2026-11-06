@@ -31,7 +31,7 @@ pytestmark = pytest.mark.feedbax_contract
 
 
 def _registry() -> ComponentRegistry:
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 def _report(graph: AcausalGraphSpec) -> DomainCompileReport:

@@ -1,127 +1,32 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
 
-import jax.numpy as jnp
-import jax.random as jr
-
-from feedbax._delayed_reaches import (
-    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
-    DEFAULT_DELAYED_MOVE_EPOCHS,
-    apply_delayed_reaches_preset,
-    delayed_reaches_n_steps_from_params,
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
+from feedbax.mechanics.analytical_component import (
+    _build_analytical_musculoskeletal_plant as _build_analytical_musculoskeletal_plant,
 )
-from feedbax.compiler.solver_config import DEFAULT_PLANAR_SOLVER, resolve_acausal_solver
+from feedbax.mechanics.direct_force_components import (
+    _build_point_mass as _build_point_mass,
+)
+from feedbax.mechanics.direct_force_components import (
+    _build_two_link_arm as _build_two_link_arm,
+)
 from feedbax.runtime.channel import Channel
 from feedbax.runtime.graph import Component
-from feedbax.mechanics.force_fields import (
-    ThresholdLatchedForce,
-    ThresholdLatchedForceParams,
-)
-from feedbax.objectives.loss import CompositeLoss
-from feedbax.mechanics.linear_state_space import StructuralLinearStateSpace
-from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
-from feedbax.mechanics.backend import DiffraxBackend
-from feedbax.mechanics.body import BodyPreset, default_2link_bounds
-from feedbax.mechanics.mechanics import Mechanics
-from feedbax.mechanics.model_builder import ChainConfig
-from feedbax.mechanics.muscle_config import (
-    default_6muscle_2link_segment_lengths,
-    default_6muscle_2link_topology,
-)
-from feedbax.mechanics.plant import DirectForceInput
-from feedbax.mechanics.skeleton.arm import TwoLinkArm
-from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.noise import Multiplicative, Normal
-from feedbax.components.penzai import (
-    PENZAI_AVAILABLE,
-    UnsupportedPenzaiStateError,
-    build_penzai_subgraph,
+from feedbax.tasks.reach_components import (
+    _build_delayed_reaches as _build_delayed_reaches,
 )
-from feedbax.contracts.acausal_interface import MUSCLE_EXCITATION_PAYLOAD
-from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
-from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
-
-
-def _build_mechanics(params: Mapping[str, Any]) -> Mechanics:
-    plant_type = params.get("plant_type", "TwoLinkArm")
-    if plant_type == "TwoLinkArm":
-        plant = DirectForceInput(TwoLinkArm(l=params.get("link_lengths", (0.30, 0.33))))
-    elif plant_type == "PointMass":
-        plant = DirectForceInput(
-            PointMass(
-                mass=float(params.get("mass", 1.0)),
-                damping=float(params.get("damping", 0.0)),
-            )
-        )
-    else:
-        raise ValueError(f"Unsupported plant_type '{plant_type}'")
-    return Mechanics(plant=plant, dt=float(params.get("dt", 0.01)))
-
-
-class _ExcitationMechanics(Mechanics):
-    input_ports = ("excitation",)
-
-    def __call__(self, inputs, state, *, key):
-        excitation = inputs.get("excitation", inputs.get("force"))
-        if excitation is None:
-            raise ValueError("Missing required acausal source input 'excitation'")
-        value = jnp.asarray(excitation)
-        MUSCLE_EXCITATION_PAYLOAD.validate_shape("excitation", value.shape)
-        return super().__call__({"force": value}, state, key=key)
-
-
-def _default_analytical_body_preset(params: Mapping[str, Any]) -> BodyPreset:
-    bounds = default_2link_bounds()
-    tau_act = float(params.get("tau_act", 0.01))
-    tau_deact = float(params.get("tau_deact", 0.04))
-    return BodyPreset(
-        segment_lengths=default_6muscle_2link_segment_lengths(),
-        segment_masses=(bounds.segment_masses_min + bounds.segment_masses_max) / 2.0,
-        joint_damping=(bounds.joint_damping_min + bounds.joint_damping_max) / 2.0,
-        joint_stiffness=(bounds.joint_stiffness_min + bounds.joint_stiffness_max) / 2.0,
-        muscle_pcsa=(bounds.muscle_pcsa_min + bounds.muscle_pcsa_max) / 2.0,
-        muscle_optimal_fiber_length=(
-            bounds.muscle_optimal_fiber_length_min + bounds.muscle_optimal_fiber_length_max
-        )
-        / 2.0,
-        muscle_tendon_slack_length=(
-            bounds.muscle_tendon_slack_length_min + bounds.muscle_tendon_slack_length_max
-        )
-        / 2.0,
-        muscle_moment_arm_magnitudes=(
-            bounds.muscle_moment_arm_magnitudes_min + bounds.muscle_moment_arm_magnitudes_max
-        )
-        / 2.0,
-        tau_act=tau_act,
-        tau_deact=tau_deact,
-    )
-
-
-def _build_analytical_musculoskeletal_plant(params: Mapping[str, Any]) -> Mechanics:
-    dt = float(params.get("dt", 0.01))
-    solver = resolve_acausal_solver(
-        params.get("solver_type", DEFAULT_PLANAR_SOLVER), dt, physical_domain="planar_multibody"
-    )
-    n_steps = int(params.get("n_steps", 1))
-    if n_steps < 1:
-        raise ValueError("AnalyticalMusculoskeletalPlant n_steps must be >= 1")
-    backend = DiffraxBackend(control_dt=dt, sub_dt=dt / n_steps, solver=solver)
-    chain_config = ChainConfig(
-        n_joints=2,
-        muscle_topology=default_6muscle_2link_topology(),
-    )
-    plant = AnalyticalMusculoskeletalPlant.from_body_preset(
-        _default_analytical_body_preset(params),
-        chain_config,
-        clip_states=bool(params.get("clip_states", True)),
-        key=jr.PRNGKey(0),
-    )
-    return _ExcitationMechanics(
-        plant=plant,
-        backend=backend,
-        key=jr.PRNGKey(0),
-    )
+from feedbax.tasks.reach_components import (
+    _build_simple_reaches as _build_simple_reaches,
+)
+from feedbax.tasks.reach_components import (
+    _build_stabilization as _build_stabilization,
+)
+from feedbax.tasks.reach_components import (
+    _project_delayed_reaches_params as _project_delayed_reaches_params,
+)
 
 
 def _noise_params(params: Mapping[str, Any]) -> dict[str, Any]:
@@ -181,9 +86,17 @@ def _build_noise_func(noise: Mapping[str, Any]):
     if model == "additive_gaussian":
         return Normal(std=additive_std) if additive_std or include_zero else None
     if model == "signal_dependent_gaussian":
-        return Multiplicative(Normal(std=signal_dependent_std)) if signal_dependent_std or include_zero else None
+        return (
+            Multiplicative(Normal(std=signal_dependent_std))
+            if signal_dependent_std or include_zero
+            else None
+        )
     if model == "signal_dependent_plus_additive":
-        signal = Multiplicative(Normal(std=signal_dependent_std)) if signal_dependent_std or include_zero else None
+        signal = (
+            Multiplicative(Normal(std=signal_dependent_std))
+            if signal_dependent_std or include_zero
+            else None
+        )
         additive = Normal(std=additive_std) if additive_std or include_zero else None
         if signal is not None and additive is not None:
             return signal + additive
@@ -210,177 +123,6 @@ def _build_channel(params: Mapping[str, Any]) -> Channel:
         noise_role=None if noise["role"] is None else str(noise["role"]),
         noise_timing=None if noise["timing"] is None else str(noise["timing"]),
     )
-
-
-def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComponent:
-    loss_func = CompositeLoss(())
-    if task_type == "SimpleReaches":
-        task = SimpleReaches(
-            loss_func=loss_func,
-            n_steps=int(params.get("n_steps", 200)),
-            workspace=jnp.asarray(params.get("workspace", [[-1.0, -1.0], [1.0, 1.0]])),
-            eval_n_directions=int(params.get("eval_n_directions", 7)),
-            eval_reach_length=float(params.get("eval_reach_length", 0.5)),
-            eval_grid_n=int(params.get("eval_grid_n", 1)),
-        )
-    elif task_type == "DelayedReaches":
-        task = DelayedReaches(
-            loss_func=loss_func,
-            n_steps=delayed_reaches_n_steps_from_params(params),
-            workspace=jnp.asarray(params.get("workspace", [[-1.0, -1.0], [1.0, 1.0]])),
-            preset=params.get("preset", None),
-            train_endpoint_mode=str(params.get("train_endpoint_mode", "workspace")),
-            epoch_len_ranges=params.get("epoch_len_ranges", DEFAULT_DELAYED_EPOCH_LEN_RANGES),
-            epoch_names=tuple(str(value) for value in params.get("epoch_names", []))
-            or ("hold", "target_on", "movement"),
-            target_on_epochs=tuple(int(value) for value in params.get("target_on_epochs", [1, 2])),
-            hold_epochs=tuple(int(value) for value in params.get("hold_epochs", [0, 1])),
-            move_epochs=params.get("move_epochs", DEFAULT_DELAYED_MOVE_EPOCHS),
-            p_catch_trial=float(params.get("p_catch_trial", 0.5)),
-            target_visible_from_start=bool(params.get("target_visible_from_start", False)),
-            go_cue_event_name=params.get("go_cue_event_name", None),
-            catch_metadata_policy=str(params.get("catch_metadata_policy", "none")),
-            eval_n_directions=int(params.get("eval_n_directions", 7)),
-            eval_reach_length=float(params.get("eval_reach_length", 0.5)),
-            eval_grid_n=int(params.get("eval_grid_n", 1)),
-        )
-    elif task_type == "Stabilization":
-        task = Stabilization(
-            loss_func=loss_func,
-            n_steps=int(params.get("n_steps", 200)),
-            workspace=jnp.asarray(params.get("workspace", [[-1.0, -1.0], [1.0, 1.0]])),
-        )
-    else:
-        raise ValueError(f"Unsupported task type '{task_type}'")
-
-    mode = params.get("mode", "open_loop")
-    if mode != "open_loop":
-        raise ValueError("Only open_loop TaskComponent is supported from GraphSpec")
-
-    trial_spec = task.sample_trial(key=jr.PRNGKey(0))
-    return TaskComponent(task=task, trial_spec=trial_spec, mode="open_loop")
-
-
-def _build_penzai_adapter(params: Mapping[str, Any]) -> Component:
-    builder_name = str(params.get("builder_name", ""))
-    if not builder_name:
-        raise ValueError("PenzaiAdapter requires 'builder_name' parameter")
-    if not PENZAI_AVAILABLE:
-        raise ImportError(
-            "penzai is required to instantiate PenzaiAdapter. Install with: pip install penzai"
-        )
-    builder_params = {
-        key: value
-        for key, value in params.items()
-        if key not in ("builder_name", "input_port", "output_port")
-    }
-    try:
-        return build_penzai_subgraph(
-            builder_name=builder_name,
-            params=builder_params,
-            input_port=str(params.get("input_port", "input")),
-            output_port=str(params.get("output_port", "output")),
-        )
-    except UnsupportedPenzaiStateError as exc:
-        raise ValueError(
-            "penzai.stateful_unsupported: PenzaiAdapter node uses unsupported "
-            f"StateVariable leaves at {', '.join(exc.paths)}"
-        ) from exc
-
-
-def _build_threshold_latched_force(params: Mapping[str, Any]) -> ThresholdLatchedForce:
-    return ThresholdLatchedForce(
-        state_selector=params["state_selector"],
-        direction=str(params["direction"]),
-        dt=float(params["dt"]),
-        params=ThresholdLatchedForceParams(
-            scale=float(params.get("scale", 1.0)),
-            active=bool(params.get("active", False)),
-            threshold=float(params["threshold"]),
-            force=jnp.asarray(params["force"]),
-            lateral_force=float(params.get("lateral_force", 0.0)),
-            ramp_duration=float(params.get("ramp_duration", 0.0)),
-        ),
-    )
-
-
-def _build_structural_linear_state_space(
-    params: Mapping[str, Any],
-) -> StructuralLinearStateSpace:
-    return StructuralLinearStateSpace(
-        A=jnp.asarray(params["A"]),
-        B=jnp.asarray(params["B"]),
-        delta_A=params["delta_A"],
-        authored_delta_A_value_spec=params.get("_authored_delta_A_value_spec"),
-        B_w=None if params.get("B_w") is None else jnp.asarray(params["B_w"]),
-        dt=float(params.get("dt", 1.0)),
-        initial_state=(
-            None if params.get("initial_state") is None else jnp.asarray(params["initial_state"])
-        ),
-        pos_slice=tuple(params.get("pos_slice", (0, 2))),
-        vel_slice=tuple(params.get("vel_slice", (2, 4))),
-        scale=float(params.get("scale", 1.0)),
-        active=bool(params.get("active", False)),
-    )
-
-
-def _build_two_link_arm(params: Mapping[str, Any]) -> Mechanics:
-    return _build_mechanics({**dict(params), "plant_type": "TwoLinkArm"})
-
-
-def _build_point_mass(params: Mapping[str, Any]) -> Mechanics:
-    return _build_mechanics({**dict(params), "plant_type": "PointMass"})
-
-
-def _build_simple_reaches(params: Mapping[str, Any]) -> TaskComponent:
-    return _build_task_component("SimpleReaches", params)
-
-
-def _project_delayed_reaches_params(params: Mapping[str, Any]) -> dict[str, Any]:
-    if params.get("preset") == "delayed_center_out":
-        return apply_delayed_reaches_preset(params)
-    return dict(params)
-
-
-def _build_delayed_reaches(params: Mapping[str, Any]) -> TaskComponent:
-    return _build_task_component("DelayedReaches", params)
-
-
-def _build_stabilization(params: Mapping[str, Any]) -> TaskComponent:
-    return _build_task_component("Stabilization", params)
-
-
-_DISPLAY_ONLY_MESSAGES: dict[str, str] = {
-    "MomentArmProjection": (
-        "MomentArmProjection node {node_name!r} has no Python builder yet. "
-        "It is a display-only abstraction used in composite subgraph templates."
-    ),
-    "RadialForceProjection": (
-        "RadialForceProjection node {node_name!r} has no Python builder yet. "
-        "It is a display-only abstraction used in composite subgraph templates."
-    ),
-    # C1 issue 196bed0: projection helpers remain display-only until C2 turns
-    # muscle paths and multibody geometry into real acausal mechanics interiors.
-}
-
-
-def _unsupported_component_builder(component_type: str) -> Callable[[Mapping[str, Any]], Component]:
-    message = _DISPLAY_ONLY_MESSAGES.get(
-        component_type,
-        f"Component type {component_type!r} is registered for metadata but has no "
-        "executable builder.",
-    )
-
-    def _builder(params: Mapping[str, Any]) -> Component:
-        del params
-        raise NotImplementedError(message.format(node_name="<unknown>"))
-
-    _builder._feedbax_unsupported_builder = True  # type: ignore[attr-defined]
-    _builder._feedbax_unsupported_builder_message = message  # type: ignore[attr-defined]
-    return _builder
-
-
-_UNREGISTERED_TEMPLATE_MESSAGES: dict[str, str] = {}
 
 
 def _template_builder_error(meta: Any, component_registry: Any) -> str | None:
@@ -420,10 +162,9 @@ def _unsupported_component_message(
     message = (
         _template_builder_error(meta, component_registry)
         or unsupported_message
-        or _DISPLAY_ONLY_MESSAGES.get(
-            node_type,
+        or (
             f"Component type {node_type!r} for node {node_name!r} is registered "
-            "for metadata but has no executable builder.",
+            "for metadata but has no executable builder."
         )
     )
     return message.format(node_name=node_name)
@@ -440,9 +181,6 @@ def build_component(
     """Build a leaf component from a GraphSpec node."""
     meta = component_registry.get(node_type)
     if meta is None:
-        message = _UNREGISTERED_TEMPLATE_MESSAGES.get(node_type)
-        if message is not None:
-            raise NotImplementedError(message.format(node_type=node_type, node_name=node_name))
         known = ", ".join(component_registry.names())
         raise ValueError(
             f"Unsupported component type {node_type!r} for node {node_name!r}. "

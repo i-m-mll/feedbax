@@ -97,7 +97,7 @@ def test_graph_round_trip_preserves_dtype_topology_and_initializer():
         key = jr.key(3)
         graph = cde_controller(2, 3, 1, vf_width=5, vf_depth=0, dtype=jnp.float64, key=key)
         spec = graph_to_spec(graph)
-        registry = ComponentRegistry(load_user_components=False)
+        registry = ComponentRegistry()
         rebuilt = compile_graph(GraphDocument(graph=spec), registry).graph
         state = rebuilt.init_state(key=key)
         outputs, _, carry = rebuilt.step({"input": jnp.ones(2, dtype=jnp.float32)}, state, key=key)

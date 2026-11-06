@@ -203,7 +203,7 @@ def test_thelen_graph_rollout_and_roundtrip_match_independent_muscles(key):
             "delayed_force": ("delay", "output"),
         },
     )
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     input_prototypes = {
         ("muscle", port): jnp.zeros_like(values[0]) for port, values in inputs.items()
     }

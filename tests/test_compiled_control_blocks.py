@@ -64,7 +64,7 @@ def test_compiled_control_blocks_run_on_float16_vectors() -> None:
     samples = jnp.array([[1.0, -2.0], [3.0, 0.5], [-0.5, 4.0]], dtype=jnp.float16)
     compiled = compile_graph(
         GraphDocument(graph=spec),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
         input_prototypes={("__graph__", "command"): samples[0]},
     )
     graph = compiled.graph
@@ -127,7 +127,7 @@ def test_compiled_control_rejects_late_incompatible_prototype(shape, dtype, obse
     with pytest.raises(GraphCompilationError) as caught:
         compile_graph(
             GraphDocument(graph=spec),
-            ComponentRegistry(load_user_components=False),
+            ComponentRegistry(),
             input_prototypes={("__graph__", "command"): jnp.zeros(shape, dtype=dtype)},
         )
 
@@ -139,7 +139,7 @@ def test_compiled_control_rejects_late_incompatible_prototype(shape, dtype, obse
 
 
 def test_programmatic_pid_unbounded_limits_survive_serialization() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     graph = Graph(nodes={"continuous": PID(), "discrete": PIDDiscrete()})
     document = GraphDocument(graph=graph_to_spec(graph, registry))
 

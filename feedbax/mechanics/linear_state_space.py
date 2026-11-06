@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from equinox import Module, field
 from equinox.nn import State, StateIndex
@@ -10,20 +11,26 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
+from feedbax.component_registry import ParameterField, component
+from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.migrations import ComponentMigration
 from feedbax.runtime.graph import Component
 from feedbax.runtime.state import CartesianState
 from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
     ARRAY_VALUE_SCHEMA_VERSION,
-    ArrayValueSpec,
     SparseCooArrayValueSpec,
     SparseCooEntrySpec,
     materialize_array_value,
 )
 
 
-STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION_V1 = "feedbax.component.structural_linear_state_space.v1"
-STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION = "feedbax.component.structural_linear_state_space.v2"
+STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION_V1 = (
+    "feedbax.component.structural_linear_state_space.v1"
+)
+STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION = (
+    "feedbax.component.structural_linear_state_space.v2"
+)
 
 
 class StructuralLinearDynamicsPerturbation(Module):
@@ -125,6 +132,85 @@ class LinearStateSpaceState(Module):
     vector: Array
 
 
+def linear_state_space_output_prototype(
+    params: Mapping[str, Any],
+    inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return LinearStateSpace effector/state prototypes from matrices and slices."""
+
+    a_matrix = jnp.asarray(params["A"])
+    b_matrix = jnp.asarray(params["B"])
+    state_dim = int(a_matrix.shape[0])
+    pos_start, pos_stop = (int(value) for value in params.get("pos_slice", [0, 2]))
+    vel_start, vel_stop = (int(value) for value in params.get("vel_slice", [2, 4]))
+    force_dim = int(b_matrix.shape[1]) if b_matrix.ndim == 2 else 0
+    return {
+        "effector": CartesianState(
+            pos=jnp.zeros((pos_stop - pos_start,), dtype=a_matrix.dtype),
+            vel=jnp.zeros((vel_stop - vel_start,), dtype=a_matrix.dtype),
+            force=jnp.zeros((force_dim,), dtype=a_matrix.dtype),
+        ),
+        "state": jnp.zeros((state_dim,), dtype=a_matrix.dtype),
+    }
+
+
+_LINEAR_MATRIX_FIELDS = [
+    ParameterField(
+        name="A",
+        type="array",
+        default=[
+            [1.0, 0.0, 0.01, 0.0],
+            [0.0, 1.0, 0.0, 0.01],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        required=True,
+    ),
+    ParameterField(
+        name="B",
+        type="array",
+        default=[
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [0.01, 0.0],
+            [0.0, 0.01],
+        ],
+        required=True,
+    ),
+    ParameterField(name="B_w", type="array", default=None, required=False),
+]
+_LINEAR_INITIALIZATION_FIELDS = [
+    ParameterField(name="dt", type="float", default=0.01, min=0.0, required=False),
+    ParameterField(
+        name="initial_state",
+        type="array",
+        default=[0.0, 0.0, 0.0, 0.0],
+        required=False,
+    ),
+    ParameterField(name="pos_slice", type="array", default=[0, 2], required=False),
+    ParameterField(name="vel_slice", type="array", default=[2, 4], required=False),
+]
+_LINEAR_STATE_SPACE_PORT_TYPES = PortTypeSpec(
+    inputs={
+        "force": PortType(dtype="vector"),
+        "epsilon": PortType(dtype="vector"),
+    },
+    outputs={
+        "effector": PortType(dtype="state"),
+        "state": PortType(dtype="vector"),
+    },
+)
+
+
+@component(
+    "LinearStateSpace",
+    category="Mechanics",
+    description="Discrete linear state-space mechanics.",
+    parameter_fields=[*_LINEAR_MATRIX_FIELDS, *_LINEAR_INITIALIZATION_FIELDS],
+    icon="Grid3x3",
+    port_types=_LINEAR_STATE_SPACE_PORT_TYPES,
+    output_prototype_fn=linear_state_space_output_prototype,
+)
 class LinearStateSpace(Component):
     """Discrete linear state-space mechanics.
 
@@ -253,6 +339,62 @@ class LinearStateSpace(Component):
         }
 
 
+_DEFAULT_STRUCTURAL_DELTA_A = SparseCooArrayValueSpec(
+    schema_id=ARRAY_VALUE_SCHEMA_ID,
+    schema_version=ARRAY_VALUE_SCHEMA_VERSION,
+    encoding="sparse_coo",
+    shape=(4, 4),
+    dtype="float32",
+    nonfinite="forbid",
+    fill=0.0,
+    entries=(),
+).model_dump(mode="json")
+
+
+def _drop_structural_label(params: dict[str, Any]) -> dict[str, Any]:
+    return {name: value for name, value in params.items() if name != "label"}
+
+
+@component(
+    "StructuralLinearStateSpace",
+    category="Mechanics",
+    description="Discrete linear mechanics with a trial-selectable structural delta_A.",
+    parameter_fields=[
+        *_LINEAR_MATRIX_FIELDS,
+        ParameterField(
+            name="delta_A",
+            type="object",
+            default=_DEFAULT_STRUCTURAL_DELTA_A,
+            description="Versioned sparse COO or constant array declaration; dense square arrays remain accepted.",
+            required=True,
+        ),
+        ParameterField(name="scale", type="float", default=1.0, required=False),
+        ParameterField(name="active", type="bool", default=False, required=False),
+        *_LINEAR_INITIALIZATION_FIELDS,
+    ],
+    icon="Grid3x3",
+    port_types=_LINEAR_STATE_SPACE_PORT_TYPES,
+    output_prototype_fn=linear_state_space_output_prototype,
+    param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+    attribute_paths={
+        "delta_A": "structural_params_index.init.delta_A",
+        "scale": "structural_params_index.init.scale",
+        "active": "structural_params_index.init.active",
+    },
+    migrations=(
+        ComponentMigration(
+            source_type="StructuralLinearStateSpace",
+            target_type="StructuralLinearStateSpace",
+            owner="feedbax",
+            source_param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION_V1,
+            target_param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+            migration_id="feedbax.component.StructuralLinearStateSpace.drop-label",
+            migrate_params=_drop_structural_label,
+            description="Use the graph node identity in place of the legacy parameter label.",
+            matches_unversioned=lambda params: "label" in params,
+        ),
+    ),
+)
 class StructuralLinearStateSpace(LinearStateSpace):
     """Discrete linear mechanics with a task-selectable structural ``delta_A``.
 
@@ -263,10 +405,6 @@ class StructuralLinearStateSpace(LinearStateSpace):
     """
 
     structural_params_index: StateIndex
-    initial_delta_A: tuple[tuple[float, ...], ...] = field(static=True)
-    initial_delta_A_value_spec: ArrayValueSpec | None = field(static=True)
-    initial_scale: float = field(static=True)
-    initial_active: bool = field(static=True)
 
     def __init__(
         self,
@@ -274,7 +412,6 @@ class StructuralLinearStateSpace(LinearStateSpace):
         B: Array,
         *,
         delta_A: Array,
-        authored_delta_A_value_spec: ArrayValueSpec | None = None,
         B_w: Array | None = None,
         dt: float = 1.0,
         initial_state: Array | None = None,
@@ -299,13 +436,6 @@ class StructuralLinearStateSpace(LinearStateSpace):
         )
         if params.delta_A.shape != self.A.shape:
             raise ValueError("delta_A must have the same shape as A.")
-        self.initial_delta_A = tuple(
-            tuple(float(value) for value in row)
-            for row in params.delta_A.tolist()
-        )
-        self.initial_delta_A_value_spec = authored_delta_A_value_spec
-        self.initial_scale = float(params.scale)
-        self.initial_active = bool(params.active)
         self.structural_params_index = StateIndex(params)
 
     def __call__(
@@ -317,9 +447,7 @@ class StructuralLinearStateSpace(LinearStateSpace):
     ) -> tuple[dict[str, PyTree], State]:
         del key
         current: LinearStateSpaceState = state.get(self.state_index)
-        params: StructuralLinearDynamicsPerturbation = state.get(
-            self.structural_params_index
-        )
+        params: StructuralLinearDynamicsPerturbation = state.get(self.structural_params_index)
         force = jnp.asarray(inputs["force"], dtype=self.A.dtype)
         epsilon = jnp.asarray(
             inputs.get("epsilon", jnp.zeros((self.B_w.shape[1],), dtype=self.A.dtype)),

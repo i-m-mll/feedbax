@@ -723,6 +723,8 @@ export interface DynamicPortPolicy {
   generated_index_origin?: number;
   minimum_count?: number;
   dynamic_port_type: PortType;
+  auto_resize_minimum?: number | null;
+  concatenate_to_output?: string | null;
 }
 
 export interface RepresentationParamPathBinding {
@@ -3372,6 +3374,8 @@ export const DynamicPortPolicySchema: z.ZodType<DynamicPortPolicy> = z.lazy(() =
       "generated_index_origin": z.number().int().safe().optional(),
       "minimum_count": z.number().int().safe().gte(0).optional(),
       "dynamic_port_type": PortTypeSchema,
+      "auto_resize_minimum": z.number().int().safe().gte(0).nullable().optional(),
+      "concatenate_to_output": z.string().nullable().optional(),
     })
     .strict()
     .superRefine((value, ctx) => {
@@ -3381,10 +3385,22 @@ export const DynamicPortPolicySchema: z.ZodType<DynamicPortPolicy> = z.lazy(() =
           message: "generated_name_template must contain only the {index} replacement field",
         });
       }
-      if (hasDuplicate(value.fixed_input_ports) || hasDuplicate(value.fixed_output_ports) || value.fixed_input_ports.some((name) => name.length === 0) || value.fixed_output_ports.some((name) => name.length === 0)) {
+      if (hasDuplicate(value.fixed_input_ports ?? []) || hasDuplicate(value.fixed_output_ports ?? []) || value.fixed_input_ports?.some((name) => name.length === 0) || value.fixed_output_ports?.some((name) => name.length === 0)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "fixed dynamic port names must be unique and non-empty",
+        });
+      }
+      if (value.auto_resize_minimum != null && (value.direction !== 'input' || value.count_mode !== 'integer' || value.auto_resize_minimum < (value.minimum_count ?? 1))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "auto resize requires integer input arity and a valid minimum",
+        });
+      }
+      if (value.concatenate_to_output != null && (value.direction !== 'input' || !value.fixed_output_ports?.includes(value.concatenate_to_output))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "concatenation requires dynamic inputs and a fixed output port",
         });
       }
     })

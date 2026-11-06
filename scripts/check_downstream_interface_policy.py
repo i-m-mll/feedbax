@@ -22,7 +22,7 @@ RATIFICATION_EVIDENCE = (
     "protected `develop` merge `798c085268119074f0522e3a2313a1722dfaedc8`"
 )
 POLICY_SOURCE_HEAD = "Protected `develop` merge `bc254ce60f8ce26640794788f8df9a236423052f`"
-RESULT_SCHEMA_VERSION = "feedbax.external_conformance.result.v14"
+RESULT_SCHEMA_VERSION = "feedbax.external_conformance.result.v15"
 RUNTIME_RESULT_EVIDENCE = (
     "No concrete conformance result artifact or execution receipt is pinned in this policy"
 )

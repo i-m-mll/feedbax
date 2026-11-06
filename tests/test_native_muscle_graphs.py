@@ -18,7 +18,7 @@ from tests.support.graph_compiler_test_support import spec_to_graph
 
 @pytest.fixture(scope="module")
 def registry():
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 @pytest.mark.parametrize("custom", [False, True])

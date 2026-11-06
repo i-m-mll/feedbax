@@ -66,7 +66,9 @@ class GraphParameterResolution:
         }
 
 
-def resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
+def resolve_component_node(
+    node: ComponentSpec, registry: Any, *, historical_unversioned: bool = False
+) -> ComponentSpec:
     from feedbax.compiler.serialization import _split_lowering_metadata
 
     resolver = getattr(registry, "resolve_component_spec", None)
@@ -85,6 +87,7 @@ def resolve_component_node(node: ComponentSpec, registry: Any) -> ComponentSpec:
             params,
             param_schema_version=node.param_schema_version,
             complete_params=False,
+            historical_unversioned=historical_unversioned,
         )
         return node.model_copy(
             update={
@@ -594,7 +597,7 @@ def resolve_graph_parameters(
     allow_incomplete: bool = False,
 ) -> GraphParameterResolution:
     """Complete each node once and infer solely from its final parameter meaning."""
-    registry = component_registry or ComponentRegistry(load_user_components=False)
+    registry = component_registry or ComponentRegistry()
     graph = graph if identities_resolved else materialize_additive_channel_adapters(graph)
     state = _Completion(graph, registry, "/graph", identities_resolved)
     while state.advance(input_prototypes):

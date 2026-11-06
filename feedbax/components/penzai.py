@@ -873,6 +873,85 @@ def build_penzai_subgraph(
     )
 
 
+def _build_penzai_adapter(params: Mapping[str, Any]) -> PenzaiSubgraph:
+    builder_name = str(params.get("builder_name", ""))
+    if not builder_name:
+        raise ValueError("PenzaiAdapter requires 'builder_name' parameter")
+    if not PENZAI_AVAILABLE:
+        raise ImportError(
+            "penzai is required to instantiate PenzaiAdapter. Install with: pip install penzai"
+        )
+    builder_params = {
+        key: value
+        for key, value in params.items()
+        if key not in ("builder_name", "input_port", "output_port")
+    }
+    try:
+        return build_penzai_subgraph(
+            builder_name=builder_name,
+            params=builder_params,
+            input_port=str(params.get("input_port", "input")),
+            output_port=str(params.get("output_port", "output")),
+        )
+    except UnsupportedPenzaiStateError as exc:
+        raise ValueError(
+            "penzai.stateful_unsupported: PenzaiAdapter node uses unsupported "
+            f"StateVariable leaves at {', '.join(exc.paths)}"
+        ) from exc
+
+
+def _extract_penzai_adapter_params(component: Any, model: Any) -> Any:
+    if component.builder_name is None:
+        raise ValueError("PenzaiAdapter serialization requires a registered builder name")
+    (input_port,) = component.input_ports
+    (output_port,) = component.output_ports
+    return type(model).model_validate(
+        {"builder_name": component.builder_name, "input_port": input_port, "output_port": output_port}
+    )
+
+
+def penzai_adapter_definition():
+    """The named Penzai adapter contract owned by PenzaiSubgraph."""
+    from feedbax.component_registry.declarations import ParameterField, declare_component
+    from feedbax.contracts.component import PortType, PortTypeSpec
+    from feedbax.contracts.domain import PENZAI_DOMAIN_ID
+
+    builders = tuple(
+        (str(item["name"]), str(item["description"]))
+        for item in list_penzai_builder_info()
+    )
+    return declare_component(
+        name="PenzaiAdapter",
+        builder=_build_penzai_adapter,
+        extractor=_extract_penzai_adapter_params,
+        override_reason="Recover the named builder and ports from the wrapped model.",
+        category="Structure",
+        description="Penzai neural network adapter (leaf). Wraps a trained Penzai model for inference.",
+        parameter_fields=[
+            ParameterField(
+                name="builder_name",
+                type="enum",
+                options=[name for name, _ in builders],
+                option_descriptions=dict(builders),
+                default=builders[0][0] if builders else "",
+                description="Registered Penzai model builder.",
+                required=True,
+            ),
+            ParameterField(name="input_port", type="str", default="input", required=False),
+            ParameterField(name="output_port", type="str", default="output", required=False),
+        ],
+        input_ports=["input"],
+        output_ports=["output"],
+        icon="Hexagon",
+        interior_domain=PENZAI_DOMAIN_ID,
+        template_kind="display",
+        port_types=PortTypeSpec(
+            inputs={"input": PortType(dtype="any")},
+            outputs={"output": PortType(dtype="any")},
+        ),
+    )
+
+
 # =============================================================================
 # Convenience exports
 # =============================================================================

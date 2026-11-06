@@ -67,7 +67,7 @@ from tests.support.checkpoint_minimax_plugin import (
 def application_registry_bundle():
     state = asyncio.run(
         bootstrap_application(
-            new_registration_context(local_component_source=None),
+            new_registration_context(),
             registrations=(PLUGIN_REGISTRATION,),
         )
     )

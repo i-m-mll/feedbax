@@ -33,9 +33,8 @@ import { isAcausalGraphSpec, isCausalGraphSpec } from '@/types/graph';
 import type { ComponentDefinition } from '@/types/components';
 import type { StudioTaskBindingSpec } from '@/types/workspace';
 import {
-  expandMuxForPort,
   normalizeDynamicPorts,
-  normalizeMuxSpec,
+  normalizeDynamicPortNode,
 } from '@/features/graph/dynamicPorts';
 import { findWireConnectionDriver } from '@/features/graph/inputDrivers';
 import { normalizeGraphForStudioAuthoring } from '@/features/graph/normalization';
@@ -1645,13 +1644,15 @@ interface GraphStoreState {
     nextPort: string
   ) => void;
   onNodesChange: (changes: NodeChange[]) => void;
-  onEdgesChange: (changes: EdgeChange[]) => void;
+  onEdgesChange: (changes: EdgeChange[], taskBindings?: StudioTaskBindingSpec | null) => void;
   onConnect: (
     connection: Connection,
     styleOverride?: 'bezier' | 'elbow',
     paramUpdates?: Array<{ nodeId: string; param: string; value: ComponentSpec['params'][string] }>,
-    wireOptions?: Pick<WireSpec, 'temporality' | 'recurrent_initializer'>
+    wireOptions?: Pick<WireSpec, 'temporality' | 'recurrent_initializer'>,
+    taskBindings?: StudioTaskBindingSpec | null
   ) => void;
+  resizeDynamicInputs: (taskBindings: StudioTaskBindingSpec) => boolean;
   addNodeFromComponent: (component: ComponentDefinition, position: { x: number; y: number }) => void;
   updateNodeParams: (
     nodeId: string,
@@ -2111,7 +2112,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
   pendingStateMerge: null,
   hydrateGraph: (graph, uiState, graphId, graphStackPath = [], saveRevision = null) => {
     const edgeStyle = get().edgeStyle;
-    const migrated = normalizeGraphForStudioAuthoring(graph);
+    const migrated = normalizeGraphForStudioAuthoring(graph, get()._componentRegistry);
     const normalized = normalizeUiState(migrated, uiState, edgeStyle);
     const restored = restoreGraphStackPathFromRoot({
       graph: migrated,
@@ -2148,7 +2149,8 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
   capturePersistedGraph: () => capturePersistedGraphFromState(get()),
   captureGraphStackPath: () => captureGraphStackPathFromState(get()),
   restoreSnapshot: (snapshot) => {
-    const { edgeStyle, graph } = snapshot;
+    const { edgeStyle } = snapshot;
+    const graph = normalizeDynamicPorts(snapshot.graph, get()._componentRegistry);
     const normalized = normalizeUiState(graph, snapshot.uiState, edgeStyle);
     baseSet({
       graphId: snapshot.graphId,
@@ -2420,7 +2422,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       let derivedNext: EditableGraphSpec;
       let nextUiState: GraphUIState;
       if (cachedGraph) {
-        derivedNext = cachedGraph;
+        derivedNext = normalizeDynamicPorts(cachedGraph, state._componentRegistry);
         nextUiState = cachedUi ?? { viewport: DEFAULT_VIEWPORT, node_states: {} };
       } else {
         if (!get()._isRegistryLoaded) {
@@ -3367,7 +3369,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       };
     });
   },
-  onEdgesChange: (changes) => {
+  onEdgesChange: (changes, taskBindings) => {
     set((state) => {
       const shouldRecord = changes.some((change) => {
         if (change.type === 'select') return false;
@@ -3399,7 +3401,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
         ...state.graph,
         wires: edgesToWires(nextEdges),
       };
-      graph = normalizeDynamicPorts(graph);
+      if (shouldRecord) graph = normalizeDynamicPorts(graph, state._componentRegistry, taskBindings, true);
       if (state.graphStack.length > 0) {
         graph = deriveSubgraphPorts(graph);
       }
@@ -3425,7 +3427,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       };
     });
   },
-  onConnect: (connection, styleOverride, paramUpdates = [], wireOptions) => {
+  onConnect: (connection, styleOverride, paramUpdates = [], wireOptions, taskBindings) => {
     if (!connection.source || !connection.target) return;
     if (!connection.sourceHandle || !connection.targetHandle) return;
     if (isAcausalGraphSpec(get().graph)) {
@@ -3536,9 +3538,8 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
         ...state.graph,
         wires: edgesToWires(nextEdges),
       };
-      graph = expandMuxForPort(graph, connection.target!, connection.targetHandle!);
-      graph = normalizeDynamicPorts(graph);
       graph = applyNodeParamUpdatesToGraph(graph, paramUpdates);
+      graph = normalizeDynamicPorts(graph, state._componentRegistry, taskBindings);
       if (state.graphStack.length > 0) {
         graph = deriveSubgraphPorts(graph);
       }
@@ -3566,6 +3567,17 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
         isDirty: true,
       };
     });
+  },
+  resizeDynamicInputs: (taskBindings) => {
+    const state = get();
+    const graph = normalizeDynamicPorts(state.graph, state._componentRegistry, taskBindings, true);
+    if (graph === state.graph) return false;
+    set({
+      graph,
+      nodes: reconcileNodes(state.nodes, graph, state.uiState),
+      isDirty: true,
+    });
+    return true;
   },
   addNodeFromComponent: (component, position) => {
     set((state) => {
@@ -3612,10 +3624,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
         input_ports: component.input_ports,
         output_ports: component.output_ports,
       };
-      spec = normalizeMuxSpec(
-        spec,
-        Number(spec.params.n_inputs) || spec.input_ports.length || 2
-      );
+      if (isCausalGraphSpec(state.graph)) spec = normalizeDynamicPortNode(spec, component);
       let graph: EditableGraphSpec = {
         ...state.graph,
         nodes: {
@@ -3665,19 +3674,13 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
           [paramName]: value,
         },
       };
-      const nextSpec = isAcausalGraphSpec(state.graph)
-        ? updatedSpec
-        : normalizeMuxSpec(
-            updatedSpec,
-            paramName === 'n_inputs' ? Number(value) : updatedSpec.input_ports.length
-          );
       const graph = normalizeDynamicPorts({
         ...state.graph,
         nodes: {
           ...state.graph.nodes,
-          [nodeId]: nextSpec,
+          [nodeId]: updatedSpec,
         },
-      }, taskBindingSpec);
+      }, state._componentRegistry, taskBindingSpec);
       return {
         graph,
         nodes: reconcileNodes(state.nodes, graph, state.uiState),
@@ -3693,7 +3696,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
     set((state) => {
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       let graph = applyNodeParamUpdatesToGraph(state.graph, updates);
-      graph = normalizeDynamicPorts(graph, taskBindingSpec);
+      graph = normalizeDynamicPorts(graph, state._componentRegistry, taskBindingSpec);
       if (state.graphStack.length > 0 && !isAcausalGraphSpec(graph)) {
         graph = deriveSubgraphPorts(graph);
       }
@@ -4286,11 +4289,18 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
         components.map((c) => [c.name, c])
       );
       const refreshed = refreshLayerContexts(state.graphStack, componentRegistry);
+      const graph = normalizeDynamicPorts(state.graph, componentRegistry);
+      const graphStack = refreshed.graphStack.map((layer) => {
+        const graph = normalizeDynamicPorts(layer.graph, componentRegistry);
+        return graph === layer.graph ? layer : { ...layer, graph };
+      });
       return {
         _compositeTypes: new Set(components.filter((c) => c.is_composite).map((c) => c.name)),
         _componentRegistry: componentRegistry,
         _isRegistryLoaded: true,
-        graphStack: refreshed.graphStack,
+        graph,
+        graphStack,
+        nodes: reconcileNodes(state.nodes, graph, state.uiState),
         currentContext: refreshed.currentContext,
       };
     });

@@ -9,12 +9,10 @@ import logging
 import os
 
 _LAZY_EXPORTS = {
-    "BUILTIN_GRAPH_TEMPLATES": ("feedbax.compiler.templates", "BUILTIN_GRAPH_TEMPLATES"),
     "cde_controller": ("feedbax.models.cde", "cde_controller"),
     "cde_controller_spec": ("feedbax.compiler.cde_templates", "cde_controller_spec"),
     "Component": ("feedbax.runtime.graph", "Component"),
     "Graph": ("feedbax.runtime.graph", "Graph"),
-    "GraphTemplateMetadata": ("feedbax.compiler.templates", "GraphTemplateMetadata"),
     "LoweredContribution": ("feedbax.lowering", "LoweredContribution"),
     "LowererExecutionError": ("feedbax.lowering", "LowererExecutionError"),
     "LowererRegistration": ("feedbax.lowering", "LowererRegistration"),
@@ -60,13 +58,11 @@ _LAZY_EXPORTS = {
 
 __all__ = [
     "AbstractTask",
-    "BUILTIN_GRAPH_TEMPLATES",
     "Component",
     "DelayedReaches",
     "DelayedReachTaskInputs",
     "DELAYED_CENTER_OUT_PRESET",
     "Graph",
-    "GraphTemplateMetadata",
     "LOG_LEVEL",
     "LoweredContribution",
     "LowererExecutionError",

@@ -9,6 +9,7 @@ import pytest
 
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
 from feedbax.components import penzai
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParamSchema
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
@@ -18,11 +19,13 @@ from tests.support.graph_compiler_test_support import spec_to_graph
 
 
 def _registry_cases() -> list[str]:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     return [
         component_type
         for component_type in registry.executable_names()
         if required_interior_domain(component_type, registry) is None
+        and registry.get(component_type).domain == CAUSAL_DOMAIN_ID
+        and not component_type.startswith("feedbax.equinox.")
     ]
 
 
@@ -269,30 +272,28 @@ def roundtrip_registry(component_type: str, monkeypatch: pytest.MonkeyPatch) -> 
         penzai.register_penzai_builder(
             "test_roundtrip_sigmoid", lambda _: pz.nn.Elementwise(jax.nn.sigmoid)
         )
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 def test_registries_capture_penzai_options_and_keep_metadata_detached(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from feedbax.component_registry import builtins
-
     options = [{"name": "example", "description": "Original"}]
-    monkeypatch.setattr(builtins, "penzai_builder_options", lambda: options)
+    monkeypatch.setattr(penzai, "list_penzai_builder_info", lambda: options)
 
-    first = ComponentRegistry(load_user_components=False)
+    first = ComponentRegistry()
     metadata = first.get("PenzaiAdapter")
     assert metadata is not None
     names = metadata.param_schema[0].options
     assert names is not None
     names.append("detached")
 
-    repeat = ComponentRegistry(load_user_components=False).get("PenzaiAdapter")
+    repeat = ComponentRegistry().get("PenzaiAdapter")
     assert repeat is not None
     assert repeat.param_schema[0].options == ["example"]
 
     options[0]["description"] = "Updated"
-    updated = ComponentRegistry(load_user_components=False).get("PenzaiAdapter")
+    updated = ComponentRegistry().get("PenzaiAdapter")
     assert updated is not None
     assert updated.param_schema[0].option_descriptions == {"example": "Updated"}
     original = first.get("PenzaiAdapter")
@@ -307,7 +308,7 @@ def test_registered_buildable_component_param_round_trips(
 ) -> None:
     """Every declared leaf parameter is exercised non-default and must survive."""
     registry = roundtrip_registry
-    restore_registry = ComponentRegistry(load_user_components=False)
+    restore_registry = ComponentRegistry()
     meta = registry.get(component_type)
     assert meta is not None
     baseline_params = _contextualize_params(component_type, None, deepcopy(meta.default_params))
@@ -361,7 +362,7 @@ def test_registered_buildable_component_param_round_trips(
 
 
 def test_two_link_arm_nondefault_lengths_round_trip() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     spec = GraphSpec(
         nodes={
             "arm": ComponentSpec(
@@ -381,7 +382,7 @@ def test_two_link_arm_nondefault_lengths_round_trip() -> None:
 
 @pytest.mark.parametrize("solver_params", [{}, {"solver_type": "tsit5"}], ids=["default", "tsit5"])
 def test_analytical_plant_authored_contract_round_trips(solver_params: dict[str, str]) -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     params = {
         "dt": 0.02,
         "n_steps": 4,
@@ -423,7 +424,7 @@ def test_analytical_plant_authored_contract_round_trips(solver_params: dict[str,
     ],
 )
 def test_channel_rejects_noncanonical_noise_spellings(params: dict[str, Any]) -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     spec = GraphSpec(
         nodes={
             "channel": ComponentSpec(
@@ -461,7 +462,7 @@ def test_programmatic_recurrent_controller_graph_round_trips() -> None:
         key=jax.random.PRNGKey(0),
     )
     spec = graph_to_spec(network)
-    roundtrip = graph_to_spec(spec_to_graph(spec, ComponentRegistry(load_user_components=False)))
+    roundtrip = graph_to_spec(spec_to_graph(spec, ComponentRegistry()))
 
     assert roundtrip == spec
     assert roundtrip.nodes["cell"].params["dtype"] == "float16"

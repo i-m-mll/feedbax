@@ -51,7 +51,7 @@ def _setup():
         output_bindings={noise: (noise, "output") for noise in _NOISE_MODELS},
     )
     model = compile_graph(
-        GraphDocument(graph=graph_spec), ComponentRegistry(load_user_components=False)
+        GraphDocument(graph=graph_spec), ComponentRegistry()
     ).graph.prepare()
     spec = _run_spec().model_copy(
         update={"graph": GraphTopologySourceSpec(inline=graph_spec.model_dump(mode="json"))}
