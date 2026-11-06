@@ -4021,8 +4021,8 @@ def test_smoke_launch_copies_declared_continuation_seed_into_scratch_namespace(
     monkeypatch.setattr(
         runpod_module,
         "build_native_resume_seed_command",
-        lambda source_path, attempt, target, resolved: (
-            f"SEED {source_path} {attempt} {target} {resolved is source}"
+        lambda source_path, attempt, target, resolved, *, workdir: (
+            f"SEED {source_path} {attempt} {target} {resolved is source} {workdir}"
         ),
     )
     namespace = build_runpod_execution_namespace(
@@ -4048,7 +4048,7 @@ def test_smoke_launch_copies_declared_continuation_seed_into_scratch_namespace(
 
     assert "SEED /remote/runs/inputs/" in command
     assert "/remote/runs/smoke/warm/.checkpoint-seed-attempt" in command
-    assert "/remote/runs/smoke/warm/checkpoints True" in command
+    assert "/remote/runs/smoke/warm/checkpoints True /workspace/feedbax" in command
     assert command.index("SEED ") < command.index("touch /remote/runs/sentinels/smoke-warm.started")
 
 

@@ -22,6 +22,7 @@ from feedbax.contracts.graph import (
     StudioTaskBindingSpec,
     WireSpec,
 )
+from feedbax.runtime._graph_key_schedule import derive_key, step_key
 from feedbax.runtime.graph import GraphTraceRequest, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.runtime.task_bindings import (
@@ -220,8 +221,8 @@ def test_registered_intervention_rollout_preserves_signal_dtype_and_gradients(
 
         noise = effect is None
         if noise:
-            # Each step, node and signal leaf gets its own split from the seed.
-            sample_keys = [jr.split(jr.split(step_key, 1)[0], 1)[0] for step_key in jr.split(key, 2)]
+            node_keys = [derive_key(step_key(key, t), "occurrence", "field") for t in range(2)]
+            sample_keys = [jr.split(node_key, 1)[0] for node_key in node_keys]
             effect = jnp.stack([jr.normal(sample_key, (2,), dtype) for sample_key in sample_keys])
         effect = jnp.broadcast_to(jnp.asarray(effect), signal.shape)
         if not active:
