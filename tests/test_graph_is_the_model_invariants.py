@@ -51,7 +51,7 @@ REFUSALS = (ValueError, TypeError, KeyError, GraphCompilationError)
 
 def _registry() -> ComponentRegistry:
     """A fresh registry per test; nothing process-global is mutated."""
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 def _gain_interior(gain: float, *, in_port: str, out_port: str) -> GraphSpec:
@@ -241,7 +241,7 @@ def test_acausal_composite_uses_interior_solver_not_outer_dt() -> None:
 
 
 def _composite_type_names() -> list[str]:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     return sorted(
         definition.name
         for definition in registry.list_all()

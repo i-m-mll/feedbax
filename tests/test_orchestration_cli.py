@@ -361,7 +361,7 @@ def test_preflight_loads_non_builtin_training_method_entry_point_before_matrix_a
         PluginDeclaration(
             "tests.orchestration_method",
             "1",
-            1,
+            2,
             families=(FamilyRequirement("training_programs"),),
         ),
         lambda context: _register_orchestration_plugin_method(context.registry(TRAINING_PROGRAMS)),
@@ -394,7 +394,7 @@ def test_matrix_commands_load_training_plugins_before_request_validation(
     request_path = _write_request(request, tmp_path / "assembly-request.json")
     events: list[str] = []
     state = asyncio.run(
-        bootstrap_application(new_registration_context(local_component_source=None))
+        bootstrap_application(new_registration_context())
     )
 
     async def compose() -> object:
@@ -834,7 +834,7 @@ with RunEventEmitter.from_env(heartbeat_seconds=None) as emitter:
         lambda **_kwargs: registry,
     )
     bundle = replace(
-        new_application_registry_bundle(local_component_source=None),
+        new_application_registry_bundle(),
         conformance_checks=CheckRegistry({"fixture_pass": lambda _row: pass_check("fixture_pass")}),
     )
     bundle.seal()
@@ -916,7 +916,7 @@ def test_runpod_driver_is_constructed_from_typed_deployment_policy(tmp_path: Pat
     )
 
     bindings = orchestrate._input_provider_bindings([f"checkpoint.inputs={tmp_path}"])
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = new_application_registry_bundle()
     driver = orchestrate._construct_driver(
         bundle,
         driver_registry=registries.drivers,
@@ -962,7 +962,7 @@ def test_resume_bootstraps_before_running(
 ) -> None:
     calls: list[tuple[str, Any]] = []
     state = asyncio.run(
-        bootstrap_application(new_registration_context(local_component_source=None))
+        bootstrap_application(new_registration_context())
     )
 
     async def compose() -> object:

@@ -61,7 +61,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
         "tests.fulfillment_cli",
         "1.0",
-        1,
+        2,
         families=(
             FamilyRequirement("evaluation_recipes"),
             FamilyRequirement("report_recipes"),

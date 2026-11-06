@@ -10,7 +10,6 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
-    field_validator,
     model_validator,
 )
 
@@ -25,7 +24,8 @@ RESULT_SCHEMA_VERSION_V10 = f"{RESULT_SCHEMA_ID}.v10"
 RESULT_SCHEMA_VERSION_V11 = f"{RESULT_SCHEMA_ID}.v11"
 RESULT_SCHEMA_VERSION_V12 = f"{RESULT_SCHEMA_ID}.v12"
 RESULT_SCHEMA_VERSION_V13 = f"{RESULT_SCHEMA_ID}.v13"
-RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v14"
+RESULT_SCHEMA_VERSION_V14 = f"{RESULT_SCHEMA_ID}.v14"
+RESULT_SCHEMA_VERSION = f"{RESULT_SCHEMA_ID}.v15"
 REJECTED_UNSHIPPED_SCHEMA_VERSIONS = (
     f"{RESULT_SCHEMA_ID}.v3",
     f"{RESULT_SCHEMA_ID}.v4",
@@ -155,13 +155,6 @@ class ProtocolRoleSlots(BaseModel):
     current: StrictInt
     minimum: StrictInt
 
-    @field_validator("current", "minimum")
-    @classmethod
-    def _require_protocol_one(cls, value: int) -> int:
-        if value != 1:
-            raise ValueError("protocol role must be the integer 1")
-        return value
-
 
 class LifecycleResult(BaseModel):
     """Truthful state of the clean-wheel production lifecycle case."""
@@ -172,13 +165,12 @@ class LifecycleResult(BaseModel):
     reason_code: str | None = None
 
 
-class ConformanceResult(BaseModel):
-    """Strict current result emitted by the external fixture."""
+class _ConformanceEvidence(BaseModel):
+    """Common envelope for the two complete evidence grammars."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_id: Literal["feedbax.external_conformance.result"] = RESULT_SCHEMA_ID
-    schema_version: Literal["feedbax.external_conformance.result.v14"] = RESULT_SCHEMA_VERSION
     status: Literal["pass", "blocked"]
     feedbax_version: str = Field(min_length=1)
     feedbax_install_root: str = Field(min_length=1)
@@ -188,11 +180,11 @@ class ConformanceResult(BaseModel):
     lifecycle: LifecycleResult
 
     @model_validator(mode="after")
-    def _validate_outcome(self) -> "ConformanceResult":
+    def _validate_outcome(self) -> "_ConformanceEvidence":
         observed = frozenset(self.cases)
         if observed != REQUIRED_CASE_ID_SET:
             raise ValueError(
-                "external conformance cases must exactly match the v14 contract: "
+                "external conformance cases must exactly match the contract: "
                 f"missing={sorted(REQUIRED_CASE_ID_SET - observed)!r}, "
                 f"extra={sorted(observed - REQUIRED_CASE_ID_SET)!r}"
             )
@@ -207,8 +199,32 @@ class ConformanceResult(BaseModel):
         return self
 
 
-def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResult:
-    """Load v14 while preserving explicit decisions for older incomplete evidence."""
+class ConformanceResult(_ConformanceEvidence):
+    """Strict current result emitted by the external fixture."""
+
+    schema_version: Literal["feedbax.external_conformance.result.v15"] = RESULT_SCHEMA_VERSION
+
+    @model_validator(mode="after")
+    def _bind_current_protocol(self) -> "ConformanceResult":
+        if (self.protocol_roles.current, self.protocol_roles.minimum) != (2, 2):
+            raise ValueError("v15 requires protocol roles current=2 and minimum=2")
+        return self
+
+
+class _HistoricalConformanceResult(_ConformanceEvidence):
+    schema_version: Literal["feedbax.external_conformance.result.v14"] = RESULT_SCHEMA_VERSION_V14
+
+    @model_validator(mode="after")
+    def _bind_historical_protocol(self) -> "_HistoricalConformanceResult":
+        if (self.protocol_roles.current, self.protocol_roles.minimum) != (1, 1):
+            raise ValueError("v14 requires protocol roles current=1 and minimum=1")
+        return self
+
+
+def load_result(
+    payload: ConformanceResult | dict[str, Any],
+) -> ConformanceResult | _HistoricalConformanceResult:
+    """Validate evidence under its original result grammar."""
 
     if isinstance(payload, ConformanceResult):
         return ConformanceResult.model_validate(payload.model_dump(mode="json"))
@@ -273,6 +289,8 @@ def load_result(payload: ConformanceResult | dict[str, Any]) -> ConformanceResul
             "external conformance result v13 cannot migrate to v14: v13 contains no "
             "figure_role_reference_public_contract evidence"
         )
+    if version == RESULT_SCHEMA_VERSION_V14:
+        return _HistoricalConformanceResult.model_validate(data)
     if version != RESULT_SCHEMA_VERSION:
         raise ValueError(
             "unsupported external conformance result schema_version: "

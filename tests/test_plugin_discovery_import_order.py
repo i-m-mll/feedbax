@@ -31,7 +31,7 @@ def test_importing_plugins_performs_no_discovery(monkeypatch) -> None:
 def test_typed_compose_discovers_once_after_import(monkeypatch) -> None:
     calls: list[str] = []
     registration = PluginRegistration(
-        PluginDeclaration("tests.import_order", "1", 1),
+        PluginDeclaration("tests.import_order", "1", 2),
         lambda _context: calls.append("register"),
     )
 
@@ -50,7 +50,7 @@ def test_typed_compose_discovers_once_after_import(monkeypatch) -> None:
         lambda **_kwargs: (EntryPoint(),),
     )
 
-    state = asyncio.run(compose_application(local_component_source=None))
+    state = asyncio.run(compose_application())
 
     assert calls == ["load", "register"]
     assert state.provenance[0].plugin_id == "tests.import_order"

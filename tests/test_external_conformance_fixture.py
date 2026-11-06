@@ -27,7 +27,7 @@ def _required_cases(fixture_package, *, value: object = True) -> dict[str, objec
 
 
 def _protocol_roles() -> dict[str, int]:
-    return {"current": 1, "minimum": 1}
+    return {"current": 2, "minimum": 2}
 
 
 def _v11_protocol_roles() -> dict[str, None]:
@@ -268,7 +268,7 @@ def test_result_v13_rejects_unmeasured_figure_role_references(fixture_package) -
 
 @pytest.mark.parametrize(
     "version",
-    [None, "feedbax.external_conformance.result.v0", "feedbax.external_conformance.result.v15"],
+    [None, "feedbax.external_conformance.result.v0", "feedbax.external_conformance.result.v16"],
 )
 def test_result_rejects_unsupported_versions(fixture_package, version: str | None) -> None:
     payload = {
@@ -423,9 +423,24 @@ def test_result_v14_case_values_are_strict_booleans(fixture_package) -> None:
         )
 
 
+def test_historical_result_keeps_original_protocol_roles(fixture_package) -> None:
+    payload = fixture_package.ConformanceResult(
+        status="pass",
+        feedbax_version="0.2.0",
+        feedbax_install_root="/installed/feedbax",
+        fixture_install_root="/installed/fixture",
+        protocol_roles=_protocol_roles(),
+        cases=_required_cases(fixture_package),
+        lifecycle={"status": "pass"},
+    ).model_dump(mode="json")
+    payload["schema_version"] = "feedbax.external_conformance.result.v14"
+    payload["protocol_roles"] = {"current": 1, "minimum": 1}
+    assert fixture_package.load_result(payload).model_dump(mode="json") == payload
+
+
 @pytest.mark.parametrize("slot", ["current", "minimum"])
-@pytest.mark.parametrize("unsupported", [None, 0, 2, "1", True, 1.0])
-def test_result_v14_protocol_roles_are_bound_to_one(
+@pytest.mark.parametrize("unsupported", [None, 0, 1, "2", True, 2.0])
+def test_current_result_protocol_roles_are_bound_to_two(
     fixture_package, slot: str, unsupported: object
 ) -> None:
     roles: dict[str, object] = _protocol_roles()
@@ -620,9 +635,7 @@ assert spec["analysis"]["manifest_id"] == manifest.id
 def test_fixture_analysis_dependency_does_not_require_matplotlib() -> None:
     feedbax_payload = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     fixture_payload = tomllib.loads(
-        (ROOT / "tests" / "fixtures" / "downstream" / "pyproject.toml").read_text(
-            encoding="utf-8"
-        )
+        (ROOT / "tests" / "fixtures" / "downstream" / "pyproject.toml").read_text(encoding="utf-8")
     )
 
     assert fixture_payload["project"]["dependencies"] == ["feedbax[analysis]==0.2.0"]
@@ -697,7 +710,7 @@ class ObservedRunnerLoader(importlib.abc.Loader):
                 feedbax_version="0.1.2",
                 feedbax_install_root="/isolated/feedbax",
                 fixture_install_root="/isolated/fixture",
-                protocol_roles={"current": 1, "minimum": 1},
+                protocol_roles={"current": 2, "minimum": 2},
                 cases={case_id: True for case_id in fixture.REQUIRED_CASE_IDS},
                 lifecycle={"status": "pass"},
             )
@@ -802,7 +815,7 @@ def test_local_lifecycle_uses_clean_interpreter_distribution_inventory(
     tmp_path: Path,
 ) -> None:
     lifecycle = importlib.import_module(f"{fixture_package.__name__}.lifecycle")
-    registries = lifecycle.new_application_registry_bundle(local_component_source=None)
+    registries = lifecycle.new_application_registry_bundle()
     driver = registries.drivers.construct(
         "local",
         lifecycle._driver_context(tmp_path, None),

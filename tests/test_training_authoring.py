@@ -736,7 +736,7 @@ def _descriptor_registration(
         PluginDeclaration(
             plugin_id,
             "1",
-            1,
+            2,
             families=(FamilyRequirement("training_programs"),),
         ),
         register,
@@ -746,7 +746,7 @@ def _descriptor_registration(
 def _bootstrap_descriptors(*registrations: PluginRegistration):
     return asyncio.run(
         bootstrap_application(
-            new_registration_context(local_component_source=None),
+            new_registration_context(),
             registrations=registrations,
         )
     )
@@ -1005,7 +1005,7 @@ PLUGIN_REGISTRATION = PluginRegistration(
     PluginDeclaration(
         "tests.fresh",
         "1",
-        1,
+        2,
         families=(FamilyRequirement("training_programs"),),
     ),
     register,
@@ -1028,7 +1028,7 @@ sources = discover_plugin_registrations(
     entry_point_group="tests.feedbax.plugins",
 )
 state = asyncio.run(bootstrap_application(
-    new_registration_context(local_component_source=None),
+    new_registration_context(),
     registrations=sources,
 ))
 print(json.dumps({

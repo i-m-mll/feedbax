@@ -53,7 +53,7 @@ from feedbax.runtime.retained_observables import lower_retention_plan
 
 
 def _components() -> ComponentRegistry:
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 def _single_node_spec(
@@ -942,7 +942,7 @@ def test_force_field_graphspec_builders_preserve_contract_and_runtime(
 
 
 def test_force_field_registry_exposes_params_override_ports_and_builders() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
 
     expected = {
         "FixedField": {"force", "params_override"},
@@ -972,7 +972,7 @@ def test_force_field_output_prototypes_passthrough_force(
     component_type: str,
     input_ports: list[str],
 ) -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     force_proto = jnp.zeros((2,), dtype=jnp.float32)
     node_spec = ComponentSpec(
         type=component_type,
@@ -1004,7 +1004,7 @@ def test_force_field_output_prototypes_require_force_input(
     component_type: str,
     input_ports: list[str],
 ) -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     node_spec = ComponentSpec(
         type=component_type,
         params={},
@@ -1028,7 +1028,7 @@ def _registered_outputs(
     input_ports: list[str],
     output_ports: list[str],
 ) -> dict[str, Any]:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     node_spec = ComponentSpec(
         type=component_type,
         params=dict(params),
@@ -1423,7 +1423,7 @@ def test_demux_output_prototype_rejects_width_mismatch() -> None:
 
 
 def test_demux_output_prototype_infers_through_graph_with_deferred_input() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     spec = GraphSpec(
         nodes={
             "join": ComponentSpec(
@@ -1652,7 +1652,7 @@ def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides(
 
 
 def test_affine_value_composer_output_prototypes_and_negative_validation() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     node_spec = ComponentSpec(
         type="AffineValueComposer",
         params=_affine_composer_params(),
@@ -1713,7 +1713,7 @@ def test_affine_value_composer_output_prototypes_and_negative_validation() -> No
 
 
 def test_affine_value_composer_registry_metadata() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     meta = registry.get("AffineValueComposer")
 
     assert meta is not None

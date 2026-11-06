@@ -187,7 +187,7 @@ def test_structural_transition_requires_floating_point_nominal_matrix(dtype) -> 
 
 
 def test_structural_registry_advertises_sparse_delta_a_authoring() -> None:
-    meta = ComponentRegistry(load_user_components=False).get("StructuralLinearStateSpace")
+    meta = ComponentRegistry().get("StructuralLinearStateSpace")
     assert meta is not None
     delta_A_schema = next(schema for schema in meta.param_schema if schema.name == "delta_A")
 
@@ -248,7 +248,7 @@ def test_signed_and_nominal_structural_variants(
 
 
 def test_task_trial_selects_one_constant_structural_variant() -> None:
-    graph = spec_to_graph(_spec(), ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(_spec(), ComponentRegistry())
     component = graph.nodes["plant"]
     trial = TaskTrialSpec(
         inits=WhereDict({
@@ -277,7 +277,7 @@ def test_task_trial_selects_one_constant_structural_variant() -> None:
 
 
 def test_graphspec_round_trip_preserves_structural_identity() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     graph = spec_to_graph(_spec(active=True), registry)
     round_tripped = graph_to_spec(graph)
     node = round_tripped.nodes["plant"]
@@ -289,7 +289,7 @@ def test_graphspec_round_trip_preserves_structural_identity() -> None:
 
 
 def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     graph = spec_to_graph(_sparse_spec(), registry)
     component = graph.nodes["plant"]
     outputs, _ = component(
@@ -373,7 +373,7 @@ def test_nested_v4_sparse_migration_materializes_losslessly_and_preserves_envelo
     with jax.experimental.enable_x64():
         graph = spec_to_graph(
             GraphSpec.model_validate(migration.payload),
-            ComponentRegistry(load_user_components=False),
+            ComponentRegistry(),
         )
         component = graph.nodes["wrapper"].nodes["plant"]
 
@@ -445,7 +445,7 @@ def test_sparse_graphspec_rejects_invalid_entries(
     )
 
     with pytest.raises(ValueError, match=match):
-        spec_to_graph(invalid, ComponentRegistry(load_user_components=False))
+        spec_to_graph(invalid, ComponentRegistry())
 
 
 def test_structural_component_rejects_unknown_parameter_schema_version() -> None:
@@ -456,6 +456,6 @@ def test_structural_component_rejects_unknown_parameter_schema_version() -> None
     incompatible = spec.model_copy(update={"nodes": {"plant": node}})
 
     with pytest.raises(GraphCompilationError, match="No component migration registered") as exc:
-        spec_to_graph(incompatible, ComponentRegistry(load_user_components=False))
+        spec_to_graph(incompatible, ComponentRegistry())
 
     assert isinstance(exc.value.__cause__, UnsupportedComponentMigration)

@@ -268,7 +268,7 @@ def test_no_compiler_registry_symbol_survives(name: str) -> None:
 
 
 def test_the_bootstrap_has_no_envelope_compiler_family() -> None:
-    state = asyncio.run(compose_application(modules=(), local_component_source=None))
+    state = asyncio.run(compose_application(modules=()))
 
     assert not hasattr(state.bundle, "experiment_envelope_compilers")
     families = {key.family for key in plugins.APPLICATION_REGISTRY_KEYS}

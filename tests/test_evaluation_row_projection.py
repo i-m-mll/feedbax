@@ -69,7 +69,7 @@ def _resolved_input(
     target: int = 0,
     states: Any | None = None,
 ) -> ResolvedAnalysisInput:
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = new_application_registry_bundle()
     states = {"velocity": np.asarray(target + 0.5)} if states is None else states
     durable = source_kind == "durable"
     training = _authenticated_ref("TrainingRunManifest", "training", "training_run", b"train")

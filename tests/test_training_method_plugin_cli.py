@@ -111,7 +111,7 @@ def test_application_composition_derives_preparation_registry() -> None:
         PluginDeclaration(
             "tests.training_program",
             "1",
-            1,
+            2,
             families=(FamilyRequirement("training_programs"),),
         ),
         lambda context: context.registry(TRAINING_PROGRAMS).register_program(
@@ -120,7 +120,7 @@ def test_application_composition_derives_preparation_registry() -> None:
     )
     state = asyncio.run(
         bootstrap_application(
-            new_registration_context(local_component_source=None),
+            new_registration_context(),
             registrations=(registration,),
         )
     )
@@ -129,7 +129,7 @@ def test_application_composition_derives_preparation_registry() -> None:
 
 
 def test_predecessor_training_families_are_not_composable() -> None:
-    context = new_registration_context(local_component_source=None)
+    context = new_registration_context()
     for family in ("training_methods", "row_lowerers", "execution_preparations"):
         obsolete = RegistryKey(family, family, object, registered_keys=lambda _value: ())
         with pytest.raises(BootstrapError, match="is unavailable") as exc_info:

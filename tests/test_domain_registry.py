@@ -79,7 +79,7 @@ def test_domains_api_returns_versioned_builtin_payload() -> None:
 
 
 def test_component_definitions_carry_domain_metadata() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
 
     for definition in registry.list_all():
         assert definition.domain.startswith("feedbax.domain.")
@@ -102,7 +102,7 @@ def test_acausal_missing_interior_error_names_domain() -> None:
     )
 
     with pytest.raises(ValueError) as exc_info:
-        spec_to_graph(graph, ComponentRegistry(load_user_components=False))
+        spec_to_graph(graph, ComponentRegistry())
 
     message = str(exc_info.value)
     assert "requires an acausal interior" in message
@@ -122,7 +122,7 @@ def test_subgraph_missing_interior_behavior_remains_unchanged() -> None:
     )
 
     with pytest.raises(ValueError, match="Subgraph node 'nested' requires a subgraph"):
-        spec_to_graph(graph, ComponentRegistry(load_user_components=False))
+        spec_to_graph(graph, ComponentRegistry())
 
 
 def test_legacy_network_missing_interior_behavior_remains_unchanged() -> None:
@@ -141,7 +141,7 @@ def test_legacy_network_missing_interior_behavior_remains_unchanged() -> None:
         ValueError,
         match="Network node 'network' requires a subgraph.*Open it in Studio",
     ):
-        spec_to_graph(graph, ComponentRegistry(load_user_components=False))
+        spec_to_graph(graph, ComponentRegistry())
 
 
 def test_domain_payload_schema_rejects_unknown_old_version() -> None:

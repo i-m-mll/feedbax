@@ -18,7 +18,7 @@ from tests.support.analysis_fixtures import ToyAnalysis, build_toy_analysis_data
 
 
 def test_analysis_recompute_uses_injected_evaluation_registry(tmp_path: Path) -> None:
-    registries = new_application_registry_bundle(local_component_source=None)
+    registries = new_application_registry_bundle()
     evaluation_type = "tests.injected_eval"
     analysis_type = "tests.injected_analysis"
     evaluation_calls: list[int] = []

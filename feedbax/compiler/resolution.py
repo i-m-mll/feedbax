@@ -597,7 +597,7 @@ def resolve_graph_parameters(
     allow_incomplete: bool = False,
 ) -> GraphParameterResolution:
     """Complete each node once and infer solely from its final parameter meaning."""
-    registry = component_registry or ComponentRegistry(load_user_components=False)
+    registry = component_registry or ComponentRegistry()
     graph = graph if identities_resolved else materialize_additive_channel_adapters(graph)
     state = _Completion(graph, registry, "/graph", identities_resolved)
     while state.advance(input_prototypes):

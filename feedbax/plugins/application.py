@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -174,13 +173,9 @@ APPLICATION_REGISTRY_KEYS = (
 )
 
 
-def new_application_registry_bundle(
-    *, local_component_source: Path | None = Path.home() / ".feedbax" / "components"
-) -> ApplicationRegistryBundle:
+def new_application_registry_bundle() -> ApplicationRegistryBundle:
     """Construct fresh built-in registries before plugin registration."""
-    components = ComponentRegistry(load_user_components=False)
-    if local_component_source is not None:
-        components.load_user_components(local_component_source)
+    components = ComponentRegistry()
     figures = FigureRegistry()
     register_default_figure_constructors(figures)
     reports = ReportRecipeRegistry()
@@ -206,11 +201,9 @@ def new_application_registry_bundle(
     )
 
 
-def new_registration_context(
-    *, local_component_source: Path | None = Path.home() / ".feedbax" / "components"
-) -> RegistrationContext:
+def new_registration_context() -> RegistrationContext:
     """Return an isolated context whose bundle is private until bootstrap succeeds."""
     return RegistrationContext(
-        lambda: new_application_registry_bundle(local_component_source=local_component_source),
+        new_application_registry_bundle,
         APPLICATION_REGISTRY_KEYS,
     )

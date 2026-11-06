@@ -84,7 +84,7 @@ def test_nested_noise_reset_keys_follow_producers() -> None:
         output_bindings=outputs,
     )
     compiled = compile_graph(
-        GraphDocument(graph=spec), ComponentRegistry(load_user_components=False)
+        GraphDocument(graph=spec), ComponentRegistry()
     )
     # Both sides of the reset fix originally emitted this resolved identity.
     assert compiled.resolved.resolved_sha256 != (
@@ -156,7 +156,7 @@ def test_reordered_random_nodes_preserve_compiler_evidence_and_seeded_execution(
                 output_bindings=bindings,
             )
         compiled.append(
-            compile_graph(GraphDocument(graph=spec), ComponentRegistry(load_user_components=False))
+            compile_graph(GraphDocument(graph=spec), ComponentRegistry())
         )
         direct.append(graph)
 
@@ -186,7 +186,7 @@ def test_construction_keys_are_scoped_and_support_explicit_overrides() -> None:
         nodes={name: ComponentSpec(type="Subgraph") for name in siblings},
         subgraphs=siblings,
     )
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
 
     def build(spec, **kwargs):
         graph = compile_graph(GraphDocument(graph=spec), registry, **kwargs).graph
@@ -318,7 +318,7 @@ def test_branching_seeded_execution_and_cycle_diagnostics_ignore_hash_seed():
 
 
 def test_historical_compiler_evidence_requires_authored_document_recompilation():
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     compiled = compile_graph(GraphDocument(graph=GraphSpec()), registry)
     for model, current in (
         (ResolvedGraph, compiled.resolved),

@@ -21,7 +21,7 @@ from feedbax.web.worker.execution import _compile_trainability
 
 def _prepare_studio_gru(key):
     graph = Graph(nodes={"cell": GRU(2, 3, key=key)}, wires=()).prepare()
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     _, trainable_filter = _compile_trainability(graph_to_spec(graph, registry), graph, registry)
     return SimpleNamespace(graph=graph, trainable_filter=trainable_filter)
 

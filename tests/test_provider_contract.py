@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from feedbax.component_registry import ComponentPack
+from feedbax.component_registry import ParameterField
+from feedbax.contracts.component import DynamicPortPolicy
+from feedbax.component_registry import declare_component
+
 import sqlite3
 import threading
 from pathlib import Path
@@ -890,7 +895,9 @@ def test_studio_and_provider_expose_intervention_payloads(provider_client) -> No
         )
 
 
-def test_provider_rejects_an_intervention_vector_outside_its_declared_dtype(provider_client) -> None:
+def test_provider_rejects_an_intervention_vector_outside_its_declared_dtype(
+    provider_client,
+) -> None:
     graph = _minimal_graph_spec()
     graph["input_ports"] = ["input"]
     graph["input_bindings"] = {"input": ("gain", "input")}
@@ -1872,20 +1879,32 @@ def test_studio_schema_materializes_external_dynamic_policy_without_type_branchi
     application_registry_bundle,
 ) -> None:
     components = application_registry_bundle.components
-    components.register_component_type(
-        "example.DynamicOutputs",
-        lambda params: params,
-        param_schema=[{"name": "items", "type": "array", "default": [1]}],
-        input_ports=["input"],
-        output_ports=["result_0"],
-        dynamic_port_policy={
-            "count_param": "items",
-            "count_mode": "sequence_length",
-            "direction": "output",
-            "fixed_input_ports": ["input"],
-            "generated_name_template": "result_{index}",
-            "dynamic_port_type": {"dtype": "vector"},
-        },
+    components.ingest(
+        ComponentPack(
+            components=(
+                declare_component(
+                    name="example.DynamicOutputs",
+                    builder=lambda params: params,
+                    input_ports=["input"],
+                    output_ports=["result_0"],
+                    dynamic_port_policy=DynamicPortPolicy.model_validate(
+                        {
+                            "count_param": "items",
+                            "count_mode": "sequence_length",
+                            "direction": "output",
+                            "fixed_input_ports": ["input"],
+                            "generated_name_template": "result_{index}",
+                            "dynamic_port_type": {"dtype": "vector"},
+                        }
+                    ),
+                    parameter_fields=[
+                        ParameterField(name='items', type='array', default=[1])
+                    ],
+                    category="Custom",
+                    override_reason="Synthetic fixture constructor",
+                ),
+            )
+        )
     )
     graph = GraphSpec(
         nodes={

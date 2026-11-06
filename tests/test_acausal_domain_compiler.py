@@ -34,7 +34,7 @@ pytestmark = [pytest.mark.usefixtures("enable_jax_x64"), pytest.mark.feedbax_con
 
 
 def _registry() -> ComponentRegistry:
-    return ComponentRegistry(load_user_components=False)
+    return ComponentRegistry()
 
 
 @pytest.mark.parametrize("grounded", [True, False], ids=["ground", "second-motion-source"])

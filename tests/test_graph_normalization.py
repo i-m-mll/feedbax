@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from feedbax.component_registry import ComponentPack
+from feedbax.component_registry import ParameterField
+from feedbax.contracts.component import DynamicPortPolicy
+from feedbax.component_registry import declare_component
+
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
@@ -57,21 +62,33 @@ def test_normalization_preserves_nested_param_schema_version() -> None:
 
 
 def test_normalization_materializes_external_dynamic_ports_from_explicit_registry() -> None:
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_component_type(
-        "example.VariableOutputs",
-        lambda params: params,
-        param_schema=[{"name": "sizes", "type": "array", "default": [1, 1]}],
-        input_ports=["input"],
-        output_ports=["result_0", "result_1"],
-        dynamic_port_policy={
-            "count_param": "sizes",
-            "count_mode": "sequence_length",
-            "direction": "output",
-            "fixed_input_ports": ["input"],
-            "generated_name_template": "result_{index}",
-            "dynamic_port_type": {"dtype": "vector"},
-        },
+    registry = ComponentRegistry()
+    registry.ingest(
+        ComponentPack(
+            components=(
+                declare_component(
+                    name="example.VariableOutputs",
+                    builder=lambda params: params,
+                    input_ports=["input"],
+                    output_ports=["result_0", "result_1"],
+                    dynamic_port_policy=DynamicPortPolicy.model_validate(
+                        {
+                            "count_param": "sizes",
+                            "count_mode": "sequence_length",
+                            "direction": "output",
+                            "fixed_input_ports": ["input"],
+                            "generated_name_template": "result_{index}",
+                            "dynamic_port_type": {"dtype": "vector"},
+                        }
+                    ),
+                    parameter_fields=[
+                        ParameterField(name='sizes', type='array', default=[1, 1])
+                    ],
+                    category="Custom",
+                    override_reason="Synthetic fixture constructor",
+                ),
+            )
+        )
     )
     graph = GraphSpec(
         nodes={

@@ -308,7 +308,7 @@ def test_spec_to_graph_requires_acausal_system_interior() -> None:
     with pytest.raises(ValueError, match="feedbax.domain.acausal"):
         compile_graph(
             GraphDocument(graph=graph),
-            ComponentRegistry(load_user_components=False),
+            ComponentRegistry(),
         )
 
 
@@ -692,7 +692,7 @@ def test_compile_graph_invokes_public_graph_spec_migration(monkeypatch: pytest.M
 
     graph = compile_graph(
         GraphDocument(graph=GraphSpec()),
-        ComponentRegistry(load_user_components=False),
+        ComponentRegistry(),
     ).graph
 
     assert called

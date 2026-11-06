@@ -316,7 +316,7 @@ def test_inactive_nonfinite_target_has_zero_position_gradient() -> None:
 
 
 def test_graphspec_round_trip_preserves_trigger_latch_ramp_and_selector_identity() -> None:
-    graph = spec_to_graph(_graph_spec(), ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(_graph_spec(), ComponentRegistry())
     component = graph.nodes["load"]
 
     assert isinstance(component, ThresholdLatchedForce)
@@ -344,7 +344,7 @@ def test_graphspec_round_trip_preserves_trigger_latch_ramp_and_selector_identity
 
 def test_target_relative_graphspec_round_trip_preserves_frame_selectors() -> None:
     graph = spec_to_graph(
-        _target_relative_graph_spec(), ComponentRegistry(load_user_components=False)
+        _target_relative_graph_spec(), ComponentRegistry()
     )
     component = graph.nodes["load"]
 
@@ -364,7 +364,7 @@ def test_target_relative_graphspec_round_trip_preserves_frame_selectors() -> Non
 
 @pytest.fixture(scope="module")
 def compiled_target_relative_rollout():
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
     graph = spec_to_graph(_target_relative_graph_spec(), registry)
     stabilization = build_component(
         "hold",
@@ -432,7 +432,7 @@ def test_compiled_activation_rejects_degenerate_trial_frame(
 
 
 def test_native_graph_materialization_runs_runtime_state_trigger() -> None:
-    graph = spec_to_graph(_graph_spec(), ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(_graph_spec(), ComponentRegistry())
     component = graph.nodes["load"]
     forces = eqx.filter_jit(_run)(component, jnp.array([-0.2, 0.0, 0.2, 0.4]))
 
@@ -450,7 +450,7 @@ def test_native_graph_materialization_runs_runtime_state_trigger() -> None:
 
 
 def test_task_authored_trial_variant_initializes_native_component_state() -> None:
-    graph = spec_to_graph(_graph_spec(), ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(_graph_spec(), ComponentRegistry())
     trial = TaskTrialSpec(
         inits={
             "load.params_index": ThresholdLatchedForceParams(
@@ -485,7 +485,7 @@ def test_v1_fixed_selector_migrates_to_v2() -> None:
     spec.input_ports.remove("target")
     del spec.input_bindings["target"]
 
-    graph = spec_to_graph(spec, ComponentRegistry(load_user_components=False))
+    graph = spec_to_graph(spec, ComponentRegistry())
 
     assert graph.nodes["load"].state_selector == StateSelector(("pos", 0))
     migrated = graph_to_spec(graph).nodes["load"]
@@ -495,7 +495,7 @@ def test_v1_fixed_selector_migrates_to_v2() -> None:
 
 
 def test_unknown_parameter_schema_version_is_rejected_without_a_migration() -> None:
-    registry = ComponentRegistry(load_user_components=False)
+    registry = ComponentRegistry()
 
     with pytest.raises(GraphCompilationError, match="No component migration registered") as exc:
         spec_to_graph(

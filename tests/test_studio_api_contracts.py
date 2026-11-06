@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from feedbax.component_registry import ComponentPack
+from feedbax.component_registry import ParameterField
+from feedbax.component_registry import declare_component
+from feedbax.contracts.representation import RepresentationSpec
+
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -334,33 +339,47 @@ def test_training_error_and_resync_events_have_stable_coordinates() -> None:
 
 
 def test_component_api_serves_representation_contract() -> None:
-    registry = ComponentRegistry(load_user_components=False)
-    registry.register_component_type(
-        "ApiRepresentedGain",
-        lambda params: None,
-        category="Test",
-        description="API represented component fixture.",
-        param_schema=[{"name": "gain", "type": "float", "default": 1.0}],
-        input_ports=["input"],
-        output_ports=["output"],
-        representation={
-            "anchors": [
-                {
-                    "id": "endpoint",
-                    "semantic_role": "endpoint",
-                    "interaction_roles": ["selectable"],
-                    "binding": {"kind": "param_path", "path": "gain"},
-                }
-            ],
-            "elements": [
-                {
-                    "id": "glyph",
-                    "archetype": "marker",
-                    "anchors": ["endpoint"],
-                    "frame_provider": {"kind": "from_input_port", "input_port": "input"},
-                }
-            ],
-        },
+    registry = ComponentRegistry()
+    registry.ingest(
+        ComponentPack(
+            components=(
+                declare_component(
+                    name="ApiRepresentedGain",
+                    builder=lambda params: None,
+                    category="Test",
+                    description="API represented component fixture.",
+                    input_ports=["input"],
+                    output_ports=["output"],
+                    representation=RepresentationSpec.model_validate(
+                        {
+                            "anchors": [
+                                {
+                                    "id": "endpoint",
+                                    "semantic_role": "endpoint",
+                                    "interaction_roles": ["selectable"],
+                                    "binding": {"kind": "param_path", "path": "gain"},
+                                }
+                            ],
+                            "elements": [
+                                {
+                                    "id": "glyph",
+                                    "archetype": "marker",
+                                    "anchors": ["endpoint"],
+                                    "frame_provider": {
+                                        "kind": "from_input_port",
+                                        "input_port": "input",
+                                    },
+                                }
+                            ],
+                        }
+                    ),
+                    parameter_fields=[
+                        ParameterField(name='gain', type='float', default=1.0)
+                    ],
+                    override_reason="Synthetic fixture constructor",
+                ),
+            )
+        )
     )
     app = create_app()
     with TestClient(app) as client:
@@ -387,8 +406,21 @@ def test_component_refresh_atomically_swaps_whole_bootstrap_state(
     app = create_app()
     with TestClient(app) as client:
         original = app.state.bootstrap_state
-        replacement_registry = ComponentRegistry(load_user_components=False)
-        replacement_registry.register_component_type("RefreshOnlyComponent", lambda _params: None)
+        replacement_registry = ComponentRegistry()
+        replacement_registry.ingest(
+            ComponentPack(
+                components=(
+                    declare_component(
+                        name="RefreshOnlyComponent",
+                        builder=lambda _params: None,
+                        input_ports=(),
+                        output_ports=(),
+                        category="Custom",
+                        override_reason="Synthetic fixture constructor",
+                    ),
+                )
+            )
+        )
         replacement_registry.seal()
         replacement = BootstrapState(
             replace(original.bundle, components=replacement_registry), original.provenance

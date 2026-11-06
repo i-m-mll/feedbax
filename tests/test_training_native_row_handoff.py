@@ -168,7 +168,7 @@ def _lifecycle_registries() -> ApplicationRegistryBundle:
     """Use the same explicit synthetic lifecycle plugin in-process and in the CLI."""
     return asyncio.run(
         bootstrap_application(
-            new_registration_context(local_component_source=None),
+            new_registration_context(),
             registrations=(PLUGIN_REGISTRATION,),
         )
     ).bundle
