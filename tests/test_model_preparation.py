@@ -11,10 +11,19 @@ import jax.tree as jt
 import optax
 import pytest
 
+from feedbax.compiler.serialization import graph_to_spec
+from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.components import GRU, RateLimiter
 from feedbax.runtime.filters import FirstOrderFilter
 from feedbax.runtime.graph import Graph
-from feedbax.web.worker.execution import _trainable_filter
+from feedbax.web.worker.execution import _compile_trainability
+
+
+def _prepare_studio_gru(key):
+    graph = Graph(nodes={"cell": GRU(2, 3, key=key)}, wires=()).prepare()
+    registry = ComponentRegistry(load_user_components=False)
+    _, trainable_filter = _compile_trainability(graph_to_spec(graph, registry), graph, registry)
+    return SimpleNamespace(graph=graph, trainable_filter=trainable_filter)
 
 
 def test_prepared_gru_reconstruction_reuses_trace_and_retains_weight_updates():
@@ -111,8 +120,8 @@ def test_filter_change_input_preserves_solver_configuration_and_mixed_float_rese
 def test_studio_update_trains_weights_and_keeps_reset_template_fixed():
     from feedbax.training.studio_executor import StudioUpdateKernel
 
-    graph = Graph(nodes={"cell": GRU(2, 3, key=jax.random.PRNGKey(0))}, wires=()).prepare()
-    compiled = SimpleNamespace(graph=graph, trainable_filter=_trainable_filter(graph, ("cell",)))
+    compiled = _prepare_studio_gru(jax.random.PRNGKey(0))
+    graph = compiled.graph
     optimizer = optax.sgd(0.1)
 
     def rollout(model, plan, key):
@@ -256,11 +265,8 @@ def test_prepared_studio_gru_checkpoint_continues_next_adam_step(tmp_path):
 
     key = jax.random.PRNGKey(0)
 
-    def build():
-        return Graph(nodes={"cell": GRU(2, 3, key=key)}, wires=()).prepare()
-
-    graph = build()
-    compiled = SimpleNamespace(graph=graph, trainable_filter=_trainable_filter(graph, ("cell",)))
+    compiled = _prepare_studio_gru(key)
+    graph = compiled.graph
     optimizer = optax.adam(0.05)
 
     def predict(model, plan, key):
@@ -273,17 +279,16 @@ def test_prepared_studio_gru_checkpoint_continues_next_adam_step(tmp_path):
         compiled=compiled, optimizer=optimizer, rollout_fn=predict, evaluate_loss_fn=loss
     )
 
-    def initial_slots(model):
+    def initial_slots(prepared):
+        trainable, _ = eqx.partition(prepared.graph, prepared.trainable_filter)
         return {
-            "model": model,
-            "optimizer": optimizer.init(
-                eqx.partition(model, _trainable_filter(model, ("cell",)))[0]
-            ),
+            "model": prepared.graph,
+            "optimizer": optimizer.init(trainable),
             "prng": key,
             "batch_counter": jnp.array(0, dtype=jnp.int32),
         }
 
-    slots = initial_slots(graph)
+    slots = initial_slots(compiled)
     for _ in range(2):
         updated = kernel(slots)
         slots = {name: updated[name] for name in slots}
@@ -310,7 +315,7 @@ def test_prepared_studio_gru_checkpoint_continues_next_adam_step(tmp_path):
         tmp_path,
         expected_run_spec=run_spec,
         expected_phase_program=program,
-        expected_slots=initial_slots(build()),
+        expected_slots=initial_slots(_prepare_studio_gru(key)),
     )
     resumed = kernel(loaded.slots)
     assert eqx.tree_equal(resumed, uninterrupted)
