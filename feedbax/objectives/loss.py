@@ -497,8 +497,9 @@ class CompositeLoss(AbstractTermedLoss):
 
         Arguments:
             terms: The sequence or mapping of loss terms to be included.
-            weights: A float PyTree of the same structure as `terms`, giving
-                the scalar term weights. By default, all terms have equal weight.
+            weights: Scalar term weights. A sequence matches the term order.
+                A mapping must contain exactly the input term keys, or the unique
+                term labels when `terms` is a sequence. Defaults to 1.0 per term.
             label: The label for the composite loss.
             user_labels: If `True`, the keys in `terms`---if it is a mapping---
                 are used as term labels, instead of the `label` field of each term.
@@ -509,82 +510,55 @@ class CompositeLoss(AbstractTermedLoss):
         self.label = label
 
         if isinstance(terms, Mapping):
-            if user_labels:
-                labels, terms = list(zip(*terms.items()))
-            else:
-                labels = [term.label for term in terms.values()]
-                terms = list(terms.values())
+            weight_keys = tuple(terms)
+            loss_terms = tuple(terms[key] for key in weight_keys)
+            labels = weight_keys if user_labels else tuple(term.label for term in loss_terms)
         elif isinstance(terms, Sequence):
-            # TODO: if `terms` is a dict, this fails!
-            labels = [term.label for term in terms]
+            loss_terms = tuple(terms)
+            labels = weight_keys = tuple(term.label for term in loss_terms)
         else:
             raise ValueError("terms must be a mapping or sequence of AbstractLoss")
 
         if isinstance(weights, Mapping):
-            weight_values = tuple(weights.values())
+            expected = set(weight_keys)
+            if len(expected) != len(weight_keys):
+                raise ValueError("Mapping weights for a sequence of loss terms require unique labels")
+            provided = set(weights)
+            missing = expected - provided
+            unknown = provided - expected
+            if missing or unknown:
+                raise ValueError(
+                    f"Loss weight keys must match term keys. "
+                    f"Missing: {sorted(missing, key=repr)}. Unknown: {sorted(unknown, key=repr)}."
+                )
+            weight_values = (weights[key] for key in weight_keys)
         elif isinstance(weights, Sequence):
-            weight_values = tuple(weights)
+            if len(weights) != len(loss_terms):
+                raise ValueError("Mismatch between number of loss terms and number of term weights")
+            weight_values = iter(weights)
         elif weights is None:
-            weight_values = tuple(1.0 for _ in terms)
-
-        if not len(terms) == len(weight_values):
-            raise ValueError("Mismatch between number of loss terms and number of term weights")
-
-        # Split into lists of data for simple and composite terms.
-        term_tuples_split: Tuple[
-            Sequence[Tuple[str, AbstractLoss, float]],
-            Sequence[Tuple[str, AbstractLoss, float]],
-        ]
-        term_tuples_split = eqx.partition(
-            list(zip(labels, terms, weight_values)),
-            lambda x: not isinstance(x[1], CompositeLoss),
-            is_leaf=lambda x: isinstance(x, tuple),
-        )
-
-        # Removes the `None` values from the lists.
-        term_tuples_leaves = jt.map(
-            lambda x: jtu.tree_leaves(x, is_leaf=lambda x: isinstance(x, tuple)),
-            term_tuples_split,
-            is_leaf=lambda x: isinstance(x, list),
-        )
-
-        # Start with the simple terms, if there are any.
-        if term_tuples_leaves[0] == []:
-            all_labels, all_terms, all_weights = (), (), ()
+            weight_values = (1.0 for _ in loss_terms)
         else:
-            all_labels, all_terms, all_weights = zip(*term_tuples_leaves[0])
+            raise ValueError("weights must be a mapping or sequence of scalar weights")
 
-        # Make sure the simple term labels are unique.
-        for i, label in enumerate(all_labels):
-            label = get_unique_label(label, all_labels[:i])
-            all_labels = all_labels[:i] + (label,) + all_labels[i + 1 :]
+        self.terms = {}
+        self.weights = {}
+        composites = []
+        for term_label, term, weight in zip(labels, loss_terms, weight_values, strict=True):
+            if isinstance(term, CompositeLoss):
+                composites.append((term_label, term, weight))
+            else:
+                name = get_unique_label(term_label, self.terms.keys())
+                self.terms[name] = term
+                self.weights[name] = weight
 
-        # Flatten the composite terms, assuming they have the usual dict
-        # attributes. We only need to flatten one level, because this `__init__`
-        # (and the immutability of `eqx.Module`) ensures no deeper nestings
-        # are ever constructed except through extreme hacks.
-        for group_label, composite_term, group_weight in term_tuples_leaves[1]:
-            labels = composite_term.terms.keys()
-
-            # If a unique label for the composite term is available, use it to
-            # format the labels of the flattened terms.
-            if group_label != "":
-                labels = [f"{group_label}_{label}" for label in labels]
-            elif composite_term.label != "":
-                labels = [f"{composite_term.label}_{label}" for label in labels]
-
-            # Make sure the labels are unique.
-            for label in labels:
-                label = get_unique_label(label, all_labels)
-                all_labels += (label,)
-
-            all_terms += tuple(composite_term.terms.values())
-            all_weights += tuple(
-                [group_weight * weight for weight in composite_term.weights.values()]
-            )
-
-        self.terms = dict(zip(all_labels, all_terms))
-        self.weights = dict(zip(all_labels, all_weights))
+        for group_label, composite, group_weight in composites:
+            group_label = group_label or composite.label
+            for child_name, child in composite.terms.items():
+                label = f"{group_label}_{child_name}" if group_label else child_name
+                name = get_unique_label(label, self.terms.keys())
+                self.terms[name] = child
+                self.weights[name] = group_weight * composite.weights[child_name]
 
     def __or__(self, other: "CompositeLoss") -> "CompositeLoss":
         """Merge two composite losses, overriding terms with the same label."""
@@ -610,8 +584,7 @@ class CompositeLoss(AbstractTermedLoss):
         children = {}
         for name, loss in self.terms.items():
             node = loss(states, trial_specs, model)
-            w = self.weights.get(name, 1.0)
-            children[name] = node.with_weight(w)
+            children[name] = node.with_weight(self.weights[name])
         return TermTree.branch(self.label, children, originator=self)
 
     def without(self, *keys: str, label: Optional[str] = None) -> "CompositeLoss":
@@ -622,32 +595,15 @@ class CompositeLoss(AbstractTermedLoss):
             label=self.label if label is None else label,
         )
 
-    def with_weights(self, new_weights: dict[str, float]) -> "CompositeLoss":
-        """Return a new `CompositeLoss` with updated weights, preserving structure.
+    def with_weights(self, new_weights: Mapping[str, float]) -> "CompositeLoss":
+        """Return a new loss with selected weights updated by term name.
 
-        Arguments:
-            new_weights: Dictionary mapping term names to new weight values.
-                Only the weights for keys present in this dict will be updated;
-                other weights remain unchanged.
-
-        Returns:
-            A new `CompositeLoss` instance with the updated weights but the same
-            term structure. This operation does not trigger JIT recompilation
-            since the PyTree structure is preserved.
+        Keys must name existing terms. Omitted weights retain their values.
         """
-        return eqx.tree_at(
-            lambda loss: loss.weights,
-            self,
-            new_weights
-        )
-
-    # def skeleton(self, batch_dims: tuple[int, ...]) -> TermTree:
-    #     children: dict[str, TermTree] = {}
-    #     for name, loss in self.terms.items():
-    #         child = loss.skeleton(batch_dims)
-    #         child = child.with_weight(self.weights.get(name, 1.0))
-    #         children[name] = child
-    #     return TermTree.branch(self.label, children, originator=self)
+        unknown = set(new_weights).difference(self.terms)
+        if unknown:
+            raise ValueError(f"Unknown loss weight keys: {sorted(unknown, key=repr)}")
+        return eqx.tree_at(lambda loss: loss.weights, self, {**self.weights, **new_weights})
 
 
 # Maybe rename TargetValueSpec; I feel like a "`TargetSpec`" would include a `where` field
