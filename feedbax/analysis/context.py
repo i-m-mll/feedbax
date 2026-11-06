@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -56,6 +56,9 @@ if TYPE_CHECKING:
     from feedbax.plugins.registry import ExperimentRegistry
 
 
+AnalysisRegenerationBuilder = Callable[[tuple[ArtifactRef, ...]], SpecPayload]
+
+
 _FIGURE_ROUTING_KEY = "figure_routing"
 _FIGURE_ROUTING_REQUIRED_KEYS = {"package", "experiment", "topic"}
 
@@ -86,6 +89,8 @@ class AnalysisRunContext:
     Registered recipe execution supplies its resolved computation identity.
     Standalone materializers can use the spec-only address when their own spec
     already binds computation authority.
+    A regeneration builder receives the full artifact list before a completed
+    receipt is published.
     """
 
     spec: AnalysisRunSpec
@@ -99,6 +104,7 @@ class AnalysisRunContext:
     index_manifest: bool = True
     use_result_cache: bool = True
     computation: AnalysisComputation | None = None
+    build_regeneration_spec: AnalysisRegenerationBuilder | None = None
     _artifacts: list[ArtifactRef] = field(default_factory=list, init=False)
     _regeneration_specs: list[SpecPayload | ParentRef | ArtifactRef] = field(
         default_factory=list,
@@ -495,6 +501,8 @@ class AnalysisRunContext:
     ) -> tuple[AnalysisRunManifest, Path]:
         """Write the completed analysis manifest and optional SQLite manifest index row."""
         self._validate_produced_data_custody()
+        if status == "completed" and self.build_regeneration_spec is not None:
+            self.record_regeneration_specs([self.build_regeneration_spec(self.artifacts)])
         provenance = self._provenance()
         manifest = AnalysisRunManifest(
             id=self.manifest_id,

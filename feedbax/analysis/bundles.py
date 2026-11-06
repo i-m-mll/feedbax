@@ -192,6 +192,7 @@ BundleOutputStatus = Literal["materialized", "skipped", "missing", "not_applicab
 BundleDryRunStageStatus = Literal["would_run", "would_skip", "missing", "not_applicable"]
 
 _StageSpecT = TypeVar("_StageSpecT")
+_ReportOrFigureManifestT = TypeVar("_ReportOrFigureManifestT", ReportManifest, FigureManifest)
 
 
 class AnalysisSpecTemplate(StrictModel):
@@ -1079,11 +1080,11 @@ def _stage_regeneration_payload(
 
 
 def _with_regeneration_spec(
-    manifest: AnalysisRunManifest | FigureManifest | ReportManifest,
+    manifest: _ReportOrFigureManifestT,
     regeneration_payload: SpecPayload,
     *,
     root: Path,
-) -> tuple[AnalysisRunManifest | FigureManifest | ReportManifest, Path]:
+) -> tuple[_ReportOrFigureManifestT, Path]:
     if regeneration_payload in manifest.regeneration_specs:
         return manifest, canonical_manifest_path(manifest.kind, manifest.id, root=root)
     updated = manifest.model_copy(
@@ -2145,6 +2146,9 @@ def _execute_analysis_stage(
             },
             fig_dump_path=fig_dump_path,
             fig_dump_formats=fig_dump_formats,
+            build_regeneration_spec=lambda artifacts: _stage_regeneration_payload(
+                stage, inputs=inputs, outputs=artifacts, issues=issues
+            ),
         )
 
     return _execute_stage_common(
@@ -2230,6 +2234,9 @@ def _execute_materialization_stage(
             ),
             fig_dump_path=fig_dump_path,
             fig_dump_formats=fig_dump_formats,
+            build_regeneration_spec=lambda artifacts: _stage_regeneration_payload(
+                stage, inputs=inputs, outputs=artifacts, issues=issues
+            ),
         )
 
     return _execute_stage_common(
@@ -2441,7 +2448,7 @@ def _execute_stage_common(
     build_spec: Callable[[Sequence[ParentRef], int], _StageSpecT],
     execute_spec: Callable[
         [_StageSpecT, Sequence[ParentRef], int],
-        tuple[AnyManifest, Path],
+        tuple[AnalysisRunManifest | ReportManifest, Path],
     ],
 ) -> list[StageMaterialization]:
     """Execute and record one spec-emitting stage for each resolved input group."""
@@ -2451,23 +2458,21 @@ def _execute_stage_common(
         inputs = tuple(input_group)
         spec = build_spec(inputs, index)
         manifest, path = execute_spec(spec, inputs, index)
+        # A reused analysis receipt may have been published by another stage.
         regeneration_payload = _stage_regeneration_payload(
             stage,
             inputs=inputs,
             # Self-authentication is carried by the external stage record only.
-            outputs=list(manifest.artifacts),
+            outputs=manifest.artifacts,
             issues=issues,
         )
-        updated_manifest, updated_path = _with_regeneration_spec(
-            manifest,
-            regeneration_payload,
-            root=root,
-        )
+        if isinstance(manifest, ReportManifest):
+            manifest, path = _with_regeneration_spec(manifest, regeneration_payload, root=root)
         products.append(
             StageMaterialization(
-                manifest_ref=_manifest_ref(updated_manifest, updated_path, manifest_role),
-                artifacts=tuple(updated_manifest.artifacts),
-                manifest_path=updated_path,
+                manifest_ref=_manifest_ref(manifest, path, manifest_role),
+                artifacts=tuple(manifest.artifacts),
+                manifest_path=path,
                 regeneration_spec=regeneration_payload,
             )
         )

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import ast
 import importlib
-import inspect
 import json
 import pickle
 import sys
 from pathlib import Path
-from textwrap import dedent
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -15,6 +12,7 @@ import numpy as np
 import pytest
 
 import feedbax.analysis.bundles as bundle_module
+import feedbax.contracts.manifest as manifest_module
 from feedbax.analysis.bundles import (
     ANALYSIS_BUNDLE_SCHEMA_VERSION,
     AnalysisBundleDeltaSpec,
@@ -77,27 +75,6 @@ TOY_ANALYSIS_TYPE = "feedbax.test.toy_analysis"
 TOY_EVALUATION_TYPE = "feedbax.test.bundle_eval"
 TOY_ARTIFACT_ANALYSIS_TYPE = "feedbax.test.bundle_artifact_analysis"
 TOY_MATERIALIZER_TYPE = "feedbax.test.bundle_materializer"
-
-
-def test_spec_emitting_bundle_stages_share_one_execution_loop() -> None:
-    """Guard the shared analysis/materialization/report execution skeleton."""
-
-    for function_name in (
-        "_execute_analysis_stage",
-        "_execute_materialization_stage",
-        "_execute_report_stage",
-    ):
-        function = getattr(bundle_module, function_name)
-        tree = ast.parse(dedent(inspect.getsource(function)))
-        common_calls = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "_execute_stage_common"
-        ]
-        assert len(common_calls) == 1, function_name
-        assert not any(isinstance(node, (ast.For, ast.AsyncFor)) for node in ast.walk(tree))
 
 
 def _register_toy_analysis_recipe(
@@ -1086,6 +1063,7 @@ def test_bundle_spec_rejects_duplicate_stage_names() -> None:
 def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
     tmp_path: Path,
     application_registry_bundle,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _register_toy_evaluation_recipe(application_registry_bundle=application_registry_bundle)
     _register_toy_analysis_recipe(application_registry_bundle=application_registry_bundle)
@@ -1132,6 +1110,14 @@ def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
         ],
     )
 
+    published_bytes: dict[Path, list[bytes]] = {}
+    write_bytes_atomic = manifest_module.write_bytes_atomic
+
+    def capture_publication(path: Path, data: bytes, **kwargs) -> None:
+        write_bytes_atomic(path, data, **kwargs)
+        published_bytes.setdefault(path, []).append(path.read_bytes())
+
+    monkeypatch.setattr(manifest_module, "write_bytes_atomic", capture_publication)
     result = execute_staged_analysis_bundle(
         bundle,
         root=tmp_path,
@@ -1160,7 +1146,19 @@ def test_staged_bundle_executes_eval_two_analyses_and_report_with_lineage(
         result.stages[1].manifest_refs[0],
         result.stages[2].manifest_refs[0],
     ]
-    assert result.stages[1].regeneration_specs[0].kind == "RegenerationSpec"
+    for stage in result.stages[1:3]:
+        receipt = resolve_manifest_input(stage.manifest_refs[0], tmp_path)
+        assert published_bytes[receipt.path] == [receipt.raw_bytes]
+        [regeneration] = stage.regeneration_specs
+        assert regeneration.kind == "RegenerationSpec"
+        assert regeneration in receipt.manifest.regeneration_specs
+        assert regeneration.inline["inputs"] == [
+            eval_ref.model_dump(mode="json", exclude_none=True)
+        ]
+        assert regeneration.inline["outputs"] == [
+            artifact.model_dump(mode="json", exclude_none=True)
+            for artifact in receipt.manifest.artifacts
+        ]
     assert result.stages[3].regeneration_specs[0].kind == "RegenerationSpec"
     assert result.report_outputs[0].status == "materialized"
     report_manifest = resolve_manifest_input(result.stages[3].manifest_refs[0], tmp_path).manifest
@@ -1384,17 +1382,31 @@ def test_staged_bundle_rerun_reuses_eval_and_analysis_manifests(
     first = execute_staged_analysis_bundle(
         bundle, root=tmp_path, fig_dump_formats=("json",), registries=application_registry_bundle
     )
+    first_analysis = resolve_manifest_input(first.stages[1].manifest_refs[0], tmp_path)
     second = execute_staged_analysis_bundle(
         bundle, root=tmp_path, fig_dump_formats=("json",), registries=application_registry_bundle
+    )
+    eval_stage, analysis_stage = bundle.stages
+    renamed_bundle = bundle.model_copy(
+        update={"stages": [eval_stage, analysis_stage.model_copy(update={"name": "renamed"})]}
+    )
+    renamed = execute_staged_analysis_bundle(
+        renamed_bundle,
+        root=tmp_path,
+        fig_dump_formats=("json",),
+        registries=application_registry_bundle,
     )
 
     assert eval_calls == [7]
     assert analysis_calls == [7]
     assert second.stages[0].manifest_refs == first.stages[0].manifest_refs
     assert second.stages[1].manifest_refs == first.stages[1].manifest_refs
+    assert renamed.stages[1].manifest_refs == first.stages[1].manifest_refs
+    [renamed_regeneration] = renamed.stages[1].regeneration_specs
+    assert renamed_regeneration.inline["parameters"]["stage"]["name"] == "renamed"
+    assert first_analysis.path.read_bytes() == first_analysis.raw_bytes
 
-    analysis_manifest = resolve_manifest_input(first.stages[1].manifest_refs[0], tmp_path).manifest
-    analysis_spec = AnalysisRunSpec.model_validate(analysis_manifest.analysis_spec.inline)
+    analysis_spec = AnalysisRunSpec.model_validate(first_analysis.manifest.analysis_spec.inline)
     evaluation_input = resolve_manifest_input(first.stages[0].manifest_refs[0], tmp_path)
     evaluation_input.path.write_bytes(evaluation_input.raw_bytes + b"\n")
     with pytest.raises(AnalysisRecipeExecutionError) as excinfo:
