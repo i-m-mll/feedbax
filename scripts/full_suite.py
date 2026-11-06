@@ -611,19 +611,6 @@ def affected_test_selection(repo_root: Path, base: str) -> dict[str, Any]:
     return selection
 
 
-def explicit_test_roots(repo_root: Path) -> list[str]:
-    tests = repo_root / "tests"
-    roots = {
-        path.relative_to(repo_root).as_posix()
-        for pattern in ("**/test_*.py", "**/*_test.py")
-        for path in tests.glob(pattern)
-        if path.is_file()
-    }
-    if not roots:
-        raise RuntimeError("affected-test run found no Python test files")
-    return sorted(roots)
-
-
 def parse_args(argv: Sequence[str] | None) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
         description="Run the Feedbax full pytest suite with xdist, JAX cache, and green-tree memoization.",
@@ -643,7 +630,7 @@ def parse_args(argv: Sequence[str] | None) -> tuple[argparse.Namespace, list[str
     parser.add_argument("--no-memo", action="store_true", help="Disable memo lookup and recording.")
     parser.add_argument(
         "--affected-base",
-        help="Run routine Python checks plus expensive checks affected since this Git commit.",
+        help="Run Python test files affected since this Git commit.",
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the computed command and memo state."
@@ -701,7 +688,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("affected selection uses the core capability profile")
     selection = affected_test_selection(repo_root, args.affected_base) if args.affected_base else None
     candidate = selection is not None and selection["mode"] == "candidate"
-    collection_roots = explicit_test_roots(repo_root) if candidate else ["tests"]
+    collection_roots = selection["python_tests"] if candidate else ["tests"]
     if selection is not None:
         selection = {"base": args.affected_base, **selection}
 
@@ -712,9 +699,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         runner_args=runner_args,
         collection_roots=collection_roots,
     )
-    if candidate:
-        command.extend(["-p", "scripts.pytest_affected"])
-
     if args.print_fingerprint:
         fingerprint = build_fingerprint(
             repo_root,
@@ -770,6 +754,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
+    if candidate and not collection_roots:
+        print("No affected Python tests")
+        return 0
+
     lock_path = full_suite_lock_path()
     try:
         with FullSuiteLock(lock_path, repo_root=repo_root):
@@ -798,16 +786,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             if candidate:
                 print(
                     "Running affected Python suite:"
-                    f" {len(collection_roots)} explicit test files,"
-                    f" {len(selection['python_tests'])} related expensive-test files"
+                    f" {len(collection_roots)} related test files"
                 )
             else:
                 print("Running:", " ".join(command))
             started = time.perf_counter()
             with owned_suite_temporary_root() as temporary_root:
                 env = {**os.environ, "TMPDIR": str(temporary_root)}
-                if candidate:
-                    env["FEEDBAX_AFFECTED_TEST_FILES"] = json.dumps(selection["python_tests"])
                 configure_jax_cache_env(temporary_root / "jax-cache", env)
                 raw_profile = temporary_root / "profile.json"
                 if args.profile_json:

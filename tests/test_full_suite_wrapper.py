@@ -28,17 +28,10 @@ def load_full_suite_module():
     return module
 
 
-def test_affected_collection_omits_an_unrelated_failing_extended_test(tmp_path: Path) -> None:
+def test_affected_collection_omits_an_unrelated_failing_test(tmp_path: Path) -> None:
     root = make_full_suite_repo(tmp_path / "repo")
-    (root / "pyproject.toml").write_text(
-        "[project]\nname = 'feedbax-test'\n"
-        "[tool.pytest.ini_options]\nmarkers = ['extended: expensive behavior']\n",
-        encoding="utf-8",
-    )
     test_file = root / "tests" / "test_affected_sentinel.py"
     test_file.write_text(
-        "import pytest\n"
-        "@pytest.mark.extended\n"
         "def test_unrelated_failure():\n    assert False\n",
         encoding="utf-8",
     )
@@ -49,10 +42,6 @@ def test_affected_collection_omits_an_unrelated_failing_extended_test(tmp_path: 
         '["tests/test_placeholder.py"], "studio_unit_tests": [], '
         '"studio_build_and_browser": false}\')\n',
         encoding="utf-8",
-    )
-    shutil.copyfile(
-        Path(__file__).resolve().parents[1] / "scripts" / "pytest_affected.py",
-        scripts / "pytest_affected.py",
     )
     command = [sys.executable, str(Path(__file__).resolve().parents[1] / "scripts" / "full_suite.py")]
     environment = {
@@ -80,7 +69,8 @@ def test_affected_collection_omits_an_unrelated_failing_extended_test(tmp_path: 
     )
 
     assert affected.returncode == 0, affected.stdout + affected.stderr
-    assert "1 passed, 1 deselected" in affected.stdout
+    assert "1 passed" in affected.stdout
+    assert "test_affected_sentinel.py" not in affected.stdout
     assert reference.returncode == 1
     assert "1 failed, 1 passed" in reference.stdout
 
