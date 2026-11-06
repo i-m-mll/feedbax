@@ -243,7 +243,7 @@ class MuscledArm(AbstractMuscledPlant):
                 ),
                 "skeleton": DynamicsComponent(
                     dynamics=self.skeleton,
-                    where_input=lambda input, state: state.skeleton.torque,
+                    where_input=lambda input, state: self._muscle_torques(state.muscles),
                     where_state=lambda state: state.skeleton,
                 ),
             }
@@ -281,17 +281,11 @@ class MuscledArm(AbstractMuscledPlant):
 
         # Muscle tension
         muscles = self.muscle_model(state.muscles.activation, state.muscles, key=key)
-        state = eqx.tree_at(lambda s: s.muscles, state, muscles)
-
-        # Muscle torques
-        torque = self._muscle_torques(state.muscles)
-        state = eqx.tree_at(lambda s: s.skeleton.torque, state, torque)
-
-        return state
+        return eqx.tree_at(lambda s: s.muscles, state, muscles)
 
     def _muscle_length(self, angle: Array) -> Array:
         moment_arms, l0, theta0 = self.moment_arms, self.l0, self.theta0
-        l = (
+        length = (
             1
             + (
                 moment_arms[0] * (theta0[0] - angle[0])
@@ -299,7 +293,7 @@ class MuscledArm(AbstractMuscledPlant):
             )
             / l0
         )
-        return l
+        return length
 
     def _muscle_velocity(self, d_angle: Array) -> Array:
         moment_arms, l0 = self.moment_arms, self.l0

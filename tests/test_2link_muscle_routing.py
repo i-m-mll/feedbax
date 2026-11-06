@@ -8,9 +8,11 @@ span multiple joints.
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
+from feedbax.mechanics.backend import DiffraxBackend
 from feedbax.mechanics.body import (
     BodyPreset,
     default_2link_bounds,
@@ -21,10 +23,16 @@ from feedbax.mechanics.body import (
     to_flat,
 )
 from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry
+from feedbax.mechanics.mechanics import Mechanics
 from feedbax.mechanics.model_builder import ChainConfig, SimConfig
 from feedbax.mechanics.mjx_plant import MJXPlant
+from feedbax.mechanics.muscle import (
+    AbstractFLVFunction,
+    ActivationFilter,
+    HillActivationFunction,
+    VirtualMuscle,
+)
 from feedbax.mechanics.muscle_config import (
-    MuscleTopology,
     default_6muscle_2link_moment_arm_magnitudes,
     default_6muscle_2link_moment_arms,
     default_6muscle_2link_muscled_arm_parameters,
@@ -255,6 +263,56 @@ class TestCanonicalSixMuscleDefaults:
             plant.current_muscle_activations(state),
             jnp.zeros(6),
         )
+
+
+class _LinearTension(AbstractFLVFunction):
+    def __call__(self, input, state, key):
+        return input
+
+
+@pytest.mark.parametrize("use_backend", [False, True], ids=["legacy", "backend"])
+def test_muscled_arm_steps_with_independent_actuation_and_loads(key, use_backend):
+    plant = MuscledArm(
+        muscle_model=VirtualMuscle(1, HillActivationFunction(), _LinearTension()),
+        activator=ActivationFilter(tau_act=0.02, tau_deact=0.04),
+        moment_arms=[[0.03], [-0.02]],
+        theta0=[[0.0], [np.pi / 2]],
+        l0=[0.1],
+        f0=[200.0],
+    )
+    dt = 0.001
+    backend = DiffraxBackend(control_dt=dt) if use_backend else None
+    mechanics = Mechanics(plant, dt, backend=backend, key=key)
+    state = eqx.nn.State(mechanics)
+    activation = jnp.array([0.25])
+    held_torque = jnp.array([0.4, -0.3])
+    endpoint_force = jnp.array([1.0, -2.0])
+    initial = eqx.tree_at(
+        lambda s: (
+            s.plant.skeleton.angle,
+            s.plant.skeleton.torque,
+            s.plant.muscles.activation,
+            s.effector.force,
+        ),
+        state.get(mechanics.state_index),
+        (jnp.array([0.0, np.pi / 2]), held_torque, activation, endpoint_force),
+    )
+    state = state.set(mechanics.state_index, initial)
+
+    outputs, _ = mechanics({"force": activation}, state, key=key)
+    skeleton = outputs["state"].plant.skeleton
+
+    # At rest with perpendicular links, the inertial coupling from cos(q2) is zero.
+    l1, l2 = np.asarray(plant.skeleton.l)
+    i1, i2 = np.asarray(plant.skeleton.I)
+    m2 = float(plant.skeleton.m[1])
+    mass = np.array([[i1 + i2 + m2 * l1**2, i2], [i2, i2]])
+    jacobian = np.array([[-l2, -l2], [l1, 0.0]])
+    muscle_torque = 50.0 * np.array([0.03, -0.02])
+    expected = np.linalg.solve(mass, muscle_torque + held_torque + jacobian.T @ endpoint_force)
+    np.testing.assert_allclose(skeleton.d_angle / dt, expected, rtol=1e-5, atol=1e-5)
+    np.testing.assert_array_equal(skeleton.torque, held_torque)
+    np.testing.assert_array_equal(skeleton.effector_force, endpoint_force)
 
 
 def test_analytical_isometric_actuation_survives_load_release(key):
