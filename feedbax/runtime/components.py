@@ -323,10 +323,9 @@ class _StepSource(Component):
         initial_state = 0
         self.step_index = StateIndex(initial_state)
 
-    def _step_time(self, state: State) -> tuple[float, State]:
+    def _take_step(self, state: State) -> tuple[Array, State]:
         step = state.get(self.step_index)
-        next_state = state.set(self.step_index, step + 1)
-        return float(step) * self.dt, next_state
+        return step, state.set(self.step_index, step + 1)
 
 
 class Ramp(_StepSource):
@@ -343,7 +342,8 @@ class Ramp(_StepSource):
         self.intercept = jt.map(jnp.asarray, intercept)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        t, state = self._step_time(state)
+        step, state = self._take_step(state)
+        t = step * self.dt
         output = jt.map(lambda s, b: b + s * t, self.slope, self.intercept)
         return {"output": output}, state
 
@@ -373,7 +373,8 @@ class Sine(_StepSource):
         self.offset = jt.map(jnp.asarray, offset)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        t, state = self._step_time(state)
+        step, state = self._take_step(state)
+        t = step * self.dt
         omega = 2 * jnp.pi * self.frequency
         output = jt.map(
             lambda a, b: b + a * jnp.sin(omega * t + self.phase),
@@ -408,8 +409,12 @@ class Pulse(_StepSource):
         self.offset = jt.map(jnp.asarray, offset)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        t, state = self._step_time(state)
-        phase = (t / self.period) % 1.0 if self.period > 0 else 0.0
+        step, state = self._take_step(state)
+        phase = 0.0
+        if self.period > 0 and self.dt != 0:
+            # Wrap in step units to avoid rounding elapsed time before finding the phase.
+            steps_per_period = self.period / self.dt
+            phase = (step % steps_per_period) / steps_per_period
         gate = jnp.where(phase < self.duty_cycle, 1.0, 0.0)
         output = jt.map(lambda a, b: b + a * gate, self.amplitude, self.offset)
         return {"output": output}, state
