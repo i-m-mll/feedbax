@@ -362,10 +362,6 @@ def _zeros_like_tree(x):
     return jt.map(jnp.zeros_like, x)
 
 
-def _ones_like_tree(x):
-    return jt.map(jnp.ones_like, x)
-
-
 def _tree_dot(x, y):
     xf, _ = ravel_pytree(x)
     yf, _ = ravel_pytree(y)
@@ -373,13 +369,15 @@ def _tree_dot(x, y):
     return jnp.vdot(xf, yf).real
 
 
-def _tree_norm(x):
-    return jnp.sqrt(_tree_dot(x, x))
-
-
-def _tree_normalize(x):
-    n = _tree_norm(x)
-    return jt.map(lambda a: a / n, x)
+def _tree_unit_and_norm(x):
+    """Return the unit direction and Euclidean norm, with zero mapping to zero."""
+    flat, unravel = ravel_pytree(x)
+    values = flat.astype(jnp.result_type(flat.dtype, jnp.float32))
+    scale = jnp.max(jnp.abs(values), initial=0)
+    scaled = values / jnp.where(scale == 0, 1, scale)
+    length = jnp.linalg.norm(scaled)
+    unit = scaled / jnp.where(length == 0, 1, length)
+    return unravel(unit.astype(flat.dtype)), scale * length
 
 
 # Linear operators
@@ -562,32 +560,42 @@ def hessian_block_linop_ij(
 
 
 def reducer_opnorm_power_bidiag(*, iters: int = 40, tol: float = 1e-6):
-    """Return a reducer (mv, mtv, like_v, like_u) -> scalar ≈ ||A||_2.
-    Works for J (rectangular) and also for symmetric H by passing mtv==mv and like_u==like_v.
+    """Estimate the spectral norm from forward and adjoint products.
+
+    Start power iteration from the stronger of two reproducible Gaussian probes.
+    Return zero if both images vanish. Stop after at most `iters` power steps
+    or when the relative change in the estimate is at most `tol`.
     """
 
     def reduce(mv, mtv, like_v, like_u):
-        v = _tree_normalize(_ones_like_tree(like_v))
+        flat, unravel = ravel_pytree(like_v)
 
-        def one_step(v):
-            Av = mv(v)
-            sigma = jnp.sqrt(_tree_dot(Av, Av))
-            u = jt.map(lambda a: a / sigma, Av)
-            v_new = _tree_normalize(mtv(u))
-            return v_new, sigma
+        def unit_seed(seed):
+            return _tree_unit_and_norm(unravel(seed))[0]
 
-        v, sigma = one_step(v)
+        with jax.ensure_compile_time_eval():
+            seeds = jax.random.normal(jax.random.key(0), (2, flat.size), dtype=flat.dtype)
+            probes = jax.vmap(unit_seed)(seeds)
+
+        directions, estimates = jax.lax.map(lambda v: _tree_unit_and_norm(mv(v)), probes)
+        best = jnp.argmax(estimates)
+        u = jt.map(lambda direction: direction[best], directions)
+        sigma = estimates[best]
 
         def cond(carry):
-            _, _, k, delta = carry
-            return jnp.logical_and(k < iters, delta > tol)
+            _, _, k, active = carry
+            return (k < iters) & active
 
         def body(carry):
-            v_prev, sigma_prev, k, _ = carry
-            v_next, sigma_new = one_step(v_prev)
-            return (v_next, sigma_new, k + 1, jnp.abs(sigma_new - sigma_prev))
+            u_prev, sigma_prev, k, _ = carry
+            v, _ = _tree_unit_and_norm(mtv(u_prev))
+            u_next, sigma_next = _tree_unit_and_norm(mv(v))
+            relative_change = jnp.abs(sigma_next - sigma_prev) / jnp.maximum(sigma_next, sigma_prev)
+            breakdown = sigma_next == 0
+            sigma = jnp.where(breakdown, sigma_prev, sigma_next)
+            return u_next, sigma, k + 1, (~breakdown) & (relative_change > tol)
 
-        _, sigma, _, _ = jax.lax.while_loop(cond, body, (v, sigma, 0, jnp.inf))
+        _, sigma, _, _ = jax.lax.while_loop(cond, body, (u, sigma, 0, sigma > 0))
         return sigma
 
     return reduce
