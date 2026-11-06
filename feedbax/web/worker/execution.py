@@ -58,7 +58,7 @@ from feedbax.contracts.training import (
     standard_supervised_method_payload,
     standard_supervised_method_ref,
 )
-from feedbax.compiler.serialization import prototypes_from_task_bindings
+from feedbax.compiler.serialization import _component_owns_trainability, prototypes_from_task_bindings
 from feedbax.objectives import ObjectiveExecutionRequirements
 from feedbax.objectives.service import LossService, LoweredObjective
 from feedbax.training.executor import execute_training_run_spec
@@ -1094,7 +1094,16 @@ def _compile_trainability(
         node_filters = dict.fromkeys(runtime.nodes, False)
         subgraphs = spec.subgraphs or {}
         for node_id, node in spec.nodes.items():
-            override = node.params.get("trainable")
+            binding = runtime.component_bindings.get(node_id)
+            override = binding.trainable_override if binding is not None else None
+            declaration = registry.get(node.type)
+            if (
+                override is None
+                and isinstance(node.params.get("trainable"), bool)
+                and declaration is not None
+                and _component_owns_trainability(declaration)
+            ):
+                override = node.params["trainable"]
             if override is False:
                 continue
             component = runtime.nodes[node_id]
@@ -1105,9 +1114,7 @@ def _compile_trainability(
                     raise TypeError(f"Expected a runtime graph at {'.'.join(node_path)!r}")
                 node_filters[node_id] = graph_filter(interior, component, node_path)
                 continue
-            if override is not True and not getattr(
-                registry.get(node.type), "trainable_by_default", False
-            ):
+            if override is not True and not getattr(declaration, "trainable_by_default", False):
                 continue
             leaves, structure = jt.flatten(
                 component, is_leaf=lambda value: isinstance(value, StateIndex)

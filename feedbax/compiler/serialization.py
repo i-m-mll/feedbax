@@ -20,7 +20,11 @@ from feedbax.contracts.array_values import (
     _parse_array_value_payload,
     materialize_array_value,
 )
-from feedbax.component_registry import format_missing_interior_message, required_interior_domain
+from feedbax.component_registry import (
+    DeclaredComponent,
+    format_missing_interior_message,
+    required_interior_domain,
+)
 from feedbax.runtime.parameter_constraints import normalize_parameter_constraints
 from feedbax.compiler.builders import (
     _unsupported_component_message,
@@ -158,6 +162,8 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
                 f"declared inputs={tuple(layout.input_ports)!r}, "
                 f"outputs={tuple(layout.output_ports)!r}"
             )
+        if binding is not None and binding.trainable_override is not None:
+            params = {**params, "trainable": binding.trainable_override}
         nodes[name] = ComponentSpec(
             type=type_id,
             params=params,
@@ -198,20 +204,19 @@ def _instantiate_graph(
     """Instantiate a resolved graph for the graph compiler."""
     execution_registry = component_registry
     metadata_registry = component_registry
-    component_bindings = {
-        node_name: ComponentBinding(
-            type_id=node.type,
-            param_schema_version=node.param_schema_version,
-        )
-        for node_name, node in spec.nodes.items()
-        if node.param_schema_version is not None
-    }
     spec, authored_array_values = _materialize_graph_component_params(spec)
 
     nodes: dict[str, Component] = {}
+    component_bindings: dict[str, ComponentBinding] = {}
     for node_name, node_spec in spec.nodes.items():
         node_type = node_spec.type
-        node_params, _ = _split_lowering_metadata(node_spec, metadata_registry)
+        node_params, lowering_metadata = _split_lowering_metadata(node_spec, metadata_registry)
+        if node_spec.param_schema_version is not None:
+            component_bindings[node_name] = ComponentBinding(
+                type_id=node_type,
+                param_schema_version=node_spec.param_schema_version,
+                trainable_override=lowering_metadata.get("trainable"),
+            )
         required_domain = required_interior_domain(node_type, metadata_registry)
         if required_domain is None and metadata_registry is not execution_registry:
             required_domain = required_interior_domain(node_type, execution_registry)
@@ -377,14 +382,16 @@ def _split_lowering_metadata(
         lowering_metadata["channel_adapter"] = params.pop("channel_adapter")
     if isinstance(params.get("trainable"), bool):
         declaration = component_registry.get(node_spec.type)
-        if declaration is not None:
-            contract = declaration.params
-            declared = "trainable" in contract.model.model_fields or (
-                "trainable" in contract.build_context_fields
-            )
-            if not declared:
-                lowering_metadata["trainable"] = params.pop("trainable")
+        if declaration is not None and not _component_owns_trainability(declaration):
+            lowering_metadata["trainable"] = params.pop("trainable")
     return params, lowering_metadata
+
+
+def _component_owns_trainability(declaration: DeclaredComponent) -> bool:
+    contract = declaration.params
+    return (
+        "trainable" in contract.model.model_fields or "trainable" in contract.build_context_fields
+    )
 
 
 def _validate_dynamic_component_ports(

@@ -246,10 +246,12 @@ class GraphTraceRequest:
 
 @dataclasses.dataclass(frozen=True)
 class ComponentBinding:
-    """Registry identity used to construct one runtime graph node."""
+    """Registry identity and explicit graph-owned controls for one node."""
 
     type_id: str
     param_schema_version: str
+    # Checkpoint slot fingerprints include the binding's repr via the PyTree definition.
+    trainable_override: bool | None = dataclasses.field(default=None, repr=False)
 
 
 class Graph(Component):
