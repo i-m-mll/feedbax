@@ -8,6 +8,12 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
 import feedbax.analysis as analysis_pkg
+from feedbax.compiler import (
+    CompilationFailureRecord,
+    CompilationRecord,
+    GraphDocument,
+    ResolvedGraph,
+)
 from feedbax.contracts.artifact_custody import (
     ImmutableArtifactBlobProviderConfig,
     ImmutableArtifactBlobProviderSpec,
@@ -278,6 +284,10 @@ def health() -> ProviderHealth:
 def _schema_models() -> dict[str, type[BaseModel]]:
     return {
         "GraphSpec": GraphSpec,
+        "GraphDocument": GraphDocument,
+        "ResolvedGraph": ResolvedGraph,
+        "CompilationRecord": CompilationRecord,
+        "CompilationFailureRecord": CompilationFailureRecord,
         "AdditiveGraphChannelAdapterSpec": AdditiveGraphChannelAdapterSpec,
         "AdditiveGraphChannelTargetSpec": AdditiveGraphChannelTargetSpec,
         "AnalysisInputRequirement": AnalysisInputRequirement,

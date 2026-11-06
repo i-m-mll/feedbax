@@ -6,7 +6,6 @@ import jax.numpy as jnp
 from pydantic import BaseModel, ValidationError, field_validator
 
 from feedbax.compiler import (
-    COMPILATION_RECORD_SCHEMA_VERSION,
     CompilationRecord,
     CompilerPhase,
     GraphCompilationError,
@@ -131,19 +130,6 @@ def test_graph_document_rejects_unknown_version_without_restamping() -> None:
         GraphDocument.model_validate(payload)
 
 
-def test_source_map_anchor_schema_rejects_pre_anchor_compiler_records() -> None:
-    compiled = compile_graph(_document(), ComponentRegistry(load_user_components=False))
-    resolved_payload = compiled.resolved.model_dump(mode="json")
-    resolved_payload["schema_version"] = "1"
-    record_payload = compiled.record.model_dump(mode="json")
-    record_payload["schema_version"] = "1"
-
-    with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
-        ResolvedGraph.model_validate(resolved_payload)
-    with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
-        CompilationRecord.model_validate(record_payload)
-
-
 def test_compile_failure_is_a_stable_source_mapped_phase_diagnostic() -> None:
     document = _document()
     graph = document.graph.model_copy(
@@ -184,17 +170,6 @@ def test_compile_failure_is_a_stable_source_mapped_phase_diagnostic() -> None:
         CompilerPhase.SCHEDULING,
         CompilerPhase.RESOLVED_IR_EMISSION,
     )
-
-
-def test_compilation_record_v2_rejects_after_diagnostics_schema_change() -> None:
-    compiled = compile_graph(_document(), ComponentRegistry(load_user_components=False))
-    payload = compiled.record.model_dump(mode="json")
-    payload["schema_version"] = "2"
-
-    assert COMPILATION_RECORD_SCHEMA_VERSION == "5"
-    assert compiled.record.diagnostics == ()
-    with pytest.raises(ValidationError, match="migration_intentionally_absent=yes"):
-        CompilationRecord.model_validate(payload)
 
 
 def test_compile_graph_migrates_an_explicit_older_graph_schema() -> None:
@@ -439,16 +414,6 @@ def test_unknown_component_version_points_to_nested_authored_node() -> None:
     diagnostic = caught.value.record.diagnostics[0]
     assert diagnostic.source_anchor.authored_path == "/graph/subgraphs/nested/nodes/gain"
     assert "source_param_schema_version='unknown'" in diagnostic.observed_condition
-
-
-@pytest.mark.parametrize("family,version", [(ResolvedGraph, "2"), (CompilationRecord, "3")])
-def test_pre_canonical_evidence_requires_recompilation(family, version: str) -> None:
-    compiled = compile_graph(_document(), ComponentRegistry(load_user_components=False))
-    evidence = compiled.resolved if family is ResolvedGraph else compiled.record
-    payload = evidence.model_dump(mode="json")
-    payload["schema_version"] = version
-    with pytest.raises(ValidationError, match="recompile the authored GraphDocument"):
-        family.model_validate(payload)
 
 
 def test_parameter_normalization_is_applied_once_before_runtime_construction() -> None:

@@ -7,6 +7,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.compiler import (
+    CompilationFailureRecord,
+    CompilationRecord,
+    GraphDocument,
+    ResolvedGraph,
+)
 from feedbax.contracts.artifact_custody import (
     ImmutableArtifactBlobProviderConfig,
     ImmutableArtifactBlobProviderSpec,
@@ -459,6 +465,10 @@ def test_provider_manifest_exports_neutral_contract_schema_names() -> None:
     contract_models = {
         "AnalysisInputRequirement": AnalysisInputRequirement,
         "GraphSpec": GraphSpec,
+        "GraphDocument": GraphDocument,
+        "ResolvedGraph": ResolvedGraph,
+        "CompilationRecord": CompilationRecord,
+        "CompilationFailureRecord": CompilationFailureRecord,
         "LossTermSpec": LossTermSpec,
         "LrScheduleSpec": LrScheduleSpec,
         "TaskSpec": TaskSpec,
