@@ -191,11 +191,9 @@ class PlotInPCSpace(AbstractAnalysis[PlotInPCSpacePorts]):
     inputs: PlotInPCSpacePorts = eqx.field(
         default_factory=PlotInPCSpacePorts, converter=PlotInPCSpacePorts.converter
     )
+    spread_label: str = eqx.field(kw_only=True)
     variant: Optional[str] = "full"
     fig_params: Mapping = MappingProxyType(dict())
-
-    # n_pcs: Literal[2, 3] = 3
-    spread_label: str = "sisu"
 
     def make_figs(
         self,

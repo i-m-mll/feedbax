@@ -588,6 +588,7 @@ export interface StudioEvaluationMatrixPreview {
   stage_id: string;
   selected_training_run_count: number;
   condition_count: number;
+  condition_labels: string[];
   checkpoint_policy_count: number;
   total_eval_count: number;
   materialized_count: number;

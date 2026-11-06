@@ -13,7 +13,7 @@
         },
         "role": "analysis_run"
       },
-      "row_id": "target2x-floor"
+      "row_id": "group-a"
     },
     {
       "binding_key": "k2",
@@ -28,7 +28,7 @@
         },
         "role": "analysis_run"
       },
-      "row_id": "target4x-floor"
+      "row_id": "group-b"
     },
     {
       "binding_key": "k1",
@@ -43,11 +43,11 @@
         },
         "role": "analysis_run"
       },
-      "row_id": "target2x-floor"
+      "row_id": "group-a"
     }
   ],
-  "index_id": "target2x_target4x_floor",
-  "index_sha256": "692a93cfbeb67f015751e785da1cbaee70658d764d5f8ac7bc7c47e6582c42d4",
+  "index_id": "velocity_comparison",
+  "index_sha256": "5c4f00442e0977d975dbf8edb3d2ad6d4e62fb8c76d1f315b63cc7f4fd496065",
   "schema_id": "feedbax.spec.row_index_custody_bindings",
   "schema_version": "feedbax.spec.row_index_custody_bindings.v2"
 }

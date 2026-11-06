@@ -62,7 +62,7 @@ export interface EvaluationRunSummary {
   selectedTrainingRunId: string | null;
   trainingRunIds: string[];
   targets: string | null;
-  sisu: number | null;
+  conditionLabel: string | null;
   perturbation: string | null;
   sourceIssue: string | null;
   provenanceId: string;
@@ -307,9 +307,9 @@ export function runParameterSummary(row: TrainingRunSummary): string {
 }
 
 export function evaluationProtocolLabel(row: EvaluationRunSummary): string {
+  if (row.conditionLabel !== null) return row.conditionLabel;
   const parts = [
     row.targets,
-    row.sisu !== null ? `SISU ${row.sisu}` : null,
     row.perturbation ? perturbationLabel(row.perturbation) : null,
   ];
   return parts.filter(Boolean).join(' - ') || 'Protocol not recorded';
@@ -1073,7 +1073,7 @@ function evaluationRunSummary(ref: StudioManifestRef): EvaluationRunSummary {
     selectedTrainingRunId: stringValue(ref.metadata.selected_training_run_id),
     trainingRunIds,
     targets: stringValue(protocol?.targets),
-    sisu: numberValue(protocol?.sisu),
+    conditionLabel: stringValue(ref.metadata.condition_label),
     perturbation: stringValue(protocol?.perturbation),
     sourceIssue: stringValue(ref.metadata.source_issue),
     provenanceId: ref.id,

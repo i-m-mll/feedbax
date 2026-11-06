@@ -257,6 +257,25 @@ describe('pipeline collection summaries', () => {
     );
   });
 
+  it('prefers the authored condition label and preserves zero in the display', () => {
+    const [summary] = evaluationRunSummaries({
+      output_collections: [{
+        item_refs: [{
+          kind: 'EvaluationRunManifest',
+          id: 'eval:zero-gain',
+          role: 'evaluation_run',
+          metadata: {
+            condition_label: 'Feedback gain=0',
+            condition_axis_coordinates: { gain: 0 },
+            eval_protocol: { targets: 'Held-out targets' },
+          },
+        }],
+      }],
+    } as any);
+
+    expect(evaluationProtocolLabel(summary)).toBe('Feedback gain=0');
+  });
+
   it('marks downstream evaluation rows stale when an upstream parent was superseded', () => {
     const rows = evaluationRunSummaries({
       output_collections: [{

@@ -31,18 +31,18 @@ from feedbax.orchestration.realization import (
 from feedbax.workflow.plan import LogicalKey, Operation, PlanEdge, PlanNode, build_workflow_plan
 
 
-def _sisu_invocation():
-    operation_key = LogicalKey("campaign", "sisu-continuous-conditioning")
+def _controller_invocation():
+    operation_key = LogicalKey("campaign", "controller-training")
     node = PlanNode(
         key=operation_key,
-        source_ref="campaign/sisu-continuous-conditioning.lock.json",
+        source_ref="campaign/controller-training.lock.json",
         operation=Operation(
             type_id="feedbax.operation.train",
             parameters={
-                "compiled_schema_id": "rlrmp2.sisu.training",
+                "compiled_schema_id": "example.controller.training",
                 "semantic_hash": "a" * 64,
             },
-            input_types={"experiment": "rlrmp2.sisu.experiment"},
+            input_types={"experiment": "example.controller.experiment"},
             output_types={"training_run": "feedbax.training_run"},
             determinism="seeded",
             cache_policy="never",
@@ -50,22 +50,22 @@ def _sisu_invocation():
             capabilities=("training",),
         ),
         content_hash="b" * 64,
-        execution_identity="sisu-tier-a",
+        execution_identity="controller-smoke",
     )
     edge = PlanEdge(
         consumer=operation_key,
         role_path=("experiment",),
         status="required",
         basis="authored",
-        input_type="rlrmp2.sisu.experiment",
-        external={"artifact_id": "sisu-experiment", "sha256": "c" * 64},
-        external_type="rlrmp2.sisu.experiment",
+        input_type="example.controller.experiment",
+        external={"artifact_id": "controller-experiment", "sha256": "c" * 64},
+        external_type="example.controller.experiment",
     )
     plan = build_workflow_plan(operation_key, (node,), (edge,))
     return invocation_for_operation(
         plan,
         operation_key,
-        bound_inputs={("experiment",): {"artifact_id": "sisu-experiment", "sha256": "c" * 64}},
+        bound_inputs={("experiment",): {"artifact_id": "controller-experiment", "sha256": "c" * 64}},
         scientific_seeds={"controller": 17, "trial": 23},
         execution_policy=InvocationExecutionPolicy(timeout_seconds=120, max_attempts=2),
     )
@@ -84,7 +84,7 @@ def _request(
         capability_variant=variant,
         code_bundle_id="git:feedbax@d8fa266a",
         environment_bundle_id="uv-lock:" + "d" * 64,
-        command=("feedbax", "execute-training-run-spec", "sisu-tier-a.json"),
+        command=("feedbax", "execute-training-run-spec", "controller-smoke.json"),
         machine=machine or MachineShape(),
         network_requirements=() if variant.startswith("local") else ("egress:https",),
         secret_names=() if variant.startswith("local") else ("runpod_api_key",),
@@ -92,13 +92,13 @@ def _request(
         retry_classification="same-plan",
         expected_cost=expected_cost,
         billable_confirmation_class=confirmation,
-        external_effect_key=f"sisu-{variant}-effect",
-        configuration={"sisu_profile": "tier-a"},
+        external_effect_key=f"controller-{variant}-effect",
+        configuration={"controller_profile": "smoke"},
     )
 
 
 def test_invocation_is_provider_neutral_versioned_and_identity_stable() -> None:
-    invocation = _sisu_invocation()
+    invocation = _controller_invocation()
     document = invocation.model_dump(mode="json")
 
     assert document["schema_id"] == INVOCATION_SCHEMA_ID
@@ -113,7 +113,7 @@ def test_invocation_is_provider_neutral_versioned_and_identity_stable() -> None:
 
 
 def test_invocation_refuses_provider_and_physical_input_coordinates() -> None:
-    invocation = _sisu_invocation()
+    invocation = _controller_invocation()
     document = invocation.model_dump(mode="json")
     document["inputs"][0]["reference"]["provider_id"] = "runpod"
     document["invocation_id"] = "0" * 64
@@ -122,8 +122,8 @@ def test_invocation_refuses_provider_and_physical_input_coordinates() -> None:
         invocation_from_document(document)
 
 
-def test_local_sisu_backend_plan_reuses_driver_capability_seam_without_effect() -> None:
-    invocation = _sisu_invocation()
+def test_local_controller_backend_plan_reuses_driver_capability_seam_without_effect() -> None:
+    invocation = _controller_invocation()
     registration = local_driver_registration()
     backend = OrchestrationBackend(
         backend_id=registration.name,
@@ -141,8 +141,8 @@ def test_local_sisu_backend_plan_reuses_driver_capability_seam_without_effect() 
     assert backend_plan_from_document(plan.model_dump(mode="json")) == plan
 
 
-def test_paid_capable_sisu_plan_is_inert_and_reservation_bound() -> None:
-    invocation = _sisu_invocation()
+def test_paid_capable_controller_plan_is_inert_and_reservation_bound() -> None:
+    invocation = _controller_invocation()
     registration = runpod_driver_registration()
     backend = OrchestrationBackend(
         backend_id=registration.name,
@@ -173,7 +173,7 @@ def test_paid_capable_sisu_plan_is_inert_and_reservation_bound() -> None:
 
 
 def test_attempt_is_a_separate_versioned_observation() -> None:
-    invocation = _sisu_invocation()
+    invocation = _controller_invocation()
     registration = local_driver_registration()
     backend = OrchestrationBackend(
         backend_id="local",
@@ -183,7 +183,7 @@ def test_attempt_is_a_separate_versioned_observation() -> None:
     plan = backend.realize("training", (invocation, _request("local-stop")))
     completed = datetime.now(timezone.utc)
     attempt = Attempt(
-        attempt_id="sisu-local-attempt-1",
+        attempt_id="controller-local-attempt-1",
         invocation_id=invocation.invocation_id,
         backend_plan_id=plan.backend_plan_id,
         worker_identity="local-worker",
@@ -191,7 +191,7 @@ def test_attempt_is_a_separate_versioned_observation() -> None:
         started_at=completed,
         terminal_at=completed,
         exit_classification="completed",
-        event_refs=("event:sisu-local-attempt-1:completed",),
+        event_refs=("event:controller-local-attempt-1:completed",),
     )
 
     assert attempt.schema_id == ATTEMPT_SCHEMA_ID
@@ -204,7 +204,7 @@ def test_attempt_is_a_separate_versioned_observation() -> None:
 
 
 def test_backend_capability_mismatch_fails_without_fallback() -> None:
-    invocation = _sisu_invocation()
+    invocation = _controller_invocation()
     registration = local_driver_registration()
     backend = OrchestrationBackend(
         backend_id="local",

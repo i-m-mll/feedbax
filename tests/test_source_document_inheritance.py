@@ -239,13 +239,13 @@ def test_inheritance_resolves_before_dotted_path_queries(tmp_path: Path) -> None
         json.dumps(_child_with_inheritance(sha)), encoding="utf-8"
     )
     binding = SourceBinding(
-        alias="sisu",
+        alias="calibration",
         kind="lock",
         uri="child.json",
         payload_query=ValueQuery(item="source", path="harmonized_task.target_support.values"),
     )
     context = load_expression_context([binding], tmp_path)
-    assert context.items["sisu"].payload == [1, 2, 3]
+    assert context.items["calibration"].payload == [1, 2, 3]
 
 
 def test_binding_without_query_exposes_effective_inherited_subtree(tmp_path: Path) -> None:
@@ -253,7 +253,7 @@ def test_binding_without_query_exposes_effective_inherited_subtree(tmp_path: Pat
     (tmp_path / "child.json").write_text(
         json.dumps(_child_with_inheritance(sha)), encoding="utf-8"
     )
-    binding = SourceBinding(alias="sisu", kind="lock", uri="child.json")
+    binding = SourceBinding(alias="calibration", kind="lock", uri="child.json")
     context = load_expression_context([binding], tmp_path)
-    payload = context.items["sisu"].payload
+    payload = context.items["calibration"].payload
     assert _strip_provenance(payload) == _duplicated_equivalent()

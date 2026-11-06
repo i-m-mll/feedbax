@@ -1241,11 +1241,6 @@ export function EvaluateCollectionPanel() {
       workspace: workspace as StudioWorkspaceSpec,
       stage_id: evalStage?.id ?? null,
       training_run_ids: Array.from(selectedIdsForEval),
-      eval_params: {
-        targets: '8-direction center-out',
-        sisu: 0.5,
-        perturbation: 'none',
-      },
       checkpoint_policy: checkpointPolicy,
       reprocess: reprocessMode,
     };
@@ -1521,11 +1516,17 @@ export function EvaluateCollectionPanel() {
                 <SlidersHorizontal className="h-4 w-4 text-slate-400" />
                 <div className="font-semibold text-slate-800">Validation conditions</div>
               </div>
-              <div className="mt-3 space-y-2">
-                <ProtocolRow label="Targets" value="8-direction center-out" />
-                <ProtocolRow label="SISU" value="0.5" />
-                <ProtocolRow label="Perturbation" value="None" />
-              </div>
+              {evalPreview?.condition_labels?.length ? (
+                <ol className="mt-3 list-decimal space-y-1 pl-5 text-xs text-slate-600">
+                  {evalPreview.condition_labels.map((label, index) => (
+                    <li key={index}>{label}</li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="mt-3 text-xs text-slate-500">
+                  Preview the evaluation matrix to see its configured conditions.
+                </p>
+              )}
               <div className="mt-4 grid gap-3">
                 <label className="grid gap-1 text-xs font-semibold text-slate-600">
                   Checkpoint
@@ -3975,15 +3976,6 @@ function StatusDot({ status }: { status: string }) {
       />
       {status}
     </span>
-  );
-}
-
-function ProtocolRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-md bg-slate-50 px-3 py-2 text-xs">
-      <span className="text-slate-500">{label}</span>
-      <span className="font-medium text-slate-700">{value}</span>
-    </div>
   );
 }
 

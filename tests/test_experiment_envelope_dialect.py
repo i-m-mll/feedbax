@@ -1571,24 +1571,20 @@ class TestPerRowInputReference:
 
 
 #: The paired-controller evaluation envelope, re-authored at v2 with the staged
-#: prerequisite its compiled base names. Every scalar is the real corpus value,
-#: because the point of the case is the *size* of the actual shape: a synthetic
-#: stand-in with shorter ids would prove nothing about whether the corpus fits.
+#: prerequisite its compiled base names. The fixture retains the byte lengths of the original identifiers to preserve
+#: the corpus-sized budget check.
 #:
-#: The rlrmp2 evaluation layer caps an authored envelope at 2048 bytes
-#: (``specs/experiment/experiment_envelope.budgets.v3.json``). That document is
-#: ratified project policy and is not Feedbax's to widen, so the authoring form
-#: has to fit it. The list-of-objects spelling this construct started with did
-#: not: it spent about thirty bytes per prerequisite restating a key that JSON
-#: already gives a mapping for free, and pushed this envelope to 2063 bytes.
+#: The example evaluation layer caps an authored envelope at 2048 bytes
+#: under its authoring budget. The list-of-objects spelling spent about thirty
+#: extra bytes per prerequisite by repeating its key and exceeded the budget.
 PAIRED_CONTROLLER_BANK = "feedbax-evaluation-run:3686909fa04735e7b802e444885ff71f"
 PAIRED_CONTROLLER_ENVELOPE: dict[str, Any] = {
     "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION_V2,
-    "base": "specs/post_run/sisu_paired_controller_response.matrix.v1.json",
-    "name": "sisu-paired-controller-response-continuous",
+    "base": "specs/post_run/demo_paired_controller_response.matrix.v1.json",
+    "name": "demo-paired-controller-response-continuous",
     "issue": "b7f3caa",
     "reason": (
-        "Bind the wave-1 continuous trained run and its capture checkpoints to the "
+        "Bind the sample continuous trained run and its capture checkpoints to the "
         "paired controller response grid."
     ),
     "evaluation": {
@@ -1612,7 +1608,7 @@ PAIRED_CONTROLLER_ENVELOPE: dict[str, Any] = {
             }
         },
         "delta": {
-            "layer_id": "sisu-paired-controller-response-continuous.subject",
+            "layer_id": "demo-paired-controller-response-continuous.subject",
             "acknowledges_ancestor_paths": [
                 "axes.0.values.0.deltas.7.value",
                 "axes.0.values.0.deltas.8.value",
@@ -1670,7 +1666,7 @@ PAIRED_CONTROLLER_ENVELOPE: dict[str, Any] = {
     },
 }
 
-#: The ratified rlrmp2 evaluation-layer cap. Restated as a literal on purpose:
+#: The example evaluation-layer cap. Restated as a literal on purpose:
 #: reading it out of the project document would make this test pass whenever the
 #: project widened the cap, which is the one outcome it exists to prevent.
 RATIFIED_EVALUATION_MAX_BYTES = 2048
