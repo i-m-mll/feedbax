@@ -91,6 +91,15 @@ class Component(Module):
             return state.get(idx)
         return None
 
+    def replace_state_value(self, state: State, path: tuple[str, ...], value: PyTree) -> State:
+        """Replace the stored state value or an attribute within it."""
+        idx = getattr(self, "state_index", None)
+        if not isinstance(idx, StateIndex):
+            raise ValueError(f"{type(self).__name__} has no state_index for explicit initialization")
+        if path:
+            value = eqx.tree_at(attrgetter(".".join(path)), state.get(idx), value)
+        return state.set(idx, value)
+
     def initial_outputs(self, state_value: PyTree | None) -> dict[str, PyTree]:
         """Return outputs inferred from current state value, if possible."""
         if state_value is None:

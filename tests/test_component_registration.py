@@ -416,7 +416,7 @@ def test_cde_standard_template_matches_standard_cde_network_step() -> None:
     graph = eqx.tree_at(lambda g: g.nodes["linear"].layer, graph, net.readout)
 
     net_state = net.init_state(key=jax.random.PRNGKey(0))
-    cde_state = net_state.get(net.state_index)
+    cde_state = net.state_view(net_state)
     graph_state = graph.init_state(key=jax.random.PRNGKey(0))
     obs = jnp.array([0.25])
 

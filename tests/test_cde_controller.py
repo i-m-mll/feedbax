@@ -12,6 +12,8 @@ import equinox as eqx
 
 from feedbax.models.cde import CDENetwork, CDENetworkState
 from feedbax.runtime.graph import init_state_from_component
+from feedbax.runtime.iteration import iterate_component
+from feedbax.tasks import set_state_by_path
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +230,63 @@ class TestZeroDX:
 # ---------------------------------------------------------------------------
 
 class TestGradients:
+    def test_rollout_uses_live_h0_only_for_fresh_state(self, key):
+        model_key, state_key, rollout_key, resume_key, explicit_key, override_key = (
+            jr.split(key, 6)
+        )
+        net = CDENetwork(
+            obs_dim=1,
+            hidden_dim=2,
+            out_size=1,
+            vf_width=4,
+            vf_depth=1,
+            decay=0.25,
+            use_anti_nf=False,
+            key=model_key,
+        )
+        fresh_state = net.init_state(key=state_key)
+        h0 = jnp.array([2.0, -4.0], dtype=net.h0.dtype)
+        live_net = eqx.tree_at(lambda model: model.h0, net, h0)
+        inputs = {"input": jnp.zeros((2, 1), dtype=h0.dtype)}
+
+        def loss_fn(model):
+            outputs, final_state, history = iterate_component(
+                model, inputs, fresh_state, 2, rollout_key
+            )
+            return jnp.sum(outputs["hidden"][0]), (outputs, final_state, history)
+
+        (_, (outputs, final_state, history)), grads = eqx.filter_value_and_grad(
+            loss_fn, has_aux=True
+        )(live_net)
+        assert jnp.allclose(history.hidden[0], h0)
+        assert jnp.allclose(outputs["hidden"][0], 0.75 * h0)
+        assert jnp.allclose(outputs["hidden"][1], 0.75**2 * h0)
+        assert jnp.allclose(grads.h0, jnp.full_like(h0, 0.75))
+
+        replaced_net = eqx.tree_at(lambda model: model.h0, live_net, -h0)
+        outputs, _, history = iterate_component(
+            replaced_net, inputs, final_state, 2, resume_key
+        )
+        assert jnp.allclose(history.hidden[0], 0.75**2 * h0)
+        assert jnp.allclose(outputs["hidden"][0], 0.75**3 * h0)
+
+        explicit_hidden = jnp.zeros_like(h0)
+        explicit_state = set_state_by_path(
+            net, net.init_state(key=explicit_key), "hidden", explicit_hidden
+        )
+        outputs, _, history = iterate_component(
+            live_net, inputs, explicit_state, 2, override_key
+        )
+        assert jnp.allclose(history.hidden[0], explicit_hidden)
+        assert jnp.allclose(outputs["hidden"][0], explicit_hidden)
+
+        fresh = net.init_state(key=explicit_key)
+        supplied = eqx.tree_at(lambda state: state.hidden, fresh.get(net.state_index), -h0)
+        whole_state = set_state_by_path(net, fresh, "", supplied)
+        outputs, _, history = iterate_component(live_net, inputs, whole_state, 2, override_key)
+        assert jnp.allclose(history.hidden[0], -h0)
+        assert jnp.allclose(outputs["hidden"][0], -0.75 * h0)
+
     def test_grad_single_step(self, net, state, key):
         """Gradients should flow through a single CDE step."""
         obs = jr.normal(key, (OBS_DIM,))
