@@ -146,10 +146,8 @@ def _python_related(root: Path, changed: set[str]) -> list[str]:
         "--no-pantsrc",
         "--level=error",
         "dependents",
-        "--transitive",
-        "--closed",
         "--format=json",
-        *sorted(changed),
+        "::",
     ]
     env = {key: value for key, value in os.environ.items() if not key.startswith("PANTS_")}
     result = subprocess.run(command, cwd=root, env=env, capture_output=True, check=True, timeout=55)
@@ -162,17 +160,25 @@ def _python_related(root: Path, changed: set[str]) -> list[str]:
     owned = {address.partition(":")[0] for address in addresses}
     if not changed <= owned:
         raise ValueError("Pants did not resolve all changed Python files")
+    file_graph = {
+        source.partition(":")[0]: {
+            path for value in values if (path := value.partition(":")[0]) in paths
+        }
+        for source, values in addresses.items()
+        if source.partition(":")[0] in paths
+    }
     selected: set[str] = set()
     for source in changed:
-        tests = {
-            path
-            for address, values in addresses.items()
-            if address.partition(":")[0] == source
-            for value in values
-            if (path := value.partition(":")[0]) in paths and _python_test(path)
-        }
+        visited = {source}
+        frontier = [source]
+        while frontier:
+            current = frontier.pop()
+            for dependent in file_graph.get(current, ()) - visited:
+                visited.add(dependent)
+                frontier.append(dependent)
+        tests = {path for path in visited if _python_test(path)}
         if not tests:
-            raise ValueError(f"no Python test witness for {source}")
+            raise ValueError(f"changed Python source has no test witness: {source}")
         selected.update(tests)
     return sorted(selected)
 
