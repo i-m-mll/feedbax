@@ -714,7 +714,9 @@ def execute_training_run_spec(
     decision completes the next durable checkpoint before returning a cancelled
     manifest; ``terminate`` emits a cancelled manifest immediately.
     ``stop_before_update`` can interrupt before any pending update, finalizing
-    the last committed state and preserving its slots and checkpoint custody.
+    the last committed state. Unsaved progress is checkpointed through the
+    committed phase's authored barrier. A stop before any new progress leaves
+    existing custody in place.
 
     ``checkpoint_source_root`` names a read-only source for legacy resume or an
     explicit initialization/fork plan. Plan-driven execution additionally

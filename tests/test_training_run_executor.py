@@ -115,6 +115,7 @@ from feedbax.contracts.worker import (
     MappingLevelSpec,
     MaterializedSlotAxisBinding,
     MetricGuardSpec,
+    PhaseProgramSpec,
     PhaseTransitionSpec,
     ProgressCoordinate,
     StateSlotSpec,
@@ -141,6 +142,7 @@ from feedbax.orchestration.drivers.native_execution import (
 from feedbax.training.checkpoint_custody import (
     CheckpointForkPlanBindings,
     CheckpointCompatibilityError,
+    authenticate_published_checkpoint_custody,
     concatenate_checkpoint_histories,
     fork_checkpoint_transaction,
     derive_checkpoint_fork_compatibility_projection,
@@ -2867,13 +2869,22 @@ def _chunked_registry(
     return registry, program
 
 
-def _interval_registry(*, total_updates: int) -> tuple[TrainingProgramRegistry, object]:
+def _interval_registry(*, total_updates: int) -> tuple[TrainingProgramRegistry, PhaseProgramSpec]:
     """Return one multi-update phase for cadence and mid-phase resume tests."""
     contract = standard_supervised_method_contract()
     program = contract.phase_program.model_copy(deep=True)
     phase = program.phases[0].model_copy(update={"max_steps": total_updates})
     program = program.model_copy(update={"phases": [phase]})
     contract = contract.model_copy(update={"phase_program": program})
+    kernel_ref = "feedbax.training.standard_supervised.gradient_update"
+    base_kernel = synthetic_supervised_update_kernels()[kernel_ref]
+
+    def gradient_update(slots, coordinate, context):
+        return {
+            **base_kernel(slots, coordinate, context),
+            "prng": jax.random.split(slots["prng"])[0],
+        }
+
     registry = TrainingProgramRegistry()
     registry.register(
         TrainingMethodRegistration(
@@ -2882,7 +2893,7 @@ def _interval_registry(*, total_updates: int) -> tuple[TrainingProgramRegistry, 
             payload_schema_version=STANDARD_SUPERVISED_METHOD_PAYLOAD_SCHEMA_VERSION,
             payload_model=StandardSupervisedMethodPayload,
             contract_factory=lambda: contract,
-            update_kernels_factory=lambda _payload: synthetic_supervised_update_kernels(),
+            update_kernels_factory=lambda _payload: {kernel_ref: gradient_update},
             owner="tests.test_training_run_executor",
             package="feedbax",
         )
@@ -4289,6 +4300,76 @@ def test_authored_intervals_drive_multi_update_phase_and_terminal_remainder(
     )
     assert result.final_coordinate.program_step == total_updates
     assert int(result.final_slots["batch_counter"]) == total_updates
+
+
+def test_native_stop_publishes_resumable_mid_phase_checkpoint_without_cadence(
+    tmp_path: Path,
+) -> None:
+    registry, program = _interval_registry(total_updates=3)
+    spec = _run_spec()
+    spec.training_config.n_batches = 3
+    initial_slots = _initial_slots(arrays=True)
+    checkpoint_root = tmp_path / "stopped-checkpoints"
+    stop_requested = False
+
+    def request_stop_after_first_update(event):
+        nonlocal stop_requested
+        if event["coordinate"]["program_step"] == 1:
+            stop_requested = True
+
+    stopped = execute_training_run_spec(
+        spec,
+        run_id="stopped",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "stopped-runs",
+        checkpoint_root=checkpoint_root,
+        registry=registry,
+        progress_callback=request_stop_after_first_update,
+        stop_before_update=lambda: stop_requested,
+    )
+
+    assert stopped.status == "cancelled"
+    assert stopped.final_coordinate.program_step == 1
+    custody = authenticate_published_checkpoint_custody(checkpoint_root)
+    assert [ref.id for ref in stopped.manifest.checkpoint_custody] == [
+        custody.manifest.transaction_id
+    ]
+    assert custody.manifest.completed_coordinate == stopped.final_coordinate
+    assert custody.manifest.completed_training_batches == 1
+    restored = load_latest_checkpoint(
+        checkpoint_root,
+        expected_run_spec=spec,
+        expected_phase_program=program,
+        expected_slots=initial_slots,
+    )
+
+    resumed = execute_training_run_spec(
+        spec,
+        run_id="resumed",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "resumed-runs",
+        checkpoint_root=checkpoint_root,
+        registry=registry,
+        resume=True,
+    )
+    uninterrupted = execute_training_run_spec(
+        spec,
+        run_id="uninterrupted",
+        initial_slots=initial_slots,
+        manifest_root=tmp_path / "uninterrupted-runs",
+        checkpoint_root=tmp_path / "uninterrupted-checkpoints",
+        registry=registry,
+    )
+
+    assert resumed.status == uninterrupted.status == "completed"
+    assert resumed.start_completed_batches == 1
+    assert resumed.end_completed_batches == uninterrupted.end_completed_batches == 3
+    for actual, expected in (
+        (restored.slots, stopped.final_slots),
+        (resumed.final_slots, uninterrupted.final_slots),
+    ):
+        for slot in ("model", "optimizer", "prng"):
+            assert eqx.tree_equal(actual[slot], expected[slot])
 
 
 def test_authored_cadence_uses_completed_batches_not_program_step(

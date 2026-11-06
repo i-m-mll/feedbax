@@ -560,7 +560,8 @@ class PhaseProgramExecutor:
         visit ordinals. ``update_budget`` uses the same authority as a delta
         from the entry counter and may end naturally before the budget is used.
         A terminal partial interval is always emitted. A stop observed before
-        an update also closes the interval at the last committed coordinate.
+        an update saves any unsaved progress at the last committed coordinate
+        through that phase's authored barrier, even without a checkpoint interval.
 
         A checkpoint restored by external custody can be passed directly as
         ``resume_checkpoint``. ``resume_from_barrier`` selects a stored in-memory visit.
@@ -598,7 +599,6 @@ class PhaseProgramExecutor:
             coordinate = resume_checkpoint.coordinate.model_copy(
                 update={
                     "run_id": run_id,
-                    "phase": start_phase,
                     "completed_barrier": resume_checkpoint.barrier,
                 }
             )
@@ -616,6 +616,7 @@ class PhaseProgramExecutor:
         previous_completed_batch = initial_batch
         last_progress_batch = initial_batch
         last_checkpoint_batch = initial_batch
+        last_checkpoint_step = coordinate.program_step
         phase_name: str | None = start_phase
         interrupted = False
         while phase_name is not None:
@@ -780,6 +781,7 @@ class PhaseProgramExecutor:
                         current_slots,
                     )
                     last_checkpoint_batch = completed_batches
+                    last_checkpoint_step = coordinate.program_step
                     coordinate = coordinate.model_copy(
                         update={"completed_barrier": saved_barrier}
                     )
@@ -817,19 +819,18 @@ class PhaseProgramExecutor:
                     progress_callback(_copy_progress_coordinate(observed_coordinate))
 
             saved_barrier: str | None = None
-            if (
-                checkpoint_interval is None
-                and not interrupted
-                and phase.checkpoint_barrier is not None
-            ):
-                saved_barrier = self._save_barrier(
-                    phase.checkpoint_barrier,
-                    coordinate,
-                    current_slots,
-                )
+            if interrupted:
+                if coordinate.program_step != last_checkpoint_step:
+                    saved_barrier = self._save_phase_barrier(
+                        coordinate.phase, coordinate, current_slots
+                    )
+            elif checkpoint_interval is None:
+                if phase.checkpoint_barrier is not None:
+                    saved_barrier = self._save_barrier(
+                        phase.checkpoint_barrier, coordinate, current_slots
+                    )
             elif (
-                checkpoint_interval is not None
-                and next_phase is None
+                next_phase is None
                 and completed_batches != last_checkpoint_batch
             ):
                 saved_barrier = self._save_phase_barrier(
@@ -838,6 +839,7 @@ class PhaseProgramExecutor:
                     current_slots,
                 )
             if saved_barrier is not None:
+                last_checkpoint_step = coordinate.program_step
                 coordinate = coordinate.model_copy(update={"completed_barrier": saved_barrier})
                 if not interrupted and self._should_stop_at_barrier(
                     saved_barrier,
@@ -1062,7 +1064,7 @@ class PhaseProgramExecutor:
         if barrier_name is None:
             raise WorkerContractValidationError(
                 f"/phase_program/phases/{phase_name}/checkpoint_barrier",
-                "authored checkpoint cadence requires a barrier for every phase where it fires",
+                "cannot checkpoint a phase without an authored barrier",
             )
         return self._save_barrier(barrier_name, coordinate, slots)
 
