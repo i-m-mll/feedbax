@@ -461,6 +461,15 @@ class ComponentDeclaration:
 
 
 @dataclass(frozen=True)
+class InputPrototypeParameter:
+    """A constructor parameter constrained by one input port's prototype."""
+
+    port: str
+    parameter: str
+    resolve: Callable[[Mapping[str, Any], Any | None], Any]
+
+
+@dataclass(frozen=True)
 class ComponentCompilerFacet:
     parameter_contract: ComponentParamContract
     input_ports: tuple[str, ...]
@@ -471,6 +480,7 @@ class ComponentCompilerFacet:
     interior_domain: str | None = None
     is_composite: bool = False
     output_prototype_fn: OutputPrototypeFn | None = None
+    input_prototype_parameter: InputPrototypeParameter | None = None
 
     @property
     def param_schema(self) -> tuple[ParamSchema, ...]:
@@ -657,6 +667,7 @@ def declare_component(
     extractor: ComponentParamExtractor | None = None,
     override_reason: str | None = None,
     output_prototype_fn: OutputPrototypeFn | None = None,
+    input_prototype_parameter: InputPrototypeParameter | None = None,
     provenance: str | None = None,
     identity: ComponentIdentity | None = None,
     owner: str | None = None,
@@ -738,6 +749,7 @@ def declare_component(
             interior_domain=interior_domain,
             is_composite=is_composite,
             output_prototype_fn=output_prototype_fn,
+            input_prototype_parameter=input_prototype_parameter,
         ),
         serialization=ComponentSerializationFacet(
             param_schema_version=param_schema_version,

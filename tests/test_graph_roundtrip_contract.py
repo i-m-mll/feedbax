@@ -46,8 +46,22 @@ def _map_value(value: Any) -> Any:
     return value
 
 
+_SCALAR_CONTROL_TYPES = (
+    "Derivative",
+    "Integrator",
+    "IntegratorDiscrete",
+    "PID",
+    "PIDDiscrete",
+    "UnitDelay",
+    "ZeroOrderHold",
+)
+
+
 _NONE_VALUES: dict[tuple[str, str], Any] = {
-    **{(kind, "input_dtype"): "float16" for kind in ("Channel", "DelayLine", "FirstOrderFilter")},
+    **{
+        (kind, "input_dtype"): "float16"
+        for kind in ("Channel", "DelayLine", "FirstOrderFilter", *_SCALAR_CONTROL_TYPES)
+    },
     ("AffineFeedbackController", "bias"): [0.25],
     ("AffineFeedbackController", "feedforward"): [0.5],
     ("Channel", "input_shape"): [3],
@@ -183,6 +197,8 @@ def _single_node_spec(
         params.get("input_shape"), list
     ):
         prototype_shape = tuple(int(dim) for dim in params["input_shape"])
+    elif component_type in _SCALAR_CONTROL_TYPES:
+        prototype_shape = (params["n_dims"],)
     prototypes = {
         ("node", port): jnp.zeros(prototype_shape, dtype=params.get("input_dtype"))
         for port in input_ports

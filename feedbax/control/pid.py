@@ -8,13 +8,13 @@ Provides continuous and discrete PID controllers with anti-windup.
 
 from __future__ import annotations
 
-import equinox as eqx
 from equinox import field
 from equinox.nn import State, StateIndex
 import jax.numpy as jnp
-import jax.tree as jt
-from jaxtyping import Array, PRNGKeyArray, PyTree
+from jax.typing import DTypeLike
+from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.control._vector import initial_control_vector, require_control_vector
 from feedbax.runtime.graph import Component
 
 
@@ -32,8 +32,9 @@ class PID(Component):
         Ki: Integral gain.
         Kd: Derivative gain.
         dt: Time step for integration and differentiation.
-        integral_limit: Symmetric clamp on the integral accumulator.
+        integral_limit: Symmetric clamp on the integral accumulator. None leaves it unclamped.
         n_dims: Dimensionality of the error signal.
+        input_dtype: Real floating dtype of the input and carry.
     """
 
     input_ports = ("error",)
@@ -45,6 +46,7 @@ class PID(Component):
     dt: float
     integral_limit: float
     n_dims: int = field(static=True)
+    input_dtype: str = field(static=True)
     state_index: StateIndex
 
     def __init__(
@@ -53,19 +55,26 @@ class PID(Component):
         Ki: float = 0.0,
         Kd: float = 0.0,
         dt: float = 0.01,
-        integral_limit: float = float("inf"),
+        integral_limit: float | None = float("inf"),
         n_dims: int = 1,
+        *,
+        input_dtype: DTypeLike | None = None,
     ):
         self.Kp = float(Kp)
         self.Ki = float(Ki)
         self.Kd = float(Kd)
         self.dt = float(dt)
-        self.integral_limit = float(integral_limit)
-        self.n_dims = n_dims
-        integral = jnp.zeros(n_dims)
-        prev_error = jnp.zeros(n_dims)
-        initial_state = (integral, prev_error)
+        self.integral_limit = float("inf") if integral_limit is None else float(integral_limit)
+        zero = initial_control_vector(n_dims, input_dtype)
+        self.n_dims = zero.shape[0]
+        self.input_dtype = zero.dtype.name
+        initial_state = (zero, zero.copy())
         self.state_index = StateIndex(initial_state)
+
+    @property
+    def integral_limit_param(self) -> float | None:
+        """Return the integral limit in a JSON-compatible form."""
+        return None if self.integral_limit == float("inf") else self.integral_limit
 
     def __call__(
         self,
@@ -75,7 +84,7 @@ class PID(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
         integral, prev_error = state.get(self.state_index)
-        error = inputs["error"]
+        error = require_control_vector(inputs["error"], prev_error, port="error")
 
         # Proportional
         p_term = self.Kp * error
@@ -107,8 +116,9 @@ class PIDDiscrete(Component):
         Ki: Integral gain.
         Kd: Derivative gain.
         dt: Time step.
-        output_limit: Symmetric clamp on the accumulated output.
+        output_limit: Symmetric clamp on the accumulated output. None leaves it unclamped.
         n_dims: Dimensionality of the error signal.
+        input_dtype: Real floating dtype of the input and carry.
     """
 
     input_ports = ("error",)
@@ -120,6 +130,7 @@ class PIDDiscrete(Component):
     dt: float
     output_limit: float
     n_dims: int = field(static=True)
+    input_dtype: str = field(static=True)
     state_index: StateIndex
 
     def __init__(
@@ -128,20 +139,26 @@ class PIDDiscrete(Component):
         Ki: float = 0.0,
         Kd: float = 0.0,
         dt: float = 0.01,
-        output_limit: float = float("inf"),
+        output_limit: float | None = float("inf"),
         n_dims: int = 1,
+        *,
+        input_dtype: DTypeLike | None = None,
     ):
         self.Kp = float(Kp)
         self.Ki = float(Ki)
         self.Kd = float(Kd)
         self.dt = float(dt)
-        self.output_limit = float(output_limit)
-        self.n_dims = n_dims
-        prev_output = jnp.zeros(n_dims)
-        prev_error = jnp.zeros(n_dims)
-        prev_prev_error = jnp.zeros(n_dims)
-        initial_state = (prev_output, prev_error, prev_prev_error)
+        self.output_limit = float("inf") if output_limit is None else float(output_limit)
+        zero = initial_control_vector(n_dims, input_dtype)
+        self.n_dims = zero.shape[0]
+        self.input_dtype = zero.dtype.name
+        initial_state = (zero, zero.copy(), zero.copy())
         self.state_index = StateIndex(initial_state)
+
+    @property
+    def output_limit_param(self) -> float | None:
+        """Return the output limit in a JSON-compatible form."""
+        return None if self.output_limit == float("inf") else self.output_limit
 
     def __call__(
         self,
@@ -151,7 +168,7 @@ class PIDDiscrete(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
         prev_output, prev_error, prev_prev_error = state.get(self.state_index)
-        error = inputs["error"]
+        error = require_control_vector(inputs["error"], prev_error, port="error")
 
         # Velocity form increments
         dp = self.Kp * (error - prev_error)
