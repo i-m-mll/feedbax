@@ -466,6 +466,7 @@ def build_fingerprint(
     suite_profile: str = "core",
     pytest_args: Sequence[str] = (),
     runner_args: Sequence[str] = (),
+    affected_selection: dict[str, Any] | None = None,
 ) -> SuiteFingerprint:
     tree_hash, git_refusals = clean_tree_hash(repo_root)
     payload: dict[str, Any] = {
@@ -489,6 +490,9 @@ def build_fingerprint(
     }
 
     refusal_reasons = list(git_refusals)
+    if affected_selection is not None:
+        payload["affected_selection"] = affected_selection
+        refusal_reasons.append("affected selection cannot certify the full reference gate")
     if os.environ.get("PYTEST_ADDOPTS"):
         refusal_reasons.append("PYTEST_ADDOPTS is nonempty")
     for field in REQUIRED_FINGERPRINT_FIELDS:
@@ -556,6 +560,7 @@ def pytest_command(
     *,
     suite_profile: str = "core",
     runner_args: Sequence[str] | None = None,
+    collection_roots: Sequence[str] = ("tests",),
 ) -> list[str]:
     marker_expression = SUITE_MARKER_EXPRESSIONS[suite_profile]
     resolved_runner_args = xdist_args() if runner_args is None else runner_args
@@ -563,12 +568,60 @@ def pytest_command(
         sys.executable,
         "-m",
         "pytest",
-        "tests",
+        *collection_roots,
         *resolved_runner_args,
         "-m",
         marker_expression,
         *pytest_args,
     ]
+
+
+def affected_test_selection(repo_root: Path, base: str) -> dict[str, Any]:
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.affected_tests", "--base", base],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "affected-test selection failed")
+    try:
+        selection = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("affected-test selection returned invalid JSON") from exc
+    if not isinstance(selection, dict) or selection.get("shadow") is not True:
+        raise RuntimeError("affected-test selection returned an invalid report")
+    if selection.get("mode") == "full":
+        if not isinstance(selection.get("reason"), str):
+            raise RuntimeError("full affected-test selection has no reason")
+    elif selection.get("mode") == "candidate":
+        tests = selection.get("python_tests")
+        if not isinstance(tests, list) or any(
+            not isinstance(path, str)
+            or not path.startswith("tests/")
+            or ".." in Path(path).parts
+            or not (repo_root / path).is_file()
+            for path in tests
+        ):
+            raise RuntimeError("affected-test selection returned invalid Python tests")
+    else:
+        raise RuntimeError("affected-test selection returned an unknown mode")
+    return selection
+
+
+def explicit_test_roots(repo_root: Path) -> list[str]:
+    tests = repo_root / "tests"
+    roots = {
+        path.relative_to(repo_root).as_posix()
+        for pattern in ("**/test_*.py", "**/*_test.py")
+        for path in tests.glob(pattern)
+        if path.is_file()
+    }
+    if not roots:
+        raise RuntimeError("affected-test run found no Python test files")
+    return sorted(roots)
 
 
 def parse_args(argv: Sequence[str] | None) -> tuple[argparse.Namespace, list[str]]:
@@ -588,6 +641,10 @@ def parse_args(argv: Sequence[str] | None) -> tuple[argparse.Namespace, list[str
         help="Write local timing diagnostics; always execute without consulting or recording memos.",
     )
     parser.add_argument("--no-memo", action="store_true", help="Disable memo lookup and recording.")
+    parser.add_argument(
+        "--affected-base",
+        help="Run routine Python checks plus expensive checks affected since this Git commit.",
+    )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the computed command and memo state."
     )
@@ -640,12 +697,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     configure_native_threads()
 
+    if args.affected_base and args.suite_profile != "core":
+        raise ValueError("affected selection uses the core capability profile")
+    selection = affected_test_selection(repo_root, args.affected_base) if args.affected_base else None
+    candidate = selection is not None and selection["mode"] == "candidate"
+    collection_roots = explicit_test_roots(repo_root) if candidate else ["tests"]
+    if selection is not None:
+        selection = {"base": args.affected_base, **selection}
+
     runner_args = xdist_args()
     command = pytest_command(
         passthrough,
         suite_profile=args.suite_profile,
         runner_args=runner_args,
+        collection_roots=collection_roots,
     )
+    if candidate:
+        command.extend(["-p", "scripts.pytest_affected"])
 
     if args.print_fingerprint:
         fingerprint = build_fingerprint(
@@ -653,6 +721,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             suite_profile=args.suite_profile,
             pytest_args=passthrough,
             runner_args=runner_args,
+            affected_selection=selection,
         )
         print(
             json.dumps(
@@ -677,6 +746,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             suite_profile=args.suite_profile,
             pytest_args=passthrough,
             runner_args=runner_args,
+            affected_selection=selection,
         )
         would_skip = (
             not args.force
@@ -692,6 +762,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "memo_dir": str(memo_dir),
                     "refusal_reasons": fingerprint.refusal_reasons,
                     "would_skip": would_skip,
+                    "affected_selection": selection,
                 },
                 indent=2,
                 sort_keys=True,
@@ -707,6 +778,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 suite_profile=args.suite_profile,
                 pytest_args=passthrough,
                 runner_args=runner_args,
+                affected_selection=selection,
             )
             would_skip = (
                 not args.force
@@ -727,6 +799,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             started = time.perf_counter()
             with owned_suite_temporary_root() as temporary_root:
                 env = {**os.environ, "TMPDIR": str(temporary_root)}
+                if candidate:
+                    env["FEEDBAX_AFFECTED_TEST_FILES"] = json.dumps(selection["python_tests"])
                 configure_jax_cache_env(temporary_root / "jax-cache", env)
                 raw_profile = temporary_root / "profile.json"
                 if args.profile_json:
