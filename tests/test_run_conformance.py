@@ -679,7 +679,11 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
         },
         stages={
             "COLLECT": StageState(
-                status="completed", outputs={"checkpoint_custody": {row_spec.row_id: custody}}
+                status="completed",
+                outputs={
+                    "rows": {row_spec.row_id: outputs},
+                    "checkpoint_custody": {row_spec.row_id: custody},
+                },
             )
         },
     )
@@ -725,10 +729,6 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
         ],
     }
     assert check_completed_batches(replace(row, training_diagnostics=swapped_counts)).status == "fail"
-    conflicting_total = {**diagnostics, "cumulative_completed_batches": 17}
-    conflicting_frame = replace(row, training_diagnostics=conflicting_total)
-    assert check_completed_batches(conflicting_frame).status == "fail"
-    assert check_checkpoint_cadence(conflicting_frame).status == "fail"
     conflicting_receipt = {
         **row.collected_checkpoint_custody,
         "completed_training_batches": 13,

@@ -26,7 +26,10 @@ from fastapi.testclient import TestClient
 from feedbax import _atomic
 from feedbax.analysis.specs import find_manifest_by_id
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
-from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
+from feedbax.contracts.artifact_custody import (
+    ArtifactBlobIntegrityError,
+    ImmutableArtifactBlobProviderSpec,
+)
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
     load_manifest,
@@ -47,6 +50,7 @@ from feedbax.contracts.spec_storage import (
 from feedbax.contracts.training import (
     CheckpointProgressPolicySpec,
     LossTermSpec,
+    LrScheduleSpec,
     MethodRefSpec,
     ObjectiveSlotSpec,
     OptimizerSpec,
@@ -85,6 +89,8 @@ from feedbax.orchestration.bundle import (
 )
 from feedbax.orchestration.conformance import (
     ConformanceRowArtifacts,
+    RunConformanceCertificate,
+    build_core_check_registry,
     check_checkpoint_cadence,
     check_completed_batches,
     check_environment_fingerprint,
@@ -133,6 +139,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins import bootstrap_application, new_registration_context
 from feedbax.plugins.application import ApplicationRegistryBundle
 from tests.support.training_fixtures import (
+    CLI_LR_METHOD_REF,
     CLI_METHOD_REF,
     CLI_TWO_STEP_METHOD_REF,
     PLUGIN_REGISTRATION,
@@ -191,15 +198,18 @@ def _training_spec(
     completed_batches: int = 1,
     continuation: CheckpointContinuationRequest | None = None,
     progress_interval: int | None = None,
+    checkpoint_interval: int = 1,
     controller_seed: int | None = None,
     batch_seed: int | None = None,
     method_ref: str = CLI_METHOD_REF,
+    lr_schedule: LrScheduleSpec | None = None,
 ) -> TrainingRunSpec:
     method_payload = standard_supervised_method_payload()
     method_payload.payload = StandardSupervisedMethodPayload(
         optimizer=OptimizerSpec(
             type="adamw",
-            params={"learning_rate": 0.001},
+            params={"learning_rate": 0.001} if lr_schedule is None else {},
+            lr_schedule=lr_schedule,
         )
     ).model_dump(mode="json")
     task_params: dict[str, Any] = {"n_steps": 1}
@@ -229,12 +239,13 @@ def _training_spec(
                 update={
                     "method_ref": method_ref,
                     "phase_program": contract.phase_program,
+                    "state_slots": contract.state_slots,
                     "consistency_predicate": derive_consistency_predicate(contract.phase_program),
                 }
             ),
         ),
         checkpoint_progress=CheckpointProgressPolicySpec(
-            checkpoint_interval=1,
+            checkpoint_interval=checkpoint_interval,
             progress_interval=progress_interval,
             continuation=continuation,
         ),
@@ -248,6 +259,7 @@ def _assemble_lowered_bundle(
     completed_batches: int = 1,
     continuation: CheckpointContinuationRequest | None = None,
     progress_interval: int | None = None,
+    checkpoint_interval: int = 1,
     input_kind: str = "registered-artifact",
     resolved_input: ResolvedAssemblyInput | None = None,
     orchestration_root: Path | None = None,
@@ -257,6 +269,7 @@ def _assemble_lowered_bundle(
     controller_seed: int | None = None,
     batch_seed: int | None = None,
     method_ref: str = CLI_METHOD_REF,
+    lr_schedule: LrScheduleSpec | None = None,
 ) -> RunBundle:
     row_declaration: dict[str, Any] = {"row_id": row_id, "overrides": []}
     if row_seed is not None:
@@ -316,9 +329,11 @@ def _assemble_lowered_bundle(
                 completed_batches=completed_batches,
                 continuation=continuation,
                 progress_interval=progress_interval,
+                checkpoint_interval=checkpoint_interval,
                 controller_seed=controller_seed,
                 batch_seed=batch_seed if authored_row.seed is None else authored_row.seed,
                 method_ref=method_ref,
+                lr_schedule=lr_schedule,
             ).model_dump(mode="json", exclude_none=True),
             lowerer_identities=[
                 RowLowererIdentity(
@@ -434,6 +449,7 @@ def _native_context(
     collection_root: Path,
     current_step: int = 0,
     seeds: list[int] | None = None,
+    include_declared_lr_trace: bool = True,
 ) -> NativeExecutionProducerContext:
     row = bundle.rows[0]
     assert row.execution.row_provenance is not None
@@ -448,10 +464,14 @@ def _native_context(
         collection_root=str(collection_root),
         diagnostics=NativeTrainingDiagnosticsInput(
             seeds=[] if seeds is None else seeds,
-            lr_trace=[
-                LearningRateDiagnostic(step=step, learning_rate=0.001)
-                for step in range(current_step, current_step + 3)
-            ],
+            lr_trace=(
+                [
+                    LearningRateDiagnostic(step=step, learning_rate=0.001)
+                    for step in range(current_step, current_step + 3)
+                ]
+                if include_declared_lr_trace
+                else []
+            ),
             resume_context=schedule_context,
             optimizer_build_context=schedule_context,
         ),
@@ -2280,13 +2300,25 @@ os.read = read_then_mutate
 
 
 def _native_source_checkpoint(
-    root: Path, *, row_id: str, mid_phase: bool = False
+    root: Path,
+    *,
+    row_id: str,
+    mid_phase: bool = False,
+    completed_batches: int = 1,
+    interval: int = 1,
+    lr_schedule: LrScheduleSpec | None = None,
+    method_ref: str = CLI_METHOD_REF,
 ) -> Path:
     bundle = _without_resolved_inputs(
         _assemble_lowered_bundle(
-            root, gain=2, progress_interval=1, row_id=row_id,
-            completed_batches=2 if mid_phase else 1,
-            method_ref=CLI_TWO_STEP_METHOD_REF if mid_phase else CLI_METHOD_REF,
+            root,
+            gain=2,
+            progress_interval=interval,
+            checkpoint_interval=interval,
+            row_id=row_id,
+            completed_batches=2 if mid_phase else completed_batches,
+            method_ref=CLI_TWO_STEP_METHOD_REF if mid_phase else method_ref,
+            lr_schedule=lr_schedule,
         )
     )
     row = bundle.rows[0]
@@ -2299,6 +2331,7 @@ def _native_source_checkpoint(
         execution_context=_native_context(
             bundle,
             collection_root=bundle.run_set_dir / "rows" / row.row_id,
+            include_declared_lr_trace=False,
         ),
         registry=_lifecycle_registries().training_programs,
         update_budget=1 if mid_phase else None,
@@ -2351,8 +2384,70 @@ def _checkpoint_snapshot(root: Path) -> dict[Path, bytes]:
     }
 
 
+def _assert_certify_rejects_tampered_inherited_collection(
+    engine: StageEngine, bundle: RunBundle, row: RunRowSpec, state: RunSetState
+) -> None:
+    def assert_rejected(error_type: type[Exception] = OrchestrationStageError) -> None:
+        with pytest.raises(error_type):
+            engine.run()
+        rejected = engine.store.load()
+        assert rejected.stage("CERTIFY").status == "failed"
+        assert rejected.stage("REGISTER").status == "pending"
+        assert not (bundle.run_set_dir / "registration.json").exists()
+
+    collect = state.stage("COLLECT")
+    receipt = collect.outputs["checkpoint_custody"][row.row_id]
+    missing_disposition = dict(receipt)
+    del missing_disposition["checkpoint_disposition"]
+    for tampered in (
+        missing_disposition,
+        {**receipt, "transaction_id": "tx-substituted"},
+    ):
+        engine.store.save(
+            state.with_stage(
+                "COLLECT",
+                collect.model_copy(
+                    update={
+                        "outputs": {**collect.outputs, "checkpoint_custody": {row.row_id: tampered}}
+                    }
+                ),
+            )
+        )
+        assert_rejected()
+    engine.store.save(state)
+
+    outputs = state.rows[row.row_id].collected_outputs
+    manifest_path = Path(outputs["manifest.json"])
+    manifest = load_manifest(manifest_path)
+    assert isinstance(manifest, TrainingRunManifest)
+    diagnostics_ref = next(ref for ref in manifest.artifacts if ref.role == "training_diagnostics")
+    manifest_root = Path(outputs["manifests"]).absolute()
+    provider = ImmutableArtifactBlobProvider(manifest_root)
+    diagnostics_path = manifest_root / provider.canonical_relative_path(
+        f"artifact://sha256/{diagnostics_ref.sha256}", size_bytes=diagnostics_ref.size_bytes
+    )
+    for path, field, old, new, error_type in (
+        (manifest_path, "run_set_id", bundle.run_set_id, mint_run_set_id(), OrchestrationStageError),
+        (diagnostics_path, "segment_completed_batches", 0, 1, ArtifactBlobIntegrityError),
+    ):
+        original = path.read_bytes()
+        expected_value = f"{json.dumps(field)}: {json.dumps(old)}".encode()
+        replacement = f"{json.dumps(field)}: {json.dumps(new)}".encode()
+        assert expected_value in original
+        path.write_bytes(original.replace(expected_value, replacement, 1))
+        try:
+            assert_rejected(error_type)
+        finally:
+            path.write_bytes(original)
+            engine.store.save(state)
+
+
 @pytest.mark.parametrize(
-    "mode", ["inherited", "substituted", "replayed", "extra-transaction", "nonterminal", "additional"]
+    "mode",
+    [
+        "inherited", "scheduled", "substituted", "replayed", "extra-transaction", "nonterminal",
+        "additional",
+    ],
 )
 def test_local_native_resume_collects_and_admits_exact_terminal_checkpoint(
     tmp_path: Path,
@@ -2370,32 +2465,54 @@ def test_local_native_resume_collects_and_admits_exact_terminal_checkpoint(
     )
 
     nonterminal = mode == "nonterminal"
+    additional = mode == "additional"
+    scheduled = mode == "scheduled"
+    source_batches = 2 if scheduled else 1
+    method_ref = CLI_METHOD_REF
+    lr_schedule = None
+    if scheduled:
+        method_ref = CLI_TWO_STEP_METHOD_REF
+        lr_schedule = LrScheduleSpec(
+            kind="warmup_cosine",
+            learning_rate_0=0.001,
+            total_steps=2,
+            constant_lr_iterations=1,
+            warmup_init_fraction=0.1,
+        )
+    elif additional:
+        method_ref = CLI_LR_METHOD_REF
+        lr_schedule = LrScheduleSpec(kind="constant", learning_rate_0=0.001)
     source_root = _native_source_checkpoint(
         tmp_path / "source",
         row_id="source",
         mid_phase=nonterminal,
+        completed_batches=source_batches,
+        interval=2 if scheduled else 1,
+        lr_schedule=lr_schedule,
+        method_ref=method_ref,
     )
     source = authenticate_published_checkpoint_custody(source_root)
-    assert source.manifest.completed_training_batches == 1
+    assert source.manifest.completed_training_batches == source_batches
     source_bytes = _checkpoint_snapshot(source_root)
     provider_root = tmp_path / "checkpoint-provider"
     resolved = _archive_checkpoint_input(source_root, provider_root)
     provider_binding = InputProviderRootBinding("checkpoint.inputs", provider_root)
-    additional = mode == "additional"
     bundle = _assemble_lowered_bundle(
         tmp_path / "resume",
         gain=2,
-        completed_batches=2 if additional or nonterminal else 1,
+        completed_batches=2 if additional or nonterminal else source_batches,
         continuation=(
             CheckpointContinuationRequest(source_completed_batches=1, additional_batches=1)
             if additional
             else None
         ),
-        progress_interval=1,
+        progress_interval=2 if scheduled else 1,
+        checkpoint_interval=2 if scheduled else 1,
         resolved_input=resolved,
         orchestration_root=orchestration_root,
         run_set_id=mint_run_set_id(),
-        method_ref=CLI_TWO_STEP_METHOD_REF if nonterminal else CLI_METHOD_REF,
+        method_ref=CLI_TWO_STEP_METHOD_REF if nonterminal else method_ref,
+        lr_schedule=lr_schedule,
     )
     row = bundle.rows[0]
     if additional:
@@ -2424,7 +2541,13 @@ def test_local_native_resume_collects_and_admits_exact_terminal_checkpoint(
         freeze_lines=[],
         input_provider_bindings=[provider_binding],
     )
-    engine = StageEngine(bundle=bundle, driver=driver, poll_interval_seconds=0.01)
+    engine = StageEngine(
+        bundle=bundle,
+        driver=driver,
+        conformance_registry=build_core_check_registry(),
+        training_method_registry=_lifecycle_registries().training_programs,
+        poll_interval_seconds=0.01,
+    )
     staged_checkpoint_root = bundle.run_set_dir / "inputs" / "checkpoint"
 
     if mode in {"substituted", "replayed", "extra-transaction", "nonterminal"}:
@@ -2521,8 +2644,40 @@ def test_local_native_resume_collects_and_admits_exact_terminal_checkpoint(
         assert response.json()["result_manifest_id"] is None
         return
 
-    state = engine.run(certify_and_register=False)
+    if mode == "inherited":
+        collected_state = engine.run(certify_and_register=False)
+        _assert_certify_rejects_tampered_inherited_collection(engine, bundle, row, collected_state)
+
+    state = engine.run()
     assert state.stage("COLLECT").status == "completed"
+    assert state.stage("CERTIFY").status == "completed"
+    assert state.stage("REGISTER").status == "completed"
+    certificate_bytes = (bundle.run_set_dir / "conformance.json").read_bytes()
+    certificate = RunConformanceCertificate.model_validate_json(certificate_bytes)
+    assert certificate.run_set_id == bundle.run_set_id
+    assert certificate.overall == "pass"
+    checks = {check.check_id: check for check in certificate.rows[row.row_id].checks}
+    assert checks["completed_batches"].status == "pass"
+    assert checks["lr_trace"].status == "pass"
+    if scheduled:
+        preflight_trace = next(
+            check for check in state.stage("PREFLIGHT").checks
+            if check.name == "conformance-trace-cardinality"
+        )
+        assert preflight_trace.status == "pass"
+        (trace_evidence,) = preflight_trace.observed[row.row_id]
+        assert trace_evidence["outcome"] == "deferred-to-collected-resume-progress"
+        assert trace_evidence["source_transaction_id"] == source.parent_ref.id
+    if not additional:
+        observed_batches = checks["completed_batches"].observed
+        assert observed_batches["cumulative"] == source_batches
+        assert observed_batches["segment"] == 0
+        assert observed_batches["transaction_id"] == source.parent_ref.id
+        assert checks["lr_trace"].expected["sample_count"] == 0
+        assert checks["lr_trace"].observed["sample_count"] == 0
+    registration = json.loads((bundle.run_set_dir / "registration.json").read_bytes())
+    assert registration["status"] == "completed"
+    assert registration["certificate_sha256"] == hashlib.sha256(certificate_bytes).hexdigest()
     assert state.rows[row.row_id].status == "completed"
     outputs = state.rows[row.row_id].collected_outputs
     diagnostics = TrainingDiagnostics.model_validate_json(
@@ -2550,6 +2705,7 @@ def test_local_native_resume_collects_and_admits_exact_terminal_checkpoint(
     assert result.terminal_certification.certified_artifacts == [checkpoint.parent_ref]
 
     if additional:
+        assert diagnostics.lr_trace
         assert diagnostics.segment_completed_batches == 1
         assert diagnostics.completed_batches == checkpoint.manifest.completed_training_batches == 2
         assert checkpoint.parent_ref != source.parent_ref
@@ -2562,8 +2718,9 @@ def test_local_native_resume_collects_and_admits_exact_terminal_checkpoint(
         )
     else:
         assert diagnostics.segment_completed_batches == 0
-        assert diagnostics.completed_batches == 1
+        assert diagnostics.completed_batches == source_batches
         assert diagnostics.checkpoint_transactions == []
+        assert diagnostics.lr_trace == []
         assert _checkpoint_snapshot(checkpoint_root) == source_bytes
         assert checkpoint.parent_ref == source.parent_ref
         assert result.checkpoint_custody == []
