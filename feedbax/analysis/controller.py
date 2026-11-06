@@ -25,36 +25,54 @@ GraphKeyPolicy = Callable[[PRNGKeyArray, int], PRNGKeyArray]
 @dataclass(frozen=True)
 class _FlatTreeSpec:
     treedef: Any
-    leaf_shapes: tuple[tuple[int, ...], ...]
-    leaf_sizes: tuple[int, ...]
+    leaves: tuple[jax.ShapeDtypeStruct, ...]
 
     @property
     def size(self) -> int:
-        return sum(self.leaf_sizes)
+        return sum(leaf.size for leaf in self.leaves)
 
 
-def _flatten_pytree_to_array(tree: PyTree, *, dtype: Any) -> tuple[Array, _FlatTreeSpec]:
-    leaves = jt.leaves(tree)
-    leaf_shapes = tuple(tuple(jnp.asarray(leaf).shape) for leaf in leaves)
-    leaf_sizes = tuple(int(jnp.asarray(leaf).size) for leaf in leaves)
-    spec = _FlatTreeSpec(jt.structure(tree), leaf_shapes, leaf_sizes)
+def _flatten_pytree_to_array(
+    tree: PyTree, *, dtype: Any, source: str, expected: _FlatTreeSpec | None = None
+) -> tuple[Array, _FlatTreeSpec]:
+    path_leaves, treedef = jt.flatten_with_path(tree)
+    if expected is not None and treedef != expected.treedef:
+        raise ValueError(f"Graph controller {source} must keep its initial PyTree structure.")
+
+    leaves = []
+    for index, (path, leaf) in enumerate(path_leaves):
+        array = jnp.asarray(leaf)
+        if not jnp.issubdtype(array.dtype, jnp.floating):
+            raise ValueError(
+                f"Graph controller {source} leaf {jax.tree_util.keystr(path)} must be real "
+                f"floating for flat analysis, got {array.dtype}. Use Graph.step for native stepping."
+            )
+        if expected is not None:
+            template = expected.leaves[index]
+            if array.shape != template.shape or array.dtype != template.dtype:
+                raise ValueError(
+                    f"Graph controller {source} leaf {jax.tree_util.keystr(path)} must keep "
+                    f"its initial shape {template.shape} and dtype {template.dtype}, "
+                    f"got shape {array.shape} and dtype {array.dtype}. "
+                    "Use Graph.step for native stepping."
+                )
+        leaves.append(array)
+
+    spec = expected or _FlatTreeSpec(
+        treedef, tuple(jax.ShapeDtypeStruct(leaf.shape, leaf.dtype) for leaf in leaves)
+    )
     if not leaves:
         return jnp.zeros((0,), dtype=dtype), spec
-    return (
-        jnp.concatenate(
-            [jnp.asarray(leaf, dtype=dtype).reshape(-1) for leaf in leaves],
-            axis=0,
-        ),
-        spec,
-    )
+    return jnp.concatenate([leaf.astype(dtype).reshape(-1) for leaf in leaves]), spec
 
 
 def _unflatten_array_to_pytree(flat: Array, spec: _FlatTreeSpec) -> PyTree:
     leaves = []
     offset = 0
-    for shape, size in zip(spec.leaf_shapes, spec.leaf_sizes):
-        leaves.append(flat[offset : offset + size].reshape(shape))
-        offset += size
+    for leaf in spec.leaves:
+        end = offset + leaf.size
+        leaves.append(flat[offset:end].reshape(leaf.shape).astype(leaf.dtype))
+        offset = end
     return jt.unflatten(spec.treedef, leaves)
 
 
@@ -82,9 +100,11 @@ class GraphControllerAdapter:
     ``h = concat(flatten(equinox.nn.State), flatten(cycle_port_values))``.
 
     Each call to :meth:`step` unpacks that state, executes the graph through the
-    public :meth:`feedbax.runtime.graph.Graph.step` API, and repacks the new graph state
-    and recurrent carry. Cyclic graphs therefore use the same recurrent/cycle
-    semantics as normal graph execution.
+    public graph step API, and repacks the new graph state and recurrent carry.
+    The vector represents continuous coordinates only. Each state and carry leaf
+    must have a fixed shape and real floating dtype, which is restored before
+    graph execution. For exact stepping with discrete state, use
+    :meth:`feedbax.runtime.graph.Graph.step` with the native state and carry.
     """
 
     graph: Graph
@@ -107,16 +127,28 @@ class GraphControllerAdapter:
 
     def unpack_state(self, h: Array) -> tuple[PyTree, dict[tuple[str, str], PyTree]]:
         """Unpack a flat controller state into graph state and recurrent carry."""
-        state_flat = h[: self.state_spec.size]
-        cycle_flat = h[self.state_spec.size :]
+        state_size = self.state_spec.size
+        expected_shape = (state_size + self.cycle_spec.size,)
+        if h.shape != expected_shape:
+            raise ValueError(
+                f"Expected flat graph controller state shape {expected_shape}, got {h.shape}."
+            )
+        state_flat = h[:state_size]
+        cycle_flat = h[state_size:]
         state = _unflatten_array_to_pytree(state_flat, self.state_spec)
         cycle_port_values = _unflatten_array_to_pytree(cycle_flat, self.cycle_spec)
         return state, cycle_port_values
 
-    def pack_state(self, state: PyTree, cycle_port_values: Mapping[tuple[str, str], PyTree]) -> Array:
+    def pack_state(
+        self, state: PyTree, cycle_port_values: Mapping[tuple[str, str], PyTree]
+    ) -> Array:
         """Pack graph state and recurrent carry into a flat controller state."""
-        state_flat, _ = _flatten_pytree_to_array(state, dtype=self.dtype)
-        cycle_flat, _ = _flatten_pytree_to_array(cycle_port_values, dtype=self.dtype)
+        state_flat, _ = _flatten_pytree_to_array(
+            state, dtype=self.dtype, source="graph state", expected=self.state_spec
+        )
+        cycle_flat, _ = _flatten_pytree_to_array(
+            cycle_port_values, dtype=self.dtype, source="recurrent carry", expected=self.cycle_spec
+        )
         return jnp.concatenate([state_flat, cycle_flat], axis=0)
 
     def _inputs_for_step(self, controller_input: PyTree, t: int) -> dict[str, PyTree]:
@@ -196,7 +228,14 @@ def graph_controller(
     ``static_inputs`` and ``input_builder`` cover task-input handling without
     baking a task schema into the adapter. ``trace`` exposes retained graph
     boundary values through :meth:`GraphControllerAdapter.step_with_trace`.
+    ``dtype`` is the dtype of the flat coordinates. Graph execution uses the
+    native leaf dtypes. Discrete state and carry are unsupported in flat analysis.
     """
+    if not jnp.issubdtype(dtype, jnp.floating):
+        raise ValueError(
+            f"Graph controller coordinates require a real floating dtype, got {dtype}."
+        )
+
     if isinstance(graph, GraphSpec):
         if component_registry is None:
             raise ValueError(
@@ -210,13 +249,19 @@ def graph_controller(
         executable = graph
     if input_builder is None and input_port not in executable.input_ports:
         raise ValueError(f"Graph has no external input port {input_port!r}.")
-    if output_selector is None and output_port is not None and output_port not in executable.output_ports:
+    if (
+        output_selector is None
+        and output_port is not None
+        and output_port not in executable.output_ports
+    ):
         raise ValueError(f"Graph has no external output port {output_port!r}.")
 
     init_state = executable.init_state(key=key)
+    state_flat, state_spec = _flatten_pytree_to_array(init_state, dtype=dtype, source="graph state")
     cycle_port_values = executable.initial_cycle_port_values(init_state, dict(cycle_init or {}))
-    state_flat, state_spec = _flatten_pytree_to_array(init_state, dtype=dtype)
-    cycle_flat, cycle_spec = _flatten_pytree_to_array(cycle_port_values, dtype=dtype)
+    cycle_flat, cycle_spec = _flatten_pytree_to_array(
+        cycle_port_values, dtype=dtype, source="recurrent carry"
+    )
     h0_flat = jnp.concatenate([state_flat, cycle_flat], axis=0)
 
     return GraphControllerAdapter(
