@@ -31,6 +31,8 @@ from feedbax.contracts.worker import (
     ProgressCoordinate,
 )
 
+PHASE_BOUNDARY_DECISION_METADATA_KEY = "phase_boundary_decision"
+
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_ID = "feedbax.manifest.training_checkpoint_transaction"
 TRAINING_CHECKPOINT_TRANSACTION_SCHEMA_VERSION_V1 = (
     "feedbax.manifest.training_checkpoint_transaction.v1"
