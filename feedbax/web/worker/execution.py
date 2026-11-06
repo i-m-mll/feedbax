@@ -241,8 +241,9 @@ def compile_training_run(
     if not loss_terms:
         raise _missing_loss_terms_error()
     trace_requests = _compile_trace_requests(graph_model, retention_plan)
-    trainable_nodes = _derive_trainable_nodes(graph_model, component_registry)
-    trainable_filter = _trainable_filter(graph, trainable_nodes)
+    trainable_nodes, trainable_filter = _compile_trainability(
+        graph_model, graph, component_registry
+    )
 
     compiled = CompiledTrainingRun(
         graph=graph,
@@ -1063,37 +1064,52 @@ def _state_path_from_selector(selector: str) -> str:
     return path
 
 
-def _derive_trainable_nodes(graph_spec: GraphSpec, registry: Any) -> tuple[str, ...]:
-    trainable: list[str] = []
-    for node_id, node in graph_spec.nodes.items():
-        raw = node.params.get("trainable")
-        if raw is False:
-            continue
-        meta = registry.get(node.type)
-        trainable_by_default = bool(
-            getattr(meta, "trainable_by_default", False) if meta is not None else False
-        )
-        if raw is True or trainable_by_default:
-            trainable.append(node_id)
-    return tuple(trainable)
+def _compile_trainability(
+    graph_spec: GraphSpec, graph: Graph, registry: Any
+) -> tuple[tuple[str, ...], Any]:
+    """Select inexact leaves of authored components outside frozen subtrees.
 
+    Causal interiors have their own parameter owners. Opaque runtimes are
+    selected as a single component, and compiler-generated nodes stay frozen.
+    """
+    trainable_paths: list[str] = []
 
-def _trainable_filter(graph: Graph, trainable_nodes: tuple[str, ...]):
-    filter_spec = jt.map(lambda _: False, graph)
-    for node_name in trainable_nodes:
-        if node_name not in graph.nodes:
-            continue
-        node_filter = jt.map(
-            eqx.is_inexact_array,
-            graph.nodes[node_name],
-            is_leaf=lambda value: isinstance(value, StateIndex),
+    def graph_filter(spec: GraphSpec, runtime: Graph, path: tuple[str, ...]) -> Any:
+        node_filters = dict.fromkeys(runtime.nodes, False)
+        subgraphs = spec.subgraphs or {}
+        for node_id, node in spec.nodes.items():
+            override = node.params.get("trainable")
+            if override is False:
+                continue
+            component = runtime.nodes[node_id]
+            node_path = (*path, node_id)
+            interior = subgraphs.get(node_id)
+            if isinstance(interior, GraphSpec):
+                if not isinstance(component, Graph):
+                    raise TypeError(f"Expected a runtime graph at {'.'.join(node_path)!r}")
+                node_filters[node_id] = graph_filter(interior, component, node_path)
+                continue
+            if override is not True and not getattr(
+                registry.get(node.type), "trainable_by_default", False
+            ):
+                continue
+            leaves, structure = jt.flatten(
+                component, is_leaf=lambda value: isinstance(value, StateIndex)
+            )
+            mask = [eqx.is_inexact_array(leaf) for leaf in leaves]
+            if any(mask):
+                node_filters[node_id] = structure.unflatten(mask)
+                trainable_paths.append(".".join(node_path))
+
+        # Equinox accepts mask prefixes, so unselected node subtrees can share one False.
+        return jt.map(
+            lambda value: node_filters if value is runtime.nodes else False,
+            runtime,
+            is_leaf=lambda value: value is runtime.nodes,
         )
-        filter_spec = eqx.tree_at(
-            lambda g, name=node_name: g.nodes[name],
-            filter_spec,
-            node_filter,
-        )
-    return filter_spec
+
+    filter_spec = graph_filter(graph_spec, graph, ())
+    return tuple(trainable_paths), filter_spec
 
 
 def _dry_run(compiled: CompiledTrainingRun) -> None:
