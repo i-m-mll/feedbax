@@ -1,29 +1,44 @@
 from collections import namedtuple
-from functools import partial
 
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
-import feedbax._vendor.jax_cookbook.tree as jtree
-import plotly.graph_objects as go
 from equinox import field
-from feedbax._vendor.jax_cookbook import LDict, is_type
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Float, Inexact
 
+import feedbax._vendor.jax_cookbook.tree as jtree
+from feedbax._vendor.jax_cookbook import LDict
 from feedbax.analysis.analysis import AbstractAnalysis, AbstractAnalysisPorts, InputOf
-from feedbax.analysis.types import AnalysisInputData, Polar
-from feedbax.config.namespace import TreeNamespace
+from feedbax.analysis.types import AnalysisInputData
 
 DecompResults = namedtuple("DecompResults", ["vals", "vecs_l", "vecs_r"])
 
 
-# @partial(jax.jit, device=jax.devices('cpu')[0])
 def eig(
-    arr: Float[Array, "... m n"],
+    arr: Inexact[Array, "... n n"],
+    *,
+    compute_left_eigenvectors: bool = True,
+    compute_right_eigenvectors: bool = True,
     **kwargs,
 ) -> DecompResults:
-    """Compute eigenvalues and eigenvectors of square matrices."""
-    eigvals, eigvecs_l, eigvecs_r = jax.lax.linalg.eig(arr, **kwargs)
+    """Compute eigenvalues and requested eigenvectors of square matrices.
+
+    The basis fields contain column eigenvectors in eigenvalue order, or
+    `None` when that basis is omitted. The left columns are eigenvectors of
+    the adjoint for the conjugated eigenvalues. Keep the output flags static
+    under JIT. Additional keywords are forwarded to `jax.lax.linalg.eig`.
+    """
+    outputs = iter(
+        jax.lax.linalg.eig(
+            arr,
+            compute_left_eigenvectors=compute_left_eigenvectors,
+            compute_right_eigenvectors=compute_right_eigenvectors,
+            **kwargs,
+        )
+    )
+    eigvals = next(outputs)
+    eigvecs_l = next(outputs) if compute_left_eigenvectors else None
+    eigvecs_r = next(outputs) if compute_right_eigenvectors else None
     return DecompResults(eigvals, eigvecs_l, eigvecs_r)
 
 
