@@ -7,11 +7,9 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import jax.tree as jt
 
-from feedbax.models.feedback import FeedbackChannels
 from feedbax.compiler.solver_config import DEFAULT_PLANAR_SOLVER, resolve_acausal_solver
-from feedbax.runtime.channel import Channel, ChannelSpec
+from feedbax.runtime.channel import Channel
 from feedbax.runtime.components import NAMED_ACTIVATIONS
 from feedbax.runtime.graph import Component
 from feedbax.intervene.intervene import (
@@ -258,6 +256,7 @@ def _noise_params(params: Mapping[str, Any]) -> dict[str, Any]:
         "model": model,
         "add_noise": add_noise,
         "additive_std": float(additive_std or 0.0),
+        "include_zero_terms": bool(params.get("include_zero_noise_terms", False)),
         "signal_dependent_std": float(signal_dependent_std or 0.0),
         "role": params.get("noise_role"),
         "timing": params.get("noise_timing"),
@@ -282,26 +281,17 @@ def _build_noise_func(noise: Mapping[str, Any]):
         )
     if model == "none":
         return None
+    include_zero = noise["include_zero_terms"]
     if model == "additive_gaussian":
-        return Normal(std=additive_std) if additive_std != 0.0 else None
+        return Normal(std=additive_std) if additive_std or include_zero else None
     if model == "signal_dependent_gaussian":
-        return (
-            Multiplicative(Normal(std=signal_dependent_std))
-            if signal_dependent_std != 0.0
-            else None
-        )
+        return Multiplicative(Normal(std=signal_dependent_std)) if signal_dependent_std or include_zero else None
     if model == "signal_dependent_plus_additive":
-        terms = []
-        if signal_dependent_std != 0.0:
-            terms.append(Multiplicative(Normal(std=signal_dependent_std)))
-        if additive_std != 0.0:
-            terms.append(Normal(std=additive_std))
-        if not terms:
-            return None
-        noise_func = terms[0]
-        for term in terms[1:]:
-            noise_func = noise_func + term
-        return noise_func
+        signal = Multiplicative(Normal(std=signal_dependent_std)) if signal_dependent_std or include_zero else None
+        additive = Normal(std=additive_std) if additive_std or include_zero else None
+        if signal is not None and additive is not None:
+            return signal + additive
+        return signal if signal is not None else additive
     raise AssertionError(f"Unhandled Channel noise_model {model!r}")
 
 
@@ -311,7 +301,9 @@ def _build_channel(params: Mapping[str, Any]) -> Channel:
     noise_func = _build_noise_func(noise)
     from feedbax.component_registry.prototypes import array_prototype
 
-    input_proto = array_prototype(params)
+    input_proto = params.get("resolved_input_proto")
+    if input_proto is None:
+        input_proto = array_prototype(params)
     return Channel(
         delay=delay,
         noise_func=noise_func,
@@ -322,93 +314,6 @@ def _build_channel(params: Mapping[str, Any]) -> Channel:
         noise_role=None if noise["role"] is None else str(noise["role"]),
         noise_timing=None if noise["timing"] is None else str(noise["timing"]),
     )
-
-
-def _feedback_selector(params: Mapping[str, Any]):
-    selector = str(params.get("selector", "point_mass_pos_vel"))
-    raw_paths = params.get("paths")
-    if raw_paths is not None and selector == "paths":
-        if not isinstance(raw_paths, (list, tuple)) or not raw_paths:
-            raise ValueError("FeedbackChannels 'paths' must be a non-empty list of attribute paths")
-        return "paths", tuple(str(path) for path in raw_paths)
-
-    if selector in {
-        "point_mass_pos_vel",
-        "point_mass_state",
-        "mechanics.plant.skeleton.pos_vel",
-    }:
-        return "point_mass_pos_vel", ("plant.skeleton.pos", "plant.skeleton.vel")
-    if selector in {"effector_pos_vel", "mechanics.effector.pos_vel"}:
-        return "effector_pos_vel", ("effector.pos", "effector.vel")
-    if selector in {"plant_skeleton", "mechanics.plant.skeleton"}:
-        return "plant_skeleton", ("plant.skeleton",)
-    raise ValueError(
-        f"Unsupported FeedbackChannels selector {selector!r}; expected point_mass_pos_vel, "
-        "effector_pos_vel, plant_skeleton, or explicit paths"
-    )
-
-
-def _feedback_where(
-    params: Mapping[str, Any], *, validate: bool = False
-) -> Callable[[Any], Any]:
-    selector, paths = _feedback_selector(params)
-
-    def select(mechanics_state):
-        values = []
-        for path in paths:
-            value = mechanics_state
-            for part in path.split("."):
-                try:
-                    value = getattr(value, part)
-                except AttributeError as exc:
-                    raise ValueError(
-                        f"FeedbackChannels selector {selector!r} path {path!r} has no "
-                        f"attribute {part!r} on {type(value).__name__}"
-                    ) from exc
-            if value is None:
-                raise ValueError(
-                    f"FeedbackChannels selector {selector!r} path {path!r} selects None"
-                )
-            if validate:
-                leaves = jt.leaves(value)
-                if not leaves or not all(
-                    hasattr(leaf, "shape") and hasattr(leaf, "dtype") for leaf in leaves
-                ):
-                    raise ValueError(
-                        f"FeedbackChannels selector {selector!r} path {path!r} "
-                        "must select a state or signal containing array leaves"
-                    )
-            values.append(value)
-        return values[0] if len(values) == 1 else tuple(values)
-
-    select._feedbax_feedback_selector = selector  # type: ignore[attr-defined]
-    select._feedbax_feedback_paths = paths  # type: ignore[attr-defined]
-    return select
-
-
-def _feedback_prototype(params: Mapping[str, Any], mechanics_proto: Any) -> Any:
-    return _feedback_where(params, validate=True)(mechanics_proto)
-
-
-def _build_feedback_channels(params: Mapping[str, Any]) -> FeedbackChannels:
-    if "feedback_proto" not in params:
-        raise ValueError("FeedbackChannels requires a resolved prototype for port 'mechanics'")
-    delay = int(params.get("delay", 0))
-    noise = _noise_params(params)
-    noise_func = _build_noise_func(noise)
-    where = _feedback_where(params)
-    channel = Channel(
-        delay=delay,
-        noise_func=noise_func,
-        add_noise=bool(noise["add_noise"]),
-        input_proto=params["feedback_proto"],
-        init_value=float(params.get("init_value", 0.0)),
-        noise_model=str(noise["model"]),
-        noise_role=None if noise["role"] is None else str(noise["role"]),
-        noise_timing=None if noise["timing"] is None else str(noise["timing"]),
-    )
-    spec = ChannelSpec(where=where, delay=delay, noise_func=noise_func)
-    return FeedbackChannels(channel, spec)
 
 
 def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComponent:

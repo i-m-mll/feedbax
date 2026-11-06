@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from feedbax.models.feedback import FeedbackChannels
+from feedbax.runtime.feedback import SelectState
 from feedbax.runtime.channel import Channel, toggle_channel_noise
 from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.affine_composer import AffineValueComposer
@@ -675,23 +675,22 @@ def test_feedback_channels_materialize_point_mass_selector() -> None:
     mechanics = graph.nodes["mechanics"]
     feedback = graph.nodes["feedback"]
     assert isinstance(mechanics, Mechanics)
-    assert isinstance(feedback, FeedbackChannels)
-    assert isinstance(feedback.channels, Channel)
-    assert feedback.channels.delay == 2
-    assert feedback.channels.noise_role == "sensory_feedback"
-    assert feedback.channels.noise_timing == "pre_controller"
-    assert isinstance(feedback.channels.noise_func, Normal)
-    assert feedback.channels.noise_func.std == 0.05
+    assert isinstance(graph.nodes["feedback_select"], SelectState)
+    assert isinstance(feedback, Channel)
+    assert feedback.delay == 2
+    assert feedback.noise_role == "sensory_feedback"
+    assert feedback.noise_timing == "pre_controller"
+    assert isinstance(feedback.noise_func, Normal)
+    assert feedback.noise_func.std == 0.05
 
-    selected = feedback.specs.where(mechanics.state_index.init)
+    selected = graph.nodes["feedback_select"].where(mechanics.state_index.init)
     assert len(selected) == 2
     assert selected[0].shape == (2,)
     assert selected[1].shape == (2,)
 
     roundtrip = graph_to_spec(graph)
     params = roundtrip.nodes["feedback"].params
-    assert params["selector"] == "point_mass_pos_vel"
-    assert params["paths"] == ["plant.skeleton.pos", "plant.skeleton.vel"]
+    assert roundtrip.nodes["feedback_select"].params["paths"] == ["plant.skeleton.pos", "plant.skeleton.vel"]
     assert params["noise_role"] == "sensory_feedback"
 
 

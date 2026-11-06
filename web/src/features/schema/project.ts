@@ -422,8 +422,6 @@ function componentPortDimension(
       dimension = nPairs === null ? null : nPairs * 2;
     }
     if (port === 'force_2d') dimension = 2;
-  } else if (componentType === 'FeedbackChannels' && direction === 'output' && port === 'output') {
-    dimension = feedbackChannelsWidth(nodeParams);
   }
   if (dimensionParam) dimension = positiveIntParam(nodeParams, dimensionParam);
   if (dimension === null) return null;
@@ -434,17 +432,6 @@ function componentPortDimension(
       dimension_param: dimensionParam,
     },
   };
-}
-
-function feedbackChannelsWidth(params: Record<string, unknown>): number | null {
-  const channels = params.channels;
-  if (!Array.isArray(channels)) return null;
-  const width = channels.reduce((sum, channel) => {
-    if (channel === 'position' || channel === 'velocity') return sum + 2;
-    if (channel === 'force') return sum + 2;
-    return sum;
-  }, 0);
-  return width > 0 ? width : null;
 }
 
 function positiveIntParam(params: Record<string, unknown>, key: string): number | null {

@@ -69,6 +69,7 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
         for kind in (*_SHAPED_SIGNAL_TYPES, *_SCALAR_CONTROL_TYPES)
     },
     **{(kind, "input_shape"): [3] for kind in _SHAPED_SIGNAL_TYPES},
+    ("AssembleFeedback", "layout"): {"list": [None]},
     ("AffineFeedbackController", "bias"): [0.25],
     ("AffineFeedbackController", "feedforward"): [0.5],
     ("Channel", "noise_role"): "motor_command",
@@ -96,11 +97,12 @@ _VALUES: dict[tuple[str, str], Any] = {
     ("AffineValueComposer", "schema_version"): "feedbax.component.affine_value_composer.v1",
     ("AffineValueComposer", "feature_rules"): [{"kind": "identity", "state_slice": [1, 2]}],
     ("Channel", "add_noise"): False,
+    ("Channel", "include_zero_noise_terms"): True,
     ("DelayedReaches", "hold_epochs"): [0],
     ("DelayedReaches", "move_epochs"): [1, 2],
     ("DelayedReaches", "target_visible_from_start"): True,
     ("DelayedReaches", "target_on_epochs"): [0, 2],
-    ("FeedbackChannels", "paths"): ["effector.force"],
+    ("SelectState", "paths"): ["effector.force"],
     ("StateFeedbackSelector", "state_slices"): {
         "position": {"start": 1, "stop": 3},
         "velocity": {"start": 3, "stop": 5},
@@ -172,11 +174,10 @@ def _contextualize_params(
         params.setdefault("input_shape", [2])
         if param_name in {"additive_noise_std", "signal_dependent_noise_std"}:
             params["noise_model"] = "signal_dependent_plus_additive"
-    elif component_type == "FeedbackChannels":
-        if param_name == "paths":
-            params["selector"] = "paths"
-        if param_name == "noise_std":
-            params["add_noise"] = True
+        if param_name == "include_zero_noise_terms":
+            params["noise_std"] = 0.0
+    elif component_type == "AssembleFeedback" and param_name == "n_inputs":
+        params["layout"] = {"tuple": [None] * params["n_inputs"]}
     elif component_type == "AffineValueComposer" and param_name == "output_block_size":
         size = int(params["output_block_size"])
         params["gain_init"] = [[0.0] for _ in range(size)]
@@ -233,10 +234,10 @@ def _single_node_spec(
         ("node", port): jnp.zeros(prototype_shape, dtype=params.get("input_dtype"))
         for port in input_ports
     }
-    if component_type == "FeedbackChannels":
+    if component_type == "SelectState":
         point_mass = registry.get("PointMass")
         assert point_mass is not None and point_mass.builder is not None
-        prototypes[("node", "mechanics")] = point_mass.builder({"dt": 0.01}).state_index.init
+        prototypes[("node", "state")] = point_mass.builder({"dt": 0.01}).state_index.init
     elif component_type == "Demux":
         prototypes[("node", "input")] = jnp.zeros(sum(params["sizes"]))
     elif component_type == "AffineValueComposer":

@@ -211,6 +211,12 @@ def validate_or_add_input_shape(
             f"{node_type} node {node_name!r} port 'input' requires an input prototype. "
             "Connect it to a source with a known output shape or provide input_shape."
         )
+    if (
+        node_type == "Channel"
+        and not hasattr(proto, "shape")
+        and all(next_params.get(field) is None for field in ("input_shape", "input_dtype"))
+    ):
+        return next_params
     try:
         inferred = prototype_params(proto)
     except ValueError as exc:

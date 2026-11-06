@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence, cast
 
-from equinox.nn import State
-
-from feedbax.runtime.channel import Channel
-from feedbax.runtime.components import Ravel
+from feedbax.models.feedback import feedback_state_view
+from feedbax.runtime.trial_history import trial_history_plan
 from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
@@ -364,7 +361,7 @@ def _instantiate_graph(
         name: (binding[0], binding[1]) for name, binding in spec.output_bindings.items()
     }
 
-    graph = Graph(
+    return Graph(
         nodes=nodes,
         wires=wires,
         input_ports=tuple(spec.input_ports),
@@ -373,76 +370,9 @@ def _instantiate_graph(
         output_bindings=output_bindings,
         parameter_constraints=normalize_parameter_constraints(spec.parameter_constraints),
         component_bindings=component_bindings,
+        state_consistency_fn=trial_history_plan(nodes, wires),
+        state_view_fn=feedback_state_view(nodes, wires),
     )
-    return _bind_trial_history_initializers(graph)
-
-
-def _bind_trial_history_initializers(graph: Graph) -> Graph:
-    children = tuple(
-        name
-        for name, node in graph.nodes.items()
-        if isinstance(node, Graph) and node.state_consistency_fn is not None
-    )
-    routes = []
-    for wire in graph.wires:
-        initializer = wire.recurrent_initializer or {}
-        if "seed_channel_history" not in initializer:
-            continue
-        seed_history = initializer["seed_channel_history"]
-        if not isinstance(seed_history, bool):
-            raise ValueError(f"{wire} seed_channel_history must be a boolean")
-        if not seed_history:
-            continue
-        if wire.temporality != "recurrent" or initializer.get("kind") != "state_output":
-            raise ValueError(f"{wire} seed_channel_history requires a recurrent state_output")
-        channel = wire.target_node
-        flatten = isinstance(graph.nodes[channel], Ravel)
-        if flatten:
-            targets = [
-                edge.target_node
-                for edge in graph.wires
-                if edge.source_node == wire.target_node
-                and edge.temporality == "instant"
-                and isinstance(graph.nodes[edge.target_node], Channel)
-            ]
-            if len(targets) != 1:
-                raise ValueError(f"{wire} seed_channel_history requires one Channel after Ravel")
-            channel = targets[0]
-        if not isinstance(graph.nodes[channel], Channel):
-            raise ValueError(
-                f"{wire} seed_channel_history must feed a Channel, optionally through Ravel"
-            )
-        routes.append((channel, wire.source_node, wire.source_port, flatten))
-
-    if not routes and not children:
-        return graph
-    return graph.with_state_consistency(_TrialHistoryPlan(children, tuple(routes)))
-
-
-@dataclass(frozen=True)
-class _TrialHistoryPlan:
-    children: tuple[str, ...]
-    routes: tuple[tuple[str, str, str, bool], ...]
-
-    def __call__(self, graph: Graph, state: State) -> State:
-        for name in self.children:
-            state = graph.nodes[name].state_consistency_update(state)
-
-        samples = {}
-        for channel_name, source_name, source_port, flatten in self.routes:
-            source = graph.nodes[source_name]
-            outputs = source.initial_outputs(source.state_view(state))
-            if source_port not in outputs:
-                raise ValueError(
-                    f"Channel {channel_name!r} seed_channel_history requires an initial "
-                    f"output from {source_name}.{source_port}"
-                )
-            value = outputs[source_port]
-            samples[channel_name] = Ravel.flatten(value) if flatten else value
-
-        for channel_name, sample in samples.items():
-            state = cast(Channel, graph.nodes[channel_name]).fill_history(state, sample)
-        return state
 
 
 def _split_lowering_metadata(

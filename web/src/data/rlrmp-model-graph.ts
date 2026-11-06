@@ -4,7 +4,7 @@
  * Represents the point-mass reaching model used in the RLRMP research:
  *   - SimpleStagedNetwork: GRU-based recurrent network (100-180 hidden units)
  *   - PointMass: 2D point-mass plant mechanics
- *   - FeedbackChannels: delayed, noisy proprioceptive feedback (position + velocity)
+ *   - SelectState and Channel: delayed, noisy proprioceptive feedback (position + velocity)
  *   - DelayedReaches task config stored on the owning Studio scenario
  *
  * This is a simplified visual representation of the model architecture.
@@ -82,13 +82,15 @@ export function createRlrmpModelGraph(projectName: string): {
         input_ports: ['force'],
         output_ports: ['effector', 'state'],
       },
+      feedback_select: {
+        type: 'SelectState',
+        params: { paths: ['plant.skeleton.pos', 'plant.skeleton.vel'] },
+        input_ports: ['state'],
+        output_ports: ['output'],
+      },
       feedback: {
-        type: 'FeedbackChannels',
-        params: {
-          delay: 5,
-          noise_std: 0.02,
-          channels: ['position', 'velocity'],
-        },
+        type: 'Channel',
+        params: { delay: 5, noise_std: 0.02, add_noise: true },
         input_ports: ['input'],
         output_ports: ['output'],
       },
@@ -114,7 +116,14 @@ export function createRlrmpModelGraph(projectName: string): {
       },
       {
         source_node: 'mechanics',
-        source_port: 'effector',
+        source_port: 'state',
+        target_node: 'feedback_select',
+        target_port: 'state',
+        temporality: 'recurrent',
+      },
+      {
+        source_node: 'feedback_select',
+        source_port: 'output',
         target_node: 'feedback',
         target_port: 'input',
       },
@@ -142,6 +151,7 @@ export function createRlrmpModelGraph(projectName: string): {
       task_mux: { position: { x: 250, y: 200 }, collapsed: false, selected: false },
       network: { position: { x: 520, y: 200 }, collapsed: false, selected: false },
       mechanics: { position: { x: 800, y: 200 }, collapsed: false, selected: false },
+      feedback_select: { position: { x: 850, y: 420 }, collapsed: false, selected: false },
       feedback: { position: { x: 660, y: 420 }, collapsed: false, selected: false, reversed: true },
     },
   };
