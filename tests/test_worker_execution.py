@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
-import queue
 from types import SimpleNamespace
 import threading
 
@@ -1219,7 +1218,6 @@ def test_worker_request_materializes_omitted_dynamic_ports_from_bootstrap_regist
         job_id="dynamic-ports",
         run_set_id="run-set",
         total_batches=1,
-        event_queue=queue.Queue(),
         stop_event=threading.Event(),
         training_spec=_training_spec(),
         task_spec={"type": "Generic", "params": {}},

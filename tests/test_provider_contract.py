@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-import queue
 import threading
 from pathlib import Path
 
@@ -2607,12 +2606,10 @@ def test_worker_emits_durable_training_manifest(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(tmp_path / "worker-runs"))
-    event_queue: queue.Queue = queue.Queue()
     job = _Job(
         job_id="stub-job",
         run_set_id="stub-run-set",
         total_batches=1,
-        event_queue=event_queue,
         stop_event=threading.Event(),
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
@@ -2639,9 +2636,7 @@ def test_worker_emits_durable_training_manifest(
     assert job.manifest_payload["run_set_id"] == "stub-run-set"
     assert job.manifest_payload["artifacts"][0]["role"] == "training_history"
 
-    events = []
-    while not event_queue.empty():
-        events.append(event_queue.get())
+    events = list(job.event_log)
     log = next(event for event in events if event["type"] == "log")
     assert log["run_set_id"] == "stub-run-set"
     assert log["row_id"] == "stub-job"
@@ -2658,7 +2653,6 @@ def _worker_contract_job(
         job_id="worker-contract",
         run_set_id="worker-contract-set",
         total_batches=1,
-        event_queue=queue.Queue(),
         stop_event=threading.Event(),
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
@@ -2901,12 +2895,10 @@ def test_worker_training_cfg_parses_grad_clip_absent_null_and_float() -> None:
 def test_worker_training_errors_instead_of_stub_on_missing_task_binding(
     application_registry_bundle,
 ) -> None:
-    event_queue: queue.Queue = queue.Queue()
     job = _Job(
         job_id="invalid-job",
         run_set_id="invalid-run-set",
         total_batches=1,
-        event_queue=event_queue,
         stop_event=threading.Event(),
         training_spec=_minimal_training_spec(),
         task_spec={"type": "SimpleReaches", "params": {}},
@@ -2918,9 +2910,7 @@ def test_worker_training_errors_instead_of_stub_on_missing_task_binding(
     _run_training(job, bootstrap_state=BootstrapState(application_registry_bundle, ()))
 
     assert job.status == WorkerStatus.ERROR
-    events = []
-    while not event_queue.empty():
-        events.append(event_queue.get())
+    events = list(job.event_log)
     assert events[0]["type"] == "failed"
     assert events[0]["run_set_id"] == "invalid-run-set"
     assert events[0]["row_id"] == "invalid-job"
@@ -2928,4 +2918,4 @@ def test_worker_training_errors_instead_of_stub_on_missing_task_binding(
     assert "task_binding_spec" in events[0]["payload"]["error"]
     assert events[0]["payload"]["diagnostics"][0]["code"] == "worker.missing_task_binding_spec"
     assert events[0]["payload"]["diagnostics"][0]["location"] == {"path": "/task_binding_spec"}
-    assert all(event is None or event.get("type") != "progress" for event in events)
+    assert all(event["type"] != "progress" for event in events)

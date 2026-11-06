@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, NoReturn, Optional, Sequence
@@ -493,25 +494,28 @@ class TrainingService:
             normalized.setdefault("diagnostics", [])
         return normalized
 
-    async def stream_progress(self, job_id: str) -> AsyncIterator[TrainingEvent]:
+    async def stream_progress(
+        self, job_id: str, *, from_seq: int | None = None
+    ) -> AsyncIterator[TrainingEvent]:
         """Relay the worker SSE stream as :class:`TrainingEvent` objects.
 
         Args:
             job_id: The job ID returned by :meth:`start_training`.
+            from_seq: Inclusive worker event sequence to replay from.
 
         Yields:
             :class:`TrainingEvent` instances wrapping raw event dicts.
         """
         if self._endpoint is None:
-            async for event in self._stream_from_event_log(job_id):
-                yield event
+            async with aclosing(self._stream_from_event_log(job_id, from_seq=from_seq)) as events:
+                async for event in events:
+                    yield event
             return
-        async for event in worker_client.stream_events(
-            self._endpoint,
-            job_id,
-        ):
-            event = self._normalize_training_event(job_id, event)
-            yield TrainingEvent(raw=event)
+        async with aclosing(
+            worker_client.stream_events(self._endpoint, job_id, from_seq=from_seq)
+        ) as events:
+            async for event in events:
+                yield TrainingEvent(raw=self._normalize_training_event(job_id, event))
 
     async def latest_checkpoint(self, job_id: str) -> Optional[dict]:
         """Return checkpoint metadata for the given job by querying the worker.
@@ -866,22 +870,26 @@ class TrainingService:
             return 0
         return int(status.get("event_seq_high_water_mark", -1)) + 1
 
-    async def _stream_from_event_log(self, job_id: str) -> AsyncIterator[TrainingEvent]:
+    async def _stream_from_event_log(
+        self, job_id: str, *, from_seq: int | None = None
+    ) -> AsyncIterator[TrainingEvent]:
         ref = self._job_ref_for(job_id)
         if ref is None:
             return
         bundle = self._load_bundle(ref)
-        for event in self._read_job_events(bundle, job_id):
+        for event in self._read_job_events(bundle, job_id, from_seq=from_seq):
             yield TrainingEvent(
                 raw=self._normalize_training_event(job_id, event.model_dump(mode="json"))
             )
             if event.type in RUN_EVENT_TERMINAL_TYPES:
                 return
 
-    def _read_job_events(self, bundle: RunBundle, job_id: str) -> list[RunEvent]:
+    def _read_job_events(
+        self, bundle: RunBundle, job_id: str, *, from_seq: int | None = None
+    ) -> list[RunEvent]:
         path = bundle.run_set_dir / "events" / f"{job_id}.events.jsonl"
         try:
-            return RunEventReader(path).read_all()
+            return RunEventReader(path).read_all(from_seq=from_seq)
         except Exception:
             return []
 

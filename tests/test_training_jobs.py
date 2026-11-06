@@ -20,7 +20,6 @@ from fastapi.testclient import TestClient
 import feedbax.web.api.training as training_api
 import feedbax.web.services.training_service as training_service_module
 import feedbax.web.services.worker_driver as worker_driver_module
-import feedbax.web.worker.client as worker_client
 import feedbax.web.worker.app as worker_app
 import feedbax.web.worker.checkpoint as worker_checkpoint
 import feedbax.web.worker.execution as worker_execution
@@ -32,7 +31,7 @@ from feedbax.contracts.studio_training import (
     STUDIO_TRAINING_ASSEMBLY_SCHEMA_VERSION,
     StudioTrainingAssemblySpec,
 )
-from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RunEvent
+from feedbax.orchestration.events import RUN_EVENT_SCHEMA_ID, RunEvent, RunEventReader
 from feedbax.orchestration.assembly import assemble_run_bundle
 from feedbax.orchestration.bundle import ROW_ID_RE
 from feedbax.orchestration.drivers.base import DriverRowProbe
@@ -166,7 +165,6 @@ def test_worker_routes_keep_terminal_state_for_distinct_job_ids(monkeypatch) -> 
                 "loss": loss,
             },
         )
-        job.event_queue.put(None)
 
     monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
 
@@ -629,6 +627,50 @@ def test_worker_http_driver_terminal_stream_unregisters_itself(monkeypatch, tmp_
     assert (bundle.run_set_dir / "sentinels" / f"{row.row_id}.done").exists()
 
 
+def test_worker_http_driver_resumes_after_clean_eof_from_persisted_cursor(
+    monkeypatch, tmp_path: Path
+) -> None:
+    bundle, row, state = _worker_stream_test_inputs(tmp_path, "job-resume")
+    event = RunEvent(run_set_id="set-a", row_id=row.row_id, seq=0, emitted_at_ms=0, type="log")
+    terminal = event.model_copy(update={"seq": 1, "type": "complete"})
+    line = f"data: {event.model_dump_json()}"
+    responses = (
+        _FakeWorkerStreamResponse(lines=(line,), paused=True),
+        _FakeWorkerStreamResponse(
+            lines=(line, f"data: {terminal.model_dump_json()}"), paused=True
+        ),
+    )
+    cursors = []
+
+    def open_stream(*_args, params, **_kwargs):
+        response = responses[len(cursors)]
+        cursors.append(params["from_seq"])
+        return response
+
+    monkeypatch.setattr(httpx, "stream", open_stream)
+    monkeypatch.setattr(worker_driver_module, "request_json_sync", lambda *_: {"status": "completed"})
+    driver = WorkerHttpDriver(base_url="http://127.0.0.1:8765")
+    try:
+        for response in responses:
+            assert driver.probe(bundle, row, state).status == "running"
+            assert response.iterating.wait(timeout=1.0)
+            thread = driver._streams[row.row_id].thread
+            assert thread is not None
+            response.released.set()
+            thread.join(timeout=1.0)
+            assert not thread.is_alive()
+        assert driver.probe(bundle, row, state).status == "completed"
+        events = RunEventReader(
+            bundle.run_set_dir / "events" / f"{row.row_id}.events.jsonl"
+        ).read_all()
+        assert cursors == [0, 1]
+        assert [(item.seq, item.type) for item in events] == [(0, "log"), (1, "complete")]
+    finally:
+        for response in responses:
+            response.released.set()
+        driver.teardown(bundle, state)
+
+
 def test_worker_http_driver_failed_stream_unregisters_and_teardown_clears_error(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -646,7 +688,9 @@ def test_worker_http_driver_failed_stream_unregisters_and_teardown_clears_error(
 
     assert not thread.is_alive()
     assert driver._streams == {}
-    assert driver._stream_errors == {row.row_id: "worker event stream failed"}
+    probe = driver.probe(bundle, row, state)
+    assert probe.status == "failed"
+    assert probe.detail == "worker event stream failed"
 
     driver.teardown(bundle, state)
     assert driver._streams == {}
@@ -658,7 +702,6 @@ def test_worker_thread_start_failure_removes_only_new_registration(
 ) -> None:
     def fake_run_training(job: worker_app._Job, _bootstrap_state) -> None:
         worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
-        job.event_queue.put(None)
 
     monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
 
@@ -707,7 +750,6 @@ def test_worker_rejects_repeated_terminal_job_id_without_checkpoint_residue(
         with job._state_lock:
             job.checkpoint_path = str(checkpoint_path)
         worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
-        job.event_queue.put(None)
 
     monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
 
@@ -757,7 +799,6 @@ def test_worker_cleans_checkpoint_when_job_ownership_handoff_fails(
         job_id="job-handoff",
         run_set_id="set-a",
         total_batches=1,
-        event_queue=worker_app.queue.Queue(),
         stop_event=FailingStopEvent(),
         graph_spec={},
         training_spec={},
@@ -803,7 +844,6 @@ def test_worker_ownership_handoff_cleanup_failure_retains_job_pointer(
         job_id="job-handoff",
         run_set_id="set-a",
         total_batches=1,
-        event_queue=worker_app.queue.Queue(),
         stop_event=FailingStopEvent(),
         graph_spec={},
         training_spec={},
@@ -845,7 +885,6 @@ def test_worker_eviction_cleanup_failure_retains_registry_pointer_for_retry(
         with job._state_lock:
             job.checkpoint_path = str(job_checkpoint_path)
         worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
-        job.event_queue.put(None)
 
     monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
     monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 1)
@@ -903,7 +942,6 @@ def test_worker_checkpoint_download_lease_defers_eviction_until_response_finishe
             with job._state_lock:
                 job.checkpoint_path = str(checkpoint_path)
         worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
-        job.event_queue.put(None)
 
     original_handle_simple = worker_app.FileResponse._handle_simple
 
@@ -989,7 +1027,6 @@ def test_worker_checkpoint_request_releases_lease_when_send_fails(
         with job._state_lock:
             job.checkpoint_path = str(checkpoint_path)
         worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
-        job.event_queue.put(None)
 
     monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
     monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 1)
@@ -1043,7 +1080,6 @@ def test_worker_checkpoint_request_cancellation_before_response_call_releases_le
         with job._state_lock:
             job.checkpoint_path = str(checkpoint_path)
         worker_app._mark_job_terminal(job, WorkerStatus.COMPLETED)
-        job.event_queue.put(None)
 
     original_response = worker_app.FileResponse
 
@@ -1120,7 +1156,6 @@ def test_worker_rejects_start_while_job_running(monkeypatch) -> None:
                 "loss": 1.0,
             },
         )
-        job.event_queue.put(None)
 
     monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
 
@@ -1164,7 +1199,6 @@ def test_worker_evicts_oldest_terminal_jobs(monkeypatch) -> None:
                 "loss": float(job.total_batches),
             },
         )
-        job.event_queue.put(None)
 
     monkeypatch.setattr(worker_app, "_TERMINAL_JOB_RETENTION_MAX", 2)
     monkeypatch.setattr(worker_app, "_run_training", fake_run_training)
@@ -1442,7 +1476,6 @@ def test_worker_emit_buffers_run_event_envelopes() -> None:
         job_id="job-events",
         run_set_id="run-set-events",
         total_batches=3,
-        event_queue=worker_app.queue.Queue(),
         stop_event=threading.Event(),
     )
 
@@ -1466,8 +1499,7 @@ def test_worker_emit_buffers_run_event_envelopes() -> None:
         },
     )
 
-    first = job.event_queue.get_nowait()
-    second = job.event_queue.get_nowait()
+    first, second = job.event_log
 
     assert first["schema_id"] == RUN_EVENT_SCHEMA_ID
     assert first["run_set_id"] == "run-set-events"
@@ -1476,7 +1508,7 @@ def test_worker_emit_buffers_run_event_envelopes() -> None:
     assert first["payload"]["legacy_type"] == "training_progress"
     assert first["payload"]["batch"] == 1
     assert second["type"] == "complete"
-    assert [seq for seq, _event in job.event_buffer] == [0, 1]
+    assert (first["seq"], second["seq"]) == (0, 1)
 
 
 def test_training_service_unwraps_run_event_worker_stream(monkeypatch) -> None:
@@ -1594,90 +1626,6 @@ def test_training_service_surfaces_reconnect_resync_marker(monkeypatch) -> None:
         }
 
     asyncio.run(run())
-
-
-def test_worker_client_emits_gap_marker_after_reconnect(monkeypatch) -> None:
-    stream_calls: list[dict] = []
-    streams = [
-        (
-            ['data: {"type": "training_progress", "job_id": "job-gap", "seq": 0}\n'],
-            worker_client.httpx.ReadError("dropped"),
-        ),
-        (
-            ['data: {"type": "training_complete", "job_id": "job-gap", "seq": 3, "batch": 1}\n'],
-            None,
-        ),
-    ]
-
-    class FakeResponse:
-        def __init__(self, lines: list[str], error: Exception | None) -> None:
-            self._lines = lines
-            self._error = error
-
-        status_code = 200
-        headers: dict[str, str] = {}
-
-        async def aiter_bytes(self):
-            for line in self._lines:
-                yield line.encode()
-            if self._error is not None:
-                raise self._error
-
-    class FakeStream:
-        def __init__(self, response: FakeResponse) -> None:
-            self._response = response
-
-        async def __aenter__(self) -> FakeResponse:
-            return self._response
-
-        async def __aexit__(self, *args: object) -> None:
-            return None
-
-    class FakeClient:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            return None
-
-        async def __aenter__(self) -> "FakeClient":
-            return self
-
-        async def __aexit__(self, *args: object) -> None:
-            return None
-
-        def stream(
-            self,
-            method: str,
-            url: str,
-            *,
-            params: dict,
-            headers: dict,
-        ) -> FakeStream:
-            stream_calls.append(params)
-            lines, error = streams.pop(0)
-            return FakeStream(FakeResponse(lines, error))
-
-    async def run() -> list[dict]:
-        monkeypatch.setattr(worker_client.httpx, "AsyncClient", FakeClient)
-        monkeypatch.setattr(worker_client, "_RECONNECT_DELAY", 0)
-        endpoint = worker_client.WorkerEndpoint.create("http://127.0.0.1:8765")
-        return [event async for event in worker_client.stream_events(endpoint, "job-gap")]
-
-    events = asyncio.run(run())
-
-    assert stream_calls == [{}, {"from_seq": 1}]
-    assert events == [
-        {"type": "training_progress", "job_id": "job-gap", "seq": 0},
-        {
-            "type": "training_resync",
-            "job_id": "job-gap",
-            "expected_worker_seq": 1,
-            "observed_worker_seq": 3,
-            "worker_seq": 0,
-            "missed_events": 2,
-            "reason": "gap",
-            "message": "Training stream resumed after reconnect with 2 missed event(s).",
-        },
-        {"type": "training_complete", "job_id": "job-gap", "seq": 3, "batch": 1},
-    ]
 
 
 def test_training_api_routes_pass_path_job_id(monkeypatch) -> None:

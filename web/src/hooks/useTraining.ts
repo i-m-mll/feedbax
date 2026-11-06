@@ -138,7 +138,7 @@ export function useTraining() {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const intentionalCloseRef = useRef(false);
-  const lastEventSeqRef = useRef(-1);
+  const lastWorkerSeqRef = useRef(-1);
   const progressBatcherRef = useRef<ReturnType<typeof createTrainingProgressBatcher> | null>(null);
   if (progressBatcherRef.current === null) {
     progressBatcherRef.current = createTrainingProgressBatcher(
@@ -155,7 +155,7 @@ export function useTraining() {
   }, []);
 
   const connect = useCallback(
-    (nextJobId: string) => {
+    (nextJobId: string, resume = false) => {
       const existing = wsRef.current;
       if (
         existing &&
@@ -166,12 +166,14 @@ export function useTraining() {
       }
 
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(`${protocol}://${window.location.host}/ws/training/${nextJobId}`);
+      const path = `${protocol}://${window.location.host}/ws/training/${nextJobId}`;
+      const fromSeq = lastWorkerSeqRef.current + 1;
+      const ws = new WebSocket(resume ? `${path}?from_seq=${fromSeq}` : path);
       wsRef.current = ws;
       wsJobIdRef.current = nextJobId;
 
       ws.onmessage = (event) => {
-        reconnectAttemptRef.current = 0;
+        if (wsRef.current !== ws) return;
         let payload: TrainingWebSocketEvent;
         try {
           payload = parseContract('TrainingWebSocketEvent', JSON.parse(event.data) as unknown);
@@ -191,10 +193,12 @@ export function useTraining() {
           ws.close();
           return;
         }
-        if (payload.job_id !== nextJobId || payload.seq <= lastEventSeqRef.current) {
-          return;
+        if (payload.job_id !== nextJobId) return;
+        if (payload.type !== 'training_resync' && payload.worker_seq != null) {
+          if (payload.worker_seq <= lastWorkerSeqRef.current) return;
+          lastWorkerSeqRef.current = payload.worker_seq;
         }
-        lastEventSeqRef.current = payload.seq;
+        reconnectAttemptRef.current = 0;
         setTrainingStreamError(null);
         if (payload.type === 'training_progress') {
           progressBatcherRef.current?.enqueue({
@@ -295,7 +299,7 @@ export function useTraining() {
         clearReconnectTimer();
         reconnectTimerRef.current = window.setTimeout(() => {
           reconnectTimerRef.current = null;
-          connect(nextJobId);
+          connect(nextJobId, true);
         }, delayMs);
       };
     },
@@ -330,7 +334,7 @@ export function useTraining() {
     try {
       intentionalCloseRef.current = false;
       reconnectAttemptRef.current = 0;
-      lastEventSeqRef.current = -1;
+      lastWorkerSeqRef.current = -1;
       progressBatcherRef.current?.cancel();
       clearReconnectTimer();
       setTrainingStreamError(null);

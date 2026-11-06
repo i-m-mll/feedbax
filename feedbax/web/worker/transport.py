@@ -17,6 +17,9 @@ if TYPE_CHECKING:
     import httpx
 
 
+WORKER_EVENT_CURSOR_EXPIRED = "worker_stream_cursor_expired"
+
+
 class WorkerTransportError(RuntimeError):
     """A redacted worker transport failure safe for user-visible diagnostics."""
 
@@ -39,6 +42,13 @@ class WorkerResponseError(WorkerTransportError):
 
 class WorkerConsumptionError(WorkerTransportError):
     """A response exceeded the configured time or size budget."""
+
+
+class WorkerEventCursorExpired(WorkerTransportError):
+    """The requested sequence has fallen out of the worker's retention window."""
+
+    def __init__(self) -> None:
+        super().__init__("Training worker event cursor expired.")
 
 
 @dataclass(frozen=True)
@@ -290,6 +300,23 @@ def decode_json_object(data: bytes) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise WorkerTransportError("Training worker returned a non-object JSON response")
     return payload
+
+
+def check_event_stream_response(response: httpx.Response) -> None:
+    """Check stream admission without reading or exposing the response body."""
+    if response.status_code == 410:
+        raise WorkerEventCursorExpired
+    _check_response(response)
+
+
+def decode_worker_event(data: bytes) -> dict[str, Any]:
+    """Decode SSE data and surface retention errors separately from run events."""
+    event = decode_json_object(data)
+    if event.get("code") == WORKER_EVENT_CURSOR_EXPIRED:
+        raise WorkerEventCursorExpired
+    if not event:
+        raise WorkerTransportError("Training worker returned an empty event")
+    return event
 
 
 async def request_json(

@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from feedbax.web.worker import client as worker_client
-from feedbax.web.worker.transport import WorkerEndpoint
+from feedbax.web.worker.transport import WorkerEndpoint, WorkerEventCursorExpired
 
 
 class _FailingAsyncClient:
@@ -184,3 +184,96 @@ def test_accepted_stream_exhausts_complete_attempts_with_backoff(
 async def _collect_terminal_stream() -> list[dict]:
     endpoint = WorkerEndpoint.create("http://127.0.0.1:8765")
     return [event async for event in worker_client.stream_events(endpoint, "job-terminal")]
+
+
+class _InterruptedBody(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b'data: {"type": "training_progress", "seq": 8}\n'
+        yield b'data: {"type": "training_progress", "seq"'
+        raise httpx.ReadError("worker connection dropped")
+
+
+def _mock_worker_responses(monkeypatch, *responses: httpx.Response) -> list[str]:
+    client = httpx.AsyncClient
+    pending = iter(responses)
+    cursors = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        cursors.append(request.url.params["from_seq"])
+        return next(pending)
+
+    monkeypatch.setattr(
+        worker_client.httpx,
+        "AsyncClient",
+        lambda **kwargs: client(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    return cursors
+
+
+async def _collect_from_cursor() -> list[dict]:
+    endpoint = WorkerEndpoint.create("http://127.0.0.1:8765")
+    return [
+        event async for event in worker_client.stream_events(endpoint, "job-resume", from_seq=8)
+    ]
+
+
+def test_stream_events_replays_from_last_complete_event(monkeypatch) -> None:
+    cursors = _mock_worker_responses(
+        monkeypatch,
+        httpx.Response(200, stream=_InterruptedBody()),
+        httpx.Response(
+            200,
+            content=(
+                b'data: {"type": "training_progress", "seq": 8}\n'
+                b'data: {"type": "training_complete", "seq": 9}\n'
+            ),
+        ),
+    )
+    monkeypatch.setattr(worker_client, "_RECONNECT_DELAY", 0)
+
+    progress, resync, complete = asyncio.run(_collect_from_cursor())
+
+    assert cursors == ["8", "9"]
+    assert progress == {"type": "training_progress", "seq": 8}
+    assert resync["type"] == "training_resync"
+    assert resync["observed_worker_seq"] == 9
+    assert "worker_seq" not in resync
+    assert complete == {"type": "training_complete", "seq": 9}
+
+
+@pytest.mark.parametrize(
+    ("status_code", "content", "error_type", "message"),
+    [
+        (410, b"upstream secret", WorkerEventCursorExpired, "cursor expired"),
+        (
+            200,
+            b'event: stream_gap\ndata: {"code": "worker_stream_cursor_expired", '
+            b'"requested_seq": 8, "oldest_seq": 9}\n\n',
+            WorkerEventCursorExpired,
+            "cursor expired",
+        ),
+        (
+            200,
+            b'data: {"type": "training_complete", "seq": 9}\n',
+            worker_client.WorkerEventStreamError,
+            "sequence gap",
+        ),
+    ],
+    ids=["expired-admission", "expired-live", "missing-sequence"],
+)
+def test_stream_events_surfaces_unavailable_cursor(
+    monkeypatch, status_code, content, error_type, message
+) -> None:
+    cursors = _mock_worker_responses(monkeypatch, httpx.Response(status_code, content=content))
+
+    with pytest.raises(error_type, match=message):
+        asyncio.run(_collect_from_cursor())
+
+    assert cursors == ["8"]
+
+
+def test_stream_events_accepts_empty_terminal_resume(monkeypatch) -> None:
+    cursors = _mock_worker_responses(monkeypatch, httpx.Response(204))
+
+    assert asyncio.run(_collect_from_cursor()) == []
+    assert cursors == ["8"]
