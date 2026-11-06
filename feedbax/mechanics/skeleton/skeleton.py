@@ -69,7 +69,7 @@ class AbstractSkeleton(AbstractDynamicalSystem[StateT]):
         *,
         key: Optional[PRNGKeyArray] = None,
     ) -> StateT:
-        """Update the state of the skeleton given a force on the end effector."""
+        """Replace the held endpoint force. Pass zero to release the load."""
         ...
 
     def linearize(self, state: StateT) -> LinearSystem:

@@ -13,8 +13,7 @@ from functools import cached_property
 from typing import Optional, Type
 
 import diffrax as dfx
-import equinox as eqx
-from equinox import Module, field
+from equinox import field
 from equinox.nn import State
 import jax
 import jax.numpy as jnp
@@ -167,9 +166,9 @@ class TwoLinkArmDAE(DAEComponent[TwoLinkArmState]):
             [tmp, self._a[2] * jnp.ones_like(cs1)],
         ])
 
-        # Net torque: input + stored torque - Coriolis - friction
+        load_torque = self.effector_force_to_torques(angle, state.effector_force)
         net_torque = (
-            state.torque + input
+            state.torque + input + load_torque
             - c_vec.T
             - jnp.matmul(d_angle, self.params.B.T)
         )
@@ -180,7 +179,8 @@ class TwoLinkArmDAE(DAEComponent[TwoLinkArmState]):
         return TwoLinkArmState(
             angle=d_angle,
             d_angle=dd_angle,
-            torque=jnp.zeros_like(state.torque),  # Torque derivative = 0
+            torque=jnp.zeros_like(state.torque),
+            effector_force=jnp.zeros_like(state.effector_force),
         )
 
     def init_system_state(self, *, key: PRNGKeyArray) -> TwoLinkArmState:
@@ -311,12 +311,13 @@ class TwoLinkArmDAE(DAEComponent[TwoLinkArmState]):
             effector_state.vel,
         )
 
-        if effector_state.force is not None:
-            torque = self.effector_force_to_torques(angle, effector_state.force)
-        else:
-            torque = jnp.zeros(2)
-
-        return TwoLinkArmState(angle=angle, d_angle=d_angle, torque=torque)
+        force = effector_state.force
+        return TwoLinkArmState(
+            angle=angle,
+            d_angle=d_angle,
+            torque=jnp.zeros_like(angle),
+            effector_force=jnp.zeros_like(angle) if force is None else force,
+        )
 
     # === Energy Methods ===
 

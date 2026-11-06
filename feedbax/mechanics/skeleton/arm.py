@@ -29,12 +29,14 @@ class TwoLinkArmState(AbstractSkeletonState):
     Attributes:
         angle: The joint angles.
         d_angle: The angular velocities.
-        torque: The torques on the joints.
+        torque: Joint torque held independently of the controller input.
+        effector_force: World-space force held at the distal endpoint.
     """
 
     angle: Float[Array, "... links=2"] = field(default_factory=lambda: jnp.zeros(2))
     d_angle: Float[Array, "... links=2"] = field(default_factory=lambda: jnp.zeros(2))
     torque: Float[Array, "... links=2"] = field(default_factory=lambda: jnp.zeros(2))
+    effector_force: Float[Array, "... 2"] = field(default_factory=lambda: jnp.zeros(2))
 
 
 class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
@@ -114,15 +116,16 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
             )
         )
 
-        # Normally, `state.torque` only contains the torque induced by
-        # linear force on the effector, as determined by inverse kinematics
-        # during the "convert_effector_force" stage of `Mechanics`,
-        # whereas `input` is the torque from the controller/muscles.
-        net_torque = state.torque + input - c_vec.T - jnp.matmul(d_angle, self.B.T)
+        load_torque = self.effector_force_to_torques(angle, state.effector_force)
+        net_torque = state.torque + input + load_torque - c_vec - self.B @ d_angle
+        dd_angle = jnp.linalg.solve(inertia_mat, net_torque)
 
-        dd_angle = jnp.linalg.inv(inertia_mat) @ net_torque
-
-        return TwoLinkArmState(d_angle, dd_angle)
+        return TwoLinkArmState(
+            angle=d_angle,
+            d_angle=dd_angle,
+            torque=jnp.zeros_like(state.torque),
+            effector_force=jnp.zeros_like(state.effector_force),
+        )
 
     def init(
         self,
@@ -195,16 +198,14 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
 
         angle = jnp.stack([theta0, theta1], axis=-1)
 
-        # TODO: Don't calculate Jacobian twice, for `d_angle` and `torque`.
-        # See https://robotics.stackexchange.com/a/6393
         d_angle = jnp.linalg.inv(self.effector_jac(angle)) @ effector_state.vel
-
-        if effector_state.force is not None:
-            torque = self.effector_force_to_torques(angle, effector_state.force)
-        else:
-            torque = None
-
-        return TwoLinkArmState(angle=angle, d_angle=d_angle, torque=torque)
+        force = effector_state.force
+        return TwoLinkArmState(
+            angle=angle,
+            d_angle=d_angle,
+            torque=jnp.zeros_like(angle),
+            effector_force=jnp.zeros_like(angle) if force is None else force,
+        )
 
     def update_state_given_effector_force(
         self,
@@ -213,22 +214,9 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         *,
         key: Optional[PRNGKeyArray] = None,
     ) -> TwoLinkArmState:
-        """Adds torques implied by a force on the end effector, to a
-        configuration state of the arm.
-
-        Arguments:
-            effector_force: The force on the end effector.
-            state: The configuration state of the arm to which to add
-                the inferred torques.
-            key: Unused. To satisfy the signature expected by
-                `AbstractSkeleton`.
-        """
-        torque = self.effector_force_to_torques(
-            state.angle,
-            effector_force,
-        )
-
-        return eqx.tree_at(lambda state: state.torque, state, torque + state.torque)
+        """Replace the held world-space endpoint force. Pass zero to clear it."""
+        force = jnp.asarray(effector_force, dtype=state.effector_force.dtype)
+        return eqx.tree_at(lambda state: state.effector_force, state, force)
 
     def effector_force_to_torques(
         self,
@@ -265,12 +253,7 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         """
         xy_pos, xy_vel = link_kinematics(self.l, state.angle, state.d_angle)
 
-        # TODO: add force conversion?
-        # It might be very important NOT to convert force here.
-        # Otherwise we could get positive feedback where the effector force
-        # is passed to the next time step and converted to torques, then
-        # converted to effector forces and added back to the torques, etc.
-
+        # The observed Cartesian state leaves the force channel free for the next step.
         return CartesianState(
             pos=xy_pos,
             vel=xy_vel,
@@ -297,11 +280,13 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
                 angle=jnp.array([0.0, 0.0]),
                 d_angle=None,
                 torque=None,
+                effector_force=None,
             ),
             high=TwoLinkArmState(
                 angle=jnp.deg2rad(jnp.array([140.0, 160.0])),
                 d_angle=None,
                 torque=None,
+                effector_force=None,
             ),
         )
 

@@ -213,7 +213,7 @@ class Mechanics(Component):
         mechanics_state: MechanicsState = state.get(self.state_index)
         force = inputs["force"]
 
-        # Convert effector force back into configuration forces, if applicable.
+        # Sample the endpoint load for this control step.
         skeleton_state = self.plant.skeleton.update_state_given_effector_force(
             mechanics_state.effector.force,
             mechanics_state.plant.skeleton,
@@ -265,7 +265,7 @@ class Mechanics(Component):
         mechanics_state: MechanicsState = state.get(self.state_index)
         action = inputs["force"]
 
-        # Convert effector force back into configuration forces, if applicable.
+        # Sample the endpoint load for this control step.
         skeleton_state = self.plant.skeleton.update_state_given_effector_force(
             mechanics_state.effector.force,
             mechanics_state.plant.skeleton,
