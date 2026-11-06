@@ -1718,3 +1718,19 @@ class Graph(Component):
             return isinstance(x, types)
 
         return select(self).at(lambda g: g.nodes).at_instances_of(*types)
+
+
+def subgraph_definition():
+    """The authored nested graph contract owned by Graph."""
+    from feedbax.component_registry.declarations import declare_component
+
+    return declare_component(
+        name="Subgraph",
+        category="Structure",
+        description="Nested graph container.",
+        parameter_fields=[],
+        input_ports=[],
+        output_ports=[],
+        icon="Layers",
+        is_composite=True,
+    )

@@ -391,6 +391,7 @@ def _drop_structural_label(params: dict[str, Any]) -> dict[str, Any]:
             migration_id="feedbax.component.StructuralLinearStateSpace.drop-label",
             migrate_params=_drop_structural_label,
             description="Use the graph node identity in place of the legacy parameter label.",
+            matches_unversioned=lambda params: "label" in params,
         ),
     ),
 )

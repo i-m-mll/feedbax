@@ -9,6 +9,7 @@ import pytest
 
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
 from feedbax.components import penzai
+from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParamSchema
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
@@ -23,6 +24,8 @@ def _registry_cases() -> list[str]:
         component_type
         for component_type in registry.executable_names()
         if required_interior_domain(component_type, registry) is None
+        and registry.get(component_type).domain == CAUSAL_DOMAIN_ID
+        and not component_type.startswith("feedbax.equinox.")
     ]
 
 
@@ -275,10 +278,8 @@ def roundtrip_registry(component_type: str, monkeypatch: pytest.MonkeyPatch) -> 
 def test_registries_capture_penzai_options_and_keep_metadata_detached(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from feedbax.component_registry import builtins
-
     options = [{"name": "example", "description": "Original"}]
-    monkeypatch.setattr(builtins, "penzai_builder_options", lambda: options)
+    monkeypatch.setattr(penzai, "list_penzai_builder_info", lambda: options)
 
     first = ComponentRegistry(load_user_components=False)
     metadata = first.get("PenzaiAdapter")

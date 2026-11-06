@@ -282,3 +282,35 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
     def _get_zero_input(self) -> Array:
         """Zero-valued input for solver initialisation."""
         return jnp.zeros(self.input_size)
+
+
+def acausal_system_definition():
+    """The authored acausal assembly contract owned by AcausalSystem."""
+    from feedbax.component_registry.declarations import ParameterField, declare_component
+    from feedbax.contracts.component import PortType, PortTypeSpec
+    from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
+
+    return declare_component(
+        name="AcausalSystem",
+        category="Mechanics",
+        description="Assembled acausal mechanical system (mass-spring-damper etc.).",
+        parameter_fields=[
+            ParameterField(name="dt", type="float", default=0.001, min=0.0001, required=True),
+            ParameterField(
+                name="domain",
+                type="enum",
+                options=["translational", "rotational"],
+                default="translational",
+                required=False,
+            ),
+        ],
+        input_ports=["input"],
+        output_ports=["state"],
+        icon="Cog",
+        interior_domain=ACAUSAL_DOMAIN_ID,
+        port_types=PortTypeSpec(
+            inputs={"input": PortType(dtype="vector")},
+            outputs={"state": PortType(dtype="state")},
+        ),
+        is_composite=True,
+    )

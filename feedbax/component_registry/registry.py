@@ -34,7 +34,7 @@ from feedbax.contracts.representation import (
     validate_representation_against_component,
 )
 
-from .migration_routes import migration_route, source_endpoint
+from .migration_routes import migration_route, source_endpoint, validate_migration_routes
 from .declarations import (
     ComponentBuilder,
     ComponentParamExtractor,
@@ -123,18 +123,10 @@ class ComponentRegistry:
             self.load_user_components(Path.home() / ".feedbax" / "components")
 
     def _register_builtins(self) -> None:
-        from .builtins import register_builtin_components
+        from .builtins import builtin_component_packs
 
-        batch = _BuiltinBatch()
-        register_builtin_components(batch)
-        self.ingest(
-            ComponentPack(
-                tuple(batch.components),
-                tuple(batch.migrations),
-                sources=(Path(__file__).with_name("builtins.py").resolve(),),
-            ),
-            provenance="feedbax",
-        )
+        for pack in builtin_component_packs():
+            self.ingest(pack, provenance="feedbax")
 
     discover_modules = staticmethod(discover_modules)
 
@@ -224,6 +216,10 @@ class ComponentRegistry:
             migrations[key] = migration
             migration_owners.setdefault(migration.owner, set()).add(migration.source_type)
             changed_targets.add(migration.target_type)
+        validate_migration_routes(
+            migrations,
+            {name: meta.param_schema_version for name, meta in components.items()},
+        )
         for target in changed_targets & components.keys():
             components[target] = self._with_migrations(
                 components[target], self._migration_infos_for_target(target, migrations.values())
@@ -240,6 +236,8 @@ class ComponentRegistry:
         for edge in self._component_migrations.values():
             if edge.migrate_params is not None:
                 origin = source_path(edge.migrate_params)
+                if origin is None and getattr(edge.migrate_params, "__module__", None) == "builtins":
+                    continue
                 for type_id in {edge.source_type, edge.target_type}:
                     migration_sources.setdefault(type_id, []).append(origin)
         for name, meta in sorted(self._components.items()):
@@ -258,6 +256,11 @@ class ComponentRegistry:
         return result
 
     def seal(self) -> None:
+        validate_migration_routes(
+            self._component_migrations,
+            {name: meta.param_schema_version for name, meta in self._components.items()},
+            require_current_terminal=True,
+        )
         self._sealed = True
 
     def _require_mutable(self) -> None:

@@ -458,6 +458,7 @@ def _extract_declared_to_params(component: Any, model: Any) -> Any:
 
 @component(
     "ThresholdLatchedForce",
+    migrations=THRESHOLD_LATCHED_FORCE_MIGRATIONS,
     constructor=ComponentConstructorPlan(
         groups={
             "params": (

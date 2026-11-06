@@ -1604,6 +1604,8 @@ class LSTM(Component):
         fixed_output_ports=("output",),
         generated_name_template="in_{index}",
         dynamic_port_type=PortType(dtype="vector"),
+        auto_resize_minimum=2,
+        concatenate_to_output="output",
     ),
     output_prototype_fn=mux_output_prototype,
 )
