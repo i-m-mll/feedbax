@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import math
-import inspect
 from collections.abc import Callable, Mapping, Sequence
 from functools import cached_property
 from typing import Literal, Optional, cast
@@ -19,11 +18,10 @@ import jax.numpy as jnp
 import jax.random as jr
 from equinox import Module, field
 from equinox.nn import State, StateIndex
-from jax.flatten_util import ravel_pytree
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
 
-from feedbax.runtime.components import NAMED_ACTIVATIONS, tanh
-from feedbax.runtime.graph import Component
+from feedbax.runtime.components import GRU, LSTM, named_activation, resolve_activation, tanh
+from feedbax.runtime.graph import Component, Graph
 from feedbax.runtime.parameter_constraints import (
     recurrent_parameter_role,
     register_parameter_role_resolver,
@@ -31,7 +29,6 @@ from feedbax.runtime.parameter_constraints import (
 from feedbax.models.support import (
     identity_func,
     interleave_unequal,
-    n_positional_args,
 )
 from feedbax.contracts.graph import ParameterConstraintSpec
 
@@ -83,33 +80,6 @@ def recurrent_gate_count(cell_type: object, *, path: str = "cell_type") -> int:
     return 1
 
 
-def _accepts_key_argument(func: Callable) -> bool:
-    params = inspect.signature(func).parameters.values()
-    return any(
-        param.name == "key" or param.kind == inspect.Parameter.VAR_KEYWORD for param in params
-    )
-
-
-# class Layer(Protocol):
-#     def __init__(
-#         self,
-#         input_size: int,
-#         hidden_size: int,
-#         use_bias: bool = True,
-#         *,
-#         key: PRNGKeyArray,
-#         **kwargs,
-#     ): ...
-
-#     def __call__(
-#         self,
-#         input: Array,
-#         state: Array,
-#         *,
-#         key: PRNGKeyArray,
-#     ) -> Array: ...
-
-
 def orthogonal_gru_cell(
     input_size: int,
     hidden_size: int,
@@ -131,21 +101,6 @@ def orthogonal_gru_cell(
         ortho_weight_hh,
     )
     return net
-
-
-class NetworkState(Module):
-    """Type of state PyTree operated on by [`SimpleStagedNetwork`][feedbax.models.networks.SimpleStagedNetwork] instances.
-
-    Attributes:
-        hidden: The (output) activity of the hidden layer units.
-        output: The activity of the readout layer, if the network has one.
-        encoding: The activity of the encoding layer, if the network has one.
-    """
-
-    input: Float[Array, "inputs"]  # noqa: F821
-    hidden: PyTree[Float[Array, "unit"]]  # noqa: F821
-    output: Optional[PyTree[Array]] = None
-    encoding: Optional[PyTree[Array]] = None
 
 
 def contiguous_assignment(
@@ -480,127 +435,12 @@ def population_readout_kernel_mask(
     return mask.at[:, population_structure.readout_indices].set(1.0)
 
 
-def infer_recurrent_gate_count(weight_rows: int, hidden_size: int) -> int:
-    """Infer recurrent-cell gate count from the input-kernel row count."""
-
-    if hidden_size <= 0 or weight_rows % hidden_size != 0:
-        raise ValueError(
-            f"Cannot infer gate count from input-kernel rows={weight_rows} "
-            f"and hidden_size={hidden_size}"
-        )
-    return weight_rows // hidden_size
-
-
-def _supports_keyword(factory: Callable[..., Module], keyword: str) -> bool:
-    """Return whether ``factory`` accepts ``keyword`` without calling it."""
-
-    try:
-        params = inspect.signature(factory).parameters
-    except (TypeError, ValueError):
-        return False
-    return keyword in params or any(
-        param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
-    )
-
-
-def _trainable_dtype_kwargs(
-    factory: Callable[..., Module],
-    dtype: object,
-    *,
-    path: str,
-) -> dict[str, object]:
-    if _supports_keyword(factory, "dtype"):
-        return {"dtype": dtype}
-    if jnp.dtype(dtype) != jnp.dtype(jnp.float32):
-        raise TypeError(
-            f"{path} does not accept a dtype keyword, so SimpleStagedNetwork cannot "
-            f"honor dtype={dtype!r}. Wrap the factory to accept and forward dtype, "
-            "or use the default float32 dtype."
-        )
-    return {}
-
-
-def _hidden_cell(
-    hidden_type: Callable[..., Module],
-    input_size: int,
-    hidden_size: int,
-    *,
-    use_bias: bool,
-    dtype: object,
-    key: PRNGKeyArray,
-) -> Module:
-    return hidden_type(
-        input_size,
-        hidden_size,
-        use_bias=use_bias,
-        key=key,
-        **_trainable_dtype_kwargs(
-            hidden_type,
-            dtype,
-            path="SimpleStagedNetwork.hidden_type",
-        ),
-    )
-
-
-def _mask_hidden_input_kernel(
-    hidden: Module,
-    population_structure: PopulationStructure | None,
-    input_size: int,
-    hidden_size: int,
-) -> Module:
-    if population_structure is None or not hasattr(hidden, "weight_ih"):
-        return hidden
-    weight_ih_shape = hidden.weight_ih.shape
-    gate_count = infer_recurrent_gate_count(weight_ih_shape[0], hidden_size)
-    hidden_input_mask = population_input_kernel_mask(
-        population_structure,
-        input_size,
-        gate_count=gate_count,
-    )
-    masked_weight_ih = hidden.weight_ih * hidden_input_mask
-    return eqx.tree_at(lambda h: h.weight_ih, hidden, masked_weight_ih)
-
-
-def _is_all_ones_mask(mask: Array) -> bool:
-    return bool(jnp.all(jnp.asarray(mask) == 1))
-
-
-def _linear_for_population_mask(
-    in_features: int,
-    out_features: int,
-    mask: Array,
-    *,
-    use_bias: bool,
-    dtype: object,
-    lower_all_ones: bool,
-    mask_dtype: object | None,
-    key: PRNGKeyArray,
-) -> eqx.nn.Linear | "MaskedLinear":
-    if lower_all_ones and _is_all_ones_mask(mask):
-        return eqx.nn.Linear(
-            in_features,
-            out_features,
-            use_bias=use_bias,
-            dtype=dtype,
-            key=key,
-        )
-    return MaskedLinear(
-        in_features,
-        out_features,
-        mask,
-        use_bias=use_bias,
-        dtype=dtype,
-        mask_dtype=mask_dtype,
-        key=key,
-    )
-
-
 def lower_population_constraints(
     population_structure: PopulationStructure | Mapping[str, object],
     *,
     hidden_size: int,
     input_size: int,
-    out_size: int,
+    out_size: int | None,
     cell_type: str,
     cell_node: str = "cell",
     readout_node: str = "readout",
@@ -609,7 +449,7 @@ def lower_population_constraints(
 
     structure = population_structure_from_spec(hidden_size, population_structure)
     gate_count = recurrent_gate_count(cell_type, path="population_constraints.cell_type")
-    return (
+    constraints = [
         ParameterConstraintSpec(
             node=cell_node,
             role="input_kernel",
@@ -620,492 +460,89 @@ def lower_population_constraints(
             ).tolist(),
             value=0.0,
         ),
-        ParameterConstraintSpec(
-            node=readout_node,
-            role="weight",
-            mask=population_readout_kernel_mask(structure, out_size).tolist(),
-            value=0.0,
-        ),
-    )
-
-
-class MaskedLinear(Module):
-    """A linear layer with a fixed mask enforcing structural zeros.
-
-    This layer wraps an eqx.nn.Linear layer and applies a binary mask to enforce
-    that certain connections remain zero throughout training.
-
-    Attributes:
-        linear: The underlying linear layer.
-        mask: Binary mask applied to weights (1 = trainable, 0 = structural zero).
-    """
-
-    linear: eqx.nn.Linear
-    mask: Array  # shape matches linear.weight
-
-    def __init__(
-        self,
-        in_features: int,
-        out_features: int,
-        mask: Array,
-        use_bias: bool = True,
-        dtype: object = jnp.float32,
-        mask_dtype: object | None = bool,
-        *,
-        key: PRNGKeyArray,
-    ):
-        """Initialize a masked linear layer.
-
-        Arguments:
-            in_features: Number of input features.
-            out_features: Number of output features.
-            mask: Binary mask of shape (out_features, in_features). 1 = trainable, 0 = always zero.
-            use_bias: Whether to include a bias term.
-            dtype: Dtype for trainable weight and bias leaves.
-            mask_dtype: Dtype for the mask leaf. ``None`` preserves the input mask dtype for
-                legacy serialized-template compatibility; bool is preferred for new templates.
-            key: Random key for weight initialization.
-        """
-        self.linear = eqx.nn.Linear(
-            in_features,
-            out_features,
-            use_bias=use_bias,
-            dtype=dtype,
-            key=key,
-        )
-        self.mask = jnp.asarray(mask, dtype=mask_dtype)
-
-    @property
-    def weight(self) -> Array:
-        """Access the underlying weight matrix for compatibility with eqx.nn.Linear interface."""
-        return self.linear.weight
-
-    @property
-    def bias(self) -> Optional[Array]:
-        """Access the underlying bias for compatibility with eqx.nn.Linear interface."""
-        return self.linear.bias
-
-    def __call__(self, x: Array, *, key: Optional[PRNGKeyArray] = None) -> Array:
-        """Apply the masked linear transformation.
-
-        The mask is applied on every forward pass to ensure structural zeros.
-
-        Arguments:
-            x: Input array.
-            key: Optional random key (unused, but required for compatibility).
-        """
-        # Apply mask to weights before computation
-        masked_weight = self.linear.weight * self.mask
-        result = jnp.dot(x, masked_weight.T)
-        if self.linear.bias is not None:
-            result = result + self.linear.bias
-        return result
-
-
-class SimpleStagedNetwork(Component):
-    """A single step of a neural network layer, with optional encoder and readout layers.
-
-    Attributes:
-        hidden_size: The number of units in the hidden layer.
-        out_size: The number of readout units, if the network has a readout layer. Otherwise
-            this is equal to `hidden_size`.
-        encoding_size: The number of encoder units, if the network has an encoder layer.
-        hidden: The module implementing the hidden layer.
-        hidden_nonlinearity: The nonlinearity applied to the hidden layer output.
-        encoder: The module implementing the encoder layer, if present.
-        readout: The module implementing the readout layer, if present.
-    """
-
-    input_size: int
-    hidden: Module
-    hidden_size: int
-    hidden_noise_std: Optional[float]
-    hidden_nonlinearity: Callable[[Float], Float]
-    out_size: int
-    out_nonlinearity: Callable[[Float], Float]
-    readout: Optional[Module] = None
-    encoding_size: Optional[int] = None
-    encoder: Optional[Module] = None
-    population_structure: Optional[PopulationStructure] = None
-    population_mask_mode: Literal["legacy_masked", "plain_all_ones"] = field(
-        default="legacy_masked",
-        static=True,
-    )
-    dtype: object = field(default=jnp.float32, static=True)
-    sisu_gating: str = field(default="additive", static=True)
-    sisu_alpha: Optional[Array] = None  # shape (hidden_size,) when multiplicative
-
-    state_index: StateIndex
-
-    def __init__(
-        self,
-        input_size: int,
-        hidden_size: int,
-        out_size: Optional[int] = None,
-        encoding_size: Optional[int] = None,
-        hidden_type: Callable[..., Module] = eqx.nn.GRUCell,
-        encoder_type: Callable[..., Module] = eqx.nn.Linear,
-        readout_type: Callable[..., Module] = eqx.nn.Linear,
-        use_bias: bool = True,
-        hidden_nonlinearity: Callable[[Float], Float] = identity_func,
-        out_nonlinearity: Callable[[Float], Float] = identity_func,
-        hidden_noise_std: Optional[float] = None,
-        population_structure: Optional[PopulationStructure] = None,
-        population_mask_mode: Literal["legacy_masked", "plain_all_ones"] = "legacy_masked",
-        sisu_gating: str = "additive",
-        dtype: object = jnp.float32,
-        *,
-        key: PRNGKeyArray,
-    ):
-        """
-        !!! Note
-            If an integer is passed for `encoding_size`, input encoding is enabled.
-            Otherwise network inputs are passed directly to the hidden layer.
-
-            If an integer is passed for `out_size`, readout is enabled. Otherwise
-            the network emits the hidden units through `out_nonlinearity`.
-
-            In principle `hidden_type` can be class defining a multi-layer network,
-            as long as it is instantiated as `hidden_type(input_size, hidden_size, use_bias, *,
-            key)`.
-
-            Use `partial` to set `use_bias` for the encoder or readout types, before
-            passing them to this constructor.
-
-        ??? dev-note
-            It is difficult to type check `hidden_type`, since there is no superclass
-            for stateful network layers, and protocols do not work with `eqx.Module`.
-            Currently we do not check its signatures, or the signatures of the
-            callable it returns. This means it is up to the user to supply the right
-            kind of class here, which we have to document.
-
-            Perhaps it is unwise to construct `SimpleStagedNetwork` as it is.
-            Maybe layers should be kept separate, and individually added by the user.
-            That would avert the relatively complicated logic in `model_spec`, here.
-
-        Arguments:
-            input_size: The number of input channels in the network.
-                If `encoder_type` is not `None`, this is the number of inputs
-                to the encoder layer—otherwise, the hidden layer.
-            hidden_size: The number of units in the hidden layer.
-            out_size: The number of readout units. If `None`, do not add a readout layer.
-            encoding_size: The number of encoder units. If `None`, do not add an encoder layer.
-            hidden_type: The type of hidden layer to use.
-            encoder_type: The type of encoder layer to use.
-            use_bias: Whether the hidden layer should have a bias term.
-            hidden_nonlinearity: A function to apply unitwise to the hidden layer output. This is
-                typically not used if `hidden_type` is `GRUCell` or `LSTMCell`.
-            out_nonlinearity: A function to apply to the readout result, or directly
-                to the hidden units when no readout is configured. Defaults to identity.
-            hidden_noise_std: Standard deviation of Gaussian noise to add to the hidden layer output.
-            population_structure: Optional population structure defining which hidden units
-                receive inputs and/or contribute to readout. If provided, input and readout
-                weights will be masked to enforce the specified connectivity pattern.
-            population_mask_mode: How population masks are materialized. ``"legacy_masked"``
-                always uses ``MaskedLinear`` when a population structure is present, preserving
-                the PyTree template expected by older serialized artifacts. ``"plain_all_ones"``
-                lowers structurally all-ones masks to plain ``eqx.nn.Linear`` for new artifacts
-                that explicitly opt into the optimized template.
-            sisu_gating: How to incorporate the SISU signal. ``"additive"`` (default)
-                concatenates SISU with the input vector. ``"multiplicative"`` removes SISU
-                from the input and instead applies post-hidden gain modulation:
-                ``h * (1 + alpha * sisu)``, where ``alpha`` is a learned per-unit vector
-                initialized to zeros.
-            dtype: Dtype for trainable neural/controller leaves and initial state arrays.
-            key: Random key for initialising the network.
-        """
-        key1, key2, key3 = jr.split(key, 3)
-        if dtype is None:
-            dtype = jnp.float32
-
-        self.input_size = input_size
-        self.population_structure = population_structure
-        if population_mask_mode not in {"legacy_masked", "plain_all_ones"}:
-            raise ValueError(
-                "population_mask_mode must be 'legacy_masked' or 'plain_all_ones', "
-                f"got {population_mask_mode!r}"
+    ]
+    if out_size is not None:
+        constraints.append(
+            ParameterConstraintSpec(
+                node=readout_node,
+                role="weight",
+                mask=population_readout_kernel_mask(structure, out_size).tolist(),
+                value=0.0,
             )
-        self.population_mask_mode = population_mask_mode
-        self.dtype = dtype
-        lower_all_ones_masks = population_mask_mode == "plain_all_ones"
-        mask_dtype = bool if lower_all_ones_masks else None
-
-        # When using multiplicative SISU gating, the SISU channel is stripped
-        # from the input before entering the layers, so layer dimensions use
-        # one fewer input channel.
-        layer_input_size = input_size - 1 if sisu_gating == "multiplicative" else input_size
-
-        # Create encoder layer (potentially masked if population_structure is provided)
-        if encoding_size is not None:
-            if population_structure is not None:
-                # Create mask for encoder: only input-receiving units get non-zero columns
-                encoder_mask = jnp.zeros((encoding_size, layer_input_size))
-                # For simplicity, allow all encoder units to receive all inputs
-                # The masking will happen at the encoder->hidden connection instead
-                encoder_mask = jnp.ones((encoding_size, layer_input_size))
-                self.encoder = _linear_for_population_mask(
-                    layer_input_size,
-                    encoding_size,
-                    encoder_mask,
-                    use_bias=use_bias,
-                    dtype=dtype,
-                    lower_all_ones=lower_all_ones_masks,
-                    mask_dtype=mask_dtype,
-                    key=key2,
-                )
-            else:
-                self.encoder = encoder_type(
-                    layer_input_size,
-                    encoding_size,
-                    key=key2,
-                    **_trainable_dtype_kwargs(
-                        encoder_type,
-                        dtype,
-                        path="SimpleStagedNetwork.encoder_type",
-                    ),
-                )
-            self.encoding_size = encoding_size
-            hidden_input_size = encoding_size
-        else:
-            self.encoding_size = None
-            self.encoder = None
-            hidden_input_size = layer_input_size
-
-        hidden = _hidden_cell(
-            hidden_type,
-            hidden_input_size,
-            hidden_size,
-            use_bias=use_bias,
-            dtype=dtype,
-            key=key1,
         )
-        self.hidden = _mask_hidden_input_kernel(
-            hidden,
-            population_structure,
-            hidden_input_size,
-            hidden_size,
-        )
+    return tuple(constraints)
 
-        self.hidden_size = hidden_size
-        self.hidden_nonlinearity = hidden_nonlinearity
-        self.hidden_noise_std = hidden_noise_std
-        self.out_nonlinearity = out_nonlinearity
 
-        # Multiplicative SISU gating: learn per-unit gain modulation alpha
-        self.sisu_gating = sisu_gating
-        if sisu_gating == "multiplicative":
-            self.sisu_alpha = jnp.zeros(hidden_size, dtype=dtype)
-        else:
-            self.sisu_alpha = None
+def recurrent_controller(
+    input_size: int,
+    hidden_size: int,
+    *,
+    out_size: int | None = None,
+    encoding_size: int | None = None,
+    hidden_type: str | type[Module] = eqx.nn.GRUCell,
+    cell_params: Mapping[str, object] | None = None,
+    use_bias: bool = True,
+    hidden_nonlinearity: str | Callable = identity_func,
+    out_nonlinearity: str | Callable = identity_func,
+    hidden_noise_std: float | None = None,
+    population_structure: PopulationStructure | Mapping[str, object] | None = None,
+    dtype: object = jnp.float32,
+    key: PRNGKeyArray,
+) -> Graph:
+    """Compile a staged recurrent controller from the built-in graph template.
 
-        # Create readout layer (potentially masked if population_structure is provided)
-        if out_size is not None:
-            if population_structure is not None:
-                readout_mask = population_readout_kernel_mask(population_structure, out_size)
-                readout = _linear_for_population_mask(
-                    hidden_size,
-                    out_size,
-                    readout_mask,
-                    use_bias=use_bias,
-                    dtype=dtype,
-                    lower_all_ones=lower_all_ones_masks,
-                    mask_dtype=mask_dtype,
-                    key=key3,
-                )
-            else:
-                readout = readout_type(
-                    hidden_size,
-                    out_size,
-                    key=key3,
-                    **_trainable_dtype_kwargs(
-                        readout_type,
-                        dtype,
-                        path="SimpleStagedNetwork.readout_type",
-                    ),
-                )
+    Choose a built-in cell by name or pass the GRU, LSTM, or LeakyRNNCell
+    constructor. Supply cell options through ``cell_params``. Omitting
+    ``out_size`` binds the controller output directly to the hidden signal,
+    with the requested output activation. For manual stepping, pass the
+    recurrent carry returned by :meth:`Graph.step` to the next step.
+    The carry includes the hidden signal after any activation and noise.
+    """
+    from feedbax.compiler.graph import GraphDocument, compile_graph
+    from feedbax.compiler.templates import recurrent_controller_template_graph
+    from feedbax.component_registry import ComponentRegistry
 
-            if (bias := getattr(readout, "bias", None)) is not None:
-                if isinstance(readout, MaskedLinear):
-                    #! Is this necessary? Or can we just tree_at `layer.bias` since it is a property
-                    #! that points to `layer.linear.bias`?
-                    readout = eqx.tree_at(
-                        lambda layer: layer.linear.bias,
-                        readout,
-                        jnp.zeros_like(bias),
-                    )
-                else:
-                    readout = eqx.tree_at(
-                        lambda layer: layer.bias,
-                        readout,
-                        jnp.zeros_like(bias),
-                    )
-            self.readout = readout
-            self.out_size = out_size
-        else:
-            self.out_size = hidden_size
+    if isinstance(hidden_type, str):
+        cell_type = normalize_recurrent_cell_type(hidden_type)
+    elif hidden_type in (eqx.nn.GRUCell, GRU):
+        cell_type = "GRU"
+    elif hidden_type in (eqx.nn.LSTMCell, LSTM):
+        cell_type = "LSTM"
+    elif hidden_type in (LeakyRNNCell, VanillaRNN):
+        cell_type = "VanillaRNN"
+    else:
+        raise TypeError("hidden_type must be a built-in recurrent cell name or constructor")
 
-        init_state = NetworkState(
-            input=jnp.zeros(layer_input_size, dtype=dtype),
-            hidden=jnp.zeros(self.hidden_size, dtype=dtype),
-            output=jnp.zeros(self.out_size, dtype=dtype) if self.out_size is not None else None,
-            encoding=(
-                jnp.zeros(self.encoding_size, dtype=dtype)
-                if self.encoding_size is not None
-                else None
-            ),
-        )
-        self.state_index = StateIndex(init_state)
+    def activation_name(value: str | Callable) -> str:
+        if value is identity_func:
+            return "identity"
+        if value is jnp.tanh:
+            return "tanh"
+        return named_activation(value)
 
-    def _add_hidden_noise(self, input, state, *, key):
-        if self.hidden_noise_std is None:
-            return state
-        return state + self.hidden_noise_std * jr.normal(key, state.shape, dtype=state.dtype)
-
-    def _call_hidden(
-        self,
-        x_hidden: PyTree,
-        previous_hidden: PyTree,
-        *,
-        key: PRNGKeyArray,
-    ) -> PyTree:
-        positional_args = n_positional_args(self.hidden)  # type: ignore[arg-type]
-        if positional_args == 1:
-            args = (x_hidden,)
-        elif positional_args >= 2:
-            args = (x_hidden, previous_hidden)
-        else:
-            raise TypeError(
-                "SimpleStagedNetwork hidden module must accept either "
-                "(input) or (input, hidden_state) positional arguments"
-            )
-
-        try:
-            if _accepts_key_argument(self.hidden):  # type: ignore[arg-type]
-                return self.hidden(*args, key=key)  # type: ignore[misc]
-            return self.hidden(*args)  # type: ignore[misc]
-        except TypeError as exc:
-            raise TypeError(
-                "SimpleStagedNetwork hidden module call failed. Expected a callable "
-                "compatible with (input), (input, *, key=...), "
-                "(input, hidden_state), or (input, hidden_state, *, key=...)."
-            ) from exc
-
-    input_ports = ("input", "feedback")
-    output_ports = ("output", "hidden")
-
-    def __call__(
-        self,
-        inputs: dict[str, PyTree],
-        state: State,
-        *,
-        key: PRNGKeyArray,
-    ) -> tuple[dict[str, PyTree], State]:
-        net_state: NetworkState = state.get(self.state_index)
-
-        input_value = inputs.get("input", None)
-        feedback_value = inputs.get("feedback", None)
-
-        if input_value is None and feedback_value is None:
-            raise ValueError("SimpleStagedNetwork requires at least one input.")
-
-        if input_value is None:
-            flat_input = jnp.zeros((0,), dtype=self.dtype)
-        else:
-            flat_input, _ = ravel_pytree(input_value)
-            flat_input = jnp.asarray(flat_input, dtype=self.dtype)
-
-        if feedback_value is None:
-            flat_feedback = jnp.zeros((0,), dtype=self.dtype)
-        else:
-            flat_feedback, _ = ravel_pytree(feedback_value)
-            flat_feedback = jnp.asarray(flat_feedback, dtype=self.dtype)
-
-        x = jnp.concatenate([flat_input, flat_feedback], axis=-1)
-
-        # Multiplicative SISU gating: extract SISU from input, apply as
-        # post-hidden gain modulation instead of passing through the network.
-        # SISU is the last element of flat_input (appended by task.add_input).
-        sisu_value = None
-        if self.sisu_gating == "multiplicative" and self.sisu_alpha is not None:
-            sisu_value = flat_input[-1]  # scalar SISU signal
-            # Remove SISU from the concatenated input
-            x = jnp.concatenate([flat_input[:-1], flat_feedback], axis=-1)
-
-        encoding = None
-        if self.encoder is not None:
-            encoding = self.encoder(x)
-            x_hidden = encoding
-        else:
-            x_hidden = x
-
-        key_hidden, key_hidden_noise = jr.split(key)
-
-        hidden = self._call_hidden(x_hidden, net_state.hidden, key=key_hidden)
-
-        hidden = self.hidden_nonlinearity(hidden)
-        if self.hidden_noise_std is not None:
-            hidden = self._add_hidden_noise(None, hidden, key=key_hidden_noise)
-
-        # Apply multiplicative SISU gain modulation: h * (1 + alpha * sisu)
-        if sisu_value is not None:
-            hidden = hidden * (1.0 + self.sisu_alpha * sisu_value)
-
-        readout_result = hidden if self.readout is None else self.readout(hidden)
-        output = self.out_nonlinearity(readout_result)
-
-        new_state = NetworkState(
-            input=x,
-            hidden=hidden,
-            output=output,
-            encoding=encoding,
-        )
-        state = state.set(self.state_index, new_state)
-        return {"output": output, "hidden": hidden}, state
-
-    def init(self):
-        output = jnp.zeros(self.out_size, dtype=self.dtype) if self.out_size is not None else None
-        encoding = (
-            jnp.zeros(self.encoding_size, dtype=self.dtype)
-            if self.encoding_size is not None
-            else None
-        )
-        layer_input_size = (
-            self.input_size - 1 if self.sisu_gating == "multiplicative" else self.input_size
-        )
-        return NetworkState(
-            input=jnp.zeros(layer_input_size, dtype=self.dtype),
-            hidden=jnp.zeros(self.hidden_size, dtype=self.dtype),
-            output=output,
-            encoding=encoding,
-        )
-
-    def to_params(self) -> dict[str, object]:
-        """Return the authored parameters represented by this staged network."""
-
-        def activation_name(activation: Callable) -> str:
-            if activation is identity_func or activation is NAMED_ACTIVATIONS["identity"]:
-                return "identity"
-            return getattr(activation, "__name__", "identity")
-
-        hidden_type = type(self.hidden).__name__
-        if isinstance(self.hidden, LeakyRNNCell):
-            hidden_type = "LeakyRNNCell"
-        params: dict[str, object] = {
-            "input_size": int(self.input_size),
-            "hidden_size": int(self.hidden_size),
-            "out_size": int(self.out_size) if self.readout is not None else None,
-            "encoding_size": self.encoding_size,
-            "hidden_type": hidden_type,
-            "hidden_nonlinearity": activation_name(self.hidden_nonlinearity),
-            "out_nonlinearity": activation_name(self.out_nonlinearity),
-            "hidden_noise_std": self.hidden_noise_std,
-            "population_mask_mode": self.population_mask_mode,
-            "sisu_gating": self.sisu_gating,
-            "dtype": jnp.dtype(self.dtype).name,
-        }
-        if self.population_structure is not None:
-            params["population_structure"] = self.population_structure.to_spec()
-        return params
+    spec = recurrent_controller_template_graph(
+        input_size=input_size,
+        hidden_size=hidden_size,
+        out_size=out_size,
+        encoding_size=encoding_size,
+        cell_type=cell_type,
+        cell_params={"use_bias": use_bias, **(cell_params or {})},
+        hidden_nonlinearity=activation_name(hidden_nonlinearity),
+        out_nonlinearity=activation_name(out_nonlinearity),
+        hidden_noise_std=hidden_noise_std,
+        encoder_use_bias=use_bias if population_structure is not None else True,
+        readout_use_bias=use_bias if population_structure is not None else True,
+        readout_initialization="zero_bias",
+        population_structure=population_structure,
+        dtype=jnp.dtype(dtype if dtype is not None else jnp.float32).name,
+    )
+    keys = dict(zip(("cell", "encoder", "readout"), jr.split(key, 3), strict=True))
+    registry = ComponentRegistry(load_user_components=False)
+    return compile_graph(
+        GraphDocument(graph=spec),
+        registry,
+        initialization_keys={name: keys[name] for name in keys if name in spec.nodes},
+    ).graph
 
 
 class LeakyRNNCell(Module):
@@ -1272,17 +709,13 @@ class VanillaRNN(Component):
     ):
         dtype = dtype or jnp.float32
         if nonlinearity is None:
-            if activation_name not in ("tanh", "relu", "identity"):
-                raise ValueError(f"Unknown VanillaRNN activation {activation_name!r}")
-            nonlinearity = (
-                identity_func if activation_name == "identity" else NAMED_ACTIVATIONS[activation_name]
-            )
+            _, nonlinearity = resolve_activation(activation_name)
         if key is None:
             key = jr.PRNGKey(0)
         self.input_size = int(input_size)
         self.hidden_size = int(hidden_size)
         self.activation_name = str(activation_name)
-        self.dtype = dtype
+        self.dtype = jnp.dtype(dtype).name
         self.cell = LeakyRNNCell(
             self.input_size,
             self.hidden_size,

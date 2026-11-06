@@ -174,8 +174,10 @@ export interface StudioObjectiveTermSpec {
   metadata: Record<string, unknown>;
 }
 
+export const STUDIO_OBJECTIVE_SCHEMA_VERSION = 'feedbax.spec.studio.objective.v1';
+
 export interface StudioObjectiveSpec {
-  schema_version: 'feedbax.studio.objective.v1' | string;
+  schema_version: string;
   terms: StudioObjectiveTermSpec[];
   legacy_loss_spec?: LossTermSpec | null;
   metadata: Record<string, unknown>;

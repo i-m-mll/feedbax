@@ -10,8 +10,8 @@ import os
 
 _LAZY_EXPORTS = {
     "BUILTIN_GRAPH_TEMPLATES": ("feedbax.compiler.templates", "BUILTIN_GRAPH_TEMPLATES"),
-    "CDENetwork": ("feedbax.models.cde", "CDENetwork"),
-    "CDENetworkState": ("feedbax.models.cde", "CDENetworkState"),
+    "cde_controller": ("feedbax.models.cde", "cde_controller"),
+    "cde_controller_spec": ("feedbax.compiler.cde_templates", "cde_controller_spec"),
     "Component": ("feedbax.runtime.graph", "Component"),
     "Graph": ("feedbax.runtime.graph", "Graph"),
     "GraphTemplateMetadata": ("feedbax.compiler.templates", "GraphTemplateMetadata"),
@@ -62,8 +62,6 @@ _LAZY_EXPORTS = {
 __all__ = [
     "AbstractTask",
     "BUILTIN_GRAPH_TEMPLATES",
-    "CDENetwork",
-    "CDENetworkState",
     "Component",
     "DelayedReaches",
     "DelayedReachTaskInputs",
@@ -82,6 +80,8 @@ __all__ = [
     "WhereDict",
     "Wire",
     "__version__",
+    "cde_controller",
+    "cde_controller_spec",
     "centreout_endpoints",
     "delayed_center_out_reaches_params",
     "eval_ensemble_on_trials",

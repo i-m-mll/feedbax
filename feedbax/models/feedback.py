@@ -6,11 +6,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-import logging
-from typing import TYPE_CHECKING, Any, Optional, TypeVar, Union
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Union, cast
 
-import equinox as eqx
+import diffrax as dfx
 from equinox import Module
 import jax.numpy as jnp
 import jax.random as jr
@@ -19,15 +19,24 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.runtime.channel import Channel, ChannelSpec, ChannelState
 from feedbax.runtime.filters import FilterState, FirstOrderFilter
-from feedbax.runtime.graph import Component, Graph, Wire
+from feedbax.runtime.feedback import (
+    AssembleFeedback,
+    FEEDBACK_INPUT,
+    FEEDBACK_OUTPUT,
+    SelectState,
+    StateSelector,
+    feedback_node_names,
+    feedback_wires,
+)
+from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
+from feedbax.runtime.trial_history import trial_history_plan
 from feedbax.mechanics import Mechanics, MechanicsState
+from feedbax.mechanics.plant import DirectForceInput
+from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.noise import Normal
 
 if TYPE_CHECKING:
     from feedbax.tasks import AbstractTask
-
-logger = logging.getLogger(__name__)
-
 
 T = TypeVar("T")
 
@@ -37,16 +46,10 @@ def _tree_sum_n_features(tree: PyTree[Array]) -> int:
 
 
 class SimpleFeedbackState(Module):
-    """State for the SimpleFeedback graph.
-
-    Note: ``net`` is typed as ``Module`` rather than ``NetworkState`` to
-    accommodate alternative controller state types (e.g. CDENetworkState).
-    Both ``NetworkState`` and ``CDENetworkState`` provide ``hidden`` and
-    ``output`` fields, which are the only fields accessed by downstream code.
-    """
+    """State for the mechanics, native controller, and both signal paths."""
 
     mechanics: MechanicsState
-    net: Module
+    net: PyTree
     feedback: PyTree[ChannelState]
     efferent: ChannelState
     force_filter: FilterState
@@ -58,116 +61,66 @@ def _convert_feedback_spec(
     if isinstance(feedback_spec, ChannelSpec):
         return feedback_spec
 
-    leaves = jt.leaves(feedback_spec, is_leaf=lambda x: isinstance(x, (ChannelSpec, Mapping)))
-    if leaves and all(isinstance(x, ChannelSpec) for x in leaves):
-        return feedback_spec
-    if leaves and all(isinstance(x, Mapping) for x in leaves):
-        return jt.map(
-            lambda spec: ChannelSpec(**spec),
-            feedback_spec,
-            is_leaf=lambda x: isinstance(x, Mapping),
+    def is_spec(value):
+        return isinstance(value, ChannelSpec) or (
+            isinstance(value, Mapping) and callable(value.get("where"))
         )
 
-    raise ValueError(f"{type(feedback_spec)} is not a valid feedback spec")
-
-
-class FeedbackChannels(Component):
-    """Bundle of feedback channels with a shared mechanics input."""
-
-    input_ports = ("mechanics",)
-    output_ports = ("feedback",)
-
-    channels: PyTree[Channel]
-    specs: PyTree[ChannelSpec]
-
-    def __call__(
-        self,
-        inputs: dict[str, PyTree],
-        state: eqx.nn.State,
-        *,
-        key: PRNGKeyArray,
-    ) -> tuple[dict[str, PyTree], eqx.nn.State]:
-        mechanics_state = inputs["mechanics"]
-
-        channels_flat, treedef = jt.flatten(self.channels, is_leaf=lambda x: isinstance(x, Channel))
-        specs_flat = jt.leaves(self.specs, is_leaf=lambda x: isinstance(x, ChannelSpec))
-        keys = jr.split(key, len(channels_flat)) if channels_flat else ()
-
-        outputs_flat = []
-        for channel, spec, key_i in zip(channels_flat, specs_flat, keys):
-            channel_input = spec.where(mechanics_state)
-            out, state = channel({"input": channel_input}, state, key=key_i)
-            outputs_flat.append(out["output"])
-
-        outputs = jt.unflatten(treedef, outputs_flat)
-        return {"feedback": outputs}, state
-
-    def state_view(self, state: eqx.nn.State) -> PyTree[ChannelState]:
-        channels_flat, treedef = jt.flatten(self.channels, is_leaf=lambda x: isinstance(x, Channel))
-        states_flat = [state.get(ch.state_index) for ch in channels_flat]
-        return jt.unflatten(treedef, states_flat)
-
-    def fill_queues(
-        self,
-        state: eqx.nn.State,
-        mechanics_state: MechanicsState,
-    ) -> eqx.nn.State:
-        channels_flat, treedef = jt.flatten(self.channels, is_leaf=lambda x: isinstance(x, Channel))
-        specs_flat = jt.leaves(self.specs, is_leaf=lambda x: isinstance(x, ChannelSpec))
-
-        for channel, spec in zip(channels_flat, specs_flat):
-            state = channel.fill_history(state, spec.where(mechanics_state))
-        return state
+    leaves = jt.leaves(feedback_spec, is_leaf=is_spec)
+    if not leaves or not all(is_spec(value) for value in leaves):
+        raise ValueError(f"{type(feedback_spec)} is not a valid feedback spec")
+    return jt.map(
+        lambda value: value if isinstance(value, ChannelSpec) else ChannelSpec(**value),
+        feedback_spec,
+        is_leaf=is_spec,
+    )
 
 
 class SimpleFeedback(Graph):
     """Graph of feedback channels, a neural network, and mechanics."""
-
-    _feedback_specs: PyTree[ChannelSpec]
 
     def __init__(
         self,
         net: Component,
         mechanics: Mechanics,
         feedback_spec: Union[PyTree[ChannelSpec], PyTree[Mapping[str, Any]]] = ChannelSpec(
-            where=lambda mechanics_state: mechanics_state.plant.skeleton,  # type: ignore
+            where=StateSelector(("plant.skeleton",)),
         ),
         motor_delay: int = 0,
-        motor_noise_func: Callable[[PRNGKeyArray, Array], Array] = Normal(),
+        motor_noise_func: Callable[[PRNGKeyArray, Array], Array] | None = Normal(),
         tau_rise: float = 0.0,
         tau_decay: float = 0.0,
         *,
         key: Optional[PRNGKeyArray] = None,
+        motor_input_proto: Array | None = None,
     ):
-        feedback_specs = _convert_feedback_spec(feedback_spec)
-
-        plant_state = mechanics.plant.init(key=jr.PRNGKey(0))
-        effector = mechanics.plant.skeleton.effector(plant_state.skeleton)
-        example_mechanics_state = MechanicsState(
-            plant=plant_state,
-            effector=effector,
-            solver=None,
+        specs, layout = jt.flatten(
+            _convert_feedback_spec(feedback_spec),
+            is_leaf=lambda value: isinstance(value, ChannelSpec),
         )
-
-        def _build_feedback_channel(spec: ChannelSpec):
-            return Channel(
+        example_state = mechanics.state_index.init
+        nodes: dict[str, Component] = {"feedback_values": AssembleFeedback(layout)}
+        for (selector_name, channel_name), spec in zip(feedback_node_names(len(specs)), specs):
+            nodes[selector_name] = SelectState(spec.where)
+            nodes[channel_name] = Channel(
                 delay=spec.delay,
                 noise_func=spec.noise_func,
-                init_value=0.0,
-            ).change_input(spec.where(example_mechanics_state))
-
-        feedback_channels = jt.map(
-            lambda spec: _build_feedback_channel(spec),
-            feedback_specs,
-            is_leaf=lambda x: isinstance(x, ChannelSpec),
-        )
-        feedback = FeedbackChannels(feedback_channels, feedback_specs)
+                input_proto=spec.where(example_state),
+                noise_role="sensory_feedback",
+                noise_timing="pre_controller",
+            )
 
         efferent = Channel(
             delay=motor_delay,
             noise_func=motor_noise_func,
             init_value=0.0,
-            input_proto=jnp.zeros(net.out_size),
+            input_proto=(
+                jnp.zeros(mechanics.plant.input_size)
+                if motor_input_proto is None
+                else motor_input_proto
+            ),
+            noise_role="motor_command",
+            noise_timing="post_controller",
         )
 
         if tau_rise == 0.0 and tau_decay == 0.0:
@@ -178,71 +131,28 @@ class SimpleFeedback(Graph):
                 tau_decay=tau_decay,
                 dt=mechanics.dt,
                 init_value=0.0,
-                input_proto=jnp.zeros(net.out_size),
+                input_proto=efferent.input_proto,
             )
 
-        nodes = {
-            "feedback": feedback,
-            "net": net,
-            "efferent": efferent,
-            "mechanics": mechanics,
-        }
-        wires = [
-            Wire("feedback", "feedback", "net", "feedback"),
-            Wire("net", "output", "efferent", "input"),
-        ]
-
-        if force_filter is None:
-            wires.append(Wire("efferent", "output", "mechanics", "force"))
-        else:
+        nodes.update(net=net, efferent=efferent, mechanics=mechanics)
+        if force_filter is not None:
             nodes["force_filter"] = force_filter
-            wires.append(Wire("efferent", "output", "force_filter", "input"))
-            wires.append(Wire("force_filter", "output", "mechanics", "force"))
-
-        # Cycle: mechanics state feeds back to feedback channel.
-        # Use the "state" output (full MechanicsState) so that
-        # feedback channel spec.where() can navigate the full structure
-        # (e.g. state.plant.skeleton.pos).
-        wires.append(Wire("mechanics", "state", "feedback", "mechanics", temporality="recurrent"))
-
+        wires = feedback_wires(len(specs), force_filter=force_filter is not None)
         super().__init__(
             nodes=nodes,
-            wires=tuple(wires),
+            wires=wires,
             input_ports=("input",),
             output_ports=("effector",),
-            input_bindings={"input": ("net", "input")},
-            output_bindings={"effector": ("mechanics", "effector")},
+            input_bindings={"input": FEEDBACK_INPUT},
+            output_bindings={"effector": FEEDBACK_OUTPUT},
+            component_bindings=_component_bindings(net, mechanics),
+            state_consistency_fn=trial_history_plan(nodes, wires),
+            state_view_fn=feedback_state_view(nodes, wires),
         )
-
-        self._feedback_specs = feedback_specs
-
-    def state_view(self, state: eqx.nn.State) -> SimpleFeedbackState:
-        if self.state_view_fn is not None:
-            return super().state_view(state)
-        node_states = {name: node.state_view(state) for name, node in self.nodes.items()}
-        return SimpleFeedbackState(
-            mechanics=node_states["mechanics"],
-            net=node_states["net"],
-            feedback=node_states["feedback"],
-            efferent=node_states["efferent"],
-            force_filter=node_states.get("force_filter", FilterState(output=None, solver=None)),
-        )
-
-    def state_consistency_update(self, state: eqx.nn.State) -> eqx.nn.State:
-        mechanics = self.mechanics
-        state = mechanics.replace_state_value(
-            state, ("effector",), mechanics.state_view(state).effector
-        )
-        state = self.feedback_channels.fill_queues(state, mechanics.state_view(state))
-        return super().state_consistency_update(state)
-
-    @property
-    def feedback_channels(self) -> FeedbackChannels:
-        return self.nodes["feedback"]
 
     @property
     def mechanics(self) -> Mechanics:
-        return self.nodes["mechanics"]
+        return cast(Mechanics, self.nodes["mechanics"])
 
     @property
     def net(self) -> Component:
@@ -250,11 +160,11 @@ class SimpleFeedback(Graph):
 
     @property
     def efferent_channel(self) -> Channel:
-        return self.nodes["efferent"]
+        return cast(Channel, self.nodes["efferent"])
 
     @property
     def force_lp(self) -> Optional[FirstOrderFilter]:
-        return self.nodes.get("force_filter")
+        return cast(FirstOrderFilter | None, self.nodes.get("force_filter"))
 
     @staticmethod
     def get_nn_input_size(
@@ -262,15 +172,9 @@ class SimpleFeedback(Graph):
         mechanics: Mechanics,
         feedback_spec: Union[
             PyTree[ChannelSpec[MechanicsState]], PyTree[Mapping[str, Any]]
-        ] = ChannelSpec(where=lambda mechanics_state: mechanics_state.plant.skeleton),
+        ] = ChannelSpec(where=StateSelector(("plant.skeleton",))),
     ) -> int:
-        plant_state = mechanics.plant.init(key=jr.PRNGKey(0))
-        effector = mechanics.plant.skeleton.effector(plant_state.skeleton)
-        example_mechanics_state = MechanicsState(
-            plant=plant_state,
-            effector=effector,
-            solver=None,
-        )
+        example_mechanics_state = mechanics.state_index.init
         example_feedback = jt.map(
             lambda spec: spec.where(example_mechanics_state),
             _convert_feedback_spec(feedback_spec),
@@ -280,3 +184,62 @@ class SimpleFeedback(Graph):
         example_trial_spec = task.get_train_trial_with_intervenor_params(key=jr.PRNGKey(0))
         n_task_inputs = _tree_sum_n_features(example_trial_spec.inputs)
         return n_feedback + n_task_inputs
+
+
+def feedback_state_view(
+    nodes: Mapping[str, Component],
+    wires: Sequence[Wire],
+    *,
+    input_bindings: Mapping[str, tuple[str, str]] | None = None,
+    output_bindings: Mapping[str, tuple[str, str]] | None = None,
+) -> Callable[[dict[str, PyTree]], PyTree] | None:
+    """Expose the state projection of the canonical feedback graph."""
+    assembly = nodes.get("feedback_values")
+    if not isinstance(assembly, AssembleFeedback):
+        if (
+            set(nodes) == {"select", "channel"}
+            and isinstance(nodes["select"], SelectState)
+            and isinstance(nodes["channel"], Channel)
+            and tuple(wires) == (Wire("select", "output", "channel", "input"),)
+            and input_bindings == {"mechanics": ("select", "state")}
+            and output_bindings == {"feedback": ("channel", "output")}
+        ):
+            return _selected_channel_state
+        return None
+    channel_names = tuple(channel for _, channel in feedback_node_names(len(assembly.input_ports)))
+    expected = feedback_wires(len(channel_names), force_filter="force_filter" in nodes)
+    if not set(expected).issubset(wires):
+        return None
+    return _FeedbackStateView(assembly.structure, channel_names)
+
+
+def _selected_channel_state(node_states: dict[str, PyTree]) -> PyTree:
+    return node_states["channel"]
+
+
+@dataclass(frozen=True)
+class _FeedbackStateView:
+    structure: Any
+    channel_names: tuple[str, ...]
+
+    def __call__(self, node_states: dict[str, PyTree]) -> SimpleFeedbackState:
+        return SimpleFeedbackState(
+            mechanics=node_states["mechanics"],
+            net=node_states.get("net"),
+            feedback=self.structure.unflatten([node_states[name] for name in self.channel_names]),
+            efferent=node_states["efferent"],
+            force_filter=node_states.get("force_filter", FilterState(output=None, solver=None)),
+        )
+
+
+def _component_bindings(net: Component, mechanics: Mechanics) -> dict[str, ComponentBinding]:
+    bindings = {"net": ComponentBinding("Subgraph", "1")} if isinstance(net, Graph) else {}
+    if (
+        type(mechanics.plant) is DirectForceInput
+        and mechanics.plant.clip_states
+        and type(mechanics.plant.skeleton) is PointMass
+        and mechanics.backend is None
+        and type(mechanics.solver) is dfx.Euler
+    ):
+        bindings["mechanics"] = ComponentBinding("PointMass", "1")
+    return bindings

@@ -351,7 +351,7 @@ describe('graph authoring normalization', () => {
           output_ports: ['effector'],
         },
         feedback: {
-          type: 'FeedbackChannels',
+          type: 'Channel',
           params: {},
           input_ports: ['input'],
           output_ports: ['output'],

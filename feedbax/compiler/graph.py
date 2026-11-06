@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Callable, Literal, Mapping, TypeVar
 
+from jaxtyping import PRNGKeyArray
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from feedbax.contracts._causal_inputs import InputDriverConflict
@@ -26,6 +27,7 @@ from feedbax.contracts.scientific_compiler_schema import (
     RESOLVED_GRAPH_SCHEMA_ID,
     RESOLVED_GRAPH_SCHEMA_VERSION,
 )
+from feedbax.compiler.feedback_migration import lower_legacy_feedback
 from feedbax.compiler.resolution import (
     GraphParameterResolution,
     ParameterResolutionError,
@@ -514,8 +516,15 @@ def compile_graph(
     document: GraphDocument,
     component_registry: Any,
     input_prototypes: Mapping[tuple[str, str], Any] | None = None,
+    *,
+    initialization_keys: Mapping[str | tuple[str, ...], PRNGKeyArray] | None = None,
 ) -> ExecutableGraph:
-    """Compile one exact graph document through resolution and realization."""
+    """Compile one exact graph document through resolution and realization.
+
+    Optional initialization keys seed leaf parameter construction. Use a node
+    name for a top-level leaf, or a tuple of node names for a nested leaf.
+    These keys do not change the resolved topology.
+    """
     document_sha256 = canonical_sha256(document.model_dump(mode="json", exclude_none=True))
     graph_anchor = SemanticAnchor(
         semantic_document_sha256=document_sha256,
@@ -538,8 +547,18 @@ def compile_graph(
         action="correct the authored graph payload or migrate it through a registered schema",
         operation=parse_graph,
     )
+    resolved_inputs = dict(input_prototypes or {})
+    feedback_graph = _compile_phase(
+        phase=CompilerPhase.STRUCTURAL_PARSING,
+        code="compiler.structural_parsing.invalid_legacy_feedback",
+        anchor=graph_anchor,
+        document_sha256=document_sha256,
+        expected="legacy feedback nodes declare recoverable mechanics selector paths",
+        action="replace the legacy wrapper with SelectState and Channel nodes",
+        operation=lambda: lower_legacy_feedback(authored_graph),
+    )
     typed_graph = _map_component_nodes(
-        authored_graph,
+        feedback_graph,
         lambda node_id, node: resolve_component_node(node, component_registry),
         document_sha256=document_sha256,
     )
@@ -571,7 +590,7 @@ def compile_graph(
     def solve_constraints() -> GraphParameterResolution:
         return resolve_graph_parameters(
             graph,
-            input_prototypes or {},
+            resolved_inputs,
             component_registry,
             identities_resolved=True,
         )
@@ -598,7 +617,15 @@ def compile_graph(
     )
 
     def build_schedule() -> tuple[Graph, tuple[str, ...]]:
-        instantiated = _instantiate_graph(graph, component_registry, resolution)
+        leaf_keys = {}
+        for name, key in (initialization_keys or {}).items():
+            path = (name,) if isinstance(name, str) else name
+            if not path or path in leaf_keys:
+                raise ValueError(f"Invalid or duplicate initialization key path {path!r}")
+            leaf_keys[path] = key
+        instantiated = _instantiate_graph(
+            graph, component_registry, resolution, initialization_keys=leaf_keys
+        )
         executable = apply_parameter_constraints(instantiated).prepare()
         return executable, tuple(executable._execution_order)
 

@@ -591,11 +591,34 @@ class Graph(Component):
         return tuple(execution_order), tuple(cycle_wires)
 
     def state_view(self, state: State) -> PyTree:
+        return self._view_from_state_and_carry(state, {})
+
+    def _rollout_state_view(self, state: State, carry: dict | None) -> PyTree:
+        if not carry:
+            return self.state_view(state)
+        return self._view_from_state_and_carry(state, carry)
+
+    def _view_from_state_and_carry(self, state: State, carry: dict) -> PyTree:
+        """Project stored state and named recurrent outputs from the live carry."""
         node_states: dict[str, PyTree] = {}
         for name, node in self.nodes.items():
-            node_state = node.state_view(state)
+            child_carry = carry.get(_nested_cycle_key(name))
+            node_state = (
+                node._rollout_state_view(state, child_carry)
+                if isinstance(node, Graph) and child_carry
+                else node.state_view(state)
+            )
             if node_state is not None:
                 node_states[name] = node_state
+        if carry:
+            for wire in self._cycle_wires:
+                alias = (wire.recurrent_initializer or {}).get("state_slot")
+                if (
+                    isinstance(alias, str)
+                    and alias not in node_states
+                    and self.output_bindings.get(alias) == (wire.source_node, wire.source_port)
+                ):
+                    node_states[alias] = carry[(wire.target_node, wire.target_port)]
         if self.state_view_fn is None:
             return GraphState(node_states)
         return self.state_view_fn(node_states)
@@ -874,8 +897,9 @@ class Graph(Component):
                     new_cycle_port_values[port_key] = value
 
         outputs = {
-            ext_port: port_values[(node_name, node_port)]
-            for ext_port, (node_name, node_port) in self.output_bindings.items()
+            port: port_values[self.output_bindings[port]]
+            for port in self.output_ports
+            if port in self.output_bindings
         }
         trace_values = {}
         if trace:
@@ -1086,7 +1110,9 @@ class Graph(Component):
 
             if request.kind == "state_path":
                 path = request.path or request.selector.removeprefix("state_path:")
-                values[request.selector] = _select_state_path(self.state_view(state), path)
+                values[request.selector] = _select_state_path(
+                    self._rollout_state_view(state, cycle_port_values), path
+                )
                 continue
 
             raise ValueError(f"Unsupported trace request kind {request.kind!r}")
@@ -1170,6 +1196,19 @@ class Graph(Component):
         for wire in cycle_wires:
             target_key = (wire.target_node, wire.target_port)
             if target_key in init_values:
+                continue
+            initializer = wire.recurrent_initializer or {}
+            if initializer.get("kind") == "state_output" and (
+                "source_node" in initializer or "source_port" in initializer
+            ):
+                reset_node = initializer.get("source_node")
+                reset_port = initializer.get("source_port")
+                if not isinstance(reset_node, str) or reset_node not in self.nodes:
+                    raise ValueError(f"{wire} state_output initializer has an unknown source node")
+                reset_outputs = self.nodes[reset_node].initial_outputs(node_states.get(reset_node))
+                if not isinstance(reset_port, str) or reset_port not in reset_outputs:
+                    raise ValueError(f"{wire} state_output initializer has no initial source port")
+                init_values[target_key] = reset_outputs[reset_port]
                 continue
             source_state = node_states.get(wire.source_node, None)
             if source_state is None:
@@ -1294,12 +1333,12 @@ class Graph(Component):
                     "kind 'zeros' requires 'shape'"
                 )
             try:
-                return jnp.zeros(tuple(int(dim) for dim in shape))
+                return jnp.zeros(tuple(int(dim) for dim in shape), dtype=initializer.get("dtype"))
             except (TypeError, ValueError) as exc:
                 raise ValueError(
                     f"Wire {wire.source_node}.{wire.source_port} -> "
                     f"{wire.target_node}.{wire.target_port} recurrent_initializer "
-                    f"has invalid shape {shape!r}"
+                    f"has invalid shape {shape!r} or dtype {initializer.get('dtype')!r}"
                 ) from exc
         if kind == "constant":
             if "value" not in initializer:
@@ -1525,7 +1564,7 @@ class Graph(Component):
             step_inputs_seq,
             keys,
             n_steps,
-            state_view_fn=self.state_view,
+            state_view_fn=self._rollout_state_view,
             init_step_carry=init_cycle_values,
             checkpoint=self.checkpoint if checkpoint is None else checkpoint,
             save_history=save_history,

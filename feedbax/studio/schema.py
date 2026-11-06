@@ -1129,8 +1129,6 @@ def _component_port_dimension(
         elif port in {"forces", "activations"}:
             n_pairs = _positive_int_param(node_params, "n_pairs")
             dimension = n_pairs * 2 if n_pairs is not None else None
-    elif component_type == "FeedbackChannels" and direction == "output" and port == "output":
-        dimension = _feedback_channels_width(node_params)
     elif component_type == "Demux":
         sizes = node_params.get("sizes")
         if isinstance(sizes, (list, tuple)) and all(
@@ -1158,17 +1156,6 @@ def _component_port_dimension(
             "dimension_param": dimension_param,
         },
     }
-
-
-def _feedback_channels_width(params: dict[str, Any]) -> Optional[int]:
-    channels = params.get("channels")
-    if not isinstance(channels, list):
-        return None
-    width = 0
-    for channel in channels:
-        if channel in {"position", "velocity", "force"}:
-            width += 2
-    return width if width > 0 else None
 
 
 def _positive_int_param(params: dict[str, Any], key: str) -> Optional[int]:

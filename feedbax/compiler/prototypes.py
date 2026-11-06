@@ -55,11 +55,11 @@ class DerivedDimensionConflict(DerivedDimensionError):
     """Raised when a declared builder dimension contradicts the derived value."""
 
 
-def array_proto_from_shape(shape: Any) -> jax.Array | None:
+def array_proto_from_shape(shape: Any, *, dtype: Any = None) -> jax.Array | None:
     if not isinstance(shape, (list, tuple)):
         return None
     try:
-        return jnp.zeros(tuple(int(dim) for dim in shape))
+        return jnp.zeros(tuple(int(dim) for dim in shape), dtype=dtype)
     except (TypeError, ValueError):
         return None
 
@@ -211,6 +211,12 @@ def validate_or_add_input_shape(
             f"{node_type} node {node_name!r} port 'input' requires an input prototype. "
             "Connect it to a source with a known output shape or provide input_shape."
         )
+    if (
+        node_type == "Channel"
+        and not hasattr(proto, "shape")
+        and all(next_params.get(field) is None for field in ("input_shape", "input_dtype"))
+    ):
+        return next_params
     try:
         inferred = prototype_params(proto)
     except ValueError as exc:

@@ -54,6 +54,7 @@ from feedbax.mechanics.linear_state_space import (
     STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
     LinearStateSpace,
 )
+from feedbax.runtime.feedback import AssembleFeedback, SelectState, StateSelector
 from feedbax.runtime.affine_composer import (
     AFFINE_VALUE_COMPOSER_SCHEMA_VERSION,
     AffineValueComposer,
@@ -114,7 +115,10 @@ from feedbax.mechanics.muscles.thelen_muscle import (
     require_thelen_input_shape,
     thelen_muscle_shape,
 )
-from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
+from feedbax.compiler.muscle_templates import (
+    arm_6muscle_rigid_tendon_graph,
+    point_mass_8muscle_relu_graph,
+)
 from feedbax.models.networks import VanillaRNN
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import StateFeedbackSelector, state_feedback_output_prototype
@@ -133,6 +137,7 @@ from .declarations import (
     declare_component,
 )
 from .interventions import register_vector_interventions
+from .muscle_graph import register_muscle_graph_leaves
 from .templates import register_builtin_graph_templates
 from .prototypes import array_prototype, prototype_params, migrate_stateful_v1
 
@@ -168,6 +173,8 @@ _DEFAULT_STRUCTURAL_DELTA_A = SparseCooArrayValueSpec(
 
 class _ConstantParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+    dtype: str | None = None
 
     value: JsonValue = Field(
         default=0.0,
@@ -252,19 +259,50 @@ def _extract_structural_linear_state_space_params(component: Any, model: Any) ->
 
 
 def _channel_noise_values(channel: Any) -> dict[str, Any]:
+    from feedbax._vendor.jax_cookbook import identity
+    from feedbax.runtime.channel import _noise_model
     from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 
     additive_std = 0.0
     signal_dependent_std = 0.0
     noise_func = channel.noise_func
+    actual_model = _noise_model(noise_func)
+    declared_model = channel.noise_model
+    allowed = {
+        "none": {"none"},
+        "additive_gaussian": {"none", "additive_gaussian"},
+        "signal_dependent_gaussian": {"none", "signal_dependent_gaussian"},
+        "signal_dependent_plus_additive": {
+            "none", "signal_dependent_gaussian", "additive_gaussian", "signal_dependent_plus_additive",
+        },
+    }
+    if actual_model not in allowed.get(declared_model, ()):
+        raise ValueError("Channel noise function does not match a portable noise model")
     terms = noise_func.terms if isinstance(noise_func, CompositeNoise) else (noise_func,)
     for term in terms:
-        if isinstance(term, Normal):
+        if term is None:
+            continue
+        if type(term) is Normal and term.mean == 0.0:
             additive_std = float(term.std)
-        elif isinstance(term, Multiplicative) and isinstance(term.noise_func, Normal):
+        elif (
+            type(term) is Multiplicative
+            and type(term.noise_func) is Normal
+            and term.noise_func.mean == 0.0
+            and term.scale_func is identity
+        ):
             signal_dependent_std = float(term.noise_func.std)
+        else:
+            raise ValueError("Channel noise parameters do not represent a portable Gaussian term")
+    include_zero = noise_func is not None and (
+        (actual_model == "additive_gaussian" and not additive_std)
+        or (actual_model == "signal_dependent_gaussian" and not signal_dependent_std)
+        or (actual_model == "signal_dependent_plus_additive" and not (additive_std and signal_dependent_std))
+    )
+    if include_zero and declared_model != actual_model:
+        raise ValueError("Channel noise model cannot recover the declared zero-strength terms")
     return {
-        "noise_model": getattr(channel, "noise_model", "additive_gaussian"),
+        "noise_model": declared_model,
+        "include_zero_noise_terms": include_zero,
         "noise_std": additive_std,
         "additive_noise_std": additive_std,
         "signal_dependent_noise_std": signal_dependent_std,
@@ -278,37 +316,31 @@ def _extract_channel_params(component: Any, model: Any) -> Any:
     values = {
         "delay": int(component.delay),
         **_channel_noise_values(component),
-        **prototype_params(component.input_proto),
+        "input_shape": None,
+        "input_dtype": None,
+        "init_value": component.init_value,
+        **(prototype_params(component.input_proto) if hasattr(component.input_proto, "shape") else {}),
     }
     return type(model).model_validate({name: values[name] for name in type(model).model_fields})
 
 
-def _extract_feedback_channel_params(component: Any, model: Any) -> Any:
-    from feedbax.runtime.channel import Channel
+def _extract_state_selector_params(component: SelectState, model: Any) -> Any:
+    if not isinstance(component.where, StateSelector):
+        raise ValueError("Portable SelectState requires a StateSelector with declared attribute paths")
+    return type(model).model_validate({"paths": list(component.where.paths)})
 
-    channels = jt.leaves(component.channels, is_leaf=lambda item: isinstance(item, Channel))
-    specs = jt.leaves(component.specs, is_leaf=lambda item: hasattr(item, "where"))
-    if len(channels) != 1 or len(specs) != 1:
-        raise ValueError("FeedbackChannels parameter extraction requires one declared channel")
-    channel = channels[0]
-    selector = getattr(specs[0].where, "_feedbax_feedback_selector", None)
-    paths = getattr(specs[0].where, "_feedbax_feedback_paths", None)
-    if selector is None:
-        raise ValueError(
-            "FeedbackChannels parameters are not recoverable without a declared selector"
-        )
-    noise = _channel_noise_values(channel)
-    values = {
-        "delay": int(channel.delay),
-        "selector": selector,
-        "paths": list(paths or ()),
-        "noise_model": noise["noise_model"],
-        "noise_std": noise["noise_std"],
-        "add_noise": noise["add_noise"],
-        "noise_role": noise["noise_role"],
-        "noise_timing": noise["noise_timing"],
-    }
-    return type(model).model_validate(values)
+
+def _extract_feedback_assembly_params(component: AssembleFeedback, model: Any) -> Any:
+    return type(model).model_validate(
+        {"layout": component.to_layout(), "n_inputs": len(component.input_ports)}
+    )
+
+
+def _build_feedback_assembly(params: Mapping[str, Any]) -> AssembleFeedback:
+    assembly = AssembleFeedback.from_layout(params.get("layout"))
+    if len(assembly.input_ports) != params["n_inputs"]:
+        raise ValueError("AssembleFeedback n_inputs must match its layout leaf count")
+    return assembly
 
 
 def _extract_delayed_reaches_params(component: Any, model: Any) -> Any:
@@ -1023,7 +1055,10 @@ def source_value_output_prototype(
 ) -> dict[str, Any]:
     """Return a source prototype from the configured scalar/array value."""
 
-    return {"output": _proto_from_value(params.get("value", 0.0))}
+    value = params.get("value", 0.0)
+    if params.get("dtype") is not None:
+        value = jnp.asarray(value, dtype=params["dtype"])
+    return {"output": _proto_from_value(value)}
 
 
 def step_source_output_prototype(
@@ -1167,7 +1202,7 @@ def linear_output_prototype(
 ) -> dict[str, Any]:
     """Return a dense-layer output prototype from ``output_size``."""
 
-    return {"output": jnp.zeros((int(params.get("output_size", 1)),))}
+    return {"output": jnp.zeros((int(params.get("output_size", 1)),), dtype=params.get("dtype"))}
 
 
 def recurrent_output_prototype(
@@ -1176,7 +1211,7 @@ def recurrent_output_prototype(
 ) -> dict[str, Any]:
     """Return GRU output and hidden prototypes from ``hidden_size``."""
 
-    hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
+    hidden = jnp.zeros((int(params.get("hidden_size", 1)),), dtype=params.get("dtype"))
     return {"output": hidden, "hidden": hidden}
 
 
@@ -1186,7 +1221,7 @@ def lstm_output_prototype(
 ) -> dict[str, Any]:
     """Return LSTM output, hidden, and cell prototypes from ``hidden_size``."""
 
-    hidden = jnp.zeros((int(params.get("hidden_size", 1)),))
+    hidden = jnp.zeros((int(params.get("hidden_size", 1)),), dtype=params.get("dtype"))
     return {"output": hidden, "hidden": hidden, "cell": hidden}
 
 
@@ -1215,7 +1250,7 @@ def mux_output_prototype(
             + ", ".join(repr(port) for port in missing)
         )
     widths = [_ravel_width(inputs[port], component="Mux", port=port) for port in ports]
-    return {"output": jnp.zeros((sum(widths),))}
+    return {"output": jnp.zeros((sum(widths),), dtype=params.get("dtype"))}
 
 
 def demux_output_prototype(
@@ -1279,15 +1314,20 @@ def elementwise_affine_output_prototype(
     return {"output": proto}
 
 
-def feedback_channels_output_prototype(
-    params: Mapping[str, Any],
-    inputs: Mapping[str, Any],
+def state_selector_output_prototype(
+    params: Mapping[str, Any], inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Select the signal tree from the resolved mechanics input."""
-    from feedbax.compiler.builders import _feedback_prototype
+    state = _required_input(inputs, "state", component="SelectState")
+    return {"output": StateSelector(tuple(params["paths"]))(state)}
 
-    mechanics = _required_input(inputs, "mechanics", component="FeedbackChannels")
-    return {"feedback": _feedback_prototype(params, mechanics)}
+
+def feedback_assembly_output_prototype(
+    params: Mapping[str, Any], inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    assembly = _build_feedback_assembly(params)
+    for port in assembly.input_ports:
+        _required_input(inputs, port, component="AssembleFeedback")
+    return {"output": assembly.assemble(inputs)}
 
 
 def spring_output_prototype(
@@ -1670,6 +1710,7 @@ def _declare_builtin_components(
             description="Multiply input by a scalar or broadcastable scale.",
             parameter_fields=[
                 ParameterField(name="scale", type="float", default=1.0, required=True),
+                ParameterField(name="fixed", type="bool", default=False, required=False),
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -1925,7 +1966,7 @@ def _declare_builtin_components(
         declare_component(
             name="MLP",
             runtime_type=MLP,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
             attribute_paths={
                 "activation": "activation_name",
@@ -1934,6 +1975,7 @@ def _declare_builtin_components(
             category="Neural Networks",
             description="Multi-layer perceptron.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="output_size", type="int", default=2, min=1, required=True),
                 ParameterField(name="hidden_sizes", type="array", default=[64], required=False),
@@ -1967,26 +2009,28 @@ def _declare_builtin_components(
         declare_component(
             name="Linear",
             runtime_type=Linear,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
             attribute_paths={"activation": "activation_name"},
             category="Neural Networks",
             description="Linear layer.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=1, min=1, required=True),
                 ParameterField(name="output_size", type="int", default=1, min=1, required=True),
                 ParameterField(name="use_bias", type="bool", default=True, required=False),
+                ParameterField(name="bias_init", type="float", default=None, required=False),
                 ParameterField(
                     name="initialization",
                     type="enum",
-                    options=["random", "zeros"],
+                    options=["random", "zero_bias", "zeros"],
                     default="random",
                     required=False,
                 ),
                 ParameterField(
                     name="activation",
                     type="enum",
-                    options=["identity", "tanh", "relu", "sigmoid"],
+                    options=["identity", "tanh", "relu", "sigmoid", "softmax"],
                     default="identity",
                     required=False,
                 ),
@@ -2019,13 +2063,17 @@ def _declare_builtin_components(
         declare_component(
             name="GRU",
             runtime_type=GRU,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+            attribute_paths={"use_bias": "cell.use_bias"},
             category="Neural Networks",
             description="GRU cell.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
+                ParameterField(name="use_bias", type="bool", default=True, required=False),
+                ParameterField(name="stateful", type="bool", default=True, required=False),
             ],
             input_ports=["input", "hidden"],
             output_ports=["output", "hidden"],
@@ -2042,7 +2090,7 @@ def _declare_builtin_components(
         declare_component(
             name="VanillaRNN",
             runtime_type=VanillaRNN,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(renames={"activation": "activation_name"}),
             attribute_paths={
                 "activation": "activation_name",
@@ -2055,6 +2103,7 @@ def _declare_builtin_components(
             category="Neural Networks",
             description="Vanilla recurrent cell.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="use_bias", type="bool", default=True, required=False),
@@ -2067,7 +2116,7 @@ def _declare_builtin_components(
                 ParameterField(
                     name="activation",
                     type="enum",
-                    options=["tanh", "relu", "identity"],
+                    options=["tanh", "relu", "identity", "sigmoid", "softmax"],
                     default="tanh",
                     required=False,
                 ),
@@ -2087,13 +2136,16 @@ def _declare_builtin_components(
         declare_component(
             name="LSTM",
             runtime_type=LSTM,
-            build_context_fields=("dtype",),
+            build_context_fields=("key",),
             constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
+            attribute_paths={"use_bias": "cell.use_bias"},
             category="Neural Networks",
             description="LSTM cell.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default="float32", required=False),
                 ParameterField(name="input_size", type="int", default=4, min=1, required=True),
                 ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
+                ParameterField(name="use_bias", type="bool", default=True, required=False),
             ],
             input_ports=["input", "hidden", "cell"],
             output_ports=["output", "hidden", "cell"],
@@ -2519,6 +2571,7 @@ def _declare_builtin_components(
             category="Channels",
             description="Delay and noise for a signal.",
             parameter_fields=[
+                ParameterField(name="init_value", type="float", default=0.0, required=False),
                 ParameterField(name="delay", type="int", default=5, min=0, required=True),
                 ParameterField(
                     name="noise_model",
@@ -2547,6 +2600,9 @@ def _declare_builtin_components(
                     min=0,
                     required=False,
                 ),
+                ParameterField(
+                    name="include_zero_noise_terms", type="bool", default=False, required=False,
+                ),
                 ParameterField(name="add_noise", type="bool", default=True, required=False),
                 ParameterField(name="noise_role", type="str", default=None, required=False),
                 ParameterField(name="noise_timing", type="str", default=None, required=False),
@@ -2557,10 +2613,11 @@ def _declare_builtin_components(
             output_ports=["output"],
             icon="Signal",
             port_types=PortTypeSpec(
-                inputs={"input": PortType(dtype="vector")},
-                outputs={"output": PortType(dtype="vector")},
+                inputs={"input": PortType(dtype="any")},
+                outputs={"output": PortType(dtype="any")},
             ),
             output_prototype_fn=stateful_passthrough_output_prototype,
+            build_output_prototypes={"resolved_input_proto": "output"},
         )
     )
     registry.register_migration(
@@ -2578,63 +2635,52 @@ def _declare_builtin_components(
 
     registry.register(
         declare_component(
-            name="FeedbackChannels",
-            builder=_builders._build_feedback_channels,
-            extractor=_extract_feedback_channel_params,
-            override_reason="selector closure and nested channel state require authored recovery",
+            name="SelectState",
+            runtime_type=SelectState,
+            builder=lambda params: SelectState(StateSelector(tuple(params["paths"]))),
+            extractor=_extract_state_selector_params,
+            override_reason="Recover portable paths from the state selector",
             category="Channels",
-            description="Mechanics feedback selector followed by delay/noise channels.",
+            description="Select state subtrees by attribute path.",
             parameter_fields=[
-                ParameterField(name="delay", type="int", default=0, min=0, required=False),
-                ParameterField(
-                    name="selector",
-                    type="enum",
-                    options=["point_mass_pos_vel", "effector_pos_vel", "plant_skeleton", "paths"],
-                    default="point_mass_pos_vel",
-                    required=False,
-                ),
-                ParameterField(
-                    name="paths",
-                    type="array",
-                    default=["plant.skeleton.pos", "plant.skeleton.vel"],
-                    required=False,
-                ),
-                ParameterField(
-                    name="noise_model",
-                    type="enum",
-                    options=[
-                        "none",
-                        "additive_gaussian",
-                        "signal_dependent_gaussian",
-                        "signal_dependent_plus_additive",
-                    ],
-                    default="additive_gaussian",
-                    required=False,
-                ),
-                ParameterField(name="noise_std", type="float", default=0.0, min=0, required=False),
-                ParameterField(name="add_noise", type="bool", default=False, required=False),
-                ParameterField(
-                    name="noise_role", type="str", default="sensory_feedback", required=False
-                ),
-                ParameterField(
-                    name="noise_timing", type="str", default="pre_controller", required=False
-                ),
-                ParameterField(
-                    name="input_shape",
-                    type="array",
-                    required=False,
-                    description="Legacy shape metadata. The selected mechanics state determines the channel shape.",
-                ),
+                ParameterField(name="paths", type="array", default=["effector"], required=True),
             ],
-            input_ports=["mechanics"],
-            output_ports=["feedback"],
-            icon="Radio",
+            input_ports=["state"],
+            output_ports=["output"],
             port_types=PortTypeSpec(
-                inputs={"mechanics": PortType(dtype="state")},
-                outputs={"feedback": PortType(dtype="state")},
+                inputs={"state": PortType(dtype="state")},
+                outputs={"output": PortType(dtype="any")},
             ),
-            output_prototype_fn=feedback_channels_output_prototype,
-            build_output_prototypes={"feedback_proto": "feedback"},
+            output_prototype_fn=state_selector_output_prototype,
+        )
+    )
+    registry.register(
+        declare_component(
+            name="AssembleFeedback",
+            builder=_build_feedback_assembly,
+            extractor=_extract_feedback_assembly_params,
+            override_reason="Recover a portable layout from the feedback tree",
+            category="Channels",
+            description="Assemble channel values into a feedback tree.",
+            parameter_fields=[
+                ParameterField(name="n_inputs", type="int", default=1, min=1, required=True),
+                ParameterField(name="layout", type="object", default=None, required=False),
+            ],
+            input_ports=["in_0"],
+            output_ports=["output"],
+            port_types=PortTypeSpec(
+                inputs={"in_0": PortType(dtype="any")},
+                outputs={"output": PortType(dtype="any")},
+            ),
+            dynamic_port_policy=DynamicPortPolicy(
+                count_param="n_inputs",
+                count_mode="integer",
+                direction="input",
+                fixed_output_ports=("output",),
+                generated_name_template="in_{index}",
+                dynamic_port_type=PortType(dtype="any"),
+            ),
+            output_prototype_fn=feedback_assembly_output_prototype,
         )
     )
     registry.register(
@@ -2979,6 +3025,8 @@ def _declare_builtin_components(
     register_vector_interventions(registry)
 
     # --- Muscles ---
+    arm_muscle_graph = arm_6muscle_rigid_tendon_graph()
+    register_muscle_graph_leaves(registry, arm_muscle_graph.nodes["geometry"].params["paths"])
     registry.register(
         declare_component(
             name="ReluMuscle",
@@ -2998,14 +3046,14 @@ def _declare_builtin_components(
                     name="tau_activation",
                     type="float",
                     default=0.015,
-                    min=0.001,
+                    min=0.0,
                     required=False,
                 ),
                 ParameterField(
                     name="tau_deactivation",
                     type="float",
                     default=0.05,
-                    min=0.001,
+                    min=0.0,
                     required=False,
                 ),
                 ParameterField(
@@ -3019,7 +3067,7 @@ def _declare_builtin_components(
                     name="dt",
                     type="float",
                     default=0.01,
-                    min=0.001,
+                    min=0.0,
                     required=True,
                 ),
                 ParameterField(
@@ -3054,12 +3102,12 @@ def _declare_builtin_components(
             ),
             parameter_fields=[
                 ParameterField(name="n_muscles", type="int", default=6, min=1, required=True),
-                ParameterField(name="dt", type="float", default=0.01, min=0.001, required=True),
+                ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
                 ParameterField(
-                    name="tau_activation", type="float", default=0.015, min=0.001, required=False
+                    name="tau_activation", type="float", default=0.015, min=0.0, required=False
                 ),
                 ParameterField(
-                    name="tau_deactivation", type="float", default=0.05, min=0.001, required=False
+                    name="tau_deactivation", type="float", default=0.05, min=0.0, required=False
                 ),
                 ParameterField(
                     name="max_isometric_force", type="float", default=500.0, min=0.0, required=False
@@ -3068,11 +3116,11 @@ def _declare_builtin_components(
                     name="optimal_muscle_length",
                     type="float",
                     default=0.1,
-                    min=0.001,
+                    min=0.0,
                     required=False,
                 ),
                 ParameterField(
-                    name="tendon_slack_length", type="float", default=0.2, min=0.001, required=False
+                    name="tendon_slack_length", type="float", default=0.2, min=0.0, required=False
                 ),
                 ParameterField(
                     name="initial_activation", type="float", default=0.001, min=0.0, required=False
@@ -3097,7 +3145,9 @@ def _declare_builtin_components(
     registry.register(
         declare_component(
             name="Arm6MuscleRigidTendon",
-            runtime_type=Arm6MuscleRigidTendon,
+            template_graph=arm_muscle_graph,
+            template_id="feedbax.templates.mechanics.arm_6muscle_rigid_tendon",
+            template_kind="executable",
             category="Mechanics",
             description="6-muscle arm with Thelen rigid tendon.",
             parameter_fields=[
@@ -3157,7 +3207,9 @@ def _declare_builtin_components(
     registry.register(
         declare_component(
             name="PointMass8MuscleRelu",
-            runtime_type=PointMass8MuscleRelu,
+            template_graph=point_mass_8muscle_relu_graph(),
+            template_id="feedbax.templates.mechanics.point_mass_8muscle_relu",
+            template_kind="executable",
             category="Mechanics",
             description="8-muscle point mass with ReLU actuators.",
             parameter_fields=[
@@ -3640,6 +3692,7 @@ def _declare_builtin_components(
             category="Signal Processing",
             description="Concatenate inputs into single vector.",
             parameter_fields=[
+                ParameterField(name="dtype", type="str", default=None, required=False),
                 ParameterField(name="n_inputs", type="int", default=2, min=1, required=True),
             ],
             input_ports=["in_0", "in_1"],

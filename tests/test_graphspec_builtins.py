@@ -10,13 +10,19 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from feedbax.models.feedback import FeedbackChannels
+from feedbax.runtime.feedback import SelectState
 from feedbax.runtime.channel import Channel, toggle_channel_noise
 from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.affine_composer import AffineValueComposer
 from feedbax.runtime.components import Demux, ElementwiseAffineModulator
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBindingSpec, WireSpec
-from feedbax.runtime.graph import init_state_from_component
+from feedbax.contracts.graph import (
+    ComponentSpec,
+    GraphSpec,
+    RetainedObservableSpec,
+    StudioTaskBindingSpec,
+    WireSpec,
+)
+from feedbax.runtime.graph import GraphTraceRequest, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.runtime.task_bindings import (
     apply_task_parameter_state_inits,
@@ -40,11 +46,12 @@ from feedbax.compiler.serialization import (
     graph_to_spec,
     prototypes_from_task_bindings,
 )
-from feedbax.compiler import GraphCompilationError
+from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.compiler.prototypes import output_prototypes_for_node
 from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.runtime.state import CartesianState
+from feedbax.runtime.retained_observables import lower_retention_plan
 
 
 def _components() -> ComponentRegistry:
@@ -661,38 +668,55 @@ def test_disabled_channel_roundtrip_preserves_authored_noise(noise_model: str) -
         assert jnp.array_equal(enabled, rollout(authored_enabled))
 
 
-def test_feedback_channels_materialize_point_mass_selector() -> None:
+@pytest.mark.parametrize("selector", ["point_mass_pos_vel", "paths"])
+def test_feedback_channels_materialize_point_mass_selector(selector: str) -> None:
     spec = _point_mass_feedback_spec(
-        selector="point_mass_pos_vel",
+        selector=selector,
         delay=2,
         noise_std=0.05,
         add_noise=True,
         noise_role="sensory_feedback",
         noise_timing="pre_controller",
     )
-    graph = spec_to_graph(spec, component_registry=_components())
+    spec.retained_observables = [RetainedObservableSpec(selector="port:feedback.feedback")]
+    compiled = compile_graph(GraphDocument(graph=spec), _components())
+    graph = compiled.graph
+    assert "port:feedback.feedback" in lower_retention_plan(compiled.resolved.graph).by_selector
 
     mechanics = graph.nodes["mechanics"]
-    feedback = graph.nodes["feedback"]
+    subgraph = graph.nodes["feedback"]
+    feedback = subgraph.nodes["channel"]
     assert isinstance(mechanics, Mechanics)
-    assert isinstance(feedback, FeedbackChannels)
-    assert isinstance(feedback.channels, Channel)
-    assert feedback.channels.delay == 2
-    assert feedback.channels.noise_role == "sensory_feedback"
-    assert feedback.channels.noise_timing == "pre_controller"
-    assert isinstance(feedback.channels.noise_func, Normal)
-    assert feedback.channels.noise_func.std == 0.05
+    assert isinstance(subgraph.nodes["select"], SelectState)
+    assert isinstance(feedback, Channel)
+    assert feedback.delay == 2
+    assert feedback.noise_role == "sensory_feedback"
+    assert feedback.noise_timing == "pre_controller"
+    assert isinstance(feedback.noise_func, Normal)
+    assert feedback.noise_func.std == 0.05
 
-    selected = feedback.specs.where(mechanics.state_index.init)
+    selected = subgraph.nodes["select"].where(mechanics.state_index.init)
     assert len(selected) == 2
     assert selected[0].shape == (2,)
     assert selected[1].shape == (2,)
 
     roundtrip = graph_to_spec(graph)
-    params = roundtrip.nodes["feedback"].params
-    assert params["selector"] == "point_mass_pos_vel"
-    assert params["paths"] == ["plant.skeleton.pos", "plant.skeleton.vel"]
+    interior = roundtrip.subgraphs["feedback"]
+    params = interior.nodes["channel"].params
+    assert interior.nodes["select"].params["paths"] == ["plant.skeleton.pos", "plant.skeleton.vel"]
     assert params["noise_role"] == "sensory_feedback"
+    restored = spec_to_graph(roundtrip, component_registry=_components())
+    _, _, trace = restored.rollout_with_trace(
+        {"force": jnp.ones((4, 2))},
+        restored.init_state(key=jr.key(0)),
+        key=jr.key(1),
+        n_steps=4,
+        trace=(
+            GraphTraceRequest(kind="port", selector="port", node="feedback", port="feedback"),
+            GraphTraceRequest(kind="state_path", selector="state", path="feedback.output"),
+        ),
+    )
+    assert eqx.tree_equal(trace["port"], trace["state"])
 
 
 @pytest.mark.parametrize(

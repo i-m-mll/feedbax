@@ -420,10 +420,9 @@ def activity_heatmap(
         `(time, unit)`.
 
     !!! Example
-        When working with a `SimpleFeedback` model built with a `SimpleStagedNetwork`
-        controller—for example, if we've constructed our `model` using
-        [`point_mass_nn`][feedbax.xabdeef.models.point_mass_nn]—we can plot the activity
-        of the hidden layer of the network:
+        To plot hidden activity from a point-mass model built with
+        [`point_mass_nn`][feedbax.xabdeef.models.point_mass_nn], select the hidden
+        trajectory from its controller graph.
 
         ```python
         import feedbax._vendor.jax_cookbook.tree as jtree

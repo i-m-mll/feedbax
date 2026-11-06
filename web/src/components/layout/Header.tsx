@@ -6,13 +6,14 @@ import {
   Download,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import clsx from 'clsx';
 import { toast } from 'sonner';
+import { useComponents } from '@/hooks/useComponents';
 import { useGraphsList } from '@/hooks/useGraphs';
 import { fetchGraph, exportGraph } from '@/api/client';
-import { useGraphStore, createBlankGraph } from '@/stores/graphStore';
+import { useGraphStore } from '@/stores/graphStore';
 import { actionErrorMessage } from '@/stores/storeActions';
 import {
   getLastProjectId,
@@ -21,11 +22,12 @@ import {
   useProjectsStore,
 } from '@/stores/projectsStore';
 import { useRunStore } from '@/stores/runStore';
-import { useTrainingStore } from '@/stores/trainingStore';
+import { defaultTaskSpec, defaultTrainingSpec, useTrainingStore } from '@/stores/trainingStore';
 import { useCompileStatusStore } from '@/stores/compileStatusStore';
 import { buildWorkspaceSnapshot, hydrateWorkspacePresentation } from '@/stores/workspaceStore';
 import { SettingsOverlay } from '@/components/layout/SettingsOverlay';
-import { PROJECT_TEMPLATES } from '@/data/project-templates';
+import type { AnalysisSnapshot } from '@/types/analysis';
+import { isCausalGraphSpec } from '@/types/graph';
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
 import { analysisSnapshotFromWorkspaceDocument } from '@/utils/analysisCanvasLayout';
 import {
@@ -428,6 +430,14 @@ function ProjectOpenOverlay({
   const [activeSection, setActiveSection] = useState<ProjectOverlaySection>(initialSection);
   const graphsQuery = useGraphsList();
   const { openProjectInTab } = useProjectsStore();
+  const { components, isLoading: loadingExamples, error: examplesError } = useComponents();
+  const [openingExample, setOpeningExample] = useState(false);
+  const example = components.find((component) =>
+    component.template_id === 'feedbax.templates.simple_feedback' &&
+    component.template_kind === 'executable' &&
+    isCausalGraphSpec(component.template_graph) &&
+    component.template_ui_state != null
+  );
 
   useEffect(() => {
     setActiveSection(initialSection);
@@ -441,91 +451,59 @@ function ProjectOpenOverlay({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
 
-  const handleLoadTemplate = useCallback(
-    async (templateIdx: number) => {
-      const template = PROJECT_TEMPLATES[templateIdx];
-      if (!template) return;
+  const handleLoadExample = async () => {
+    const modelGraph = example?.template_graph;
+    const uiState = example?.template_ui_state;
+    if (!example || !isCausalGraphSpec(modelGraph) || !uiState || openingExample) return;
 
-      let modelGraph: ReturnType<typeof createBlankGraph>;
-      let uiState: any;
-
-      if (template.createModelGraph) {
-        const result = template.createModelGraph();
-        modelGraph = result.graph;
-        uiState = result.uiState;
-      } else {
-        modelGraph = createBlankGraph();
-        modelGraph.metadata!.name = template.name;
-        uiState = { viewport: { x: 0, y: 0, zoom: 1 }, node_states: {} };
-      }
-
-      const analysisSnapshot = template.createAnalysis();
-      let workspace = buildWorkspaceSnapshot({
+    setOpeningExample(true);
+    const analysisSnapshot: AnalysisSnapshot = { pages: [], activePageId: null };
+    try {
+      const workspace = buildWorkspaceSnapshot({
         workspace: null,
         graph: modelGraph,
         uiState,
-        trainingSpec: useTrainingStore.getState().trainingSpec,
-        taskSpec: useTrainingStore.getState().taskSpec,
+        trainingSpec: defaultTrainingSpec,
+        taskSpec: defaultTaskSpec,
         analysisSnapshot,
-        projectName: template.name,
+        projectName: example.name,
       });
-      if (template.createWorkspace) {
-        workspace = template.createWorkspace({
-          baseWorkspace: workspace,
-          graph: modelGraph,
-          uiState,
-          analysisSnapshot,
-        });
-      }
+      const detached = buildDetachedStudioDocument({
+        documentId: `template:${example.template_id}:${crypto.randomUUID()}`,
+        label: example.name,
+        graph: modelGraph,
+        uiState,
+        analysisSnapshot,
+        workspace,
+      });
+      const outcome = await studioPersistence.save(detached, 'template');
+      studioPersistence.reset(detached.documentId);
 
-      try {
-        const detached = buildDetachedStudioDocument({
-          documentId: `template:${template.id}:${crypto.randomUUID()}`,
-          label: template.name,
-          graph: modelGraph,
-          uiState,
-          analysisSnapshot,
-          workspace,
-        });
-        const outcome = await studioPersistence.save(detached, 'template');
-        studioPersistence.reset(detached.documentId);
-        if (outcome.ok === false) throw outcome.error;
+      if (outcome.ok) {
         const graphId = outcome.result.graphId;
-        openProjectInTab(
-          graphId,
-          modelGraph,
-          uiState,
-          template.name,
-          analysisSnapshot,
-          workspace,
-          {
-            saveRevision: outcome.result.metadata.save_revision,
-            workspaceDocument: outcome.workspaceDocument,
-          },
-        );
-        useRunStore.getState().hydrateFromWorkspace(workspace);
-        setLastProjectId(graphId);
-      } catch (error) {
-        console.error('Failed to save example project to backend:', error);
-        toast.error('Template opened locally; backend save failed.', {
-          id: `template-load-error-${template.id}`,
+        openProjectInTab(graphId, modelGraph, uiState, example.name, analysisSnapshot, workspace, {
+          saveRevision: outcome.result.metadata.save_revision,
+          workspaceDocument: outcome.workspaceDocument,
         });
-        openProjectInTab(
-          '',
-          modelGraph,
-          uiState,
-          template.name,
-          analysisSnapshot,
-          workspace,
-        );
+        setLastProjectId(graphId);
+      } else {
+        openProjectInTab('', modelGraph, uiState, example.name, analysisSnapshot, workspace);
         useGraphStore.getState().markDirty();
-        useRunStore.getState().hydrateFromWorkspace(workspace);
+        toast.error('Example opened locally. Saving to the backend failed.', {
+          id: 'example-save-error',
+        });
       }
+      useRunStore.getState().hydrateFromWorkspace(workspace);
       persistLocalProjectTabs();
       onClose();
-    },
-    [onClose, openProjectInTab],
-  );
+    } catch (error) {
+      toast.error(actionErrorMessage(error, 'Failed to open example.'), {
+        id: 'example-open-error',
+      });
+    } finally {
+      setOpeningExample(false);
+    }
+  };
 
   const navItems: Array<{ id: ProjectOverlaySection; label: string }> = [
     { id: 'projects', label: 'Projects' },
@@ -597,36 +575,27 @@ function ProjectOpenOverlay({
 
         {activeSection === 'examples' && (
           <div className="grid max-w-5xl gap-3 md:grid-cols-2">
-            {PROJECT_TEMPLATES.map((template, index) => (
+            {example ? (
               <button
-                key={template.id}
                 type="button"
-                onClick={() => handleLoadTemplate(index)}
-                className="rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-brand-200 hover:bg-slate-50"
+                onClick={handleLoadExample}
+                disabled={openingExample}
+                className="rounded-lg border border-slate-200 bg-white p-4 text-left hover:border-brand-200 hover:bg-slate-50 disabled:opacity-60"
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate font-semibold text-slate-800">{template.name}</div>
-                    <div className="mt-1 text-sm leading-5 text-slate-500">{template.description}</div>
-                  </div>
-                  {template.createWorkspace && (
-                    <span className="shrink-0 rounded-full bg-brand-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.1em] text-brand-700">
-                      runs
-                    </span>
-                  )}
-                </div>
-                <div className="mt-3 flex flex-wrap gap-1">
-                  {template.pageNames.map((pageName) => (
-                    <span
-                      key={pageName}
-                      className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-600"
-                    >
-                      {pageName}
-                    </span>
-                  ))}
+                <div className="truncate font-semibold text-slate-800">{example.name}</div>
+                <div className="mt-1 text-sm leading-5 text-slate-500">
+                  {openingExample ? 'Opening example…' : example.description}
                 </div>
               </button>
-            ))}
+            ) : (
+              <div role="status" className="rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-500">
+                {loadingExamples
+                  ? 'Loading examples…'
+                  : examplesError
+                    ? 'Failed to load examples from the backend.'
+                    : 'The simple feedback example is unavailable.'}
+              </div>
+            )}
           </div>
         )}
 
