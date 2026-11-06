@@ -80,17 +80,17 @@ def test_select_step_inputs_is_identity_for_time_major_inputs():
 
 
 class _AddInputs(Component):
-    input_ports = ("x", "bias")
+    input_ports = ("x", "bias", "carry")
     output_ports = ("y",)
 
     def __call__(self, inputs, state, *, key):
-        return {"y": inputs["x"] + inputs["bias"]}, state
+        return {"y": inputs["x"] + inputs["bias"] + inputs["carry"]}, state
 
 
 def _make_iterating_graph():
     return Graph(
         nodes={"add": _AddInputs()},
-        wires=(Wire("add", "y", "add", "x", temporality="recurrent"),),
+        wires=(Wire("add", "y", "add", "carry", temporality="recurrent"),),
         input_ports=("x", "bias"),
         output_ports=("y",),
         input_bindings={"x": ("add", "x"), "bias": ("add", "bias")},
@@ -106,10 +106,10 @@ def test_graph_rollout_preserves_scalar_broadcast_and_longer_input():
         init_state_from_component(graph),
         key=jr.PRNGKey(0),
         n_steps=3,
-        cycle_init={("add", "x"): jnp.float32(0.0)},
+        cycle_init={("add", "carry"): jnp.float32(0.0)},
     )
 
-    assert jnp.array_equal(outputs["y"], jnp.array([2.0, 3.0, 4.0]))
+    assert jnp.array_equal(outputs["y"], jnp.array([2.0, 5.0, 9.0]))
 
 
 def test_graph_rollout_rejects_short_input_before_scan():
@@ -121,7 +121,7 @@ def test_graph_rollout_rejects_short_input_before_scan():
             init_state_from_component(graph),
             key=jr.PRNGKey(0),
             n_steps=3,
-            cycle_init={("add", "x"): jnp.float32(0.0)},
+            cycle_init={("add", "carry"): jnp.float32(0.0)},
         )
 
 

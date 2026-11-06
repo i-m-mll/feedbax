@@ -1,24 +1,25 @@
-"""Tests for ``feedbax.intervene`` components.
-
-Currently focused on ``DynamicsMatrixPerturb`` (Bug: c723082) — the
-force-channel embedding of a model-class ``ΔA`` perturbation. The
-``CurlField`` / ``FixedField`` paths are exercised via integration tests
-in the rlrmp tree.
-"""
+"""Behavioral tests for intervention components and feedback impulses."""
 
 import equinox as eqx
 from equinox.nn import State
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from feedbax.intervene import (
     AddNoise,
     AddNoiseParams,
+    ConstantInput,
+    ConstantInputParams,
     DynamicsMatrixPerturb,
     DynamicsMatrixPerturbParams,
 )
+from feedbax.intervene.perturbations import feedback_impulse
+from feedbax.runtime.graph import Graph, Wire, init_state_from_component
+from feedbax.runtime.iteration import run_component
 from feedbax.runtime.state import CartesianState
+from feedbax.tasks.task import TaskTrialSpec, prepare_trial
 
 
 def _make_state(component: DynamicsMatrixPerturb, params: DynamicsMatrixPerturbParams) -> State:
@@ -132,3 +133,118 @@ def test_add_noise_splits_key_per_signal_leaf() -> None:
     outputs, _ = component({"input": signal}, state, key=jr.PRNGKey(0))
 
     assert not jnp.allclose(outputs["output"]["left"], outputs["output"]["right"])
+
+
+@pytest.fixture
+def feedback():
+    pos = jnp.arange(12, dtype=jnp.float32).reshape(6, 2)
+    vel = -pos - 1
+    return pos, vel
+
+
+def _run_feedback_impulse(feedback, *, seed=0, **kwargs):
+    n_transitions = feedback[0].shape[0]
+    component = feedback_impulse(n_steps=n_transitions + 1, **kwargs)
+    outputs, _, _ = run_component(
+        component,
+        {"input": feedback},
+        init_state_from_component(component),
+        n_steps=n_transitions,
+        key=jr.key(seed),
+        state_filter=False,
+    )
+    result = outputs["output"]
+    assert isinstance(result, tuple)
+    return result
+
+
+@pytest.mark.parametrize(
+    ("feedback_var", "feedback_dim", "start", "duration", "active"),
+    [
+        (0, 1, 1, 2, slice(1, 3)),
+        (1, 0, -2, 4, slice(0, 2)),
+    ],
+    ids=["position", "velocity-clipped-at-start"],
+)
+def test_feedback_impulse_adds_signed_offset_in_window(
+    feedback, feedback_var, feedback_dim, start, duration, active
+):
+    actual = _run_feedback_impulse(
+        feedback,
+        amplitude=-0.25,
+        feedback_var=feedback_var,
+        feedback_dim=feedback_dim,
+        start_timestep=start,
+        duration=duration,
+    )
+    expected = list(feedback)
+    expected[feedback_var] = expected[feedback_var].at[active, feedback_dim].add(-0.25)
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_nested_feedback_impulse_and_task_constant_input(feedback):
+    pulse = feedback_impulse(
+        n_steps=5, amplitude=-0.25, duration=4, feedback_var=1, start_timestep=3, feedback_dim=1
+    )
+    offsets = (jnp.array([0.0, 2.0]), jnp.array([3.0, 0.0]))
+    graph = Graph(
+        nodes={"pulse": pulse, "constant": ConstantInput(ConstantInputParams(arrays=offsets))},
+        wires=(Wire("pulse", "output", "constant", "input"),),
+        input_ports=("input",),
+        output_ports=("output",),
+        input_bindings={"input": ("pulse", "input")},
+        output_bindings={"output": ("constant", "output")},
+    )
+    trial = prepare_trial(
+        graph,
+        TaskTrialSpec(
+            inits={},
+            targets={},
+            inputs={"input": feedback},
+            intervene={"constant_input": ConstantInputParams(scale=2.0, arrays=offsets)},
+        ),
+    )
+    outputs, _, _ = run_component(
+        graph,
+        trial.inputs,
+        trial.init_state,
+        n_steps=trial.n_steps,
+        key=jr.key(0),
+        state_filter=False,
+    )
+
+    expected_pos = feedback[0] + jnp.array([0.0, 4.0])
+    expected_vel = (feedback[1] + jnp.array([6.0, 0.0])).at[3, 1].add(-0.25)
+    np.testing.assert_array_equal(outputs["output"], (expected_pos, expected_vel))
+
+
+@pytest.mark.parametrize(
+    ("start", "duration"),
+    [(2, 0), (6, 3), (-3, 2)],
+    ids=["zero-duration", "after-rollout", "before-rollout"],
+)
+def test_feedback_impulse_is_identity_without_active_transitions(feedback, start, duration):
+    actual = _run_feedback_impulse(
+        feedback,
+        amplitude=0.25,
+        feedback_var=0,
+        start_timestep=start,
+        duration=duration,
+    )
+    np.testing.assert_array_equal(actual, feedback)
+
+
+def test_feedback_impulse_uses_one_seeded_direction_per_trial(feedback):
+    kwargs = dict(amplitude=0.75, feedback_var=1, start_timestep=2, duration=3)
+    pos, vel = _run_feedback_impulse(feedback, seed=7, **kwargs)
+    np.testing.assert_array_equal(pos, feedback[0])
+    np.testing.assert_array_equal(vel[:2], feedback[1][:2])
+    np.testing.assert_array_equal(vel[5:], feedback[1][5:])
+
+    offsets = vel[2:5] - feedback[1][2:5]
+    np.testing.assert_allclose(jnp.linalg.norm(offsets, axis=1), 0.75, atol=1e-6)
+    np.testing.assert_allclose(offsets, jnp.broadcast_to(offsets[0], offsets.shape), atol=1e-6)
+
+    np.testing.assert_array_equal(_run_feedback_impulse(feedback, seed=7, **kwargs)[1], vel)
+    other_vel = _run_feedback_impulse(feedback, seed=8, **kwargs)[1]
+    assert not jnp.allclose(other_vel[2:5], vel[2:5])
