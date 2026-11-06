@@ -39,7 +39,7 @@ def selection(base: str, env: dict[str, str]) -> dict:
         report = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError("affected-test selection returned invalid JSON") from exc
-    if not isinstance(report, dict) or report.get("shadow") is not True:
+    if not isinstance(report, dict):
         raise RuntimeError("affected-test selection returned an invalid report")
     if report.get("mode") not in {"candidate", "full"}:
         raise RuntimeError("affected-test selection returned an unknown mode")
@@ -47,6 +47,15 @@ def selection(base: str, env: dict[str, str]) -> dict:
 
 
 def reference(env: dict[str, str], profile_json: Path | None, python_junit: Path | None) -> None:
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if status.returncode or status.stdout:
+        raise RuntimeError("complete reference requires a clean checkout for wheel provenance")
     with TemporaryDirectory(prefix="feedbax-reference-") as directory:
         run(
             [
@@ -116,10 +125,21 @@ def main() -> int:
     mode.add_argument("--reference", action="store_true", help="Run every reference gate.")
     parser.add_argument("--profile-json", type=Path, help="Write the Python timing profile.")
     parser.add_argument("--python-junit", type=Path, help="Write the executed Python test cases.")
+    parser.add_argument(
+        "--plan", action="store_true", help="Print selection without running gates."
+    )
     args = parser.parse_args()
     env = os.environ.copy()
     env.setdefault("FEEDBAX_FULL_SUITE_XDIST_WORKERS", "10")
     env.setdefault("FEEDBAX_TEST_NATIVE_THREADS", "1")
+    if args.plan:
+        report = (
+            {"mode": "full", "reason": "complete reference requested"}
+            if args.reference
+            else selection(args.base, env)
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
     HEAVY_LOCK.parent.mkdir(parents=True, exist_ok=True)
     with HEAVY_LOCK.open("a+") as handle:
         try:
@@ -127,10 +147,14 @@ def main() -> int:
         except BlockingIOError:
             print(f"shared heavy-suite lock is busy: {HEAVY_LOCK}", file=sys.stderr)
             return 75
-        if args.reference:
-            reference(env, args.profile_json, args.python_junit)
-        else:
-            affected(args.base, env, args.profile_json, args.python_junit)
+        try:
+            if args.reference:
+                reference(env, args.profile_json, args.python_junit)
+            else:
+                affected(args.base, env, args.profile_json, args.python_junit)
+        except (RuntimeError, subprocess.TimeoutExpired) as exc:
+            print(f"affected gate failed: {exc}", file=sys.stderr)
+            return 1
     return 0
 
 

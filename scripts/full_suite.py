@@ -591,7 +591,7 @@ def affected_test_selection(repo_root: Path, base: str) -> dict[str, Any]:
         selection = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError("affected-test selection returned invalid JSON") from exc
-    if not isinstance(selection, dict) or selection.get("shadow") is not True:
+    if not isinstance(selection, dict):
         raise RuntimeError("affected-test selection returned an invalid report")
     if selection.get("mode") == "full":
         if not isinstance(selection.get("reason"), str):

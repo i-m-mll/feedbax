@@ -325,7 +325,6 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "shadow": True,
                 "changes": [vars(change) for change in changes],
                 **decision,
             },
