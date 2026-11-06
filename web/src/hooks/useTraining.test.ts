@@ -24,34 +24,48 @@ describe('training config authoring', () => {
   });
 });
 
+function renderTrainingStream(jobId: string) {
+  const initialGraphId = useGraphStore.getState().graphId;
+  const initialTraining = useTrainingStore.getState();
+  const sockets: Socket[] = [];
+  class Socket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    readyState = Socket.OPEN;
+    onmessage?: (event: MessageEvent) => void;
+    onclose?: () => void;
+    constructor(readonly url: string) {
+      sockets.push(this);
+    }
+    close = vi.fn(() => this.onclose?.());
+    emit(payload: object) {
+      this.onmessage?.(new MessageEvent('message', {
+        data: JSON.stringify({ job_id: jobId, emitted_at_ms: 1, ...payload }),
+      }));
+    }
+  }
+  vi.useFakeTimers();
+  vi.stubGlobal('WebSocket', Socket);
+  vi.spyOn(api, 'startTraining').mockResolvedValue({ job_id: jobId });
+  useGraphStore.setState({ graphId: 'test-graph' });
+  const { result, unmount } = renderHook(() => useTraining());
+  return {
+    result,
+    sockets,
+    cleanup() {
+      unmount();
+      useGraphStore.setState({ graphId: initialGraphId });
+      useTrainingStore.setState(initialTraining);
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    },
+  };
+}
+
 describe('training WebSocket reconnect policy', () => {
   it('resumes after the last worker event despite synthetic Studio sequence numbers', async () => {
-    const initialGraphId = useGraphStore.getState().graphId;
-    const initialTraining = useTrainingStore.getState();
-    const sockets: Socket[] = [];
-    class Socket {
-      static CONNECTING = 0;
-      static OPEN = 1;
-      readyState = Socket.OPEN;
-      onmessage?: (event: MessageEvent) => void;
-      onclose?: () => void;
-      constructor(readonly url: string) {
-        sockets.push(this);
-      }
-      close() {
-        this.onclose?.();
-      }
-      emit(payload: object) {
-        this.onmessage?.(new MessageEvent('message', {
-          data: JSON.stringify({ job_id: 'job-resume', emitted_at_ms: 1, ...payload }),
-        }));
-      }
-    }
-    vi.useFakeTimers();
-    vi.stubGlobal('WebSocket', Socket);
-    const start = vi.spyOn(api, 'startTraining').mockResolvedValue({ job_id: 'job-resume' });
-    useGraphStore.setState({ graphId: 'graph-resume' });
-    const { result, unmount } = renderHook(() => useTraining());
+    const { result, sockets, cleanup } = renderTrainingStream('job-resume');
     try {
       await act(() => result.current.start());
       expect(new URL(sockets[0].url).search).toBe('');
@@ -89,14 +103,83 @@ describe('training WebSocket reconnect policy', () => {
       expect(state.status).toBe('completed');
       expect(state.trainingStreamError).toBeNull();
     } finally {
-      unmount();
-      useGraphStore.setState({ graphId: initialGraphId });
-      useTrainingStore.setState(initialTraining);
-      start.mockRestore();
-      vi.unstubAllGlobals();
-      vi.useRealTimers();
+      cleanup();
     }
   });
+
+  it.each(['acknowledged', 'failed', 'completed first'] as const)(
+    'follows the terminal stream when the stop request is %s',
+    async (outcome) => {
+      const { result, sockets, cleanup } = renderTrainingStream('job-stop');
+      let settleStop!: () => void;
+      const response = new Promise<Awaited<ReturnType<typeof api.stopTraining>>>((resolve, reject) => {
+        settleStop = outcome === 'failed'
+          ? () => reject(new Error('Network error'))
+          : () => resolve({ success: true });
+      });
+      const stop = vi.spyOn(api, 'stopTraining').mockReturnValue(response);
+      try {
+        await act(() => result.current.start());
+        const request = result.current.stop();
+        expect(stop).toHaveBeenCalledWith('job-stop');
+        if (outcome !== 'completed first') {
+          await act(async () => {
+            settleStop();
+            await request;
+          });
+        }
+        expect(useTrainingStore.getState()).toMatchObject({ status: 'running', jobId: 'job-stop' });
+        expect(sockets[0].close).not.toHaveBeenCalled();
+
+        act(() => {
+          sockets[0].emit({
+            type: 'training_progress', seq: 2, worker_seq: 2, batch: 1, program_step: 5,
+            total_batches: 5, loss: 0.4,
+          });
+          sockets[0].close();
+          vi.advanceTimersByTime(500);
+        });
+        expect(new URL(sockets[1].url).searchParams.get('from_seq')).toBe('3');
+
+        const completed = outcome === 'completed first';
+        const batch = completed ? 5 : 2;
+        act(() => {
+          if (completed) {
+            sockets[1].emit({
+              type: 'training_progress', seq: 3, worker_seq: 3, batch, program_step: 9,
+              total_batches: 5, loss: 0.3,
+            });
+          }
+          sockets[1].emit({
+            type: completed ? 'training_complete' : 'training_stopped',
+            seq: 4, worker_seq: 4, batch, program_step: 9, loss: 0.3,
+          });
+        });
+        if (completed) {
+          await act(async () => {
+            settleStop();
+            await request;
+          });
+        }
+        expect(useTrainingStore.getState()).toMatchObject({
+          status: completed ? 'completed' : 'stopped',
+          jobId: 'job-stop',
+          progress: completed
+            ? { batch, program_step: 9, loss: 0.3 }
+            : { batch: 1, program_step: 5, loss: 0.4 },
+        });
+        expect(useTrainingStore.getState().consoleLogs.at(-1)).toMatchObject({
+          batch,
+          program_step: 9,
+        });
+        expect(sockets[1].close).toHaveBeenCalledOnce();
+        act(() => vi.advanceTimersByTime(4_000));
+        expect(sockets).toHaveLength(2);
+      } finally {
+        cleanup();
+      }
+    },
+  );
 
   it('backs off retries and caps the delay', () => {
     expect(trainingWebSocketReconnectDelayMs(0)).toBe(500);

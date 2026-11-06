@@ -173,7 +173,7 @@ export function useTraining() {
       wsJobIdRef.current = nextJobId;
 
       ws.onmessage = (event) => {
-        if (wsRef.current !== ws) return;
+        if (wsRef.current !== ws || intentionalCloseRef.current) return;
         let payload: TrainingWebSocketEvent;
         try {
           payload = parseContract('TrainingWebSocketEvent', JSON.parse(event.data) as unknown);
@@ -235,9 +235,17 @@ export function useTraining() {
             timestamp: Date.now(),
           });
         }
-        if (payload.type === 'training_complete') {
+        if (payload.type === 'training_complete' || payload.type === 'training_stopped') {
           progressBatcherRef.current?.flush();
-          setStatus('completed');
+          const completed = payload.type === 'training_complete';
+          appendLog({
+            batch: payload.batch,
+            program_step: payload.program_step,
+            level: 'info',
+            message: completed ? 'Training completed.' : 'Training stopped.',
+            timestamp: Date.now(),
+          });
+          setStatus(completed ? 'completed' : 'stopped');
           intentionalCloseRef.current = true;
           ws.close();
         }
@@ -395,35 +403,23 @@ export function useTraining() {
   ]);
 
   const stop = useCallback(async () => {
-    if (!jobId) return;
-    intentionalCloseRef.current = true;
-    clearReconnectTimer();
-    progressBatcherRef.current?.flush();
-    const stopped = await withStoreActionFeedback(
+    const isRunningJob = () => {
+      const state = useTrainingStore.getState();
+      return state.jobId === jobId && state.status === 'running';
+    };
+    if (!jobId || !isRunningJob()) return;
+    const acknowledgement = await withStoreActionFeedback(
       () => stopTraining(jobId),
       {
-        errorToast: (error) =>
-          `${actionErrorMessage(error, 'Failed to stop training.')} Marked idle locally.`,
+        errorToast: (error) => actionErrorMessage(error, 'Failed to request training stop.'),
         toastId: 'training-stop-error',
+        onError: isRunningJob,
       },
     );
-    wsRef.current?.close();
-    wsJobIdRef.current = null;
-    setStatus('idle');
-    setJobId(null);
-    setTrainingStreamError(null);
-    setTrainingDiagnostics([]);
-    if (stopped) {
-      toast.success('Training stopped.', { id: 'training-stop-success' });
+    if (acknowledgement && isRunningJob()) {
+      toast.success('Training stop requested.', { id: 'training-stop-requested' });
     }
-  }, [
-    jobId,
-    setJobId,
-    setStatus,
-    clearReconnectTimer,
-    setTrainingStreamError,
-    setTrainingDiagnostics,
-  ]);
+  }, [jobId]);
 
   return {
     status,

@@ -325,7 +325,7 @@ async def stream_events(
                             yield event
                             if event.get("type") in RUN_EVENT_TERMINAL_TYPES or event.get(
                                 "type"
-                            ) in ("training_complete", "training_error"):
+                            ) in ("training_complete", "training_stopped", "training_error"):
                                 return
             raise _WorkerEventStreamEnded
         except (

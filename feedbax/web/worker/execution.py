@@ -107,6 +107,8 @@ class TrainingGraphResult:
     final_loss: float
     final_loss_terms: dict[str, float]
     final_batch: int
+    final_program_step: int
+    stopped: bool
     manifest_path: str | None
     manifest_payload: dict[str, Any] | None
     execution_metadata: dict[str, Any]
@@ -329,7 +331,6 @@ def run_training_graph(
         compiled=compiled,
         optimizer=optimizer,
         total_batches=total_batches,
-        stop_event=stop_event,
         rollout_fn=lambda graph, plan, key: rollout_graph(graph, plan, key=key),
         evaluate_loss_fn=_evaluate_loss,
         observe_model=observe_model,
@@ -395,6 +396,7 @@ def run_training_graph(
         task_binding_spec=compiled.task_binding_spec.model_dump(mode="json", exclude_none=True),
         manifest_conflict_policy="reuse-identical",
         progress_callback=_emit_executor_progress,
+        stop_before_update=stop_event.is_set,
     )
 
     graph = result.final_slots["model"]
@@ -416,6 +418,8 @@ def run_training_graph(
             final_loss=final_loss,
             final_loss_terms=final_terms,
             final_batch=result.end_completed_batches,
+            final_program_step=result.final_coordinate.program_step,
+            stopped=result.status == "cancelled",
             manifest_path=str(result.manifest_path),
             manifest_payload=result.manifest.model_dump(mode="json", exclude_none=True),
             execution_metadata=dict(compiled.metadata),

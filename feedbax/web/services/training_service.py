@@ -380,10 +380,7 @@ class TrainingService:
         return job_id
 
     async def stop_training(self, job_id: str) -> None:
-        """Ask the worker to stop a job.
-
-        Also kills the subprocess if the HTTP request fails (local mode only).
-        """
+        """Request a cooperative stop. The worker publishes the actual outcome."""
         ref = self._job_ref_for(job_id)
         if self._endpoint is None:
             if ref is None:
@@ -397,14 +394,6 @@ class TrainingService:
         except WorkerResponseError as exc:
             if exc.status_code == 404:
                 raise ValueError(f"Unknown job {job_id!r}") from exc
-            raise
-        except Exception:
-            # If the HTTP call failed, forcibly kill the subprocess.
-            if self._process is not None:
-                try:
-                    self._process.kill()
-                except OSError:
-                    pass
             raise
 
     async def worker_connected(self) -> bool:
@@ -481,6 +470,8 @@ class TrainingService:
         normalized["emitted_at_ms"] = int(time.time() * 1000)
         if worker_seq is not None:
             normalized["worker_seq"] = int(worker_seq)
+        if normalized.get("type") in {"training_complete", "training_stopped"}:
+            normalized.pop("status", None)
         if normalized.get("type") == "training_error":
             fallback_batch = (self._status_from_state(job_id) or {}).get("batch", 0)
             normalized.setdefault("batch", fallback_batch)
@@ -846,13 +837,16 @@ class TrainingService:
         latest = events[-1] if events else None
         payload = dict(latest.payload) if latest is not None else {}
         status = row.status
-        if status == "failed":
+        if latest is not None and latest.type == "complete":
+            status = "stopped" if payload.get("status") == "cancelled" else "completed"
+        elif status == "failed":
             status = "error"
         elif status in ("launched", "ready"):
             status = "running"
         return {
             "status": status,
             "batch": int(payload.get("batch", 0) or 0),
+            "program_step": payload.get("program_step"),
             "total_batches": int(payload.get("total_batches", total_batches) or 0),
             "last_loss": float(payload.get("loss", 0.0) or 0.0),
             "job_id": job_id,

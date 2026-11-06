@@ -60,6 +60,7 @@ class WorkerStatus(str, Enum):
     IDLE = "idle"
     RUNNING = "running"
     COMPLETED = "completed"
+    STOPPED = "stopped"
     ERROR = "error"
 
 
@@ -102,6 +103,7 @@ class _Job:
     retention_plan_payload: Optional[Dict[str, Any]] = None
     retained_observables_payload: Optional[Dict[str, Any]] = None
     batch: int = 0
+    program_step: int | None = None
     last_loss: float = 0.0
     snapshot_interval: int = 100
     terminal_at: Optional[float] = None
@@ -125,7 +127,7 @@ class _Job:
 
 def _is_terminal_status(status: WorkerStatus) -> bool:
     """Return whether *status* represents a finished registry entry."""
-    return status in {WorkerStatus.IDLE, WorkerStatus.COMPLETED, WorkerStatus.ERROR}
+    return status is not WorkerStatus.RUNNING
 
 
 def _mark_job_terminal(job: _Job, status: WorkerStatus) -> None:
@@ -143,6 +145,7 @@ def _job_status_payload(job: _Job) -> dict[str, Any]:
         return {
             "status": job.status,
             "batch": job.batch,
+            "program_step": job.program_step,
             "total_batches": job.total_batches,
             "last_loss": job.last_loss,
             "job_id": job.job_id,
@@ -155,6 +158,7 @@ def _job_checkpoint_payload(job: _Job) -> dict[str, Any]:
     with job._state_lock:
         return {
             "batch": job.batch,
+            "program_step": job.program_step,
             "loss": job.last_loss,
             "weights_available": (
                 job.checkpoint_path is not None and job.checkpoint_cleanup_error is None
@@ -170,7 +174,13 @@ def _cleanup_checkpoint_path(path: str | None) -> None:
 
 def _manifest_history_events(job: _Job) -> list[dict[str, Any]]:
     """Return compact event history suitable for a durable JSON artifact."""
-    history_types = {"training_progress", "training_log", "training_error", "training_complete"}
+    history_types = {
+        "training_progress",
+        "training_log",
+        "training_error",
+        "training_complete",
+        "training_stopped",
+    }
     with job._state_lock:
         events = tuple(job.event_log)
     history = []
@@ -423,16 +433,14 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg", bootstrap_state: Bootstra
         emit=lambda event: _emit(job, event),
     )
     try:
-        terminal_status = WorkerStatus.IDLE if job.stop_event.is_set() else WorkerStatus.COMPLETED
         with job._state_lock:
             job.last_loss = result.final_loss
             job.batch = result.final_batch
+            job.program_step = result.final_program_step
             job.retention_plan_payload = result.retention_plan
             job.retained_observables_payload = result.retained_observables
             job.manifest_path = result.manifest_path
             job.manifest_payload = result.manifest_payload
-            job.status = terminal_status
-            job.terminal_at = time.monotonic()
             job.checkpoint_path = result.checkpoint_path
             job.checkpoint_cleanup_error = None
             batch = job.batch
@@ -477,18 +485,21 @@ def _run_training_real(job: _Job, cfg: "_TrainingCfg", bootstrap_state: Bootstra
                 "execution": "contract_executor",
             },
         )
-    complete_event = {
-        "type": "training_complete",
+    terminal_event = {
+        "type": "training_stopped" if result.stopped else "training_complete",
         "job_id": job.job_id,
         "batch": batch,
+        "program_step": result.final_program_step,
         "loss": last_loss,
         "execution": "contract_executor",
     }
     if manifest_path is not None:
-        complete_event["manifest_path"] = manifest_path
+        terminal_event["manifest_path"] = manifest_path
     if manifest_payload is not None:
-        complete_event["manifest_id"] = manifest_payload.get("id")
-    _emit(job, complete_event)
+        terminal_event["manifest_id"] = manifest_payload.get("id")
+    with job._state_lock:
+        _emit(job, terminal_event)
+        _mark_job_terminal(job, WorkerStatus.STOPPED if result.stopped else WorkerStatus.COMPLETED)
 
 
 def _run_training(job: _Job, bootstrap_state: BootstrapState) -> None:
@@ -568,6 +579,8 @@ def _emit(job: _Job, event: dict) -> None:
         if event.get("type") == "training_progress":
             if (batch := event.get("batch")) is not None:
                 job.batch = int(batch)
+            if (program_step := event.get("program_step")) is not None:
+                job.program_step = int(program_step)
             if "loss" in event:
                 job.last_loss = float(event["loss"])
         job.event_log.append(run_event)
@@ -772,13 +785,9 @@ def create_app(
     @app.post("/jobs/{job_id}/stop", dependencies=[_auth_dep])
     def stop(job_id: str):
         job = _get_job(job_id)
-        job.stop_event.set()
         with job._state_lock:
-            thread = job.thread
-        if thread is None or not thread.is_alive():
-            _mark_job_terminal(job, WorkerStatus.IDLE)
-            with _jobs_lock:
-                _evict_terminal_jobs_locked()
+            if job.status is WorkerStatus.RUNNING:
+                job.stop_event.set()
         return {"ok": True}
 
     @app.get("/jobs/{job_id}/status", dependencies=[_auth_dep])
