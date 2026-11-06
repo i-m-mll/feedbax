@@ -549,7 +549,7 @@ def test_analysis_computation_revision_controls_reuse_and_preserves_exact_receip
     second_revision = "recipe-20" if scenario == "recipe-revision" else first_revision
     with monkeypatch.context() as prior_engine:
         if scenario == "engine-revision":
-            prior_engine.setattr(analysis_specs, "ANALYSIS_ENGINE_REVISION", "3")
+            prior_engine.setattr(analysis_specs, "ANALYSIS_ENGINE_REVISION", "4")
         first_registry = registered(10, first_revision)
         first, first_path = run(first_registry)
     first_bytes = first_path.read_bytes()
@@ -566,6 +566,9 @@ def test_analysis_computation_revision_controls_reuse_and_preserves_exact_receip
         assert (
             second.computation is not None and second.computation.recipe_revision == second_revision
         )
+        if scenario == "engine-revision":
+            assert first.computation.engine_revision == "4"
+            assert second.computation.engine_revision == analysis_specs.ANALYSIS_ENGINE_REVISION
         if entry_point == "direct":
             assert list(analysis_results_cache_dir(first.id, root=root).glob("*.pkl"))
             assert list(analysis_results_cache_dir(second.id, root=root).glob("*.pkl"))

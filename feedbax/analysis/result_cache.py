@@ -21,7 +21,7 @@ from feedbax.contracts.computation_revision import ANALYSIS_ENGINE_REVISION
 
 
 RESULTS_CACHE_SUBDIR = "results"
-ANALYSIS_RESULT_CACHE_SCHEMA_VERSION = "feedbax.analysis.result-cache.v3"
+ANALYSIS_RESULT_CACHE_SCHEMA_VERSION = "feedbax.analysis.result-cache.v4"
 
 _CACHE_LOAD_ERRORS = (
     OSError,
@@ -219,7 +219,6 @@ def _fingerprint_semantic_values(
 def _load_analysis_result_cache(
     cache_path: Path,
     *,
-    analysis_id: str,
     inputs_hash: str,
 ) -> Any:
     import dill
@@ -243,10 +242,6 @@ def _load_analysis_result_cache(
         raise AnalysisResultCacheCorruption(
             f"schema_version={schema_version!r}, expected {ANALYSIS_RESULT_CACHE_SCHEMA_VERSION!r}"
         )
-    if payload.get("analysis_id") != analysis_id:
-        raise AnalysisResultCacheCorruption(
-            f"analysis_id={payload.get('analysis_id')!r}, expected {analysis_id!r}"
-        )
     if payload.get("inputs_hash") != inputs_hash:
         raise AnalysisResultCacheCorruption(
             f"inputs_hash={payload.get('inputs_hash')!r}, expected {inputs_hash!r}"
@@ -259,7 +254,6 @@ def _load_analysis_result_cache(
 def _write_analysis_result_cache(
     cache_path: Path,
     *,
-    analysis_id: str,
     inputs_hash: str,
     result: Any,
 ) -> None:
@@ -267,7 +261,6 @@ def _write_analysis_result_cache(
 
     payload = {
         "schema_version": ANALYSIS_RESULT_CACHE_SCHEMA_VERSION,
-        "analysis_id": analysis_id,
         "inputs_hash": inputs_hash,
         "result": result,
     }

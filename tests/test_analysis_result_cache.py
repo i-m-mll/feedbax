@@ -72,6 +72,18 @@ def test_cache_reuses_only_the_declared_computation_revision(
     assert len(calls) == 2
 
 
+def test_nodes_with_different_final_operations_share_the_raw_result(context, constant_analysis):
+    analysis, calls = constant_analysis
+    doubled = analysis.then_transform_result(lambda result: 2 * result)
+
+    _, results, _ = run_analyses_with_context(
+        {"raw": analysis, "doubled": doubled}, build_toy_analysis_data(), context
+    )
+
+    assert results == {"raw": 7, "doubled": 14}
+    assert len(calls) == 1
+
+
 def test_inherited_revision_does_not_authorize_cache(context, monkeypatch):
     calls = []
 
@@ -204,7 +216,7 @@ def test_cache_replaces_unsafe_payload_version(context, constant_analysis):
     assert _run(analysis, context) == 7
     (entry,) = context.results_cache_dir.glob("*.pkl")
     payload = dill.loads(entry.read_bytes())
-    payload.update(schema_version="feedbax.analysis.result-cache.v2", result=-1)
+    payload.update(schema_version="feedbax.analysis.result-cache.v3", result=-1)
     entry.write_bytes(dill.dumps(payload))
 
     assert _run(analysis, context) == 7

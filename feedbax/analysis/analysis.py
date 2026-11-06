@@ -1,4 +1,5 @@
 import dataclasses
+import hashlib
 import logging
 import pprint
 from collections.abc import Callable, Hashable, Mapping, Sequence
@@ -31,7 +32,6 @@ from feedbax._vendor.jax_cookbook import (
     LDictConstructor,
     MaskedArray,
     anyf,
-    is_module,
     is_none,
     is_type,
     vmap_multi,
@@ -51,11 +51,8 @@ from feedbax.analysis.support import (
     get_origin_type,
     is_json_serializable,
 )
-from feedbax.persistence.support import get_md5_hexdigest
 from feedbax.config.tree import (
-    DoNotHashTree,
     _align_trees_to_structure,
-    hash_callable_leaves,
     ldict_label_only_fn,
     move_ldict_level_above,
     subdict,
@@ -154,14 +151,6 @@ __all__ = [
     "_write_analysis_result_cache",
     "get_validation_trial_specs",
 ]
-
-
-def _project_dependency_metadata(value: Any) -> Any:
-    if isinstance(value, PurePath):
-        return value.parts
-    # Opaque keys and factories can affect reconstruction. Only coalesce them
-    # when they are the same live object. This grants no result-cache authority.
-    return id(value)
 
 
 PARAM_SEQ_LEN_TRUNCATE = 9
@@ -363,6 +352,8 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             and supported prepared values. Cached computations must treat their inputs
             as read-only values. Opaque inputs such as Python functions run without
             result-cache reads or writes.
+
+    Treat node parameters as read-only once used in an analysis graph.
     """
 
     _exclude_fields = (
@@ -603,19 +594,14 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
                 logger.debug("Skipping result cache for %s: %s", self.name, exc)
                 return _run_compute()
 
-            analysis_id = self.md5_str
             cache_root = (
                 analysis_context.results_cache_dir
                 if analysis_context is not None
                 else PATHS.cache / RESULTS_CACHE_SUBDIR
             )
-            cache_path = cache_root / (
-                f"{ANALYSIS_RESULT_CACHE_SCHEMA_VERSION}_{analysis_id}_{inputs_hash}.pkl"
-            )
+            cache_path = cache_root / f"{ANALYSIS_RESULT_CACHE_SCHEMA_VERSION}_{inputs_hash}.pkl"
             try:
-                result = _load_analysis_result_cache(
-                    cache_path, analysis_id=analysis_id, inputs_hash=inputs_hash
-                )
+                result = _load_analysis_result_cache(cache_path, inputs_hash=inputs_hash)
             except FileNotFoundError:
                 pass
             except AnalysisResultCacheCorruption as exc:
@@ -631,9 +617,7 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
 
             result = _run_compute()
             try:
-                _write_analysis_result_cache(
-                    cache_path, analysis_id=analysis_id, inputs_hash=inputs_hash, result=result
-                )
+                _write_analysis_result_cache(cache_path, inputs_hash=inputs_hash, result=result)
                 logger.info("Saved cache for %s to %s", self.name, cache_path)
             except _CACHE_SAVE_ERRORS as exc:
                 logger.warning("Could not save cache for %s: %s", self.name, exc)
@@ -844,14 +828,11 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
             cls, metadata = node
             # Match the tree used at execution: dict keys are sorted by JAX,
             # while ordered or custom mappings carry their own order and metadata.
-            mapping_id = _fingerprint_semantic_values(
-                metadata,
-                header=(cls.__module__, cls.__qualname__),
-                project_leaf=_project_dependency_metadata,
-            )
             return (
                 b"feedbax.analysis.input-mapping.v2",
-                mapping_id,
+                cls.__module__,
+                cls.__qualname__,
+                metadata,
                 tuple(self._hashable_input_value(child) for child in children),
             )
         if isinstance(value, tuple):
@@ -2181,24 +2162,44 @@ class AbstractAnalysis(Module, Generic[PortsType], strict=False):
         return result
 
     @cached_property
-    def md5_str(self):
-        """Identify a logical node from its inputs, operations, and parameters."""
-        # ? TODO: De-duplicate computations *prior* to ops (i.e. some analyses get repeated with
-        # ? different ops)
-        ops_params = self._extract_ops_info()
+    def _logical_identity(self) -> tuple[str, tuple[Any, ...]]:
+        opaque_leaves: list[Any] = []
 
-        params = (
-            dict(cls_name=self.__class__.__name__, inputs=self._hashable_inputs())
-            | ops_params
-            | self._field_params
-        )
+        def project_leaf(value: Any) -> Any:
+            if isinstance(value, PurePath):
+                return value.parts
+            if dataclasses.is_dataclass(value) and not isinstance(value, type):
+                return tuple(
+                    (field.name, getattr(value, field.name))
+                    for field in dataclasses.fields(value)
+                )
+            # Keep opaque PyTree metadata alive along with its identity.
+            opaque_leaves.append(value)
+            return id(value)
 
-        params = hash_callable_leaves(
-            params,
-            is_leaf=is_type(DoNotHashTree),
-            ignore=(LDict, is_module, DoNotHashTree),
+        prep_params = tuple((op.name, op.dep_name, op.params) for op in self._prep_ops)
+        fig_params = tuple((op.name, op.dep_name, op.params) for op in self._fig_ops)
+        final_params = {
+            kind: tuple((op.name, op.params) for op in ops)
+            for kind, ops in self._final_ops_by_type.items()
+        }
+        cls = type(self)
+        fingerprint = _fingerprint_semantic_values(
+            self._hashable_inputs(),
+            self._field_params,
+            prep_params,
+            fig_params,
+            final_params,
+            header=("feedbax.analysis.logical-node", cls.__module__, cls.__qualname__),
+            project_leaf=project_leaf,
         )
-        return get_md5_hexdigest(params)
+        node_id = hashlib.md5(bytes.fromhex(fingerprint), usedforsecurity=False).hexdigest()
+        return node_id, tuple(opaque_leaves)
+
+    @property
+    def md5_str(self) -> str:
+        """Identify a logical node within a live analysis graph."""
+        return self._logical_identity[0]
 
     def _params_to_save(self, hps: PyTree[TreeNamespace], **kwargs):
         """Additional parameters to save.
