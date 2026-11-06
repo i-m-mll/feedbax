@@ -1448,20 +1448,96 @@ def test_an_envelope_alias_parent_resolves_and_pins_its_compiled_bytes(
     assert base["content_hash"] == canonical_sha256(parent.document)
 
 
-def test_an_envelope_alias_cycle_is_refused(repo: Path) -> None:
-    for alias, base in (("ping", "pong"), ("pong", "ping")):
+def test_shared_envelope_compiles_once_and_retains_each_edge_pin(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    producer_path = envelope_path(repo, "widened")
+    envelope_path(repo, "widened-link").symlink_to(producer_path.name)
+    consumer_path = envelope_path(repo, "forked")
+    write_envelope(
+        consumer_path,
+        {
+            "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
+            "name": "forked",
+            "base": "widened-link",
+            "training": {
+                "rows_mode": "append",
+                "checkpoint_initialization": [
+                    {
+                        "row": "widened",
+                        "mode": "continue_from",
+                        "source": {"kind": "envelope", "alias": "widened"},
+                    }
+                ],
+            },
+        },
+    )
+    compiler = kernel()
+    read_envelope = compiler.read_envelope
+    read_refs: list[str] = []
+    producer_ref = f"{ENVELOPE_DIRECTORY}/widened.envelope.json"
+
+    def record_envelope_read(raw: bytes, *, envelope_ref: str) -> Any:
+        read_refs.append(envelope_ref)
+        return read_envelope(raw, envelope_ref=envelope_ref)
+
+    monkeypatch.setattr(compiler, "read_envelope", record_envelope_read)
+    first = compiler.compile_envelope_file(consumer_path, repo_root=repo)
+    assert read_refs.count(producer_ref) == 1
+    producer = _read(repo, "widened")
+    producer["training"]["tags"]["add"].append("refreshed")
+    _write(repo, "widened", producer)
+    second = compiler.compile_envelope_file(consumer_path, repo_root=repo)
+    assert read_refs.count(producer_ref) == 2
+
+    for outcome in (first, second):
+        base = outcome.compile_lock["base"]
+        planned = next(
+            ref for ref in outcome.compile_lock["references"] if ref["kind"] == "planned_product"
+        )
+        assert base["ref"] == f"{ENVELOPE_DIRECTORY}/widened-link.envelope.json"
+        assert planned["envelope_ref"] == producer_ref
+        assert planned["compiled_content_hash"] == base["content_hash"]
+
+    assert "refreshed" not in first.document["tags"]
+    assert "refreshed" in second.document["tags"]
+    assert first.compile_lock["base"]["content_hash"] != second.compile_lock["base"]["content_hash"]
+
+
+def test_a_mixed_envelope_cycle_is_refused_at_the_repeated_alias(repo: Path) -> None:
+    from tests.support.fake_project_experiment import EVALUATION_BASE
+
+    for alias, base, subject in (("ping", "pong", "widened"), ("pong", EVALUATION_BASE, "ping")):
         write_envelope(
             envelope_path(repo, alias),
             {
                 "schema": EXPERIMENT_ENVELOPE_SCHEMA_VERSION,
                 "name": alias,
                 "base": base,
-                "training": {"rows_mode": "append", "tags": {"add": [alias]}},
+                "evaluation": {
+                    "subject": {"kind": "envelope", "alias": subject},
+                    "subject_id": alias,
+                },
             },
         )
 
-    with pytest.raises(ExperimentEnvelopeRejection, match="cycle"):
-        kernel().compile_envelope_file(envelope_path(repo, "ping"), repo_root=repo)
+    compiler = kernel()
+    with pytest.raises(
+        ExperimentEnvelopeRejection, match="envelope alias cycle: pong -> ping -> pong"
+    ) as inheritance:
+        compiler.compile_envelope_file(envelope_path(repo, "ping"), repo_root=repo)
+    assert inheritance.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+    assert inheritance.value.field == "envelope.base"
+
+    with pytest.raises(
+        ExperimentEnvelopeRejection, match="envelope reference cycle: ping -> pong -> ping"
+    ) as reference:
+        compiler.compile_envelope_file(envelope_path(repo, "pong"), repo_root=repo)
+    assert (
+        reference.value.category
+        is ExperimentEnvelopeRejectionCategory.UNRESOLVED_UPSTREAM_REFERENCE
+    )
+    assert reference.value.field == "evaluation.subject"
 
 
 def test_a_rootless_envelope_is_refused(repo: Path) -> None:

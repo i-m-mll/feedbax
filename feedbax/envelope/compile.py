@@ -2707,6 +2707,179 @@ def authored_layer_of(document: Mapping[str, Any]) -> str | None:
     return present[0] if len(present) == 1 else None
 
 
+class _EnvelopeEvaluation:
+    """Evaluate file-backed authored envelopes once within one compile.
+
+    The compiler and repository define the authority for canonical file refs.
+    The active path follows demand order, and only successful outcomes are
+    shared. Each edge still interprets the outcome in its own context.
+    """
+
+    def __init__(
+        self,
+        kernel: EnvelopeKernel,
+        repo_root: Path,
+        *,
+        ancestor_aliases: tuple[str, ...] = (),
+    ) -> None:
+        self.kernel = kernel
+        self.repo_root = repo_root
+        self._resolved_root = repo_root.resolve()
+        self._active_aliases = list(ancestor_aliases)
+        self._outcomes: dict[str, EnvelopeCompileOutcome] = {}
+        self._alias_parents: dict[tuple[str, str], ResolvedParent] = {}
+        self._frozen_parents: dict[str, ResolvedParent] = {}
+
+    def _file_ref(self, path: Path) -> str:
+        try:
+            return str(path.resolve().relative_to(self._resolved_root))
+        except ValueError as exc:
+            raise ExperimentEnvelopeRejection(
+                ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+                "an envelope must be a repo-relative document inside the repository",
+                field=str(path),
+            ) from exc
+
+    def compile_file(self, path: Path) -> EnvelopeCompileOutcome:
+        return self._evaluate_file(self._file_ref(path))
+
+    def _evaluate_file(self, envelope_ref: str) -> EnvelopeCompileOutcome:
+        if envelope_ref in self._outcomes:
+            return self._outcomes[envelope_ref]
+        outcome = self.kernel._compile_envelope(
+            (self._resolved_root / envelope_ref).read_bytes(),
+            envelope_ref=envelope_ref,
+            evaluation=self,
+        )
+        self._outcomes[envelope_ref] = outcome
+        return outcome
+
+    def _compile_alias(
+        self, alias: str, field: str, *, inheritance: bool
+    ) -> tuple[str, EnvelopeCompileOutcome]:
+        alias_ref = self.kernel.layout.alias_ref(alias, field=field)
+        self.kernel.refuse_compiled_output_base(alias_ref, field)
+        path = self.repo_root / alias_ref
+        category = (
+            ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+            if inheritance
+            else ExperimentEnvelopeRejectionCategory.UNRESOLVED_UPSTREAM_REFERENCE
+        )
+        if not path.is_file():
+            if inheritance:
+                _reject(
+                    category,
+                    field,
+                    f"{alias!r} resolves to neither the envelope {alias_ref!r} nor a "
+                    "repo-relative path to an existing document",
+                )
+            _reject(
+                category,
+                field,
+                f"{alias!r} names no envelope at {alias_ref!r}",
+                correct_home="a cross-layer reference names the alias of the envelope "
+                "that produces it",
+            )
+        # Track authored aliases so a mixed cycle is refused at the same edge
+        # (and with the same category) as an uncached traversal.
+        if alias in self._active_aliases:
+            chain = " -> ".join((*self._active_aliases, alias))
+            kind = "alias" if inheritance else "reference"
+            _reject(category, field, f"envelope {kind} cycle: {chain}")
+        self._active_aliases.append(alias)
+        try:
+            return alias_ref, self.compile_file(path)
+        finally:
+            self._active_aliases.pop()
+
+    def compile_upstream(self, alias: str, field: str) -> EnvelopeCompileOutcome:
+        _, outcome = self._compile_alias(alias, field, inheritance=False)
+        return outcome
+
+    def resolve_parent(
+        self,
+        base: str,
+        *,
+        expected_layer: ExperimentEnvelopeLayer,
+        field: str = "envelope.base",
+    ) -> ResolvedParent:
+        """Resolve the single parent: an envelope alias or a frozen document.
+
+        The parent must belong to ``expected_layer``. The layer is read from the
+        *resolved document's own declared schema id*, never from the base string,
+        so an alias chain cannot smuggle a cross-layer parent past the check.
+        """
+        self.kernel.refuse_compiled_output_base(base, field)
+        if base.endswith(".json"):
+            parent = self._resolve_frozen_parent(base, field)
+        else:
+            parent = self._resolve_alias_parent(base, field)
+        if parent.layer is not expected_layer:
+            _reject(
+                ExperimentEnvelopeRejectionCategory.CROSS_FAMILY_BASE,
+                field,
+                f"a {expected_layer.value!r} envelope resolves {base!r} to {parent.ref}, "
+                f"which is a {parent.layer.value!r} document; an envelope inherits from its "
+                "own layer only",
+                correct_home=f"the {parent.layer.value} document is the base of a "
+                f"{parent.layer.value} envelope; a {expected_layer.value} envelope reaches "
+                "it by name, as a cross-layer reference, not as a parent",
+            )
+        return parent
+
+    def _resolve_frozen_parent(self, base: str, field: str) -> ResolvedParent:
+        if base in self._frozen_parents:
+            return self._frozen_parents[base]
+        repo_root = self.repo_root
+        pinned = load_pinned(repo_root, base, skips=("rows",))
+        if pinned is None:
+            _reject(
+                ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+                field,
+                f"{base!r} is not a readable repo-relative JSON document",
+            )
+        contract = output_contract_of_document(pinned.document)
+        if contract is None:
+            _reject(
+                ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
+                field,
+                f"{base!r} declares schema_id {pinned.document.get('schema_id')!r}, which is "
+                "no Feedbax layer output family, so it is not an experiment parent",
+                correct_home="a base is a document of the same layer as the envelope that "
+                "names it; an unrelated document is read through its own layer's envelope",
+            )
+        parent = ResolvedParent(
+            "frozen_document",
+            base,
+            pinned,
+            build_lineage(repo_root, pinned, source_refs=source_refs_of(repo_root, base)),
+            contract.layer,
+            contract,
+        )
+        self._frozen_parents[base] = parent
+        return parent
+
+    def _resolve_alias_parent(self, alias: str, field: str) -> ResolvedParent:
+        alias_ref, outcome = self._compile_alias(alias, field, inheritance=True)
+        key = (alias_ref, str(outcome.compile_lock["envelope"]["ref"]))
+        if key in self._alias_parents:
+            return self._alias_parents[key]
+        repo_root = self.repo_root
+        pinned = PinnedDocument.of(alias_ref, outcome.document, skips=("rows",))
+        contract = output_contract_of_document(outcome.document)
+        assert contract is not None
+        parent = ResolvedParent(
+            "envelope_alias",
+            alias_ref,
+            pinned,
+            build_lineage(repo_root, pinned, source_refs=source_refs_of(repo_root, alias_ref)),
+            contract.layer,
+            contract,
+        )
+        self._alias_parents[key] = parent
+        return parent
+
+
 class EnvelopeKernel:
     """The one compiler, bound to one project's data declaration."""
 
@@ -2773,92 +2946,9 @@ class EnvelopeKernel:
         expected_layer: ExperimentEnvelopeLayer,
         field: str = "envelope.base",
     ) -> ResolvedParent:
-        """Resolve the single parent: an envelope alias or a frozen document.
-
-        The parent must belong to ``expected_layer``. The layer is read from the
-        *resolved document's own declared schema id*, never from the base string,
-        so an alias chain cannot smuggle a cross-layer parent past the check.
-        """
-        self.refuse_compiled_output_base(base, field)
-        if base.endswith(".json"):
-            parent = self._resolve_frozen_parent(repo_root, base, field)
-        else:
-            parent = self._resolve_alias_parent(repo_root, base, stack, field)
-        if parent.layer is not expected_layer:
-            _reject(
-                ExperimentEnvelopeRejectionCategory.CROSS_FAMILY_BASE,
-                field,
-                f"a {expected_layer.value!r} envelope resolves {base!r} to {parent.ref}, "
-                f"which is a {parent.layer.value!r} document; an envelope inherits from its "
-                "own layer only",
-                correct_home=f"the {parent.layer.value} document is the base of a "
-                f"{parent.layer.value} envelope; a {expected_layer.value} envelope reaches "
-                "it by name, as a cross-layer reference, not as a parent",
-            )
-        return parent
-
-    def _resolve_frozen_parent(self, repo_root: Path, base: str, field: str) -> ResolvedParent:
-        pinned = load_pinned(repo_root, base, skips=("rows",))
-        if pinned is None:
-            _reject(
-                ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
-                field,
-                f"{base!r} is not a readable repo-relative JSON document",
-            )
-        contract = output_contract_of_document(pinned.document)
-        if contract is None:
-            _reject(
-                ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
-                field,
-                f"{base!r} declares schema_id {pinned.document.get('schema_id')!r}, which is "
-                "no Feedbax layer output family, so it is not an experiment parent",
-                correct_home="a base is a document of the same layer as the envelope that "
-                "names it; an unrelated document is read through its own layer's envelope",
-            )
-        return ResolvedParent(
-            "frozen_document",
-            base,
-            pinned,
-            build_lineage(repo_root, pinned, source_refs=source_refs_of(repo_root, base)),
-            contract.layer,
-            contract,
-        )
-
-    def _resolve_alias_parent(
-        self, repo_root: Path, base: str, stack: tuple[str, ...], field: str
-    ) -> ResolvedParent:
-        alias_ref = self.layout.alias_ref(base, field=field)
-        # The joined path is checked too, not only the authored string: a project
-        # whose envelope directory sits under its output directory would
-        # otherwise reach compiled output through an alias that looks contained.
-        self.refuse_compiled_output_base(alias_ref, field)
-        if not (repo_root / alias_ref).is_file():
-            _reject(
-                ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
-                field,
-                f"{base!r} resolves to neither the envelope {alias_ref!r} nor a "
-                "repo-relative path to an existing document",
-            )
-        if base in stack:
-            _reject(
-                ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
-                field,
-                f"envelope alias cycle: {' -> '.join((*stack, base))}",
-            )
-        outcome = self.compile_envelope_file(
-            repo_root / alias_ref, repo_root=repo_root, _stack=(*stack, base)
-        )
-        pinned = PinnedDocument.of(alias_ref, outcome.document, skips=("rows",))
-        contract = output_contract_of_document(outcome.document)
-        assert contract is not None
-        return ResolvedParent(
-            "envelope_alias",
-            alias_ref,
-            pinned,
-            build_lineage(repo_root, pinned, source_refs=source_refs_of(repo_root, alias_ref)),
-            contract.layer,
-            contract,
-        )
+        """Resolve and pin an alias or frozen parent of the expected layer."""
+        evaluation = _EnvelopeEvaluation(self, repo_root, ancestor_aliases=stack)
+        return evaluation.resolve_parent(base, expected_layer=expected_layer, field=field)
 
     # -- compilation ------------------------------------------------------
 
@@ -2868,9 +2958,20 @@ class EnvelopeKernel:
         *,
         repo_root: Path,
         envelope_ref: str,
-        _stack: tuple[str, ...] = (),
     ) -> EnvelopeCompileOutcome:
-        """Compile one authored envelope into a document and its compile lock."""
+        """Compile supplied bytes without treating them as a file-backed dependency."""
+        return self._compile_envelope(
+            raw, envelope_ref=envelope_ref, evaluation=_EnvelopeEvaluation(self, repo_root)
+        )
+
+    def _compile_envelope(
+        self,
+        raw: bytes,
+        *,
+        envelope_ref: str,
+        evaluation: _EnvelopeEvaluation,
+    ) -> EnvelopeCompileOutcome:
+        repo_root = evaluation.repo_root
         envelope = self.read_envelope(raw, envelope_ref=envelope_ref)
         compiler_contract = CompilerContract(
             contract_id=EXPERIMENT_ENVELOPE_COMPILER_CONTRACT_ID,
@@ -2907,30 +3008,8 @@ class EnvelopeKernel:
         parent = (
             None
             if envelope.base is None
-            else self.resolve_parent(repo_root, envelope.base, _stack, expected_layer=layer)
+            else evaluation.resolve_parent(envelope.base, expected_layer=layer)
         )
-
-        def compile_upstream(alias: str, field: str) -> EnvelopeCompileOutcome:
-            upstream_ref = self.layout.alias_ref(alias, field=field)
-            self.refuse_compiled_output_base(upstream_ref, field)
-            if not (repo_root / upstream_ref).is_file():
-                _reject(
-                    ExperimentEnvelopeRejectionCategory.UNRESOLVED_UPSTREAM_REFERENCE,
-                    field,
-                    f"{alias!r} names no envelope at {upstream_ref!r}",
-                    correct_home="a cross-layer reference names the alias of the envelope "
-                    "that produces it",
-                )
-            if alias in _stack:
-                _reject(
-                    ExperimentEnvelopeRejectionCategory.UNRESOLVED_UPSTREAM_REFERENCE,
-                    field,
-                    f"envelope reference cycle: {' -> '.join((*_stack, alias))}",
-                )
-            return self.compile_envelope_file(
-                repo_root / upstream_ref, repo_root=repo_root, _stack=(*_stack, alias)
-            )
-
         context = LayerCompileContext(
             envelope=envelope,
             envelope_ref=envelope_ref,
@@ -2939,7 +3018,7 @@ class EnvelopeKernel:
             repo_root=repo_root,
             layout=self.layout,
             declaration=self.declaration,
-            compile_upstream=compile_upstream,
+            compile_upstream=evaluation.compile_upstream,
             parent_authorities=self.parent_authorities,
         )
         lowered = _LAYER_LOWERERS[layer](context)
@@ -3141,24 +3220,10 @@ class EnvelopeKernel:
         path: Path,
         *,
         repo_root: Path,
-        _stack: tuple[str, ...] = (),
     ) -> EnvelopeCompileOutcome:
         """Compile the envelope at ``path``, which must lie inside ``repo_root``."""
-        resolved = path.resolve()
-        try:
-            envelope_ref = str(resolved.relative_to(repo_root.resolve()))
-        except ValueError as exc:
-            raise ExperimentEnvelopeRejection(
-                ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
-                "an envelope must be a repo-relative document inside the repository",
-                field=str(path),
-            ) from exc
-        return self.compile_envelope(
-            resolved.read_bytes(),
-            repo_root=repo_root,
-            envelope_ref=envelope_ref,
-            _stack=_stack,
-        )
+        evaluation = _EnvelopeEvaluation(self, repo_root)
+        return evaluation.compile_file(path)
 
     # -- output ------------------------------------------------------------
 
