@@ -9,17 +9,28 @@ import { useTrainingStore } from '@/stores/trainingStore';
 import { getTrainingScenario, useWorkspaceStore } from '@/stores/workspaceStore';
 import { useComponents } from '@/hooks/useComponents';
 import { isAcausalGraphSpec } from '@/types/graph';
-import { compileStatusForReport, graphPathKey, stableGraphHash } from '@/features/domains/acausal';
-import { useCompileStatusStore } from '@/stores/compileStatusStore';
+import {
+  compileActiveLayer,
+  compileLayerStatus,
+  compileTarget,
+  reportForLayer,
+  useDocumentCompileLayers,
+} from '@/stores/compileStatusStore';
+import { useProjectsStore } from '@/stores/projectsStore';
 
 export function StatusBar() {
+  const graphId = useGraphStore((state) => state.graphId);
   const graph = useGraphStore((state) => state.graph);
   const rootGraph = useRootGraph();
   const graphStack = useGraphStore((state) => state.graphStack);
   const workspace = useWorkspaceStore((state) => state.workspace);
   const { components } = useComponents();
-  const reports = useCompileStatusStore((state) => state.reports);
-  const compilingPaths = useCompileStatusStore((state) => state.compilingPaths);
+  const documentId = useProjectsStore((state) => state.activeTabId);
+  const compileLayers = useDocumentCompileLayers(documentId);
+  const target = useMemo(
+    () => compileTarget(documentId, { graphId, graph, graphStack }),
+    [documentId, graphId, graph, graphStack],
+  );
   const trainingScenario = getTrainingScenario(workspace);
   const taskBindingSpec = useMemo(() => {
     const currentGraphPath = graphStack
@@ -43,25 +54,13 @@ export function StatusBar() {
     () => (!isAcausalGraphSpec(graph) && schemaRegistry ? validateGraph(graph, schemaRegistry) : { valid: true, errors: [], warnings: [], cycles: [] }),
     [graph, schemaRegistry]
   );
-  const acausalBalance = useMemo(() => {
-    if (!isAcausalLayer) return null;
-    const path = graphPathKey(
-      graphStack.map((layer) => layer.childNodeId).filter((item): item is string => Boolean(item))
-    );
-    const report = reports[path];
-    const status = compileStatusForReport(
-      report,
-      stableGraphHash(graph),
-      compilingPaths.has(path)
-    );
-    const hasError = report?.diagnostics?.some((diagnostic) => diagnostic.severity === 'error') ?? false;
-    return {
-      status,
-      hasError,
-      equations: report?.summary?.equations ?? report?.summary?.eq ?? 0,
-      unknowns: report?.summary?.unknowns ?? report?.summary?.unk ?? 0,
-    };
-  }, [compilingPaths, graph, graphStack, isAcausalLayer, reports]);
+  const compileLayer = target ? compileLayers.get(target.pathKey) : undefined;
+  const report = reportForLayer(compileLayer, target?.kind === 'ready' ? target.hash : undefined);
+  const compileStatus = target?.kind === 'ready' ? compileLayerStatus(compileLayer, target.hash)
+    : target?.kind === 'invalid' ? 'error'
+    : 'never_compiled';
+  const failure = compileLayer?.failed;
+  const hasError = report?.diagnostics?.some((diagnostic) => diagnostic.severity === 'error') ?? false;
   const status = useTrainingStore((state) => state.status);
 
   return (
@@ -78,17 +77,30 @@ export function StatusBar() {
         )}
         {validation.valid ? 'Valid graph' : `${validation.errors.length} issue(s)`}
       </div>
-      {acausalBalance && (
+      {isAcausalLayer && (
         <div className="flex items-center gap-1">
-          {acausalBalance.hasError || acausalBalance.status === 'error' ? (
+          {hasError || compileStatus === 'error' ? (
             <AlertTriangle className="w-3 h-3 text-red-500" />
-          ) : acausalBalance.status === 'stale' ? (
+          ) : compileStatus === 'stale' ? (
             <AlertTriangle className="w-3 h-3 text-amber-500" />
           ) : (
             <CheckCircle2 className="w-3 h-3 text-mint-500" />
           )}
-          eq {acausalBalance.equations} / unk {acausalBalance.unknowns}
-          {acausalBalance.status === 'stale' && <span className="text-amber-600">stale</span>}
+          eq {report?.summary?.equations ?? report?.summary?.eq ?? 0}
+          {' / unk '}{report?.summary?.unknowns ?? report?.summary?.unk ?? 0}
+          {compileStatus === 'stale' && <span className="text-amber-600">stale</span>}
+          {compileStatus === 'compiling' && <span>Compiling…</span>}
+          {target?.kind === 'invalid' && <span className="text-red-600">{target.message}</span>}
+          {target?.kind === 'ready' && compileStatus === 'error' && (
+            <button
+              type="button"
+              className="text-red-600 underline"
+              title={failure && failure.hash === target.hash ? failure.message : undefined}
+              onClick={() => void compileActiveLayer(target.key, 'retry')}
+            >
+              Retry compile
+            </button>
+          )}
         </div>
       )}
       <div className="ml-auto capitalize">{status}</div>

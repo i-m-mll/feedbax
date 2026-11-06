@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 import json
 import os
 import uuid
@@ -295,12 +295,14 @@ class GraphService:
         node_path: list[str],
         interior: AcausalGraphSpec,
         component_registry: object,
+        authored_interior: dict[str, Any] | None = None,
     ) -> DomainCompileReport:
         record = self.get_graph(graph_id)
         report = compile_acausal_authoring_report(
             interior,
             node_path=node_path,
             component_registry=component_registry,
+            authored_interior=authored_interior,
         )
         self._save_compile_report(record, node_path, report)
         return report

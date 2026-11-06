@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
@@ -444,6 +445,15 @@ def test_compile_endpoint_returns_report_and_malformed_body_422(
         payload = response.json()
         assert payload["status"] == "ok"
         assert service.get_graph(record.graph_id).project.compile_reports is not None
+
+        fixture_path = Path(__file__).parent / "fixtures" / "acausal_report_subject.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        authored = client.post(
+            f"/api/graphs/{record.graph_id}/nodes/compile",
+            json={"node_path": ["plant"], "interior": fixture["interior"]},
+        )
+        assert authored.status_code == 200
+        assert authored.json()["interior_content_hash"] == fixture["subject"]
 
         malformed = client.post(
             f"/api/graphs/{record.graph_id}/nodes/compile",

@@ -1,0 +1,31 @@
+{
+  "interior": {
+    "physical_domain": "translational",
+    "nodes": {
+      "plant": {
+        "type": "AcausalSystem",
+        "params": {
+          "authored": [null, {"null_value": null, "numeric": 1e-7, "large": 1000000000000000100}],
+          "typed": {
+            "schema_version": "feedbax.studio.value.v1",
+            "mode": "constant",
+            "value": 1
+          }
+        }
+      }
+    },
+    "solver": {"solver_type": "implicit_euler", "dt": 1, "root_finder": {}},
+    "subgraphs": {
+      "plant": {
+        "physical_domain": "translational",
+        "nodes": {"𝄞|a": {"type": "Ground"}, ":b": {"type": "Ground"}},
+        "connections": [
+          {"a": [":b", "flange"], "b": ["𝄞|a", "flange"]}
+        ],
+        "solver": {"solver_type": "euler", "dt": 0.01},
+        "metadata": null
+      }
+    }
+  },
+  "subject": "9d4c1213a9c85fbb6c6ed6b2b3797694cf6a7465fd426ef4cc663aadc764b9b2"
+}

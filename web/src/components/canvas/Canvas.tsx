@@ -83,14 +83,20 @@ import type {
 } from '@/types/workspace';
 import { ChevronsDown, ChevronsUp, Info, ListTree, Map as MapIcon, MoveDiagonal } from 'lucide-react';
 import {
-  compileStatusForReport,
   evaluateAcausalConnection,
   graphPathKey,
   rollupCompileStatus,
-  stableGraphHash,
 } from '@/features/domains/acausal';
 import type { AssemblyViewMode } from '@/features/domains/mechanicsAssembly';
-import { useCompileStatusStore } from '@/stores/compileStatusStore';
+import {
+  compileActiveLayer,
+  compileLayerStatus,
+  compileTarget,
+  reportForLayer,
+  shouldAutoCompile,
+  useDocumentCompileLayers,
+} from '@/stores/compileStatusStore';
+import { useProjectsStore } from '@/stores/projectsStore';
 
 interface TaskSourceNodeData extends Record<string, unknown> {
   label: string;
@@ -705,9 +711,15 @@ export function Canvas() {
   const toggleMinimap = useSettingsStore((state) => state.toggleMinimap);
   const showDomainLegend = useSettingsStore((state) => state.showDomainLegend);
   const setShowDomainLegend = useSettingsStore((state) => state.setShowDomainLegend);
-  const reports = useCompileStatusStore((state) => state.reports);
-  const compilingPaths = useCompileStatusStore((state) => state.compilingPaths);
-  const compileNode = useCompileStatusStore((state) => state.compileNode);
+  const documentId = useProjectsStore((state) => state.activeTabId);
+  const compileLayers = useDocumentCompileLayers(documentId);
+  const target = useMemo(
+    () => compileTarget(documentId, { graphId, graph, graphStack }),
+    [documentId, graphId, graph, graphStack],
+  );
+  const automaticCompileKey = target?.kind === 'ready' && shouldAutoCompile(compileLayers.get(target.pathKey), target.hash)
+    ? target.key
+    : null;
   const {
     selectTopPaneEntity,
     hoverTopPaneEntity,
@@ -755,7 +767,10 @@ export function Canvas() {
     isAcausalLayer && isAcausalGraphSpec(graph) && graph.physical_domain === 'planar_multibody';
   const showAssemblyView = canShowAssemblyView && assemblyViewMode !== 'graph';
   const hideGraphCanvas = canShowAssemblyView && assemblyViewMode === 'assembly';
-  const assemblyDiagnostics = reports[graphPathKey(currentGraphPath)]?.diagnostics ?? [];
+  const assemblyDiagnostics = reportForLayer(
+    compileLayers.get(graphPathKey(currentGraphPath)),
+    target?.kind === 'ready' ? target.hash : undefined,
+  )?.diagnostics ?? [];
   const assemblyPanelWidth = `${Math.round(
     Math.max(0.28, Math.min(0.72, uiState.assembly_view?.split_ratio ?? 0.42)) * 100
   )}%`;
@@ -1123,15 +1138,14 @@ export function Canvas() {
             status: rollupCompileStatus({
               graph: childGraph,
               path: [...currentGraphPath, node.id],
-              reports,
-              compilingPaths,
+              statusForLayer: (path, hash) => compileLayerStatus(compileLayers.get(graphPathKey(path)), hash),
             }),
           },
         };
       }),
       ...taskSourceNodes,
     ],
-    [compilingPaths, currentGraphPath, graph.subgraphs, nodes, reports, taskSourceNodes]
+    [compileLayers, currentGraphPath, graph.subgraphs, nodes, taskSourceNodes]
   );
   const baseDisplayEdges = useMemo(
     () => [...edges, ...taskBindingEdges],
@@ -1167,22 +1181,12 @@ export function Canvas() {
   }, [reactFlow]);
 
   useEffect(() => {
-    if (!graphId || !isAcausalLayer || !isAcausalGraphSpec(graph)) return undefined;
-    const path = currentGraphPath;
-    const key = graphPathKey(path);
-    const status = compileStatusForReport(
-      reports[key],
-      stableGraphHash(graph),
-      compilingPaths.has(key)
-    );
-    if (status !== 'never_compiled' && status !== 'stale') return undefined;
+    if (!automaticCompileKey) return;
     const timeout = window.setTimeout(() => {
-      compileNode(graphId, path, graph).catch((error) => {
-        console.error('Failed to compile acausal interior', error);
-      });
+      void compileActiveLayer(automaticCompileKey, 'automatic');
     }, 500);
     return () => window.clearTimeout(timeout);
-  }, [compileNode, compilingPaths, currentGraphPath, graph, graphId, isAcausalLayer, reports]);
+  }, [automaticCompileKey]);
 
   const schemaRegistry = useMemo(
     () =>
