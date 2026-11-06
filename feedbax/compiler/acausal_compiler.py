@@ -10,7 +10,12 @@ import diffrax as dfx
 import optimistix as optx
 
 from feedbax.acausal.base import AcausalConnection, AcausalElement
-from feedbax.acausal.analysis import GearConstraintError, StructuralAnalysis, analyze_system
+from feedbax.acausal.analysis import (
+    CoordinateOwnershipError,
+    GearConstraintError,
+    StructuralAnalysis,
+    analyze_system,
+)
 from feedbax.acausal.rotational import (
     AngleSensor,
     AngularVelocitySensor,
@@ -354,6 +359,21 @@ def _diagnose_acausal_spec(
                         flattened.connections,
                     ))
                 )
+        except CoordinateOwnershipError as exc:
+            diagnostics.append(
+                DomainDiagnostic(
+                    severity="error",
+                    code=(
+                        "acausal.grounded_prescribed_coordinate"
+                        if exc.grounds
+                        else "acausal.parallel_across_sources"
+                    ),
+                    message=str(exc),
+                    node_ids=[*exc.grounds, *exc.sources],
+                    variables=[exc.coordinate],
+                    counts={"n_sources": len(exc.sources)},
+                )
+            )
         except GearConstraintError as exc:
             diagnostics.append(
                 DomainDiagnostic(
@@ -744,30 +764,17 @@ def _diagnose_structural_analysis(analysis: StructuralAnalysis) -> list[DomainDi
                     counts=counts,
                 )
             )
-        if not network.has_ground:
+        if not network.has_coordinate_reference:
             diagnostics.append(
                 DomainDiagnostic(
                     severity="error",
                     code="acausal.ungrounded_network",
                     message=(
-                        "Acausal network has no Ground or RotationalGround: "
+                        "Acausal network has no Ground, RotationalGround, or prescribed motion: "
                         f"elements={list(network.elements)!r}."
                     ),
                     node_ids=list(network.elements),
                     counts={"n_elements": len(network.elements)},
-                )
-            )
-        if len(network.across_source_elements) > 1:
-            diagnostics.append(
-                DomainDiagnostic(
-                    severity="error",
-                    code="acausal.parallel_across_sources",
-                    message=(
-                        "Acausal network has multiple prescribed across-variable sources: "
-                        f"elements={list(network.across_source_elements)!r}."
-                    ),
-                    node_ids=list(network.across_source_elements),
-                    counts={"n_sources": len(network.across_source_elements)},
                 )
             )
         if len(network.source_elements) > 1:

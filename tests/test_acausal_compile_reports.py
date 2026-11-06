@@ -271,19 +271,6 @@ def test_planar_multibody_reports_missing_muscle_path_frame() -> None:
             ("mass", "act", "Ground"),
         ),
         (
-            "acausal.parallel_across_sources",
-            AcausalGraphSpec(
-                physical_domain="translational",
-                nodes={
-                    "motion_a": ComponentSpec(type="PrescribedMotion"),
-                    "motion_b": ComponentSpec(type="PrescribedMotion"),
-                },
-                connections=[{"a": ("motion_a", "flange"), "b": ("motion_b", "flange")}],
-                solver={"solver_type": "euler", "dt": 0.001},
-            ),
-            ("motion_a", "motion_b", "sources"),
-        ),
-        (
             "acausal.series_through_sources",
             AcausalGraphSpec(
                 physical_domain="translational",

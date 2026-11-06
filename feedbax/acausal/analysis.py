@@ -22,9 +22,8 @@ class StructuralNetwork:
     variables: tuple[str, ...]
     differential_variables: tuple[str, ...]
     equations: tuple[str, ...]
-    has_ground: bool
+    has_coordinate_reference: bool
     source_elements: tuple[str, ...]
-    across_source_elements: tuple[str, ...]
 
     @property
     def counts(self) -> dict[str, int]:
@@ -49,6 +48,28 @@ class StructuralAnalysis:
 
 class GearConstraintError(ValueError):
     """An authored gear constraint cannot be reduced to a nonsingular tree."""
+
+
+class CoordinateOwnershipError(ValueError):
+    """A reduced coordinate has competing prescribed or grounded values."""
+
+    def __init__(
+        self, coordinate: str, grounds: tuple[str, ...], sources: tuple[str, ...]
+    ) -> None:
+        self.coordinate = coordinate
+        self.grounds = grounds
+        self.sources = sources
+        if grounds:
+            message = (
+                f"Reduced coordinate {coordinate!r} is grounded by {list(grounds)!r} "
+                f"and driven by prescribed motion sources {list(sources)!r}."
+            )
+        else:
+            message = (
+                f"Reduced coordinate {coordinate!r} has multiple prescribed motion "
+                f"sources {list(sources)!r}."
+            )
+        super().__init__(message)
 
 
 class UnionFind:
@@ -131,37 +152,27 @@ def analyze_system(
                 all_vars[member].alias_of = root
                 eliminated[member] = root
 
-    grounded: set[str] = set()
-    input_vars: dict[str, int] = {}
-    input_specs: dict[str, tuple[str, int]] = {}
-    input_idx_counter = 0
+    coordinate_owners: dict[str, list[str]] = {}
+    authored_inputs: dict[str, tuple[str, int]] = {}
     output_map: dict[str, str] = {}
     gears: list[AcausalElement] = []
 
     for elem in sorted(elements.values(), key=lambda item: item.name):
         for slot_idx, signal_input in enumerate(elem.signal_inputs):
             fqn = f"{elem.name}.{signal_input}"
-            input_vars[fqn] = input_idx_counter
-            input_specs[fqn] = (elem.name, slot_idx)
-            all_vars[fqn].is_input = True
-            input_idx_counter += 1
+            authored_inputs[fqn] = (elem.name, slot_idx)
 
         if elem.element_type == "ground":
             for port in elem.ports.values():
                 for slot in port.across_vars:
                     fqn = f"{elem.name}.{port.name}.{slot}"
                     canonical = _resolve(fqn, eliminated)
-                    grounded.add(canonical)
-                    all_vars[canonical].is_grounded = True
-                    all_vars[canonical].is_differential = False
+                    coordinate_owners.setdefault(canonical, []).append(fqn)
 
         elif elem.element_type == "force_source":
             for port in elem.ports.values():
                 through_fqn = f"{elem.name}.{port.name}.{port.through_var}"
-                input_vars[through_fqn] = input_idx_counter
-                input_specs[through_fqn] = (elem.name, 0)
-                all_vars[through_fqn].is_input = True
-                input_idx_counter += 1
+                authored_inputs[through_fqn] = (elem.name, 0)
 
         elif elem.element_type == "prescribed_motion":
             for port in elem.ports.values():
@@ -170,11 +181,8 @@ def analyze_system(
                 ):
                     fqn = f"{elem.name}.{port.name}.{slot}"
                     canonical = _resolve(fqn, eliminated)
-                    input_vars[canonical] = input_idx_counter
-                    input_specs[canonical] = (elem.name, slot_idx)
-                    all_vars[canonical].is_input = True
-                    all_vars[canonical].is_differential = False
-                    input_idx_counter += 1
+                    coordinate_owners.setdefault(canonical, []).append(fqn)
+                    authored_inputs[fqn] = (elem.name, slot_idx)
 
         elif elem.element_type == "sensor":
             if elem.sensor_output is not None:
@@ -213,9 +221,7 @@ def analyze_system(
                 continue
             component.add(node)
             pending.extend(other for other, _, _ in adjacency[node])
-        fixed = component & (grounded | set(input_vars))
-        if len(fixed) > 1:
-            raise GearConstraintError("Gear network has multiple grounded/prescribed coordinates")
+        fixed = component & coordinate_owners.keys()
         candidates = fixed or (component - incoming) or component
 
         def mechanical_names(node):
@@ -257,6 +263,37 @@ def analyze_system(
         node = _resolve(name, physical_aliases)
         coordinate_map[name] = node_coordinates.get(node, (node, ()))
 
+    reduced_owners: dict[str, list[str]] = {}
+    for node, owners in coordinate_owners.items():
+        root, _ = coordinate_map[node]
+        reduced_owners.setdefault(root, []).extend(owners)
+
+    grounded: set[str] = set()
+    for root, owners in reduced_owners.items():
+        sources = [owner for owner in owners if owner in authored_inputs]
+        grounds = [owner for owner in owners if owner not in authored_inputs]
+        if len(sources) > 1 or (sources and grounds):
+            raise CoordinateOwnershipError(
+                root,
+                tuple(sorted({variable_owners[owner] for owner in grounds})),
+                tuple(sorted({variable_owners[owner] for owner in sources})),
+            )
+        if grounds:
+            if len({_resolve(owner, physical_aliases) for owner in grounds}) > 1:
+                raise GearConstraintError("Gear network has multiple grounded coordinates")
+            grounded.add(root)
+            all_vars[root].is_grounded = True
+            all_vars[root].is_differential = False
+
+    input_vars: dict[str, int] = {}
+    input_specs: dict[str, tuple[str, int]] = {}
+    for index, (name, spec) in enumerate(authored_inputs.items()):
+        root, _ = coordinate_map[name]
+        input_vars[root] = index
+        input_specs[root] = spec
+        all_vars[root].is_input = True
+        all_vars[root].is_differential = False
+
     differential: list[str] = []
     for name, var in sorted(all_vars.items()):
         if (
@@ -289,7 +326,7 @@ def analyze_system(
         params_dict=params_dict,
         physical_aliases=physical_aliases,
         coordinate_map=coordinate_map,
-        networks=_build_networks(elements, connections, layout, variable_owners),
+        networks=_build_networks(elements, connections, layout, variable_owners, reduced_owners),
         through_equation_cycle=through_equation_cycle,
     )
 
@@ -310,6 +347,7 @@ def _build_networks(
     connections: list[AcausalConnection],
     layout: StateLayout,
     variable_owners: dict[str, str],
+    coordinate_owners: dict[str, list[str]],
 ) -> tuple[StructuralNetwork, ...]:
     element_groups: dict[str, set[str]] = {name: {name} for name in elements}
 
@@ -355,14 +393,9 @@ def _build_networks(
                 variables=variables,
                 differential_variables=differential_variables,
                 equations=equation_lhs,
-                has_ground=any(elements[name].element_type == "ground" for name in names),
+                has_coordinate_reference=not coordinate_owners.keys().isdisjoint(variables),
                 source_elements=tuple(
                     sorted(name for name in names if elements[name].element_type == "force_source")
-                ),
-                across_source_elements=tuple(
-                    sorted(
-                        name for name in names if elements[name].element_type == "prescribed_motion"
-                    )
                 ),
             )
         )
