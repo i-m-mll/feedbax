@@ -14,7 +14,13 @@ from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.state import CartesianState
 from feedbax.training.rl.env import RLEnvConfig, rl_env_reset, rl_env_step_with_outcome
 from feedbax.training.rl.obs_norm import ObsNormState, init_obs_norm
-from feedbax.training.rl.policy import ActorCritic, BetaParams, init_lattice_noise
+from feedbax.training.rl.policy import (
+    ActorCritic,
+    BetaParams,
+    init_lattice_noise,
+    load_policy,
+    save_policy,
+)
 from feedbax.training.rl.ppo import (
     PPOConfig,
     TrainingEnhancements,
@@ -25,6 +31,7 @@ from feedbax.training.rl.ppo import (
     _run_ppo_updates,
     _stack_pytrees,
     _update_one,
+    collect_rollouts_batched,
     train_ppo_batched,
 )
 from feedbax.training.rl.tasks import TASK_HOLD, TASK_REACH, init_curriculum, reach_task_params
@@ -139,6 +146,86 @@ def test_training_reports_completed_returns_and_uses_current_stage_evidence():
     # counts as success in metrics but comes from the previous stage.
     np.testing.assert_array_equal(stages[:, 3], [0] * 7 + [1] * 9 + [2])
     assert metrics["per_body_success_rate"][8][3] == 1
+
+
+@pytest.mark.parametrize("obs_norm", [True, False], ids=["normalized", "disabled"])
+def test_trained_policy_executes_on_raw_observations_after_save_and_load(tmp_path, obs_norm):
+    starts = np.array([-4.0, -18.0], dtype=np.float32)
+    plants = _stack_pytrees(*[_plant(x) for x in starts])
+    config = eqx.tree_at(lambda cfg: (cfg.tau_act, cfg.tau_deact), _config(), (1.0, 1.0))
+    key = jax.random.PRNGKey(7)
+    policy, _ = train_ppo_batched(
+        plants,
+        config,
+        PPOConfig(
+            n_steps_per_update=2, total_timesteps=4, n_epochs=1, n_minibatches=1,
+            hidden_dim=4, hidden_layers=1,
+        ),
+        key,
+        n_envs=1,
+        enhancements=TrainingEnhancements(obs_norm=obs_norm),
+    )
+
+    raw_obs = _coasting_observations(starts, np.zeros_like(starts), np.zeros(2)).astype(np.float32)
+    if obs_norm:
+        # Each body coasts for three steps, then resets for the fourth observation.
+        training_x = starts[:, None] + np.array([0, 1, 2, 0])
+        np.testing.assert_array_equal(policy.obs_norm.count, [4, 4])
+        np.testing.assert_allclose(policy.obs_norm.mean[:, 0], training_x.mean(axis=1))
+        np.testing.assert_allclose(policy.obs_norm.var[:, 0], training_x.var(axis=1))
+        mean = np.asarray(policy.obs_norm.mean)
+        variance = np.asarray(policy.obs_norm.var)
+        network_obs = np.clip((raw_obs - mean) / np.sqrt(variance + 1e-8), -10, 10)
+    else:
+        network_obs = raw_obs
+
+    # Reuse only the network weights in the oracle and feed it the expected inputs.
+    bare = ActorCritic(obs_dim=13, action_dim=2, hidden_dim=4, hidden_layers=1, key=key)
+    bare = eqx.tree_at(lambda p: (p.actor, p.critic), bare, (policy.actor, policy.critic))
+    forward = eqx.filter_vmap(ActorCritic.forward)
+    sample = eqx.filter_vmap(ActorCritic.sample_action)
+    expected_forward = forward(bare, jnp.asarray(network_obs))
+    rollout_key = jax.random.key(17)
+    rollout_keys = jax.random.split(rollout_key, len(starts))
+    step_keys = jax.vmap(lambda k: jax.random.split(k, 3)[0])(rollout_keys)
+    action_keys = jax.vmap(lambda k: jax.random.split(k)[1])(step_keys)
+    expected_sample = sample(bare, jnp.asarray(network_obs), action_keys)
+
+    path = tmp_path / "policy.eqx"
+    save_policy(path, policy)
+    for candidate in (policy, load_policy(path)):
+        actual_forward = forward(candidate, jnp.asarray(raw_obs))
+        for actual, expected in zip(actual_forward, expected_forward, strict=True):
+            np.testing.assert_allclose(actual, expected, atol=1e-6)
+        for actual, expected in zip(
+            sample(candidate, jnp.asarray(raw_obs), action_keys), expected_sample, strict=True,
+        ):
+            np.testing.assert_allclose(actual, expected, atol=1e-6)
+        rollouts = collect_rollouts_batched(
+            plants, config, candidate, rollout_key, jnp.array([TASK_REACH]),
+        )
+        # Unit time constants make the first activation equal the sampled action.
+        np.testing.assert_allclose(
+            rollouts["muscle_activations"][:, 0, 1], expected_sample[0], atol=1e-6,
+        )
+
+    if obs_norm:
+        body = jax.tree.map(lambda leaf: leaf[1] if eqx.is_array(leaf) else leaf, policy)
+        configured = ActorCritic(
+            13, 2, 4, 1, key=key, obs_norm=body.obs_norm, obs_norm_eps=0.5, obs_norm_clip=0.6,
+        )
+        configured = eqx.tree_at(
+            lambda p: (p.actor, p.critic), configured, (body.actor, body.critic),
+        )
+        save_policy(path, configured)
+        probe = raw_obs[1].copy()
+        probe[0] += 0.5
+        expected_obs = np.clip((probe - mean[1]) / np.sqrt(variance[1] + 0.5), -0.6, 0.6)
+        single_bare = eqx.tree_at(lambda p: p.obs_norm, body, None)
+        actual = load_policy(path).forward(jnp.asarray(probe))
+        expected = single_bare.forward(jnp.asarray(expected_obs))
+        for actual_part, expected_part in zip(actual, expected, strict=True):
+            np.testing.assert_allclose(actual_part, expected_part, atol=1e-6)
 
 
 def test_reward_annealing_changes_collected_distance_penalty():

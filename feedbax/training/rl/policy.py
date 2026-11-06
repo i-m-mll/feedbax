@@ -9,12 +9,23 @@ structured exploration in latent space rather than action space.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from pathlib import Path
 from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
+
+from feedbax._vendor.jax_cookbook import load, save
+from feedbax.training.rl.obs_norm import (
+    DEFAULT_OBS_NORM_CLIP,
+    DEFAULT_OBS_NORM_EPS,
+    ObsNormState,
+    init_obs_norm,
+    normalize_obs,
+)
 
 
 class BetaParams(NamedTuple):
@@ -201,12 +212,18 @@ class ActorCritic(eqx.Module):
         critic: MLP mapping observations to scalar value estimate.
         obs_dim: Observation dimension (static).
         action_dim: Action dimension (static).
+        obs_norm: Optional frozen observation statistics for raw-input inference.
+        obs_norm_eps: Stability constant for observation standardization.
+        obs_norm_clip: Symmetric clipping bound for standardized observations.
     """
 
     actor: eqx.nn.MLP
     critic: eqx.nn.MLP
     obs_dim: int = eqx.field(static=True)
     action_dim: int = eqx.field(static=True)
+    obs_norm: ObsNormState | None
+    obs_norm_eps: float = eqx.field(static=True)
+    obs_norm_clip: float = eqx.field(static=True)
 
     def __init__(
         self,
@@ -216,10 +233,16 @@ class ActorCritic(eqx.Module):
         hidden_layers: int,
         *,
         key: PRNGKeyArray,
+        obs_norm: ObsNormState | None = None,
+        obs_norm_eps: float = DEFAULT_OBS_NORM_EPS,
+        obs_norm_clip: float = DEFAULT_OBS_NORM_CLIP,
     ) -> None:
         key_actor, key_critic = jax.random.split(key)
         self.obs_dim = obs_dim
         self.action_dim = action_dim
+        self.obs_norm = obs_norm
+        self.obs_norm_eps = obs_norm_eps
+        self.obs_norm_clip = obs_norm_clip
         self.actor = eqx.nn.MLP(
             obs_dim,
             2 * action_dim,
@@ -250,10 +273,10 @@ class ActorCritic(eqx.Module):
         Float[Array, "... action_dim"],
         Float[Array, "..."],
     ]:
-        """Compute raw Beta parameters and value estimate.
+        """Compute Beta parameters and value estimate from raw observations.
 
         Args:
-            obs: Observation array.
+            obs: Raw observation array.
 
         Returns:
             Tuple of (alpha, beta, value).
@@ -266,11 +289,13 @@ class ActorCritic(eqx.Module):
         obs: Float[Array, "... obs_dim"],
         latent_noise: Float[Array, "... latent_dim"] | None = None,
     ) -> tuple[BetaParams, Float[Array, "..."]]:
-        """Return the Beta law conditional on observations and optional latent noise.
+        """Return the Beta law and value for raw observations.
 
         A single noise vector may be shared across a batch. Noise enters at the
         input to the actor output layer, leaving the critic unchanged.
         """
+        if self.obs_norm is not None:
+            obs = normalize_obs(self.obs_norm, obs, eps=self.obs_norm_eps, clip=self.obs_norm_clip)
         if latent_noise is None:
             params = self._apply_mlp(self.actor, obs)
         else:
@@ -292,7 +317,7 @@ class ActorCritic(eqx.Module):
         """Sample an action from the policy.
 
         Args:
-            obs: Single observation, shape ``(obs_dim,)``.
+            obs: Single raw observation, shape ``(obs_dim,)``.
             key: PRNG key.
 
         Returns:
@@ -332,6 +357,55 @@ class ActorCritic(eqx.Module):
 
 def _clip_action(action: Float[Array, "... action_dim"]) -> Float[Array, "... action_dim"]:
     return jnp.clip(action, 1e-4, 1.0 - 1e-4)
+
+
+def save_policy(path: str | Path, policy: ActorCritic) -> None:
+    """Save a single policy or body batch with the metadata needed to load it."""
+    save(
+        path,
+        policy,
+        hyperparameters={
+            "obs_dim": policy.obs_dim,
+            "action_dim": policy.action_dim,
+            "hidden_dim": policy.actor.width_size,
+            "hidden_layers": policy.actor.depth,
+            "batch_shape": policy.actor.layers[0].weight.shape[:-2],
+            "normalize_observations": policy.obs_norm is not None,
+            "obs_norm_eps": policy.obs_norm_eps,
+            "obs_norm_clip": policy.obs_norm_clip,
+        },
+    )
+
+
+def _policy_template(
+    obs_dim: int,
+    action_dim: int,
+    hidden_dim: int,
+    hidden_layers: int,
+    *,
+    key: PRNGKeyArray,
+    batch_shape: Sequence[int],
+    normalize_observations: bool,
+    obs_norm_eps: float,
+    obs_norm_clip: float,
+) -> ActorCritic:
+    policy = ActorCritic(
+        obs_dim, action_dim, hidden_dim, hidden_layers,
+        key=key,
+        obs_norm=init_obs_norm(obs_dim) if normalize_observations else None,
+        obs_norm_eps=obs_norm_eps,
+        obs_norm_clip=obs_norm_clip,
+    )
+    return jax.tree.map(
+        lambda leaf: jnp.broadcast_to(leaf, (*batch_shape, *leaf.shape))
+        if eqx.is_array(leaf) else leaf,
+        policy,
+    )
+
+
+def load_policy(path: str | Path) -> ActorCritic:
+    """Restore an executable policy or body batch saved by :func:`save_policy`."""
+    return load(path, _policy_template)
 
 
 def forward_with_latent_noise(
