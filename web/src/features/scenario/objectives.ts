@@ -25,7 +25,7 @@ import type {
   StudioSelectorRef,
 } from '@/types/workspace';
 
-const OBJECTIVE_SCHEMA_VERSION = 'feedbax.studio.objective.v1';
+import { STUDIO_OBJECTIVE_SCHEMA_VERSION } from '@/types/workspace';
 const VALID_NORMS = new Set<NormFunction>(['squared_l2', 'l2', 'l1', 'huber']);
 
 export const OBJECTIVE_PENALTY_OPTIONS: Array<{ value: NormFunction; label: string }> = [
@@ -70,7 +70,7 @@ export function isStudioObjectiveSpec(value: unknown): value is StudioObjectiveS
 
 export function emptyObjectiveSpec(): StudioObjectiveSpec {
   return {
-    schema_version: OBJECTIVE_SCHEMA_VERSION,
+    schema_version: STUDIO_OBJECTIVE_SCHEMA_VERSION,
     terms: [],
     legacy_loss_spec: null,
     metadata: {},

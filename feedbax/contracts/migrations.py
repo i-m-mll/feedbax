@@ -2261,6 +2261,11 @@ def migrate_structured_spec_payload(
     )
 
 
+_STUDIO_OBJECTIVE_SCHEMA_ID = "feedbax.spec.studio.objective"
+_STUDIO_OBJECTIVE_SCHEMA_VERSION = f"{_STUDIO_OBJECTIVE_SCHEMA_ID}.v1"
+_LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION = "feedbax.studio.objective.v1"
+
+
 _SCENARIO_STRUCTURED_FIELDS = {
     "training_spec": "TrainingSpec",
     "task_spec": "TaskSpec",
@@ -2316,6 +2321,14 @@ def migrate_studio_scenario_spec(
     for field_name, kind in _SCENARIO_STRUCTURED_FIELDS.items():
         field_payload = migrated_payload.get(field_name)
         if isinstance(field_payload, Mapping):
+            if field_name == "objective_spec" and (
+                field_payload.get("schema_id") == _STUDIO_OBJECTIVE_SCHEMA_ID
+                or field_payload.get("schema_version") in (
+                    _STUDIO_OBJECTIVE_SCHEMA_VERSION,
+                    _LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION,
+                )
+            ):
+                kind = "StudioObjectiveSpec"
             if not assume_current:
                 field_payload = _stamp_parent_carried_nested_schema_version(
                     kind,
@@ -5052,6 +5065,17 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             ),
         ),
         _family(
+            "StudioObjectiveSpec",
+            _STUDIO_OBJECTIVE_SCHEMA_ID,
+            _STUDIO_OBJECTIVE_SCHEMA_VERSION,
+            owner_module="feedbax.contracts.graph",
+            emitted_by=("Studio objective authoring",),
+            consumed_by=("StudioScenarioSpec.objective_spec",),
+            description="Studio-authored objective with editor selectors and legacy loss provenance.",
+            stance="migrate",
+            supported_old_versions=(_LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION,),
+        ),
+        _family(
             "ObjectiveSpec",
             "feedbax.spec.objective",
             "feedbax.spec.objective.v1",
@@ -7555,6 +7579,16 @@ default_spec_registry.register_migration(
         migration_id=COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
         migrate=migrate_component_definition_v2_to_v3_payload,
         description="Add the optional declarative dynamic-port policy field.",
+    ),
+)
+default_spec_registry.register_migration(
+    "StudioObjectiveSpec",
+    SchemaMigration(
+        source_version=_LEGACY_STUDIO_OBJECTIVE_SCHEMA_VERSION,
+        target_version=_STUDIO_OBJECTIVE_SCHEMA_VERSION,
+        migration_id="studio-objective-v1-governed-identity",
+        migrate=dict,
+        description="Preserve authored objective terms under the governed Studio schema identity.",
     ),
 )
 default_spec_registry.register_migration(

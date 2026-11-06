@@ -13,7 +13,7 @@ import {
   retargetTaskBindingsForNodeRename,
   retargetTaskBindingsForNodePortRename,
 } from '@/features/scenario/taskBindings';
-import { WORKSPACE_VIEW_STATE_SCHEMA_VERSION } from '@/types/workspace';
+import { STUDIO_OBJECTIVE_SCHEMA_VERSION, WORKSPACE_VIEW_STATE_SCHEMA_VERSION } from '@/types/workspace';
 import type { AnalysisSnapshot } from '@/types/analysis';
 import { isCausalGraphSpec, type GraphSpec, type GraphUIState } from '@/types/graph';
 import type { LossTermSpec, TaskSpec, TrainingSpec } from '@/types/training';
@@ -117,7 +117,6 @@ const WORKSPACE_SCHEMA_ID = 'feedbax.spec.studio.workspace';
 const STAGE_SCHEMA_ID = 'feedbax.spec.studio.stage';
 const STAGE_SCHEMA_VERSION = 'feedbax.spec.studio.stage.v2';
 const SCENARIO_SCHEMA_VERSION = 'feedbax.spec.studio.scenario.v3';
-const OBJECTIVE_SCHEMA_VERSION = 'feedbax.studio.objective.v1';
 
 const DEFAULT_STAGE_IDS = {
   train: 'stage:train',
@@ -481,7 +480,7 @@ export function objectiveSpecFromLossSpec(loss: LossTermSpec): StudioObjectiveSp
 
   visit(loss, []);
   return {
-    schema_version: OBJECTIVE_SCHEMA_VERSION,
+    schema_version: STUDIO_OBJECTIVE_SCHEMA_VERSION,
     terms,
     legacy_loss_spec: loss,
     metadata: {
