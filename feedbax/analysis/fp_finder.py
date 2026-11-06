@@ -39,8 +39,15 @@ class FixedPointFinder(Module):
     optimizer: optax.GradientTransformation
     enable_log: bool = True
 
+    @staticmethod
     @eqx.filter_jit
-    def __call__(
+    def _find_and_filter_with_factory(factory, /, *args, **kwargs):
+        """Prepare optimizer callbacks within the solver's compilation."""
+        with jax.ensure_compile_time_eval():
+            optimizer = factory()
+        return FixedPointFinder(optimizer)._find_and_filter(*args, **kwargs)
+
+    def _solve(
         self,
         func: Callable[[Float[Array, "state"]], Float[Array, "state"]],  # noqa: F821
         candidates: Float[Array, "n_candidates state"],
@@ -112,8 +119,9 @@ class FixedPointFinder(Module):
 
         return i_batch, fps[loss_sort_idxs], losses[loss_sort_idxs]
 
-    @eqx.filter_jit
-    def find_and_filter(
+    __call__ = eqx.filter_jit(_solve)
+
+    def _find_and_filter(
         self,
         func: Callable[[Float[Array, "state"]], Float[Array, "state"]],  # noqa: F821
         candidates: Float[Array, "n_candidates state"],
@@ -128,7 +136,7 @@ class FixedPointFinder(Module):
         key: PRNGKeyArray,  # TODO
     ) -> FPFilteredResults:
         """Finds fixed points and filters by loss, and (optionally) duplicates and outliers."""
-        n_updates, fps, losses = self(
+        n_updates, fps, losses = self._solve(
             func, candidates, loss_tol, n_batches, n_batches_per_iter, key=key
         )
         if self.enable_log:
@@ -138,7 +146,10 @@ class FixedPointFinder(Module):
         )
         return FPFilteredResults(fps, losses, masks, counts)
 
-    def _log(self, n_candidates, n_updates):
+    find_and_filter = eqx.filter_jit(_find_and_filter)
+
+    @staticmethod
+    def _log(n_candidates, n_updates):
         logger.debug(
             "Optimization of %d candidates finished after %d updates.", n_candidates, n_updates
         )
