@@ -189,34 +189,25 @@ class PolynomialMomentArmGeometry(AbstractMuscleGeometry):
 
 
 class WrappingGeometry(AbstractMuscleGeometry):
-    """Geometry for muscles that wrap around cylindrical surfaces.
+    """Simplified cylindrical wrap around a single joint.
 
-    Models muscle paths that wrap around joint centers or bony
-    prominences, creating angle-dependent moment arms.
+    The wrap adds an arc of radius times absolute joint angle to the
+    reference length. The moment arm is the negative length gradient.
+    At zero angle, the arc has a cusp and uses the symmetric subgradient
+    of zero for both moment arm and velocity.
 
     Attributes:
         wrap_radius: Radius of wrapping surface [m].
-        attachment_distance: Distance from wrap center to attachments [m].
+        attachment_distances: Distances from wrap center to attachments [m].
+            Unused by the simplified arc model.
         reference_length: MT length at zero wrap angle [m].
+        joint_index: Index of the wrapped joint.
     """
 
     wrap_radius: float
     attachment_distances: Float[Array, "2"] = field(converter=jnp.asarray)
     reference_length: float
-    joint_index: int = 0  # Which joint this wrapping applies to
-
-    def _wrap_angle(self, joint_angle: Array) -> Array:
-        """Compute the arc length of muscle contact with wrap surface.
-
-        Args:
-            joint_angle: Joint angle [rad].
-
-        Returns:
-            Wrap arc angle [rad].
-        """
-        # Simplified: wrap angle is proportional to joint angle
-        # More complex models would compute actual tangent points
-        return jnp.abs(joint_angle)
+    joint_index: int = 0
 
     def musculotendon_length(self, angles: Array) -> Array:
         """Compute MT length including wrap arc.
@@ -229,29 +220,16 @@ class WrappingGeometry(AbstractMuscleGeometry):
         Returns:
             Muscle-tendon length.
         """
-        wrap_angle = self._wrap_angle(angles[self.joint_index])
+        joint_angle = angles[self.joint_index]
+        # Select a constant at the cusp so autodiff uses the symmetric subgradient.
+        wrap_angle = jnp.where(joint_angle == 0, 0, jnp.abs(joint_angle))
         wrap_length = self.wrap_radius * wrap_angle
         return self.reference_length + wrap_length
 
     def moment_arm(self, angles: Array) -> Array:
-        """Compute moment arm for wrapping geometry.
-
-        For pure wrapping, moment arm equals wrap radius when in contact.
-
-        Args:
-            angles: Joint angles.
-
-        Returns:
-            Moment arms (only non-zero for wrapped joint).
-        """
-        n_joints = angles.shape[0]
-        moment_arms = jnp.zeros(n_joints)
-        # Moment arm = wrap_radius when wrapping
-        is_wrapping = jnp.abs(angles[self.joint_index]) > 0.01
-        moment_arms = moment_arms.at[self.joint_index].set(
-            jnp.where(is_wrapping, self.wrap_radius, 0.0)
-        )
-        return moment_arms
+        """Return the negative length gradient with respect to joint angles."""
+        angles = jnp.asarray(angles, dtype=jnp.result_type(angles, self.wrap_radius, 0.0))
+        return -jax.grad(self.musculotendon_length)(angles)
 
 
 # ============================================================================
