@@ -362,6 +362,9 @@ class ThresholdLatchedForce(Component):
     the intervention remains latched for the rest of that component state
     lifetime. A positive ramp duration linearly raises the force from zero at
     the crossing sample to full scale.
+
+    A target-relative frame uses the first position and target, including
+    when the intervention starts inactive. Activation requires a usable frame.
     """
 
     input_ports = ("state", "target", "force", "params_override")
@@ -422,14 +425,17 @@ class ThresholdLatchedForce(Component):
             )
             origin = jnp.where(latch.initialized, latch.origin, position)
             displacement = target - origin
-            distance = jnp.linalg.norm(displacement)
-            displacement = eqx.error_if(
-                displacement,
-                ~latch.initialized & (distance <= 0),
-                "PlanarTargetRelativeSelector requires distinct trial start and target",
-            )
-            candidate_forward = displacement / jnp.where(distance > 0, distance, 1.0)
+            distance_squared = jnp.dot(displacement, displacement)
+            valid_distance = (distance_squared > 0) & jnp.isfinite(distance_squared)
+            safe_distance = jnp.sqrt(jnp.where(valid_distance, distance_squared, 1.0))
+            candidate_forward = jnp.where(valid_distance, displacement / safe_distance, 0.0)
             forward = jnp.where(latch.initialized, latch.forward, candidate_forward)
+            forward = eqx.error_if(
+                forward,
+                params.active & ~jnp.any(forward),
+                "PlanarTargetRelativeSelector requires distinct trial start and target "
+                "with a finite distance",
+            )
             observed = jnp.dot(position - origin, forward)
             lateral = jnp.stack([-forward[1], forward[0]])
             applied_force = params.lateral_force * lateral
@@ -441,12 +447,16 @@ class ThresholdLatchedForce(Component):
         observed = jnp.asarray(observed, dtype=latch.previous.dtype)
 
         if self.direction == "increasing":
-            crossed = latch.initialized & (latch.previous < params.threshold) & (
-                observed >= params.threshold
+            crossed = (
+                latch.initialized
+                & (latch.previous < params.threshold)
+                & (observed >= params.threshold)
             )
         else:
-            crossed = latch.initialized & (latch.previous > params.threshold) & (
-                observed <= params.threshold
+            crossed = (
+                latch.initialized
+                & (latch.previous > params.threshold)
+                & (observed <= params.threshold)
             )
         newly_latched = params.active & ~latch.latched & crossed
         latched = latch.latched | newly_latched
