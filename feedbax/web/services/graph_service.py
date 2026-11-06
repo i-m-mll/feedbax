@@ -36,6 +36,7 @@ from feedbax.contracts.graph import (
     SemanticAnchor,
     WorkspaceDocument,
     build_default_studio_workspace,
+    graph_input_driver_conflicts,
     studio_semantic_document_sha256,
 )
 from feedbax.compiler import GraphDocument, compile_graph
@@ -228,17 +229,26 @@ class GraphService:
             path.unlink()
 
     def validate_graph(self, graph: GraphSpec) -> list[DomainDiagnostic]:
-        diagnostics: list[DomainDiagnostic] = []
+        diagnostics = [
+            DomainDiagnostic(
+                code="graph.input_occupied",
+                message=str(conflict),
+                node_ids=[conflict.target[0]],
+                ports=[conflict.target],
+                location={"path": conflict.authored_path, "occupied_by": conflict.occupied_by},
+            )
+            for conflict in graph_input_driver_conflicts(graph)
+        ]
+        driven_inputs = set(graph.input_bindings.values()) | {
+            (wire.target_node, wire.target_port) for wire in graph.wires
+        }
+        used_outputs = set(graph.output_bindings.values()) | {
+            (wire.source_node, wire.source_port) for wire in graph.wires
+        }
 
         for node_name, node in graph.nodes.items():
             for input_port in node.input_ports:
-                has_wire = any(
-                    w.target_node == node_name and w.target_port == input_port for w in graph.wires
-                )
-                has_binding = any(
-                    binding == (node_name, input_port) for binding in graph.input_bindings.values()
-                )
-                if not has_wire and not has_binding:
+                if (node_name, input_port) not in driven_inputs:
                     diagnostics.append(
                         DomainDiagnostic(
                             severity="error",
@@ -251,14 +261,7 @@ class GraphService:
                     )
 
             for output_port in node.output_ports:
-                has_wire = any(
-                    w.source_node == node_name and w.source_port == output_port for w in graph.wires
-                )
-                has_binding = any(
-                    binding == (node_name, output_port)
-                    for binding in graph.output_bindings.values()
-                )
-                if not has_wire and not has_binding:
+                if (node_name, output_port) not in used_outputs:
                     diagnostics.append(
                         DomainDiagnostic(
                             severity="warning",

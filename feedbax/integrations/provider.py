@@ -118,6 +118,7 @@ from feedbax.contracts.graph import (
     GraphSpec,
     StudioTaskBindingSpec,
     StudioWorkspaceSpec,
+    graph_input_driver_conflicts,
 )
 from feedbax.contracts.component import ComponentIdentity, ComponentMigrationInfo
 from feedbax.contracts.training import (
@@ -1084,6 +1085,7 @@ def validate_graph_spec(
     from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 
     migration_records: list[ArtifactMigrationRecord] = []
+    parsed: GraphSpec | None = None
     try:
         migrated = migrate_graph_spec(payload)
         migration_records = migrated.migration_records
@@ -1113,9 +1115,18 @@ def validate_graph_spec(
             migration_records=migration_records,
         )
     except ValueError as exc:
+        conflicts = () if parsed is None else graph_input_driver_conflicts(parsed)
         return ProviderValidationResult(
             valid=False,
             errors=[
+                *(
+                    ValidationIssue(
+                        type="graph_input_occupied",
+                        message=str(conflict),
+                        location={"path": conflict.authored_path, "occupied_by": conflict.occupied_by},
+                    )
+                    for conflict in conflicts
+                ),
                 ValidationIssue(
                     type="invalid_additive_channel_adapter",
                     message=str(exc),

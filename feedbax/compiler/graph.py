@@ -8,8 +8,14 @@ from typing import Any, Callable, Literal, Mapping, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from feedbax.contracts._causal_inputs import InputDriverConflict
 from feedbax.contracts.authored_canonical import canonical_sha256
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, SemanticAnchor
+from feedbax.contracts.graph import (
+    ComponentSpec,
+    GraphSpec,
+    SemanticAnchor,
+    graph_input_driver_conflicts,
+)
 from feedbax.contracts.scientific_compiler_schema import (
     COMPILATION_FAILURE_SCHEMA_ID,
     COMPILATION_FAILURE_SCHEMA_VERSION,
@@ -284,6 +290,10 @@ def _compile_phase(
         raise
     except (KeyError, TypeError, ValueError) as exc:
         cause = exc.cause if isinstance(exc, ParameterResolutionError) else exc
+        context = {"action": action, "exception_type": type(exc).__name__}
+        if isinstance(exc, InputDriverConflict):
+            context["action"] = "remove a driver or route both through an explicit merge"
+            context["occupied_by"] = exc.occupied_by
         diagnostic = CompilerDiagnostic(
             code=(
                 "compiler.constraint_solving.invalid_component_parameters"
@@ -300,10 +310,7 @@ def _compile_phase(
             ),
             expected_condition=expected,
             observed_condition=str(exc) or type(exc).__name__,
-            actionable_context={
-                "action": action,
-                "exception_type": type(exc).__name__,
-            },
+            actionable_context=context,
         )
         raise GraphCompilationError(
             CompilationFailureRecord(
@@ -501,7 +508,10 @@ def compile_graph(
 
     def parse_graph() -> tuple[Any, GraphSpec]:
         migration = migrate_graph_spec(document.graph)
-        return migration, GraphSpec.model_validate(migration.payload)
+        graph = GraphSpec.model_validate(migration.payload)
+        if conflict := next(graph_input_driver_conflicts(graph, "/graph"), None):
+            raise conflict
+        return migration, graph
 
     migration, authored_graph = _compile_phase(
         phase=CompilerPhase.STRUCTURAL_PARSING,
@@ -517,6 +527,21 @@ def compile_graph(
         lambda node_id, node: resolve_component_node(node, component_registry),
         document_sha256=document_sha256,
     )
+
+    def lower_graph() -> GraphSpec:
+        lowered = materialize_additive_channel_adapters(typed_graph)
+        if conflict := next(graph_input_driver_conflicts(lowered, "/graph"), None):
+            raise conflict
+        return _map_component_nodes(
+            lowered,
+            lambda node_id, node: (
+                resolve_component_node(node, component_registry)
+                if node.param_schema_version is None
+                else node
+            ),
+            document_sha256=document_sha256,
+        )
+
     graph = _compile_phase(
         phase=CompilerPhase.COMPOSITE_AND_ACAUSAL_LOWERING,
         code="compiler.composite_and_acausal_lowering.invalid_lowering",
@@ -524,15 +549,7 @@ def compile_graph(
         document_sha256=document_sha256,
         expected="every authored lowering rule produces one valid literal semantic graph",
         action="correct the authored composite, acausal, or channel-adapter declaration",
-        operation=lambda: _map_component_nodes(
-            materialize_additive_channel_adapters(typed_graph),
-            lambda node_id, node: (
-                resolve_component_node(node, component_registry)
-                if node.param_schema_version is None
-                else node
-            ),
-            document_sha256=document_sha256,
-        ),
+        operation=lower_graph,
     )
 
     def solve_constraints() -> GraphSpec:

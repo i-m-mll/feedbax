@@ -76,6 +76,53 @@ def test_compile_graph_is_deterministic_and_records_runtime_key_order() -> None:
     assert CompilationRecord.model_validate_json(first.record.model_dump_json()) == first.record
 
 
+@pytest.mark.parametrize(
+    ("driver", "competing_owners", "path", "occupied_by"),
+    [
+        ("wire", ("source.output", "second.output"), "/graph/wires/1", "/graph/wires/0"),
+        ("repeated_wire", ("source.output",), "/graph/wires/1", "/graph/wires/0"),
+        (
+            "binding",
+            ("external input 'command'", "source.output"),
+            "/graph/wires/0",
+            "/graph/input_bindings/command",
+        ),
+        (
+            "two_bindings",
+            ("external input 'command'", "external input 'override'"),
+            "/graph/input_bindings/override",
+            "/graph/input_bindings/command",
+        ),
+    ],
+)
+def test_compile_rejects_competing_drivers_before_realization(
+    driver, competing_owners, path, occupied_by
+):
+    graph = _document().graph
+    if driver == "wire":
+        graph.nodes["second"] = graph.nodes["source"].model_copy(update={"params": {"value": 5.0}})
+        graph.wires.append(graph.wires[0].model_copy(update={"source_node": "second"}))
+    elif driver == "repeated_wire":
+        graph.wires.append(graph.wires[0])
+    else:
+        graph.input_ports.append("command")
+        graph.input_bindings["command"] = ("gain", "input")
+        if driver == "two_bindings":
+            graph.wires.clear()
+            graph.input_ports.append("override")
+            graph.input_bindings["override"] = ("gain", "input")
+
+    with pytest.raises(GraphCompilationError) as caught:
+        compile_graph(GraphDocument(graph=graph), ComponentRegistry(load_user_components=False))
+
+    (diagnostic,) = caught.value.record.diagnostics
+    assert diagnostic.phase is CompilerPhase.STRUCTURAL_PARSING
+    assert diagnostic.source_anchor.authored_path == path
+    assert diagnostic.actionable_context["occupied_by"] == occupied_by
+    assert "gain.input" in diagnostic.observed_condition
+    assert all(owner in diagnostic.observed_condition for owner in competing_owners)
+
+
 def test_graph_document_rejects_unknown_version_without_restamping() -> None:
     payload = _document().model_dump(mode="json")
     payload["schema_version"] = "0"

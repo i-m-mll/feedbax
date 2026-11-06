@@ -96,6 +96,8 @@ def expose_task_bindings(
 
     input_ports = list(graph.input_ports)
     input_bindings = dict(graph.input_bindings)
+    external_by_target = {(node, port): name for name, (node, port) in input_bindings.items()}
+    task_input_owners: dict[str, str] = {}
     input_plans: list[TaskInputPlan] = []
     state_init_plans: list[TaskParameterStateInitPlan] = []
     data_by_id = _task_data_by_id(task_binding_spec)
@@ -125,13 +127,23 @@ def expose_task_bindings(
             )
             continue
 
-        graph_input = next(
-            (name for name, bound in input_bindings.items() if tuple(bound) == target_key),
-            f"task:{binding.source_data_id}->{binding.target_node_id}.{binding.target_port}",
-        )
-        if graph_input not in input_ports:
+        graph_input = external_by_target.get(target_key)
+        if graph_input is None:
+            graph_input = f"task:{binding.source_data_id}->{target_key[0]}.{target_key[1]}"
+            if graph_input in input_ports:
+                raise ValueError(
+                    f"Task binding {binding.id!r} cannot expose {target_key[0]}.{target_key[1]} "
+                    f"as external input {graph_input!r}, already declared on the graph"
+                )
             input_ports.append(graph_input)
-        input_bindings[graph_input] = target_key
+            input_bindings[graph_input] = target_key
+            external_by_target[target_key] = graph_input
+        if graph_input in task_input_owners:
+            raise ValueError(
+                f"Input {target_key[0]}.{target_key[1]} receives task data from both "
+                f"{task_input_owners[graph_input]!r} and {binding.id!r}"
+            )
+        task_input_owners[graph_input] = binding.id
         input_plans.append(
             TaskInputPlan(
                 data_id=binding.source_data_id,
@@ -148,6 +160,7 @@ def expose_task_bindings(
         graph,
         (tuple(input_ports), input_bindings),
     )
+    exposed_graph._validate_graph()
     return TaskBindingExposure(
         graph=exposed_graph,
         input_plans=tuple(input_plans),

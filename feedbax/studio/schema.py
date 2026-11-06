@@ -9,6 +9,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
+from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.value_schema import SchemaOrigin, ValueSchema
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
@@ -409,12 +410,16 @@ def validate_graph_connection_schema(
         if port.node_id is not None
     }
     by_node_port = {(port.node_id, port.port): port for port in ports if port.node_id is not None}
-    occupied: dict[tuple[str, str], int] = {}
-    for binding in graph.input_bindings.values():
-        occupied[(binding[0], binding[1])] = -1
-
     issues: list[SchemaValidationIssue] = _missing_subgraph_issues(
         graph, base_path, component_registry=component_registry
+    )
+    issues.extend(
+        SchemaValidationIssue(
+            type="graph_input_occupied",
+            message=str(conflict),
+            location={"path": conflict.authored_path, "occupied_by": conflict.occupied_by},
+        )
+        for conflict in input_driver_conflicts(graph.wires, graph.input_bindings, base_path)
     )
     issues.extend(
         _dynamic_port_arity_issues(
@@ -492,21 +497,6 @@ def validate_graph_connection_schema(
                         location={"path": f"{wire_path}/target_node"},
                     )
                 )
-
-        target_key = (wire.target_node, wire.target_port)
-        previous = occupied.get(target_key)
-        if previous is not None:
-            location = (
-                f"{base_path}/input_bindings" if previous < 0 else f"{base_path}/wires/{previous}"
-            )
-            issues.append(
-                SchemaValidationIssue(
-                    type="graph_input_occupied",
-                    message=f"Input {wire.target_node}.{wire.target_port} is already occupied",
-                    location={"path": wire_path, "occupied_by": location},
-                )
-            )
-        occupied[target_key] = index
 
         if source is None or target is None:
             continue

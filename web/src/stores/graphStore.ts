@@ -37,6 +37,7 @@ import {
   normalizeDynamicPorts,
   normalizeMuxSpec,
 } from '@/features/graph/dynamicPorts';
+import { findWireConnectionDriver } from '@/features/graph/inputDrivers';
 import { normalizeGraphForStudioAuthoring } from '@/features/graph/normalization';
 import {
   acausalConnectionsFromEdges,
@@ -163,12 +164,21 @@ function closesInstantCycle(
   return false;
 }
 
-function buildStateMergeRequest(graph: GraphSpec, sourceNode: string, targetNode: string): StateMergeRequest | null {
+function buildStateMergeRequest(
+  graph: GraphSpec,
+  sourceNode: string,
+  targetNode: string,
+  parent?: GraphLayer
+): StateMergeRequest | null {
   const sourceSpec = graph.nodes[sourceNode];
   const targetSpec = graph.nodes[targetNode];
   if (!sourceSpec || !targetSpec) return null;
+  const targetInputs = targetSpec.input_ports.filter(
+    (port) => findWireConnectionDriver(graph, targetNode, port, parent)?.kind !== 'external'
+  );
+  if (targetInputs.length === 0) return null;
   const currentSources: Record<string, WireSpec | null> = {};
-  for (const input of targetSpec.input_ports) {
+  for (const input of targetInputs) {
     const existing =
       graph.wires.find(
         (wire) => wire.target_node === targetNode && wire.target_port === input
@@ -176,7 +186,7 @@ function buildStateMergeRequest(graph: GraphSpec, sourceNode: string, targetNode
     currentSources[input] = existing;
   }
   const suggested: Record<string, string | null> = {};
-  for (const input of targetSpec.input_ports) {
+  for (const input of targetInputs) {
     suggested[input] = sourceSpec.output_ports.includes(input) ? input : null;
   }
   const hasExistingConnections = Object.values(currentSources).some(Boolean);
@@ -184,7 +194,7 @@ function buildStateMergeRequest(graph: GraphSpec, sourceNode: string, targetNode
     sourceNode,
     targetNode,
     sourceOutputs: [...sourceSpec.output_ports],
-    targetInputs: [...targetSpec.input_ports],
+    targetInputs,
     currentSources,
     suggested,
     hasExistingConnections,
@@ -3442,7 +3452,9 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       }
       set((state) => {
         requireCausalGraph(state.graph, 'Merging causal state flows');
-        const request = buildStateMergeRequest(state.graph, connection.source!, connection.target!);
+        const request = buildStateMergeRequest(
+          state.graph, connection.source!, connection.target!, state.graphStack.at(-1)
+        );
         if (!request) return state;
         const autoMappings = Object.entries(request.suggested).filter(([, value]) => value);
         if (!request.hasExistingConnections && autoMappings.length > 0) {
@@ -3475,15 +3487,12 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       });
       return;
     }
-    const alreadyUsed = get().edges.some(
-      (edge) =>
-        edge.target === connection.target &&
-        edge.targetHandle === connection.targetHandle
-    );
-    if (alreadyUsed) return;
-    const edgeStyle = styleOverride ?? get().edgeStyle;
-    const causalGraph = get().graph;
+    const { graph: causalGraph, graphStack, edgeStyle: currentEdgeStyle } = get();
     requireCausalGraph(causalGraph, 'Connecting causal signal ports');
+    if (findWireConnectionDriver(
+      causalGraph, connection.target, connection.targetHandle, graphStack.at(-1)
+    )) return;
+    const edgeStyle = styleOverride ?? currentEdgeStyle;
     const temporality =
       wireOptions?.temporality ??
       (closesInstantCycle(causalGraph, connection.source, connection.target)
@@ -4232,6 +4241,10 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       requireCausalGraph(state.graph, 'Merging causal state flows');
       if (!state.pendingStateMerge) return state;
       const { sourceNode, targetNode } = state.pendingStateMerge;
+      const request = buildStateMergeRequest(state.graph, sourceNode, targetNode, state.graphStack.at(-1));
+      if (!request || Object.keys(mapping).some((port) => !request.targetInputs.includes(port))) {
+        return { pendingStateMerge: null };
+      }
       const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
       let graph = applyStateMerge(state.graph, sourceNode, targetNode, mapping);
       if (state.graphStack.length > 0) {

@@ -398,6 +398,25 @@ def test_graph_validate_endpoint_returns_domain_diagnostics() -> None:
     assert "valid" not in data[0]
 
 
+def test_graph_validate_endpoint_names_competing_external_inputs() -> None:
+    client = TestClient(create_app())
+    graph = GraphSpec(
+        nodes={"gain": ComponentSpec(type="Gain", input_ports=["input"])},
+        input_ports=["command", "override"],
+        input_bindings={"command": ("gain", "input"), "override": ("gain", "input")},
+    )
+
+    response = client.post("/api/graphs/graph-1/validate", json=graph.model_dump(mode="json"))
+
+    assert response.status_code == 200
+    (conflict,) = response.json()["data"]
+    assert conflict["severity"] == "error"
+    assert conflict["code"] == "graph.input_occupied"
+    assert conflict["ports"] == [["gain", "input"]]
+    assert "external input 'command'" in conflict["message"]
+    assert "external input 'override'" in conflict["message"]
+
+
 def test_generated_studio_contracts_cover_route_response_models() -> None:
     app = create_app()
     generated_model_names = {model.__name__ for model in MODEL_TYPES}

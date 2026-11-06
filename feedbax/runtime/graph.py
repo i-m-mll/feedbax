@@ -22,6 +22,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
+from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.runtime._graph import detect_cycles_and_sort
 from feedbax.runtime._rollout import scan_rollout, select_step_inputs
 from feedbax.runtime.selectors import Selection, select
@@ -304,6 +305,8 @@ class Graph(Component):
             if node_port not in self.nodes[node_name].output_ports:
                 raise ValueError(f"Output binding port '{node_name}.{node_port}' does not exist")
 
+        if conflict := next(input_driver_conflicts(self.wires, self.input_bindings), None):
+            raise conflict
         self._validate_node_output_recurrent_initializers()
 
     @property
@@ -427,18 +430,11 @@ class Graph(Component):
     def _nested_initializer_wires(
         self, nested_inputs: dict[str, set[str]]
     ) -> dict[tuple[str, str], Wire]:
-        wires: dict[tuple[str, str], Wire] = {}
-        for wire in self.wires:
-            if wire.target_port not in nested_inputs.get(wire.target_node, ()):
-                continue
-            target = (wire.target_node, wire.target_port)
-            if target in wires:
-                raise ValueError(
-                    f"Nested recurrent initializer input {target[0]}.{target[1]} "
-                    "has multiple wire sources"
-                )
-            wires[target] = wire
-        return wires
+        return {
+            (wire.target_node, wire.target_port): wire
+            for wire in self.wires
+            if wire.target_port in nested_inputs.get(wire.target_node, ())
+        }
 
     def _nested_initializer_upstream_nodes(self, wire: Wire, description: str) -> set[str]:
         if wire.temporality != "instant":
@@ -1198,11 +1194,9 @@ class Graph(Component):
 
         def nested_input_value(target: tuple[str, str]) -> PyTree:
             if target not in nested_wires:
-                for name, binding in reversed(self.input_bindings.items()):
+                for name, binding in self.input_bindings.items():
                     if binding == target:
-                        value = input_value(name)
-                        if value is not _MISSING_RESET_INPUT:
-                            return value
+                        return input_value(name)
                 return _MISSING_RESET_INPUT
 
             wire = nested_wires[target]
@@ -1538,17 +1532,13 @@ class Graph(Component):
             (new_nodes, new_wires, new_input_bindings, new_output_bindings),
         )
 
-    def add_wire(self, wire: Wire) -> "Graph":
-        if wire.source_node not in self.nodes:
-            raise ValueError(f"Source node '{wire.source_node}' does not exist")
-        if wire.target_node not in self.nodes:
-            raise ValueError(f"Target node '{wire.target_node}' does not exist")
+    def _with_wires(self, wires: tuple[Wire, ...]) -> "Graph":
+        graph = eqx.tree_at(lambda g: g.wires, self, wires)
+        graph._validate_graph()
+        return graph
 
-        return eqx.tree_at(
-            lambda g: g.wires,
-            self,
-            self.wires + (wire,),
-        )
+    def add_wire(self, wire: Wire) -> "Graph":
+        return self._with_wires(self.wires + (wire,))
 
     def remove_wire(self, wire: Wire) -> "Graph":
         new_wires = tuple(w for w in self.wires if w != wire)
@@ -1570,12 +1560,31 @@ class Graph(Component):
         input_port: str = "input",
         output_port: str = "output",
     ) -> "Graph":
-        old_wire = Wire(source_node, source_port, target_node, target_port)
-        graph = self.remove_wire(old_wire)
-        graph = graph.add_node(node_name, component)
-        graph = graph.add_wire(Wire(source_node, source_port, node_name, input_port))
-        graph = graph.add_wire(Wire(node_name, output_port, target_node, target_port))
-        return graph
+        old_wire = next(
+            (
+                wire
+                for wire in self.wires
+                if (wire.source_node, wire.source_port, wire.target_node, wire.target_port)
+                == (source_node, source_port, target_node, target_port)
+            ),
+            None,
+        )
+        if old_wire is None:
+            raise ValueError(f"No wire {source_node}.{source_port} -> {target_node}.{target_port}")
+
+        # The new component receives the value previously delivered to the target,
+        # including any recurrent delay and reset value on that connection.
+        incoming = Wire(
+            source_node,
+            source_port,
+            node_name,
+            input_port,
+            old_wire.temporality,
+            old_wire.recurrent_initializer,
+        )
+        outgoing = Wire(node_name, output_port, target_node, target_port)
+        wires = tuple(wire for wire in self.wires if wire is not old_wire)
+        return self.add_node(node_name, component)._with_wires((*wires, incoming, outgoing))
 
     # ========== Selection API ==========
 

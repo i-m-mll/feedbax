@@ -1,3 +1,4 @@
+import { findCausalInputDriver } from '@/features/graph/inputDrivers';
 import { isCausalGraphSpec, type GraphSpec, type GraphSubgraphSpec } from '@/types/graph';
 import { StudioTaskBindingSpecSchema } from '@/generated/studioContracts';
 import type { TaskSpec } from '@/types/training';
@@ -259,13 +260,6 @@ export function scopedTaskBindingSpec(
 
 export function taskBindingId(dataId: string, nodeId: string, port: string): string {
   return `task:${dataId}->${nodeId}:${port}`;
-}
-
-export function taskBindingTargetKey(
-  targetNodeId: string,
-  targetPort: string
-): string {
-  return `${targetNodeId}.${targetPort}`;
 }
 
 export function taskDataEntityId(
@@ -534,6 +528,20 @@ export function removeTaskBindingsForTargetNodes(
   return bindings.length === spec.bindings.length ? spec : { ...spec, bindings };
 }
 
+export function findTaskBinding(
+  taskBindingSpec: StudioTaskBindingSpec | null | undefined,
+  targetNodeId: string,
+  targetPort: string,
+  ignoredBindingId?: string
+): StudioTaskBinding | undefined {
+  return taskBindingSpec?.bindings.find(
+    (binding) =>
+      binding.id !== ignoredBindingId &&
+      binding.target_node_id === targetNodeId &&
+      binding.target_port === targetPort
+  );
+}
+
 export function targetInputOccupied(
   graph: GraphSpec,
   taskBindingSpec: StudioTaskBindingSpec | null | undefined,
@@ -541,15 +549,8 @@ export function targetInputOccupied(
   targetPort: string,
   ignoredBindingId?: string
 ): boolean {
-  return (
-    graph.wires.some(
-      (wire) => wire.target_node === targetNodeId && wire.target_port === targetPort
-    ) ||
-    (taskBindingSpec?.bindings ?? []).some(
-      (binding) =>
-        binding.id !== ignoredBindingId &&
-        taskBindingTargetKey(binding.target_node_id, binding.target_port) ===
-          taskBindingTargetKey(targetNodeId, targetPort)
-    )
+  return Boolean(
+    findCausalInputDriver(graph, targetNodeId, targetPort, (driver) => driver.kind === 'wire') ||
+    findTaskBinding(taskBindingSpec, targetNodeId, targetPort, ignoredBindingId)
   );
 }
