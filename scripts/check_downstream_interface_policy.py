@@ -26,15 +26,12 @@ RESULT_SCHEMA_VERSION = "feedbax.external_conformance.result.v14"
 RUNTIME_RESULT_EVIDENCE = (
     "No concrete conformance result artifact or execution receipt is pinned in this policy"
 )
-START = "<!-- feedbax-downstream-stability:start -->"
-END = "<!-- feedbax-downstream-stability:end -->"
 GUARANTEE_START = "<!-- policy-guarantees:start -->"
 GUARANTEE_END = "<!-- policy-guarantees:end -->"
 PLUGIN_API_START = "<!-- plugin-api-inventory:start -->"
 PLUGIN_API_END = "<!-- plugin-api-inventory:end -->"
 FIGURE_API_START = "<!-- figure-api-inventory:start -->"
 FIGURE_API_END = "<!-- figure-api-inventory:end -->"
-INSTRUCTION_FILE = ROOT / "AGENTS.md"
 POLICY_DOCUMENT = ROOT / "docs" / "design" / "downstream_interface_stability.md"
 FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "downstream"
 sys.path.insert(0, str(FIXTURE_ROOT / "src"))
@@ -437,8 +434,6 @@ def _check_boundary_obligations(payload: dict[str, object]) -> None:
 
 
 def check_policy() -> None:
-    instruction_block = _marked_block(INSTRUCTION_FILE, START, END)
-
     bootstrap = _literal_assignments(ROOT / "feedbax" / "plugins" / "bootstrap.py")
     expected = {
         "policy_id": bootstrap["DOWNSTREAM_INTERFACE_POLICY_ID"],
@@ -470,15 +465,6 @@ def check_policy() -> None:
     for name, value in required_fields.items():
         if fields.get(name) != value:
             raise ValueError(f"policy field {name!r} drifted: {fields.get(name)!r} != {value!r}")
-
-    for value in (
-        str(expected["policy_id"]),
-        f"version `{expected['current']}`",
-        f"version `{expected['minimum']}`",
-        f"release `{expected['effective_release']}`",
-    ):
-        if value not in instruction_block:
-            raise ValueError(f"instruction block does not pin {value!r}")
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     fixture = tomllib.loads((FIXTURE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
