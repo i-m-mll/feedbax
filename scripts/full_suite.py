@@ -795,7 +795,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Skipping full suite: green memo {memo_file(memo_dir, fingerprint)}")
                 return 0
 
-            print("Running:", " ".join(command))
+            if candidate:
+                print(
+                    "Running affected Python suite:"
+                    f" {len(collection_roots)} explicit test files,"
+                    f" {len(selection['python_tests'])} related expensive-test files"
+                )
+            else:
+                print("Running:", " ".join(command))
             started = time.perf_counter()
             with owned_suite_temporary_root() as temporary_root:
                 env = {**os.environ, "TMPDIR": str(temporary_root)}
