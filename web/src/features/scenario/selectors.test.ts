@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRlrmpModelGraph } from '@/data/rlrmp-model-graph';
+import { createBlankGraph } from '@/stores/graphStore';
 import { buildScenarioEntityRegistry } from '@/features/scenario/entities';
 import {
   preferredSelectorForGraphPort,
@@ -14,11 +14,17 @@ import { defaultTaskSpec, defaultTrainingSpec } from '@/stores/trainingStore';
 import type { StudioSchemaRegistry } from '@/types/workspace';
 
 function registry() {
-  const { graph, uiState } = createRlrmpModelGraph('selector test');
+  const graph = createBlankGraph();
+  graph.nodes.mechanics = {
+    type: 'PointMass',
+    params: {},
+    input_ports: ['force'],
+    output_ports: ['effector'],
+  };
   const workspace = buildWorkspaceSnapshot({
     workspace: null,
     graph,
-    uiState,
+    uiState: null,
     trainingSpec: defaultTrainingSpec,
     taskSpec: defaultTaskSpec,
     analysisSnapshot: null,
