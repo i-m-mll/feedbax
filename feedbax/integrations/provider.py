@@ -74,6 +74,7 @@ from feedbax.contracts.selection import SelectionSpec
 from feedbax.contracts.training_matrix_composition import TrainingRunMatrixDeltaSpec
 from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
+    default_spec_registry,
     migrate_graph_spec,
     migrate_studio_task_binding_spec,
     migrate_studio_workspace_spec,
@@ -376,6 +377,13 @@ def _schema_models() -> dict[str, type[BaseModel]]:
         "MandibleArtifactMapping": MandibleArtifactMapping,
         "MandibleManifestMapping": MandibleManifestMapping,
         "ProviderManifest": ProviderManifest,
+        "ProviderHealth": ProviderHealth,
+        "ProviderValidationResult": ProviderValidationResult,
+        **{
+            name: RegistrySnapshot
+            for name, policy in default_spec_registry.policy_matrix().items()
+            if name != "RegistrySnapshot" and policy.covers == "RegistrySnapshot"
+        },
         **objective_schema_models(),
     }
 

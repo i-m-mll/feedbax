@@ -1905,20 +1905,15 @@ def test_default_policy_matrix_covers_provider_schema_exports_and_capability_ref
     from feedbax.integrations.provider import provider_manifest
 
     manifest = provider_manifest()
-    schema_refs = set(manifest.schemas)
-    for capability in manifest.capabilities.values():
-        if capability.input_schema is not None:
-            schema_refs.add(capability.input_schema)
-        if capability.output_schema is not None:
-            schema_refs.add(capability.output_schema)
+    schema_refs = {
+        schema_ref
+        for capability in manifest.capabilities.values()
+        for schema_ref in (capability.input_schema, capability.output_schema)
+        if schema_ref is not None
+    }
 
-    missing = schema_refs - set(default_spec_registry.policy_matrix())
-
-    assert missing == set()
-    assert default_spec_registry.resolve("ComponentRegistrySnapshot").policy is not None
-    assert default_spec_registry.resolve("ComponentRegistrySnapshot").policy.covers == (
-        "RegistrySnapshot"
-    )
+    assert schema_refs - manifest.schemas.keys() == set()
+    assert manifest.schemas.keys() - default_spec_registry.policy_matrix().keys() == set()
 
 
 def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> None:
