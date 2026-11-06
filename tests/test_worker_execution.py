@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree as jt
 import pytest
+from pydantic import TypeAdapter
 
 import feedbax.web.worker.execution as worker_execution
 import feedbax.web.worker.checkpoint as worker_checkpoint
@@ -37,6 +38,9 @@ from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_
 from feedbax.web.worker.app import _Job, _require_worker_specs
 from feedbax.web.worker.checkpoint import CheckpointCleanupError
 from feedbax.web.worker.diagnostics import GraphCompilationError
+from feedbax.contracts.studio_api import TrainingWebSocketEvent
+from feedbax.orchestration.events import run_event_from_legacy_worker_event
+from feedbax.web.services.training_service import TrainingService
 
 
 def _linear_graph_spec(component_type: str = "Linear", output_size: int = 1) -> dict:
@@ -911,7 +915,22 @@ def test_run_training_graph_emits_executor_progress_each_batch(tmp_path: Path, m
     assert _checkpoint_steps(
         result.manifest_payload, tmp_path / "runs" / "checkpoints" / "test-job"
     ) == [3, 5]
-    assert all("batch" not in event for event in events)
+    service = TrainingService()
+    validator = TypeAdapter(TrainingWebSocketEvent)
+    for seq, event in enumerate(events):
+        worker_event = run_event_from_legacy_worker_event(
+            event, run_set_id="test-run", row_id="test-job", seq=seq
+        )
+        payload = service._normalize_training_event(
+            "test-job", worker_event.model_dump(mode="json")
+        )
+        studio_event = validator.validate_python(payload)
+        assert studio_event.worker_seq == seq
+        assert studio_event.batch == event["batch"]
+    assert [event["batch"] for event in events if event["type"] == "training_progress"] == [
+        1, 2, 3, 4, 5
+    ]
+    assert result.final_batch == 5
 
     assert compiled.graph is result.graph
     final_snapshot = next(

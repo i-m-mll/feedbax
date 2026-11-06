@@ -566,7 +566,8 @@ def _emit(job: _Job, event: dict) -> None:
             emitted_at_ms=emitted_at_ms,
         ).model_dump(mode="json", exclude_none=True)
         if event.get("type") == "training_progress":
-            job.batch = int(event.get("program_step", job.batch) or job.batch)
+            if (batch := event.get("batch")) is not None:
+                job.batch = int(batch)
             if "loss" in event:
                 job.last_loss = float(event["loss"])
         job.event_log.append(run_event)

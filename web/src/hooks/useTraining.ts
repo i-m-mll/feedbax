@@ -180,10 +180,10 @@ export function useTraining() {
         } catch (error) {
           const message =
             error instanceof Error ? error.message : 'Invalid training WebSocket payload';
+          progressBatcherRef.current?.cancel();
           setTrainingStreamError(message);
           setTrainingDiagnostics([]);
           appendLog({
-            batch: 0,
             level: 'error',
             message,
             timestamp: Date.now(),
@@ -203,6 +203,7 @@ export function useTraining() {
         if (payload.type === 'training_progress') {
           progressBatcherRef.current?.enqueue({
             batch: payload.batch,
+            program_step: payload.program_step,
             total_batches: payload.total_batches,
             loss: payload.loss,
             loss_terms: payload.loss_terms ?? {},
@@ -215,21 +216,20 @@ export function useTraining() {
         if (payload.type === 'training_log') {
           appendLog({
             batch: payload.batch,
+            program_step: payload.program_step,
             level: payload.level ?? 'info',
             message: payload.message,
             timestamp: Date.now(),
           });
         }
         if (payload.type === 'training_trajectory') {
-          const traj = payload.trajectory;
-          if (traj) {
-            setLatestTrajectory(normalizeTrainingTrajectoryPayload(traj, payload.batch));
-          }
+          setLatestTrajectory(
+            normalizeTrainingTrajectoryPayload(payload.trajectory, payload.batch, payload.program_step)
+          );
         }
         if (payload.type === 'training_resync') {
           setTrainingStreamError(payload.reason === 'gap' ? payload.message : null);
           appendLog({
-            batch: useTrainingStore.getState().progress?.batch ?? 0,
             level: payload.reason === 'gap' ? 'warning' : 'info',
             message: payload.message,
             timestamp: Date.now(),
@@ -247,7 +247,7 @@ export function useTraining() {
           setTrainingDiagnostics(diagnostics);
           setTrainingStreamError(payload.error);
           appendLog({
-            batch: payload.batch ?? 0,
+            batch: payload.batch,
             level: 'error',
             message: payload.error,
             timestamp: Date.now(),
@@ -273,7 +273,6 @@ export function useTraining() {
             const message = 'Training stream disconnected after multiple reconnect attempts.';
             setTrainingStreamError(message);
             appendLog({
-              batch: 0,
               level: 'error',
               message,
               timestamp: Date.now(),
@@ -291,7 +290,6 @@ export function useTraining() {
         )}s (attempt ${attempt + 1}/${TRAINING_WS_MAX_RECONNECT_ATTEMPTS}).`;
         setTrainingStreamError(message);
         appendLog({
-          batch: 0,
           level: 'warning',
           message,
           timestamp: Date.now(),

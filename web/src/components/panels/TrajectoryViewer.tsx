@@ -30,7 +30,7 @@ export function TrajectoryViewer() {
     );
   }
 
-  const { effector, target, batch } = latestTrajectory;
+  const { effector, target, batch, program_step } = latestTrajectory;
   const targetPoint = latestTargetPoint(target);
 
   if (effector.length === 0) {
@@ -54,7 +54,8 @@ export function TrajectoryViewer() {
     <div className="flex flex-col gap-1">
       <div className="text-[10px] text-slate-400 flex justify-between px-1">
         <span>Trajectory</span>
-        <span>batch {batch}</span>
+        {batch != null ? <span>Batch {batch}</span>
+          : program_step != null && <span>Program step {program_step}</span>}
       </div>
       <svg
         width={SVG_SIZE}

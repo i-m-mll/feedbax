@@ -342,15 +342,18 @@ def run_training_graph(
             total_batches=total_batches,
             elapsed_seconds=time.perf_counter() - started_at,
         )
+        batch = progress_event["batch"]
+        program_step = progress_event["program_step"]
         emit(progress_event)
         emit(
             {
                 "type": "training_log",
                 "job_id": job_id,
-                "program_step": progress_event["program_step"],
+                "batch": batch,
+                "program_step": program_step,
                 "level": "info",
                 "message": (
-                    f"Program step {progress_event['program_step']} | "
+                    f"Program step {program_step} | "
                     f"loss={progress_event['loss']:.4f} | "
                     f"grad_norm={progress_event['grad_norm']:.3f} | "
                     f"{progress_event['step_time_ms']:.0f}ms"
@@ -358,18 +361,17 @@ def run_training_graph(
                 "execution": "contract_executor",
             }
         )
-        if progress_event["program_step"] % snapshot_interval == 0 or (
-            progress_event["program_step"] >= total_batches
-        ):
+        if batch % snapshot_interval == 0 or batch >= total_batches:
             emit(
                 {
                     "type": "training_trajectory",
                     "job_id": job_id,
-                    "program_step": progress_event["program_step"],
+                    "batch": batch,
+                    "program_step": program_step,
                     "trajectory": _trajectory_snapshot(
                         current_graph,
                         compiled,
-                        key=jr.PRNGKey(progress_event["program_step"]),
+                        key=jr.PRNGKey(program_step),
                     ),
                     "execution": "contract_executor",
                 }
@@ -413,7 +415,7 @@ def run_training_graph(
             checkpoint_path=checkpoint_path,
             final_loss=final_loss,
             final_loss_terms=final_terms,
-            final_batch=result.final_coordinate.program_step,
+            final_batch=result.end_completed_batches,
             manifest_path=str(result.manifest_path),
             manifest_payload=result.manifest.model_dump(mode="json", exclude_none=True),
             execution_metadata=dict(compiled.metadata),
@@ -506,11 +508,9 @@ def _studio_progress_event(
     total_batches: int,
     elapsed_seconds: float,
 ) -> dict[str, Any]:
-    coordinate = event.get("coordinate", {})
-    coordinate = coordinate if isinstance(coordinate, Mapping) else {}
+    coordinate = event["coordinate"]
     metrics = event.get("metrics", {})
     metrics = metrics if isinstance(metrics, Mapping) else {}
-    program_step = int(coordinate.get("program_step") or 0)
     loss = _float_metric(metrics.get("train_loss", 0.0))
     loss_terms = _float_mapping(metrics.get("loss_terms", {}))
     scalar_metrics = {
@@ -520,7 +520,8 @@ def _studio_progress_event(
     return {
         "type": "training_progress",
         "job_id": job_id,
-        "program_step": program_step,
+        "batch": coordinate["completed_batches"],
+        "program_step": coordinate["program_step"],
         "total_batches": total_batches,
         "loss": loss,
         "loss_terms": loss_terms,

@@ -9,7 +9,8 @@ export const LIVE_TRAINING_TRAJECTORY_SCHEMA_VERSION =
   'feedbax.event.studio.training_trajectory.v1';
 
 export interface LiveTrainingFrame {
-  batch: number;
+  batch?: number | null;
+  program_step?: number | null;
   schema_id: typeof LIVE_TRAINING_TRAJECTORY_SCHEMA_ID;
   schema_version: typeof LIVE_TRAINING_TRAJECTORY_SCHEMA_VERSION;
   fidelity: 'lower_fidelity_live_snapshot';
@@ -118,7 +119,8 @@ export function liveTrainingEffectorTrack(
 
 export function normalizeTrainingTrajectoryPayload(
   payload: TrainingTrajectoryPayload,
-  batch: number
+  batch?: number | null,
+  program_step?: number | null
 ): LiveTrainingFrame {
   if (payload.schema_id && payload.schema_id !== LIVE_TRAINING_TRAJECTORY_SCHEMA_ID) {
     throw new Error(`Unsupported training trajectory schema_id '${payload.schema_id}'.`);
@@ -142,6 +144,7 @@ export function normalizeTrainingTrajectoryPayload(
 
   return {
     batch,
+    program_step,
     schema_id: LIVE_TRAINING_TRAJECTORY_SCHEMA_ID,
     schema_version: LIVE_TRAINING_TRAJECTORY_SCHEMA_VERSION,
     fidelity: 'lower_fidelity_live_snapshot',

@@ -56,19 +56,38 @@ describe('training WebSocket reconnect policy', () => {
       await act(() => result.current.start());
       expect(new URL(sockets[0].url).search).toBe('');
       act(() => {
-        sockets[0].emit({ type: 'training_log', seq: 4, worker_seq: 4, batch: 1, message: 'First' });
+        sockets[0].emit({
+          type: 'training_progress', seq: 3, worker_seq: 3, program_step: 7,
+          total_batches: 5, loss: 0.5,
+        });
+        sockets[0].emit({
+          type: 'training_log', seq: 4, worker_seq: 4, program_step: 7, message: 'First',
+        });
         sockets[0].emit({ type: 'training_resync', seq: 100, reason: 'resumed', message: 'Resumed' });
         sockets[0].close();
         vi.advanceTimersByTime(500);
       });
       expect(new URL(sockets[1].url).searchParams.get('from_seq')).toBe('5');
+      expect(useTrainingStore.getState().progress?.program_step).toBe(7);
+      expect(useTrainingStore.getState().progress?.batch).toBeUndefined();
       act(() => {
         sockets[1].emit({ type: 'training_log', seq: 4, worker_seq: 4, batch: 1, message: 'First' });
-        sockets[1].emit({ type: 'training_log', seq: 5, worker_seq: 5, batch: 1, message: 'Next' });
+        sockets[1].emit({
+          type: 'training_progress', seq: 5, worker_seq: 5, batch: 5, program_step: 12,
+          total_batches: 5, loss: 0.1,
+        });
+        sockets[1].emit({
+          type: 'training_trajectory', seq: 6, worker_seq: 6, batch: 5, program_step: 12,
+          trajectory: {},
+        });
+        sockets[1].emit({ type: 'training_complete', seq: 7, worker_seq: 7, batch: 5 });
       });
-      const logs = useTrainingStore.getState().consoleLogs.map(({ message }) => message);
-      expect(logs.filter((message) => message === 'First')).toHaveLength(1);
-      expect(logs.at(-1)).toBe('Next');
+      const state = useTrainingStore.getState();
+      expect(state.consoleLogs.filter(({ message }) => message === 'First')).toHaveLength(1);
+      expect(state.progress).toMatchObject({ batch: 5, program_step: 12, loss: 0.1 });
+      expect(state.latestTrajectory).toMatchObject({ batch: 5, program_step: 12 });
+      expect(state.status).toBe('completed');
+      expect(state.trainingStreamError).toBeNull();
     } finally {
       unmount();
       useGraphStore.setState({ graphId: initialGraphId });

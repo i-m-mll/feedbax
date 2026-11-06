@@ -189,8 +189,8 @@ def studio_training_registry(
         coordinate: Any,
         context: Mapping[str, Any],
     ) -> bool:
-        del slots, context
-        return coordinate.program_step < total_batches and not stop_event.is_set()
+        del coordinate, context
+        return int(slots["batch_counter"]) < total_batches and not stop_event.is_set()
 
     registry = TrainingProgramRegistry()
     registry.register(
