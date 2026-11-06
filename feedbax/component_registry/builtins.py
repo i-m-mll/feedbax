@@ -75,6 +75,7 @@ from feedbax.runtime.components import (
     Noise,
     Pulse,
     Ramp,
+    RateLimiter,
     Ravel,
     Reshape,
     Saturation,
@@ -84,8 +85,14 @@ from feedbax.runtime.components import (
     Spring,
     Subtract,
     Sum,
+    stateful_vector_prototype,
 )
-from feedbax.runtime.filters import FirstOrderFilter, require_real_floating_filter_prototype
+from feedbax.runtime.filters import (
+    BandPassFilter,
+    FirstOrderFilter,
+    HighPassFilter,
+    require_real_floating_filter_prototype,
+)
 from feedbax.intervene.intervene import (
     AddNoise,
     AddNoiseParams,
@@ -1405,13 +1412,25 @@ class _DiscretePIDParams(_PIDParams):
     output_limit: float | None = 1000.0
 
 
-def rate_limiter_output_prototype(
+def stateful_vector_output_prototype(
     params: Mapping[str, Any],
     inputs: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return input-shaped rate limiter output, or ``n_dims`` when unconnected."""
+    """Return the vector prototype shared by state storage and output."""
 
-    return input_or_n_dims_output_prototype(params, inputs)
+    proto = inputs.get("input")
+    if proto is None:
+        proto = array_prototype(params)
+    return {"output": stateful_vector_prototype(int(params.get("n_dims", 1)), proto)}
+
+
+_STATEFUL_VECTOR_CONSTRUCTOR = ComponentConstructorPlan(
+    context_adapters={"input_shape": ("input_proto", "array_prototype")}
+)
+_STATEFUL_VECTOR_PROTOTYPE_FIELDS = (
+    ParameterField(name="input_shape", type="array", default=None, required=False),
+    ParameterField(name="input_dtype", type="str", default=None, required=False),
+)
 
 
 def register_builtin_components(registry: _Registry) -> None:
@@ -3760,13 +3779,16 @@ def register_builtin_components(registry: _Registry) -> None:
     registry.register(
         declare_component(
             name="RateLimiter",
+            runtime_type=RateLimiter,
+            constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
             category="Signal Processing",
             description="Limit rate of change of signal.",
             parameter_fields=[
                 ParameterField(name="max_rate", type="float", default=1.0, min=0.0, required=True),
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
                 ParameterField(name="initial_value", type="float", default=0.0, required=False),
+                *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3775,18 +3797,21 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=rate_limiter_output_prototype,
+            output_prototype_fn=stateful_vector_output_prototype,
         )
     )
     registry.register(
         declare_component(
             name="HighPassFilter",
+            runtime_type=HighPassFilter,
+            constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
             category="Signal Processing",
             description="High-pass filter (input - lowpass).",
             parameter_fields=[
                 ParameterField(name="tau", type="float", default=0.1, min=0.0, required=True),
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
+                *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3795,19 +3820,22 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=stateful_vector_output_prototype,
         )
     )
     registry.register(
         declare_component(
             name="BandPassFilter",
+            runtime_type=BandPassFilter,
+            constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
             category="Signal Processing",
             description="Band-pass: high-pass then low-pass.",
             parameter_fields=[
                 ParameterField(name="tau_low", type="float", default=0.1, min=0.0, required=True),
                 ParameterField(name="tau_high", type="float", default=0.01, min=0.0, required=True),
                 ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-                ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
+                ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
+                *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
             ],
             input_ports=["input"],
             output_ports=["output"],
@@ -3816,7 +3844,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 inputs={"input": PortType(dtype="vector")},
                 outputs={"output": PortType(dtype="vector")},
             ),
-            output_prototype_fn=input_or_n_dims_output_prototype,
+            output_prototype_fn=stateful_vector_output_prototype,
         )
     )
     registry.register(

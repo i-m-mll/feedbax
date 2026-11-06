@@ -16,6 +16,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 
 from feedbax._ode import ode_init, ode_step
+from feedbax.runtime.components import stateful_vector_prototype
 from feedbax.runtime.graph import Component
 from feedbax.runtime.state import StateBounds
 
@@ -145,7 +146,8 @@ class HighPassFilter(Component):
     Args:
         tau: Time constant for both rise and decay of the internal low-pass.
         dt: Integration time step.
-        n_dims: Dimensionality of the signal.
+        n_dims: Dimensionality used when no input prototype is supplied.
+        input_proto: Shape and dtype of the signal.
     """
 
     input_ports = ("input",)
@@ -153,6 +155,7 @@ class HighPassFilter(Component):
 
     tau: float
     dt: float
+    n_dims: int = field(static=True)
     _lowpass: FirstOrderFilter
 
     def __init__(
@@ -160,16 +163,22 @@ class HighPassFilter(Component):
         tau: float = 0.1,
         dt: float = 0.01,
         n_dims: int = 1,
+        *,
+        input_proto: Array | None = None,
     ):
         self.tau = float(tau)
         self.dt = float(dt)
-        input_proto = jnp.zeros(n_dims)
+        self.n_dims = n_dims
         self._lowpass = FirstOrderFilter(
             tau_rise=tau,
             tau_decay=tau,
             dt=dt,
-            input_proto=input_proto,
+            input_proto=stateful_vector_prototype(n_dims, input_proto),
         )
+
+    @property
+    def input_proto(self) -> Array:
+        return self._lowpass.input_proto
 
     def __call__(
         self,
@@ -196,7 +205,8 @@ class BandPassFilter(Component):
         tau_high: Time constant for the low-pass stage (upper frequency bound;
             smaller tau means higher cutoff frequency).
         dt: Integration time step.
-        n_dims: Dimensionality of the signal.
+        n_dims: Dimensionality used when no input prototype is supplied.
+        input_proto: Shape and dtype of the signal.
     """
 
     input_ports = ("input",)
@@ -205,6 +215,7 @@ class BandPassFilter(Component):
     tau_low: float
     tau_high: float
     dt: float
+    n_dims: int = field(static=True)
     _highpass: HighPassFilter
     _lowpass: FirstOrderFilter
 
@@ -214,18 +225,24 @@ class BandPassFilter(Component):
         tau_high: float = 0.01,
         dt: float = 0.01,
         n_dims: int = 1,
+        *,
+        input_proto: Array | None = None,
     ):
         self.tau_low = float(tau_low)
         self.tau_high = float(tau_high)
         self.dt = float(dt)
-        input_proto = jnp.zeros(n_dims)
-        self._highpass = HighPassFilter(tau=tau_low, dt=dt, n_dims=n_dims)
+        self.n_dims = n_dims
+        self._highpass = HighPassFilter(tau=tau_low, dt=dt, n_dims=n_dims, input_proto=input_proto)
         self._lowpass = FirstOrderFilter(
             tau_rise=tau_high,
             tau_decay=tau_high,
             dt=dt,
-            input_proto=input_proto,
+            input_proto=self.input_proto,
         )
+
+    @property
+    def input_proto(self) -> Array:
+        return self._highpass.input_proto
 
     def __call__(
         self,
