@@ -101,7 +101,6 @@ def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:
             "rows": [
                 {
                     "row_id": "lr_hi",
-                    "seed": 11,
                     "overrides": [
                         {"path": "training_config.learning_rate", "op": "replace", "value": 0.02},
                         {"path": "metadata.row", "op": "add", "value": "hi"},
@@ -109,7 +108,6 @@ def _matrix(base: dict[str, object]) -> TrainingRunMatrixSpec:
                 },
                 {
                     "row_id": "lr_lo",
-                    "seed": 12,
                     "overrides": [
                         {"path": "training_config.learning_rate", "op": "replace", "value": 0.002}
                     ],
@@ -502,7 +500,11 @@ def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(
                 "path": "training_config.learning_rate",
                 "variation": {"kind": "explicit", "values": [0.1, 0.01]},
             },
-            {"id": "seed", "path": "seed", "variation": {"kind": "explicit", "values": [1, 2]}},
+            {
+                "id": "batch_size",
+                "path": "training_config.batch_size",
+                "variation": {"kind": "explicit", "values": [1, 2]},
+            },
         ],
         "combination": {"mode": "zip"},
     }
@@ -522,8 +524,8 @@ def test_materialize_sweep_mode_uses_shared_axes_and_coordinates(
         0.1,
         0.01,
     ]
-    assert [row.seed for row in materialized.rows] == [1, 2]
-    assert materialized.run_set_manifest.axes.runs[1].values == {"lr": 0.01, "seed": 2}
+    assert [row.payload["training_config"]["batch_size"] for row in materialized.rows] == [1, 2]
+    assert materialized.run_set_manifest.axes.runs[1].values == {"lr": 0.01, "batch_size": 2}
 
 
 def test_sweep_patches_owned_rows_in_axis_order_and_isolates_callbacks(tmp_path: Path) -> None:

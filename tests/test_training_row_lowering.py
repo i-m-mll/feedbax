@@ -227,7 +227,7 @@ def _write_request(
             "ref": base_path.name,
             "content_hash": training_spec_sha256(authored_payload),
         },
-        "rows": [{"row_id": "downstream-row", "seed": 7}],
+        "rows": [{"row_id": "downstream-row"}],
     }
     matrix_bytes = json.dumps(matrix, sort_keys=True).encode("utf-8")
     matrix_path = tmp_path / "matrix.json"
@@ -295,7 +295,7 @@ def _write_parent_request(
             "ref": authored_path.name,
             "content_hash": training_spec_sha256(authored_payload),
         },
-        "rows": [{"row_id": "parent-aware-row", "seed": 7}],
+        "rows": [{"row_id": "parent-aware-row"}],
     }
     documents = {
         "matrix": matrix,
@@ -593,7 +593,7 @@ def test_assembly_supplies_exact_composition_parents_and_binds_provenance(
             "ref": authored_path.name,
             "content_hash": training_spec_sha256(authored_row),
         },
-        "rows": [{"row_id": "row", "seed": 7}],
+        "rows": [{"row_id": "row"}],
     }
     payloads = {
         "matrix": training_spec_canonical_bytes(matrix),
@@ -869,7 +869,7 @@ def _assemble_governed_parent(
             "ref": authored_path.name,
             "content_hash": training_spec_sha256(authored_row),
         },
-        "rows": [{"row_id": "row", "seed": 7}],
+        "rows": [{"row_id": "row"}],
     }
     payloads = {
         "matrix": training_spec_canonical_bytes(matrix),

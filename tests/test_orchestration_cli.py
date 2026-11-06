@@ -306,7 +306,7 @@ def _matrix_request(
             "ref": base_path.name,
             "content_hash": training_spec_sha256(training_run_payload),
         },
-        "rows": [{"row_id": "plugin-row", "seed": 7}],
+        "rows": [{"row_id": "plugin-row"}],
     }
     authored_bytes = json.dumps(matrix, sort_keys=True).encode("utf-8")
     authored_path = tmp_path / "training-matrix.json"
