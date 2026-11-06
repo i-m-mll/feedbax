@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { ComponentDefinition } from '@/types/components';
 import type { AcausalGraphSpec, DomainCompileReport } from '@/generated/studioContracts';
@@ -5,6 +6,7 @@ import {
   acausalEdgesFromGraph,
   compileStatusForReport,
   evaluateAcausalConnection,
+  graphPathKey,
   rollupCompileStatus,
   stableGraphHash,
 } from './acausal';
@@ -77,10 +79,34 @@ function report(graph: AcausalGraphSpec, status: DomainCompileReport['status']):
 }
 
 describe('acausal domain helpers', () => {
-  it('matches the backend canonical acausal content hash', () => {
-    expect(stableGraphHash(acausalGraph())).toBe(
-      '88c5a546717d4f4059079e03b5df8f75d9ade7e63e39b1e60116b22cbe7ab727'
-    );
+  it('matches the endpoint subject across authored and defaulted fields', () => {
+    const { interior, subject } = JSON.parse(readFileSync(
+      new URL('../../../../tests/fixtures/acausal_report_subject.json', import.meta.url), 'utf8',
+    )) as { interior: AcausalGraphSpec; subject: string };
+    const node = interior.nodes!.plant;
+    const child = interior.subgraphs!.plant;
+    const [{ a, b }] = child.connections!;
+    expect(stableGraphHash(interior)).toBe(subject);
+    expect(stableGraphHash({
+      ...interior,
+      schema_id: 'feedbax.spec.acausal_graph',
+      nodes: { plant: { ...node, param_schema_version: null, input_ports: [], output_ports: [] } },
+      connections: [],
+      solver: {
+        ...interior.solver,
+        root_finder: { method: 'newton', rtol: 1e-6, atol: 1e-6, max_steps: 32 },
+      },
+      subgraphs: { plant: { ...child, connections: [{ a: b, b: a }], metadata: undefined } },
+    })).toBe(subject);
+    expect(stableGraphHash({
+      ...interior,
+      solver: { ...interior.solver, root_finder: null },
+    })).not.toBe(subject);
+    const authored = node.params.authored as unknown[];
+    expect(stableGraphHash({
+      ...interior,
+      nodes: { plant: { ...node, params: { ...node.params, authored: authored.slice(1) } } },
+    })).not.toBe(subject);
   });
 
   it('blocks signal-to-conserving connections with adapter-oriented text', () => {
@@ -120,14 +146,15 @@ describe('acausal domain helpers', () => {
 
     const child = acausalGraph();
     const parent: AcausalGraphSpec = { ...acausalGraph(), subgraphs: { child } };
+    const reports = {
+      [graphPathKey(['plant'])]: report(parent, 'ok'),
+      [graphPathKey(['plant', 'child'])]: report(child, 'error'),
+    };
     expect(
       rollupCompileStatus({
         graph: parent,
         path: ['plant'],
-        reports: {
-          plant: report(parent, 'ok'),
-          'plant/child': report(child, 'error'),
-        },
+        statusForLayer: (path, hash) => compileStatusForReport(reports[graphPathKey(path)], hash),
       })
     ).toBe('error');
   });

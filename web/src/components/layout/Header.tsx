@@ -117,7 +117,7 @@ export function Header() {
         data.workspace_document,
         hydratedWorkspace,
       );
-      openProjectInTab(
+      const documentId = openProjectInTab(
         id,
         data.graph,
         data.workspace_document.graph_ui_state,
@@ -130,7 +130,7 @@ export function Header() {
           workspaceDocument: data.workspace_document,
         },
       );
-      useCompileStatusStore.getState().setReports(data.compile_reports);
+      useCompileStatusStore.getState().setReports(documentId, data.graph, data.compile_reports);
       useRunStore.getState().hydrateFromWorkspace(hydratedWorkspace);
       if (data.demo_training_data) {
         const demo = data.demo_training_data;

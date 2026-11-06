@@ -989,6 +989,20 @@ def model_dependencies(model: type[BaseModel]) -> tuple[type[BaseModel], ...]:
 def generate() -> str:
     interfaces = "\n\n".join(emit_interface(model) for model in MODEL_TYPES)
     schemas = "\n\n".join(emit_schema(model) for model in MODEL_TYPES)
+    acausal_report_defaults = {
+        model.__name__: {
+            name: field.get_default(call_default_factory=True)
+            for name, field in model.model_fields.items()
+            if not field.is_required()
+        }
+        for model in (
+            AcausalGraphSpec,
+            ComponentSpec,
+            GraphMetadata,
+            RootFinderSpec,
+            SolverConfigSpec,
+        )
+    }
     event_model_names = [model.__name__ for model in EVENT_MODELS]
     event_type = " | ".join(event_model_names)
     event_schema = (
@@ -1006,6 +1020,7 @@ def generate() -> str:
         "export type JsonPrimitive = string | number | boolean | null;\n"
         "export type ParamValue = JsonPrimitive | unknown[] | Record<string, unknown>;\n\n"
         f"{interfaces}\n\n"
+        f"export const acausalReportDefaults = {json.dumps(acausal_report_defaults, indent=2)};\n\n"
         f"{REFINEMENT_HELPERS}\n"
         f"{schemas}\n\n"
         f"{event_schema}\n\n"

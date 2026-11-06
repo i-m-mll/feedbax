@@ -215,10 +215,11 @@ def compile_acausal_authoring_report(
     *,
     node_path: list[str],
     component_registry: Any,
+    authored_interior: dict[str, Any] | None = None,
 ) -> DomainCompileReport:
     """Return a structural authoring compile report without constructing JAX closures."""
 
-    content_hash = acausal_interior_content_hash(interior_spec)
+    content_hash = acausal_interior_content_hash(interior_spec, authored=authored_interior)
     diagnostics = _diagnose_acausal_spec(
         interior_spec,
         component_registry=component_registry,

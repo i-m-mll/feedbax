@@ -1980,6 +1980,39 @@ export interface InspectionStatusResponse {
   treescope_version?: string | null;
 }
 
+export const acausalReportDefaults = {
+  "AcausalGraphSpec": {
+    "schema_id": "feedbax.spec.acausal_graph",
+    "schema_version": "feedbax.spec.acausal_graph.v1",
+    "nodes": {},
+    "connections": [],
+    "subgraphs": null,
+    "metadata": null
+  },
+  "ComponentSpec": {
+    "params": {},
+    "param_schema_version": null,
+    "input_ports": [],
+    "output_ports": []
+  },
+  "GraphMetadata": {
+    "description": null,
+    "version": "1.0.0",
+    "save_revision": 0,
+    "author": null,
+    "tags": null
+  },
+  "RootFinderSpec": {
+    "method": "newton",
+    "rtol": 1e-06,
+    "atol": 1e-06,
+    "max_steps": 32
+  },
+  "SolverConfigSpec": {
+    "root_finder": null
+  }
+};
+
 function hasDuplicate(values: readonly unknown[]): boolean {
   return new Set(values).size !== values.length;
 }

@@ -17,7 +17,8 @@ import { PanelSectionHeader } from '@/components/ui/PanelPrimitives';
 import { semanticTokens } from '@/components/ui/semanticTokens';
 import type { DomainDiagnostic } from '@/generated/studioContracts';
 import { isAcausalGraphSpec } from '@/types/graph';
-import { useCompileStatusStore } from '@/stores/compileStatusStore';
+import { compileTarget, reportForLayer, useDocumentCompileLayers } from '@/stores/compileStatusStore';
+import { useProjectsStore } from '@/stores/projectsStore';
 
 type PanelDiagnostic = Pick<
   DomainDiagnostic,
@@ -41,6 +42,7 @@ export function ValidationPanel() {
 
   // state.graph is always the currently active layer (root or nested subgraph),
   // because the store updates it whenever the user enters/exits a subgraph.
+  const graphId = useGraphStore((state) => state.graphId);
   const graph = useGraphStore((state) => state.graph);
   const rootGraph = useRootGraph();
   const graphStack = useGraphStore((state) => state.graphStack);
@@ -48,7 +50,12 @@ export function ValidationPanel() {
   const enterSubgraph = useGraphStore((state) => state.enterSubgraph);
   const exitToBreadcrumb = useGraphStore((state) => state.exitToBreadcrumb);
   const setSelectedNode = useGraphStore((state) => state.setSelectedNode);
-  const reports = useCompileStatusStore((state) => state.reports);
+  const documentId = useProjectsStore((state) => state.activeTabId);
+  const compileLayers = useDocumentCompileLayers(documentId);
+  const target = useMemo(
+    () => compileTarget(documentId, { graphId, graph, graphStack }),
+    [documentId, graphId, graph, graphStack],
+  );
   const isInSubgraph = graphStack.length > 0;
   const workspace = useWorkspaceStore((state) => state.workspace);
   const { components } = useComponents();
@@ -112,14 +119,16 @@ export function ValidationPanel() {
   }, [validation.errors, validation.cycles, warnings]);
   const domainDiagnostics = useMemo(
     () =>
-      Object.entries(reports).flatMap(([pathKey, report]) =>
-        (report.diagnostics ?? []).map((diagnostic) => ({
+      Array.from(compileLayers).flatMap(([pathKey, layer]) =>
+        (reportForLayer(layer, target?.kind === 'ready' && target.pathKey === pathKey
+          ? target.hash
+          : undefined)?.diagnostics ?? []).map((diagnostic) => ({
           ...diagnostic,
           severity: diagnostic.severity ?? 'info',
-          path: pathKey ? pathKey.split('/') : [],
+          path: layer.path,
         }))
       ),
-    [reports]
+    [compileLayers, target]
   );
 
   const navigateToDomainDiagnostic = useCallback(

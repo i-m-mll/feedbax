@@ -199,9 +199,12 @@ async def compile_graph_node(
             node_path=payload.node_path,
             interior=payload.interior,
             component_registry=request.app.state.bootstrap_state.bundle.components,
+            authored_interior=(await request.json())["interior"],
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Graph not found") from exc
+    except CanonicalJsonError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/{graph_id}/nodes/penzai/compile", response_model=DomainCompileReport)

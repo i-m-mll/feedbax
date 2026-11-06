@@ -6,7 +6,9 @@ import type {
   AcausalGraphSpec,
   DomainCompileReport,
 } from '@/generated/studioContracts';
-import type { GraphEdgeData, GraphNodeData } from '@/types/graph';
+import { acausalReportDefaults } from '@/generated/studioContracts';
+import { canonicalJsonV2, CanonicalJsonV2Error } from '@/utils/canonicalJsonV2';
+import type { GraphEdgeData } from '@/types/graph';
 
 export type CompileStatus =
   | 'never_compiled'
@@ -39,7 +41,7 @@ export function acausalConnectionId(connection: AcausalConnectionSpec): string {
 }
 
 export function graphPathKey(path: string[]): string {
-  return path.join('/');
+  return JSON.stringify(path);
 }
 
 function rightRotate(value: number, amount: number): number {
@@ -109,38 +111,62 @@ function sha256(text: string): string {
   return h.map((value) => value.toString(16).padStart(8, '0')).join('');
 }
 
-function canonicalAcausalPayload(graph: AcausalGraphSpec): unknown {
-  const normalize = (item: unknown): unknown => {
-    if (item === null || item === undefined) return undefined;
-    if (Array.isArray(item)) return item.map(normalize).filter((value) => value !== undefined);
-    if (typeof item !== 'object') return item;
-    const entries = Object.entries(item as Record<string, unknown>)
-      .flatMap(([key, value]) => {
-        const normalized = normalize(value);
-        return normalized === undefined ? [] : [[key, normalized] as const];
-      })
-      .sort(([left], [right]) => left.localeCompare(right));
-    return Object.fromEntries(entries);
-  };
-  const payload = normalize(graph) as Record<string, unknown>;
-  payload.connections = [...((payload.connections as AcausalConnectionSpec[] | undefined) ?? [])].sort(
-    (left, right) =>
-      `${left.a[0]}:${left.a[1]}|${left.b[0]}:${left.b[1]}`.localeCompare(
-        `${right.a[0]}:${right.a[1]}|${right.b[0]}:${right.b[1]}`
-      )
-  );
-  if (graph.subgraphs) {
-    payload.subgraphs = Object.fromEntries(
-      Object.keys(graph.subgraphs)
-        .sort()
-        .map((key) => [key, canonicalAcausalPayload(graph.subgraphs![key])])
-    );
-  }
-  return payload;
+function withoutModelDefaults(
+  fields: Record<string, unknown>,
+  defaults: Record<string, unknown>
+): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(fields).filter(([key, value]) => {
+    const defaultValue = Object.prototype.hasOwnProperty.call(defaults, key) ? defaults[key] : undefined;
+    if (value === undefined || value === defaultValue) return false;
+    if (value === null || defaultValue === null) return true;
+    return typeof value !== 'object' || typeof defaultValue !== 'object'
+      || Object.keys(value).length !== Object.keys(defaultValue).length
+      || canonicalJsonV2(value) !== canonicalJsonV2(defaultValue);
+  }));
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function compareEndpoints(left: Endpoint, right: Endpoint): number {
+  return compareText(left[0], right[0]) || compareText(left[1], right[1]);
+}
+
+function canonicalAcausalPayload(graph: AcausalGraphSpec): Record<string, unknown> {
+  const defaults = acausalReportDefaults;
+  const { nodes, connections, solver, subgraphs, metadata } = graph;
+  return withoutModelDefaults({
+    ...graph,
+    nodes: nodes && Object.fromEntries(
+      Object.entries(nodes).map(([id, node]) => [id, withoutModelDefaults({ ...node }, defaults.ComponentSpec)])
+    ),
+    connections: connections
+      ?.map(({ a, b }) => compareEndpoints(a, b) > 0 ? { a: b, b: a } : { a, b })
+      .sort((left, right) => compareEndpoints(left.a, right.a) || compareEndpoints(left.b, right.b)),
+    solver: withoutModelDefaults({
+      ...solver,
+      root_finder: solver.root_finder && withoutModelDefaults({ ...solver.root_finder }, defaults.RootFinderSpec),
+    }, defaults.SolverConfigSpec),
+    subgraphs: subgraphs && Object.fromEntries(
+      Object.entries(subgraphs).map(([id, child]) => [id, canonicalAcausalPayload(child)])
+    ),
+    metadata: metadata && withoutModelDefaults({ ...metadata }, defaults.GraphMetadata),
+  }, defaults.AcausalGraphSpec);
 }
 
 export function stableGraphHash(graph: AcausalGraphSpec): string {
-  return sha256(JSON.stringify(canonicalAcausalPayload(graph)));
+  return sha256(canonicalJsonV2(canonicalAcausalPayload(graph)));
+}
+
+export function tryAcausalGraphHash(graph: AcausalGraphSpec):
+  { ok: true; hash: string } | { ok: false; message: string } {
+  try {
+    return { ok: true, hash: stableGraphHash(graph) };
+  } catch (error) {
+    if (!(error instanceof CanonicalJsonV2Error)) throw error;
+    return { ok: false, message: error.message };
+  }
 }
 
 export function compileStatusForReport(
@@ -173,15 +199,10 @@ export function worstCompileStatus(statuses: CompileStatus[]): CompileStatus {
 export function rollupCompileStatus(args: {
   graph: AcausalGraphSpec;
   path: string[];
-  reports: Record<string, DomainCompileReport>;
-  compilingPaths?: Set<string>;
+  statusForLayer: (path: string[], hash: string) => CompileStatus;
 }): CompileStatus {
-  const pathKey = graphPathKey(args.path);
-  const own = compileStatusForReport(
-    args.reports[pathKey],
-    stableGraphHash(args.graph),
-    args.compilingPaths?.has(pathKey) ?? false
-  );
+  const identity = tryAcausalGraphHash(args.graph);
+  const own = identity.ok ? args.statusForLayer(args.path, identity.hash) : 'error';
   const childStatuses = Object.entries(args.graph.subgraphs ?? {}).map(([nodeId, child]) =>
     rollupCompileStatus({
       ...args,
@@ -284,33 +305,4 @@ export function acausalConnectionsFromEdges(
       targetHandle: edge.targetHandle as string,
     }) ?? [];
   });
-}
-
-export function acausalNodeDataPatch(args: {
-  graph: AcausalGraphSpec;
-  registry: Map<string, ComponentDefinition>;
-  reports: Record<string, DomainCompileReport>;
-  path: string[];
-  compilingPaths?: Set<string>;
-}): Record<string, Partial<GraphNodeData>> {
-  return Object.fromEntries(
-    Object.entries(args.graph.nodes ?? {}).map(([nodeId]) => {
-      const child = args.graph.subgraphs?.[nodeId];
-      const status = child
-        ? rollupCompileStatus({
-            graph: child,
-            path: [...args.path, nodeId],
-            reports: args.reports,
-            compilingPaths: args.compilingPaths,
-          })
-        : undefined;
-      return [
-        nodeId,
-        {
-          current_domain: 'feedbax.domain.acausal',
-          status,
-        },
-      ];
-    })
-  );
 }
