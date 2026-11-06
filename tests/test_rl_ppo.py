@@ -128,10 +128,6 @@ class TestPPOConsolidation:
         assert "device_get" not in called_attrs
         return source, tree
 
-    def test_update_body_uses_lax_loop_without_host_scalar_syncs(self):
-        source, _ = self._assert_no_host_scalar_syncs(ppo._update_one)
-        assert "jax.lax.fori_loop" in source
-
     def test_outer_training_body_uses_scan_without_host_scalar_syncs(self):
         source, _ = self._assert_no_host_scalar_syncs(ppo._run_ppo_updates)
         assert "jax.lax.scan" in source

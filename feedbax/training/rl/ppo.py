@@ -79,7 +79,8 @@ class PPOConfig(eqx.Module):
         gae_lambda: GAE lambda for advantage estimation.
         clip_eps: PPO clipping epsilon.
         n_epochs: Number of optimization epochs per update.
-        n_minibatches: Number of minibatches per epoch.
+        n_minibatches: Positive number of equal minibatches per epoch. Must
+            divide the number of rollout samples per body.
         n_steps_per_update: Rollout length per update.
         total_timesteps: Total environment steps to train.
         ent_coef: Entropy bonus coefficient.
@@ -581,6 +582,15 @@ def _batched_collect_rollouts_extended(
     )(batched_plant, policy, states, episodes, keys, obs_norm_state, lattice_state, curriculum_state)
 
 
+def _ppo_minibatch_size(batch_size: int, n_minibatches: int) -> int:
+    if not 1 <= n_minibatches <= batch_size or batch_size % n_minibatches:
+        raise ValueError(
+            f"n_minibatches ({n_minibatches}) must be positive and evenly divide "
+            f"the rollout size per body ({batch_size})."
+        )
+    return batch_size // n_minibatches
+
+
 def _update_one(
     policy: ActorCritic,
     opt_state: optax.OptState,
@@ -594,9 +604,13 @@ def _update_one(
     vf_coef: float,
     ent_coef: float,
     n_minibatches: int,
-    n_train_iters: int,
+    n_epochs: int,
 ) -> tuple[ActorCritic, optax.OptState]:
     """Single-body PPO update step."""
+    n_steps, n_envs = rollout.obs.shape[:2]
+    batch_size = n_steps * n_envs
+    minibatch_size = _ppo_minibatch_size(batch_size, n_minibatches)
+
     advantages, returns = compute_gae_scan(
         rollout.rewards,
         rollout.values,
@@ -612,19 +626,11 @@ def _update_one(
     flat_ret = returns.reshape(-1)
     flat_adv = (flat_adv - jnp.mean(flat_adv)) / (jnp.std(flat_adv) + 1e-8)
 
-    n_envs = rollout.obs.shape[1]
-    batch_size = flat_obs.shape[0]
-    minibatch_size = batch_size // n_minibatches
-
     dynamic_policy, static_policy = eqx.partition(policy, eqx.is_array)
 
-    def train_step(i, carry):
-        dynamic_policy, opt_state, key = carry
+    def train_minibatch(carry, mb_idx):
+        dynamic_policy, opt_state = carry
         policy = eqx.combine(dynamic_policy, static_policy)
-        perm_key = jax.random.fold_in(key, i // n_minibatches)
-        perm = jax.random.permutation(perm_key, batch_size)
-        start = (i % n_minibatches) * minibatch_size
-        mb_idx = jax.lax.dynamic_slice(perm, (start,), (minibatch_size,))
 
         # Flat samples are time-major, with one noise vector shared per timestep.
         latent_noise = (
@@ -649,13 +655,21 @@ def _update_one(
         updates, opt_state = optimizer.update(grads, opt_state, policy)
         policy = eqx.apply_updates(policy, updates)
         dynamic_policy, _ = eqx.partition(policy, eqx.is_array)
-        return dynamic_policy, opt_state, key
+        return (dynamic_policy, opt_state), None
 
-    dynamic_policy, opt_state, _ = jax.lax.fori_loop(
+    def train_epoch(epoch, carry):
+        perm_key = jax.random.fold_in(key, epoch)
+        minibatches = jax.random.permutation(perm_key, batch_size).reshape(
+            n_minibatches, minibatch_size,
+        )
+        carry, _ = jax.lax.scan(train_minibatch, carry, minibatches)
+        return carry
+
+    dynamic_policy, opt_state = jax.lax.fori_loop(
         0,
-        n_train_iters,
-        train_step,
-        (dynamic_policy, opt_state, key),
+        n_epochs,
+        train_epoch,
+        (dynamic_policy, opt_state),
     )
     policy = eqx.combine(dynamic_policy, static_policy)
     return policy, opt_state
@@ -675,7 +689,7 @@ def _batched_update(
     vf_coef: float,
     ent_coef: float,
     n_minibatches: int,
-    n_train_iters: int,
+    n_epochs: int,
 ) -> tuple[ActorCritic, optax.OptState]:
     """Vectorized PPO update over bodies."""
     n_bodies = rollout.obs.shape[0]
@@ -696,7 +710,7 @@ def _batched_update(
             vf_coef,
             ent_coef,
             n_minibatches,
-            n_train_iters,
+            n_epochs,
         ),
     )(policy, opt_state, rollout, last_values, keys)
 
@@ -720,7 +734,7 @@ def _run_ppo_updates(
     n_steps: int,
     n_envs: int,
     n_minibatches: int,
-    n_train_iters: int,
+    n_epochs: int,
     gamma: float,
     gae_lambda: float,
     clip_eps: float,
@@ -784,7 +798,7 @@ def _run_ppo_updates(
             vf_coef,
             ent_coef,
             n_minibatches,
-            n_train_iters,
+            n_epochs,
         )
 
         updated_curriculum = _update_curriculum_batched(
@@ -856,10 +870,6 @@ def train_ppo_batched(
     if enhancements is None:
         enhancements = TrainingEnhancements()
 
-    n_bodies = jt.leaves(batched_plant)[0].shape[0]
-    obs_dim = env_config.n_joints * 2 + env_config.n_muscles + 2 + 2 + 2 + 1
-    action_dim = env_config.n_muscles
-
     # Extract config as concrete Python values for JIT tracing
     n_steps = int(ppo_config.n_steps_per_update)
     total_timesteps = int(ppo_config.total_timesteps)
@@ -871,8 +881,11 @@ def train_ppo_batched(
     vf_coef = float(ppo_config.vf_coef)
     ent_coef = float(ppo_config.ent_coef)
     timesteps_per_update = n_steps * n_envs
-    n_train_iters = n_epochs * n_minibatches
+    _ppo_minibatch_size(timesteps_per_update, n_minibatches)
 
+    n_bodies = jt.leaves(batched_plant)[0].shape[0]
+    obs_dim = env_config.n_joints * 2 + env_config.n_muscles + 2 + 2 + 2 + 1
+    action_dim = env_config.n_muscles
     total_updates = (total_timesteps + timesteps_per_update - 1) // timesteps_per_update
     reward_ramp_updates = 0.0
     if enhancements.reward_annealing:
@@ -967,7 +980,7 @@ def train_ppo_batched(
         n_steps,
         n_envs,
         n_minibatches,
-        n_train_iters,
+        n_epochs,
         gamma,
         gae_lambda,
         clip_eps,

@@ -111,6 +111,20 @@ def test_reach_uses_endpoint_even_when_the_effector_matches_the_reference():
     assert not outcome.success
 
 
+@pytest.mark.parametrize("n_minibatches", [0, -1, 4, 8])
+def test_training_rejects_invalid_minibatch_partitions(n_minibatches):
+    with pytest.raises(ValueError, match=r"n_minibatches .*rollout size per body \(6\)"):
+        train_ppo_batched(
+            _stack_pytrees(_plant(-1.0)),
+            _config(),
+            PPOConfig(
+                n_steps_per_update=2, n_minibatches=n_minibatches, total_timesteps=0,
+            ),
+            jax.random.PRNGKey(0),
+            n_envs=3,
+        )
+
+
 def test_training_reports_completed_returns_and_uses_current_stage_evidence():
     # Bodies reach x=0 on step 1, 2, never within the horizon, and exactly
     # on the horizon respectively. Rewards are -|x| plus 2 at the origin.
@@ -280,7 +294,7 @@ def test_mixed_lanes_use_distinct_episode_denominators_and_pool_raw_observations
     # A reset at x=-10 cannot create a second completion within the window.
     final_carry, history = _run_ppo_updates(
         _stack_pytrees(_plant(-10.0)), config, carry, static_policy, optimizer,
-        total_updates=2, n_steps=3, n_envs=4, n_minibatches=1, n_train_iters=1,
+        total_updates=2, n_steps=3, n_envs=4, n_minibatches=1, n_epochs=1,
         gamma=0.99, gae_lambda=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01,
         lattice_resample_interval=2, curriculum_arm_reach=0.5,
         reward_ramp_updates=jnp.array(0.0), use_obs_norm=jnp.array(True),
@@ -442,7 +456,7 @@ def test_ppo_replays_tail_draws_with_their_sampling_distribution(use_lattice, mo
     _, accumulated = eqx.filter_jit(_update_one)(
         changed_policy, optimizer.init(changed_policy), rollout, last_values, key, optimizer,
         gamma=0.0, gae_lambda=0.0, clip_eps=clip_eps, vf_coef=0.0, ent_coef=0.0,
-        n_minibatches=actions.shape[0], n_train_iters=actions.shape[0],
+        n_minibatches=actions.shape[0], n_epochs=1,
     )
     log_density_gradient = np.concatenate([
         np.log(actions) + digamma(alpha + beta_param) - digamma(alpha),
