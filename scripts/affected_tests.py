@@ -66,6 +66,8 @@ class GatePlan(TypedDict):
     contracts: bool
     clean_wheel: bool
     capabilities: list[str]
+    component_ids: list[str]
+    component_witnesses: list[str]
 
 
 def _git(root: Path, *args: str) -> bytes:
@@ -300,12 +302,55 @@ def _fixture_consumers(root: Path, fixture: str) -> tuple[set[str], set[str]]:
     return python, studio
 
 
+def _component_projection(root: Path) -> dict[str, tuple[str, ...] | None] | None:
+    from feedbax.component_registry import ComponentRegistry
+
+    registry = ComponentRegistry()
+    if not hasattr(registry, "component_source_paths"):
+        return None
+    return registry.component_source_paths(root)
+
+
+def _component_literal_witnesses(root: Path, ids: set[str]) -> list[str]:
+    if not ids:
+        return []
+    witnesses: set[str] = set()
+    for path in (root / "tests").glob("test_*.py"):
+        syntax = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if any(isinstance(node, ast.Constant) and node.value in ids for node in ast.walk(syntax)):
+            witnesses.add(path.relative_to(root).as_posix())
+    for path in (root / "web" / "src").rglob("*.test.ts*"):
+        contents = path.read_text(encoding="utf-8")
+        if any(re.search(rf"(['\"])({re.escape(type_id)})\1", contents) for type_id in ids):
+            witnesses.add(path.relative_to(root).as_posix())
+    for path in (root / "tests" / "fixtures").rglob("*.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        stack = [data]
+        while stack:
+            value = stack.pop()
+            if isinstance(value, dict):
+                if isinstance(value.get("type"), str) and value["type"] in ids:
+                    python, studio = _fixture_consumers(root, path.relative_to(root).as_posix())
+                    witnesses.update(python | studio)
+                    break
+                stack.extend(value.values())
+            elif isinstance(value, list):
+                stack.extend(value)
+    return sorted(witnesses)
+
+
 def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan:
     python, studio = set(), set()
     fixtures: set[str] = set()
     python_reason = ""
     studio_reason = ""
     browser = build = contracts = clean_wheel = False
+    component_ids: set[str] = set()
+    projection = (
+        _component_projection(root)
+        if any(change.path.startswith("feedbax/") for change in changes)
+        else {}
+    )
     if external:
         python_reason = studio_reason = "external project or plugin source changed"
         browser = build = contracts = clean_wheel = True
@@ -320,6 +365,17 @@ def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan
         elif path.startswith("feedbax/") and path.endswith(".py"):
             python.add(path)
             clean_wheel = True
+            if projection is None or any(sources is None for sources in projection.values()):
+                python_reason = studio_reason = "component-source projection is incomplete"
+                browser = build = contracts = True
+            else:
+                owners = {type_id for type_id, sources in projection.items() if path in sources}
+                if owners:
+                    component_ids.update(owners)
+                    python_reason = studio_reason = (
+                        f"component source requires reference coverage: {path}"
+                    )
+                    browser = build = contracts = True
             if path.startswith(
                 (
                     "feedbax/compiler/",
@@ -389,6 +445,8 @@ def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan
             if python_tests
             else []
         ),
+        "component_ids": sorted(component_ids),
+        "component_witnesses": _component_literal_witnesses(root, component_ids),
     }
 
 
