@@ -1,136 +1,137 @@
-"""In-memory job tracker for demand-driven analysis generation.
-
-Tracks the lifecycle of background analysis computation jobs triggered
-by the ``POST /api/analyses/jobs`` endpoint.  Storage is a plain
-dict guarded by an ``asyncio.Lock`` -- not persistent across server
-restarts, which is acceptable for this use case.
-"""
+"""App-scoped execution and transient status for Studio analysis jobs."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
-from dataclasses import dataclass
+import traceback
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Optional
+from threading import Lock
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
 
 class JobStatus(str, Enum):
-    """Status values for an analysis generation job.
-
-    These match the frontend ``FigureStatusResponse.status`` union:
-    ``'pending' | 'running' | 'complete' | 'error'``.
-    """
-
     PENDING = "pending"
     RUNNING = "running"
     COMPLETE = "complete"
     ERROR = "error"
 
 
-@dataclass
+@dataclass(frozen=True)
+class AnalysisJobResult:
+    """Durable result identifiers produced by one Studio analysis job."""
+
+    manifest_id: str
+    manifest_path: str
+    figure_hashes: list[str]
+    artifact_ids: list[str]
+    artifact_paths: list[str]
+
+
+@dataclass(frozen=True)
 class JobEntry:
-    """State for a single analysis generation job."""
-
-    request_id: str
-    node_id: str
-    manifest_id: Optional[str] = None
+    manifest_id: str
     status: JobStatus = JobStatus.PENDING
-    figure_hashes: Optional[list[str]] = None
-    manifest_path: Optional[str] = None
-    artifact_ids: Optional[list[str]] = None
-    artifact_paths: Optional[list[str]] = None
-    error: Optional[str] = None
+    result: AnalysisJobResult | None = None
+    error: str | None = None
 
 
-class AnalysisJobTracker:
-    """Thread-safe, in-memory tracker for analysis generation jobs.
+class AnalysisJobsUnavailable(RuntimeError):
+    """The app cannot accept another analysis job."""
 
-    All public methods are coroutines guarded by an ``asyncio.Lock`` so
-    that concurrent endpoint handlers do not race on the internal dict.
 
-    Completed and errored jobs are evicted when the tracker exceeds
-    ``_MAX_JOBS`` entries, keeping the dict bounded.
-    """
+class AnalysisJobService:
+    """Run one Studio job at a time, with room for one waiting submission."""
 
+    _MAX_ACTIVE = 2
     _MAX_JOBS = 1000
 
     def __init__(self) -> None:
+        # Serialize JAX compilations within this app to limit device memory use.
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
+        self._lock = Lock()
         self._jobs: dict[str, JobEntry] = {}
-        self._lock = asyncio.Lock()
+        self._active = 0
+        self._closed = False
 
-    def _evict_completed(self) -> None:
-        """Remove oldest completed/errored jobs until under the limit.
+    def submit(self, manifest_id: str, work: Callable[[], AnalysisJobResult]) -> str:
+        """Admit and schedule work together, independently of the HTTP request."""
+        with self._lock:
+            if self._closed:
+                raise AnalysisJobsUnavailable("Studio analysis jobs are unavailable")
+            if self._active >= self._MAX_ACTIVE:
+                raise AnalysisJobsUnavailable("Studio analysis job queue is full")
+            request_id = str(uuid4())
+            try:
+                self._executor.submit(self._run, request_id, work)
+            except RuntimeError as exc:
+                # ThreadPoolExecutor can enqueue work before failing to start a thread.
+                # Close the executor and discard that submission before it can run.
+                self._stop_admission()
+                self._executor.shutdown(wait=False, cancel_futures=True)
+                logger.exception("Could not submit Studio analysis job")
+                raise AnalysisJobsUnavailable("Studio analysis worker is unavailable") from exc
+            if len(self._jobs) >= self._MAX_JOBS:
+                oldest_terminal = next(
+                    job_id
+                    for job_id, entry in self._jobs.items()
+                    if entry.status in (JobStatus.COMPLETE, JobStatus.ERROR)
+                )
+                del self._jobs[oldest_terminal]
+            self._jobs[request_id] = JobEntry(manifest_id=manifest_id)
+            self._active += 1
+            return request_id
 
-        Must be called while ``self._lock`` is held.
-        """
-        if len(self._jobs) <= self._MAX_JOBS:
-            return
-        # Collect completed/errored entries (insertion-order = oldest first)
-        evictable = [
-            rid
-            for rid, entry in self._jobs.items()
-            if entry.status in (JobStatus.COMPLETE, JobStatus.ERROR)
-        ]
-        n_to_evict = len(self._jobs) - self._MAX_JOBS
-        for rid in evictable[:n_to_evict]:
-            del self._jobs[rid]
-        if n_to_evict > 0:
-            logger.info("Evicted %d completed/errored jobs", min(n_to_evict, len(evictable)))
-
-    async def create_job(self, node_id: str, *, manifest_id: Optional[str] = None) -> str:
-        """Create a new pending job and return its ``request_id``."""
-        request_id = str(uuid.uuid4())
-        entry = JobEntry(request_id=request_id, node_id=node_id, manifest_id=manifest_id)
-        async with self._lock:
-            self._evict_completed()
-            self._jobs[request_id] = entry
-        logger.info("Created analysis job %s for node_id=%s", request_id, node_id)
-        return request_id
-
-    async def get_status(self, request_id: str) -> Optional[JobEntry]:
-        """Return the job entry for *request_id*, or ``None`` if unknown."""
-        async with self._lock:
+    def get_status(self, request_id: str) -> JobEntry | None:
+        with self._lock:
             return self._jobs.get(request_id)
 
-    async def update_status(
-        self,
-        request_id: str,
-        status: JobStatus,
-        *,
-        figure_hashes: Optional[list[str]] = None,
-        manifest_id: Optional[str] = None,
-        manifest_path: Optional[str] = None,
-        artifact_ids: Optional[list[str]] = None,
-        artifact_paths: Optional[list[str]] = None,
-        error: Optional[str] = None,
-    ) -> None:
-        """Update the status (and optional results) of a tracked job."""
-        async with self._lock:
-            entry = self._jobs.get(request_id)
-            if entry is None:
-                logger.warning(
-                    "Attempted to update unknown job %s -- ignoring", request_id
-                )
+    def _run(self, request_id: str, work: Callable[[], AnalysisJobResult]) -> None:
+        with self._lock:
+            if self._closed:
                 return
-            entry.status = status
-            if figure_hashes is not None:
-                entry.figure_hashes = figure_hashes
-            if manifest_id is not None:
-                entry.manifest_id = manifest_id
-            if manifest_path is not None:
-                entry.manifest_path = manifest_path
-            if artifact_ids is not None:
-                entry.artifact_ids = artifact_ids
-            if artifact_paths is not None:
-                entry.artifact_paths = artifact_paths
-            if error is not None:
-                entry.error = error
-        logger.info("Job %s -> %s", request_id, status.value)
+            entry = self._jobs[request_id]
+            self._jobs[request_id] = replace(entry, status=JobStatus.RUNNING)
 
+        try:
+            result = work()
+        except BaseException:
+            # Executor threads capture even BaseException; settle the public job too.
+            error = traceback.format_exc()
+            logger.exception("Studio analysis job %s failed", request_id)
+            terminal = replace(entry, status=JobStatus.ERROR, error=error)
+        else:
+            terminal = JobEntry(
+                manifest_id=result.manifest_id, status=JobStatus.COMPLETE, result=result
+            )
 
-# Module-level singleton shared across the application lifetime.
-job_tracker = AnalysisJobTracker()
+        with self._lock:
+            self._jobs[request_id] = terminal
+            self._active -= 1
+
+    def _stop_admission(self) -> None:
+        """Close admission and settle jobs that have yet to start, under the lock."""
+        self._closed = True
+        for request_id, entry in self._jobs.items():
+            if entry.status is JobStatus.PENDING:
+                self._jobs[request_id] = replace(
+                    entry, status=JobStatus.ERROR, error="Studio stopped before this job started"
+                )
+                self._active -= 1
+
+    async def aclose(self) -> None:
+        with self._lock:
+            self._stop_admission()
+        join = asyncio.create_task(
+            asyncio.to_thread(self._executor.shutdown, wait=True, cancel_futures=True)
+        )
+        try:
+            await asyncio.shield(join)
+        except asyncio.CancelledError:
+            await join
+            raise

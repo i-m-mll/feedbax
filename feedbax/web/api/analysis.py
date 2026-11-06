@@ -7,11 +7,7 @@ Endpoints:
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import traceback
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -33,31 +29,13 @@ from feedbax.contracts.manifest import (
     analysis_run_manifest_id,
     figure_manifest_id,
 )
-from feedbax.web.services.analysis_service import JobStatus, job_tracker
+from feedbax.web.services.analysis_service import (
+    AnalysisJobResult,
+    AnalysisJobsUnavailable,
+    JobStatus,
+)
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# Dedicated thread pool for CPU-bound JAX work so we don't starve the
-# asyncio event loop.  A single worker prevents concurrent JAX compilations
-# from fighting over device memory.
-_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
-
-
-# ---------------------------------------------------------------------------
-# Background execution
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class AnalysisJobResult:
-    """Durable result identifiers produced by one Studio analysis job."""
-
-    manifest_id: str
-    manifest_path: str
-    figure_hashes: list[str]
-    artifact_ids: list[str]
-    artifact_paths: list[str]
 
 
 def _job_artifact_location(artifact: ArtifactRef) -> str:
@@ -193,38 +171,6 @@ def _run_analysis_sync(
     )
 
 
-async def _run_analysis_background(
-    request_id: str, spec: AnalysisRunSpec, registries: ApplicationRegistryBundle
-) -> None:
-    """Wrapper that updates the job tracker around the synchronous pipeline."""
-    await job_tracker.update_status(request_id, JobStatus.RUNNING)
-    try:
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            _executor,
-            _run_analysis_sync,
-            spec,
-            registries,
-        )
-        await job_tracker.update_status(
-            request_id,
-            JobStatus.COMPLETE,
-            figure_hashes=result.figure_hashes,
-            manifest_id=result.manifest_id,
-            manifest_path=result.manifest_path,
-            artifact_ids=result.artifact_ids,
-            artifact_paths=result.artifact_paths,
-        )
-    except Exception:
-        tb = traceback.format_exc()
-        logger.error("Analysis job %s failed:\n%s", request_id, tb)
-        await job_tracker.update_status(
-            request_id,
-            JobStatus.ERROR,
-            error=str(tb),
-        )
-
-
 def _run_figure_sync(spec: FigureSpec, registries: ApplicationRegistryBundle) -> AnalysisJobResult:
     """Run a declarative figure spec synchronously inside the executor."""
     from feedbax.analysis.figures import FIGURE_RENDER_ROLE, execute_figure_spec
@@ -247,34 +193,6 @@ def _run_figure_sync(spec: FigureSpec, registries: ApplicationRegistryBundle) ->
     )
 
 
-async def _run_figure_background(
-    request_id: str, spec: FigureSpec, registries: ApplicationRegistryBundle
-) -> None:
-    """Wrapper that updates the job tracker around declarative figure execution."""
-    await job_tracker.update_status(request_id, JobStatus.RUNNING)
-    try:
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(_executor, _run_figure_sync, spec, registries)
-        await job_tracker.update_status(
-            request_id,
-            JobStatus.COMPLETE,
-            figure_hashes=result.figure_hashes,
-            manifest_id=result.manifest_id,
-            manifest_path=result.manifest_path,
-            artifact_ids=result.artifact_ids,
-            artifact_paths=result.artifact_paths,
-        )
-    except Exception:
-        tb = traceback.format_exc()
-        logger.error("Figure job %s failed:\n%s", request_id, tb)
-        await job_tracker.update_status(request_id, JobStatus.ERROR, error=str(tb))
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-
 @router.post("", response_model=GenerateAnalysisResponse)
 async def generate_figure(
     payload: GenerateAnalysisRequest, request: Request
@@ -289,40 +207,19 @@ async def generate_figure(
     spec. The in-memory tracker is UX-only; the returned manifest ID is the
     durable result identity.
     """
+    registries = request.app.state.bootstrap_state.bundle
     if payload.job_kind == "figure":
         figure_spec = _figure_spec_for_request(payload)
         manifest_id = figure_manifest_id(figure_spec)
-        logger.info(
-            "Generate figure request for node_id=%s manifest_id=%s",
-            payload.node_id,
-            manifest_id,
-        )
-        request_id = await job_tracker.create_job(payload.node_id, manifest_id=manifest_id)
-        asyncio.create_task(
-            _run_figure_background(
-                request_id, figure_spec, request.app.state.bootstrap_state.bundle
-            )
-        )
-        return GenerateAnalysisResponse(
-            data={
-                "request_id": request_id,
-                "status": JobStatus.PENDING.value,
-                "manifest_id": manifest_id,
-            }
-        )
-
-    spec = _spec_for_analysis_request(payload)
-    manifest_id = analysis_run_manifest_id(spec)
-    logger.info(
-        "Generate request for node_id=%s with eval_run_id=%s manifest_id=%s",
-        payload.node_id,
-        payload.eval_run_id,
-        manifest_id,
-    )
-    request_id = await job_tracker.create_job(payload.node_id, manifest_id=manifest_id)
-    asyncio.create_task(
-        _run_analysis_background(request_id, spec, request.app.state.bootstrap_state.bundle),
-    )
+        work = partial(_run_figure_sync, figure_spec, registries)
+    else:
+        analysis_spec = _spec_for_analysis_request(payload)
+        manifest_id = analysis_run_manifest_id(analysis_spec)
+        work = partial(_run_analysis_sync, analysis_spec, registries)
+    try:
+        request_id = request.app.state.analysis_jobs.submit(manifest_id, work)
+    except AnalysisJobsUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return GenerateAnalysisResponse(
         data={
             "request_id": request_id,
@@ -333,20 +230,21 @@ async def generate_figure(
 
 
 @router.get("/status/{request_id}", response_model=AnalysisJobStatusResponse)
-async def get_status(request_id: str) -> AnalysisJobStatusResponse:
+async def get_status(request_id: str, request: Request) -> AnalysisJobStatusResponse:
     """Poll the status of a figure generation job."""
-    entry = await job_tracker.get_status(request_id)
+    entry = request.app.state.analysis_jobs.get_status(request_id)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Unknown request_id '{request_id}'")
+    result = entry.result
     return AnalysisJobStatusResponse(
         data={
-            "request_id": entry.request_id,
+            "request_id": request_id,
             "status": entry.status.value,
-            "figure_hashes": entry.figure_hashes,
+            "figure_hashes": result.figure_hashes if result is not None else None,
             "manifest_id": entry.manifest_id,
-            "manifest_path": entry.manifest_path,
-            "artifact_ids": entry.artifact_ids,
-            "artifact_paths": entry.artifact_paths,
+            "manifest_path": result.manifest_path if result is not None else None,
+            "artifact_ids": result.artifact_ids if result is not None else None,
+            "artifact_paths": result.artifact_paths if result is not None else None,
             "error": entry.error,
         }
     )

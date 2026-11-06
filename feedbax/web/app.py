@@ -26,6 +26,7 @@ from feedbax.web.api import (
     trajectories,
 )
 from feedbax.web.orchestration.controller import get_studio_controller
+from feedbax.web.services.analysis_service import AnalysisJobService
 from feedbax.web.services.training_service import training_service
 from feedbax.web.ws import training as ws_training
 from feedbax.web.ws import simulation as ws_simulation
@@ -47,10 +48,15 @@ def create_app(*, bootstrap_modules: tuple[str, ...] = ()) -> FastAPI:
             training_service.rebuild_cache_from_state_docs()
         except Exception:
             logger.exception("Failed to rebuild the Studio run-state projection")
+        analysis_jobs = AnalysisJobService()
+        app.state.analysis_jobs = analysis_jobs
         try:
             yield
         finally:
-            training_service._terminate_worker()
+            try:
+                await analysis_jobs.aclose()
+            finally:
+                training_service._terminate_worker()
 
     app = FastAPI(
         title="Feedbax Web API",
