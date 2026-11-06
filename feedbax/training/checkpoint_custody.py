@@ -1121,8 +1121,20 @@ def authenticate_checkpoint_custody_ref(
         ) from exc
 
 
+def _checkpoint_latest_parent_ref(latest: CheckpointLatestPointer) -> ParentRef:
+    return ParentRef(
+        kind="TrainingCheckpointTransactionManifest",
+        id=latest.transaction_id,
+        role="training_checkpoint_custody",
+        uri=latest.manifest_relative_path,
+        metadata={"manifest_sha256": latest.manifest_sha256},
+    )
+
+
 def authenticate_published_checkpoint_custody(
     root: str | Path,
+    *,
+    require_single_transaction: bool = False,
 ) -> AuthenticatedCheckpointTransaction:
     """Authenticate the published latest checkpoint without executing payloads."""
     try:
@@ -1152,15 +1164,8 @@ def authenticate_published_checkpoint_custody(
                 raise CheckpointReferenceResolutionError(
                     "checkpoint latest pointer manifest_sha256 does not match raw manifest bytes"
                 )
-            ref = ParentRef(
-                kind="TrainingCheckpointTransactionManifest",
-                id=latest.transaction_id,
-                role="training_checkpoint_custody",
-                uri="/".join(manifest_parts),
-                metadata={"manifest_sha256": manifest_sha256},
-            )
             authenticated = _authenticate_checkpoint_custody_bytes(
-                ref,
+                _checkpoint_latest_parent_ref(latest),
                 raw_manifest=raw_manifest,
                 manifest_parts=manifest_parts,
                 root_descriptor=root_descriptor,
@@ -1172,6 +1177,19 @@ def authenticate_published_checkpoint_custody(
                 raise CheckpointReferenceResolutionError(
                     "checkpoint latest pointer transaction root does not match manifest"
                 )
+            if require_single_transaction:
+                transaction_root = os.open(
+                    TRANSACTIONS_DIR_NAME,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=root_descriptor,
+                )
+                try:
+                    if os.listdir(transaction_root) != [latest.transaction_id]:
+                        raise CheckpointReferenceResolutionError(
+                            "inherited checkpoint custody must contain only the source transaction"
+                        )
+                finally:
+                    os.close(transaction_root)
             return authenticated
         finally:
             os.close(root_descriptor)
@@ -3506,7 +3524,7 @@ def _load_checkpoint_from_pointer(
     """Load and validate a transaction through the same gates as latest resume."""
     manifest_path, manifest = _manifest_from_latest_pointer(root_path, latest)
 
-    _validate_contract_binding(
+    validate_checkpoint_run_contract(
         manifest,
         expected_run_spec,
         expected_phase_program,
@@ -3581,6 +3599,7 @@ def _load_checkpoint_from_pointer(
 
     return CheckpointResumeResult(
         manifest=manifest,
+        parent_ref=_checkpoint_latest_parent_ref(latest),
         slots=loaded_slots,
         provenance_notices=provenance_notices,
         new_lineage_required=allow_new_lineage_override
@@ -6769,13 +6788,14 @@ def _manifest_optimizer_bindings(
     return tuple(binding for binding in bindings or () if isinstance(binding, Mapping))
 
 
-def _validate_contract_binding(
+def validate_checkpoint_run_contract(
     manifest: CheckpointTransactionManifest,
     expected_run_spec: TrainingRunSpec,
     expected_phase_program: PhaseProgramSpec,
     *,
-    allow_new_lineage_override: bool,
+    allow_new_lineage_override: bool = False,
 ) -> None:
+    """Check the resume contract without loading checkpoint slots."""
     expected = run_contract_binding(expected_run_spec, expected_phase_program)
     if _contract_binding_matches(
         manifest.run_contract_binding,

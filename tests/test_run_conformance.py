@@ -659,7 +659,7 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
         "checkpoints": str(checkpoint_root),
         "manifests": str(manifest_root),
     }
-    custody = _publish_verified_native_collection(row_spec, outputs)
+    custody = _publish_verified_native_collection(bundle, row_spec, outputs)
 
     manifest = load_manifest(result.manifest_path)
     terminal = authenticate_checkpoint_custody_ref(

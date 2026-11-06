@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -615,6 +615,12 @@ class TrainingRunCertification(StrictModel):
         return self
 
 
+class InheritedTerminalCheckpoint(StrictModel):
+    """A terminal checkpoint reused by a resume that performed no work."""
+
+    checkpoint: ParentRef
+
+
 class TrainingRunManifest(BaseManifest):
     kind: Literal["TrainingRunManifest"] = "TrainingRunManifest"
     run_set_id: Optional[str] = None
@@ -638,6 +644,15 @@ class TrainingRunManifest(BaseManifest):
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
     metadata_projection_custody: TrainingManifestMetadataProjectionCustody | None = None
     terminal_certification: TrainingRunCertification | None = None
+    inherited_terminal_checkpoint: InheritedTerminalCheckpoint | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @property
+    def terminal_checkpoint(self) -> ParentRef | ArtifactRef | None:
+        if self.inherited_terminal_checkpoint is not None:
+            return self.inherited_terminal_checkpoint.checkpoint
+        return self.checkpoint_custody[-1] if self.checkpoint_custody else None
 
     @model_validator(mode="after")
     def _validate_execution_identity(self) -> "TrainingRunManifest":
@@ -662,6 +677,19 @@ class TrainingRunManifest(BaseManifest):
                     f"status: reason={self.terminal_certification.termination_reason!r}, "
                     f"status={self.status!r}, expected={expected_status!r}"
                 )
+        inherited = self.inherited_terminal_checkpoint
+        if inherited is not None and (
+            self.status != "completed"
+            or self.stopped
+            or self.completed_batches is None
+            or self.checkpoint_custody
+            or self.terminal_certification is None
+            or self.terminal_certification.certified_artifacts != [inherited.checkpoint]
+        ):
+            raise ValueError(
+                "inherited terminal custody requires a completed run, no new checkpoints, "
+                "and certification of the exact inherited checkpoint"
+            )
         if self.intent_hash is not None:
             validate_sha256(self.intent_hash, field_name="intent_hash")
         if self.resolved_semantics_root_hash is not None:
@@ -730,6 +758,15 @@ class TrainingRunManifest(BaseManifest):
                     "training metadata projection custody disagrees with provenance summary"
                 )
         return self
+
+
+def has_training_checkpoint_custody(payload: Mapping[str, Any]) -> bool:
+    """Read checkpoint availability from an indexed training manifest payload."""
+    custody = payload.get("checkpoint_custody")
+    inherited = payload.get("inherited_terminal_checkpoint")
+    return bool(isinstance(custody, list) and custody) or (
+        isinstance(inherited, Mapping) and isinstance(inherited.get("checkpoint"), Mapping)
+    )
 
 
 def training_run_certification(

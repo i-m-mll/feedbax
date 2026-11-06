@@ -97,7 +97,7 @@ class NativeTrainingExecutorAdapter:
         update_budget: int | None = None,
         native_context_injector: Callable[..., list[str]] | None = None,
     ) -> tuple[list[str], RunRowSpec]:
-        del bundle, inputs_root, repo_root
+        del inputs_root, repo_root
         bound, bound_row = bind_native_execution_command(
             command,
             row=row,
@@ -110,6 +110,7 @@ class NativeTrainingExecutorAdapter:
             context_injector(
                 bound,
                 row=bound_row,
+                run_set_id=bundle.run_set_id,
                 environment_fingerprint=environment_fingerprint,
                 collection_root=collection_root,
             ),
