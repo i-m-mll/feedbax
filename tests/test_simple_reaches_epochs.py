@@ -224,7 +224,7 @@ def test_simple_reaches_epoch_name_populates_target_length_bounds() -> None:
     task = _make_epoch_task()
 
     train = task.get_train_trial(jax.random.PRNGKey(17))
-    validation = task.get_validation_trials(jax.random.PRNGKey(23))
+    validation = task.validation_trials
     train_target = _first_value(train.targets)
     validation_target = _first_value(validation.targets)
 
@@ -235,11 +235,29 @@ def test_simple_reaches_epoch_name_populates_target_length_bounds() -> None:
 
     assert validation.timeline.epoch_names == ("movement",)
     assert validation.timeline.n_steps == task.n_steps - 1
-    assert jnp.array_equal(
-        validation.timeline.epoch_bounds,
-        jnp.asarray([[0, 4], [0, 4]], dtype=jnp.int32),
-    )
     assert jnp.array_equal(validation_target.discount, train_target.discount)
+
+    steps = jnp.arange(task.n_steps - 1)
+
+    def movement_queries(timeline):
+        return (
+            *timeline.epoch_bounds_by_name("movement"),
+            timeline.epoch_idx_at(steps),
+            timeline.epoch_mask("movement"),
+        )
+
+    timeline = validation.timeline
+    assert timeline.events_at(0) == []
+    actual = movement_queries(timeline)
+    mapped = jax.vmap(movement_queries)(timeline)
+    for result, reference in zip(actual, mapped, strict=True):
+        assert jnp.array_equal(result, reference)
+
+    starts, ends, indices, mask = actual
+    assert jnp.array_equal(starts, jnp.array([0, 0]))
+    assert jnp.array_equal(ends, jnp.array([4, 4]))
+    assert jnp.array_equal(indices, jnp.zeros((2, 4), dtype=jnp.int32))
+    assert jnp.array_equal(mask, jnp.ones((2, 4), dtype=bool))
 
 
 def test_simple_reaches_epoch_consumers_accept_target_length_epoch() -> None:
