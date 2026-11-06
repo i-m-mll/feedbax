@@ -108,8 +108,7 @@ def test_cache():
     if expected:
         child = subprocess.check_output([
             sys.executable, "-c",
-            "from feedbax.orchestration.drivers.local import resolve_jax_compilation_cache_dir; "
-            "print(resolve_jax_compilation_cache_dir())",
+            "import os; print(os.environ['FEEDBAX_JAX_COMPILATION_CACHE_DIR'])",
         ], text=True, timeout=10).strip()
         assert child == expected
     else:

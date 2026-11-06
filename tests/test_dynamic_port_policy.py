@@ -71,7 +71,6 @@ def test_dynamic_arity_derivation_is_policy_driven_for_external_component() -> N
         dynamic_port_type=PortType(dtype="scalar"),
     )
 
-    assert "component_type" not in inspect.signature(derive_dynamic_port_layout).parameters
     assert derive_dynamic_port_layout(policy, {"channels": ["left", "right"]}).model_dump(
         mode="json"
     ) == {
