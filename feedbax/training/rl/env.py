@@ -27,13 +27,17 @@ from feedbax.training.rl.tasks import (
 )
 
 
+def _control_step_duration(dt: float, frame_skip: int) -> float:
+    return dt * frame_skip
+
+
 class RLEnvConfig(eqx.Module):
     """Static configuration for the RL environment.
 
     Attributes:
         n_steps: Number of control steps per episode.  Each control step runs
             ``frame_skip`` physics sub-steps, so the episode spans
-            ``n_steps * frame_skip * dt`` seconds of simulated time.
+            ``n_steps * control_dt`` seconds of simulated time.
         dt: Physics timestep in seconds.
         frame_skip: Number of physics sub-steps per control step.  The action
             (muscle command) is held constant across sub-steps while activation
@@ -70,6 +74,11 @@ class RLEnvConfig(eqx.Module):
     """When set, ``auto_reset`` always uses this task type instead of
     sampling randomly.  ``None`` preserves the default random behaviour."""
 
+    @property
+    def control_dt(self) -> float:
+        """Simulated seconds per control step."""
+        return _control_step_duration(self.dt, self.frame_skip)
+
 
 class RLEnvState(NamedTuple):
     """Carries simulation state and episode bookkeeping.
@@ -77,7 +86,7 @@ class RLEnvState(NamedTuple):
     Attributes:
         plant_state: Current plant state (skeleton + optional muscles).
         muscle_activations: Current muscle activation levels, shape ``(n_muscles,)``.
-        t_index: Current timestep index.
+        t_index: Current control-step index.
         task: Current task specification.
     """
 
@@ -372,7 +381,7 @@ def rl_env_reset_sampled(
     single_task = default_task_type is not None
     task_type = 0 if default_task_type is None else int(default_task_type)
     new_task = sample_task_params_jax(
-        task_key, task_type, config.n_steps, config.dt,
+        task_key, task_type, config.n_steps, config.control_dt,
         segment_lengths=seg_lens,
         use_fk=use_fk,
         max_target_distance=max_target_distance,
@@ -419,4 +428,4 @@ def compute_n_steps(episode_duration: float, dt: float, frame_skip: int = 1) -> 
     Returns:
         Number of control steps per episode.
     """
-    return int(round(episode_duration / (dt * frame_skip)))
+    return int(round(episode_duration / _control_step_duration(dt, frame_skip)))
