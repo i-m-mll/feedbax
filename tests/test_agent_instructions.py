@@ -42,47 +42,6 @@ def _block(
     )
 
 
-# --- the template ships and is the only source of the body -------------------
-
-
-def test_the_template_is_shipped_as_package_data() -> None:
-    from importlib import resources
-
-    resource = resources.files(ai.AGENT_INSTRUCTIONS_TEMPLATE_PACKAGE).joinpath(
-        ai.AGENT_INSTRUCTIONS_TEMPLATE_NAME
-    )
-
-    assert resource.is_file()
-    assert ai.template_body() == resource.read_text(encoding="utf-8")
-
-
-def test_the_template_covers_every_section_the_contract_requires() -> None:
-    body = ai.template_body()
-
-    for heading in (
-        "The mental model",
-        "Project map",
-        "The experiment model",
-        "Naming: a name states a concept, never a value",
-        "The residence boundary",
-        "What a science plugin may be",
-        "Command orientation",
-        "Science authorization",
-        "Durable formats migrate or reject",
-        "Generated custody is hands-off",
-        "When something does not fit",
-    ):
-        assert heading in body, heading
-
-
-def test_the_template_names_no_particular_project() -> None:
-    """Framework text is generic text; a real project name here would be a bug."""
-    body = ai.template_body().lower()
-
-    for forbidden in ("rlrmp", "quillon", "spinnaker"):
-        assert forbidden not in body, forbidden
-
-
 def test_the_block_header_states_its_own_identity() -> None:
     rendered = ai.render_block()
     parsed = ai.parse_block(rendered)

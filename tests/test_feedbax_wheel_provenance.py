@@ -107,52 +107,38 @@ def _install_and_assert_wheel(
         cwd=root,
         extra_env={"UV_CACHE_DIR": str(root / "uv-install-cache")},
     )
-    package_root = Path(
+    dependency_site = Path(pytest.__file__).resolve().parent.parent
+    probe = """
+import json
+from pathlib import Path
+import sys
+
+sys.path.append(sys.argv[1])
+import feedbax
+import feedbax.analysis.exact_parents
+import feedbax.models.cde as cde
+import feedbax.models.feedback as feedback
+from feedbax.orchestration.revision import assert_feedbax_revision_exact, resolve_feedbax_revision
+
+assert_feedbax_revision_exact(sys.argv[2])
+print(json.dumps({
+    "package_root": str(Path(feedbax.__file__).resolve().parent),
+    "models": [str(Path(module.__file__).resolve()) for module in (cde, feedback)],
+    "revision": resolve_feedbax_revision(),
+}))
+"""
+    observed = json.loads(
         _run(
-            [
-                str(python),
-                "-c",
-                "import pathlib, feedbax; print(pathlib.Path(feedbax.__file__).parent)",
-            ],
+            [str(python), "-c", probe, str(dependency_site), revision_id],
             cwd=root,
-        ).stdout.strip()
+            extra_env={"PYTHONPATH": ""},
+        ).stdout
     )
+    package_root = Path(observed["package_root"])
     assert package_root.is_relative_to(environment)
     assert not (package_root.parent / ".git").exists()
-    dependency_site = Path(pytest.__file__).resolve().parent.parent
-    imported_paths = _run(
-        [
-            str(python),
-            "-c",
-            (
-                "import pathlib, sys; "
-                f"sys.path.append({str(dependency_site)!r}); "
-                "import feedbax.analysis.exact_parents; "
-                "import feedbax.models.cde as cde; "
-                "import feedbax.models.feedback as feedback; "
-                "print(pathlib.Path(cde.__file__).resolve()); "
-                "print(pathlib.Path(feedback.__file__).resolve())"
-            ),
-        ],
-        cwd=root,
-        extra_env={"PYTHONPATH": ""},
-    ).stdout.splitlines()
-    assert len(imported_paths) == 2
-    assert all(Path(path).is_relative_to(environment) for path in imported_paths)
-    observed_revision = _run(
-        [
-            str(python),
-            "-c",
-            (
-                "from feedbax.orchestration.revision import "
-                "assert_feedbax_revision_exact, resolve_feedbax_revision; "
-                f"assert_feedbax_revision_exact({revision_id!r}); "
-                "print(resolve_feedbax_revision())"
-            ),
-        ],
-        cwd=root,
-    ).stdout.strip()
-    assert observed_revision == revision_id
+    assert all(Path(path).is_relative_to(environment) for path in observed["models"])
+    assert observed["revision"] == revision_id
     return package_root
 
 

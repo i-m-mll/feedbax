@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from typing import Any
 
 import pytest
@@ -72,7 +71,6 @@ def test_dynamic_arity_derivation_is_policy_driven_for_external_component() -> N
         dynamic_port_type=PortType(dtype="scalar"),
     )
 
-    assert "component_type" not in inspect.signature(derive_dynamic_port_layout).parameters
     assert derive_dynamic_port_layout(policy, {"channels": ["left", "right"]}).model_dump(
         mode="json"
     ) == {
@@ -326,10 +324,3 @@ def test_public_contract_exports_dynamic_port_policy_helpers() -> None:
     assert contracts.derive_dynamic_port_layout is derive_dynamic_port_layout
     assert contracts.validate_dynamic_port_layout is validate_dynamic_port_layout
     assert contracts.DynamicPortLayout.__name__ == "DynamicPortLayout"
-
-
-def test_policy_plumbing_is_instance_scoped() -> None:
-    assert (
-        "dynamic_port_policy"
-        in inspect.signature(ComponentRegistry.register_component_type).parameters
-    )

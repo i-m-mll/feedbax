@@ -839,7 +839,7 @@ def test_assembly_copies_the_authored_feedbax_revision(
 
 
 def test_resolve_feedbax_revision_uses_imported_package_source_and_disables_git_locks(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     resolved_revision = "a" * 40
     calls: list[tuple[list[str], dict[str, Any]]] = []
@@ -854,7 +854,8 @@ def test_resolve_feedbax_revision_uses_imported_package_source_and_disables_git_
             stdout = f"{resolved_revision}\n"
         return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
 
-    source = Path(revision.feedbax.__file__).resolve()
+    source = tmp_path / "feedbax" / "__init__.py"
+    monkeypatch.setattr(revision.feedbax, "__file__", str(source))
     monkeypatch.setattr(revision.subprocess, "run", fake_run)
 
     assert revision.resolve_feedbax_revision() == resolved_revision

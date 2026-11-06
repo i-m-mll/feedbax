@@ -445,15 +445,8 @@ class TestSimpleFeedbackIntegration:
         # The effector output is a CartesianState; check pos shape
         assert outputs["effector"].pos.shape[0] == n_steps
 
-    @pytest.mark.xfail(
-        reason="Pre-existing circular import in the full CDE builder import path",
-        strict=True,
-    )
     def test_full_model_builder(self, key):
-        """Build a complete model with cde_controller_nn and run one trial.
-
-        This test requires the task module which has a circular import issue.
-        """
+        """Build a complete point-mass model with a CDE controller."""
         from feedbax.tasks import SimpleReaches
         from feedbax.objectives.loss import CompositeLoss
         from feedbax.xabdeef.models import cde_controller_nn

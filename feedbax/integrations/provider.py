@@ -8,6 +8,13 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, ValidationError as PydanticValidationError
 
 import feedbax.analysis as analysis_pkg
+from feedbax._delayed_reaches import (
+    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
+    DEFAULT_DELAYED_MOVE_EPOCHS,
+    apply_delayed_reaches_preset,
+    delayed_reaches_n_steps_from_params,
+    delayed_timing_issues,
+)
 from feedbax.compiler import (
     CompilationFailureRecord,
     CompilationRecord,
@@ -139,12 +146,6 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
-from feedbax.tasks._delayed_timing import (
-    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
-    DEFAULT_DELAYED_MOVE_EPOCHS,
-    delayed_timing_issues,
-)
-from feedbax.tasks.presets import apply_delayed_reaches_preset, delayed_reaches_n_steps_from_params
 
 TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
 

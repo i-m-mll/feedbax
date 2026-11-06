@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from functools import partial
+from functools import lru_cache, partial
 from math import prod
 from typing import Any, Protocol
 
@@ -12,6 +12,11 @@ import jax.tree as jt
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SerializerFunctionWrapHandler
 from pydantic import model_serializer
 
+from feedbax._delayed_reaches import (
+    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
+    DEFAULT_DELAYED_MOVE_EPOCHS,
+    DEFAULT_DELAYED_N_STEPS,
+)
 from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, PENZAI_DOMAIN_ID
 from feedbax.compiler.mechanics_templates import point_mass_template_graph
@@ -113,11 +118,6 @@ from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleR
 from feedbax.models.networks import VanillaRNN
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import StateFeedbackSelector, state_feedback_output_prototype
-from feedbax.tasks._delayed_timing import (
-    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
-    DEFAULT_DELAYED_MOVE_EPOCHS,
-)
-from feedbax.tasks.presets import DEFAULT_DELAYED_N_STEPS
 from feedbax.intervene.intervene import (
     THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
     THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
@@ -141,6 +141,17 @@ class _Registry(Protocol):
     def register(self, meta: DeclaredComponent) -> None: ...
 
     def register_migration(self, migration: ComponentMigration) -> None: ...
+
+
+class _BuiltinDefinitions:
+    def __init__(self) -> None:
+        self.entries: list[DeclaredComponent | ComponentMigration] = []
+
+    def register(self, meta: DeclaredComponent) -> None:
+        self.entries.append(meta)
+
+    def register_migration(self, migration: ComponentMigration) -> None:
+        self.entries.append(migration)
 
 
 _DEFAULT_STRUCTURAL_DELTA_A = SparseCooArrayValueSpec(
@@ -1442,6 +1453,38 @@ _STATEFUL_VECTOR_PROTOTYPE_FIELDS = (
 
 
 def register_builtin_components(registry: _Registry) -> None:
+    options = tuple(
+        (str(builder["name"]), str(builder["description"]))
+        for builder in penzai_builder_options()
+    )
+    # Some built-in templates materialize JAX arithmetic as authored numbers.
+    jax_defaults = (
+        jax.config.jax_enable_x64,
+        jnp.result_type(0.0).name,
+        jax.default_backend(),
+        jax.config.jax_default_device,
+    )
+    for entry in _builtin_definitions(options, jax_defaults):
+        if isinstance(entry, ComponentMigration):
+            registry.register_migration(entry)
+        else:
+            registry.register(entry)
+
+
+@lru_cache(maxsize=4)
+def _builtin_definitions(
+    penzai_builders: tuple[tuple[str, str], ...],
+    _jax_defaults: tuple[bool, str, str, jax.Device | str | None],
+) -> tuple[DeclaredComponent | ComponentMigration, ...]:
+    definitions = _BuiltinDefinitions()
+    _declare_builtin_components(definitions, penzai_builders)
+    return tuple(definitions.entries)
+
+
+def _declare_builtin_components(
+    registry: _Registry,
+    penzai_builders: tuple[tuple[str, str], ...],
+) -> None:
     from feedbax.compiler import builders as _builders
 
     registry.register(
@@ -1457,7 +1500,6 @@ def register_builtin_components(registry: _Registry) -> None:
         )
     )
     register_builtin_graph_templates(registry)
-    penzai_builders = penzai_builder_options()
     registry.register(
         declare_component(
             name="PenzaiAdapter",
@@ -1470,11 +1512,9 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(
                     name="builder_name",
                     type="enum",
-                    options=[builder["name"] for builder in penzai_builders],
-                    option_descriptions={
-                        builder["name"]: str(builder["description"]) for builder in penzai_builders
-                    },
-                    default=penzai_builders[0]["name"] if penzai_builders else "",
+                    options=[name for name, _ in penzai_builders],
+                    option_descriptions=dict(penzai_builders),
+                    default=penzai_builders[0][0] if penzai_builders else "",
                     description="Registered Penzai model builder.",
                     required=True,
                 ),

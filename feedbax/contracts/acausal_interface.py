@@ -5,6 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal
 
+from feedbax._acausal_payload import (
+    ACTIVATION_PAYLOAD as ACTIVATION_PAYLOAD,
+    FORCE_PAYLOAD as FORCE_PAYLOAD,
+    MUSCLE_EXCITATION_PAYLOAD as MUSCLE_EXCITATION_PAYLOAD,
+    PRESCRIBED_MOTION_PAYLOAD as PRESCRIBED_MOTION_PAYLOAD,
+    SourcePayload as SourcePayload,
+    TORQUE_PAYLOAD as TORQUE_PAYLOAD,
+)
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.component import PortType, PortTypeSpec
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, GraphSubgraphSpec
@@ -20,48 +28,6 @@ class AcausalInterfaceError(ValueError):
     """Raised when an acausal graph cannot expose a valid derived interface."""
 
 
-@dataclass(frozen=True)
-class SourcePayload:
-    """Ordered scalar fields in a causal payload delivered to one acausal source."""
-
-    slots: tuple[str, ...]
-
-    @property
-    def shape(self) -> tuple[int, ...]:
-        return () if len(self.slots) == 1 else (len(self.slots),)
-
-    def validate_shape(self, port: str, shape: tuple[int, ...] | None) -> None:
-        expected_shape = self.shape
-        # Scalar channels also accept the one-element arrays emitted by vector components.
-        if shape == expected_shape or (expected_shape == () and shape == (1,)):
-            return
-        expected = (
-            f"shape {expected_shape} with fields {self.slots}"
-            if expected_shape
-            else "a scalar or a one-element vector"
-        )
-        raise ValueError(f"Acausal source input {port!r} expects {expected}, got shape {shape}")
-
-    def port_type(self) -> PortType:
-        return (
-            PortType(dtype="vector", shape=list(self.shape), kind="signal")
-            if self.shape
-            else signal_port_type()
-        )
-
-
-FORCE_PAYLOAD = SourcePayload(("force",))
-TORQUE_PAYLOAD = SourcePayload(("torque",))
-PRESCRIBED_MOTION_PAYLOAD = SourcePayload(("pos", "vel"))
-ACTIVATION_PAYLOAD = SourcePayload(("activation",))
-MUSCLE_EXCITATION_PAYLOAD = SourcePayload((
-    "shoulder_flexor",
-    "shoulder_extensor",
-    "elbow_flexor",
-    "elbow_extensor",
-    "biarticular_flexor",
-    "biarticular_extensor",
-))
 ACTUATION_PAYLOADS = {
     "force": FORCE_PAYLOAD,
     "torque": TORQUE_PAYLOAD,

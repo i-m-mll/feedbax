@@ -68,10 +68,12 @@ def test_invocation_cache_lifecycle(tmp_path, outcome, workers, override, return
     sentinel.write_bytes(b"keep")
     records = tmp_path / "records"
     records.mkdir()
-    conftest = (repo / "tests" / "conftest.py").read_text()
-    conftest += r"""
-
+    conftest = r"""
 import json
+import os
+from pathlib import Path
+
+import jax
 
 def pytest_sessionstart(session):
     worker = os.environ.get("PYTEST_XDIST_WORKER", "controller")
@@ -106,8 +108,7 @@ def test_cache():
     if expected:
         child = subprocess.check_output([
             sys.executable, "-c",
-            "from feedbax.orchestration.drivers.local import resolve_jax_compilation_cache_dir; "
-            "print(resolve_jax_compilation_cache_dir())",
+            "import os; print(os.environ['FEEDBAX_JAX_COMPILATION_CACHE_DIR'])",
         ], text=True, timeout=10).strip()
         assert child == expected
     else:
@@ -157,6 +158,8 @@ def test_cache():
         "warm" if (outcome, workers, override) == ("success", "0", "default") else "cold",
         "-p",
         "xdist.plugin",
+        "-p",
+        "scripts.pytest_jax_cache",
         "-n",
         workers,
         "--dist=each",
@@ -167,7 +170,8 @@ def test_cache():
         str(tmp_path / "pytest-temp"),
     ]
     caches = []
-    for invocation_index in range(2 if override == "default" and outcome == "success" else 1):
+    repeats = 2 if (outcome, workers, override) == ("success", "0", "default") else 1
+    for invocation_index in range(repeats):
         env["CACHE_CALLER_DIR"] = str(tmp_path / f"caller-cache-{invocation_index}")
         result = subprocess.run(
             command, cwd=corpus, env=env, capture_output=True, text=True, timeout=25, check=False
