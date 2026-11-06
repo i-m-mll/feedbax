@@ -151,19 +151,15 @@ checks are:
 - Full integration bar at lane closeout: `scripts/full_suite.sh`.
 - Generated contract freshness:
   `uv run --no-sync pytest tests/test_studio_api_contracts.py::test_generated_studio_contracts_are_current -q`.
-  To regenerate, run `cd web && npm run generate:contracts`.
+  To regenerate, run `cd web && bun run generate:contracts`.
 - Backend focused tests: relevant `uv run --no-sync pytest ...` paths such as
   `tests/test_studio_api_contracts.py`, `tests/test_studio_workspace.py`,
   `tests/test_studio_execution.py`, `tests/test_studio_runs_api.py`, and
   `tests/test_studio_analysis_jobs.py`.
-- Frontend build: `cd web && npm run build`.
-- Frontend focused tests: `cd web && npm run test -- <path-or-pattern>`.
-- Instruction-policy mirror check, only when the marked AGENTS/CLAUDE test
-  policy block changes:
-  `uv run --no-sync python scripts/check_instruction_policy.py`.
+- Frontend build: `cd web && bun run build`.
+- Frontend focused tests: `cd web && bun run test <path-or-pattern>`.
 
-For docs-only updates, `git diff --check` plus targeted stale-term searches are
-usually enough unless the docs touch generated or mirrored instruction blocks.
+For docs-only updates, use `git diff --check` and targeted searches for stale terms.
 
 ## Known Non-Claims
 

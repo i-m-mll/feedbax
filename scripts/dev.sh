@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if ! command -v npm >/dev/null 2>&1; then
-  echo "npm is required to run the Studio frontend" >&2
+if ! command -v bun >/dev/null 2>&1; then
+  echo "Bun is required to run the Studio frontend" >&2
   exit 1
 fi
 
@@ -17,6 +17,6 @@ UVICORN_PID=$!
 trap 'kill "$UVICORN_PID" 2>/dev/null || true' EXIT
 
 pushd "$ROOT_DIR/web" >/dev/null
-npm install
-npm run dev
+bun install --frozen-lockfile
+bun run dev
 popd >/dev/null
