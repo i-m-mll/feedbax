@@ -11,8 +11,17 @@ from feedbax.runtime.state import CartesianState
 from feedbax.tasks.task import SimpleReaches, TaskTrialSpec
 
 
-@pytest.mark.parametrize("normalize_by", ["actual", "goal"])
-def test_straight_path_loss_and_gradient_on_mixed_batch(normalize_by):
+class _TimeMajorTarget(TargetSpec):
+    @property
+    def batch_axes(self):
+        return TargetSpec(value=1)
+
+
+@pytest.mark.parametrize(
+    "normalize_by, target_type",
+    [("actual", TargetSpec), ("goal", TargetSpec), ("goal", _TimeMajorTarget)],
+)
+def test_straight_path_loss_and_gradient_on_mixed_batch(normalize_by, target_type):
     moving_end = [0, 0] if normalize_by == "actual" else [2, 1]
     positions = jnp.array(
         [
@@ -29,9 +38,11 @@ def test_straight_path_loss_and_gradient_on_mixed_batch(normalize_by):
 
     def objective(pos, goal):
         states = SimpleNamespace(mechanics=SimpleNamespace(effector=CartesianState(pos=pos)))
+        if target_type is _TimeMajorTarget:
+            goal = jnp.stack((goal + 1, goal + 2, goal))
         specs = TaskTrialSpec(
             inits=WhereDict(),
-            targets=WhereDict({"mechanics.effector.pos": TargetSpec(value=goal)}),
+            targets=WhereDict({"mechanics.effector.pos": target_type(value=goal)}),
             inputs=None,
         )
         result = loss(states, specs, None)

@@ -1480,11 +1480,17 @@ class EffectorStraightPathLoss(AbstractLoss):
         if self.normalize_by == "actual":
             final_pos = effector_pos[:, -1]
         elif self.normalize_by == "goal":
-            final_pos = jnp.asarray(trial_specs.targets["mechanics.effector.pos"].value)
-            if final_pos.ndim == effector_pos.ndim:
-                if final_pos.shape[1] == 0:
+            target = trial_specs.targets["mechanics.effector.pos"]
+            final_pos = jnp.asarray(target.value)
+            trial_axis = target.batch_axes.value
+            time_axis = 0
+            if trial_axis is not None and final_pos.ndim >= initial_pos.ndim:
+                final_pos = jnp.moveaxis(final_pos, trial_axis, 0)
+                time_axis = 1
+            if final_pos.ndim == initial_pos.ndim + time_axis:
+                if final_pos.shape[time_axis] == 0:
                     raise ValueError("EffectorStraightPathLoss requires a nonempty goal trajectory")
-                final_pos = final_pos[:, -1]
+                final_pos = jnp.moveaxis(final_pos, time_axis, 0)[-1]
             final_pos = jnp.broadcast_to(final_pos, initial_pos.shape)
         else:
             raise ValueError("normalize_by must be 'actual' or 'goal'")
