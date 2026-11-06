@@ -11,6 +11,7 @@ from itertools import product
 import json
 from pathlib import Path
 import re
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import plotly.graph_objs as go
@@ -97,7 +98,6 @@ from feedbax.contracts.manifest import (
     SpecPayload,
     figure_manifest_id,
     spec_payload,
-    write_manifest,
 )
 from feedbax.plot.colors import sample_colorscale_at, sample_colorscale_unique
 from feedbax.plot.constructors import (
@@ -113,6 +113,7 @@ from feedbax.persistence.artifact_custody import (
     ArtifactBlobIntegrityError,
     ImmutableArtifactBlobProvider,
 )
+from feedbax.persistence.terminal_publication import publish_render_manifest
 
 FIGURE_RENDER_ROLE = "figure_render"
 FIGURE_SPEC_ROLE = "figure_spec"
@@ -206,12 +207,15 @@ class RenderedFigure:
 
 
 class FigureSpecExecutionError(RuntimeError):
-    """Raised after figure execution fails and a failed manifest is written."""
+    """A failed figure attempt, with a path if its manifest was published."""
 
-    def __init__(self, manifest: FigureManifest, path: Path, cause: BaseException):
-        super().__init__(
-            f"Figure spec for {manifest.id!r} failed; failed manifest written to {path}"
+    def __init__(self, manifest: FigureManifest, path: Path | None, cause: BaseException):
+        outcome = (
+            f"failed manifest written to {path}"
+            if path is not None
+            else "completed manifest retained"
         )
+        super().__init__(f"Figure spec for {manifest.id!r} failed; {outcome}")
         self.manifest = manifest
         self.path = path
         self.__cause__ = cause
@@ -977,35 +981,18 @@ def execute_figure_spec(
     resolved_inputs = resolve_figure_inputs(
         figure_spec, root=root, execution_context=execution_context
     )
+    manifest_metadata = dict(metadata or {})
     try:
         context = _figure_expression_context(figure_spec, resolved_inputs)
         if figure_spec.run_condition is not None and not evaluate_expr(
             figure_spec.run_condition,
             context,
         ):
-            manifest = _build_figure_manifest(
-                manifest_id=manifest_id,
-                resolved_spec=resolved_spec,
-                execution_spec=figure_spec,
-                authored_payload=resolved_payload,
-                composition_payloads=composition_payloads,
-                runtime_binding_payload=runtime_binding_payload,
-                status="completed",
-                provenance=prov,
-                artifacts=[],
-                resolved_inputs=resolved_inputs,
-                execution_trace=exec_trace,
-                metadata={**dict(metadata or {}), "skipped": "run_condition false"},
-            )
-            return manifest, write_manifest(manifest, root=root_path)
-
-        figures = _build_figures(figure_spec, context, exec_trace, root_path, registry)
-        artifacts = _write_figure_custody(
-            figures,
-            resolved_spec,
-            root=root_path,
-            manifest_id=manifest_id,
-        )
+            artifacts = []
+            manifest_metadata["skipped"] = "run_condition false"
+        else:
+            figures = _build_figures(figure_spec, context, exec_trace, root_path, registry)
+            artifacts = _write_figure_custody(figures, resolved_spec, root=root_path)
         manifest = _build_figure_manifest(
             manifest_id=manifest_id,
             resolved_spec=resolved_spec,
@@ -1018,9 +1005,8 @@ def execute_figure_spec(
             artifacts=artifacts,
             resolved_inputs=resolved_inputs,
             execution_trace=exec_trace,
-            metadata=dict(metadata or {}),
+            metadata=manifest_metadata,
         )
-        return manifest, write_manifest(manifest, root=root_path)
     except Exception as exc:
         manifest = _build_figure_manifest(
             manifest_id=manifest_id,
@@ -1037,8 +1023,11 @@ def execute_figure_spec(
             metadata=dict(metadata or {}),
             failure={"type": _failure_type(exc), "message": str(exc)},
         )
-        path = write_manifest(manifest, root=root_path)
+        path = publish_render_manifest(manifest, root=root_path)
         raise FigureSpecExecutionError(manifest, path, exc) from exc
+    path = publish_render_manifest(manifest, root=root_path)
+    assert path is not None
+    return manifest, path
 
 
 def _figure_runtime_binding_payload(
@@ -2276,68 +2265,69 @@ def _write_figure_custody(
     spec: FigureSpec,
     *,
     root: Path,
-    manifest_id: str,
 ) -> list[ArtifactRef]:
-    output_dir = root / "figures" / manifest_id.replace(":", "_")
-    output_dir.mkdir(parents=True, exist_ok=True)
     render_format = str(spec.figure_routing.get("render_format", "json"))
     artifacts: list[ArtifactRef] = []
-    for index, rendered in enumerate(figures):
-        suffix = "" if len(figures) == 1 else f"-{_safe_figure_name(rendered.name, index)}"
-        output_name = f"figure{suffix}"
-        spec_path, render_path = save_figure_with_spec(
-            rendered.figure,
-            {
-                "kind": "FigureSpec",
-                "figure_spec": spec.model_dump(mode="json", exclude_none=True),
-                "facet": rendered.name if len(figures) > 1 else None,
-            },
-            output_dir,
-            name=output_name,
-            render_format=render_format,
-        )
-        artifacts.append(
-            store_artifact(
-                spec_path,
-                root=root,
-                role=FIGURE_SPEC_ROLE,
-                logical_name=f"{spec.name}{suffix}-spec.json",
-                media_type="application/json",
-                metadata={
-                    "figure": spec.name,
+    with TemporaryDirectory(prefix="feedbax-figure-") as staging:
+        for index, rendered in enumerate(figures):
+            suffix = "" if len(figures) == 1 else f"-{_safe_figure_name(rendered.name, index)}"
+            output_name = f"figure{suffix}"
+            spec_path, render_path = save_figure_with_spec(
+                rendered.figure,
+                {
+                    "kind": "FigureSpec",
+                    "figure_spec": spec.model_dump(mode="json", exclude_none=True),
                     "facet": rendered.name if len(figures) > 1 else None,
                 },
+                Path(staging),
+                name=output_name,
+                render_format=render_format,
             )
-        )
-        if render_path is not None:
-            media_type = media_type_for_extension(render_path.suffix)
             artifacts.append(
                 store_artifact(
-                    render_path,
+                    spec_path,
                     root=root,
-                    role=FIGURE_RENDER_ROLE,
-                    logical_name=render_path.name,
-                    media_type=media_type,
+                    role=FIGURE_SPEC_ROLE,
+                    logical_name=f"{spec.name}{suffix}-spec.json",
+                    media_type="application/json",
                     metadata={
                         "figure": spec.name,
                         "facet": rendered.name if len(figures) > 1 else None,
-                        "format": render_format,
                     },
                 )
             )
-        artifacts.append(
-            store_json_artifact(
-                rendered.figure.to_plotly_json(),
-                root=root,
-                role=FIGURE_RENDER_ROLE,
-                logical_name=f"{spec.name}{suffix}.plotly.json",
-                metadata={
-                    "figure": spec.name,
-                    "facet": rendered.name if len(figures) > 1 else None,
-                    "format": "plotly-json",
-                },
+            if render_path is not None:
+                media_type = media_type_for_extension(render_path.suffix)
+                artifacts.append(
+                    store_artifact(
+                        render_path,
+                        root=root,
+                        role=FIGURE_RENDER_ROLE,
+                        logical_name=render_path.name,
+                        media_type=media_type,
+                        metadata={
+                            "figure": spec.name,
+                            "facet": rendered.name if len(figures) > 1 else None,
+                            "format": render_format,
+                        },
+                    )
+                )
+            artifacts.append(
+                store_json_artifact(
+                    rendered.figure.to_plotly_json(),
+                    root=root,
+                    role=FIGURE_RENDER_ROLE,
+                    logical_name=f"{spec.name}{suffix}.plotly.json",
+                    metadata={
+                        "figure": spec.name,
+                        "facet": rendered.name if len(figures) > 1 else None,
+                        "format": "plotly-json",
+                    },
+                )
             )
-        )
+    # Receipts should only refer to the durable copies.
+    for artifact in artifacts:
+        artifact.metadata.pop("original_uri", None)
     return artifacts
 
 

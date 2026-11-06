@@ -401,10 +401,10 @@ def build_report_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _report_manifest_payload(manifest, path: Path) -> dict[str, object]:
+def _report_manifest_payload(manifest, path: Path | None) -> dict[str, object]:
     return {
         "manifest_id": manifest.id,
-        "manifest_path": str(path),
+        "manifest_path": str(path) if path is not None else None,
         "status": manifest.status,
         "artifacts": [
             artifact.model_dump(mode="json", exclude_none=True) for artifact in manifest.artifacts
