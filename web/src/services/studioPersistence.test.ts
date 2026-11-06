@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
-import { studioPersistenceDocument, type StudioPersistenceResult } from '@/api/client';
+import {
+  fetchGraph,
+  studioPersistenceDocument,
+  type StudioPersistenceEnvelope,
+  type StudioPersistenceResult,
+} from '@/api/client';
 import type { WorkspaceDocument } from '@/generated/studioContracts';
 import type { GraphMetadata, GraphSpec, GraphUIState } from '@/types/graph';
 import type { StudioWorkspaceSpec } from '@/types/workspace';
@@ -10,6 +15,7 @@ import { studioDraftHashes } from '@/utils/studioDraftHash';
 import {
   StudioPersistenceCoordinator,
   captureActiveStudioDocument,
+  saveActiveStudioDocument,
   startStudioPersistence,
   studioPersistence,
   type StudioDocumentDraft,
@@ -465,17 +471,212 @@ describe('document-scoped Studio persistence transactions', () => {
     await expect(explicitRetry).resolves.toMatchObject({ ok: true, localRevision: 2 });
   });
 
-  it('keeps conflicts blocked and visible with the server comparison', async () => {
-    const persist = vi.fn<StudioPersistenceDependencies['persist']>(async () => {
-      throw new ApiRequestError('http', '/api/graphs/graph:a', 'stale', { status: 409 });
+  it('compares a queued first-save conflict against the admitted graph', async () => {
+    const first = deferred<StudioPersistenceResult>();
+    const persist = vi.fn<StudioPersistenceDependencies['persist']>()
+      .mockImplementationOnce(() => first.promise)
+      .mockRejectedValueOnce(
+        new ApiRequestError('http', '/api/graphs/graph:created', 'stale', { status: 409 }),
+      );
+    const fetch = vi.fn<StudioPersistenceDependencies['fetch']>(async () =>
+      serverDocument('graph:created')
+    );
+    const { coordinator } = harness(persist, fetch);
+
+    const unsaved = draft({ graphId: null, saveRevision: null });
+    const firstSave = coordinator.save(unsaved, 'manual');
+    const queuedSave = coordinator.save({ ...unsaved, localRevision: 2 }, 'shortcut');
+    first.resolve(result(0, 'graph:created', true));
+
+    await expect(firstSave).resolves.toMatchObject({ ok: true });
+    await expect(queuedSave).resolves.toMatchObject({
+      ok: false,
+      kind: 'conflict',
+      message: expect.stringMatching(/at revision 5.*expected revision 0/),
     });
-    const { coordinator, failed } = harness(persist);
-
-    const outcome = await coordinator.save(draft(), 'manual');
-
-    expect(outcome).toMatchObject({ ok: false, kind: 'conflict' });
-    expect(failed[0].outcome.message).toContain('Save conflict');
+    expect(fetch.mock.calls).toEqual([['graph:created'], ['graph:created']]);
     expect(coordinator.state('document:a').blocked).toBe(true);
+  });
+});
+
+function startFirstSaveTest() {
+  const projects = useProjectsStore.getState();
+  const documents = [projects.openNewTab('First project')];
+  const firstCreateStatus = deferred<number>();
+  const writes: Array<{
+    method: string;
+    path: string;
+    expectedRevision: StudioPersistenceEnvelope['expected_save_revision'];
+    ifMatch: string | null;
+  }> = [];
+  const saved = new Map<string, { revision: number; document: WorkspaceDocument }>();
+  let nextId = 1;
+
+  vi.stubGlobal('fetch', async (path: string, request: RequestInit) => {
+    const method = request.method ?? 'GET';
+    if (method === 'GET') {
+      const record = saved.get(path);
+      if (!record) return new Response(null, { status: 404 });
+      return Response.json({
+        data: {
+          graph: graph(record.revision),
+          metadata: metadata(record.revision),
+          workspace_document: record.document,
+        },
+      });
+    }
+
+    const envelope = JSON.parse(request.body as string) as StudioPersistenceEnvelope;
+    const ifMatch = new Headers(request.headers).get('If-Match');
+    writes.push({ method, path, expectedRevision: envelope.expected_save_revision, ifMatch });
+
+    if (method === 'POST' && path === '/api/graphs') {
+      const id = `created-${nextId++}`;
+      if (id === 'created-1') {
+        const status = await firstCreateStatus.promise;
+        if (status !== 201) return new Response(null, { status });
+      }
+      saved.set(`/api/graphs/${id}`, { revision: 0, document: envelope.workspace_document! });
+      return Response.json({ data: { id, metadata: metadata(0) } }, { status: 201 });
+    }
+
+    const current = saved.get(path);
+    if (method !== 'PUT' || !current) return new Response(null, { status: 404 });
+    if (envelope.expected_save_revision !== current.revision || ifMatch !== String(current.revision)) {
+      return new Response(null, { status: 409 });
+    }
+    const revision = current.revision + 1;
+    saved.set(path, { revision, document: envelope.workspace_document! });
+    return Response.json({ data: { success: true, metadata: metadata(revision) } });
+  });
+  const stop = startStudioPersistence();
+
+  return {
+    documentId: documents[0],
+    firstCreateStatus,
+    writes,
+    openAnotherProject: () => {
+      const documentId = projects.openNewTab('Second project');
+      documents.push(documentId);
+      return documentId;
+    },
+    stop: () => {
+      stop();
+      for (const documentId of documents) {
+        studioPersistence.reset(documentId);
+        projects.closeTab(documentId);
+      }
+      vi.unstubAllGlobals();
+    },
+  };
+}
+
+const firstPost = {
+  method: 'POST', path: '/api/graphs', expectedRevision: undefined, ifMatch: null,
+};
+const firstPut = {
+  method: 'PUT', path: '/api/graphs/created-1', expectedRevision: 0, ifMatch: '0',
+};
+
+describe('first save through the Studio persistence subscription', () => {
+  it.each(['shortcut', 'autosave'] as const)(
+    'keeps a newer %s draft on the first admitted graph',
+    async (reason) => {
+      const fixture = startFirstSaveTest();
+      try {
+        useAnalysisStore.getState().addPage('Before create');
+        const firstSave = saveActiveStudioDocument('manual');
+        useAnalysisStore.getState().addPage('After create started');
+        await flushPromises();
+        const secondSave = reason === 'shortcut' ? saveActiveStudioDocument(reason) : null;
+        expect(fixture.writes).toEqual([firstPost]);
+
+        fixture.firstCreateStatus.resolve(201);
+        await expect(firstSave).resolves.toMatchObject({
+          ok: true, result: { graphId: 'created-1', created: true },
+        });
+        const secondOutcome = await secondSave;
+        if (!secondOutcome) {
+          await vi.waitFor(() => expect(useGraphStore.getState().isDirty).toBe(false));
+        }
+        expect(fixture.writes).toEqual([firstPost, firstPut]);
+        if (secondOutcome) {
+          expect(secondOutcome).toMatchObject({
+            ok: true, result: { graphId: 'created-1', created: false },
+          });
+        }
+
+        const reloaded = await fetchGraph('created-1');
+        expect(reloaded.workspace_document.analysis_pages).toEqual([
+          expect.objectContaining({ name: 'Before create' }),
+          expect.objectContaining({ name: 'After create started' }),
+        ]);
+      } finally {
+        fixture.stop();
+      }
+    },
+  );
+
+  it('saves an outgoing first-save edit to its own graph when the active tab changes', async () => {
+    const fixture = startFirstSaveTest();
+    try {
+      useAnalysisStore.getState().addPage('First project page');
+      const firstSave = saveActiveStudioDocument('manual');
+      useAnalysisStore.getState().addPage('Outgoing edit');
+      const secondDocumentId = fixture.openAnotherProject();
+      useAnalysisStore.getState().addPage('Second project page');
+      await expect(saveActiveStudioDocument('manual')).resolves.toMatchObject({
+        ok: true, documentId: secondDocumentId, result: { graphId: 'created-2' },
+      });
+
+      fixture.firstCreateStatus.resolve(201);
+      await expect(firstSave).resolves.toMatchObject({
+        ok: true, documentId: fixture.documentId, result: { graphId: 'created-1' },
+      });
+      await vi.waitFor(() => {
+        const inactive = useProjectsStore.getState().tabs.find((tab) => tab.tabId === fixture.documentId);
+        expect(inactive?.graphSnapshot).toMatchObject({
+          graphId: 'created-1', saveRevision: 1, isDirty: false,
+        });
+      });
+
+      expect(fixture.writes).toEqual([firstPost, firstPost, firstPut]);
+      expect(useProjectsStore.getState().activeTabId).toBe(secondDocumentId);
+      expect(useGraphStore.getState()).toMatchObject({ graphId: 'created-2', saveRevision: 0 });
+      const reloaded = await fetchGraph('created-1');
+      expect(reloaded.workspace_document.analysis_pages).toContainEqual(
+        expect.objectContaining({ name: 'Outgoing edit' }),
+      );
+    } finally {
+      fixture.stop();
+    }
+  });
+
+  it('leaves an unsuccessful first create local until an explicit retry', async () => {
+    const fixture = startFirstSaveTest();
+    try {
+      useAnalysisStore.getState().addPage('Before failure');
+      const firstSave = saveActiveStudioDocument('manual');
+      useAnalysisStore.getState().addPage('Retry edit');
+      const queuedSave = saveActiveStudioDocument('shortcut');
+
+      fixture.firstCreateStatus.resolve(503);
+      await expect(firstSave).resolves.toMatchObject({ ok: false, kind: 'error' });
+      await expect(queuedSave).resolves.toMatchObject({ ok: false, kind: 'error' });
+      expect(fixture.writes).toEqual([firstPost]);
+      expect(useGraphStore.getState()).toMatchObject({ graphId: null, isDirty: true });
+
+      await expect(saveActiveStudioDocument('manual')).resolves.toMatchObject({
+        ok: true, result: { graphId: 'created-2', created: true },
+      });
+      expect(fixture.writes).toEqual([firstPost, firstPost]);
+      const reloaded = await fetchGraph('created-2');
+      expect(reloaded.workspace_document.analysis_pages).toContainEqual(
+        expect.objectContaining({ name: 'Retry edit' }),
+      );
+    } finally {
+      fixture.stop();
+    }
   });
 });
 

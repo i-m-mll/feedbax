@@ -69,12 +69,14 @@ interface PendingWaiter {
   resolve: (outcome: StudioSaveOutcome) => void;
 }
 
+type SaveDestination = { graphId: string; saveRevision: number | null } | null;
+
 interface DocumentQueue {
   pending: StudioDocumentDraft | null;
   inFlight: StudioDocumentDraft | null;
   timer: ReturnType<typeof setTimeout> | null;
   blocked: boolean;
-  knownSaveRevision: number | null;
+  destination: SaveDestination;
   waiters: PendingWaiter[];
 }
 
@@ -116,15 +118,14 @@ function captureWorkspaceDocument(
 
 function transactionEnvelope(
   draft: StudioDocumentDraft,
-  knownSaveRevision: number | null,
+  destination: SaveDestination,
 ): StudioPersistenceEnvelope {
   const envelope = immutable(draft.envelope);
-  if (draft.graphId) {
-    const expectedSaveRevision = knownSaveRevision ?? draft.saveRevision;
-    if (expectedSaveRevision === null) {
+  if (destination) {
+    if (destination.saveRevision === null) {
       throw new Error(`Project "${draft.label}" has no server save revision.`);
     }
-    envelope.expected_save_revision = expectedSaveRevision;
+    envelope.expected_save_revision = destination.saveRevision;
   } else {
     delete envelope.expected_save_revision;
   }
@@ -140,15 +141,15 @@ export class StudioPersistenceCoordinator {
   ) {}
 
   documentChanged(draft: StudioDocumentDraft): void {
-    const queue = this.queue(draft.documentId);
+    const queue = this.queueFor(draft);
     if (!queue.pending || draft.localRevision >= queue.pending.localRevision) {
       queue.pending = immutable(draft);
     }
-    if (draft.graphId && !queue.blocked) this.schedule(queue, draft.documentId);
+    if (queue.destination && !queue.blocked) this.schedule(queue, draft.documentId);
   }
 
   save(draft: StudioDocumentDraft, _reason: Exclude<StudioSaveReason, 'autosave'>): Promise<StudioSaveOutcome> {
-    const queue = this.queue(draft.documentId);
+    const queue = this.queueFor(draft);
     queue.blocked = false;
     if (
       (!queue.inFlight || draft.localRevision > queue.inFlight.localRevision) &&
@@ -187,7 +188,7 @@ export class StudioPersistenceCoordinator {
     };
   }
 
-  private queue(documentId: string): DocumentQueue {
+  private queueFor({ documentId, graphId, saveRevision }: StudioDocumentDraft): DocumentQueue {
     const existing = this.queues.get(documentId);
     if (existing) return existing;
     const created: DocumentQueue = {
@@ -195,7 +196,7 @@ export class StudioPersistenceCoordinator {
       inFlight: null,
       timer: null,
       blocked: false,
-      knownSaveRevision: null,
+      destination: graphId ? { graphId, saveRevision } : null,
       waiters: [],
     };
     this.queues.set(documentId, created);
@@ -211,19 +212,22 @@ export class StudioPersistenceCoordinator {
   }
 
   private async drain(documentId: string): Promise<void> {
-    const queue = this.queue(documentId);
-    if (queue.inFlight || queue.blocked || !queue.pending) return;
+    const queue = this.queues.get(documentId);
+    if (!queue || queue.inFlight || queue.blocked || !queue.pending) return;
 
     const draft = queue.pending;
+    const destination = queue.destination;
     queue.pending = null;
     queue.inFlight = draft;
     this.dependencies.started(draft);
-    let attemptedSaveRevision = draft.saveRevision;
 
     try {
-      const envelope = transactionEnvelope(draft, queue.knownSaveRevision);
-      attemptedSaveRevision = envelope.expected_save_revision ?? null;
-      const result = await this.dependencies.persist(draft.graphId, envelope);
+      const envelope = transactionEnvelope(draft, destination);
+      const result = await this.dependencies.persist(destination?.graphId ?? null, envelope);
+      queue.destination = {
+        graphId: result.graphId,
+        saveRevision: result.metadata.save_revision ?? null,
+      };
       let workspaceDocument: WorkspaceDocument | undefined;
       let warning: string | undefined;
       if (result.created) {
@@ -235,7 +239,6 @@ export class StudioPersistenceCoordinator {
           this.dependencies.warning?.(draft, warning, error);
         }
       }
-      queue.knownSaveRevision = result.metadata.save_revision ?? null;
       this.dependencies.acknowledged(draft, result, workspaceDocument);
       const outcome: StudioSaveOutcome = {
         ok: true,
@@ -253,12 +256,12 @@ export class StudioPersistenceCoordinator {
     } catch (error) {
       const kind = isHttpConflict(error) ? 'conflict' : 'error';
       let message = `Could not save "${draft.label}". Its changes remain local.`;
-      if (kind === 'conflict' && draft.graphId) {
-        const server = await this.dependencies.fetch(draft.graphId).catch(() => null);
+      if (kind === 'conflict' && destination) {
+        const server = await this.dependencies.fetch(destination.graphId).catch(() => null);
         const localDocument = draft.envelope.workspace_document;
         message = server && localDocument
           ? summarizeSaveConflict({
-              expectedRevision: attemptedSaveRevision,
+              expectedRevision: destination.saveRevision,
               serverMetadata: server.metadata,
               local: {
                 graph: draft.envelope.graph as GraphSpec,
@@ -496,7 +499,7 @@ export function startStudioPersistence(): () => void {
   const unsubscribeProjects = useProjectsStore.subscribe((state, previous) => {
     if (state.activeTabId === previous.activeTabId) return;
     const outgoing = state.tabs.find((tab) => tab.tabId === previous.activeTabId);
-    if (outgoing?.graphSnapshot.isDirty && outgoing.graphSnapshot.graphId) {
+    if (outgoing?.graphSnapshot.isDirty) {
       try {
         studioPersistence.documentChanged(captureStoredStudioDocument(outgoing));
       } catch (error) {
