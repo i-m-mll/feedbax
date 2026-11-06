@@ -195,7 +195,7 @@ def _extract_penzai_adapter_params(component: Any, model: Any) -> Any:
 
 
 def _extract_analytical_plant_params(component: Any, model: Any) -> Any:
-    from feedbax.mechanics.backend import DiffraxBackend
+    from feedbax.mechanics.backend import DiffraxBackend, _mechanics_control_dt
 
     backend = component.backend
     if not isinstance(backend, DiffraxBackend):
@@ -203,13 +203,9 @@ def _extract_analytical_plant_params(component: Any, model: Any) -> Any:
             "AnalyticalMusculoskeletalPlant serialization requires DiffraxBackend "
             "to recover the authored substep count"
         )
-    if float(backend.control_dt) != float(component.dt):
-        raise ValueError(
-            "AnalyticalMusculoskeletalPlant backend control_dt must equal Mechanics dt"
-        )
     return type(model).model_validate(
         {
-            "dt": float(component.dt),
+            "dt": _mechanics_control_dt(component.dt, backend),
             "n_steps": int(backend.n_substeps),
             "solver_type": planar_solver_name(backend.solver),
             **component.plant.to_params(),

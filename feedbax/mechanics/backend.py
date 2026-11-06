@@ -14,11 +14,13 @@ delegate time integration to either:
 
 from __future__ import annotations
 
+import math
+from numbers import Integral
 from typing import Protocol, runtime_checkable
 
 import diffrax as dfx
 import equinox as eqx
-from equinox import Module, field
+from equinox import Module
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
@@ -26,6 +28,56 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from feedbax._ode import ode_init, ode_step
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.runtime.state import CartesianState
+
+
+# Allow independently rounded float32 control and substep periods to agree.
+_TIMING_RTOL = 2e-7
+
+
+def _positive_period(name: str, value: float) -> float:
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be positive and finite, got {value!r}")
+    return float(value)
+
+
+def _substep_count(
+    control_dt: float, sub_dt: float, n_substeps: int | None = None
+) -> int:
+    control_dt = _positive_period("control_dt", control_dt)
+    sub_dt = _positive_period("sub_dt", sub_dt)
+    ratio = control_dt / sub_dt
+    if math.isfinite(ratio):
+        count = round(ratio)
+        tolerance = min(_TIMING_RTOL * ratio, 0.125)
+        if count > 0 and abs(ratio - count) <= tolerance:
+            if n_substeps is None:
+                return count
+            if (
+                isinstance(n_substeps, Integral)
+                and not isinstance(n_substeps, bool)
+                and n_substeps == count
+            ):
+                return count
+            raise ValueError(
+                f"n_substeps must be the integer {count} for control_dt={control_dt!r} "
+                f"and sub_dt={sub_dt!r}, got {n_substeps!r}"
+            )
+    raise ValueError(
+        f"control_dt={control_dt!r} must be a positive integer multiple "
+        f"of sub_dt={sub_dt!r}"
+    )
+
+
+def _mechanics_control_dt(dt: float, backend: PhysicsBackend | None) -> float:
+    dt = _positive_period("Mechanics.dt", dt)
+    if backend is None:
+        return dt
+    control_dt = _positive_period("backend.control_dt", backend.control_dt)
+    if not math.isclose(dt, control_dt, rel_tol=_TIMING_RTOL):
+        raise ValueError(
+            f"Mechanics.dt={dt!r} must agree with backend.control_dt={control_dt!r}"
+        )
+    return control_dt
 
 
 def step_plant_ode(
@@ -72,8 +124,8 @@ class PhysicsBackend(Protocol):
     """Protocol for physics stepping backends.
 
     Each backend defines how a single substep of physics integration is
-    performed, along with timing parameters that determine how many
-    substeps comprise one control step.
+    performed. The control period must equal the substep period times
+    the positive integer number of substeps, within numerical tolerance.
 
     Attributes:
         control_dt: Time per control step (seconds).
@@ -159,14 +211,19 @@ class DiffraxBackend(Module):
                 (single substep, matching legacy behavior).
             solver: Diffrax solver. Defaults to ``dfx.Euler()``.
         """
-        self.control_dt = control_dt
-        self.sub_dt = sub_dt if sub_dt is not None else control_dt
+        self.control_dt = _positive_period("control_dt", control_dt)
+        n_substeps = _substep_count(control_dt, control_dt if sub_dt is None else sub_dt)
+        self.sub_dt = self.control_dt / n_substeps
         self.solver = solver if solver is not None else dfx.Euler()
 
     @property
     def n_substeps(self) -> int:
         """Number of substeps per control step."""
-        return max(1, int(round(self.control_dt / self.sub_dt)))
+        return _substep_count(self.control_dt, self.sub_dt)
+
+    @property
+    def _integration_dt(self) -> float:
+        return self.control_dt / self.n_substeps
 
     def _term(self, plant: AbstractPlant) -> dfx.AbstractTerm:
         """Build the ODE term from a plant's vector field."""
@@ -188,7 +245,7 @@ class DiffraxBackend(Module):
         plant_state = plant.init(key=key)
         init_input = jnp.zeros((plant.input_size,))
         solver_state = ode_init(
-            self.solver, self._term(plant), self.sub_dt, plant_state, init_input
+            self.solver, self._term(plant), self._integration_dt, plant_state, init_input
         )
         effector = plant.skeleton.effector(plant_state.skeleton)
         return PhysicsState(
@@ -227,7 +284,7 @@ class DiffraxBackend(Module):
             Updated PhysicsState.
         """
         plant_state, solver_state = step_plant_ode(
-            plant, self.solver, self.sub_dt, state.plant, action, state.aux,
+            plant, self.solver, self._integration_dt, state.plant, action, state.aux,
         )
         effector = plant.skeleton.effector(plant_state.skeleton)
         return PhysicsState(
@@ -245,13 +302,12 @@ class MJXBackend(Module):
 
     Attributes:
         control_dt: Time per control step.
-        sub_dt: Time per MuJoCo timestep (should match ``model.opt.timestep``).
+        sub_dt: Time per MuJoCo timestep (must agree with ``model.opt.timestep``).
         n_substeps: Number of ``mjx.step()`` calls per control step.
     """
 
     control_dt: float
     sub_dt: float
-    n_substeps: int = field(static=True)
 
     def __init__(
         self,
@@ -264,15 +320,35 @@ class MJXBackend(Module):
         Args:
             control_dt: Time per control step.
             sub_dt: Time per MuJoCo timestep.
-            n_substeps: Number of substeps per control step. If ``None``,
-                computed as ``round(control_dt / sub_dt)``.
+            n_substeps: Number of substeps per control step. If given, it
+                must agree with the subdivision implied by the two periods.
         """
-        self.control_dt = control_dt
-        self.sub_dt = sub_dt
-        if n_substeps is not None:
-            self.n_substeps = n_substeps
-        else:
-            self.n_substeps = max(1, int(round(control_dt / sub_dt)))
+        count = _substep_count(control_dt, sub_dt, n_substeps)
+        self.control_dt = float(control_dt)
+        self.sub_dt = self.control_dt / count
+
+    def __setstate__(self, state: dict) -> None:
+        # Older checkpoints stored a separate count that could override the schedule.
+        _substep_count(state["control_dt"], state["sub_dt"], state.pop("n_substeps", None))
+        self.__dict__.update(state)
+
+    @property
+    def n_substeps(self) -> int:
+        """Number of MuJoCo steps per control step."""
+        return _substep_count(self.control_dt, self.sub_dt)
+
+    def _check_model_timestep(self, plant: AbstractPlant, value: PyTree) -> PyTree:
+        model_dt = plant.skeleton.mjx_model.opt.timestep
+        sub_dt = self.control_dt / self.n_substeps
+        message = f"MJX model.opt.timestep must agree with backend.sub_dt={sub_dt!r}"
+        if isinstance(model_dt, jax.core.Tracer):
+            mismatch = (model_dt <= 0) | ~jnp.isclose(
+                model_dt, sub_dt, rtol=_TIMING_RTOL, atol=0.0,
+            )
+            return eqx.error_if(value, mismatch, message, on_error="raise")
+        if not math.isclose(float(model_dt), sub_dt, rel_tol=_TIMING_RTOL):
+            raise ValueError(f"{message}, got {float(model_dt)!r}")
+        return value
 
     @jax.named_scope("fbx.MJXBackend.init_state")
     def init_state(
@@ -287,6 +363,7 @@ class MJXBackend(Module):
         Returns:
             Initial PhysicsState with ``aux=None``.
         """
+        key = self._check_model_timestep(plant, key)
         plant_state = plant.init(key=key)
         effector = plant.skeleton.effector(plant_state.skeleton)
         return PhysicsState(
@@ -333,7 +410,8 @@ class MJXBackend(Module):
         else:
             ctrl = action
 
-        new_skeleton = plant.skeleton.step(state.plant.skeleton, ctrl)
+        skeleton_state = self._check_model_timestep(plant, state.plant.skeleton)
+        new_skeleton = plant.skeleton.step(skeleton_state, ctrl)
         new_plant = eqx.tree_at(
             lambda s: s.skeleton, state.plant, new_skeleton
         )

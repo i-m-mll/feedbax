@@ -225,6 +225,21 @@ def test_effector_force_satisfies_virtual_work(offset_hinge):
     np.testing.assert_allclose(joint_power, site_power, atol=1e-6)
 
 
+def test_native_step_refuses_replaced_model_timestep_under_jit(offset_hinge, key):
+    model, skeleton, _ = offset_hinge
+    plant = MJXPlant(skeleton)
+    backend = MJXBackend(control_dt=model.opt.timestep, sub_dt=model.opt.timestep)
+    state = backend.init_state(plant, key=key)
+    changed_plant = eqx.tree_at(
+        lambda p: p.skeleton.mjx_model.opt.timestep,
+        plant,
+        jnp.asarray(2 * model.opt.timestep),
+    )
+    step = eqx.filter_jit(backend.substep)
+    with pytest.raises(eqx.EquinoxRuntimeError, match=r"model\.opt\.timestep"):
+        step(changed_plant, state, jnp.zeros(plant.input_size)).plant.skeleton.qpos.block_until_ready()
+
+
 def test_native_substeps_apply_held_force_at_moving_site(offset_hinge, key):
     import mujoco
 
