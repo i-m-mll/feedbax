@@ -31,8 +31,8 @@ class _FakeState(eqx.Module):
 
 def _full_state(values: jnp.ndarray) -> _FakeState:
     return _FakeState(
-        x=values[None, :, :],
-        hidden=values[None, :, :],
+        x=values[None],
+        hidden=values[None],
     )
 
 
@@ -76,15 +76,28 @@ def test_streaming_order_one_matches_full_trajectory_loss():
     assert jnp.allclose(streamed, full)
 
 
-def test_streaming_order_two_matches_full_trajectory_loss():
-    t = jnp.arange(9, dtype=jnp.float32)[:, None]
-    values = jnp.concatenate([jnp.sin(0.4 * t), jnp.cos(0.3 * t)], axis=-1)
+@pytest.mark.parametrize("feature_shape", [(6,), (2, 3), ()])
+def test_streaming_order_two_matches_retained_value_and_gradient(feature_shape):
+    values = jnp.broadcast_to(
+        jnp.array([0.0, 0.0, 1.0, 4.0, 9.0]).reshape((5,) + (1,) * len(feature_shape)),
+        (5,) + feature_shape,
+    )
     loss = NthDifferenceLoss(label="second_difference", order=2, where=lambda s: s.x)
 
-    full = loss(_full_state(values), trial_specs=None, model=None).total
-    streamed = _stream_loss(loss, values)
+    def retained(values):
+        return loss(_full_state(values), trial_specs=None, model=None).total
 
-    assert jnp.allclose(streamed, full, atol=1e-6)
+    full, full_grad = jax.value_and_grad(retained)(values)
+    streamed, streamed_grad = jax.value_and_grad(lambda x: _stream_loss(loss, x))(values)
+
+    # Each feature has second differences [1, 2, 2] and contributes 3.
+    expected_grad = jnp.array([1.0, 0.0, -1.0, -2.0, 2.0]) * (2 / 3)
+    assert full == pytest.approx(3 * values.size / 5)
+    assert jnp.allclose(full_grad.reshape(5, -1), expected_grad[:, None])
+    unbatched = NthDifferenceLoss(order=2, time_axis=0)(values, None, None).value
+    assert unbatched == pytest.approx(float(full))
+    assert streamed == pytest.approx(float(full))
+    assert jnp.allclose(streamed_grad, full_grad)
 
 
 def test_streaming_uses_max_order_for_composite_cross_timestep_terms():

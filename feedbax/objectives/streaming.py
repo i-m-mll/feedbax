@@ -247,13 +247,12 @@ def _make_cross_timestep_closure(
             for arr in leaves:
                 # Reintroduce the singleton trial axis used by retained losses.
                 window = arr[None, -(order + 1):]
-                axis = loss.time_axis if loss.time_axis >= 0 else window.ndim + loss.time_axis
-                if axis != 1:
+                if loss.time_axis not in (1, 1 - window.ndim):
                     raise ValueError(
                         f"{type(loss).__name__}('{loss.label}') must use the "
                         "rollout time axis for streaming loss."
                     )
-                density = loss._difference_density(window, axis)
+                density, _ = loss._difference_density(window, time_axis=1)
                 if density.shape != (1, 1):
                     raise ValueError(
                         f"{type(loss).__name__}('{loss.label}') must produce one "
