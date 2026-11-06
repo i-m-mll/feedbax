@@ -38,7 +38,7 @@ export interface OpenTab {
 
 type StoredGraphSnapshot = Omit<
   GraphSnapshot,
-  'past' | 'future' | 'saveRevision' | 'localRevision' | 'saveStatus' | 'saveError'
+  'past' | 'future' | 'graphHistory' | 'saveRevision' | 'localRevision' | 'saveStatus' | 'saveError'
 > & {
   saveRevision?: number | null;
   localRevision?: number;
@@ -46,7 +46,6 @@ type StoredGraphSnapshot = Omit<
   saveError?: string | null;
   past?: GraphSnapshot['past'];
   future?: GraphSnapshot['future'];
-  graphHistory?: unknown;
 };
 
 type StoredGraphLayer = GraphSnapshot['graphStack'][number] & {
@@ -82,6 +81,7 @@ function captureGraphSnapshot(): GraphSnapshot {
     edgeStyle: s.edgeStyle,
     past: s.past,
     future: s.future,
+    graphHistory: s.graphHistory,
     selectedTapId: s.selectedTapId,
     selectedEdgeId: s.selectedEdgeId,
     pendingStateMerge: s.pendingStateMerge,
@@ -119,6 +119,7 @@ function makeInitialGraphSnapshot(): GraphSnapshot {
     edgeStyle: 'bezier',
     past: [],
     future: [],
+    graphHistory: {},
     selectedTapId: null,
     selectedEdgeId: null,
     pendingStateMerge: null,
@@ -148,6 +149,7 @@ function makeBlankGraphSnapshot(name: string): GraphSnapshot & { graph: GraphSpe
     edgeStyle: 'bezier',
     past: [],
     future: [],
+    graphHistory: {},
     selectedTapId: null,
     selectedEdgeId: null,
     pendingStateMerge: null,
@@ -314,6 +316,7 @@ function graphSnapshotForRuntime(snapshot: StoredGraphSnapshot): GraphSnapshot {
     graphStack: (snapshot.graphStack ?? []).map(compactGraphLayerForStorage),
     past: [],
     future: [],
+    graphHistory: {},
     pendingStateMerge: null,
   };
 }
@@ -324,7 +327,7 @@ function graphSnapshotForStorage(snapshot: GraphSnapshot): StoredGraphSnapshot {
     future: _future,
     graphHistory: _graphHistory,
     ...storedSnapshot
-  } = graphSnapshotForRuntime(snapshot) as GraphSnapshot & { graphHistory?: unknown };
+  } = graphSnapshotForRuntime(snapshot);
   return storedSnapshot;
 }
 

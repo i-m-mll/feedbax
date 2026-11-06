@@ -44,7 +44,6 @@ import {
 } from '@/features/scenario/entities';
 import {
   ensureTaskBindingSpec,
-  removeTaskBindingsForTargetNodes,
   scopedTaskBindingSpec,
   canAuthorTaskBindings,
   ROOT_TASK_BINDING_MESSAGE,
@@ -1539,35 +1538,9 @@ export function Canvas() {
       const graphChanges = changes.filter(
         (change) => !('id' in change) || !taskDataIdFromSourceNodeId(change.id)
       );
-      const removedNodeIds = graphChanges
-        .filter((change) => change.type === 'remove' && 'id' in change)
-        .map((change) => (change as { id: string }).id);
-      const nextTaskBindingSpec = removeTaskBindingsForTargetNodes(
-        allTaskBindingSpec,
-        removedNodeIds,
-        currentGraphPath
-      );
-      if (nextTaskBindingSpec !== allTaskBindingSpec) {
-        updateTaskBindingSpec(nextTaskBindingSpec);
-        markDirty();
-        if (
-          selectedTaskBindingId &&
-          !nextTaskBindingSpec.bindings.some((binding) => binding.id === selectedTaskBindingId)
-        ) {
-          selectTopPaneEntity(null);
-        }
-      }
       if (graphChanges.length > 0) onNodesChange(graphChanges);
     },
-    [
-      allTaskBindingSpec,
-      currentGraphPath,
-      markDirty,
-      onNodesChange,
-      selectTopPaneEntity,
-      selectedTaskBindingId,
-      updateTaskBindingSpec,
-    ]
+    [onNodesChange]
   );
 
   const removeTaskBindings = useCallback(
@@ -1731,6 +1704,7 @@ export function Canvas() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={handleNodesChange}
+        deleteKeyCode={null}
         onEdgesChange={handleEdgesChange}
         onConnect={handleConnect}
         isValidConnection={isValidConnection}
