@@ -50,7 +50,11 @@ from feedbax.intervene import (
     InterventionSpec,
     TimeSeriesParam,
 )
-from feedbax.intervene.schedule import IntervenorLabelStr, evaluate_intervenor_params
+from feedbax.intervene.schedule import (
+    IntervenorLabelStr,
+    evaluate_intervenor_params,
+    params_at_step,
+)
 from feedbax.objectives.loss import (
     AbstractLoss,
     TargetSpec,
@@ -2229,21 +2233,9 @@ class TaskComponent(Component):
 
         if self.mode == "open_loop":
             inputs = jt.map(lambda x: x[step], self.trial_spec.inputs)
-            if self.trial_spec.intervene:
-                # Unwrap TimeSeriesParam leaves (index by step) and pass
-                # through time-invariant leaves as-is.
-                def _index_or_passthrough(x):
-                    if isinstance(x, TimeSeriesParam):
-                        return x.value[step]
-                    return x
-
-                intervene = jt.map(
-                    _index_or_passthrough,
-                    self.trial_spec.intervene,
-                    is_leaf=is_type(TimeSeriesParam),
-                )
-            else:
-                intervene = {}
+            intervene = (
+                params_at_step(self.trial_spec.intervene, step) if self.trial_spec.intervene else {}
+            )
             outputs = {
                 "inputs": inputs,
                 "targets": self.trial_spec.targets,

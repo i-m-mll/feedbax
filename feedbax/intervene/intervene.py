@@ -728,8 +728,10 @@ class ConstantInput(Component):
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         params: ConstantInputParams = state.get(self.params_index)
-        signal = inputs["input"]
+        return {"output": self._apply(inputs["input"], params)}, state
 
+    @staticmethod
+    def _apply(signal: PyTree, params: ConstantInputParams) -> PyTree:
         def apply():
             if params.arrays is None:
                 return signal
@@ -739,8 +741,7 @@ class ConstantInput(Component):
                 params.arrays,
             )
 
-        output = jax.lax.cond(params.active, apply, lambda: signal)
-        return {"output": output}, state
+        return jax.lax.cond(params.active, apply, lambda: signal)
 
     def task_parameter_state_indices(self):
         return {self.label: self.params_index}

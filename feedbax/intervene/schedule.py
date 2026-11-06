@@ -26,6 +26,15 @@ class TimeSeriesParam(eqx.Module):
     value: Any
 
 
+def params_at_step(params: PyTree, step: Any) -> PyTree:
+    """Index time-series leaves at a valid step and pass other leaves through."""
+    return jt.map(
+        lambda leaf: leaf.value[step] if isinstance(leaf, TimeSeriesParam) else leaf,
+        params,
+        is_leaf=lambda leaf: isinstance(leaf, TimeSeriesParam),
+    )
+
+
 class InterventionSpec(eqx.Module):
     """Specifies how to generate intervention parameters for a task."""
 

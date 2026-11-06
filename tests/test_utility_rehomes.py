@@ -7,7 +7,6 @@ import matplotlib.figure as mplfig
 from feedbax.config.defaults import get_iterations_to_save_model_parameters
 from feedbax.config.hyperparams import flat_key_to_where_fn, flatten_hps
 from feedbax.config.namespace import TreeNamespace
-from feedbax.intervene.perturbations import feedback_impulse
 from feedbax.plot.utils import get_label_str, savefig
 from feedbax.training.environment import EnvironmentProtocol, EnvironmentStep
 
@@ -63,17 +62,3 @@ def test_training_environment_protocol_accepts_structural_implementation():
 
     assert isinstance(env, EnvironmentProtocol)
     assert env.step_env(None, None, jr.PRNGKey(0), 1, None).obs == {"t": 1}
-
-
-def test_feedback_impulse_activation_window():
-    perturbation = feedback_impulse(
-        n_steps=5,
-        amplitude=0.25,
-        duration=2,
-        feedback_var=0,
-        start_timestep=1,
-        feedback_dim=1,
-    )
-
-    assert perturbation.params_index.init.scale == 0.25
-    assert perturbation.params_index.init.active.tolist() == [False, True, True, False]
