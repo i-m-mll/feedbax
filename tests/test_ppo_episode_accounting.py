@@ -126,6 +126,30 @@ def test_training_reports_completed_returns_and_uses_current_stage_evidence():
     assert metrics["per_body_success_rate"][8][3] == 1
 
 
+def test_reward_annealing_changes_collected_distance_penalty():
+    plants = _stack_pytrees(_plant(-2.0))
+    env_config = eqx.tree_at(lambda config: config.velocity_weight, _config(), 1.0)
+    ppo_config = PPOConfig(
+        n_steps_per_update=2, total_timesteps=8, n_epochs=1, n_minibatches=1,
+        hidden_dim=4, hidden_layers=1,
+    )
+    key = jax.random.PRNGKey(3)
+    _, annealed = train_ppo_batched(
+        plants, env_config, ppo_config, key, n_envs=1,
+        enhancements=TrainingEnhancements(
+            reward_annealing=True, annealing_start_fraction=0.5,
+        ),
+    )
+    _, default = train_ppo_batched(plants, env_config, ppo_config, key, n_envs=1)
+
+    # Each update finishes a reach with distances 1 and 0, a +2 proximity
+    # bonus, and a -0.3 velocity penalty at the target.
+    np.testing.assert_allclose(annealed["per_body_mean_return"], [[0.7], [0.7], [1.2], [1.7]])
+    np.testing.assert_allclose(default["per_body_mean_return"], [[0.7]] * 4)
+    np.testing.assert_array_equal(annealed["distance_weight_schedule"], [1, 1, 0.5, 0])
+    assert "distance_weight_schedule" not in default
+
+
 def test_mixed_lanes_use_distinct_return_and_success_denominators():
     config = _config()
     key = jax.random.PRNGKey(2)
@@ -156,7 +180,7 @@ def test_mixed_lanes_use_distinct_return_and_success_denominators():
         total_updates=1, n_steps=3, n_envs=4, n_minibatches=1, n_train_iters=1,
         gamma=0.99, gae_lambda=0.95, clip_eps=0.2, vf_coef=0.5, ent_coef=0.01,
         lattice_resample_interval=2, curriculum_arm_reach=0.5,
-        annealing_start_fraction=0.7, use_obs_norm=jnp.array(True),
+        reward_ramp_updates=jnp.array(0.0), use_obs_norm=jnp.array(True),
         use_lattice=jnp.array(True), use_curriculum=jnp.array(True),
     )
     np.testing.assert_array_equal(history.per_body_completed_episodes, [[4]])
