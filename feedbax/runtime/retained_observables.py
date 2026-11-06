@@ -13,6 +13,7 @@ from typing import Any, Iterable, Literal, Mapping, Optional
 
 import jax.numpy as jnp
 
+from feedbax._numerics import sqrt_with_zero_grad
 from feedbax.contracts.graph import (
     AnalysisInputRequirement,
     GraphSpec,
@@ -318,9 +319,8 @@ def evaluate_loss_term(term: LossTermPlan, trace: Mapping[str, Any]) -> Any:
         except TaskTimelineMaskError as exc:
             raise RetentionPlanError(str(exc), path=exc.path) from exc
         # Mask before nonlinear operations so inactive NaNs cannot enter their
-        # derivatives. The unsquared norm also needs a nonzero inactive input.
-        inactive = 1 if not matrix_quadratic and term.norm == "l2" else 0
-        diff = jnp.where(_broadcast_time_mask(mask, diff), diff, inactive)
+        # derivatives.
+        diff = jnp.where(_broadcast_time_mask(mask, diff), diff, 0)
 
     if matrix_quadratic:
         per_step = _matrix_quadratic_values(diff, term.matrix, term.matrix_kind)
@@ -917,9 +917,7 @@ def _lookup_trace(trace: Mapping[str, Any], selector: str, path: str) -> Any:
 
 def _norm_values(values: Any, norm: str) -> Any:
     arr = jnp.asarray(values)
-    if norm == "squared_l2":
-        per_element = jnp.square(arr)
-    elif norm == "l2":
+    if norm in {"squared_l2", "l2"}:
         per_element = jnp.square(arr)
     elif norm == "l1":
         per_element = jnp.abs(arr)
@@ -937,7 +935,7 @@ def _norm_values(values: Any, norm: str) -> Any:
     else:
         reduced = jnp.sum(per_element, axis=tuple(range(1, arr.ndim)))
     if norm == "l2":
-        return jnp.sqrt(reduced)
+        return sqrt_with_zero_grad(reduced)
     return reduced
 
 

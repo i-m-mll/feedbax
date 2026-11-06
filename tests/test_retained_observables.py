@@ -582,12 +582,13 @@ def test_compiled_segment_loss_aligns_support_and_ignores_inactive_nonfinite_sam
         return total
 
     score_and_grad = jax.jit(jax.value_and_grad(loss))
-    trace = jnp.array([[3.0, 4.0], [0.0, 1.0], [jnp.nan, jnp.inf], [jnp.inf, jnp.nan]])
+    trace = jnp.array([[3.0, 4.0], [0.0, 0.0], [jnp.nan, jnp.inf], [jnp.inf, jnp.nan]])
     total, grad = score_and_grad(trace, term.time_mask)
 
     # The four-sample trace omits the first timestep of the five-step timeline.
-    assert float(total) == pytest.approx(3.0)
-    assert jnp.allclose(grad, jnp.array([[0.3, 0.4], [0.0, 0.5], [0.0, 0.0], [0.0, 0.0]]))
+    assert float(total) == 2.5
+    assert jnp.allclose(grad[0], jnp.array([0.3, 0.4]))
+    assert jnp.array_equal(grad[1:], jnp.zeros((3, 2)))
 
     with pytest.raises((ValueError, RuntimeError), match="time_agg: .*selected no timesteps"):
         jax.block_until_ready(score_and_grad(trace, jnp.array([True, False, False, False, False])))
