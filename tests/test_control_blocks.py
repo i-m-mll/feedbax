@@ -395,48 +395,30 @@ class TestIntegratorDiscrete:
 
 
 # ===========================================================================
-# HighPassFilter
+# HighPassFilter and BandPassFilter
 # ===========================================================================
 
-class TestHighPassFilter:
-    def test_blocks_dc(self):
-        """A high-pass filter should attenuate a constant (DC) input over time."""
-        comp = HighPassFilter(tau=0.1, dt=0.01, n_dims=1)
-        state = init_state_from_component(comp)
-        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
+def test_fixed_filter_step_and_impulse_responses():
+    n = jnp.arange(1, 129)
+    samples = jnp.stack((jnp.ones_like(n, dtype=float), (n == 1).astype(float)), axis=1)
+    slow_pole, fast_pole = jnp.exp(-0.1), jnp.exp(-1.0)
+    highpass_step = jnp.exp(-0.1 * n)
+    bandpass_step = (1 - fast_pole) * slow_pole / (slow_pole - fast_pole) * (
+        highpass_step - jnp.exp(-1.0 * n)
+    )
 
-        # Apply constant input for many steps
-        for _ in range(500):
-            out, state = step({"input": jnp.array([1.0])}, state)
+    for component, step_response in (
+        (HighPassFilter(n_dims=2), highpass_step),
+        (BandPassFilter(n_dims=2), bandpass_step),
+    ):
+        def step(state, sample):
+            output, state = component({"input": sample}, state, key=KEY)
+            return state, output["output"]
 
-        # Output should be close to zero (DC rejected)
-        assert jnp.abs(out["output"][0]) < 0.1
-
-    def test_passes_transient(self):
-        """A step change should produce a nonzero transient."""
-        comp = HighPassFilter(tau=0.1, dt=0.01, n_dims=1)
-        state = init_state_from_component(comp)
-
-        # First step from zero: should have significant output
-        out, _ = comp({"input": jnp.array([1.0])}, state, key=KEY)
-        assert jnp.abs(out["output"][0]) > 0.5
-
-
-# ===========================================================================
-# BandPassFilter
-# ===========================================================================
-
-class TestBandPassFilter:
-    def test_step_transient_decays(self):
-        """A band-pass filter passes the step transient and rejects its DC tail."""
-        comp = BandPassFilter(tau_low=0.1, tau_high=0.01, dt=0.01, n_dims=1)
-        state = init_state_from_component(comp)
-        step = jax.jit(lambda inputs, state: comp(inputs, state, key=KEY))
-        out, _ = step({"input": jnp.array([1.0])}, state)
-        assert 0.0 < out["output"][0] < 1.0
-        for _ in range(200):
-            out, state = step({"input": jnp.array([1.0])}, state)
-        assert jnp.abs(out["output"][0]) < 1e-5
+        _, output = jax.lax.scan(step, component.init_state(key=KEY), samples)
+        impulse_response = jnp.diff(step_response, prepend=0.0)
+        assert jnp.allclose(output[:, 0], step_response, atol=5e-7)
+        assert jnp.allclose(output[:, 1], impulse_response, atol=5e-7)
 
 
 # ===========================================================================

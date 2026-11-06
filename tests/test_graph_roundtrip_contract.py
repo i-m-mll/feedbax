@@ -53,22 +53,29 @@ _SCALAR_CONTROL_TYPES = (
     "ZeroOrderHold",
 )
 
+_SHAPED_SIGNAL_TYPES = (
+    "BandPassFilter",
+    "Channel",
+    "DelayLine",
+    "FirstOrderFilter",
+    "HighPassFilter",
+    "RateLimiter",
+)
+
 
 _NONE_VALUES: dict[tuple[str, str], Any] = {
     **{
         (kind, "input_dtype"): "float16"
-        for kind in ("Channel", "DelayLine", "FirstOrderFilter", *_SCALAR_CONTROL_TYPES)
+        for kind in (*_SHAPED_SIGNAL_TYPES, *_SCALAR_CONTROL_TYPES)
     },
+    **{(kind, "input_shape"): [3] for kind in _SHAPED_SIGNAL_TYPES},
     ("AffineFeedbackController", "bias"): [0.25],
     ("AffineFeedbackController", "feedforward"): [0.5],
-    ("Channel", "input_shape"): [3],
     ("Channel", "noise_role"): "motor_command",
     ("Channel", "noise_timing"): "post_controller",
-    ("DelayLine", "input_shape"): [3],
     ("DelayedReaches", "n_control_stages"): 49,
     ("DelayedReaches", "go_cue_event_name"): "go",
     ("DynamicsMatrixPerturb", "mass"): 1.25,
-    ("FirstOrderFilter", "input_shape"): [3],
     ("LinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
     ("StructuralLinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
     ("StateFeedbackSelector", "expected_state_dim"): 4,
@@ -196,7 +203,7 @@ def _single_node_spec(
         }
     )
     prototype_shape = (2,)
-    if component_type in {"Channel", "DelayLine", "FirstOrderFilter"} and isinstance(
+    if component_type in _SHAPED_SIGNAL_TYPES and isinstance(
         params.get("input_shape"), list
     ):
         prototype_shape = tuple(int(dim) for dim in params["input_shape"])

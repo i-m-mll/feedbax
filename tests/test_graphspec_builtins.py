@@ -2050,11 +2050,11 @@ def test_stateful_signal_blocks_compile_and_round_trip_with_float32_carry() -> N
     rebuilt = spec_to_graph(roundtrip, registry)
     key = jr.key(0)
 
-    # Euler low-pass coefficients are 1/2 for highpass and 1/4 then 1/2 for bandpass.
+    # End-of-interval outputs with each stage holding its input for that sample.
     expected = {
         "limiter": [[0.3, -0.1], [0.5, -0.3]],
-        "highpass": [[0.15, -0.05], [0.175, -0.125]],
-        "bandpass": [[0.05625, -0.01875], [0.0796875, -0.0515625]],
+        "highpass": [[0.18195920, -0.06065307], [0.23166996, -0.15809408]],
+        "bandpass": [[0.05575853, -0.01858618], [0.09247712, -0.05560727]],
     }
     for candidate in (graph, rebuilt):
 
@@ -2070,6 +2070,35 @@ def test_stateful_signal_blocks_compile_and_round_trip_with_float32_carry() -> N
             assert output.shape == samples.shape
             assert output.dtype == jnp.float32
             assert jnp.allclose(output, jnp.array(values, dtype=jnp.float32), atol=1e-7)
+
+
+def test_registered_bandpass_attenuates_nyquist_and_remains_bounded_at_small_tau() -> None:
+    registry = _components()
+    samples = jnp.tile(jnp.array([[1.0], [-1.0]]), (64, 1))
+    key = jr.key(0)
+
+    def run(component_type, params):
+        defaults = registry.get(component_type).default_params
+        spec = _single_node_spec(
+            component_type,
+            {**defaults, **params},
+            input_ports=["input"],
+            output_ports=["output"],
+        )
+        graph = spec_to_graph(spec, registry, {("field", "input"): samples[0]})
+
+        def step(state, sample):
+            outputs, state = graph({"input": sample}, state, key=key)
+            return state, outputs["output"]
+
+        _, output = jax.lax.scan(step, graph.init_state(key=key), samples)
+        return output
+
+    highpass = run("HighPassFilter", {})
+    bandpass = run("BandPassFilter", {})
+    small_tau = run("BandPassFilter", {"tau_high": 0.003, "dt": 0.01})
+    assert jnp.linalg.norm(bandpass[-8:]) < 0.5 * jnp.linalg.norm(highpass[-8:])
+    assert jnp.all(jnp.abs(small_tau) <= 1.0)
 
 
 def test_demux_graphspec_rejects_invalid_sizes() -> None:

@@ -4,6 +4,7 @@
 :license: Apache 2.0. See LICENSE for details.
 """
 
+import math
 from typing import Optional, Type
 
 import diffrax as dfx
@@ -137,15 +138,47 @@ class FirstOrderFilter(Component):
         )
 
 
+def _nonnegative_time(value: float, name: str) -> float:
+    value = float(value)
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be finite and nonnegative")
+    return value
+
+
+class _HeldLowPass(eqx.Module):
+    input_proto: Array
+    state_index: StateIndex
+
+    def __init__(self, input_proto: Array):
+        self.input_proto = input_proto
+        self.state_index = StateIndex(FilterState(output=jnp.zeros_like(input_proto), solver=None))
+
+    def advance(
+        self, sample: Array, state: State, *, tau: float, dt: float
+    ) -> tuple[Array, Array, State]:
+        """Return the updated low-pass and its same-sample residual."""
+        previous = state.get(self.state_index).output
+        elapsed = dt / tau if tau else (math.inf if dt else 0.0)
+        dtype = jnp.result_type(previous.dtype, jnp.float32)
+        decay = jnp.asarray(math.exp(-elapsed), dtype=dtype)
+        gain = jnp.asarray(-math.expm1(-elapsed), dtype=dtype)
+        retained = decay * previous
+        lowpass = (retained + gain * sample).astype(previous.dtype)
+        residual = (decay * sample - retained).astype(previous.dtype)
+        return lowpass, residual, state.set(self.state_index, FilterState(lowpass, None))
+
+
 class HighPassFilter(Component):
     """High-pass filter: output = input - lowpass(input).
 
-    Uses a first-order low-pass filter internally. The high-pass response
-    is obtained by subtracting the low-pass filtered signal from the input.
+    The first-order low-pass state advances exactly over one interval with
+    the current input held constant. The output is the residual after this
+    update, so the current input contributes to the current output.
 
     Args:
-        tau: Time constant for both rise and decay of the internal low-pass.
-        dt: Integration time step.
+        tau: Analog time constant (cutoff at `1 / (2 * pi * tau)`). Zero
+            makes the low-pass track the input instantly when dt is positive.
+        dt: Sample interval. Zero leaves the low-pass state fixed.
         n_dims: Dimensionality used when no input prototype is supplied.
         input_proto: Shape and dtype of the signal.
     """
@@ -153,10 +186,10 @@ class HighPassFilter(Component):
     input_ports = ("input",)
     output_ports = ("output",)
 
-    tau: float
-    dt: float
+    tau: float = field(static=True)
+    dt: float = field(static=True)
     n_dims: int = field(static=True)
-    _lowpass: FirstOrderFilter
+    _lowpass: _HeldLowPass
 
     def __init__(
         self,
@@ -166,15 +199,10 @@ class HighPassFilter(Component):
         *,
         input_proto: Array | None = None,
     ):
-        self.tau = float(tau)
-        self.dt = float(dt)
+        self.tau = _nonnegative_time(tau, "tau")
+        self.dt = _nonnegative_time(dt, "dt")
         self.n_dims = n_dims
-        self._lowpass = FirstOrderFilter(
-            tau_rise=tau,
-            tau_decay=tau,
-            dt=dt,
-            input_proto=stateful_vector_prototype(n_dims, input_proto),
-        )
+        self._lowpass = _HeldLowPass(stateful_vector_prototype(n_dims, input_proto))
 
     @property
     def input_proto(self) -> Array:
@@ -187,24 +215,24 @@ class HighPassFilter(Component):
         *,
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
-        lp_out, state = self._lowpass(inputs, state, key=key)
-        output = inputs["input"] - lp_out["output"]
+        _, output, state = self._lowpass.advance(inputs["input"], state, tau=self.tau, dt=self.dt)
         return {"output": output}, state
 
 
 class BandPassFilter(Component):
     """Band-pass filter: cascade of high-pass and low-pass.
 
-    Passes frequencies between the two cutoffs by first applying a
-    high-pass filter (to reject low frequencies) then a low-pass filter
-    (to reject high frequencies).
+    The high-pass output for the current sample is held constant over the
+    upper-cutoff stage's interval. Both stages use exact held-input updates
+    and the time constants describe the analog cutoffs of the individual stages.
 
     Args:
         tau_low: Time constant for the high-pass stage (lower frequency bound;
             larger tau means lower cutoff frequency).
         tau_high: Time constant for the low-pass stage (upper frequency bound;
-            smaller tau means higher cutoff frequency).
-        dt: Integration time step.
+            smaller tau means higher cutoff frequency). Zero makes this stage
+            track its input instantly when dt is positive.
+        dt: Sample interval. Zero leaves both stages' state fixed.
         n_dims: Dimensionality used when no input prototype is supplied.
         input_proto: Shape and dtype of the signal.
     """
@@ -212,12 +240,9 @@ class BandPassFilter(Component):
     input_ports = ("input",)
     output_ports = ("output",)
 
-    tau_low: float
-    tau_high: float
-    dt: float
-    n_dims: int = field(static=True)
+    tau_high: float = field(static=True)
     _highpass: HighPassFilter
-    _lowpass: FirstOrderFilter
+    _lowpass: _HeldLowPass
 
     def __init__(
         self,
@@ -228,17 +253,21 @@ class BandPassFilter(Component):
         *,
         input_proto: Array | None = None,
     ):
-        self.tau_low = float(tau_low)
-        self.tau_high = float(tau_high)
-        self.dt = float(dt)
-        self.n_dims = n_dims
+        self.tau_high = _nonnegative_time(tau_high, "tau_high")
         self._highpass = HighPassFilter(tau=tau_low, dt=dt, n_dims=n_dims, input_proto=input_proto)
-        self._lowpass = FirstOrderFilter(
-            tau_rise=tau_high,
-            tau_decay=tau_high,
-            dt=dt,
-            input_proto=self.input_proto,
-        )
+        self._lowpass = _HeldLowPass(self.input_proto)
+
+    @property
+    def tau_low(self) -> float:
+        return self._highpass.tau
+
+    @property
+    def dt(self) -> float:
+        return self._highpass.dt
+
+    @property
+    def n_dims(self) -> int:
+        return self._highpass.n_dims
 
     @property
     def input_proto(self) -> Array:
@@ -252,6 +281,7 @@ class BandPassFilter(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
         hp_out, state = self._highpass(inputs, state, key=key)
-        lp_inputs = {"input": hp_out["output"]}
-        lp_out, state = self._lowpass(lp_inputs, state, key=key)
-        return {"output": lp_out["output"]}, state
+        output, _, state = self._lowpass.advance(
+            hp_out["output"], state, tau=self.tau_high, dt=self.dt
+        )
+        return {"output": output}, state
