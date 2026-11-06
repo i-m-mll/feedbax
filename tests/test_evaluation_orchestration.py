@@ -64,7 +64,7 @@ from feedbax.orchestration.staged_root_custody import (
     seal_staged_root,
 )
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.plugins.application import ApplicationRegistryBundle, new_application_registry_bundle
 from feedbax.orchestration.revision import resolve_feedbax_revision
 
 
@@ -216,15 +216,21 @@ def _grouped_worker_tasks(
     *,
     matrix: dict[str, Any] | None = None,
     content_bindings: tuple[ContentBinding, ...] = (),
+    consumers: tuple[EvaluationBatchConsumerDeclaration, ...] = (),
 ) -> tuple[RunBundle, tuple[dict[str, Any], ...]]:
     if matrix is None:
         matrix = _sized_matrix(sum(map(len, ordered_batches)))
     plan = EvaluationMatrixBatchPlan(
         matrix_intent_hash=evaluation_matrix_intent_hash(matrix),
         batches=tuple(
-            EvaluationMatrixBatchUnit(batch_id=f"{index:04d}", ordered_row_ids=row_ids)
+            EvaluationMatrixBatchUnit(
+                batch_id=f"{index:04d}",
+                ordered_row_ids=row_ids,
+                required_leaf_ids=tuple(consumer.leaf_id for consumer in consumers) or None,
+            )
             for index, row_ids in enumerate(ordered_batches)
         ),
+        consumers=consumers,
     )
     request = _request(
         tmp_path,
@@ -255,7 +261,7 @@ def _grouped_worker_tasks(
     return bundle, tuple({**common, "batch_index": index} for index in range(len(plan.batches)))
 
 
-def _register_grouped_worker_recipe(monkeypatch, batch_recipe) -> None:
+def _register_grouped_worker_recipe(monkeypatch, batch_recipe) -> ApplicationRegistryBundle:
     from feedbax.plugins import composition
 
     registries = new_application_registry_bundle(local_component_source=None)
@@ -269,27 +275,89 @@ def _register_grouped_worker_recipe(monkeypatch, batch_recipe) -> None:
         return SimpleNamespace(bundle=registries)
 
     monkeypatch.setattr(composition, "compose_application", compose)
+    return registries
 
 
+@pytest.mark.parametrize("accepts_fresh_states", [False, True], ids=["cache", "fresh"])
 def test_grouped_worker_preserves_order_outputs_and_lineage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, accepts_fresh_states: bool
 ) -> None:
     from feedbax.analysis import evaluation
+    from feedbax.analysis.evaluation_compaction import EvaluationBatchFragment
     from feedbax.analysis.harness import (
         _execute_evaluation_batch_partition_group,
         resolve_manifest_regeneration,
     )
+    from feedbax.contracts.base import ArtifactRef
     from feedbax.contracts.manifest import EvaluationRunManifest
 
-    ordered_batches = (("gain-00", "gain-01"), ("gain-02", "gain-03"))
-    _, tasks = _grouped_worker_tasks(tmp_path, ordered_batches)
-    _register_grouped_worker_recipe(
+    ordered_batches = (("gain-00",), ("gain-01", "gain-02", "gain-03"))
+    declaration = EvaluationBatchConsumerDeclaration(
+        leaf_id="gains",
+        consumer_id="tests.projector",
+        consumer_version="v1",
+        terminal_analysis_type="tests.gains.analysis",
+        accepted_evaluation_state_schema_ids=("tests.diagnostic.evaluation.v1",),
+        compact_product_schema_id="tests.gains.product",
+        compact_product_schema_version="tests.gains.product.v1",
+        compact_product_role="gains_result",
+        merge_state_schema_id="tests.gains.merge",
+        merge_state_schema_version="tests.gains.merge.v1",
+    )
+    _, tasks = _grouped_worker_tasks(tmp_path, ordered_batches, consumers=(declaration,))
+
+    class CacheDecodedState(dict):
+        def __reduce__(self):
+            return dict, ({**self, "decoded": True},)
+
+    state_type = dict if accepts_fresh_states else CacheDecodedState
+    registries = _register_grouped_worker_recipe(
         monkeypatch,
         lambda items, _context: [
-            evaluation.EvaluationRecipeResult(summary_metrics={"gain": item.spec.params["gain"]})
+            evaluation.EvaluationRecipeResult(
+                states=state_type(gain=item.spec.params["gain"]),
+                summary_metrics={"gain": item.spec.params["gain"]},
+                metadata={"states_schema": "tests.diagnostic.evaluation.v1"},
+            )
             for item in items
         ],
     )
+
+    def compact(value):
+        assert all(
+            states.get("decoded", False) is not accepts_fresh_states for states in value.states
+        )
+        return EvaluationBatchFragment(
+            payload=[
+                [outcome.row_id, states["gain"]]
+                for outcome, states in zip(value.outcomes, value.states, strict=True)
+            ],
+            schema_id=declaration.compact_product_schema_id,
+            schema_version=declaration.compact_product_schema_version,
+            role=declaration.compact_product_role,
+        )
+
+    def unexpected_terminal_call(_value):
+        pytest.fail("the batch worker only compacts fragments")
+
+    registries.evaluation_batch_consumers.register(
+        declaration.consumer_id,
+        declaration.consumer_version,
+        compact=compact,
+        merge=unexpected_terminal_call,
+        finalize=unexpected_terminal_call,
+        **({"accepts_fresh_states": True} if accepts_fresh_states else {}),
+    )
+
+    loaded_manifest_ids = []
+    load_cache = evaluation.load_evaluation_states_cache
+
+    def record_cache_load(path, *, manifest):
+        loaded_manifest_ids.append(manifest.id)
+        return load_cache(path, manifest=manifest)
+
+    monkeypatch.setattr(evaluation, "load_evaluation_states_cache", record_cache_load)
+    provider = ImmutableArtifactBlobProvider(Path(tasks[0]["compaction_root"]))
     materialized_counts = []
     materialize = evaluation.materialize_matrix_rows
 
@@ -302,6 +370,14 @@ def test_grouped_worker_preserves_order_outputs_and_lineage(
 
     def snapshot(completed):
         rows = []
+        (fragment_value,) = completed["fragments"]
+        fragment = ArtifactRef.model_validate(fragment_value)
+        fragment_bytes = provider.get_bytes(fragment)
+        assert fragment.metadata["parent_authorities"] == completed["parent_authorities"]
+        assert json.loads(fragment_bytes) == [
+            [outcome["row_id"], float(outcome["row_id"].removeprefix("gain-"))]
+            for outcome in completed["outcomes"]
+        ]
         for outcome, authority in zip(
             completed["outcomes"], completed["parent_authorities"], strict=True
         ):
@@ -321,29 +397,65 @@ def test_grouped_worker_preserves_order_outputs_and_lineage(
             }
             manifest = json.loads(raw)
             del manifest["created_at"]
-            rows.append((outcome, manifest))
+            cache = manifest["metadata"]["cache"]
+            cache_bytes = Path(cache["states_path"]).read_bytes()
+            assert sha256_bytes(cache_bytes) == cache["states_cache_sha256"]
+            rows.append((outcome, manifest, cache_bytes))
         return rows
 
-    grouped = tuple(map(snapshot, _execute_evaluation_batch_partition_group(tasks, ())))
-    assert materialized_counts == [4]
+    initial = _execute_evaluation_batch_partition_group(tasks, ())
+    grouped = tuple(map(snapshot, initial))
+    expected_loads = (
+        []
+        if accepts_fresh_states
+        else [outcome["manifest_id"] for batch in grouped for outcome, _, _ in batch]
+    )
+    assert loaded_manifest_ids == expected_loads
     cached = _execute_evaluation_batch_partition_group(tasks, ())
     assert all(batch["reused_verified_fragments"] for batch in cached)
-    assert tuple(map(snapshot, cached)) == grouped
+    assert [batch["fragments"] for batch in cached] == [batch["fragments"] for batch in initial]
+    assert loaded_manifest_ids == expected_loads
+    loaded_manifest_ids.clear()
     assert materialized_counts == [4]
     shutil.rmtree(tasks[0]["manifest_root"])
     shutil.rmtree(tasks[0]["compaction_root"])
-    independent = tuple(
-        snapshot(_execute_evaluation_batch_partition_group((task,), ())[0]) for task in tasks
-    )
+    (first,) = _execute_evaluation_batch_partition_group(tasks[:1], ())
+    manifest_path = Path(first["outcomes"][0]["manifest_path"])
+    manifest_bytes = manifest_path.read_bytes()
+    manifest_path.write_bytes(manifest_bytes + b" ")
+    with pytest.raises(ValueError, match="checkpoint parent authority drifted"):
+        _execute_evaluation_batch_partition_group(tasks, ())
+    assert not (Path(tasks[0]["manifest_root"]) / "0001").exists()
+    manifest_path.write_bytes(manifest_bytes)
+
+    resumed = _execute_evaluation_batch_partition_group(tasks, ())
+    assert [batch["reused_verified_fragments"] for batch in resumed] == [True, False]
+    assert loaded_manifest_ids == expected_loads
     assert materialized_counts == [4, 4, 4]
 
-    assert tuple(tuple(outcome["row_id"] for outcome, _ in batch) for batch in grouped) == (
+    assert tuple(tuple(outcome["row_id"] for outcome, _, _ in batch) for batch in grouped) == (
         ordered_batches
     )
     assert [
-        manifest["summary_metrics"]["gain"] for batch in grouped for _, manifest in batch
+        manifest["summary_metrics"]["gain"] for batch in grouped for _, manifest, _ in batch
     ] == [0.0, 1.0, 2.0, 3.0]
-    assert grouped == independent
+    assert grouped == tuple(map(snapshot, resumed))
+
+    shutil.rmtree(tasks[0]["manifest_root"])
+    shutil.rmtree(tasks[0]["compaction_root"])
+    execute = evaluation._execute_evaluation_run_plan
+
+    def execute_and_corrupt_cache(*args, **kwargs):
+        result = execute(*args, **kwargs)
+        cache_path = Path(result.rows[0].result.metadata["cache"]["states_path"])
+        cache_path.write_bytes(cache_path.read_bytes() + b" ")
+        return result
+
+    monkeypatch.setattr(evaluation, "_execute_evaluation_run_plan", execute_and_corrupt_cache)
+    with pytest.raises(ValueError, match="matching state cache"):
+        _execute_evaluation_batch_partition_group(tasks[:1], ())
+    assert loaded_manifest_ids == expected_loads + expected_loads[:1]
+    assert not (Path(tasks[0]["compaction_root"]) / "fragment-checkpoints").exists()
 
 
 def test_grouped_worker_reauthenticates_staged_content_before_next_batch(

@@ -664,6 +664,7 @@ def _execute_evaluation_run_plan(
     execution_context: StagedExecutionContext | None = None,
     batch: EvaluationBatchExecution | None = None,
     matrix_metadata: Mapping[str, Any] | None = None,
+    published_states: dict[tuple[str, str], Any] | None = None,
 ):
     from feedbax.analysis.harness import MatrixMaterializerHarness
 
@@ -701,9 +702,13 @@ def _execute_evaluation_run_plan(
             matrix_metadata.get("staged_parents", {}) if plan.staged_parents is not None else {}
         ),
     }
+    if batch is not None and type(batch) is not EvaluationBatchExecution:
+        raise TypeError("batch must be an EvaluationBatchExecution instance")
+    if published_states is not None and (
+        batch is None or batch.batch_units is None or len(batch.batch_units) != 1
+    ):
+        raise ValueError("in-memory states handoff requires one batch unit")
     if batch is not None:
-        if type(batch) is not EvaluationBatchExecution:
-            raise TypeError("batch must be an EvaluationBatchExecution instance")
         if escape_hatch_reason is not None:
             raise ValueError("batched execution only accepts EvaluationRunMatrixSpec")
         if batch.ordered_row_ids is not None and batch.batch_units is not None:
@@ -726,6 +731,7 @@ def _execute_evaluation_run_plan(
                     root=Path(root) / batch_id,
                     execution_context=execution_context,
                     matrix_metadata=matrix_metadata,
+                    published_states=published_states,
                     regeneration_parameters={
                         **regeneration_parameters,
                         "batch_execution": {
@@ -807,6 +813,7 @@ def _execute_evaluation_batch_rows(
     execution_context: StagedExecutionContext,
     matrix_metadata: Mapping[str, Any],
     regeneration_parameters: Mapping[str, Any],
+    published_states: dict[tuple[str, str], Any] | None = None,
 ):
     from feedbax.analysis.harness import MatrixMaterializerHarness
     from feedbax.persistence.manifest_index import connect_index, index_manifest
@@ -882,10 +889,11 @@ def _execute_evaluation_batch_rows(
             raise TypeError("batch recipe must return one EvaluationRecipeResult per row")
         provenance = collect_git_provenance()
         completed: dict[str, tuple[EvaluationRunManifest, Path]] = {}
+        staged_states: dict[tuple[str, str], Any] = {}
         batch_metadata = {"row_ids": [item.row_id for item in items]}
         for item, result in zip(items, results, strict=True):
             try:
-                completed[item.row_id] = _store_batched_evaluation_result(
+                manifest, path = _store_batched_evaluation_result(
                     item,
                     result,
                     store_root=staging,
@@ -897,6 +905,10 @@ def _execute_evaluation_batch_rows(
                         }
                     },
                 )
+                completed[item.row_id] = manifest, path
+                if published_states is not None and result.states is not None:
+                    digest = manifest.metadata["cache"]["states_cache_sha256"]
+                    staged_states[manifest.id, digest] = result.states
             except Exception as exc:
                 raise EvaluationBatchRowError(item.row_id, exc) from exc
 
@@ -948,6 +960,8 @@ def _execute_evaluation_batch_rows(
             root=staging,
         )
         staging.rename(root)
+        if published_states is not None:
+            published_states.update(staged_states)
         return replace(result, rows=tuple(published_rows))
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
@@ -1356,6 +1370,8 @@ def evaluation_states_cache_matches(path: Path, manifest: EvaluationRunManifest)
             return _matches_evaluation_cache(stream, manifest)
     except FileNotFoundError:
         return False
+    except OSError as exc:
+        raise _cache_corruption(path, str(exc)) from exc
 
 
 def load_evaluation_states_cache(path: Path, *, manifest: EvaluationRunManifest) -> Any:
