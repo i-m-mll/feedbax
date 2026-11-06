@@ -191,6 +191,7 @@ def test_training_reports_completed_returns_and_uses_current_stage_evidence():
     assert metrics["per_body_success_rate"][8][3] == 1
 
 
+@pytest.mark.extended
 @pytest.mark.parametrize("obs_norm", [True, False], ids=["normalized", "disabled"])
 def test_trained_policy_executes_on_raw_observations_after_save_and_load(tmp_path, obs_norm):
     starts = np.array([-4.0, -18.0], dtype=np.float32)
