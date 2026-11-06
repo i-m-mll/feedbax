@@ -50,40 +50,64 @@ class FixedPointFinder(Module):
         *,
         key: PRNGKeyArray,
     ) -> tuple[int, Float[Array, "n_candidates state"], Float[Array, "n_candidates"]]:  # noqa: F821
-        """Optimize candidates to minimize their mean fixed-point MSE.
+        """Optimize trainable candidates to minimize their mean fixed-point MSE.
 
         Check the current mean loss against `loss_tol` before the first update
         and after each chunk of up to `n_batches_per_iter` updates. Stop when
-        the loss is at or below the tolerance or after `n_batches` updates.
-        Return the update count, candidates, and their losses in ascending loss
-        order. The random key is reserved for future stochastic dynamics.
+        the mean loss is at or below the tolerance, no trainable candidates
+        remain, or `n_batches` updates have run.
+
+        Freeze candidates with nonfinite states, losses, or gradients and report
+        their losses as infinite. A finite candidate with a nonfinite gradient
+        keeps its loss if it is already strictly below the tolerance.
+        Return the update count, candidates, and losses in ascending loss order.
+        The random key is reserved for future stochastic dynamics.
         """
         if n_batches_per_iter <= 0:
             raise ValueError("n_batches_per_iter must be positive.")
 
-        candidate_loss = get_fp_loss_fn(func)
-        loss_grad = jax.grad(get_total_fp_loss_fn(func))
+        # Differentiate each residual independently so invalid adjoints stay in their own row.
+        candidate_value_and_grad = jax.vmap(jax.value_and_grad(_get_candidate_fp_loss_fn(func)))
         loss_tol = jnp.asarray(loss_tol).reshape(())
-        opt_state = self.optimizer.init(candidates)
 
-        def update(_, state):
-            params, opt_state = state
-            grads = loss_grad(params)
-            updates, opt_state = self.optimizer.update(grads, opt_state, params)
-            return optax.apply_updates(params, updates), opt_state
+        def evaluate(params):
+            losses, grads = candidate_value_and_grad(params)
+            finite = jnp.all(jnp.isfinite(params), axis=1) & jnp.isfinite(losses)
+            trainable = finite & jnp.all(jnp.isfinite(grads), axis=1)
+            losses = jnp.where(finite & (trainable | (losses < loss_tol)), losses, jnp.inf)
+            return losses, grads, trainable
 
         def cond_fn(state):
-            i_batch, _, losses, _ = state
-            return (i_batch < n_batches) & (jnp.mean(losses) > loss_tol)
+            i_batch, _, losses, _, trainable, _ = state
+
+            def above_tolerance():
+                mean_loss = jnp.mean(losses, where=trainable)
+                return mean_loss > loss_tol
+
+            return (
+                (i_batch < n_batches)
+                & jnp.any(trainable)
+                & jax.lax.cond(i_batch % n_batches_per_iter == 0, above_tolerance, lambda: True)
+            )
 
         def body_fn(state):
-            i_batch, params, _, opt_state = state
-            end_batch = i_batch + jnp.minimum(n_batches_per_iter, n_batches - i_batch)
-            params, opt_state = jax.lax.fori_loop(i_batch, end_batch, update, (params, opt_state))
-            return end_batch, params, candidate_loss(params), opt_state
+            i_batch, params, losses, grads, trainable, opt_state = state
+            mask = trainable[:, None]
+            accumulation_dtype = jnp.result_type(grads.dtype, jnp.float32)
+            count = jnp.maximum(jnp.sum(trainable), 1).astype(accumulation_dtype)
+            grads = (jnp.where(mask, grads, 0).astype(accumulation_dtype) / count).astype(
+                grads.dtype
+            )
+            updates, opt_state = self.optimizer.update(grads, opt_state, jnp.where(mask, params, 0))
+            params = jnp.where(mask, optax.apply_updates(params, updates), params)
+            new_losses, grads, new_trainable = evaluate(params)
+            losses = jnp.where(trainable, new_losses, losses)
+            return i_batch + 1, params, losses, grads, trainable & new_trainable, opt_state
 
-        initial_state = 0, candidates, candidate_loss(candidates), opt_state
-        i_batch, fps, losses, _ = jax.lax.while_loop(cond_fn, body_fn, initial_state)
+        losses, grads, trainable = evaluate(candidates)
+        opt_state = self.optimizer.init(jnp.where(trainable[:, None], candidates, 0))
+        initial_state = 0, candidates, losses, grads, trainable, opt_state
+        i_batch, fps, losses, _, _, _ = jax.lax.while_loop(cond_fn, body_fn, initial_state)
         loss_sort_idxs = jnp.argsort(losses)
 
         return i_batch, fps[loss_sort_idxs], losses[loss_sort_idxs]
@@ -217,10 +241,12 @@ def fp_adam_optimizer(
 
 def get_fp_loss_fn(func):
     """Returns the batched fixed point MSE loss for a given function."""
-    batch_fn = jax.vmap(func, in_axes=(0,))
+    return jax.vmap(_get_candidate_fp_loss_fn(func))
 
+
+def _get_candidate_fp_loss_fn(func):
     def loss_fn(x):
-        return jnp.mean((x - batch_fn(x)) ** 2, axis=1)
+        return jnp.mean((x - func(x)) ** 2)
 
     return loss_fn
 

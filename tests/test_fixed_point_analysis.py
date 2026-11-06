@@ -52,6 +52,43 @@ def test_fixed_point_finder_converges_on_linear_fixed_point() -> None:
     assert float(jnp.abs(fixed_points[0, 0])) < 0.05
 
 
+def test_fixed_point_finder_isolates_invalid_residuals_and_gradients() -> None:
+    finder = FixedPointFinder(optax.chain(optax.clip_by_global_norm(1.0), optax.sgd(0.2)))
+
+    def dynamics(state):
+        return 0.5 * jnp.sqrt(state) + 0.5
+
+    options = dict(loss_tol=jnp.array(1e-7), n_batches=128, n_batches_per_iter=4, key=jr.key(0))
+    alone = finder.find_and_filter(dynamics, jnp.array([[2.0]]), **options)
+    mixed = finder.find_and_filter(dynamics, jnp.array([[-1.0], [0.0], [2.0]]), **options)
+
+    # At -1 the residual is NaN. At 0 the residual is finite but its gradient is not.
+    assert mixed.masks["meets_all_criteria"].tolist() == [True, False, False]
+    assert float(mixed.fps[0, 0]) == pytest.approx(1.0, abs=5e-4)
+    assert jnp.array_equal(mixed.fps[:1], alone.fps)
+
+    n_updates, _, losses = finder(dynamics, jnp.array([[-1.0], [0.0]]), **options)
+    assert int(n_updates) == 0
+    assert not jnp.any(jnp.isfinite(losses))
+
+
+def test_fixed_point_finder_isolates_candidates_that_leave_the_domain() -> None:
+    finder = FixedPointFinder(optax.sgd(learning_rate=3.0))
+    # The first step sends 1 outside the square root's domain and keeps 0.5 inside.
+    # The exact root at 0 has a singular gradient and should remain accepted.
+    results = finder.find_and_filter(
+        lambda state: 0.5 * jnp.sqrt(state),
+        jnp.array([[0.0], [0.5], [1.0]]),
+        loss_tol=jnp.array(1e-7),
+        n_batches=128,
+        n_batches_per_iter=4,
+        key=jr.key(0),
+    )
+
+    assert results.masks["meets_all_criteria"].tolist() == [True, True, False]
+    assert results.fps[:2, 0].tolist() == pytest.approx([0.0, 0.25], abs=7e-4)
+
+
 @pytest.mark.parametrize(
     ("budget", "tolerance", "expected_updates"),
     [
