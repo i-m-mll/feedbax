@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
 
+import jax.random as jr
 import pytest
 from fastapi.testclient import TestClient
 
@@ -238,7 +239,7 @@ def _assemble_lowered_bundle(
     progress_interval: int | None = None,
     input_kind: str = "registered-artifact",
     orchestration_root: Path | None = None,
-    row_seed: int | None = 7,
+    row_seed: int | None = None,
     controller_seed: int | None = None,
     batch_seed: int | None = None,
 ) -> RunBundle:
@@ -301,7 +302,7 @@ def _assemble_lowered_bundle(
                 continuation=continuation,
                 progress_interval=progress_interval,
                 controller_seed=controller_seed,
-                batch_seed=batch_seed,
+                batch_seed=batch_seed if authored_row.seed is None else authored_row.seed,
             ).model_dump(mode="json", exclude_none=True),
             lowerer_identities=[
                 RowLowererIdentity(
@@ -313,6 +314,9 @@ def _assemble_lowered_bundle(
                     lowerer_version="feedbax.tests.native-row-lowerer.v1",
                 ),
             ],
+            execution_seed_path=(
+                "task.params.training.batch_seed" if authored_row.seed is not None else None
+            ),
         )
 
     registry = AssemblyCompilerRegistry()
@@ -425,7 +429,7 @@ def _native_context(
         environment_fingerprint="environment:integrated-row",
         collection_root=str(collection_root),
         diagnostics=NativeTrainingDiagnosticsInput(
-            seeds=[7] if seeds is None else seeds,
+            seeds=[] if seeds is None else seeds,
             lr_trace=[
                 LearningRateDiagnostic(step=step, learning_rate=0.001)
                 for step in range(current_step, current_step + 3)
@@ -629,7 +633,6 @@ def _executed_configuration_seed_row(root: Path) -> ConformanceRowArtifacts:
     bundle = _assemble_lowered_bundle(
         root,
         gain=2,
-        row_seed=None,
         controller_seed=42,
         batch_seed=42,
     )
@@ -641,12 +644,13 @@ def _executed_configuration_seed_row(root: Path) -> ConformanceRowArtifacts:
     assert payload["task"]["params"]["controller"]["seed"] == 42
     assert payload["task"]["params"]["training"]["batch_seed"] == 42
     collection_root = bundle.run_set_dir / "rows" / row.row_id
+    batch_seed = payload["task"]["params"]["training"]["batch_seed"]
     result = execute_training_run_spec(
         payload,
-        initial_slots=_initial_slots(),
+        initial_slots={**_initial_slots(), "prng": jr.PRNGKey(batch_seed)},
         manifest_root=collection_root / "manifests",
         checkpoint_root=collection_root / "checkpoints",
-        execution_context=_native_context(bundle, collection_root=collection_root, seeds=[]),
+        execution_context=_native_context(bundle, collection_root=collection_root),
         registry=registries.training_programs,
     )
     diagnostics = result.diagnostics.model_dump(mode="json", exclude_none=True)
@@ -725,18 +729,19 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
     tmp_path: Path,
 ) -> None:
     registries = _lifecycle_registries()
-    bundle = _assemble_lowered_bundle(tmp_path / "source", gain=2)
+    bundle = _assemble_lowered_bundle(tmp_path / "source", gain=2, row_seed=7)
     row = bundle.rows[0]
     provenance = row.execution.row_provenance
     assert provenance is not None
     payload = json.loads(Path(row.execution.payload.uri).read_text(encoding="utf-8"))
     collection_root = bundle.run_set_dir / "rows" / row.row_id
     checkpoint_root = collection_root / "checkpoints"
-    context = _native_context(bundle, collection_root=collection_root)
+    batch_seed = payload["task"]["params"]["training"]["batch_seed"]
+    context = _native_context(bundle, collection_root=collection_root, seeds=[batch_seed])
 
     result = execute_training_run_spec(
         payload,
-        initial_slots=_initial_slots(),
+        initial_slots={**_initial_slots(), "prng": jr.PRNGKey(batch_seed)},
         manifest_root=collection_root / "manifests",
         checkpoint_root=checkpoint_root,
         execution_context=context,
@@ -900,6 +905,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
         tmp_path / "resumed",
         gain=2,
         completed_batches=2,
+        row_seed=7,
         continuation=continuation,
     )
     resumed_row = resumed_bundle.rows[0]
@@ -935,6 +941,7 @@ def test_native_row_outputs_resume_and_collect_from_the_assembled_contract(
             resumed_bundle,
             collection_root=resumed_collection_root,
             current_step=1,
+            seeds=[batch_seed],
         ),
         registry=registries.training_programs,
     )
@@ -1312,10 +1319,7 @@ def _studio_native_matrix(spec: TrainingRunSpec, *row_ids: str) -> dict[str, Any
             "kind": "inline",
             "inline": spec.model_dump(mode="json", exclude_none=True),
         },
-        "rows": [
-            {"row_id": row_id, "seed": seed, "overrides": []}
-            for seed, row_id in enumerate(row_ids, start=7)
-        ],
+        "rows": [{"row_id": row_id, "overrides": []} for row_id in row_ids],
     }
 
 

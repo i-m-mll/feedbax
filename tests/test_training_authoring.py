@@ -123,7 +123,6 @@ def _authored_row(payload: dict[str, Any] | None = None) -> AuthoredTrainingRow:
         row_index=0,
         payload=compact,
         payload_hash=training_spec_sha256(compact),
-        seed=7,
         axis_coordinates={"gain": compact.get("gain")},
     )
 

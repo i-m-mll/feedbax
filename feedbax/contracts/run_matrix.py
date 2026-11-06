@@ -42,6 +42,7 @@ TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION_V1 = f"{TRAINING_ROW_LOWERER_REF_SCHEMA_
 TRAINING_ROW_LOWERER_REF_SCHEMA_VERSION = f"{TRAINING_ROW_LOWERER_REF_SCHEMA_ID}.v2"
 TRAINING_ROW_LOWERING_CONTEXT_API_VERSION = "feedbax.training_row_lowering_context.v1"
 TRAINING_ROW_LOWERER_REF_FIELD = "feedbax_row_lowerer"
+TRAINING_MATRIX_SEED_AXES = frozenset({"seed", "master_prng_key", "prng_key"})
 TRAINING_ROW_PROVENANCE_SCHEMA_ID = "feedbax.spec.training_row_provenance"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V1 = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v1"
 TRAINING_ROW_PROVENANCE_SCHEMA_VERSION_V2 = f"{TRAINING_ROW_PROVENANCE_SCHEMA_ID}.v2"
@@ -344,7 +345,12 @@ class AuthoredTrainingRow(StrictModel):
 
 
 class TrainingRowLoweringResult(StrictModel):
-    """Authoritative execution payload returned by one declared row lowerer."""
+    """Authoritative execution payload returned by one declared row lowerer.
+
+    For a seeded native row, execution_seed_path declares the dotted path of
+    the executable RNG input written by the lowerer. Its value must equal
+    AuthoredTrainingRow.seed and be consumed by the selected training program.
+    """
 
     schema_id: Literal["feedbax.spec.training_row_lowering_result"] = (
         TRAINING_ROW_LOWERING_RESULT_SCHEMA_ID
@@ -354,6 +360,16 @@ class TrainingRowLoweringResult(StrictModel):
     )
     execution_payload: dict[str, Any]
     lowerer_identities: list[RowLowererIdentity] = Field(min_length=1)
+    execution_seed_path: str | None = None
+
+    @field_validator("execution_seed_path")
+    @classmethod
+    def _validate_execution_seed_path(cls, path: str | None) -> str | None:
+        if path is not None:
+            _validate_dotted_path(path, "/execution_seed_path")
+            if path.split(".", 1)[0] == "metadata":
+                raise ValueError("/execution_seed_path must name an executable field")
+        return path
 
 
 class TrainingRowParentProvenance(StrictModel):
@@ -801,7 +817,7 @@ class _TrainingRunMatrixSpecCore(StrictModel):
         if len(set(axis_ids)) != len(axis_ids):
             raise ValueError("/axes axis ids must be unique")
         for axis in self.axes:
-            if axis.path not in {"seed", "master_prng_key", "prng_key"}:
+            if axis.path not in TRAINING_MATRIX_SEED_AXES:
                 _validate_dotted_path(axis.path, f"/axes/{axis.id}/path")
         output_paths = [derivation.output_path for derivation in self.derivations]
         if len(set(output_paths)) != len(output_paths):

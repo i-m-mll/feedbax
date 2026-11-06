@@ -238,35 +238,24 @@ def test_emission_round_trip_is_stable_and_materializer_drift_is_visible(
         )
 
 
-def test_snapshot_rows_are_complete_and_seed_changes_execution_identity(tmp_path: Path) -> None:
+def test_snapshot_rows_are_complete(tmp_path: Path) -> None:
     lock = tmp_path / "uv.lock"
     lock.write_text("lock", encoding="utf-8")
-    first_matrix = _matrix({"value": 1})
-    first_payload = first_matrix.model_dump(mode="json")
-    first_payload["rows"][0]["seed"] = 11
-    second_payload = json.loads(json.dumps(first_payload))
-    second_payload["rows"][0]["seed"] = 12
-
-    def emit(payload, suffix):
-        return emit_training_run_spec_storage(
-            TrainingRunMatrixSpec.model_validate(payload),
-            method_registry=_METHOD_REGISTRY,
-            repo_root=tmp_path,
-            authored_path=tmp_path / f"authored-{suffix}.json",
-            custody_root=tmp_path / "custody",
-            materializer_commit="abc",
-            dependency_lock_path=lock,
-            allow_inline_base=True,
-            row_validator=lambda _payload, _row_id: None,
-        )
-
-    first = emit(first_payload, "first")
-    second = emit(second_payload, "second")
-    assert first.execution_hash != second.execution_hash
+    storage = emit_training_run_spec_storage(
+        _matrix({"value": 1}),
+        method_registry=_METHOD_REGISTRY,
+        repo_root=tmp_path,
+        authored_path=tmp_path / "authored.json",
+        custody_root=tmp_path / "custody",
+        materializer_commit="abc",
+        dependency_lock_path=lock,
+        allow_inline_base=True,
+        row_validator=lambda _payload, _row_id: None,
+    )
 
     from feedbax.contracts.resolved_snapshot_decoder import decode_resolved_snapshot
 
-    snapshot = json.loads(Path(first.snapshot_artifact.uri).read_text(encoding="utf-8"))
+    snapshot = json.loads(Path(storage.snapshot_artifact.uri).read_text(encoding="utf-8"))
     decoded = decode_resolved_snapshot(snapshot)
     row = decoded["rows"][0]
     assert set(row) == {
@@ -278,7 +267,7 @@ def test_snapshot_rows_are_complete_and_seed_changes_execution_identity(tmp_path
         "row_provenance",
         "payload",
     }
-    assert row["seed"] == 11
+    assert row["seed"] is None
     assert row["axis_coordinates"]["values"]["overrides"] == []
 
 

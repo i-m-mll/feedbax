@@ -60,6 +60,7 @@ from feedbax.contracts.run_matrix import (
     ResolvedOutputMatrixBaseSpec,
     ResolvedOutputMatrixBaseSpecV6,
     ResolvedOutputRootForkSourceAuthority,
+    TRAINING_MATRIX_SEED_AXES,
     TrainingRowLoweringResult,
     TrainingRowPlanningProvenance,
     TrainingRowProvenance,
@@ -88,6 +89,7 @@ from feedbax.contracts.checkpoints import (
     CheckpointSegmentLineage,
 )
 from feedbax.contracts.training import (
+    TRAINING_RUN_SPEC_SCHEMA_ID,
     LrScheduleSpec,
     OptimizerSpec,
     TrainingProgramRegistry,
@@ -110,6 +112,9 @@ from feedbax.training.row_lowering import TrainingRowLoweringContext
 from feedbax.training.schedule_clocks import resolve_schedule_window
 
 RUN_MATRIX_FORK_PARITY_SCHEMA_VERSION = "feedbax.run_matrix_fork_parity.v1"
+
+
+_UNSET_MATRIX_SEED = object()
 
 
 class RunMatrixError(ValueError):
@@ -243,10 +248,10 @@ def _resolve_compiled_training_row_parent(
 ) -> dict[str, Any]:
     """Materialize and select one governed authored matrix-v6 row payload."""
     matrix = verify_compiled_training_row_parent(parent, repo_root=repo_root)
-    materialized = materialize_adapted_run_matrix(
+    materialized = _materialize_run_matrix(
         matrix,
         repo_root=repo_root,
-        row_validator=lambda _payload, _row_id: None,
+        row_validator=None,
         row_lowering_context=row_lowering_context,
     )
     rows = [row for row in materialized.rows if row.row_id == parent.row_id]
@@ -1526,7 +1531,7 @@ def _materialize_explicit_rows(
             row_id=row.row_id,
             row_index=index,
             authored_payload=authored_payload,
-            seed=row.seed,
+            seed=row.seed if row.seed is not None else _UNSET_MATRIX_SEED,
             axis_coordinates=axis_coordinates,
             overrides=axis_coordinates["overrides"],
             row_validator=row_validator,
@@ -1633,11 +1638,13 @@ def _materialize_sweep_rows(
             for axis_id, value_index in value_indices.items()
         }
         authored_payload = copy.deepcopy(base_payload)
-        seed = None
+        seed = _UNSET_MATRIX_SEED
         patches = []
         for axis_id, value in values.items():
             axis = axis_by_id[axis_id]
-            if axis.path in {"seed", "master_prng_key", "prng_key"}:
+            if axis.path in TRAINING_MATRIX_SEED_AXES:
+                if seed is not _UNSET_MATRIX_SEED:
+                    raise RunMatrixError(f"row {row_id!r} has multiple seed axes")
                 seed = value
                 studio_training_spec = authored_payload.get("training_spec")
                 if isinstance(studio_training_spec, dict):
@@ -1663,7 +1670,7 @@ def _materialize_sweep_rows(
             row_id=row_id,
             row_index=index,
             authored_payload=authored_payload,
-            seed=seed if isinstance(seed, int) else None,
+            seed=seed,
             axis_coordinates=values,
             overrides=override_payloads,
             row_validator=row_validator,
@@ -1672,7 +1679,7 @@ def _materialize_sweep_rows(
         )
         run_id = _planned_run_id(
             payload,
-            seed=seed,
+            seed=None if seed is _UNSET_MATRIX_SEED else seed,
             axis_coordinates=values,
             authored_payload_hash=authored_payload_hash,
             lowered_execution_payload_hash=lowered_execution_payload_hash,
@@ -1685,6 +1692,7 @@ def _materialize_sweep_rows(
             values=values,
             label=_coordinate_label(axis_by_id, values),
         )
+        row_seed = seed if isinstance(seed, int) else None
         rows.append(
             MaterializedMatrixRow(
                 row_id=row_id,
@@ -1698,7 +1706,7 @@ def _materialize_sweep_rows(
                     planned_run_id=run_id,
                     authored_payload_hash=authored_payload_hash,
                     lowered_execution_payload_hash=lowered_execution_payload_hash,
-                    seed=seed if isinstance(seed, int) else None,
+                    seed=row_seed,
                     axis_coordinates=coordinate.model_dump(mode="json", exclude_none=True),
                     overrides=override_payloads,
                     lowerer_identities=lowerer_identities,
@@ -1708,7 +1716,7 @@ def _materialize_sweep_rows(
                 ),
                 coordinate=coordinate,
                 overrides=patches,
-                seed=seed if isinstance(seed, int) else None,
+                seed=row_seed,
             )
         )
     run_set_axes.runs = [row.coordinate for row in rows if row.coordinate is not None]
@@ -1761,7 +1769,7 @@ def _lower_authored_row(
     row_id: str,
     row_index: int,
     authored_payload: dict[str, Any],
-    seed: int | None,
+    seed: Any,
     axis_coordinates: dict[str, Any],
     overrides: list[dict[str, Any]],
     row_validator: RowPayloadValidator | None,
@@ -1776,35 +1784,59 @@ def _lower_authored_row(
 ]:
     """Lower and validate one row while isolating callback-owned mutations."""
     authored_payload_hash = training_spec_sha256(authored_payload)
-    lowerer_identities: list[RowLowererIdentity] = []
-    if row_lowerer is None:
-        execution_payload = copy.deepcopy(authored_payload)
-    else:
+    result = None
+    if row_lowerer is not None:
         authored_row = AuthoredTrainingRow(
             row_id=row_id,
             row_index=row_index,
             payload=copy.deepcopy(authored_payload),
             payload_hash=authored_payload_hash,
-            seed=seed,
+            seed=seed if isinstance(seed, int) else None,
             axis_coordinates=copy.deepcopy(axis_coordinates),
             overrides=copy.deepcopy(overrides),
         )
         if row_lowering_context is None:
             row_lowering_context = TrainingRowLoweringContext()
         raw_result = row_lowerer(authored_row, row_lowering_context)
-        if raw_result is None:
-            execution_payload = copy.deepcopy(authored_payload)
-        else:
+        if raw_result is not None:
             result = (
                 raw_result
                 if isinstance(raw_result, TrainingRowLoweringResult)
                 else TrainingRowLoweringResult.model_validate(raw_result)
             )
-            execution_payload = copy.deepcopy(result.execution_payload)
-            lowerer_identities = list(result.lowerer_identities)
+    execution_payload = copy.deepcopy(
+        authored_payload if result is None else result.execution_payload
+    )
+    lowerer_identities = [] if result is None else list(result.lowerer_identities)
     spec = (
         None if row_validator is None else row_validator(copy.deepcopy(execution_payload), row_id)
     )
+    if seed is not _UNSET_MATRIX_SEED and (
+        spec is not None
+        or (
+            (row_validator is not None or row_lowerer is not None)
+            and execution_payload.get("schema_id") == TRAINING_RUN_SPEC_SCHEMA_ID
+        )
+    ):
+        if type(seed) is not int:
+            raise RunMatrixError(f"row {row_id!r} seed must be an integer, got {seed!r}")
+        seed_path = None if result is None else result.execution_seed_path
+        if seed_path is None:
+            raise RunMatrixError(
+                f"row {row_id!r} seed {seed} requires a row lowerer with execution_seed_path. "
+                "Use an override or sweep axis on the program's RNG field for a native base."
+            )
+        try:
+            execution_seed = _get_dotted(execution_payload, seed_path)
+        except RunMatrixError as exc:
+            raise RunMatrixError(
+                f"row {row_id!r} execution_seed_path {seed_path!r} is missing from the payload"
+            ) from exc
+        if type(execution_seed) is not int or execution_seed != seed:
+            raise RunMatrixError(
+                f"row {row_id!r} execution_seed_path {seed_path!r} must carry seed {seed}, "
+                f"got {execution_seed!r}"
+            )
     lowered_execution_payload_hash = training_spec_sha256(execution_payload)
     return (
         execution_payload,
