@@ -43,6 +43,7 @@ from feedbax.components.penzai import (
     get_penzai_builder,
     penzai_state_variable_paths,
 )
+from feedbax.contracts.acausal_interface import MUSCLE_EXCITATION_PAYLOAD
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
 from feedbax.tasks.presets import apply_delayed_reaches_preset
@@ -169,7 +170,11 @@ class _ExcitationMechanics(Mechanics):
 
     def __call__(self, inputs, state, *, key):
         excitation = inputs.get("excitation", inputs.get("force"))
-        return super().__call__({"force": excitation}, state, key=key)
+        if excitation is None:
+            raise ValueError("Missing required acausal source input 'excitation'")
+        value = jnp.asarray(excitation)
+        MUSCLE_EXCITATION_PAYLOAD.validate_shape("excitation", value.shape)
+        return super().__call__({"force": value}, state, key=key)
 
 
 def _default_analytical_body_preset(params: Mapping[str, Any]) -> BodyPreset:

@@ -30,9 +30,17 @@ class SourcePayload:
     def shape(self) -> tuple[int, ...]:
         return () if len(self.slots) == 1 else (len(self.slots),)
 
-    def accepts_shape(self, shape: tuple[int, ...] | None) -> bool:
+    def validate_shape(self, port: str, shape: tuple[int, ...] | None) -> None:
+        expected_shape = self.shape
         # Scalar channels also accept the one-element arrays emitted by vector components.
-        return shape == self.shape or (self.shape == () and shape == (1,))
+        if shape == expected_shape or (expected_shape == () and shape == (1,)):
+            return
+        expected = (
+            f"shape {expected_shape} with fields {self.slots}"
+            if expected_shape
+            else "a scalar or a one-element vector"
+        )
+        raise ValueError(f"Acausal source input {port!r} expects {expected}, got shape {shape}")
 
     def port_type(self) -> PortType:
         return (
@@ -40,12 +48,6 @@ class SourcePayload:
             if self.shape
             else signal_port_type()
         )
-
-    def shape_error(self, port: str, shape: tuple[int, ...] | None) -> str:
-        expected = "a scalar or a one-element vector"
-        if self.shape:
-            expected = f"shape {self.shape} with fields {self.slots}"
-        return f"Acausal source input {port!r} expects {expected}, got shape {shape}"
 
 
 FORCE_PAYLOAD = SourcePayload(("force",))

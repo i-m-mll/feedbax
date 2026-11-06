@@ -207,8 +207,7 @@ class _Completion:
         if payload is not None:
             dims = shape_from_proto(proto)
             shape = tuple(dims) if dims is not None else None
-            if not payload.accepts_shape(shape):
-                raise ValueError(payload.shape_error(f"{node}.{port}", shape))
+            payload.validate_shape(f"{node}.{port}", shape)
         if key in self.inputs:
             if _prototype_signature(self.inputs[key]) != _prototype_signature(proto):
                 old_shape, new_shape = shape_from_proto(self.inputs[key]), shape_from_proto(proto)
