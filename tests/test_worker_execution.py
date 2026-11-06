@@ -16,7 +16,7 @@ import feedbax.web.worker.execution as worker_execution
 import feedbax.web.worker.checkpoint as worker_checkpoint
 from feedbax.component_registry import ComponentRegistry, register_cde_templates
 from feedbax.contracts.acausal import AcausalGraphSpec
-from feedbax.compiler.templates import network_template_graph
+from feedbax.compiler.templates import network_template_graph, recurrent_node_output_initializer
 from feedbax.compiler.normalization import normalize_task_binding_spec_for_studio_authoring
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.graph import (
@@ -24,7 +24,9 @@ from feedbax.contracts.graph import (
     GraphSpec,
     ParameterConstraintSpec,
     StudioTaskBindingSpec,
+    WireSpec,
 )
+from feedbax.runtime.graph import init_state_from_component
 from feedbax.web.worker.execution import (
     _build_optimizer,
     _derive_trainable_nodes,
@@ -494,6 +496,118 @@ def test_rollout_graph_threads_network_template_recurrence() -> None:
 
     assert output.shape == (5, 1)
     assert not jnp.allclose(output[0], output[-1])
+
+
+def test_worker_rollout_matches_runtime_for_task_seeded_noisy_cycle() -> None:
+    # A noisy encoder seeds the accumulator once. A noisy delay reads its
+    # output on every frame and gives the rollout nontrivial state to retain.
+    graph_spec = GraphSpec(
+        nodes={
+            "encoder": ComponentSpec(
+                type="Channel",
+                params={"delay": 0, "noise_std": 0.25},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+            "total": ComponentSpec(
+                type="Sum",
+                input_ports=["a", "b"],
+                output_ports=["output"],
+            ),
+            "delay": ComponentSpec(
+                type="Channel",
+                params={"delay": 1, "noise_std": 0.25},
+                input_ports=["input"],
+                output_ports=["output"],
+            ),
+        },
+        wires=[
+            WireSpec(
+                source_node="total",
+                source_port="output",
+                target_node="total",
+                target_port="a",
+                temporality="recurrent",
+                recurrent_initializer=recurrent_node_output_initializer(
+                    "encoder", "output", state_slot="a"
+                ),
+            ),
+            WireSpec(
+                source_node="total",
+                source_port="output",
+                target_node="delay",
+                target_port="input",
+            ),
+        ],
+        input_ports=["seed", "drive"],
+        input_bindings={"seed": ("encoder", "input"), "drive": ("total", "b")},
+        output_ports=["output"],
+        output_bindings={"output": ("delay", "output")},
+        retained_observables=[
+            {"selector": "recurrent_carry:total.output->total.a"},
+            {"selector": "state_path:delay.output"},
+        ],
+    )
+    task_binding_spec = _task_binding_spec()
+    seed = [7.0]
+    drive = [[1.0], [3.0], [-2.0], [4.0]]
+    task_binding_spec["exposed_data"][0]["value_spec"]["value"] = drive
+    task_binding_spec["bindings"][0].update(
+        id="task:model_input->total:b", target_node_id="total", target_port="b"
+    )
+    task_binding_spec["exposed_data"].append(
+        {
+            "id": "seed",
+            "label": "Seed",
+            "kind": "signal",
+            "role": "model_input",
+            "path": "inputs.seed",
+            "bindable": True,
+            "expected_shape": [1],
+            "value_spec": {"mode": "constant", "value": seed, "shape": [1]},
+        }
+    )
+    task_binding_spec["bindings"].append(
+        {
+            "id": "task:seed->encoder:input",
+            "source_data_id": "seed",
+            "target_node_id": "encoder",
+            "target_port": "input",
+            "role": "model_input",
+        }
+    )
+    compiled = compile_training_run(
+        component_registry=ComponentRegistry(load_user_components=False),
+        graph_spec=graph_spec,
+        training_spec=_training_spec(),
+        task_spec={"type": "Generic", "params": {}},
+        task_binding_spec=task_binding_spec,
+        cfg=_cfg(n_reach_steps=len(drive)),
+    )
+    graph = compiled.graph
+    key = jax.random.PRNGKey(17)
+    rollout = rollout_graph(graph, compiled, key=key)
+    _, graph_key = jax.random.split(key)
+    outputs, final_state, history = graph(
+        {"seed": jnp.array(seed), "drive": jnp.array(drive)},
+        init_state_from_component(graph),
+        key=graph_key,
+        n_steps=len(drive),
+        return_state_history=True,
+    )
+
+    assert jnp.array_equal(rollout["task_data"]["model_input"], jnp.array(drive))
+    assert jnp.array_equal(rollout["outputs"]["output"], outputs["output"])
+    assert eqx.tree_equal(rollout["final_state"], final_state)
+    assert jnp.array_equal(graph.state_view(final_state).encoder.output, jnp.zeros(1))
+    assert jnp.array_equal(rollout["trace"]["state_path:delay.output"], history.delay.output[1:])
+    carry_selector = "recurrent_carry:total.output->total.a"
+    assert jnp.array_equal(rollout["trace"][carry_selector], history.delay.queue[0][1:])
+
+    other_rollout = rollout_graph(graph, compiled, key=jax.random.PRNGKey(18))
+    assert not jnp.array_equal(
+        rollout["trace"][carry_selector][0], other_rollout["trace"][carry_selector][0]
+    )
 
 
 def test_compile_training_run_dry_runs_cde_templates() -> None:

@@ -1,6 +1,6 @@
 """Shared scan harness for multi-timestep rollouts.
 
-``Graph._call_with_iteration`` and ``iterate_component`` drive the same
+``Graph._scan_rollout`` and ``iterate_component`` drive the same
 three-branch scan — accumulate a streaming loss, stack a filtered state
 history, or just stack outputs. They differ only in how one timestep is
 evaluated and in whether the scan carry threads extra per-step values

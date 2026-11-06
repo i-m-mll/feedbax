@@ -447,7 +447,7 @@ class Graph(Component):
         for node_name, node in self.nodes.items():
             if not isinstance(node, Graph):
                 continue
-            nested_sources = node._trial_scope_initializer_input_sources()
+            nested_sources = node.trial_initializer_input_names
             if not nested_sources:
                 continue
             for ext_port, (target_node, target_port) in self.input_bindings.items():
@@ -455,7 +455,9 @@ class Graph(Component):
                     sources.add(ext_port)
         return sources
 
-    def _trial_scope_initializer_input_sources(self) -> set[str]:
+    @property
+    def trial_initializer_input_names(self) -> set[str]:
+        """Graph inputs consumed once per rollout, without a leading time axis."""
         return (
             self._graph_input_initializer_sources()
             | self._node_output_initializer_input_sources()
@@ -623,17 +625,21 @@ class Graph(Component):
         t: PyTree = 0,
     ) -> tuple[dict[str, PyTree], State] | tuple[dict[str, PyTree], State, PyTree | None]:
         if self._needs_iteration:
-            return self._call_with_iteration(
+            save_history = return_state_history and state_filter is not False
+            outputs, state, aux, _ = self._scan_rollout(
                 inputs,
                 state,
                 key=key,
                 n_steps=n_steps,
-                return_state_history=return_state_history,
+                save_history=save_history,
                 state_filter=state_filter,
                 cycle_init=cycle_init,
                 streaming_loss_fn=streaming_loss_fn,
                 rollout_step_hook=rollout_step_hook,
             )
+            if streaming_loss_fn is not None or save_history:
+                return outputs, state, aux
+            return outputs, state
         outputs, state = self._call_single_step(
             inputs,
             state,
@@ -655,26 +661,13 @@ class Graph(Component):
         rollout_step_hook: Optional[RolloutStepHook] = None,
         t: PyTree = 0,
     ) -> tuple[dict[str, PyTree], State]:
-        port_values: dict[tuple[str, str], PyTree] = {}
-
-        for ext_port, (node_name, node_port) in self.input_bindings.items():
-            if ext_port in inputs:
-                port_values[(node_name, node_port)] = inputs[ext_port]
-
-        port_values, state = self._execute_step(
-            port_values,
+        outputs, state, _, _ = self._transition(
+            inputs,
             state,
             key=key,
-            step_inputs=inputs,
             t=t,
             rollout_step_hook=rollout_step_hook,
         )
-
-        outputs = {
-            ext_port: port_values[(node_name, node_port)]
-            for ext_port, (node_name, node_port) in self.output_bindings.items()
-        }
-
         return outputs, state
 
     def step(
@@ -718,54 +711,15 @@ class Graph(Component):
                 to pass into the next ``step`` call. Empty for graphs
                 without cycles.
         """
-        if not self._needs_iteration:
-            outputs, new_state = self._call_single_step(
-                inputs,
-                state,
-                key=key,
-                t=t,
-                rollout_step_hook=rollout_step_hook,
-            )
-            return outputs, new_state, {}
-
-        if cycle_port_values is None:
-            cycle_port_values = self._get_initial_cycle_values(
-                state,
-                inputs=inputs,
-                key=jax.random.fold_in(key, _INITIALIZER_KEY_SALT),
-            )
-
-        port_values: dict[tuple[str, str], PyTree] = dict(cycle_port_values)
-
-        trial_scope_sources = self._trial_scope_initializer_input_sources()
-        for ext_port, (node_name, node_port) in self.input_bindings.items():
-            if ext_port in inputs and ext_port not in trial_scope_sources:
-                port_values[(node_name, node_port)] = inputs[ext_port]
-
-        port_values, new_state = self._execute_step(
-            port_values,
+        outputs, state, cycle_port_values, _ = self._step(
+            inputs,
             state,
+            cycle_port_values,
             key=key,
-            step_inputs=inputs,
             t=t,
             rollout_step_hook=rollout_step_hook,
         )
-
-        new_cycle_port_values: dict[tuple[str, str], PyTree] = {}
-        for wire in self._cycle_wires:
-            source_key = (wire.source_node, wire.source_port)
-            target_key = (wire.target_node, wire.target_port)
-            new_cycle_port_values[target_key] = port_values[source_key]
-        for key, value in port_values.items():
-            if _is_nested_cycle_key(key):
-                new_cycle_port_values[key] = value
-
-        outputs = {
-            ext_port: port_values[(node_name, node_port)]
-            for ext_port, (node_name, node_port) in self.output_bindings.items()
-        }
-
-        return outputs, new_state, new_cycle_port_values
+        return outputs, state, cycle_port_values
 
     def step_with_trace(
         self,
@@ -790,18 +744,56 @@ class Graph(Component):
         paths. Leaf component internals remain opaque; acausal/equational
         components only need executable ports and state views.
         """
-        if self._needs_iteration:
-            if cycle_port_values is None:
-                cycle_port_values = self._get_initial_cycle_values(
-                    state,
-                    inputs=inputs,
-                    key=jax.random.fold_in(key, _INITIALIZER_KEY_SALT),
-                )
-            port_values: dict[tuple[str, str], PyTree] = dict(cycle_port_values)
-        else:
-            port_values = {}
+        return self._step(
+            inputs,
+            state,
+            cycle_port_values,
+            key=key,
+            t=t,
+            rollout_step_hook=rollout_step_hook,
+            trace=trace,
+        )
 
-        trial_scope_sources = self._trial_scope_initializer_input_sources()
+    def _step(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        cycle_port_values: dict[tuple[str, str], PyTree] | None,
+        *,
+        key: PRNGKeyArray,
+        t: PyTree,
+        rollout_step_hook: Optional[RolloutStepHook],
+        trace: tuple[GraphTraceRequest, ...] = (),
+    ) -> tuple[dict[str, PyTree], State, dict[tuple[str, str], PyTree], dict[str, PyTree]]:
+        if not self._needs_iteration:
+            cycle_port_values = None
+        elif cycle_port_values is None:
+            cycle_port_values = self._seed_cycle_carry(inputs, state, key)
+        return self._transition(
+            inputs,
+            state,
+            cycle_port_values,
+            key=key,
+            t=t,
+            rollout_step_hook=rollout_step_hook,
+            trace=trace,
+        )
+
+    def _transition(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        cycle_port_values: dict[tuple[str, str], PyTree] | None = None,
+        *,
+        key: PRNGKeyArray,
+        t: PyTree,
+        rollout_step_hook: Optional[RolloutStepHook],
+        trace: tuple[GraphTraceRequest, ...] = (),
+    ) -> tuple[dict[str, PyTree], State, dict[tuple[str, str], PyTree], dict[str, PyTree]]:
+        port_values = {} if cycle_port_values is None else dict(cycle_port_values)
+        trial_scope_sources = (
+            set() if cycle_port_values is None else self.trial_initializer_input_names
+        )
         for ext_port, (node_name, node_port) in self.input_bindings.items():
             if ext_port in inputs and ext_port not in trial_scope_sources:
                 port_values[(node_name, node_port)] = inputs[ext_port]
@@ -816,25 +808,28 @@ class Graph(Component):
         )
 
         new_cycle_port_values: dict[tuple[str, str], PyTree] = {}
-        for wire in self._cycle_wires:
-            source_key = (wire.source_node, wire.source_port)
-            target_key = (wire.target_node, wire.target_port)
-            new_cycle_port_values[target_key] = port_values[source_key]
-        for key, value in port_values.items():
-            if _is_nested_cycle_key(key):
-                new_cycle_port_values[key] = value
+        if cycle_port_values is not None:
+            for wire in self._cycle_wires:
+                source_key = (wire.source_node, wire.source_port)
+                target_key = (wire.target_node, wire.target_port)
+                new_cycle_port_values[target_key] = port_values[source_key]
+            for port_key, value in port_values.items():
+                if _is_nested_cycle_key(port_key):
+                    new_cycle_port_values[port_key] = value
 
         outputs = {
             ext_port: port_values[(node_name, node_port)]
             for ext_port, (node_name, node_port) in self.output_bindings.items()
         }
-        trace_values = self._collect_trace_values(
-            trace,
-            outputs=outputs,
-            port_values=port_values,
-            cycle_port_values=new_cycle_port_values,
-            state=new_state,
-        )
+        trace_values = {}
+        if trace:
+            trace_values = self._collect_trace_values(
+                trace,
+                outputs=outputs,
+                port_values=port_values,
+                cycle_port_values=new_cycle_port_values,
+                state=new_state,
+            )
         return outputs, new_state, new_cycle_port_values, trace_values
 
     def _execute_step(
@@ -1079,6 +1074,20 @@ class Graph(Component):
         """
         return self._get_initial_cycle_values(state, cycle_init, inputs=inputs, key=key)
 
+    def _seed_cycle_carry(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        key: PRNGKeyArray,
+        cycle_init: dict[tuple[str, str], PyTree] | None = None,
+    ) -> dict[tuple[str, str], PyTree]:
+        return self._get_initial_cycle_values(
+            state,
+            cycle_init,
+            inputs=inputs,
+            key=jax.random.fold_in(key, _INITIALIZER_KEY_SALT),
+        )
+
     def _get_initial_cycle_values(
         self,
         state: State,
@@ -1282,7 +1291,9 @@ class Graph(Component):
             if node_name in upstream_nodes and ext_port in inputs:
                 port_values[(node_name, node_port)] = inputs[ext_port]
 
-        eval_state = state
+        # State.set invalidates its input object. Initializer evaluation must
+        # leave the reset state available to the live rollout.
+        eval_state = jt.map(lambda value: value, state)
         execution_order = self._execution_order
         outgoing_wires = self._outgoing_wires
         keys = jax.random.split(key, len(execution_order)) if execution_order else ()
@@ -1332,43 +1343,66 @@ class Graph(Component):
             )
         return port_values[source_key]
 
-    def _call_with_iteration(
+    def rollout_with_trace(
+        self,
+        inputs: dict[str, PyTree],
+        state: State,
+        *,
+        key: PRNGKeyArray,
+        n_steps: int,
+        trace: tuple[GraphTraceRequest, ...],
+        cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
+        rollout_step_hook: Optional[RolloutStepHook] = None,
+    ) -> tuple[dict[str, PyTree], State, dict[str, PyTree]]:
+        """Roll out a graph with selected post-step observations.
+
+        Trial initializer inputs are passed without a time axis. Other inputs
+        are time-major. Each trace entry aligns with the output of that step.
+        """
+        outputs, final_state, _, traces = self._scan_rollout(
+            inputs,
+            state,
+            key=key,
+            n_steps=n_steps,
+            cycle_init=cycle_init,
+            rollout_step_hook=rollout_step_hook,
+            trace=trace,
+        )
+        return outputs, final_state, traces
+
+    def _scan_rollout(
         self,
         inputs: dict[str, PyTree],
         state: State,
         *,
         key: PRNGKeyArray,
         n_steps: int | None = None,
-        return_state_history: bool = False,
+        save_history: bool = False,
         state_filter: PyTree[bool] = True,
         cycle_init: Optional[dict[tuple[str, str], PyTree]] = None,
         streaming_loss_fn: Optional[Callable] = None,
         rollout_step_hook: Optional[RolloutStepHook] = None,
-    ) -> tuple[dict[str, PyTree], State] | tuple[dict[str, PyTree], State, PyTree | None]:
-        trial_scope_sources = self._trial_scope_initializer_input_sources()
+        trace: tuple[GraphTraceRequest, ...] = (),
+        checkpoint: bool | None = None,
+    ) -> tuple[dict[str, PyTree], State, PyTree | None, dict[str, PyTree]]:
+        trial_scope_sources = self.trial_initializer_input_names
+        scan_inputs = {
+            name: value for name, value in inputs.items() if name not in trial_scope_sources
+        }
         if n_steps is None:
-            timed_inputs = {
-                name: value for name, value in inputs.items() if name not in trial_scope_sources
-            }
-            if not timed_inputs:
+            if not scan_inputs:
                 raise ValueError("n_steps is required when inputs are empty")
-            first_input = next(iter(timed_inputs.values()))
+            first_input = next(iter(scan_inputs.values()))
             first_leaf = jt.leaves(first_input)[0]
             n_steps = int(first_leaf.shape[0])
 
         keys = jax.random.split(key, n_steps)
 
-        init_cycle_values = self._get_initial_cycle_values(
-            state,
-            cycle_init,
-            inputs=inputs,
-            key=jax.random.fold_in(key, _INITIALIZER_KEY_SALT),
+        init_cycle_values = (
+            self._seed_cycle_carry(inputs, state, key, cycle_init)
+            if self._needs_iteration
+            else None
         )
-        scan_inputs = {
-            name: value
-            for name, value in inputs.items()
-            if name not in trial_scope_sources
-        }
 
         # Broadcast scalar input leaves to (n_steps, ...) so they can be
         # indexed by step.  Non-scalar leaves pass through as-is.
@@ -1379,19 +1413,21 @@ class Graph(Component):
 
         step_inputs_seq = select_step_inputs(jt.map(_broadcast_scalar, scan_inputs), n_steps)
 
-        save_history = return_state_history and state_filter is not False
-
         def step_fn(step_inputs, step_state, prev_cycle_values, step_key, t):
-            return self.step(
+            outputs, next_state, next_cycle_values, observations = self._transition(
                 step_inputs,
                 step_state,
                 prev_cycle_values,
                 key=step_key,
+                trace=trace,
                 t=t,
                 rollout_step_hook=rollout_step_hook,
             )
+            step_outputs = (outputs, observations) if trace else outputs
+            step_carry = next_cycle_values if prev_cycle_values is not None else None
+            return step_outputs, next_state, step_carry
 
-        outputs_seq, final_state, aux = scan_rollout(
+        output_seq, final_state, aux = scan_rollout(
             step_fn,
             state,
             step_inputs_seq,
@@ -1399,15 +1435,14 @@ class Graph(Component):
             n_steps,
             state_view_fn=self.state_view,
             init_step_carry=init_cycle_values,
-            checkpoint=self.checkpoint,
+            checkpoint=self.checkpoint if checkpoint is None else checkpoint,
             save_history=save_history,
             state_filter=state_filter,
             streaming_loss_fn=streaming_loss_fn,
         )
 
-        if streaming_loss_fn is not None or save_history:
-            return outputs_seq, final_state, aux
-        return outputs_seq, final_state
+        outputs, traces = output_seq if trace else (output_seq, {})
+        return outputs, final_state, aux, traces
 
     # ========== Graph Surgery API ==========
 
