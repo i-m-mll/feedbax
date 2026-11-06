@@ -1381,7 +1381,7 @@ def test_a_pinned_matrix_row_that_states_the_bound_parent_materializes(
 # --------------------------------------------------------------------------
 
 
-def test_one_walk_fulfils_the_closure_and_the_second_executes_nothing(
+def test_workflow_walk_authenticates_parents_and_reuses_receipts(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment, calls: _Calls
 ) -> None:
     target = _chain(outputs)
@@ -1390,42 +1390,28 @@ def test_one_walk_fulfils_the_closure_and_the_second_executes_nothing(
     assert first.execution_order == CHAIN_ORDER
     assert first.executed == CHAIN_ORDER
     assert calls.evaluation == 2 and calls.report == 1
+    upstream, middle, leaf = first.results
     for result in first.results:
         assert load_manifest(result.receipt.path).status == "completed"
 
-    second = _fulfill(outputs, target, environment=environment)
-    assert second.executed == ()
-    assert second.reused == CHAIN_ORDER
-    assert calls.evaluation == 2 and calls.report == 1
-
-
-def test_two_walks_produce_identical_order_and_listings(
-    outputs: QuillonOutputs, environment: FulfillmentEnvironment
-) -> None:
-    target = _chain(outputs)
-    first = _fulfill(outputs, target, environment=environment)
-    second = _fulfill(outputs, target, environment=environment)
-    assert first.execution_order == second.execution_order
-    assert [result.receipt.manifest_id for result in first.results] == [
-        result.receipt.manifest_id for result in second.results
-    ]
-
-
-def test_a_receipt_binds_forward_as_the_authenticated_parent_it_is(
-    outputs: QuillonOutputs, environment: FulfillmentEnvironment
-) -> None:
-    run = _fulfill(outputs, _chain(outputs), environment=environment)
-    upstream, middle, leaf = run.results
     middle_parents = load_manifest(middle.receipt.path).provenance.parents
     assert [ref.id for ref in middle_parents] == [upstream.receipt.manifest_id]
-    assert (
-        middle_parents[0].metadata["manifest_sha256"]
-        == hashlib.sha256(upstream.receipt.path.read_bytes()).hexdigest()
-    )
+    assert middle_parents[0].metadata["manifest_sha256"] == hashlib.sha256(
+        upstream.receipt.path.read_bytes()
+    ).hexdigest()
     assert [ref.role for ref in middle_parents] == ["upstream"]
     leaf_parents = load_manifest(leaf.receipt.path).provenance.parents
     assert [ref.id for ref in leaf_parents] == [middle.receipt.manifest_id]
     assert [ref.role for ref in leaf_parents] == ["middle"]
+
+    second = _fulfill(outputs, target, environment=environment)
+    assert second.executed == ()
+    assert second.reused == CHAIN_ORDER
+    assert second.execution_order == first.execution_order
+    assert [result.receipt.manifest_id for result in second.results] == [
+        result.receipt.manifest_id for result in first.results
+    ]
+    assert calls.evaluation == 2 and calls.report == 1
 
 
 @pytest.mark.parametrize("boundary", [1, 2])
