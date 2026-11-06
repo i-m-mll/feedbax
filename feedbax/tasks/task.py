@@ -16,6 +16,7 @@ TODO:
 
 import logging
 from abc import abstractmethod
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from functools import cached_property, partial
@@ -43,7 +44,6 @@ from feedbax._vendor.jax_cookbook import is_module, is_none, is_type
 from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
 from feedbax.runtime.mapping import WhereDict
-from feedbax.tasks._tree import tree_call
 from feedbax.runtime.graph import Component, Graph, RolloutStepHook, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.intervene import (
@@ -640,13 +640,11 @@ class TaskInterventionSpecs(Module):
 
 
 class TrialSpecDependency(Module):
-    """Wraps functions that depend on a trial specification.
+    """A callback embedded in a raw trial specification.
 
-    When defining a subclass of `AbstractTask`, the `TaskTrialSpec` return by `get_train_trial`
-    can be specified with leaves of this type, which will be evaluated before returning the
-    finalized trial specification for training or validation. For example, this allows us to
-    define that certain intervenor params should be provided as model inputs, even though those
-    intervenor params have not yet been generated and placed in the trial specification.
+    The callback receives a single trial with intervention parameters already
+    realized. Wrap callbacks outside `inputs` explicitly to distinguish them
+    from callables used later, such as loss-time selectors.
     """
 
     func: Callable[[TaskTrialSpec, PRNGKeyArray], PyTree[Array]]
@@ -682,7 +680,7 @@ class AbstractTask(Module):
     n_steps: AbstractVar[int]
     seed_validation: AbstractVar[int]
     intervention_specs: AbstractVar[TaskInterventionSpecs]
-    input_dependencies: AbstractVar[dict[str, TrialSpecDependency]]
+    input_dependencies: AbstractVar[Mapping[str, TrialSpecDependency]]
 
     def __check_init__(self):
         if not isinstance(self.loss_func, AbstractLoss):
@@ -722,57 +720,57 @@ class AbstractTask(Module):
         with jax.named_scope(f"{type(self).__name__}.get_train_trial"):
             trial_spec = self.get_train_trial(key, batch_info)
 
-        intervenor_params = self._get_intervenor_params(
-            self.intervention_specs.training,
+        return self._finalize_trial(
             trial_spec,
+            self.intervention_specs.training,
             key_intervene,
+            key_dependencies,
             batch_info,
         )
-        trial_spec = eqx.tree_at(
-            lambda x: x.intervene,
-            trial_spec,
-            replace=intervenor_params,  # replace= needed: intervene starts as {}
-        )
 
-        trial_spec = self._attach_input_dependencies(trial_spec)
-        trial_spec = self._evaluate_self_dependencies(trial_spec, key_dependencies)
-
-        return trial_spec
-
-    def _attach_input_dependencies(self, trial_spec: TaskTrialSpec) -> TaskTrialSpec:
-        # Attach `self.input_dependencies` under `trial_spec.inputs`
-        deps = self.input_dependencies
-        if not deps:
-            return trial_spec
-        inputs = trial_spec.inputs
-        if isinstance(inputs, Mapping):
-            missing = {k: v for k, v in deps.items() if k not in inputs}
-            if not missing:
-                return trial_spec
-            merged_inputs = dict(inputs) | missing
-        else:
-            merged_inputs = dict(task=inputs, **deps)
-        return eqx.tree_at(lambda x: x.inputs, trial_spec, merged_inputs)
-
-    def _evaluate_self_dependencies(
+    def _finalize_trial(
         self,
         trial_spec: TaskTrialSpec,
-        key: PRNGKeyArray,
+        intervention_specs: LabeledInterventionSpecs,
+        key_intervene: PRNGKeyArray,
+        key_dependencies: PRNGKeyArray,
+        batch_info: Optional[BatchInfo],
     ) -> TaskTrialSpec:
-        return tree_call(
-            trial_spec,
-            trial_spec,
-            key=key,
-            is_leaf=is_type(Callable),
+        intervenor_params = self._get_intervenor_params(
+            intervention_specs, trial_spec, key_intervene, batch_info
         )
+        trial_spec = replace(trial_spec, intervene=intervenor_params)
+
+        def realize_native_dependency(path, value):
+            if isinstance(value, TrialSpecDependency) or (
+                path[0] == jax.tree_util.GetAttrKey("inputs") and isinstance(value, Callable)
+            ):
+                return value(trial_spec, key=key_dependencies)
+            return value
+
+        trial_spec = jt.map_with_path(
+            realize_native_dependency, trial_spec, is_leaf=is_type(Callable)
+        )
+
+        if not self.input_dependencies:
+            return trial_spec
+        inputs = trial_spec.inputs
+        if not isinstance(inputs, Mapping):
+            inputs = {"task": inputs}
+            trial_spec = replace(trial_spec, inputs=inputs)
+        for name, dependency in self.input_dependencies.items():
+            if name not in inputs:
+                inputs = {**inputs, name: dependency(trial_spec, key_dependencies)}
+                trial_spec = replace(trial_spec, inputs=inputs)
+        return trial_spec
 
     def _get_intervenor_params(
         self,
-        intervention_specs: Mapping[IntervenorLabelStr, InterventionSpec],
+        intervention_specs: LabeledInterventionSpecs,
         trial_spec: TaskTrialSpec,
         key: PRNGKeyArray,
         batch_info: Optional[BatchInfo] = None,
-    ) -> TaskTrialSpec:
+    ) -> Mapping[IntervenorLabelStr, PyTree]:
         # Split at the label boundary, then the shared evaluator splits each
         # callable parameter leaf within that label.
         return {
@@ -811,31 +809,34 @@ class AbstractTask(Module):
         """The set of validation trials associated with the task."""
         key = jr.PRNGKey(self.seed_validation)
         key_trials, key_intervene, key_dependencies = jr.split(key, 3)
-        keys = jr.split(key_intervene, self.n_validation_trials)
-
+        n_trials = self.n_validation_trials
         trial_specs = self.get_validation_trials(key_trials)
+        # Callable modules can contain arrays that are parameters rather than trial data.
+        is_callable = is_type(Callable)
+        callables, values = eqx.partition(trial_specs, is_callable, is_leaf=is_callable)
+        batch_info = BatchInfo(size=n_trials, current=0, total=0)
 
-        callables, other = eqx.partition(trial_specs, is_type(Callable))
-
-        trial_specs = eqx.tree_at(
-            lambda x: x.intervene,
-            trial_specs,
-            eqx.filter_vmap(
-                self._get_intervenor_params,
-                in_axes=(None, trial_specs.batch_axes, 0, None),
-            )(
+        def finalize(values, key_intervene, key_dependencies):
+            trial_spec = eqx.combine(values, callables, is_leaf=is_callable)
+            trial_spec = self._finalize_trial(
+                trial_spec,
                 self.intervention_specs.validation,
-                other,
-                keys,
-                BatchInfo(size=self.n_validation_trials, current=0, total=0),
-            ),
-            is_leaf=is_none,
+                key_intervene,
+                key_dependencies,
+                batch_info,
+            )
+            return trial_spec._partition_batch_fields()
+
+        mapped, shared = eqx.filter_vmap(
+            finalize,
+            in_axes=(values.batch_axes, 0, 0),
+            out_axes=(eqx.if_array(0), None),
+        )(
+            values,
+            jr.split(key_intervene, n_trials),
+            jr.split(key_dependencies, n_trials),
         )
-
-        trial_specs = self._attach_input_dependencies(trial_specs)
-        trial_specs = self._evaluate_self_dependencies(trial_specs, key_dependencies)
-
-        return trial_specs
+        return eqx.combine(mapped, shared)
 
     # ------------------------------------------------------------------
     # Authoring convenience projected into separate trial and objective contracts.
@@ -1229,7 +1230,9 @@ class AbstractTask(Module):
             name: The unique name of the input. If a task input with this name already exists
                 for this task, an error will be raised.
             input_fn: A function that will generate the value of the input on each trial,
-                given the trial spec and a random key.
+                given the trial spec and a random key. Inputs are realized in registration
+                order after interventions and native trial dependencies, so later inputs
+                can read earlier ones. Callbacks on the same trial receive the same key.
         """
         if not exist_ok and name in self.input_dependencies:
             err_msg = f"Task input with name '{name}' already exists."
@@ -1239,7 +1242,7 @@ class AbstractTask(Module):
         return eqx.tree_at(
             lambda task: task.input_dependencies,
             self,
-            self.input_dependencies | {name: TrialSpecDependency(input_fn)},
+            OrderedDict(self.input_dependencies) | {name: TrialSpecDependency(input_fn)},
         )
 
     @abstractmethod
@@ -1456,7 +1459,7 @@ class SimpleReaches(AbstractTask):
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     seed_validation: int = 5555
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
-    input_dependencies: dict[str, TrialSpecDependency] = field(default_factory=dict)
+    input_dependencies: Mapping[str, TrialSpecDependency] = field(default_factory=dict)
     eval_n_directions: int = 7
     eval_reach_length: float = 0.5
     eval_grid_n: int = 1  # e.g. 2 -> 2x2 grid of center-out reach sets
@@ -1633,7 +1636,7 @@ class DelayedReaches(AbstractTask):
     workspace: Float[Array, "bounds=2 ndim=2"] = field(converter=jnp.asarray)
     seed_validation: int = 5555
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
-    input_dependencies: dict[str, TrialSpecDependency] = field(default_factory=dict)
+    input_dependencies: Mapping[str, TrialSpecDependency] = field(default_factory=dict)
     epoch_len_ranges: Sequence[Tuple[int, int]] = DEFAULT_DELAYED_EPOCH_LEN_RANGES
     epoch_names: Sequence[str] = ("hold", "target_on", "movement")
     hold_epochs: Int[Array, " _"] = field(default=(0, 1), converter=jnp.asarray)
@@ -1915,7 +1918,7 @@ class Stabilization(AbstractTask):
     #     converter=jnp.asarray, default=None
     # )
     intervention_specs: TaskInterventionSpecs = TaskInterventionSpecs()
-    input_dependencies: dict[str, TrialSpecDependency] = field(default_factory=dict)
+    input_dependencies: Mapping[str, TrialSpecDependency] = field(default_factory=dict)
     epoch_name: Optional[str] = field(default=None, static=True)
 
     def get_train_trial(

@@ -9,10 +9,20 @@ import jax.random as jr
 import numpy as np
 import pytest
 
-from feedbax.objectives import make_streaming_loss_fn
+from feedbax.intervene import InterventionSpec
+from feedbax.objectives import CompositeLoss, make_streaming_loss_fn
 from feedbax.runtime.batch import BatchInfo
+from feedbax.runtime.graph import Component, Graph
 from feedbax.runtime.iteration import run_component
-from feedbax.tasks import TaskTrialSpec, WhereDict, prepare_trial
+from feedbax.runtime.state import CartesianState
+from feedbax.tasks import (
+    SimpleReaches,
+    TaskInterventionSpecs,
+    TaskTrialSpec,
+    TrialSpecDependency,
+    WhereDict,
+    prepare_trial,
+)
 from feedbax.xabdeef import point_mass_nn_simple_reaches
 
 
@@ -151,3 +161,105 @@ def test_simple_reaches_shared_discount_weights_each_control_step(context):
         streaming_loss_fn=make_streaming_loss_fn(position, scalar, model, prepared.n_steps),
     )
     np.testing.assert_allclose(streamed_loss, expected[0], atol=1e-6, rtol=1e-6)
+
+
+
+class _DriveRecorder(Component):
+    input_ports = ("drive",)
+    output_ports = ()
+    state_index: eqx.nn.StateIndex
+    offset_index: eqx.nn.StateIndex
+
+    def __init__(self):
+        self.state_index = eqx.nn.StateIndex(CartesianState())
+        self.offset_index = eqx.nn.StateIndex(jnp.zeros(2))
+
+    def task_parameter_state_indices(self):
+        return {"offset": self.offset_index}
+
+    def __call__(self, inputs, state, *, key):
+        effector = state.get(self.state_index)
+        pos = inputs["drive"] + state.get(self.offset_index)
+        return {}, state.set(self.state_index, replace(effector, pos=pos))
+
+
+def _select_last_step(trial):
+    return jnp.array([trial.timeline.n_steps - 1])
+
+
+class _ReachesWithNativeDependency(SimpleReaches):
+    def _construct_trial_spec(self, effector_init_state, effector_target_state):
+        trial = super()._construct_trial_spec(effector_init_state, effector_target_state)
+        targets = eqx.tree_at(
+            lambda targets: targets[_POSITION].time_idxs,
+            trial.targets,
+            _select_last_step,
+            is_leaf=lambda value: value is None,
+        )
+        return replace(
+            trial,
+            targets=targets,
+            extra={
+                "offset": TrialSpecDependency(lambda trial, key: trial.intervene["offset"]),
+            },
+        )
+
+
+def test_simple_reaches_realizes_added_inputs_per_validation_trial():
+    intervention = {
+        "offset": InterventionSpec(
+            lambda trial, batch_info, *, key: trial.inputs["effector_target"].pos[0]
+        )
+    }
+    task = _ReachesWithNativeDependency(
+        n_steps=5,
+        loss_func=CompositeLoss(()),
+        workspace=((-1.0, -1.0), (1.0, 1.0)),
+        eval_n_directions=7,
+        epoch_name="reach",
+        intervention_specs=TaskInterventionSpecs(training=intervention, validation=intervention),
+    )
+
+    def noise(trial, key):
+        return jr.normal(key, (trial.timeline.n_steps, 2))
+
+    def drive(trial, key):
+        return trial.inputs["z_noise"] + noise(trial, key) + trial.extra["offset"]
+
+    task = task.add_input("z_noise", noise).add_input("drive", drive)
+    sampled = task.sample_trial(jr.key(0))
+    assert sampled.inputs["drive"].shape == (4, 2)
+    np.testing.assert_allclose(
+        sampled.inputs["drive"], 2 * sampled.inputs["z_noise"] + sampled.intervene["offset"]
+    )
+
+    trials = task.validation_trials
+    drives = np.asarray(trials.inputs["drive"])
+    assert drives.shape == (7, 4, 2)
+    assert np.unique(trials.inputs["z_noise"], axis=0).shape[0] == 7
+    np.testing.assert_array_equal(drives, replace(task).validation_trials.inputs["drive"])
+    np.testing.assert_array_equal(
+        trials.intervene["offset"], trials.inputs["effector_target"].pos[:, 0]
+    )
+    np.testing.assert_allclose(
+        drives, 2 * trials.inputs["z_noise"] + trials.intervene["offset"][:, None, :]
+    )
+    assert trials.targets[_POSITION].discount.shape == (4,)
+    assert trials.targets[_POSITION].time_idxs is _select_last_step
+    np.testing.assert_array_equal(trials.timeline.epoch_bounds, np.tile([0, 4], (7, 1)))
+
+    mechanics = Graph(
+        nodes={"effector": _DriveRecorder()},
+        input_ports=("drive",),
+        input_bindings={"drive": ("effector", "drive")},
+    )
+    model = Graph(
+        nodes={"mechanics": mechanics},
+        input_ports=("drive",),
+        input_bindings={"drive": ("mechanics", "drive")},
+    )
+    states = task.eval(model, jr.key(1))
+    np.testing.assert_allclose(
+        states.nodes["mechanics"].nodes["effector"].pos,
+        drives + trials.intervene["offset"][:, None, :],
+    )
