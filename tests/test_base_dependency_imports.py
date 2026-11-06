@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from importlib.metadata import packages_distributions
 from pathlib import Path
 
+import pytest
+
 
 IMPORT_TO_DISTRIBUTION_OVERRIDES = {
     "ruamel": "ruamel-yaml",
@@ -33,10 +35,6 @@ OPTIONAL_NAMESPACE_IMPORT_ALLOWLIST = {
     ("feedbax.plot", "pyperclip"): "viz extra module imports pyperclip at module import time",
     ("feedbax.plot", "scikit-learn"): "viz extra module imports sklearn at module import time",
     ("feedbax.plot", "seaborn"): "viz extra module imports seaborn at module import time",
-    ("feedbax.web", "fastapi"): "web extra module imports fastapi at module import time",
-    ("feedbax.web", "httpx"): "web extra module imports httpx at module import time",
-    ("feedbax.web", "starlette"): "web extra module imports starlette at module import time",
-    ("feedbax.web", "uvicorn"): "web extra module imports uvicorn at module import time",
 }
 
 
@@ -99,29 +97,33 @@ class UnguardedImportVisitor(ast.NodeVisitor):
         self.imports.append((node.lineno, node.module.split(".", maxsplit=1)[0]))
 
 
-def test_unconditional_feedbax_imports_are_base_dependencies() -> None:
+def test_unconditional_feedbax_imports_are_declared_for_their_namespace() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     pyproject = _load_pyproject(repo_root)
-    base_dependencies = _project_dependencies(pyproject)
 
     findings = _find_unapproved_imports(
         sorted((repo_root / "feedbax").rglob("*.py")),
         repo_root=repo_root,
-        base_dependencies=base_dependencies,
+        base_dependencies=_project_dependencies(pyproject),
+        web_dependencies=_project_dependencies(pyproject, extra="web"),
     )
 
     assert findings == []
 
 
-def test_worker_identity_import_does_not_require_web_runtime_dependencies() -> None:
+def test_base_orchestration_imports_do_not_require_web_runtime_dependencies() -> None:
     script = textwrap.dedent(
         """
         import importlib
         import importlib.abc
         import sys
 
-        blocked_roots = {"fastapi", "uvicorn"}
-        blocked_modules = {"feedbax.web.worker.app"}
+        blocked_roots = {"anyio", "fastapi", "httpx", "starlette", "uvicorn"}
+        blocked_modules = {
+            "feedbax.web.app",
+            "feedbax.web.orchestration.controller",
+            "feedbax.web.worker.app",
+        }
 
         class BlockWebRuntimeImports(importlib.abc.MetaPathFinder):
             def find_spec(self, fullname, path=None, target=None):
@@ -130,7 +132,11 @@ def test_worker_identity_import_does_not_require_web_runtime_dependencies() -> N
                 return None
 
         sys.meta_path.insert(0, BlockWebRuntimeImports())
+        importlib.import_module("feedbax.bin.orchestrate")
         importlib.import_module("feedbax.web.worker.identity")
+        from feedbax.orchestration.drivers.builtins import build_builtin_driver_registry
+
+        build_builtin_driver_registry()
 
         assert not blocked_modules.intersection(sys.modules)
         assert not blocked_roots.intersection(sys.modules)
@@ -142,31 +148,35 @@ def test_worker_identity_import_does_not_require_web_runtime_dependencies() -> N
         check=False,
         capture_output=True,
         text=True,
+        timeout=20,
     )
 
     assert result.returncode == 0, result.stderr
 
 
-def test_extras_only_top_level_import_canary_is_flagged() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    canary_path = repo_root / "tests/fixtures/base_dependency_imports/extras_only_top_level.py"
-    assert canary_path.exists(), "the extras-only top-level import canary fixture was removed"
+@pytest.mark.parametrize(
+    ("module_path", "web_dependencies", "allowed"),
+    [
+        ("feedbax/web/canary.py", {"anyio"}, True),
+        ("feedbax/web/canary.py", set(), False),
+        ("feedbax/webish/canary.py", {"anyio"}, False),
+    ],
+)
+def test_web_dependency_import_canary(
+    tmp_path: Path, module_path: str, web_dependencies: set[str], allowed: bool
+) -> None:
+    canary_path = tmp_path / module_path
+    canary_path.parent.mkdir(parents=True)
+    canary_path.write_text("import anyio\n", encoding="utf-8")
 
     findings = _find_unapproved_imports(
         [canary_path],
-        repo_root=repo_root,
-        base_dependencies={"feedbax"},
+        repo_root=tmp_path,
+        base_dependencies=set(),
+        web_dependencies=web_dependencies,
     )
 
-    assert findings == [
-        ImportFinding(
-            module="tests.fixtures.base_dependency_imports.extras_only_top_level",
-            path=canary_path.relative_to(repo_root),
-            line=1,
-            import_name="plotly",
-            distribution="plotly",
-        )
-    ]
+    assert (findings == []) == allowed
 
 
 def test_ruamel_yaml_must_remain_a_base_dependency() -> None:
@@ -178,6 +188,7 @@ def test_ruamel_yaml_must_remain_a_base_dependency() -> None:
         [repo_root / "feedbax/config/config.py", repo_root / "feedbax/config/yaml.py"],
         repo_root=repo_root,
         base_dependencies=base_dependencies,
+        web_dependencies=set(),
     )
 
     assert any(finding.distribution == "ruamel-yaml" for finding in findings)
@@ -188,13 +199,18 @@ def _find_unapproved_imports(
     *,
     repo_root: Path,
     base_dependencies: set[str],
+    web_dependencies: set[str],
 ) -> list[ImportFinding]:
     import_to_distributions = packages_distributions()
     stdlib_modules = set(sys.stdlib_module_names) | {"__future__"}
     findings = []
 
     for path in paths:
-        module = _module_name(path, repo_root=repo_root)
+        relative_path = path.relative_to(repo_root)
+        module = ".".join(relative_path.with_suffix("").parts)
+        dependencies = base_dependencies
+        if relative_path.parts[:2] == ("feedbax", "web"):
+            dependencies = base_dependencies | web_dependencies
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         visitor = UnguardedImportVisitor()
         visitor.visit(tree)
@@ -203,12 +219,12 @@ def _find_unapproved_imports(
             if import_name in stdlib_modules or import_name == "feedbax":
                 continue
             distribution = _distribution_name(import_name, import_to_distributions)
-            if distribution in base_dependencies or _allowlist_rationale(module, distribution):
+            if distribution in dependencies or _allowlist_rationale(module, distribution):
                 continue
             findings.append(
                 ImportFinding(
                     module=module,
-                    path=path.relative_to(repo_root),
+                    path=relative_path,
                     line=line,
                     import_name=import_name,
                     distribution=distribution,
@@ -222,10 +238,15 @@ def _load_pyproject(repo_root: Path) -> dict[str, object]:
     return tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
 
 
-def _project_dependencies(pyproject: dict[str, object]) -> set[str]:
+def _project_dependencies(pyproject: dict[str, object], *, extra: str | None = None) -> set[str]:
     project = pyproject["project"]
     assert isinstance(project, dict)
-    dependencies = project["dependencies"]
+    if extra is None:
+        dependencies = project["dependencies"]
+    else:
+        optional_dependencies = project["optional-dependencies"]
+        assert isinstance(optional_dependencies, dict)
+        dependencies = optional_dependencies[extra]
     assert isinstance(dependencies, list)
     return {_normalize_distribution(str(dependency)) for dependency in dependencies}
 
@@ -245,11 +266,6 @@ def _distribution_name(
 def _normalize_distribution(value: str) -> str:
     name = re.split(r"[<>=!~;\[\s]", value, maxsplit=1)[0]
     return name.replace("_", "-").lower()
-
-
-def _module_name(path: Path, *, repo_root: Path) -> str:
-    relative = path.relative_to(repo_root).with_suffix("")
-    return ".".join(relative.parts)
 
 
 def _is_type_checking_test(node: ast.expr) -> bool:
