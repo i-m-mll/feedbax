@@ -257,7 +257,8 @@ def collect_rollouts_batched(
     Args:
         batched_plant: MJXPlant with leading ``(B,)`` on array leaves.
         env_config: Shared environment configuration.
-        batched_policy: ActorCritic with leading ``(B,)`` on array leaves.
+        batched_policy: ActorCritic with leading ``(B,)`` on array leaves,
+            including any frozen per-body observation statistics.
         key: PRNG key.
         task_types: Task type per rollout, shape ``(R,)``.
 
@@ -271,7 +272,7 @@ def collect_rollouts_batched(
     n_steps = env_config.n_steps
 
     all_keys = jax.random.split(key, n_bodies * n_rollouts)
-    all_keys = all_keys.reshape(n_bodies, n_rollouts, 2)
+    all_keys = all_keys.reshape(n_bodies, n_rollouts, *all_keys.shape[1:])
 
     def single_rollout(plant, policy, key, task_type):
         key, task_key, reset_key = jax.random.split(key, 3)
@@ -845,7 +846,8 @@ def train_ppo_batched(
             ``TrainingEnhancements()`` with all enhancements disabled.
 
     Returns:
-        Tuple of (batched ActorCritic with ``(B,)`` leading dim,
+        Tuple of (batched ActorCritic with ``(B,)`` leading dim and frozen
+        per-body normalization when enabled, accepting raw observations,
         metrics dict with per-body episode statistics for each update and
         enhancement-specific data). Mean return includes all completed episodes.
         Success rate includes only completed episodes with a success criterion.
@@ -979,7 +981,6 @@ def train_ppo_batched(
         use_curriculum,
     )
     batched_policy = eqx.combine(carry.dynamic_policy, static_policy)
-    batched_obs_norm = carry.obs_norm
 
     metrics: dict[str, object] = {
         "updates": total_updates,
@@ -994,6 +995,10 @@ def train_ppo_batched(
     if enhancements.reward_annealing:
         metrics["distance_weight_schedule"] = list(history.distance_weight)
     if enhancements.obs_norm:
-        metrics["obs_norm_mean"] = batched_obs_norm.mean
+        batched_policy = eqx.tree_at(
+            lambda policy: policy.obs_norm, batched_policy, carry.obs_norm,
+            is_leaf=lambda leaf: leaf is None,
+        )
+        metrics["obs_norm_mean"] = carry.obs_norm.mean
 
     return batched_policy, metrics
