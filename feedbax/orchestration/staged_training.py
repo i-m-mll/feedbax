@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from feedbax._atomic import sync_parent_directories
 from feedbax.contracts.base import utc_now
 from feedbax.contracts.manifest import (
     TrainingRunManifest,
@@ -118,13 +119,15 @@ def _staged_owner(bundle: RunBundle, row: RunRowSpec) -> dict[str, str]:
     }
 
 
-def _bound_receipt(binding: StagedTrainingBinding, row: RunRowSpec) -> TrainingRunManifest:
+def _bound_receipt(
+    binding: StagedTrainingBinding, row: RunRowSpec
+) -> tuple[TrainingRunManifest, Path]:
     manifest_id = binding.manifest_id
     provenance = row.execution.row_provenance
     if provenance is None or provenance.planned_run_id != manifest_id:
         raise StagedTrainingConflict(f"Row {row.row_id!r} does not match its staged training run")
     try:
-        manifest, _ = load_staged_training_receipt(Path(binding.manifest_root), manifest_id)
+        manifest, path = load_staged_training_receipt(Path(binding.manifest_root), manifest_id)
     except FileNotFoundError as exc:
         raise StagedTrainingConflict(str(exc)) from exc
     if staging_generation(manifest.metadata) != binding.generation:
@@ -141,7 +144,7 @@ def _bound_receipt(binding: StagedTrainingBinding, row: RunRowSpec) -> TrainingR
         raise StagedTrainingConflict(
             f"Staged training run {manifest_id!r} does not bind the exact local row payload"
         )
-    return manifest
+    return manifest, path
 
 
 def claim_staged_training(bundle: RunBundle) -> None:
@@ -161,8 +164,10 @@ def claim_staged_training(bundle: RunBundle) -> None:
     owner = _staged_owner(bundle, row)
     root = Path(binding.manifest_root)
     with training_receipt_lock(root, binding.manifest_id):
-        manifest = _bound_receipt(binding, row)
+        manifest, path = _bound_receipt(binding, row)
         if manifest.status == "pending" and manifest.metadata.get("staged_attempt") == owner:
+            # The bytes were synced before replacement, but the directory sync may have failed.
+            sync_parent_directories(path)
             return
         require_unclaimed_training_receipt(manifest)
         claimed = manifest.model_copy(
@@ -176,7 +181,7 @@ def require_staged_training_owner(bundle: RunBundle, row: RunRowSpec) -> None:
     binding = bundle.staged_training
     if binding is None:
         return
-    manifest = _bound_receipt(binding, row)
+    manifest, _ = _bound_receipt(binding, row)
     if manifest.status != "pending" or manifest.metadata.get("staged_attempt") != _staged_owner(
         bundle, row
     ):
