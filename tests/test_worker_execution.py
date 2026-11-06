@@ -1317,18 +1317,18 @@ def test_compile_training_run_fails_unsupported_display_only_component() -> None
     graph_spec = GraphSpec(
         nodes={
             "readout": ComponentSpec(
-                type="MomentArmProjection",
-                params={"n_muscles": 1, "n_joints": 1},
-                input_ports=["forces", "angles", "angular_velocities"],
-                output_ports=["torques", "musculotendon_lengths", "musculotendon_velocities"],
+                type="DeadZone",
+                params={"threshold": 0.1},
+                input_ports=["input"],
+                output_ports=["output"],
             )
         },
         output_ports=["output"],
-        output_bindings={"output": ("readout", "torques")},
+        output_bindings={"output": ("readout", "output")},
     ).model_dump(mode="json", exclude_none=True)
     task_binding_spec = _task_binding_spec()
-    task_binding_spec["bindings"][0]["id"] = "task:model_input->readout:forces"
-    task_binding_spec["bindings"][0]["target_port"] = "forces"
+    task_binding_spec["bindings"][0]["id"] = "task:model_input->readout:input"
+    task_binding_spec["bindings"][0]["target_port"] = "input"
 
     with pytest.raises(ValueError, match="unsupported executable component"):
         compile_training_run(
