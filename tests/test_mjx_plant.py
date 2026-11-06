@@ -274,6 +274,60 @@ def test_native_substeps_apply_held_force_at_moving_site(offset_hinge, key):
     np.testing.assert_allclose(stepped.qvel, data.qvel, atol=1e-6)
 
 
+def test_native_step_projects_only_the_limited_joint(key):
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_string("""
+        <mujoco>
+            <compiler angle="radian"/>
+            <option gravity="0 0 0" timestep="0.04" integrator="Euler"/>
+            <worldbody>
+                <body name="link">
+                    <joint axis="0 0 1" range="-0.25 0.25"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                    <site name="tip" pos="0.8 0 0"/>
+                </body>
+                <body>
+                    <joint axis="0 0 1" limited="false" range="-0.1 0.1"/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    """)
+    skeleton = MJXSkeleton(to_mjx(model), get_site_id(model, "tip"), get_body_id(model, "link"))
+    start = MJXSkeletonState(
+        qpos=jnp.array([0.24, 0.4]), qvel=jnp.array([2.0, -1.0]), effector_force=jnp.zeros(2),
+    )
+    dt = model.opt.timestep
+    backend = MJXBackend(control_dt=dt, sub_dt=dt)
+    force = jnp.array([0.0, 0.2])
+
+    def step(clip_states):
+        plant = MJXPlant(skeleton, clip_states=clip_states)
+        mechanics = Mechanics(plant, dt, backend=backend, key=key)
+        state = eqx.nn.State(mechanics)
+        initial = eqx.tree_at(
+            lambda s: (s.plant.skeleton, s.effector.force),
+            state.get(mechanics.state_index),
+            (start, force),
+        )
+        state = state.set(mechanics.state_index, initial)
+        inputs = {"force": jnp.zeros(plant.input_size)}
+        outputs, _ = eqx.filter_jit(mechanics)(inputs, state, key=key)
+        return outputs["state"].plant.skeleton, outputs["effector"]
+
+    projected, effector = step(True)
+    unprojected, _ = step(False)
+
+    assert unprojected.qpos[0] > 0.25
+    assert unprojected.qpos[1] > 0.1
+    np.testing.assert_array_equal(projected.qpos, [0.25, unprojected.qpos[1]])
+    np.testing.assert_array_equal(projected.qvel, unprojected.qvel)
+    np.testing.assert_array_equal(projected.effector_force, force)
+    expected_effector = skeleton.effector(projected)
+    np.testing.assert_allclose(effector.pos, expected_effector.pos)
+    np.testing.assert_allclose(effector.vel, expected_effector.vel)
+
+
 class TestMJXSkeletonIK:
     def test_raises(self, skeleton):
         dummy = CartesianState(

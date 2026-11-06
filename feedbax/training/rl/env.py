@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
-from feedbax._ode import ode_step
+from feedbax.mechanics.backend import step_plant_ode
 from feedbax.mechanics.plant import AbstractPlant, PlantState
 from feedbax.training.rl.rewards import compute_reward
 from feedbax.training.rl.tasks import (
@@ -219,13 +219,8 @@ def _physics_substep(
     # Scale activations to control signal
     ctrl = activations * config.action_scale + config.action_offset
 
-    # Diffrax Euler integration
-    term = dfx.ODETerm(plant.vector_field)
-    solver = dfx.Euler()
-    storage_state = plant_state
-    plant_state = plant.kinematics_update(ctrl, plant_state)
-    plant_state, _ = ode_step(
-        solver, term, config.dt, plant_state, ctrl, None, storage_like=storage_state,
+    plant_state, _ = step_plant_ode(
+        plant, dfx.Euler(), config.dt, plant_state, ctrl, None,
     )
 
     return plant_state, activations
