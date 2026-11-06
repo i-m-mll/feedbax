@@ -14,6 +14,8 @@ import tomllib
 
 import pytest
 
+from tests.support.git_fixtures import run_fixture_git
+
 
 def load_full_suite_module():
     script_path = Path(__file__).resolve().parents[1] / "scripts" / "full_suite.py"
@@ -26,40 +28,17 @@ def load_full_suite_module():
     return module
 
 
-def run_git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
-
-
-def commit_all(repo: Path, message: str) -> None:
-    run_git(repo, "add", ".")
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Test User",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-m",
-            message,
-        ],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-
 def make_full_suite_repo(repo: Path) -> Path:
     repo.mkdir()
-    run_git(repo, "init")
+    run_fixture_git(repo, "init")
     (repo / "feedbax").mkdir()
     (repo / "feedbax" / "__init__.py").write_text("", encoding="utf-8")
     (repo / "tests").mkdir()
     (repo / "tests" / "test_placeholder.py").write_text("def test_placeholder():\n    pass\n")
     (repo / "pyproject.toml").write_text("[project]\nname = 'feedbax-test'\n")
     (repo / "uv.lock").write_text("lock\n", encoding="utf-8")
-    commit_all(repo, "initial")
+    run_fixture_git(repo, "add", ".")
+    run_fixture_git(repo, "commit", "-m", "initial")
     return repo
 
 
@@ -476,7 +455,7 @@ def test_shared_cache_root_is_common_across_worktrees(tmp_path: Path) -> None:
     full_suite = load_full_suite_module()
     repo = make_full_suite_repo(tmp_path / "repo")
     worktree = tmp_path / "other-worktree"
-    run_git(repo, "worktree", "add", "-b", "test-other-worktree", str(worktree))
+    run_fixture_git(repo, "worktree", "add", "-b", "test-other-worktree", str(worktree))
 
     assert full_suite.shared_cache_root(repo) == full_suite.shared_cache_root(worktree)
 

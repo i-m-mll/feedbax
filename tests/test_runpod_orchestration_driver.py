@@ -33,6 +33,7 @@ from feedbax.contracts.studio_training import (
     StudioTrainingAssemblySpec,
     StudioTrainingIdentityAdapter,
 )
+from tests.support.git_fixtures import run_fixture_git
 from tests.support.training_fixtures import synthetic_training_program_registry
 from feedbax.orchestration.assembly import (
     AssemblyCompilerRegistry,
@@ -365,27 +366,6 @@ class _RunPodFixtureCompiler:
         )
 
 
-def _fixture_git(root: Path, *args: str) -> str:
-    """Run Git inside a synthetic test repository without host Git configuration."""
-    return subprocess.run(
-        [
-            "git",
-            "-C",
-            str(root),
-            "--no-optional-locks",
-            "-c",
-            "user.email=runpod@example.invalid",
-            "-c",
-            "user.name=RunPod Test",
-            *args,
-        ],
-        env={**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"},
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-
-
 def _git_seal_ready(root: Path, *tracked: str) -> None:
     """Make an existing directory a sealable Git top-level.
 
@@ -402,9 +382,9 @@ def _git_seal_ready(root: Path, *tracked: str) -> None:
     if not to_add:
         (root / ".sealed").write_text("sealed\n", encoding="utf-8")
         to_add = [".sealed"]
-    _fixture_git(root, "init", "--quiet")
-    _fixture_git(root, "add", "--", *to_add)
-    _fixture_git(root, "commit", "--quiet", "-m", "fixture")
+    run_fixture_git(root, "init", "--quiet")
+    run_fixture_git(root, "add", "--", *to_add)
+    run_fixture_git(root, "commit", "--quiet", "-m", "fixture")
 
 
 _FIXTURE_LOCK = b"""\
@@ -2550,8 +2530,8 @@ def test_runpod_wholesale_snapshot_sync_deletes_stale_secret(tmp_path: Path) -> 
     local_repo = tmp_path / "feedbax"
     _init_snapshot_repo(local_repo)
     (local_repo / ".gitignore").write_text("*.secret\n", encoding="utf-8")
-    _fixture_git(local_repo, "add", ".gitignore")
-    _fixture_git(local_repo, "commit", "-m", "ignore secrets")
+    run_fixture_git(local_repo, "add", ".gitignore")
+    run_fixture_git(local_repo, "commit", "-m", "ignore secrets")
     (local_repo / "local.secret").write_text("never ship\n", encoding="utf-8")
     remote = tmp_path / "remote repo"
     remote.mkdir()
@@ -4441,8 +4421,8 @@ def test_remote_layout_rejects_missing_or_hash_mismatched_lock(tmp_path: Path) -
 
     lock_path = Path(config.local_repos["consumer"]) / "uv.lock"
     lock_path.write_text("version = 2\n", encoding="utf-8")
-    _fixture_git(lock_path.parent, "add", "uv.lock")
-    _fixture_git(lock_path.parent, "commit", "-m", "add mismatched lock")
+    run_fixture_git(lock_path.parent, "add", "uv.lock")
+    run_fixture_git(lock_path.parent, "commit", "-m", "add mismatched lock")
     mismatch_error, _ = _realization_layout_error(missing_bundle, config)
     assert mismatch_error is not None
     assert "hash mismatch" in mismatch_error
@@ -4792,11 +4772,11 @@ def test_live_preflight_rejects_report_only_descendant_science_checkout_before_p
 ) -> None:
     science_repo = tmp_path / "science"
     _init_snapshot_repo(science_repo)
-    expected = _fixture_git(science_repo, "rev-parse", "HEAD^{commit}").strip()
+    expected = run_fixture_git(science_repo, "rev-parse", "HEAD^{commit}")
     (science_repo / "report.md").write_text("report-only descendant\n", encoding="utf-8")
-    _fixture_git(science_repo, "add", "report.md")
-    _fixture_git(science_repo, "commit", "-m", "report only")
-    observed = _fixture_git(science_repo, "rev-parse", "HEAD^{commit}").strip()
+    run_fixture_git(science_repo, "add", "report.md")
+    run_fixture_git(science_repo, "commit", "-m", "report only")
+    observed = run_fixture_git(science_repo, "rev-parse", "HEAD^{commit}")
     assert observed != expected
 
     bundle_root = tmp_path / "bundle"
