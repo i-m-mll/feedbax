@@ -917,7 +917,7 @@ function buildComponentNodes(graph: EditableGraphSpec, uiState: GraphUIState): N
       position: ui.position,
       style: size ? { width: size.width, height: size.height } : undefined,
       data: {
-        label: id,
+        label: ui.label ?? id,
         spec,
         current_domain: isAcausalGraphSpec(graph) ? 'feedbax.domain.acausal' : undefined,
         collapsed: ui.collapsed,
@@ -1636,6 +1636,7 @@ interface GraphStoreState {
   enterSubgraph: (nodeId: string) => void;
   wrapInParentGraph: () => void;
   exitToBreadcrumb: (index: number) => void;
+  setNodeLabel: (nodeId: string, label: string) => void;
   renameNode: (nodeId: string, nextId: string) => void;
   renameSubgraphBoundaryPort: (
     nodeId: string,
@@ -2965,6 +2966,30 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
         selectedTapId: null,
         selectedEdgeId: null,
         pendingStateMerge: null,
+      };
+    });
+  },
+  setNodeLabel: (nodeId, label) => {
+    set((state) => {
+      const nodeState = state.uiState.node_states[nodeId];
+      const trimmed = label.trim();
+      const nextLabel = trimmed && trimmed !== nodeId ? trimmed : undefined;
+      if (!nodeState || (nodeState.label ?? undefined) === nextLabel) return state;
+
+      const past = [...state.past, cloneSnapshot(state.graph, state.uiState)].slice(-MAX_HISTORY);
+      const uiState: GraphUIState = {
+        ...state.uiState,
+        node_states: {
+          ...state.uiState.node_states,
+          [nodeId]: { ...nodeState, label: nextLabel },
+        },
+      };
+      return {
+        uiState,
+        nodes: reconcileNodes(state.nodes, state.graph, uiState),
+        past,
+        future: [],
+        isDirty: true,
       };
     });
   },

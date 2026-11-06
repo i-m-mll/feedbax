@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useGraphStore } from './graphStore';
+import { GraphUIStateSchema } from '@/generated/studioContracts';
 import {
   isAcausalGraphSpec,
   isCausalGraphSpec,
@@ -775,6 +776,19 @@ describe('graphStore React Flow identity preservation', () => {
   beforeEach(() => {
     const { graph, uiState } = graphWithTwoNodes();
     useGraphStore.getState().hydrateGraph(graph, uiState);
+  });
+
+  it('persists a display label without editing the executable graph or its occurrence IDs', () => {
+    const before = useGraphStore.getState().capturePersistedGraph();
+    useGraphStore.getState().setNodeLabel('a', 'Sensor gain');
+    const saved = useGraphStore.getState().capturePersistedGraph();
+    expect(saved.graph).toEqual(before.graph);
+
+    const restoredUi = GraphUIStateSchema.parse(JSON.parse(JSON.stringify(saved.uiState)));
+    useGraphStore.getState().hydrateGraph(saved.graph, restoredUi);
+    expect(useGraphStore.getState().nodes.find((node) => node.id === 'a')?.data.label)
+      .toBe('Sensor gain');
+    expect(useGraphStore.getState().edges[0].source).toBe('a');
   });
 
   it('keeps untouched node and edge references stable for a single-node param edit', () => {
