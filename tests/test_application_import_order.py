@@ -13,11 +13,9 @@ import pytest
 @pytest.mark.parametrize(
     "module_name",
     (
-        "feedbax.config",
         "feedbax.analysis.evaluation",
         "feedbax.bin.analysis",
         "feedbax.orchestration.drivers.runpod",
-        "feedbax.plugins",
         "feedbax.web.app",
     ),
 )

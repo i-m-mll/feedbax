@@ -186,6 +186,7 @@ def test_pytest_command_uses_xdist_by_default(monkeypatch) -> None:
     full_suite = load_full_suite_module()
 
     monkeypatch.delenv("FEEDBAX_FULL_SUITE_DISABLE_XDIST", raising=False)
+    monkeypatch.delenv("FEEDBAX_FULL_SUITE_XDIST_WORKERS", raising=False)
     monkeypatch.setattr(full_suite, "distribution_version", lambda name: "3.8.0")
 
     command = full_suite.pytest_command(["-q"])
@@ -253,6 +254,7 @@ def test_green_memo_cannot_alias_serial_runner(monkeypatch, tmp_path: Path) -> N
     monkeypatch.setattr(full_suite, "distribution_version", lambda name: "0.0.0")
 
     monkeypatch.delenv("FEEDBAX_FULL_SUITE_DISABLE_XDIST", raising=False)
+    monkeypatch.delenv("FEEDBAX_FULL_SUITE_XDIST_WORKERS", raising=False)
     parallel_args = full_suite.xdist_args()
     parallel = full_suite.build_fingerprint(repo, runner_args=parallel_args)
     full_suite.write_green_memo(memo_dir, parallel, ["pytest", "tests", *parallel_args])
