@@ -431,6 +431,42 @@ def test_graph_with_state_view_attaches_view_out_of_place() -> None:
     assert jnp.array_equal(view["counter_value"], jnp.array(0))
 
 
+def test_nested_graph_projects_each_node_state_once() -> None:
+    calls = []
+
+    class ProjectedCounter(Counter):
+        label: str = eqx.field(static=True)
+
+        def __init__(self, label, value):
+            self.label = label
+            self.state_index = StateIndex(value)
+
+        def state_view(self, state):
+            calls.append(self.label)
+            return super().state_view(state)
+
+    def wrap_view(node_states):
+        return {"projected": node_states}
+
+    inner = Graph(
+        nodes={
+            "zero": ProjectedCounter("zero", jnp.array(0)),
+            "omitted": ProjectedCounter("omitted", None),
+            "array": ProjectedCounter("array", jnp.array([1, 2])),
+        },
+        state_view_fn=wrap_view,
+    )
+    graph = Graph(nodes={"inner": inner})
+
+    view = graph.state_view(init_state_from_component(graph))
+
+    assert calls == ["zero", "omitted", "array"]
+    projected = view.inner["projected"]
+    assert list(projected) == ["zero", "array"]
+    assert jnp.array_equal(projected["zero"], jnp.array(0))
+    assert jnp.array_equal(projected["array"], jnp.array([1, 2]))
+
+
 class _RuntimeCallbackGraph(Graph):
     pass
 
