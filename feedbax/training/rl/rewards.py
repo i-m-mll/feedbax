@@ -60,13 +60,15 @@ def compute_reward(
     velocity_weight: float,
     hold_bonus: float,
     hold_threshold: float,
+    distance_weight: float | Float[Array, ""] = 1.0,
     step: Float[Array, ""] | None = None,
     n_steps: int | None = None,
 ) -> Float[Array, ""]:
     """Unified proximity-gated velocity-matching reward.
 
     Computes a scalar reward from three terms:
-    ``-distance - effort_weight * effort - velocity_weight * vel_gate * vel_error``
+    ``-distance_weight * distance - effort_weight * effort
+    - velocity_weight * vel_gate * vel_error``
     plus a proximity bonus when the effector is within ``hold_threshold``.
 
     The velocity error is ``||v_effector - v_target||`` regardless of
@@ -85,6 +87,7 @@ def compute_reward(
         velocity_weight: Velocity error penalty weight.
         hold_bonus: Bonus for being within ``hold_threshold`` of target.
         hold_threshold: Distance threshold for proximity bonus.
+        distance_weight: Weight on the additive distance penalty.
         step: Current timestep index (scalar int32 array).  Optional for
             backward compatibility; when ``None`` the temporal gate is 1.0.
         n_steps: Total timesteps per episode.  Required when ``step`` is
@@ -116,7 +119,7 @@ def compute_reward(
 
     # Base reward: distance + effort + proximity-gated velocity matching.
     reward = (
-        -distance
+        -jnp.asarray(distance_weight, dtype=distance.dtype) * distance
         - effort_weight * effort
         - velocity_weight * vel_gate * vel_error
     )

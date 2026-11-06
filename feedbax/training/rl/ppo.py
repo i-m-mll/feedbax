@@ -355,8 +355,11 @@ class TrainingEnhancements:
         lattice_resample_interval: Steps between LATTICE noise resamples.
         curriculum: Enable progressive target distance curriculum.
         curriculum_arm_reach: Total arm reach for curriculum distance scaling.
-        reward_annealing: Enable linear distance_weight annealing to zero.
-        annealing_start_fraction: Fraction of training at which annealing begins.
+        reward_annealing: Linearly anneal the additive distance penalty to zero.
+        annealing_start_fraction: Keep full weight through this fraction of
+            training, measured by the one-based update number divided by the
+            total updates. Must be in [0, 1] when enabled. At 1 the weight stays
+            constant. Otherwise the final update uses zero, even in a one-update run.
     """
 
     obs_norm: bool = False
@@ -385,6 +388,7 @@ def _collect_rollout_extended(
     use_obs_norm: Bool[Array, ""],
     use_lattice: Bool[Array, ""],
     use_curriculum: Bool[Array, ""],
+    distance_weight: Float[Array, ""],
 ) -> tuple[
     RLEnvState,
     Rollout,
@@ -415,13 +419,18 @@ def _collect_rollout_extended(
         use_obs_norm: Whether to normalize observations.
         use_lattice: Whether to apply LATTICE noise.
         use_curriculum: Whether to clamp reach target distance.
+        distance_weight: Shared distance penalty weight for this rollout.
 
     Returns:
         Tuple of (final_states, rollout, last_values,
         updated_lattice_state, unfinished_episodes, episode_totals).
     """
     v_get_obs = jax.vmap(rl_env_get_obs, in_axes=(None, None, 0))
-    v_step = jax.vmap(rl_env_step_with_outcome, in_axes=(None, None, 0, 0))
+    v_step = jax.vmap(
+        lambda state, action: rl_env_step_with_outcome(
+            plant, cfg, state, action, distance_weight=distance_weight,
+        ),
+    )
     use_obs_norm = jnp.asarray(use_obs_norm)
     use_lattice = jnp.asarray(use_lattice)
     use_curriculum = jnp.asarray(use_curriculum)
@@ -462,7 +471,7 @@ def _collect_rollout_extended(
             in_axes=(None, 0, 0, None, None),
         )(policy, obs, act_keys, lat_state.noise, use_lattice)
 
-        states, _, rewards, outcome = v_step(plant, cfg, states, actions)
+        states, _, rewards, outcome = v_step(states, actions)
         completed = outcome.completed
         returns = episodes.returns + rewards
         eligible = completed & outcome.success_eligible
@@ -526,6 +535,7 @@ def _batched_collect_rollouts_extended(
     use_obs_norm: Bool[Array, ""],
     use_lattice: Bool[Array, ""],
     use_curriculum: Bool[Array, ""],
+    distance_weight: Float[Array, ""],
 ) -> tuple[
     RLEnvState,
     Rollout,
@@ -557,6 +567,7 @@ def _batched_collect_rollouts_extended(
             use_obs_norm,
             use_lattice,
             use_curriculum,
+            distance_weight,
         ),
     )(batched_plant, policy, states, episodes, keys, obs_norm_state, lattice_state, curriculum_state)
 
@@ -710,7 +721,7 @@ def _run_ppo_updates(
     ent_coef: float,
     lattice_resample_interval: int,
     curriculum_arm_reach: float,
-    annealing_start_fraction: float,
+    reward_ramp_updates: Float[Array, ""],
     use_obs_norm: Bool[Array, ""],
     use_lattice: Bool[Array, ""],
     use_curriculum: Bool[Array, ""],
@@ -721,8 +732,14 @@ def _run_ppo_updates(
     updates, and enhancement-state transitions all stay inside the compiled
     loop.
     """
+    anneal_reward = reward_ramp_updates > 0
+    ramp_length = jnp.where(anneal_reward, reward_ramp_updates, 1.0)
 
     def scan_step(carry: _PPOTrainCarry, update_index: Int[Array, ""]):
+        remaining_updates = total_updates - 1 - update_index
+        distance_weight = jnp.where(
+            anneal_reward, jnp.minimum(remaining_updates / ramp_length, 1.0), 1.0,
+        )
         key, collect_key, update_key = jax.random.split(carry.key, 3)
         policy = eqx.combine(carry.dynamic_policy, static_policy)
         states, rollout, last_values, returned_lattice, episodes, totals = (
@@ -743,6 +760,7 @@ def _run_ppo_updates(
                 use_obs_norm,
                 use_lattice,
                 use_curriculum,
+                distance_weight,
             )
         )
 
@@ -789,16 +807,6 @@ def _run_ppo_updates(
             updated_curriculum,
         )
 
-        progress = (update_index + 1) / jnp.maximum(jnp.asarray(total_updates), 1)
-        raw_distance_weight = 1.0 - (
-            (progress - annealing_start_fraction) / (1.0 - annealing_start_fraction)
-        )
-        distance_weight = jnp.where(
-            progress > annealing_start_fraction,
-            jnp.maximum(raw_distance_weight, 0.0),
-            1.0,
-        )
-
         next_carry = _PPOTrainCarry(
             key=key,
             dynamic_policy=eqx.filter(policy, eqx.is_array),
@@ -834,7 +842,7 @@ def train_ppo_batched(
 
     The batch axis represents independent bodies/policies. Optional
     observation normalization, LATTICE exploration noise, curriculum learning,
-    and reward-annealing metrics are dynamically gated inside the same
+    and distance penalty annealing run inside the same
     JIT-compiled rollout/update path.
 
     Args:
@@ -874,6 +882,12 @@ def train_ppo_batched(
     n_train_iters = n_epochs * n_minibatches
 
     total_updates = (total_timesteps + timesteps_per_update - 1) // timesteps_per_update
+    reward_ramp_updates = 0.0
+    if enhancements.reward_annealing:
+        start = enhancements.annealing_start_fraction
+        if not 0.0 <= start <= 1.0:
+            raise ValueError("annealing_start_fraction must be in [0, 1]")
+        reward_ramp_updates = total_updates * (1.0 - start)
 
     # B independent policies
     key, init_key, env_key = jax.random.split(key, 3)
@@ -969,7 +983,7 @@ def train_ppo_batched(
         ent_coef,
         enhancements.lattice_resample_interval,
         enhancements.curriculum_arm_reach,
-        enhancements.annealing_start_fraction,
+        jnp.asarray(reward_ramp_updates),
         use_obs_norm,
         use_lattice,
         use_curriculum,
@@ -988,11 +1002,6 @@ def train_ppo_batched(
     if enhancements.curriculum:
         metrics["curriculum_stages"] = list(history.curriculum_stage)
     if enhancements.reward_annealing:
-        # Bug: 2055433 -- Linear distance_weight annealing from 1.0 to 0.0.
-        # The distance_weight conceptually scales the -distance term in
-        # compute_reward. Since modifying the reward function mid-training
-        # would cause JIT re-tracing, we record the annealing schedule here
-        # for the caller to apply externally if needed.
         metrics["distance_weight_schedule"] = list(history.distance_weight)
     if enhancements.obs_norm:
         metrics["obs_norm_mean"] = batched_obs_norm.mean

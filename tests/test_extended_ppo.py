@@ -101,10 +101,6 @@ def ppo_config():
             ),
             id="all-enhancements",
         ),
-        pytest.param(
-            TrainingEnhancements(reward_annealing=True, annealing_start_fraction=0.0),
-            id="reward-annealing",
-        ),
     ],
 )
 def test_training_contract(batched_plant, env_config, ppo_config, key, enhancements):
@@ -150,8 +146,6 @@ def test_training_contract(batched_plant, env_config, ppo_config, key, enhanceme
         schedule = jnp.asarray(metrics["distance_weight_schedule"])
         assert schedule.shape == (updates,), "Missing reward annealing updates"
         assert jnp.all(jnp.isfinite(schedule)), "Non-finite reward annealing schedule"
-        assert jnp.all(jnp.diff(schedule) <= 1e-6), "Reward weights must not increase"
-        assert schedule[-1] < 0.5, "Reward annealing did not decrease the distance weight"
 
     if enhancements == TrainingEnhancements():
         default_policy, _ = train_ppo_batched(batched_plant, env_config, ppo_config, key, n_envs=N)

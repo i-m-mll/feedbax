@@ -238,6 +238,8 @@ def rl_env_step_with_outcome(
     config: RLEnvConfig,
     state: RLEnvState,
     action: Float[Array, " n_muscles"],
+    *,
+    distance_weight: float | Float[Array, ""] = 1.0,
 ) -> tuple[RLEnvState, Float[Array, " obs_dim"], Float[Array, ""], EpisodeOutcome]:
     """Step the RL environment forward by one control step.
 
@@ -252,6 +254,7 @@ def rl_env_step_with_outcome(
         config: Environment configuration.
         state: Current environment state.
         action: Muscle excitation commands in [0, 1], shape ``(n_muscles,)``.
+        distance_weight: Weight on the additive distance penalty for this step.
 
     Returns:
         Tuple of (new_state, observation, reward, episode_outcome).
@@ -324,6 +327,7 @@ def rl_env_step_with_outcome(
         velocity_weight=config.velocity_weight,
         hold_bonus=config.hold_bonus,
         hold_threshold=config.hold_threshold,
+        distance_weight=distance_weight,
         step=t,
         n_steps=config.n_steps,
     )
