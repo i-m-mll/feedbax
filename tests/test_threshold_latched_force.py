@@ -299,6 +299,28 @@ def test_target_relative_variants_are_batched_and_jitted() -> None:
     assert jnp.allclose(batched[2], jnp.zeros((3, 2)))
 
 
+def test_inactive_nonfinite_target_has_zero_position_gradient() -> None:
+    component = _target_relative_component(active=False)
+    incoming_force = jnp.array([0.5, 0.25])
+
+    def total_force(position: jax.Array, target: jax.Array) -> jax.Array:
+        outputs, _ = component(
+            {
+                "state": CartesianState(pos=position, vel=jnp.zeros_like(position)),
+                "target": {"goal": target},
+                "force": incoming_force,
+            },
+            State(component),
+            key=jr.PRNGKey(0),
+        )
+        return jnp.sum(outputs["force"])
+
+    evaluate = jax.jit(jax.vmap(jax.value_and_grad(total_force), in_axes=(None, 0)))
+    force, gradient = evaluate(jnp.zeros(2), jnp.array([[jnp.nan, 0.0], [jnp.inf, 0.0]]))
+    assert jnp.array_equal(force, jnp.full(2, incoming_force.sum()))
+    assert jnp.array_equal(gradient, jnp.zeros((2, 2)))
+
+
 def test_graphspec_round_trip_preserves_trigger_latch_ramp_and_selector_identity() -> None:
     graph = spec_to_graph(_graph_spec(), ComponentRegistry(load_user_components=False))
     component = graph.nodes["load"]

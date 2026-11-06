@@ -425,6 +425,8 @@ class ThresholdLatchedForce(Component):
             )
             origin = jnp.where(latch.initialized, latch.origin, position)
             displacement = target - origin
+            # Mask before the dot product so invalid frames have finite gradients.
+            displacement = jnp.where(jnp.all(jnp.isfinite(displacement)), displacement, 0.0)
             distance_squared = jnp.dot(displacement, displacement)
             valid_distance = (distance_squared > 0) & jnp.isfinite(distance_squared)
             safe_distance = jnp.sqrt(jnp.where(valid_distance, distance_squared, 1.0))
