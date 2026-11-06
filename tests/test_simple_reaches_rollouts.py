@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from feedbax.intervene import InterventionSpec
-from feedbax.objectives import CompositeLoss, make_streaming_loss_fn
+from feedbax.objectives import CompositeLoss, TargetSpec, make_streaming_loss_fn
 from feedbax.runtime.batch import BatchInfo
 from feedbax.runtime.graph import Component, Graph
 from feedbax.runtime.iteration import run_component
@@ -187,18 +187,23 @@ def _select_last_step(trial):
     return jnp.array([trial.timeline.n_steps - 1])
 
 
+class _TimeMajorTarget(TargetSpec):
+    @property
+    def batch_axes(self):
+        return type(self)(value=1 if self.value is not None else None)
+
+
 class _ReachesWithNativeDependency(SimpleReaches):
     def _construct_trial_spec(self, effector_init_state, effector_target_state):
         trial = super()._construct_trial_spec(effector_init_state, effector_target_state)
-        targets = eqx.tree_at(
-            lambda targets: targets[_POSITION].time_idxs,
-            trial.targets,
-            _select_last_step,
-            is_leaf=lambda value: value is None,
-        )
+        target = trial.targets[_POSITION]
+        value = target.value
+        if effector_init_state.pos.ndim > 1:
+            value = jnp.swapaxes(value, 0, 1)
+        target = _TimeMajorTarget(value, discount=target.discount, time_idxs=_select_last_step)
         return replace(
             trial,
-            targets=targets,
+            targets=WhereDict({_POSITION: target}),
             extra={
                 "offset": TrialSpecDependency(lambda trial, key: trial.intervene["offset"]),
             },
@@ -244,6 +249,9 @@ def test_simple_reaches_realizes_added_inputs_per_validation_trial():
     np.testing.assert_allclose(
         drives, 2 * trials.inputs["z_noise"] + trials.intervene["offset"][:, None, :]
     )
+    np.testing.assert_array_equal(
+        trials.targets[_POSITION].value, jnp.swapaxes(trials.inputs["effector_target"].pos, 0, 1)
+    )
     assert trials.targets[_POSITION].discount.shape == (4,)
     assert trials.targets[_POSITION].time_idxs is _select_last_step
     np.testing.assert_array_equal(trials.timeline.epoch_bounds, np.tile([0, 4], (7, 1)))
@@ -262,4 +270,10 @@ def test_simple_reaches_realizes_added_inputs_per_validation_trial():
     np.testing.assert_allclose(
         states.nodes["mechanics"].nodes["effector"].pos,
         drives + trials.intervene["offset"][:, None, :],
+    )
+
+    _, _, training_trials = task.eval_train_batch(model, BatchInfo(3, 0, 1), jr.key(2))
+    np.testing.assert_array_equal(
+        training_trials.targets[_POSITION].value,
+        jnp.swapaxes(training_trials.inputs["effector_target"].pos, 0, 1),
     )

@@ -572,6 +572,15 @@ class TaskTrialSpec(Module):
         mapped = jt.map(lambda axis: axis is not None, self.batch_axes, is_leaf=is_none)
         return eqx.partition(self, mapped)
 
+    def _combine_batch_fields(self, shared: Self) -> Self:
+        """Combine vmap outputs and restore each mapped field's declared trial axis."""
+        trials = eqx.combine(self, shared)
+        return jt.map(
+            lambda value, axis: jnp.moveaxis(value, 0, axis) if axis not in (None, 0) else value,
+            trials,
+            trials.batch_axes,
+        )
+
 
 T = TypeVar("T")
 LabeledInterventionSpecs: TypeAlias = Mapping[IntervenorLabelStr, InterventionSpec]
@@ -836,7 +845,7 @@ class AbstractTask(Module):
             jr.split(key_intervene, n_trials),
             jr.split(key_dependencies, n_trials),
         )
-        return eqx.combine(mapped, shared)
+        return mapped._combine_batch_fields(shared)
 
     # ------------------------------------------------------------------
     # Authoring convenience projected into separate trial and objective contracts.
@@ -1161,7 +1170,7 @@ class AbstractTask(Module):
         mapped, shared = eqx.filter_vmap(
             sample, out_axes=(eqx.if_array(0), None)
         )(keys_batch)
-        trial_specs = eqx.combine(mapped, shared)
+        trial_specs = mapped._combine_batch_fields(shared)
 
         states, losses = self.eval_trials_with_loss(
             model,
