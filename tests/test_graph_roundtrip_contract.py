@@ -226,6 +226,9 @@ def _single_node_spec(
         prototype_shape = tuple(int(dim) for dim in params["input_shape"])
     elif component_type in _SCALAR_CONTROL_TYPES:
         prototype_shape = (params["n_dims"],)
+    elif component_type == "RigidTendonHillMuscleThelen":
+        count = params["n_muscles"]
+        prototype_shape = () if count == 1 else (count,)
     prototypes = {
         ("node", port): jnp.zeros(prototype_shape, dtype=params.get("input_dtype"))
         for port in input_ports

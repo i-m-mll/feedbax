@@ -15,18 +15,40 @@ References:
 
 from __future__ import annotations
 
-import logging
 import math
+from numbers import Number
+from operator import index
 
 from equinox import field
 from equinox.nn import State, StateIndex
 import jax.numpy as jnp
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
 
 
-logger = logging.getLogger(__name__)
+def thelen_muscle_shape(n_muscles: int) -> tuple[int, ...]:
+    """Return the signal and activation shape for a Thelen muscle count."""
+    error = f"n_muscles must be a positive integer, got {n_muscles!r}"
+    if isinstance(n_muscles, (bool, jnp.bool_)):
+        raise ValueError(error)
+    try:
+        count = index(n_muscles)
+    except TypeError as exc:
+        raise ValueError(error) from exc
+    if count < 1:
+        raise ValueError(error)
+    return () if count == 1 else (count,)
+
+
+def require_thelen_input_shape(
+    value: PyTree, expected_shape: tuple[int, ...], *, port: str
+) -> None:
+    shape = () if isinstance(value, Number) else getattr(value, "shape", None)
+    if shape != expected_shape:
+        raise ValueError(
+            f"RigidTendonHillMuscleThelen {port} requires shape {expected_shape}, got {shape}"
+        )
 
 
 class RigidTendonHillMuscleThelen(Component):
@@ -93,7 +115,7 @@ class RigidTendonHillMuscleThelen(Component):
         tau_deactivation: float = 0.05,
         dt: float = 0.01,
         initial_activation: float = 0.001,
-        n_muscles: int = 6,
+        n_muscles: int = 1,
     ):
         """Initialize Thelen rigid tendon muscle.
 
@@ -106,7 +128,9 @@ class RigidTendonHillMuscleThelen(Component):
             tau_activation: Activation time constant [s].
             tau_deactivation: Deactivation time constant [s].
             dt: Integration timestep [s].
-            initial_activation: Starting activation value.
+            initial_activation: Starting activation value for each muscle.
+            n_muscles: Positive muscle count. A single muscle uses scalar signals
+                and activation. Multiple muscles use vectors of this length.
         """
         self.max_isometric_force = max_isometric_force
         self.optimal_muscle_length = optimal_muscle_length
@@ -116,9 +140,8 @@ class RigidTendonHillMuscleThelen(Component):
         self.tau_activation = tau_activation
         self.tau_deactivation = tau_deactivation
         self.dt = dt
-        if int(n_muscles) < 1:
-            raise ValueError("n_muscles must be positive")
-        self.n_muscles = int(n_muscles)
+        shape = thelen_muscle_shape(n_muscles)
+        self.n_muscles = shape[0] if shape else 1
 
         # Pre-compute passive element constants (from MotorNet)
         self.pe_k = 5.0
@@ -146,9 +169,19 @@ class RigidTendonHillMuscleThelen(Component):
         )
         self.ce_5 = 8.0 * (self.ce_Af + 1.0)
 
-        # State: activation scalar
-        initial_state = jnp.zeros(()) + initial_activation
+        if jnp.ndim(initial_activation) != 0:
+            raise ValueError("initial_activation must be a scalar")
+        initial_state = jnp.zeros(shape) + initial_activation
         self.state_index = StateIndex(initial_state)
+
+    @property
+    def initial_activation(self) -> float:
+        """Return the shared initializer as a scalar for GraphSpec export."""
+        initial = self.state_index.init.reshape(-1)
+        value = initial[0]
+        if initial.size > 1 and not bool(jnp.all(initial == value)):
+            raise ValueError("GraphSpec requires the same initial_activation for every muscle")
+        return float(value)
 
     def __call__(
         self,
@@ -169,9 +202,23 @@ class RigidTendonHillMuscleThelen(Component):
             Outputs dict and updated state.
         """
         activation = state.get(self.state_index)
-        excitation = inputs.get("excitation", jnp.array(0.0))
-        mt_length = inputs.get("musculotendon_length", jnp.array(self.optimal_muscle_length + self.tendon_slack_length))
-        mt_velocity = inputs.get("musculotendon_velocity", jnp.array(0.0))
+        shape = activation.shape
+        defaults = {
+            "excitation": 0.0,
+            "musculotendon_length": self.optimal_muscle_length + self.tendon_slack_length,
+            "musculotendon_velocity": 0.0,
+        }
+        signals = {}
+        for port, default in defaults.items():
+            if port in inputs:
+                value = jnp.asarray(inputs[port])
+                require_thelen_input_shape(value, shape, port=port)
+            else:
+                value = jnp.full(shape, default)
+            signals[port] = value
+        excitation = signals["excitation"]
+        mt_length = signals["musculotendon_length"]
+        mt_velocity = signals["musculotendon_velocity"]
 
         # --- Activation dynamics (Euler step) ---
         tau = jnp.where(
