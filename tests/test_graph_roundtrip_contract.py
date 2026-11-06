@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import pytest
 
 from feedbax.component_registry import ComponentRegistry, required_interior_domain
+from feedbax.components import penzai
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParamSchema
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
@@ -17,21 +18,13 @@ from feedbax.runtime.graph import Graph
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 
-def _registry_cases() -> list[pytest.ParameterSet]:
+def _registry_cases() -> list[str]:
     registry = ComponentRegistry(load_user_components=False)
-    cases = []
-    for component_type in registry.executable_names():
-        if required_interior_domain(component_type, registry) is not None:
-            continue
-        meta = registry.get(component_type)
-        assert meta is not None
-        param_names = [
-            schema.name
-            for schema in meta.param_schema
-            if (component_type, schema.name) != ("FeedbackChannels", "input_shape")
-        ] or [None]
-        cases.append(pytest.param(component_type, param_names, id=component_type))
-    return cases
+    return [
+        component_type
+        for component_type in registry.executable_names()
+        if required_interior_domain(component_type, registry) is None
+    ]
 
 
 def _map_value(value: Any) -> Any:
@@ -87,6 +80,8 @@ _VALUES: dict[tuple[str, str], Any] = {
     ("AffineValueComposer", "schema_version"): "feedbax.component.affine_value_composer.v1",
     ("AffineValueComposer", "feature_rules"): [{"kind": "identity", "state_slice": [1, 2]}],
     ("Channel", "add_noise"): False,
+    ("DelayedReaches", "hold_epochs"): [0],
+    ("DelayedReaches", "move_epochs"): [1, 2],
     ("DelayedReaches", "target_visible_from_start"): True,
     ("DelayedReaches", "target_on_epochs"): [0, 2],
     ("FeedbackChannels", "paths"): ["effector.force"],
@@ -140,6 +135,8 @@ def _non_default_value(component_type: str, schema: ParamSchema) -> Any:
 
 
 def _ports(registry: ComponentRegistry, component_type: str, params: dict[str, Any]):
+    if component_type == "PenzaiAdapter":
+        return [params["input_port"]], [params["output_port"]]
     meta = registry.get(component_type)
     assert meta is not None
     layout = registry.dynamic_port_layout(component_type, params)
@@ -172,6 +169,8 @@ def _contextualize_params(
         params["target_on_epochs"] = [0, 1, 2]
     elif component_type == "DelayedReaches" and param_name == "n_control_stages":
         params.pop("n_steps", None)
+    elif component_type == "DelayedReaches" and param_name == "move_epochs":
+        params["hold_epochs"] = [0]
     elif component_type == "DynamicsMatrixPerturb":
         params.setdefault("mass", 1.0)
     elif component_type == "StateFeedbackSelector" and param_name == "output_size":
@@ -221,13 +220,29 @@ def _single_node_spec(
     return spec, prototypes
 
 
-@pytest.mark.parametrize(("component_type", "param_names"), _registry_cases())
+@pytest.fixture
+def roundtrip_registry(component_type: str, monkeypatch: pytest.MonkeyPatch) -> ComponentRegistry:
+    if component_type == "PenzaiAdapter":
+        pytest.importorskip("penzai")
+        from penzai import pz
+
+        monkeypatch.setattr(penzai, "_PENZAI_MODEL_BUILDERS", {})
+        penzai.register_penzai_builder(
+            "test_roundtrip_relu", lambda _: pz.nn.Elementwise(jax.nn.relu)
+        )
+        penzai.register_penzai_builder(
+            "test_roundtrip_sigmoid", lambda _: pz.nn.Elementwise(jax.nn.sigmoid)
+        )
+    return ComponentRegistry(load_user_components=False)
+
+
+@pytest.mark.parametrize("component_type", _registry_cases())
 def test_registered_buildable_component_param_round_trips(
     component_type: str,
-    param_names: list[str | None],
+    roundtrip_registry: ComponentRegistry,
 ) -> None:
     """Every declared leaf parameter is exercised non-default and must survive."""
-    registry = ComponentRegistry(load_user_components=False)
+    registry = roundtrip_registry
     meta = registry.get(component_type)
     assert meta is not None
     baseline_params = _contextualize_params(component_type, None, deepcopy(meta.default_params))
@@ -236,22 +251,31 @@ def test_registered_buildable_component_param_round_trips(
     )
     baseline = graph_to_spec(spec_to_graph(baseline_spec, registry, baseline_prototypes))
 
-    for param_name in param_names:
-        witness = f"{component_type}.{param_name}"
-        params = deepcopy(baseline_params)
-        if param_name is not None:
-            schema = next(item for item in meta.param_schema if item.name == param_name)
-            params[param_name] = _non_default_value(component_type, schema)
-            params = _contextualize_params(component_type, param_name, params)
+    probes: list[ParamSchema | None] = [
+        schema
+        for schema in meta.param_schema
+        if (component_type, schema.name) != ("FeedbackChannels", "input_shape")
+    ]
+    if not probes or component_type == "PenzaiAdapter":
+        probes.insert(0, None)
 
-        if param_name is None:
+    for schema in probes:
+        param_name = schema.name if schema is not None else None
+        witness = f"{component_type}.{param_name}"
+        if schema is None:
+            params = baseline_params
             serialized, prototypes = baseline, baseline_prototypes
         else:
+            params = deepcopy(baseline_params)
+            params[schema.name] = _non_default_value(component_type, schema)
+            params = _contextualize_params(component_type, schema.name, params)
             spec, prototypes = _single_node_spec(registry, component_type, params)
             serialized = graph_to_spec(spec_to_graph(spec, registry, prototypes))
         emitted = serialized.nodes["node"]
         assert emitted.type == component_type, witness
 
+        if component_type == "DelayedReaches" and param_name == "move_epochs":
+            assert emitted.params["move_epochs"] == params["move_epochs"], witness
         if param_name is not None and param_name != "schema_version":
             assert emitted.params != baseline.nodes["node"].params, (
                 f"{witness} did not affect the canonical GraphSpec"
