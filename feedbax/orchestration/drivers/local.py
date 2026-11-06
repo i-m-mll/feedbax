@@ -353,7 +353,6 @@ class LocalOrchestrationDriver:
                 destination_root=attempt_root,
                 provider_bindings=self.input_provider_bindings,
                 staged_root_bindings=self.staged_root_bindings,
-                content_store_root=self.content_store_root,
             )
             if content_projection is not None:
                 staged_inputs = (
@@ -362,7 +361,6 @@ class LocalOrchestrationDriver:
                         content_projection,
                         content_provider,
                         destination_root=attempt_root / "inputs" / "content" / "trees",
-                        object_root=bundle.run_set_dir / ".content-cache" / "objects" / "sha256",
                     ),
                 )
         except InputMaterializationError as exc:

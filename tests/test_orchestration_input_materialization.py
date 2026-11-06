@@ -1,15 +1,23 @@
 import hashlib
-import json
-from pathlib import Path
 import shlex
+import shutil
+import subprocess
+import sys
+import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
 
 import pytest
 
 import feedbax.orchestration.bundle as contracts
 import feedbax.orchestration.drivers.local as local_driver
-from feedbax.contracts.artifact_custody import ContentBinding, ImmutableArtifactBlobProviderSpec
+import feedbax.orchestration.drivers.runpod as runpod_driver
+from feedbax.contracts.artifact_custody import (
+    ContentBinding,
+    ImmutableArtifactBlobProviderSpec,
+)
 from feedbax.contracts.spec_storage import (
     canonicalize_immutable_input_identities,
     training_run_execution_hash,
@@ -18,9 +26,11 @@ from feedbax.orchestration.drivers.local import LocalDriverError, LocalOrchestra
 from feedbax.orchestration.drivers.runpod import (
     CommandResult,
     RunPodDriverConfig,
+    RunPodDriverError,
     RunPodOrchestrationDriver,
 )
 from feedbax.orchestration.input_materialization import (
+    InputMaterializationError,
     InputProviderRootBinding,
     acquire_content_projection_lease,
     compile_content_input_projection,
@@ -119,12 +129,19 @@ class _LeaseManager:
         self.released.append(lease_id)
 
 
-def _content_bundle(tmp_path: Path) -> tuple[contracts.RunBundle, Path, int]:
+def _content_bundle(
+    tmp_path: Path, *, checkpoint_bytes: int | None = None
+) -> tuple[contracts.RunBundle, Path, int]:
     store_root = tmp_path / "content-store"
     provider = ImmutableArtifactBlobProvider(store_root)
     selected = tmp_path / "selected"
     selected.mkdir()
-    (selected / "checkpoint.json").write_text("checkpoint", encoding="utf-8")
+    checkpoint = selected / "checkpoint.json"
+    if checkpoint_bytes is None:
+        checkpoint.write_bytes(b"checkpoint")
+    else:
+        with checkpoint.open("wb") as stream:
+            stream.truncate(checkpoint_bytes)
     (selected / "manifest.json").write_text("manifest", encoding="utf-8")
     tree = provider.ingest_tree(selected)
     provider.store_object(b"unrelated optimizer state")
@@ -140,32 +157,83 @@ def _content_bundle(tmp_path: Path) -> tuple[contracts.RunBundle, Path, int]:
     return bundle, store_root, unique_bytes
 
 
-class _ContentCacheTransport(FakeRunPodTransport):
-    def __init__(self, *, conflict: bool = False) -> None:
-        super().__init__()
-        self.resident: set[str] = set()
-        self.conflict = conflict
+class _LocalStagingTransport(FakeRunPodTransport):
+    """Run the remote staging commands in a temporary workspace without SSH."""
 
-    def ssh(self, command: str):
-        if "remote content cache conflicts" not in command and "conflicts=[]" in command:
-            refs = json.loads(shlex.split(command)[-1])
-            digests = {item["sha256"] for item in refs}
-            conflict = sorted(digests) if self.conflict else []
-            return CommandResult(
-                0,
-                json.dumps(
-                    {
-                        "present": sorted(self.resident - set(conflict)),
-                        "missing": sorted(digests - self.resident - set(conflict)),
-                        "conflicts": conflict,
-                    }
-                ),
-            )
-        if "uploaded content object mismatch" in command:
-            refs = json.loads(shlex.split(command)[-1])
-            self.resident.update(item["sha256"] for item in refs)
-            return CommandResult(0, "")
-        return super().ssh(command)
+    interrupt_content_upload = False
+
+    def ssh(self, command: str) -> CommandResult:
+        self.ssh_commands.append(command)
+        command = command.replace("uv run --no-sync python ", f"{shlex.quote(sys.executable)} ", 1)
+        result = subprocess.run(
+            ["/bin/sh", "-c", command], capture_output=True, text=True, timeout=20
+        )
+        return CommandResult(result.returncode, result.stdout, result.stderr)
+
+    def rsync(
+        self,
+        source: str,
+        target: str,
+        *,
+        delete: bool = False,
+        excludes: tuple[str, ...] = (),
+        timeout_seconds: float | None = None,
+    ) -> CommandResult:
+        result = super().rsync(
+            source, target, delete=delete, excludes=excludes, timeout_seconds=timeout_seconds
+        )
+        if self.interrupt_content_upload and Path(target).parent.name == "content-upload":
+            return CommandResult(1, "", "interrupted")
+        if result.returncode == 0:
+            if Path(source).is_dir():
+                shutil.copytree(
+                    source, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns(*excludes)
+                )
+            else:
+                shutil.copy2(source, target)
+        return result
+
+
+@pytest.fixture
+def runpod_staging_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RunPodDriverConfig:
+    if sys.platform == "darwin":
+        # RunPod's final publication command uses Linux renameat2 directly.
+        publish = """
+import os
+import sys
+from pathlib import Path
+from feedbax._secure_fs import rename_no_replace
+source, destination = map(Path, sys.argv[1:])
+source_fd = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY)
+destination_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+try:
+    rename_no_replace(
+        source.name,
+        destination.name,
+        source_dir_fd=source_fd,
+        destination_dir_fd=destination_fd,
+        error_factory=RuntimeError,
+        context="test staging publication",
+    )
+finally:
+    os.close(source_fd)
+    os.close(destination_fd)
+"""
+        monkeypatch.setattr(
+            runpod_driver,
+            "build_atomic_directory_publish_command",
+            lambda source, target: shlex.join([sys.executable, "-c", publish, source, target]),
+        )
+    workspace = tmp_path / "remote"
+    pinned_repo = workspace / "pinned-repo"
+    old_package = pinned_repo / "feedbax"
+    old_package.mkdir(parents=True)
+    (old_package / "__init__.py").write_text("", encoding="utf-8")
+    return RunPodDriverConfig(
+        volume_mount=str(workspace),
+        remote_run_root=str(workspace / "runs"),
+        remote_repos={"feedbax": str(pinned_repo)},
+    )
 
 
 def test_content_aliases_share_one_local_projection_and_exclude_unselected_objects(
@@ -186,12 +254,10 @@ def test_content_aliases_share_one_local_projection_and_exclude_unselected_objec
         "checkpoint.json",
         "manifest.json",
     ]
-    object_files = [
-        path
-        for path in (bundle.run_set_dir / ".content-cache/objects").rglob("*")
-        if path.is_file()
+    selected_files = [
+        path for path in (bundle.run_set_dir / "inputs/content").rglob("*") if path.is_file()
     ]
-    assert sum(path.stat().st_size for path in object_files) == unique_bytes
+    assert sum(path.stat().st_size for path in selected_files) == unique_bytes
     ImmutableArtifactBlobProvider(store_root).release_lease(bundle.run_set_id)
     runtime = staged_execution_bindings_for_bundle(
         bundle, inputs_root=bundle.run_set_dir / "inputs"
@@ -200,40 +266,78 @@ def test_content_aliases_share_one_local_projection_and_exclude_unselected_objec
     assert runtime.manifest_root_bindings[0].root == runtime.manifest_root_bindings[1].root
 
 
-def test_runpod_uploads_each_missing_digest_once_then_zero_bytes(tmp_path: Path) -> None:
+def test_runpod_content_views_are_isolated_and_reuse_uploaded_objects(
+    tmp_path: Path, runpod_staging_config: RunPodDriverConfig
+) -> None:
     bundle, store_root, unique_bytes = _content_bundle(tmp_path)
-    transport = _ContentCacheTransport()
+    transport = _LocalStagingTransport()
     driver = RunPodOrchestrationDriver(
+        config=runpod_staging_config,
         transport=transport,
         content_store_root=store_root,
         content_lease_seconds=3600,
     )
 
-    first = driver.stage_inputs(bundle, _state(bundle, 1))["content_projection"]
-    first_object_uploads = len(transport.rsync_calls) - 1
-    second = driver.stage_inputs(bundle, _state(bundle, 2))["content_projection"]
-    second_object_uploads = len(transport.rsync_calls) - first_object_uploads - 2
+    def stage(run_set_id: str) -> tuple[dict[str, Any], Path]:
+        run = bundle.model_copy(update={"run_set_id": run_set_id})
+        projection = driver.stage_inputs(run, _state(run, 1))["content_projection"]
+        assert projection["bindings"][0]["target"] == projection["bindings"][1]["target"]
+        target = Path(projection["bindings"][0]["target"])
+        inputs = Path(runpod_staging_config.remote_run_root) / run_set_id / "inputs"
+        runtime = staged_execution_bindings_for_bundle(run, inputs_root=inputs)
+        assert target == runtime.manifest_root_bindings[0].root
+        return projection, target
 
+    first, first_view = stage(bundle.run_set_id)
+    second, second_view = stage("2026-01-02-feedface")
     assert first["uploaded_bytes"] == unique_bytes
     assert first["transfer_bytes"] == unique_bytes + first["metadata_bytes"]
-    assert first_object_uploads == first["unique_object_count"]
-    assert second["uploaded_bytes"] == 0 and second_object_uploads == 0
-    assert first["bindings"][0]["target"] == first["bindings"][1]["target"]
-    ImmutableArtifactBlobProvider(store_root).release_lease(bundle.run_set_id)
+    assert first["controller_helper_bytes"] > 0
+    assert first["uploaded_object_count"] == first["unique_object_count"]
+    assert second["uploaded_bytes"] == second["uploaded_object_count"] == 0
+    descriptor = bundle.content_bindings[0].tree.descriptor
+    first_descriptor = first_view.parents[1] / "descriptors" / descriptor.sha256
+    second_descriptor = second_view.parents[1] / "descriptors" / descriptor.sha256
+    original_descriptor = second_descriptor.read_bytes()
+
+    (first_view / "checkpoint.json").write_bytes(b"experiment")
+    first_descriptor.write_bytes(b"changed descriptor")
+
+    assert (second_view / "checkpoint.json").read_bytes() == b"checkpoint"
+    assert second_descriptor.read_bytes() == original_descriptor
+    third, third_view = stage("2026-01-02-abcddcba")
+    assert third["uploaded_bytes"] == third["uploaded_object_count"] == 0
+    assert (third_view / "checkpoint.json").read_bytes() == b"checkpoint"
+    object_uploads = [
+        Path(target).name
+        for _, target, _, _ in transport.rsync_calls
+        if Path(target).parent.name == "content-upload"
+    ]
+    assert len(object_uploads) == len(set(object_uploads)) == first["unique_object_count"]
 
 
-def test_runpod_rejects_conflicting_remote_digest_before_upload(tmp_path: Path) -> None:
+def test_runpod_rejects_conflicting_remote_digest_before_upload(
+    tmp_path: Path, runpod_staging_config: RunPodDriverConfig
+) -> None:
     bundle, store_root, _ = _content_bundle(tmp_path)
-    transport = _ContentCacheTransport(conflict=True)
+    transport = _LocalStagingTransport()
+    digest = bundle.content_bindings[0].tree.descriptor.sha256
+    cache = Path(runpod_staging_config.volume_mount) / "feedbax-content-cache/v2/objects/sha256"
+    conflicting = cache / digest[:2] / digest
+    conflicting.parent.mkdir(parents=True)
+    conflicting.write_bytes(b"conflicting bytes")
     driver = RunPodOrchestrationDriver(
+        config=runpod_staging_config,
         transport=transport,
         content_store_root=store_root,
         content_lease_seconds=3600,
     )
 
-    with pytest.raises(Exception, match="remote content cache conflicts"):
+    with pytest.raises(RunPodDriverError, match="remote content cache conflicts"):
         driver.stage_inputs(bundle, _state(bundle))
-    assert not transport.rsync_calls
+    assert [Path(target).name for _, target, _, _ in transport.rsync_calls] == [
+        "content-staging.zip"
+    ]
     with pytest.raises(ContentRetentionError, match="active lease is unavailable"):
         ImmutableArtifactBlobProvider(store_root).renew_lease(
             bundle.run_set_id,
@@ -250,6 +354,92 @@ def test_content_source_mutation_fails_before_materialization(tmp_path: Path) ->
     canonical.write_bytes(b"x" * member.size_bytes)
     with pytest.raises(Exception, match="SHA-256 mismatch"):
         compile_content_input_projection(bundle.content_bindings, provider)
+
+
+def test_local_content_views_are_isolated_from_each_other_and_custody(tmp_path: Path) -> None:
+    bundle, store_root, _ = _content_bundle(tmp_path)
+    provider = ImmutableArtifactBlobProvider(store_root)
+    projection = compile_content_input_projection(bundle.content_bindings, provider)
+
+    def materialize(name: str) -> tuple[Path, Path]:
+        inputs = tmp_path / name / "inputs"
+        views = materialize_content_input_projection(
+            projection,
+            provider,
+            destination_root=inputs / "content" / "trees",
+        )
+        return inputs, views[0].destination
+
+    first_inputs, first = materialize("first")
+    second_inputs, second = materialize("second")
+    descriptor_ref = bundle.content_bindings[0].tree.descriptor
+    first_descriptor = first_inputs / "content" / "descriptors" / descriptor_ref.sha256
+    second_descriptor = second_inputs / "content" / "descriptors" / descriptor_ref.sha256
+    original_descriptor = second_descriptor.read_bytes()
+
+    (first / "checkpoint.json").write_bytes(b"experiment")
+    first_descriptor.write_bytes(b"changed descriptor")
+
+    assert (second / "checkpoint.json").read_bytes() == b"checkpoint"
+    assert second_descriptor.read_bytes() == original_descriptor
+    assert provider.get_object(descriptor_ref) == original_descriptor
+    staged_execution_bindings_for_bundle(bundle, inputs_root=second_inputs)
+
+    third_inputs, third = materialize("third")
+    assert (third / "checkpoint.json").read_bytes() == b"checkpoint"
+    staged_execution_bindings_for_bundle(bundle, inputs_root=third_inputs)
+
+
+@pytest.mark.parametrize("invalid_alias", [0, 1])
+def test_content_aliases_reject_conflicting_descriptor_size(
+    tmp_path: Path, invalid_alias: int
+) -> None:
+    bundle, store_root, _ = _content_bundle(tmp_path)
+    provider = ImmutableArtifactBlobProvider(store_root)
+    inputs = tmp_path / "view" / "inputs"
+    projection = compile_content_input_projection(bundle.content_bindings, provider)
+    materialize_content_input_projection(
+        projection, provider, destination_root=inputs / "content" / "trees"
+    )
+
+    bindings = list(bundle.content_bindings)
+    binding = bindings[invalid_alias]
+    descriptor = binding.tree.descriptor.model_copy(
+        update={"size_bytes": binding.tree.descriptor.size_bytes + 1}
+    )
+    bindings[invalid_alias] = binding.model_copy(
+        update={"tree": binding.tree.model_copy(update={"descriptor": descriptor})}
+    )
+    conflicting_bundle = bundle.model_copy(update={"content_bindings": bindings})
+
+    with pytest.raises(InputMaterializationError, match="metadata conflicts"):
+        compile_content_input_projection(bindings, provider)
+    with pytest.raises(InputMaterializationError, match="metadata conflicts"):
+        staged_execution_bindings_for_bundle(conflicting_bundle, inputs_root=inputs)
+
+
+def test_large_content_member_verification_has_bounded_memory(tmp_path: Path) -> None:
+    member_size = 16 * 1024 * 1024
+    bundle, store_root, _ = _content_bundle(tmp_path, checkpoint_bytes=member_size)
+    driver = LocalOrchestrationDriver(
+        freeze_lines=[], content_store_root=store_root, content_lease_seconds=3600
+    )
+    inputs = bundle.run_set_dir / "inputs"
+
+    tracemalloc.start()
+    try:
+        driver.stage_inputs(bundle, _state(bundle))
+        runtime = staged_execution_bindings_for_bundle(bundle, inputs_root=inputs)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < member_size // 2
+    member = runtime.manifest_root_bindings[0].root / "checkpoint.json"
+    with member.open("r+b") as stream:
+        stream.seek(member_size - 1)
+        stream.write(b"x")
+    with pytest.raises(InputMaterializationError, match="SHA-256 mismatch"):
+        staged_execution_bindings_for_bundle(bundle, inputs_root=inputs)
 
 
 def test_concurrent_identical_local_projections_converge(tmp_path: Path) -> None:
@@ -272,21 +462,22 @@ def test_concurrent_identical_local_projections_converge(tmp_path: Path) -> None
     assert results[0][0].destination == results[0][1].destination
 
 
-def test_interrupted_remote_object_upload_never_publishes_inputs(tmp_path: Path) -> None:
+def test_interrupted_remote_object_upload_never_publishes_inputs(
+    tmp_path: Path, runpod_staging_config: RunPodDriverConfig
+) -> None:
     bundle, store_root, _ = _content_bundle(tmp_path)
-    transport = _ContentCacheTransport()
-    transport.rsync_result = CommandResult(1, "", "interrupted")
+    transport = _LocalStagingTransport()
+    transport.interrupt_content_upload = True
     driver = RunPodOrchestrationDriver(
+        config=runpod_staging_config,
         transport=transport,
         content_store_root=store_root,
         content_lease_seconds=3600,
     )
 
-    with pytest.raises(Exception, match="upload immutable content object.*interrupted"):
+    with pytest.raises(RunPodDriverError, match="upload immutable content object.*interrupted"):
         driver.stage_inputs(bundle, _state(bundle))
-    assert not any(
-        "input publication target already exists" in cmd for cmd in transport.ssh_commands
-    )
+    assert not (Path(runpod_staging_config.remote_run_root) / bundle.run_set_id / "inputs").exists()
     with pytest.raises(ContentRetentionError, match="active lease is unavailable"):
         ImmutableArtifactBlobProvider(store_root).renew_lease(
             bundle.run_set_id,
@@ -296,7 +487,7 @@ def test_interrupted_remote_object_upload_never_publishes_inputs(tmp_path: Path)
 
 def test_missing_explicit_content_lease_policy_fails_before_remote_contact(tmp_path: Path) -> None:
     bundle, store_root, _ = _content_bundle(tmp_path)
-    transport = _ContentCacheTransport()
+    transport = FakeRunPodTransport()
     driver = RunPodOrchestrationDriver(
         transport=transport,
         content_store_root=store_root,
@@ -319,7 +510,7 @@ def test_terminal_teardown_releases_content_lease(tmp_path: Path) -> None:
         expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
     )
     driver = RunPodOrchestrationDriver(
-        transport=_ContentCacheTransport(),
+        transport=FakeRunPodTransport(),
         content_store_root=store_root,
         content_lease_seconds=3600,
     )

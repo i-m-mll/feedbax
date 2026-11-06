@@ -443,6 +443,196 @@ def _stage_blob_file(
     return _stage_blob(destination, expected_identity, write_payload)
 
 
+def _object_identity(
+    object_ref: ContentObjectRef | str,
+    *,
+    size_bytes: int | None = None,
+) -> tuple[str, int]:
+    if isinstance(object_ref, str):
+        digest = _parse_content_object_id(object_ref)
+        if size_bytes is None:
+            raise ArtifactBlobReferenceError(
+                "size_bytes is required when reading a raw content object id"
+            )
+        expected_size = _validate_size(size_bytes, field="size_bytes")
+    elif isinstance(object_ref, ContentObjectRef):
+        digest = _parse_content_object_id(object_ref.object_id)
+        if object_ref.sha256 != digest:
+            raise ArtifactBlobReferenceError(
+                "content object id digest does not match ContentObjectRef.sha256"
+            )
+        expected_size = object_ref.size_bytes
+        if size_bytes is not None and size_bytes != expected_size:
+            raise ArtifactBlobReferenceError(
+                "size_bytes override does not match ContentObjectRef.size_bytes"
+            )
+    else:
+        raise ArtifactBlobReferenceError(
+            "object_ref must be a ContentObjectRef or content object id"
+        )
+    return digest, expected_size
+
+
+def _read_blob(target: Path, expected_size: int) -> bytes:
+    with _open_blob_for_read(target, expected_size) as descriptor:
+        data = _read_file_descriptor(descriptor)
+    if len(data) != expected_size:
+        raise ArtifactBlobIntegrityError(
+            f"artifact read size mismatch: expected {expected_size}, found {len(data)}"
+        )
+    return data
+
+
+def _verify_blob(
+    target: Path, *, sha256: str, size_bytes: int, destination_descriptor: int | None = None
+) -> None:
+    with _open_blob_for_read(target, size_bytes) as descriptor:
+        actual_digest, actual_size = _stream_file_descriptor(
+            descriptor, target=destination_descriptor
+        )
+    if actual_size != size_bytes:
+        raise ArtifactBlobIntegrityError(
+            f"artifact read size mismatch: expected {size_bytes}, found {actual_size}"
+        )
+    if actual_digest != sha256:
+        raise ArtifactBlobIntegrityError(
+            f"artifact SHA-256 mismatch: expected {sha256}, found {actual_digest}"
+        )
+
+
+@contextmanager
+def _open_blob_for_read(target: Path, expected_size: int) -> Iterator[int]:
+    try:
+        records = _open_directory_chain(target.parent, create=False)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"artifact blob is missing: {target}") from exc
+    parent_descriptor = records[-1][1]
+    file_descriptor: int | None = None
+    try:
+        try:
+            path_stat_before = os.stat(
+                target.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"artifact blob is missing: {target}") from exc
+        if stat.S_ISLNK(path_stat_before.st_mode):
+            raise ArtifactBlobContainmentError(
+                f"canonical artifact must not be a symlink: {target}"
+            )
+        file_descriptor, file_stat_before = open_existing_file(
+            target.name,
+            rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
+            error_factory=ArtifactBlobIntegrityError,
+            context=f"canonical artifact {target}",
+            dir_fd=parent_descriptor,
+        )
+        if (file_stat_before.st_dev, file_stat_before.st_ino) != (
+            path_stat_before.st_dev,
+            path_stat_before.st_ino,
+        ):
+            raise ArtifactBlobIntegrityError(
+                f"canonical artifact identity changed before read: {target}"
+            )
+        if file_stat_before.st_size != expected_size:
+            raise ArtifactBlobIntegrityError(
+                "artifact size mismatch: "
+                f"expected {expected_size}, found {file_stat_before.st_size}"
+            )
+        yield file_descriptor
+        file_stat_after = os.fstat(file_descriptor)
+        if _file_state(file_stat_before) != _file_state(file_stat_after):
+            raise ArtifactBlobIntegrityError(
+                f"canonical artifact identity changed during read: {target}"
+            )
+        path_stat_after = os.stat(
+            target.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if _file_state(path_stat_before) != _file_state(path_stat_after):
+            raise ArtifactBlobIntegrityError(
+                f"canonical artifact path changed during read: {target}"
+            )
+        _recheck_directory_chain(records)
+        external_stat = os.stat(target, follow_symlinks=False)
+        if (external_stat.st_dev, external_stat.st_ino) != (
+            file_stat_after.st_dev,
+            file_stat_after.st_ino,
+        ):
+            raise ArtifactBlobContainmentError(
+                f"canonical artifact path mapping changed during read: {target}"
+            )
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ArtifactBlobContainmentError(
+                f"artifact path traverses a symlink or non-directory: {target}"
+            ) from exc
+        raise
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        _close_directory_chain(records)
+
+
+def _read_content_object(path: Path, digest: str, expected_size: int) -> bytes:
+    data = _read_blob(path, expected_size)
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise ArtifactBlobIntegrityError(f"content object SHA-256 mismatch: expected {digest}")
+    return data
+
+
+def verify_content_file(path: Path, object_ref: ContentObjectRef) -> None:
+    """Verify a stable, single-link regular file against its pinned object identity."""
+    digest, size_bytes = _object_identity(object_ref)
+    _verify_blob(_validate_explicit_root(path), sha256=digest, size_bytes=size_bytes)
+
+
+def copy_content_file(source: Path, destination: Path, object_ref: ContentObjectRef) -> None:
+    """Verify the source while copying it to a new private file in a trusted directory."""
+    digest, size_bytes = _object_identity(object_ref)
+    source = _validate_explicit_root(source)
+    descriptor = os.open(destination, _file_flags(writable=True) | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        try:
+            _verify_blob(
+                source, sha256=digest, size_bytes=size_bytes, destination_descriptor=descriptor
+            )
+            os.fchmod(descriptor, 0o600)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except BaseException:
+        destination.unlink()
+        raise
+
+
+def read_content_tree_descriptor(path: Path, tree_ref: ContentTreeRef) -> ContentTree:
+    """Read and parse a stable file containing a pinned canonical tree descriptor."""
+    if not isinstance(tree_ref, ContentTreeRef):
+        raise ArtifactBlobReferenceError("tree_ref must be a ContentTreeRef")
+    digest, expected_size = _object_identity(tree_ref.descriptor)
+    raw = _read_content_object(_validate_explicit_root(path), digest, expected_size)
+    return _parse_content_tree(raw, tree_ref)
+
+
+def _parse_content_tree(raw: bytes, tree_ref: ContentTreeRef) -> ContentTree:
+    try:
+        payload = strict_json_loads(raw.decode("utf-8"), ref=tree_ref.tree_id)
+        tree = ContentTree.model_validate(payload)
+    except Exception as exc:
+        raise ArtifactBlobIntegrityError(
+            f"content-tree descriptor is invalid: {tree_ref.tree_id}: {exc}"
+        ) from exc
+    expected = canonical_json_v1_bytes(tree.model_dump(mode="json"))
+    if raw != expected:
+        raise ArtifactBlobIntegrityError(
+            f"content-tree descriptor is not canonical: {tree_ref.tree_id}"
+        )
+    return tree
+
+
 @dataclass(frozen=True, slots=True)
 class ImmutableArtifactBlobProvider:
     """Explicit local provider for suffixless immutable artifact blobs."""
@@ -666,45 +856,18 @@ class ImmutableArtifactBlobProvider:
         size_bytes: int | None = None,
     ) -> bytes:
         """Read one pinned role-free object and verify its exact identity."""
-        digest, expected_size = self._object_identity(object_ref, size_bytes=size_bytes)
-        data = self._read_canonical_blob(self._canonical_path(digest), expected_size)
-        if hashlib.sha256(data).hexdigest() != digest:
-            raise ArtifactBlobIntegrityError(f"content object SHA-256 mismatch: expected {digest}")
-        return data
+        digest, expected_size = _object_identity(object_ref, size_bytes=size_bytes)
+        return _read_content_object(self._canonical_path(digest), digest, expected_size)
 
-    def _verify_object(self, object_ref: ContentObjectRef) -> None:
-        digest, size_bytes = self._object_identity(object_ref)
-        self._verify_blob(self._canonical_path(digest), sha256=digest, size_bytes=size_bytes)
+    def object_path(self, object_ref: ContentObjectRef) -> Path:
+        """Derive the canonical path for a pinned object without reading it."""
+        digest, _ = _object_identity(object_ref)
+        return self._canonical_path(digest)
 
-    @staticmethod
-    def _object_identity(
-        object_ref: ContentObjectRef | str,
-        *,
-        size_bytes: int | None = None,
-    ) -> tuple[str, int]:
-        if isinstance(object_ref, str):
-            digest = _parse_content_object_id(object_ref)
-            if size_bytes is None:
-                raise ArtifactBlobReferenceError(
-                    "size_bytes is required when reading a raw content object id"
-                )
-            expected_size = _validate_size(size_bytes, field="size_bytes")
-        elif isinstance(object_ref, ContentObjectRef):
-            digest = _parse_content_object_id(object_ref.object_id)
-            if object_ref.sha256 != digest:
-                raise ArtifactBlobReferenceError(
-                    "content object id digest does not match ContentObjectRef.sha256"
-                )
-            expected_size = object_ref.size_bytes
-            if size_bytes is not None and size_bytes != expected_size:
-                raise ArtifactBlobReferenceError(
-                    "size_bytes override does not match ContentObjectRef.size_bytes"
-                )
-        else:
-            raise ArtifactBlobReferenceError(
-                "object_ref must be a ContentObjectRef or content object id"
-            )
-        return digest, expected_size
+    def verify_object(self, object_ref: ContentObjectRef) -> None:
+        """Verify one pinned object in bounded chunks."""
+        digest, size_bytes = _object_identity(object_ref)
+        _verify_blob(self._canonical_path(digest), sha256=digest, size_bytes=size_bytes)
 
     def ingest_tree(self, source_root: Path | str) -> ContentTreeRef:
         """Ingest a canonical regular-file tree with identity independent of its role."""
@@ -840,20 +1003,7 @@ class ImmutableArtifactBlobProvider:
         """Resolve and revalidate one exact role-free content-tree descriptor."""
         if not isinstance(tree_ref, ContentTreeRef):
             raise ArtifactBlobReferenceError("tree_ref must be a ContentTreeRef")
-        raw = self.get_object(tree_ref.descriptor)
-        try:
-            payload = strict_json_loads(raw.decode("utf-8"), ref=tree_ref.tree_id)
-            tree = ContentTree.model_validate(payload)
-        except Exception as exc:
-            raise ArtifactBlobIntegrityError(
-                f"content-tree descriptor is invalid: {tree_ref.tree_id}: {exc}"
-            ) from exc
-        expected = canonical_json_v1_bytes(tree.model_dump(mode="json"))
-        if raw != expected:
-            raise ArtifactBlobIntegrityError(
-                f"content-tree descriptor is not canonical: {tree_ref.tree_id}"
-            )
-        return tree
+        return _parse_content_tree(self.get_object(tree_ref.descriptor), tree_ref)
 
     def bind_manifest(
         self,
@@ -1357,101 +1507,12 @@ class ImmutableArtifactBlobProvider:
             ) from exc
 
     def _read_canonical_blob(self, target: Path, expected_size: int) -> bytes:
-        with self._open_blob_for_read(target, expected_size) as descriptor:
-            data = _read_file_descriptor(descriptor)
-        if len(data) != expected_size:
-            raise ArtifactBlobIntegrityError(
-                f"artifact read size mismatch: expected {expected_size}, found {len(data)}"
-            )
-        return data
+        self._validate_lexical_containment(target)
+        return _read_blob(target, expected_size)
 
     def _verify_blob(self, target: Path, *, sha256: str, size_bytes: int) -> None:
-        with self._open_blob_for_read(target, size_bytes) as descriptor:
-            actual_digest, actual_size = _stream_file_descriptor(descriptor)
-        if actual_size != size_bytes:
-            raise ArtifactBlobIntegrityError(
-                f"artifact read size mismatch: expected {size_bytes}, found {actual_size}"
-            )
-        if actual_digest != sha256:
-            raise ArtifactBlobIntegrityError(
-                f"artifact SHA-256 mismatch: expected {sha256}, found {actual_digest}"
-            )
-
-    @contextmanager
-    def _open_blob_for_read(self, target: Path, expected_size: int) -> Iterator[int]:
         self._validate_lexical_containment(target)
-        try:
-            records = _open_directory_chain(target.parent, create=False)
-        except FileNotFoundError as exc:
-            raise FileNotFoundError(f"artifact blob is missing: {target}") from exc
-        parent_descriptor = records[-1][1]
-        file_descriptor: int | None = None
-        try:
-            try:
-                path_stat_before = os.stat(
-                    target.name,
-                    dir_fd=parent_descriptor,
-                    follow_symlinks=False,
-                )
-            except FileNotFoundError as exc:
-                raise FileNotFoundError(f"artifact blob is missing: {target}") from exc
-            if stat.S_ISLNK(path_stat_before.st_mode):
-                raise ArtifactBlobContainmentError(
-                    f"canonical artifact must not be a symlink: {target}"
-                )
-            file_descriptor, file_stat_before = open_existing_file(
-                target.name,
-                rigor=SecurePathRigor.SINGLE_LINK_FILE_IDENTITY,
-                error_factory=ArtifactBlobIntegrityError,
-                context=f"canonical artifact {target}",
-                dir_fd=parent_descriptor,
-            )
-            if (file_stat_before.st_dev, file_stat_before.st_ino) != (
-                path_stat_before.st_dev,
-                path_stat_before.st_ino,
-            ):
-                raise ArtifactBlobIntegrityError(
-                    f"canonical artifact identity changed before read: {target}"
-                )
-            if file_stat_before.st_size != expected_size:
-                raise ArtifactBlobIntegrityError(
-                    "artifact size mismatch: "
-                    f"expected {expected_size}, found {file_stat_before.st_size}"
-                )
-            yield file_descriptor
-            file_stat_after = os.fstat(file_descriptor)
-            if _file_state(file_stat_before) != _file_state(file_stat_after):
-                raise ArtifactBlobIntegrityError(
-                    f"canonical artifact identity changed during read: {target}"
-                )
-            path_stat_after = os.stat(
-                target.name,
-                dir_fd=parent_descriptor,
-                follow_symlinks=False,
-            )
-            if _file_state(path_stat_before) != _file_state(path_stat_after):
-                raise ArtifactBlobIntegrityError(
-                    f"canonical artifact path changed during read: {target}"
-                )
-            _recheck_directory_chain(records)
-            external_stat = os.stat(target, follow_symlinks=False)
-            if (external_stat.st_dev, external_stat.st_ino) != (
-                file_stat_after.st_dev,
-                file_stat_after.st_ino,
-            ):
-                raise ArtifactBlobContainmentError(
-                    f"canonical artifact path mapping changed during read: {target}"
-                )
-        except OSError as exc:
-            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
-                raise ArtifactBlobContainmentError(
-                    f"artifact path traverses a symlink or non-directory: {target}"
-                ) from exc
-            raise
-        finally:
-            if file_descriptor is not None:
-                os.close(file_descriptor)
-            _close_directory_chain(records)
+        _verify_blob(target, sha256=sha256, size_bytes=size_bytes)
 
     def _validate_materialization_destination(self, destination: Path) -> None:
         if not destination.name:
