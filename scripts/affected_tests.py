@@ -14,7 +14,6 @@ import re
 import shutil
 import subprocess
 from tempfile import TemporaryDirectory
-import tomllib
 from typing import Literal, TypedDict
 from urllib.request import urlopen
 
@@ -30,7 +29,6 @@ SHARED_STUDIO_SOURCES = (
     "web/src/utils/canonicalJsonV2.ts",
     "web/src/utils/studioDraftHash.ts",
 )
-PANTS_VERSION = "2.33.0"
 PANTS_LAUNCHER_VERSION = "v0.13.2"
 PANTS_LAUNCHERS = {
     ("Darwin", "arm64"): (
@@ -142,61 +140,19 @@ def _python_related(root: Path, changed: set[str]) -> list[str]:
         and (root / path).is_file()
     }
     pants = _pants_launcher()
-    with (root / "pyproject.toml").open("rb") as config:
-        requires_python = tomllib.load(config)["project"]["requires-python"]
-    with TemporaryDirectory(prefix="feedbax-test-graph-") as directory:
-        graph = Path(directory)
-        for path in paths:
-            destination = graph / path
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(root / path, destination)
-        (graph / "pants.toml").write_text(
-            f"""[GLOBAL]
-pants_version = "{PANTS_VERSION}"
-backend_packages = ["pants.backend.python", "pants.backend.project_info"]
-pantsd = false
-
-[source]
-root_patterns = ["/"]
-
-[python]
-interpreter_constraints = [{json.dumps(requires_python)}]
-
-[python-infer]
-init_files = "always"
-unowned_dependency_behavior = "warning"
-""",
-            encoding="utf-8",
-        )
-        for package in PYTHON_ROOTS:
-            build = 'python_sources(sources=["**/*.py"])\n'
-            if package == "tests":
-                build = (
-                    'python_tests(name="tests", sources=["**/test_*.py"])\n'
-                    'python_sources(name="support", sources=["**/*.py", "!**/test_*.py"])\n'
-                )
-            (graph / package).mkdir(exist_ok=True)
-            (graph / package / "BUILD").write_text(build, encoding="utf-8")
-        command = [
-            pants,
-            "--no-pantsrc",
-            "dependents",
-            "--transitive",
-            "--closed",
-            "--format=json",
-            *sorted(changed),
-        ]
-        env = {key: value for key, value in os.environ.items() if not key.startswith("PANTS_")}
-        result = subprocess.run(
-            command, cwd=graph, env=env, capture_output=True, check=True, timeout=55
-        )
-    # The first-party graph intentionally omits third-party owners. Preserve local diagnostics.
-    diagnostics = result.stderr.decode(errors="replace")
-    for module in re.findall(r"^\s+\* ([\w.]+) \(line: \d+\)$", diagnostics, re.M):
-        if module.partition(".")[0] in PYTHON_ROOTS:
-            raise ValueError(f"Pants could not resolve first-party import {module}")
-    if "ambiguous dependency inference" in diagnostics:
-        raise ValueError("Pants reported ambiguous dependency inference")
+    _validate_first_party_imports(root, paths)
+    command = [
+        pants,
+        "--no-pantsrc",
+        "--level=error",
+        "dependents",
+        "--transitive",
+        "--closed",
+        "--format=json",
+        *sorted(changed),
+    ]
+    env = {key: value for key, value in os.environ.items() if not key.startswith("PANTS_")}
+    result = subprocess.run(command, cwd=root, env=env, capture_output=True, check=True, timeout=55)
     addresses = json.loads(result.stdout)
     if not isinstance(addresses, dict) or any(
         not isinstance(values, list) or any(not isinstance(value, str) for value in values)
@@ -219,6 +175,40 @@ unowned_dependency_behavior = "warning"
             raise ValueError(f"no Python test witness for {source}")
         selected.update(tests)
     return sorted(selected)
+
+
+def _validate_first_party_imports(root: Path, paths: set[str]) -> None:
+    modules = {
+        (path[:-12] if path.endswith("/__init__.py") else path[:-3]).replace("/", ".")
+        for path in paths
+    }
+    modules.update(PYTHON_ROOTS)
+
+    def owned(name: str) -> bool:
+        return name in modules or any(module.startswith(name + ".") for module in modules)
+
+    for path in paths:
+        syntax = ast.parse((root / path).read_text(encoding="utf-8"), filename=path)
+        package = path.removesuffix("/__init__.py").removesuffix(".py").replace("/", ".")
+        if not path.endswith("/__init__.py"):
+            package = package.rpartition(".")[0]
+        for node in ast.walk(syntax):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                prefix = package.split(".")
+                if node.level:
+                    prefix = prefix[: len(prefix) - node.level + 1]
+                else:
+                    prefix = []
+                names = [".".join((*prefix, node.module or "")).rstrip(".")]
+            else:
+                continue
+            for name in names:
+                if name.partition(".")[0] in PYTHON_ROOTS and not owned(name):
+                    raise ValueError(
+                        f"unresolved first-party import {name} in {path}:{node.lineno}"
+                    )
 
 
 def _studio_related(root: Path, paths: set[str]) -> list[str]:
@@ -253,8 +243,60 @@ def _capabilities(root: Path, tests: list[str]) -> list[str]:
     return sorted(required)
 
 
+def _literal_python_path(node: ast.AST, source: Path) -> Path | str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Path"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "__file__"
+    ):
+        return source
+    if isinstance(node, ast.Attribute) and node.attr == "parent":
+        path = _literal_python_path(node.value, source)
+        return path.parent if isinstance(path, Path) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        parent = _literal_python_path(node.left, source)
+        child = _literal_python_path(node.right, source)
+        return parent / child if isinstance(parent, Path) and isinstance(child, str) else None
+    return None
+
+
+def _fixture_consumers(root: Path, fixture: str) -> tuple[set[str], set[str]]:
+    source = (root / fixture).resolve()
+    python: set[str] = set()
+    studio: set[str] = set()
+    basename = source.name
+    for path in (root / "tests").rglob("*.py"):
+        contents = path.read_text(encoding="utf-8")
+        if basename not in contents:
+            continue
+        syntax = ast.parse(contents, filename=str(path))
+        if any(
+            isinstance(resolved, Path) and resolved.resolve() == source
+            for node in ast.walk(syntax)
+            if (resolved := _literal_python_path(node, path)) is not None
+        ):
+            python.add(path.relative_to(root).as_posix())
+    url_pattern = re.compile(r"new\s+URL\(\s*(['\"])([^'\"]+)\1\s*,\s*import\.meta\.url\s*\)")
+    for path in (root / "web" / "src").rglob("*.ts*"):
+        contents = path.read_text(encoding="utf-8")
+        if basename not in contents:
+            continue
+        if any(
+            (path.parent / relative).resolve() == source
+            for _, relative in url_pattern.findall(contents)
+        ):
+            studio.add(path.relative_to(root).as_posix())
+    return python, studio
+
+
 def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan:
     python, studio = set(), set()
+    fixtures: set[str] = set()
     python_reason = ""
     studio_reason = ""
     browser = build = contracts = clean_wheel = False
@@ -285,6 +327,8 @@ def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan
                 browser = build = contracts = True
         elif _python_test(path):
             python.add(path)
+        elif path.startswith("tests/fixtures/") and Path(path).suffix in {".json", ".yaml", ".yml"}:
+            fixtures.add(path)
         elif (
             path.startswith("web/src/")
             and not path.startswith(("web/src/generated/", "web/src/test/"))
@@ -301,6 +345,16 @@ def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan
         else:
             python_reason = studio_reason = f"shared or unproved dependency: {path}"
             browser = build = contracts = clean_wheel = True
+    for fixture in fixtures:
+        python_consumers, studio_consumers = _fixture_consumers(root, fixture)
+        if not python_consumers:
+            python_reason = f"fixture has no proven Python consumer: {fixture}"
+        else:
+            python.update(python_consumers)
+        if not studio_consumers:
+            studio_reason = f"fixture has no proven Studio consumer: {fixture}"
+        else:
+            studio.update(studio_consumers)
     python_tests = _python_related(root, python) if python and not python_reason else []
     studio_tests = _studio_related(root, studio) if studio and not studio_reason else []
     if python and not python_tests and not python_reason:
