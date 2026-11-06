@@ -85,8 +85,8 @@ notebook = [
     "ruamel-yaml>=0.18.0",
 ]
 mjx = [
-    "mujoco>=3.0.0",
-    "mujoco-mjx>=0.1.0",
+    "mujoco>=3.2.5",
+    "mujoco-mjx>=3.2.5",
 ]
 all = [
     "dill>=0.3.9",
@@ -96,8 +96,8 @@ all = [
     "ipywidgets>=8.1.5",
     "kaleido==0.2.1",
     "matplotlib>=3.10.1",
-    "mujoco>=3.0.0",
-    "mujoco-mjx>=0.1.0",
+    "mujoco>=3.2.5",
+    "mujoco-mjx>=3.2.5",
     "notebook>=7.4.1",
     "pandas>=2.1.0",
     "polars>=1.24.0",
@@ -132,8 +132,8 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "mujoco>=3.0.0",
-    "mujoco-mjx>=0.1.0",
+    "mujoco>=3.2.5",
+    "mujoco-mjx>=3.2.5",
     "pyright>=1.1.407",
     "pytest>=9.0.2",
     "pytest-xdist>=3.8.0",
