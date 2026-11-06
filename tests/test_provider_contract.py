@@ -1021,6 +1021,34 @@ def test_delayed_center_out_preset_task_spec_validates_and_infers_control_stages
     assert infer_task_n_steps(payload) == 140
 
 
+@pytest.mark.parametrize(
+    ("params", "expected_error"),
+    [
+        ({"n_control_stages": 15}, None),
+        ({"n_control_stages": 8}, "invalid_epoch_budget"),
+        ({"n_control_stages": 8, "epoch_len_ranges": [[8, 8]]}, "invalid_epoch_budget"),
+        ({"n_steps": 9, "epoch_len_ranges": [[3, 9]]}, "invalid_epoch_budget"),
+        ({"n_steps": 9, "epoch_len_ranges": [[3, 8]]}, None),
+        ({"preset": "default", "n_steps": 31}, "invalid_epoch_budget"),
+        (
+            {"n_control_stages": 100, "epoch_len_ranges": [[0, 2]], "move_epochs": [0]},
+            "invalid_epoch_budget",
+        ),
+    ],
+)
+def test_delayed_reaches_validates_budget_for_every_possible_draw(params, expected_error):
+    result = validate_task_spec(
+        {"type": "DelayedReaches", "params": {"preset": "delayed_center_out", **params}}
+    )
+
+    if expected_error is None:
+        assert result.valid
+    else:
+        assert [(error.type, error.location) for error in result.errors] == [
+            (expected_error, {"path": "/params/epoch_len_ranges"})
+        ]
+
+
 def test_delayed_center_out_validation_rejects_inconsistent_control_stages() -> None:
     result = validate_task_spec(
         {
@@ -1045,6 +1073,7 @@ def test_delayed_reaches_validation_rejects_invalid_metadata_policy() -> None:
                 "epoch_names": ["prep", "movement"],
                 "epoch_len_ranges": [[20, 60]],
                 "target_on_epochs": [0, 1],
+                "move_epochs": [1],
                 "catch_metadata_policy": "trial_type",
             },
         }

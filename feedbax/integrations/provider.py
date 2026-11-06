@@ -131,7 +131,12 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
-from feedbax.tasks.presets import apply_delayed_reaches_preset
+from feedbax.tasks._delayed_timing import (
+    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
+    DEFAULT_DELAYED_MOVE_EPOCHS,
+    delayed_timing_issues,
+)
+from feedbax.tasks.presets import apply_delayed_reaches_preset, delayed_reaches_n_steps_from_params
 
 TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
 
@@ -1456,9 +1461,10 @@ def validate_task_spec(payload: dict[str, Any] | TaskSpec) -> ProviderValidation
                 location={"path": "/type"},
             )
         )
-    errors.extend(_validate_task_n_steps(spec))
+    step_errors = _validate_task_n_steps(spec)
+    errors.extend(step_errors)
     if spec.type in {"DelayedReaches", "feedbax.task.DelayedReaches"}:
-        errors.extend(_validate_delayed_reaches_task_params(spec.params))
+        errors.extend(_validate_delayed_reaches_task_params(spec.params, not step_errors))
     return ProviderValidationResult(valid=not errors, errors=errors)
 
 
@@ -1491,7 +1497,9 @@ def _validate_task_n_steps(spec: TaskSpec) -> list[ValidationIssue]:
     return errors
 
 
-def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[ValidationIssue]:
+def _validate_delayed_reaches_task_params(
+    params: dict[str, Any], step_count_valid: bool
+) -> list[ValidationIssue]:
     """Validate compact DelayedReaches task params at the Studio boundary."""
     errors: list[ValidationIssue] = []
     try:
@@ -1521,47 +1529,45 @@ def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[Valida
             )
         )
 
-    epoch_len_ranges = params.get("epoch_len_ranges", [[5, 15], [10, 20]])
-    if not isinstance(epoch_len_ranges, list):
-        errors.append(
-            ValidationIssue(
-                type="invalid_epoch_len_ranges",
-                message="DelayedReaches epoch_len_ranges must be a list of [min, max] pairs",
-                location={"path": "/params/epoch_len_ranges"},
+    epoch_len_ranges = params.get("epoch_len_ranges", DEFAULT_DELAYED_EPOCH_LEN_RANGES)
+    move_epochs = params.get("move_epochs", DEFAULT_DELAYED_MOVE_EPOCHS)
+    if "n_control_stages" in params:
+        n_control_stages = parse_positive_n_steps(params["n_control_stages"])
+        if n_control_stages is None:
+            errors.append(
+                ValidationIssue(
+                    type="invalid_task_n_steps",
+                    message="DelayedReaches n_control_stages must be a positive integer",
+                    location={"path": "/params/n_control_stages"},
+                )
             )
-        )
-        return errors
+            step_count_valid = False
+        elif "n_steps" in params and step_count_valid:
+            n_steps = parse_positive_n_steps(params["n_steps"])
+            if n_steps != n_control_stages + 1:
+                errors.append(
+                    ValidationIssue(
+                        type="task_n_steps_mismatch",
+                        message=(
+                            "DelayedReaches n_steps must equal "
+                            "n_control_stages + 1 when both are provided"
+                        ),
+                        location={"path": "/"},
+                    )
+                )
+                step_count_valid = False
 
-    for index, item in enumerate(epoch_len_ranges):
-        if not isinstance(item, list) or len(item) != 2:
-            errors.append(
-                ValidationIssue(
-                    type="invalid_epoch_len_range",
-                    message="Each DelayedReaches epoch_len_ranges entry must be [min, max]",
-                    location={"path": f"/params/epoch_len_ranges/{index}"},
-                )
-            )
-            continue
-        try:
-            lower = int(item[0])
-            upper = int(item[1])
-        except (TypeError, ValueError):
-            errors.append(
-                ValidationIssue(
-                    type="invalid_epoch_len_range",
-                    message="DelayedReaches epoch lengths must be integers",
-                    location={"path": f"/params/epoch_len_ranges/{index}"},
-                )
-            )
-            continue
-        if lower < 0 or upper < lower:
-            errors.append(
-                ValidationIssue(
-                    type="invalid_epoch_len_range",
-                    message="DelayedReaches epoch length ranges must satisfy 0 <= min <= max",
-                    location={"path": f"/params/epoch_len_ranges/{index}"},
-                )
-            )
+    n_steps = delayed_reaches_n_steps_from_params(params) if step_count_valid else None
+    errors.extend(
+        ValidationIssue(
+            type=issue.code,
+            message=issue.message,
+            location={"path": f"/params/{issue.path}"},
+        )
+        for issue in delayed_timing_issues(n_steps, epoch_len_ranges, move_epochs)
+    )
+    if not isinstance(epoch_len_ranges, (list, tuple)):
+        return errors
 
     epoch_count = len(epoch_len_ranges) + 1
     epoch_names = params.get("epoch_names", [])
@@ -1587,7 +1593,7 @@ def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[Valida
                 )
             )
 
-    for key in ("target_on_epochs", "hold_epochs", "move_epochs"):
+    for key in ("target_on_epochs", "hold_epochs"):
         value = params.get(key, [])
         if not isinstance(value, list):
             errors.append(
@@ -1688,42 +1694,6 @@ def _validate_delayed_reaches_task_params(params: dict[str, Any]) -> list[Valida
             )
         )
 
-    if "n_control_stages" in params:
-        try:
-            n_control_stages = int(params["n_control_stages"])
-        except (TypeError, ValueError):
-            errors.append(
-                ValidationIssue(
-                    type="invalid_task_n_steps",
-                    message="DelayedReaches n_control_stages must be a positive integer",
-                    location={"path": "/params/n_control_stages"},
-                )
-            )
-        else:
-            if n_control_stages <= 0:
-                errors.append(
-                    ValidationIssue(
-                        type="invalid_task_n_steps",
-                        message="DelayedReaches n_control_stages must be a positive integer",
-                        location={"path": "/params/n_control_stages"},
-                    )
-                )
-            if "n_steps" in params:
-                try:
-                    n_steps = int(params["n_steps"])
-                except (TypeError, ValueError):
-                    n_steps = None
-                if n_steps is not None and n_steps != n_control_stages + 1:
-                    errors.append(
-                        ValidationIssue(
-                            type="task_n_steps_mismatch",
-                            message=(
-                                "DelayedReaches n_steps must equal "
-                                "n_control_stages + 1 when both are provided"
-                            ),
-                            location={"path": "/"},
-                        )
-                    )
     return errors
 
 

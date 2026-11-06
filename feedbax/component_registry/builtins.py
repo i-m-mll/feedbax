@@ -87,6 +87,11 @@ from feedbax.mechanics.templates import Arm6MuscleRigidTendon, PointMass8MuscleR
 from feedbax.models.networks import VanillaRNN
 from feedbax.runtime.state import CartesianState
 from feedbax.runtime.state_feedback import StateFeedbackSelector, state_feedback_output_prototype
+from feedbax.tasks._delayed_timing import (
+    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
+    DEFAULT_DELAYED_MOVE_EPOCHS,
+)
+from feedbax.tasks.presets import DEFAULT_DELAYED_N_STEPS
 from feedbax.intervene.intervene import (
     THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
     THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
@@ -3259,7 +3264,13 @@ def register_builtin_components(registry: _Registry) -> None:
             category="Tasks",
             description="Reaches with a delay period before movement.",
             parameter_fields=[
-                ParameterField(name="n_steps", type="int", default=140, min=1, required=False),
+                ParameterField(
+                    name="n_steps",
+                    type="int",
+                    default=DEFAULT_DELAYED_N_STEPS,
+                    min=1,
+                    required=False,
+                ),
                 ParameterField(
                     name="n_control_stages",
                     type="int",
@@ -3290,7 +3301,7 @@ def register_builtin_components(registry: _Registry) -> None:
                 ParameterField(
                     name="epoch_len_ranges",
                     type="array",
-                    default=[[5, 15], [10, 20]],
+                    default=[list(pair) for pair in DEFAULT_DELAYED_EPOCH_LEN_RANGES],
                     required=False,
                 ),
                 ParameterField(
@@ -3303,7 +3314,12 @@ def register_builtin_components(registry: _Registry) -> None:
                     name="target_on_epochs", type="array", default=[1, 2], required=False
                 ),
                 ParameterField(name="hold_epochs", type="array", default=[0, 1], required=False),
-                ParameterField(name="move_epochs", type="array", default=[2], required=False),
+                ParameterField(
+                    name="move_epochs",
+                    type="array",
+                    default=list(DEFAULT_DELAYED_MOVE_EPOCHS),
+                    required=False,
+                ),
                 ParameterField(
                     name="target_visible_from_start",
                     type="bool",

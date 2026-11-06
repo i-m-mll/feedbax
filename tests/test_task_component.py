@@ -407,12 +407,67 @@ def test_delayed_reaches_can_sample_center_out_training_trials():
         workspace=jnp.asarray([[-1.0, -1.0], [1.0, 1.0]]),
         train_endpoint_mode="center_out",
         eval_reach_length=0.5,
-        epoch_len_ranges=((0, 1), (2, 3)),
+        epoch_len_ranges=((0, 2), (2, 4)),
     )
 
     trial = task.get_train_trial(jax.random.PRNGKey(0))
 
     assert jnp.allclose(trial.inits["mechanics.effector"].pos, jnp.zeros(2))
+    assert 0 <= trial.timeline.epoch_bounds[1] < 2
+    assert 2 <= trial.timeline.epoch_bounds[2] - trial.timeline.epoch_bounds[1] < 4
+    assert trial.timeline.epoch_bounds[-1] == 19
+
+
+@pytest.mark.parametrize(
+    ("stages", "prep_range", "expected_go_cue"),
+    [(1, (0, 0), 0), (8, (7, 7), 7), (8, (7, 8), 7)],
+)
+def test_delayed_center_out_can_use_last_control_stage_for_movement(
+    stages, prep_range, expected_go_cue
+):
+    task = DelayedReaches.delayed_center_out(
+        loss_func=DummyLoss(),
+        n_control_stages=stages,
+        workspace=[[-1.0, -1.0], [1.0, 1.0]],
+        epoch_len_ranges=[list(prep_range)],
+        p_catch_trial=0.0,
+    )
+
+    trial = task.get_train_trial(jax.random.PRNGKey(0))
+
+    np.testing.assert_array_equal(trial.timeline.epoch_bounds, [0, expected_go_cue, stages])
+    np.testing.assert_array_equal(trial.timeline.event_steps, [expected_go_cue])
+    np.testing.assert_array_equal(trial.inputs.hold[:, 0], [1] * expected_go_cue + [0])
+
+
+def test_delayed_center_out_rejects_short_rollout_with_default_prep():
+    with pytest.raises(ValueError, match="only 8 are available"):
+        DelayedReaches.delayed_center_out(
+            loss_func=DummyLoss(),
+            n_control_stages=8,
+            workspace=[[-1.0, -1.0], [1.0, 1.0]],
+        )
+
+
+def test_delayed_reaches_accepts_movement_in_sampled_epoch_without_remainder():
+    task = DelayedReaches(
+        loss_func=DummyLoss(),
+        n_steps=3,
+        workspace=[[-1.0, -1.0], [1.0, 1.0]],
+        epoch_len_ranges=((2, 2),),
+        epoch_names=("movement", "after_movement"),
+        hold_epochs=(1,),
+        target_on_epochs=(0,),
+        move_epochs=(0,),
+        p_catch_trial=0.0,
+    )
+
+    trial = task.get_train_trial(jax.random.PRNGKey(0))
+
+    np.testing.assert_array_equal(trial.timeline.epoch_bounds, [0, 2, 2])
+    np.testing.assert_array_equal(
+        trial.targets["mechanics.effector.pos"].value, trial.inputs.effector_target.pos
+    )
 
 
 def test_delayed_center_out_preset_exposes_timeline_and_catch_metadata():
@@ -459,6 +514,14 @@ def test_delayed_center_out_task_spec_materializes_from_compact_params(
     )
     task = component.task
     trial = component.trial_spec
+
+    with pytest.raises(ValueError, match="epoch lengths must be integers"):
+        build_component(
+            "task",
+            "DelayedReaches",
+            {**params, "epoch_len_ranges": [[2, 2.5]]},
+            component_registry=application_registry_bundle.components,
+        )
 
     assert task.n_steps == 9
     assert task.train_endpoint_mode == "center_out"

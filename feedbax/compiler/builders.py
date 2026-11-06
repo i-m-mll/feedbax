@@ -46,7 +46,11 @@ from feedbax.components.penzai import (
 from feedbax.contracts.acausal_interface import MUSCLE_EXCITATION_PAYLOAD
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.tasks import DelayedReaches, SimpleReaches, Stabilization, TaskComponent
-from feedbax.tasks.presets import apply_delayed_reaches_preset
+from feedbax.tasks._delayed_timing import (
+    DEFAULT_DELAYED_EPOCH_LEN_RANGES,
+    DEFAULT_DELAYED_MOVE_EPOCHS,
+)
+from feedbax.tasks.presets import apply_delayed_reaches_preset, delayed_reaches_n_steps_from_params
 
 
 _HIDDEN_TYPES: dict[str, Callable[..., eqx.Module]] = {
@@ -419,26 +423,18 @@ def _build_task_component(task_type: str, params: Mapping[str, Any]) -> TaskComp
             eval_grid_n=int(params.get("eval_grid_n", 1)),
         )
     elif task_type == "DelayedReaches":
-        n_steps = (
-            int(params["n_control_stages"]) + 1
-            if params.get("n_control_stages") is not None
-            else int(params["n_steps"])
-        )
         task = DelayedReaches(
             loss_func=loss_func,
-            n_steps=n_steps,
+            n_steps=delayed_reaches_n_steps_from_params(params),
             workspace=jnp.asarray(params.get("workspace", [[-1.0, -1.0], [1.0, 1.0]])),
             preset=params.get("preset", None),
             train_endpoint_mode=str(params.get("train_endpoint_mode", "workspace")),
-            epoch_len_ranges=tuple(
-                tuple(int(value) for value in item)
-                for item in params.get("epoch_len_ranges", [[5, 15], [10, 20]])
-            ),
+            epoch_len_ranges=params.get("epoch_len_ranges", DEFAULT_DELAYED_EPOCH_LEN_RANGES),
             epoch_names=tuple(str(value) for value in params.get("epoch_names", []))
             or ("hold", "target_on", "movement"),
             target_on_epochs=tuple(int(value) for value in params.get("target_on_epochs", [1, 2])),
             hold_epochs=tuple(int(value) for value in params.get("hold_epochs", [0, 1])),
-            move_epochs=tuple(int(value) for value in params.get("move_epochs", [2])),
+            move_epochs=params.get("move_epochs", DEFAULT_DELAYED_MOVE_EPOCHS),
             p_catch_trial=float(params.get("p_catch_trial", 0.5)),
             target_visible_from_start=bool(params.get("target_visible_from_start", False)),
             go_cue_event_name=params.get("go_cue_event_name", None),
