@@ -53,6 +53,30 @@ def test_sample_task_params_shapes(key, n_steps, dt):
     assert params.n_steps == n_steps
 
 
+def test_track_sampling_modes_accept_batched_typed_keys(n_steps, dt):
+    def sample(key, use_fk):
+        return sample_task_params_jax(
+            key,
+            TASK_TRACK,
+            n_steps,
+            dt,
+            segment_lengths=jnp.array([0.5]),
+            use_fk=use_fk,
+            track_radius=0.35,
+            max_target_distance=10.0,
+            use_curriculum=False,
+            single_task=True,
+        )
+
+    with jax.debug_key_reuse(True):
+        keys = jax.random.split(jax.random.key(0), 2)
+        params = jax.jit(jax.vmap(sample))(keys, jnp.array([False, True]))
+
+    cartesian_radii, fk_radii = jnp.linalg.norm(params.control_points, axis=-1)
+    assert jnp.all((cartesian_radii >= 0.21 - 1e-6) & (cartesian_radii <= 0.35 + 1e-6))
+    assert jnp.allclose(fk_radii, 0.5)
+
+
 def test_reach_task_params_materialize_without_stored_trajectory(n_steps, dt):
     start = jnp.array([0.0, 0.0])
     target = jnp.array([0.3, -0.2])
