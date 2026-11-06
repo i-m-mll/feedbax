@@ -55,6 +55,7 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import stat
 from typing import Any, Literal
 import uuid
 
@@ -82,7 +83,6 @@ from feedbax.analysis.fulfillment_adapters import (
 from feedbax.contracts.base import (
     ArtifactRef,
     StrictModel,
-    sha256_bytes,
     utc_now,
 )
 from feedbax.contracts.artifact_store import store_bytes_artifact
@@ -90,11 +90,12 @@ from feedbax.contracts.manifest import (
     AnalysisDataProduct,
     AnalysisOutputDescriptor,
     AnyManifest,
+    canonical_manifest_path,
     load_manifest_bytes,
     normalize_manifest_spec_payloads,
     safe_manifest_key,
+    write_manifest,
 )
-from feedbax.persistence.manifest_index import index_manifest_file
 
 
 FULFILLMENT_PROJECTION_SCHEMA_ID = "feedbax.fulfillment.output_projection"
@@ -547,10 +548,7 @@ def shadow_custody(
         chosen = authoritative.parent / f".fulfillment-shadow-{uuid.uuid4().hex}"
     else:
         chosen = Path(shadow_root)
-    if _is_inside(chosen, authoritative):
-        raise ValueError(
-            f"shadow root {chosen} must not live inside the authoritative root {authoritative}"
-        )
+    _validate_shadow_root(chosen, authoritative)
     seeded = chosen.exists()
     if not seeded:
         _mirror_root(authoritative, chosen)
@@ -571,21 +569,71 @@ def shadow_custody(
             shutil.rmtree(chosen, ignore_errors=True)
 
 
-def _is_inside(candidate: Path, parent: Path) -> bool:
-    """Return whether *candidate* physically resolves at or inside *parent*.
+def _validate_shadow_root(chosen: Path, authoritative: Path) -> None:
+    candidate = chosen.resolve()
+    original = authoritative.resolve()
+    if candidate.is_relative_to(original):
+        raise ValueError(
+            f"shadow root {chosen} must not live inside the authoritative root {authoritative}"
+        )
+    if original.is_relative_to(candidate):
+        raise ValueError(
+            f"shadow root {chosen} must not contain the authoritative root {authoritative}"
+        )
+    _validate_output_entry(chosen, directory=True)
 
-    Containment is decided after resolving symlinks on both sides. A lexical
-    comparison accepts a shadow root that merely *looks* like a sibling while
-    being a symlink into authoritative custody, and a shadow that resolves into
-    the authoritative root writes candidate bytes over authoritative ones. Both
-    sides are resolved because a receipt root is itself commonly reached through
-    a symlink, and resolving only one side would refuse legitimate siblings.
-    ``os.path.realpath`` is non-strict, so a shadow root that does not exist yet
-    resolves through its existing prefix.
+
+def _validate_output_entry(path: Path, *, directory: bool) -> None:
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        return
+    safe = (
+        stat.S_ISDIR(entry.st_mode)
+        if directory
+        else stat.S_ISREG(entry.st_mode) and entry.st_nlink == 1
+    )
+    if not safe:
+        expected = "directory" if directory else "regular file"
+        raise ValueError(f"unsafe fulfillment output path {path}: expected an unaliased {expected}")
+
+
+def _validate_output_file(path: Path, *, root: Path) -> None:
+    relative = path.relative_to(root)
+    for parent in reversed(relative.parents[:-1]):
+        _validate_output_entry(root / parent, directory=True)
+    _validate_output_entry(path, directory=False)
+
+
+def _validate_shadow_output(
+    shadow: ShadowCustody, *, environment: FulfillmentEnvironment
+) -> None:
+    """Check retained scratch before staging inputs or invoking an executor.
+
+    Recipes may mint artifact names from their results, and SQLite may write
+    sidecars. Check the existing tree because those names are unavailable here.
     """
-    absolute_candidate = Path(os.path.realpath(candidate))
-    absolute_parent = Path(os.path.realpath(parent))
-    return absolute_candidate == absolute_parent or absolute_parent in absolute_candidate.parents
+    if Path(shadow.environment.root) != shadow.root:
+        raise ValueError("shadow environment must write beneath its own output root")
+    _validate_shadow_root(shadow.root, Path(environment.root))
+
+    def fail(error: OSError) -> None:
+        raise error
+
+    if not shadow.root.exists():
+        return
+    for directory, directories, files in os.walk(shadow.root, onerror=fail):
+        for name in directories:
+            _validate_output_entry(Path(directory) / name, directory=True)
+        for name in files:
+            _validate_output_entry(Path(directory) / name, directory=False)
+
+
+def _execute_candidate(
+    request: NodeRequest, *, environment: FulfillmentEnvironment, shadow: ShadowCustody
+) -> tuple[AnyManifest, Path]:
+    _validate_shadow_output(shadow, environment=environment)
+    return execute_node(request, environment=shadow.environment)
 
 
 def _mirror_root(source: Path, destination: Path) -> None:
@@ -658,7 +706,7 @@ def _rebuild_in_shadow(
         ).manifest,
         node_kind=request.node_kind,
     )
-    rebuilt, _path = execute_node(request, environment=shadow.environment)
+    rebuilt, _path = _execute_candidate(request, environment=environment, shadow=shadow)
     observed = output_projection(rebuilt, node_kind=request.node_kind)
     differences = compare_output_projections(expected, observed)
     return NodeRebuildOutcome(
@@ -811,6 +859,8 @@ def _repair_in_shadow(
     if failed_bytes.raw is None:  # pragma: no cover - present implies bytes were read
         raise RuntimeError("a present receipt must carry the bytes admission read")
     stored_manifest = load_manifest_bytes(failed_bytes.raw)
+    _validate_shadow_output(shadow, environment=environment)
+    _validate_repair_destination(stored_manifest, path=manifest_path, root=root)
     quarantined = _quarantine_failed_bytes(
         stored_manifest,
         manifest_path=manifest_path,
@@ -820,7 +870,7 @@ def _repair_in_shadow(
     old_manifest_sha256 = quarantined[0].observed_sha256
     _purge_mirrored_corruption(stored_manifest, shadow_root=shadow.root)
 
-    candidate, candidate_path = execute_node(request, environment=shadow.environment)
+    candidate, candidate_path = _execute_candidate(request, environment=environment, shadow=shadow)
     candidate_outcome = admit_node(request, environment=shadow.environment, path=candidate_path)
     if not candidate_outcome.admitted:
         raise FulfillmentRepairError(
@@ -846,7 +896,7 @@ def _repair_in_shadow(
             f"authoritative root: {promoted_outcome.describe()}",
             outcome=promoted_outcome,
         )
-    replacement_sha256 = _publish_manifest_bytes(promoted, path=manifest_path, root=root)
+    _publish_manifest_bytes(promoted, path=manifest_path, root=root, original=failed_bytes.raw)
 
     repaired_bytes = AdmittedManifestBytes()
     admission_after = admit_node(request, environment=environment, capture=repaired_bytes)
@@ -857,6 +907,7 @@ def _repair_in_shadow(
             outcome=admission_after,
         )
 
+    receipt = repaired_bytes.receipt(node_kind=request.node_kind, root=root)
     record = RepairRecord(
         node_key=request.node_key,
         node_kind=request.node_kind,
@@ -865,7 +916,7 @@ def _repair_in_shadow(
         manifest_relative_path=manifest_path.relative_to(root).as_posix(),
         triggering_admission=failure,
         quarantined=list(quarantined),
-        replacement_manifest_sha256=replacement_sha256,
+        replacement_manifest_sha256=receipt.manifest_sha256,
         replacement_artifacts=[_artifact_projection(a) for a in promoted.artifacts],
         admission_after_repair=admission_after,
         started_at=started_at,
@@ -880,7 +931,7 @@ def _repair_in_shadow(
     return RepairResult(
         record=record,
         record_path=record_path,
-        receipt=repaired_bytes.receipt(node_kind=request.node_kind, root=root),
+        receipt=receipt,
     )
 
 
@@ -967,6 +1018,7 @@ def _quarantine_bytes(
     observed = hashlib.sha256(data).hexdigest()
     relative = f"{FULFILLMENT_QUARANTINE_DIRECTORY}/sha256/{observed[:2]}/{observed}{suffix}"
     destination = root / Path(relative)
+    _validate_output_file(destination, root=root)
     if destination.is_file():
         if destination.read_bytes() != data:
             raise FulfillmentRepairError(
@@ -1058,17 +1110,23 @@ def _promote_artifact_bytes(
     return artifact.model_copy(update={"uri": stored.uri})
 
 
-def _publish_manifest_bytes(manifest: AnyManifest, *, path: Path, root: Path) -> str:
-    """Publish manifest bytes by write-then-rename and return their SHA-256.
+def _validate_repair_destination(manifest: AnyManifest, *, path: Path, root: Path) -> None:
+    canonical = canonical_manifest_path(manifest.kind, manifest.id, root=root)
+    if path != canonical:
+        raise FulfillmentRepairError(
+            f"repair receipt {path} is outside its canonical path {canonical}"
+        )
+    _validate_output_file(path, root=root)
 
-    ``os.replace`` inside the manifest's own directory is as close to atomic as
-    the filesystem allows: the authoritative path holds either the previous
-    bytes or the fully written replacement, never a partial candidate.
-    """
-    data = manifest.model_dump_json(indent=2, exclude_none=True).encode("utf-8") + b"\n"
-    write_bytes_atomic(path, data)
-    index_manifest_file(path, root=root)
-    return sha256_bytes(data)
+
+def _publish_manifest_bytes(
+    manifest: AnyManifest, *, path: Path, root: Path, original: bytes
+) -> None:
+    """Replace the failed receipt through the canonical manifest writer."""
+    _validate_repair_destination(manifest, path=path, root=root)
+    if path.read_bytes() != original:
+        raise FulfillmentRepairError(f"repair receipt {path} changed after admission")
+    write_manifest(manifest, root=root)
 
 
 def _publish_repair_record(
@@ -1089,6 +1147,7 @@ def _publish_repair_record(
         / safe_manifest_key(record.manifest_id)
     )
     path = directory / f"{failed_manifest_sha256}.json"
+    _validate_output_file(path, root=root)
     write_bytes_atomic(
         path,
         record.model_dump_json(indent=2).encode("utf-8") + b"\n",
