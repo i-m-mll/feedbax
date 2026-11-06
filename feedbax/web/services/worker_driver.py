@@ -36,7 +36,7 @@ from feedbax.orchestration.drivers.capabilities import (
     SpendSemantics,
     TeardownSemantics,
 )
-from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES, RunEvent
+from feedbax.orchestration.events import RUN_EVENT_TERMINAL_TYPES, RunEvent, RunEventReader
 from feedbax.orchestration.state import RunSetState
 from feedbax.web.worker.identity import require_worker_job_id
 from feedbax.web.worker.transport import (
@@ -45,7 +45,8 @@ from feedbax.web.worker.transport import (
     WorkerEndpoint,
     WorkerResponseError,
     WorkerTransportError,
-    _check_response,
+    check_event_stream_response,
+    decode_worker_event,
     request_json_sync,
 )
 
@@ -57,6 +58,17 @@ class _OwnedStream:
     cancel: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     response: Any | None = None
+
+
+@dataclass(frozen=True)
+class _StreamFailure:
+    detail: str
+    reconnectable: bool
+    eof_at: int | None = None
+
+
+class _WorkerStreamEnded(WorkerTransportError):
+    """An HTTP response ended cleanly before delivering a terminal run event."""
 
 
 class WorkerStreamTeardownError(RuntimeError):
@@ -111,7 +123,7 @@ class WorkerHttpDriver:
         self._stream_lock = threading.Lock()
         self._teardown_started = False
         self._streams: dict[str, _OwnedStream] = {}
-        self._stream_errors: dict[str, str] = {}
+        self._stream_errors: dict[str, _StreamFailure] = {}
 
     def provision(self, bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
         del state
@@ -173,8 +185,14 @@ class WorkerHttpDriver:
                 status="failed",
                 detail=paths["failed"].read_text(encoding="utf-8").strip() or None,
             )
+        with self._stream_lock:
+            if row_id in self._streams:
+                return DriverRowProbe(status="running")
+            error = self._stream_errors.get(row_id)
+        if error is not None and not error.reconnectable:
+            return DriverRowProbe(status="failed", detail=error.detail)
         try:
-            payload = request_json_sync(
+            request_json_sync(
                 self.endpoint,
                 "GET",
                 f"/jobs/{row.row_id}/status",
@@ -185,14 +203,6 @@ class WorkerHttpDriver:
             return self._orphan_probe(row.row_id, detail=str(exc))
         except WorkerTransportError:
             return self._orphan_probe(row.row_id, detail="worker request failed")
-        status = payload.get("status")
-        if status == "completed":
-            paths["done"].write_text("status=completed\n", encoding="utf-8")
-            return DriverRowProbe(status="completed")
-        if status == "error":
-            detail = str(payload.get("error") or "worker status=error")
-            paths["failed"].write_text(detail + "\n", encoding="utf-8")
-            return DriverRowProbe(status="failed", detail=detail)
         self._ensure_stream_thread(bundle, row)
         return DriverRowProbe(status="running")
 
@@ -275,6 +285,9 @@ class WorkerHttpDriver:
                 raise RuntimeError("worker HTTP driver teardown has started")
             if row_id in self._streams:
                 return
+            error = self._stream_errors.get(row_id)
+            if error is not None and not error.reconnectable:
+                return
             stream = _OwnedStream()
             thread = threading.Thread(
                 target=self._stream_row_events,
@@ -303,12 +316,22 @@ class WorkerHttpDriver:
         paths = _row_paths(bundle, row_id)
         if stream is None:
             stream = _OwnedStream()
+        failure: _StreamFailure | None = None
+        next_seq = 0
         try:
+            events = RunEventReader(paths["event_log"]).read_all()
+            last_event = events[-1] if events else None
+            if last_event is not None and last_event.type in RUN_EVENT_TERMINAL_TYPES:
+                self._write_terminal_sentinel(paths, last_event)
+                return
+            next_seq = last_event.seq + 1 if last_event is not None else 0
+            del events
             self.endpoint.revalidate_address()
             consumption = SSEConsumptionBudget(self.endpoint.limits)
             with httpx.stream(
                 "GET",
                 self.endpoint.url(f"/jobs/{row_id}/stream"),
+                params={"from_seq": next_seq},
                 headers=self.endpoint.authorization_headers(),
                 timeout=self.endpoint.limits.httpx_timeout(),
                 follow_redirects=False,
@@ -318,31 +341,54 @@ class WorkerHttpDriver:
                 if stream.cancel.is_set():
                     response.close()
                     return
-                _check_response(response)
+                check_event_stream_response(response)
+                if response.status_code == 204:
+                    raise WorkerTransportError("Training worker closed without a terminal event.")
                 for chunk in response.iter_bytes():
+                    if stream.cancel.is_set():
+                        return
                     for payload in consumption.feed(chunk):
-                        event = RunEvent.model_validate_json(payload)
+                        event = RunEvent.model_validate(decode_worker_event(payload))
+                        if event.seq < next_seq:
+                            continue
+                        if event.seq != next_seq:
+                            raise WorkerTransportError("Training worker event sequence has a gap.")
                         with paths["event_log"].open("a", encoding="utf-8") as handle:
                             handle.write(event.model_dump_json(exclude_none=True) + "\n")
-                        if event.type == "complete":
-                            paths["done"].write_text("event=complete\n", encoding="utf-8")
-                        elif event.type == "failed":
-                            paths["failed"].write_text("event=failed\n", encoding="utf-8")
                         if event.type in RUN_EVENT_TERMINAL_TYPES:
+                            self._write_terminal_sentinel(paths, event)
                             return
+                        next_seq += 1
+                raise _WorkerStreamEnded(
+                    "Training worker event stream ended without a terminal event."
+                )
         except Exception as exc:
-            if not stream.cancel.is_set():
-                with self._stream_lock:
-                    self._stream_errors[row_id] = (
-                        str(exc)
-                        if isinstance(exc, WorkerTransportError)
-                        else "worker event stream failed"
-                    )
+            with self._stream_lock:
+                previous = self._stream_errors.get(row_id)
+            eof_at = next_seq if isinstance(exc, _WorkerStreamEnded) else None
+            failure = _StreamFailure(
+                detail=str(exc)
+                if isinstance(exc, WorkerTransportError)
+                else "worker event stream failed",
+                reconnectable=isinstance(exc, httpx.TransportError)
+                or (eof_at is not None and (previous is None or previous.eof_at != eof_at)),
+                eof_at=eof_at,
+            )
         finally:
             with self._stream_lock:
+                if not stream.cancel.is_set():
+                    if failure is None:
+                        self._stream_errors.pop(row_id, None)
+                    else:
+                        self._stream_errors[row_id] = failure
                 stream.response = None
                 if self._streams.get(row_id) is stream:
                     del self._streams[row_id]
+
+    @staticmethod
+    def _write_terminal_sentinel(paths: Mapping[str, Path], event: RunEvent) -> None:
+        sentinel = paths["done"] if event.type == "complete" else paths["failed"]
+        sentinel.write_text(f"event={event.type}\n", encoding="utf-8")
 
     def _orphan_probe(self, row_id: str, detail: str | None = None) -> DriverRowProbe:
         row_id = require_worker_job_id(row_id)
@@ -352,8 +398,10 @@ class WorkerHttpDriver:
             error = self._stream_errors.get(row_id)
         if thread is not None and thread.is_alive():
             return DriverRowProbe(status="running")
-        error = error or detail or "worker row is no longer reachable"
-        return DriverRowProbe(status="failed", detail=f"orphaned: {error}")
+        message = (
+            error.detail if error is not None else detail or "worker row is no longer reachable"
+        )
+        return DriverRowProbe(status="failed", detail=f"orphaned: {message}")
 
 
 def worker_http_driver_registration() -> DriverRegistration:
