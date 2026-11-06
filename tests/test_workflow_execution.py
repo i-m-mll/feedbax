@@ -33,6 +33,7 @@ from typing import Any, ClassVar
 import pytest
 import numpy as np
 
+from feedbax.analysis import specs as analysis_specs
 from feedbax.analysis.evaluation import EvaluationRecipeResult
 from feedbax.analysis.specs import (
     AnalysisRecipeRegistry,
@@ -466,12 +467,13 @@ def test_a_matrix_receipt_set_executes_analysis_in_row_order_and_rebuilds(
 
 
 @pytest.mark.parametrize("entry_point", ["direct", "workflow"])
-@pytest.mark.parametrize("versioned", [True, False], ids=["versioned", "unversioned"])
-def test_analysis_recipe_revision_controls_reuse_and_preserves_exact_receipts(
+@pytest.mark.parametrize("scenario", ["recipe-revision", "engine-revision", "unversioned"])
+def test_analysis_computation_revision_controls_reuse_and_preserves_exact_receipts(
     outputs: QuillonOutputs,
     environment: FulfillmentEnvironment,
     entry_point: str,
-    versioned: bool,
+    scenario: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     compiled = outputs.condensate("revision")
     spec = AnalysisRunSpec.model_validate_json(compiled.document_path.read_bytes())
@@ -488,7 +490,7 @@ def test_analysis_recipe_revision_controls_reuse_and_preserves_exact_receipts(
         def compute(self, _data, **kwargs):
             return super().compute(build_toy_analysis_data(value=computation_value), **kwargs)
 
-    def registered(value: int) -> AnalysisRecipeRegistry:
+    def registered(value: int, revision: str | None) -> AnalysisRecipeRegistry:
         registry = AnalysisRecipeRegistry()
 
         def recipe(_spec, _root, _inputs, _execution_context):
@@ -500,9 +502,7 @@ def test_analysis_recipe_revision_controls_reuse_and_preserves_exact_receipts(
                 data=build_toy_analysis_data(),
             )
 
-        registry.register(
-            spec.analysis_type, recipe, computation_revision=f"recipe-{value}" if versioned else None
-        )
+        registry.register(spec.analysis_type, recipe, computation_revision=revision)
         return registry
 
     def run(
@@ -545,20 +545,27 @@ def test_analysis_recipe_revision_controls_reuse_and_preserves_exact_receipts(
     historical_path = write_manifest(historical, root=root)
     historical_bytes = historical_path.read_bytes()
 
-    first_registry, second_registry = registered(10), registered(20)
-    first, first_path = run(first_registry)
+    first_revision = None if scenario == "unversioned" else "recipe-10"
+    second_revision = "recipe-20" if scenario == "recipe-revision" else first_revision
+    with monkeypatch.context() as prior_engine:
+        if scenario == "engine-revision":
+            prior_engine.setattr(analysis_specs, "ANALYSIS_ENGINE_REVISION", "1")
+        first_registry = registered(10, first_revision)
+        first, first_path = run(first_registry)
     first_bytes = first_path.read_bytes()
-    second, second_path = run(second_registry)
-    again, again_path = run(registered(20))
+    second, second_path = run(registered(20, second_revision))
+    again, again_path = run(registered(20, second_revision))
 
     assert len({historical.id, first.id, second.id}) == 3
     assert len({historical_path, first_path, second_path}) == 3
     assert first.analysis_spec == second.analysis_spec == historical.analysis_spec
-    if versioned:
+    if scenario != "unversioned":
         assert calls == [10, 20]
         assert (again.id, again_path) == (second.id, second_path)
-        assert first.computation is not None and first.computation.recipe_revision == "recipe-10"
-        assert second.computation is not None and second.computation.recipe_revision == "recipe-20"
+        assert first.computation is not None and first.computation.recipe_revision == first_revision
+        assert (
+            second.computation is not None and second.computation.recipe_revision == second_revision
+        )
         if entry_point == "direct":
             assert list(analysis_results_cache_dir(first.id, root=root).glob("*.pkl"))
             assert list(analysis_results_cache_dir(second.id, root=root).glob("*.pkl"))
