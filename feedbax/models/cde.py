@@ -29,6 +29,7 @@ gate can partially counteract the decay for important state dimensions.
 
 import logging
 import math
+from dataclasses import replace
 from typing import Union
 
 import equinox as eqx
@@ -38,7 +39,7 @@ import jax.random as jr
 from equinox import Module, field
 from equinox.nn import State, StateIndex
 from jax.flatten_util import ravel_pytree
-from jaxtyping import Array, Float, PRNGKeyArray, PyTree
+from jaxtyping import Array, Bool, Float, PRNGKeyArray, PyTree
 
 from feedbax.runtime.graph import Component
 
@@ -47,6 +48,12 @@ logger = logging.getLogger(__name__)
 
 class CDENetworkState(Module):
     """State PyTree for CDENetwork.
+
+    Constructing a value explicitly supplies its hidden state. A fresh state
+    created by the network defers hidden initialization to the live model.
+    Use ``CDENetwork.state_view`` to read the effective hidden state. The
+    stored state includes an initialization flag, which changes the PyTree
+    layout of CDE checkpoints.
 
     Attributes:
         input: The concatenated observation vector from the most recent step.
@@ -60,6 +67,7 @@ class CDENetworkState(Module):
     hidden: Float[Array, "hidden_dim"]  # noqa: F821
     output: Float[Array, "action_dim"]  # noqa: F821
     obs_prev: Float[Array, "obs_dim"]  # noqa: F821
+    _use_h0: Bool[Array, ""] = field(default_factory=lambda: jnp.asarray(False))
 
 
 class CDENetwork(Component):
@@ -206,11 +214,30 @@ class CDENetwork(Component):
         # Build initial state for Equinox State management
         init_state = CDENetworkState(
             input=jnp.zeros(obs_dim, dtype=dtype),
-            hidden=self.h0,
+            hidden=jnp.zeros(hidden_dim, dtype=dtype),
             output=jnp.zeros(out_size, dtype=dtype),
             obs_prev=jnp.zeros(obs_dim, dtype=dtype),
+            _use_h0=jnp.asarray(True),
         )
         self.state_index = StateIndex(init_state)
+
+    def _effective_hidden(self, state: CDENetworkState) -> Float[Array, "hidden_dim"]:
+        return jnp.where(state._use_h0, self.h0, state.hidden)
+
+    def state_view(self, state: State) -> CDENetworkState:
+        value = state.get(self.state_index)
+        return replace(value, hidden=self._effective_hidden(value), _use_h0=jnp.asarray(False))
+
+    def replace_state_value(self, state: State, path: tuple[str, ...], value: PyTree) -> State:
+        if not path:
+            return state.set(self.state_index, replace(value, _use_h0=jnp.asarray(False)))
+        if path == ("hidden",):
+            current = state.get(self.state_index)
+            return state.set(
+                self.state_index,
+                replace(current, hidden=value, _use_h0=jnp.asarray(False)),
+            )
+        return super().replace_state_value(state, path, value)
 
     def _cde_step(
         self,
@@ -317,7 +344,7 @@ class CDENetwork(Component):
         obs = jnp.concatenate([flat_input, flat_feedback], axis=-1)
 
         # CDE step
-        h_new = self._cde_step(net_state.hidden, obs, net_state.obs_prev)
+        h_new = self._cde_step(self._effective_hidden(net_state), obs, net_state.obs_prev)
 
         # Action readout
         action = self._get_action(h_new)

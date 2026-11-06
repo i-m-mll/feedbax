@@ -136,7 +136,7 @@ def set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
     node's state value. For example, ``"net.hidden"`` selects the ``hidden``
     attribute of the state owned by graph node ``"net"``.
     """
-    parts = [p for p in path.split(".") if p]
+    parts = tuple(p for p in path.split(".") if p)
 
     def _set_component(component: Component, parts, state):
         if isinstance(component, Graph):
@@ -147,16 +147,7 @@ def set_state_by_path(model: Component, state: eqx.nn.State, path: str, value):
                 raise ValueError(f"Unknown node '{node_name}' in init path '{path}'")
             return _set_component(component.nodes[node_name], parts[1:], state)
 
-        idx = getattr(component, "state_index", None)
-        if not isinstance(idx, eqx.nn.StateIndex):
-            raise ValueError(f"Component has no state_index for init path '{path}'")
-
-        if parts:
-            import operator as _op
-
-            comp_state = eqx.tree_at(_op.attrgetter(".".join(parts)), state.get(idx), value)
-            return state.set(idx, comp_state)
-        return state.set(idx, value)
+        return component.replace_state_value(state, parts, value)
 
     return _set_component(model, parts, state)
 
