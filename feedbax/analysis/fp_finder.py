@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from functools import partial
-from typing import Literal, Optional
+from typing import Optional
 
 import equinox as eqx
 import jax
@@ -23,10 +23,6 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray, PyTree
 
 from feedbax.analysis.math import squareform_pdist
 
-# class FixedPoint(Module):
-#     value: Array
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -38,24 +34,7 @@ class FPFilteredResults(Module):
 
 
 class FixedPointFinder(Module):
-    """Transformable version of FixedPointFinder, without verbosity.
-
-    Arguments:
-        func: Callable describing the dynamical system. Takes a state array,
-            and returns an updated state array.
-        candidates: Array of initial candidate states. Each will be optimized
-            to converge on a fixed point.
-        tol: Tolerance for the optimization. If the mean loss across candidates
-            falls below this value, the optimization will terminate.
-        n_batches: Number of batches to run the optimization for, if the
-            tolerance is not reached.
-        n_batches_per_iter: Number of optimization iterations to run, between
-            each check of the termination conditions. Note that if `n_batches`
-            is not divisible by `n_batches_per_iter`, the optimization may
-            run for up to `n_batches + n_batches_per_iter - 1` (?) iterations,
-            if the tolerance is not reached by the penultimate check.
-        key: Random key for evaluating `func`. (Not implemented yet!)
-    """
+    """JAX-transformable optimizer for batches of fixed-point candidates."""
 
     optimizer: optax.GradientTransformation
     enable_log: bool = True
@@ -71,52 +50,40 @@ class FixedPointFinder(Module):
         *,
         key: PRNGKeyArray,
     ) -> tuple[int, Float[Array, "n_candidates state"], Float[Array, "n_candidates"]]:  # noqa: F821
-        # NOTE: Like the original Fixed Point Finder, this implementation
-        #   1. Optimizes the mean loss of a batch of candidates simultaneously,
-        #      rather than optimizing each candidate individually. This seems to be
-        #      necessary for good convergence.
-        #   2. Runs multiple iterations of the optimization before each check of the
-        #      termination criteria; this shouldn't strictly be necessary but its
-        #      results are consistent with the original implementation.
+        """Optimize candidates to minimize their mean fixed-point MSE.
 
-        # This loss takes the mean over all the candidates.
-        loss_fn = get_total_fp_loss_fn(func)
+        Check the current mean loss against `loss_tol` before the first update
+        and after each chunk of up to `n_batches_per_iter` updates. Stop when
+        the loss is at or below the tolerance or after `n_batches` updates.
+        Return the update count, candidates, and their losses in ascending loss
+        order. The random key is reserved for future stochastic dynamics.
+        """
+        if n_batches_per_iter <= 0:
+            raise ValueError("n_batches_per_iter must be positive.")
+
+        candidate_loss = get_fp_loss_fn(func)
+        loss_grad = jax.grad(get_total_fp_loss_fn(func))
+        loss_tol = jnp.asarray(loss_tol).reshape(())
         opt_state = self.optimizer.init(candidates)
-        # The candidate points themselves are the parameters to be optimized;
-        # over the optimization they should converge on fixed points.
-        params = candidates
 
-        val = (0, params, jnp.inf, opt_state)
+        def update(_, state):
+            params, opt_state = state
+            grads = loss_grad(params)
+            updates, opt_state = self.optimizer.update(grads, opt_state, params)
+            return optax.apply_updates(params, updates), opt_state
 
-        def updates(params, opt_state):
-            def update(batch_idx, result):
-                params, opt_state, loss = result
+        def cond_fn(state):
+            i_batch, _, losses, _ = state
+            return (i_batch < n_batches) & (jnp.mean(losses) > loss_tol)
 
-                loss, grads = jax.value_and_grad(loss_fn)(params)
-                updates, opt_state = self.optimizer.update(grads, opt_state, params)
-                params = optax.apply_updates(params, updates)
+        def body_fn(state):
+            i_batch, params, _, opt_state = state
+            end_batch = i_batch + jnp.minimum(n_batches_per_iter, n_batches - i_batch)
+            params, opt_state = jax.lax.fori_loop(i_batch, end_batch, update, (params, opt_state))
+            return end_batch, params, candidate_loss(params), opt_state
 
-                result = params, opt_state, loss
-                return result
-
-            result = params, opt_state, jnp.inf
-            return jax.lax.fori_loop(0, n_batches_per_iter, update, result)
-
-        def cond_fn(val):
-            i_batch, _, loss, _ = val
-            return (i_batch < n_batches) & (loss > loss_tol)
-
-        def body_fn(val):
-            i_batch, params, _, opt_state = val
-            params, opt_state, loss = updates(params, opt_state)
-            i_batch += n_batches_per_iter
-            val = i_batch, params, loss, opt_state
-            return val
-
-        i_batch, fps, _, opt_state = jax.lax.while_loop(cond_fn, body_fn, val)
-
-        losses = get_fp_loss_fn(func)(fps)
-
+        initial_state = 0, candidates, candidate_loss(candidates), opt_state
+        i_batch, fps, losses, _ = jax.lax.while_loop(cond_fn, body_fn, initial_state)
         loss_sort_idxs = jnp.argsort(losses)
 
         return i_batch, fps[loss_sort_idxs], losses[loss_sort_idxs]
@@ -137,24 +104,20 @@ class FixedPointFinder(Module):
         key: PRNGKeyArray,  # TODO
     ) -> FPFilteredResults:
         """Finds fixed points and filters by loss, and (optionally) duplicates and outliers."""
-        n_batches, fps, losses = self(
+        n_updates, fps, losses = self(
             func, candidates, loss_tol, n_batches, n_batches_per_iter, key=key
         )
         if self.enable_log:
-            jax.debug.callback(
-                self._log,
-                (
-                    f"Optimization of {candidates.shape[0]} candidates"
-                    f"converged after {n_batches} batches."
-                ),
-            )
+            jax.debug.callback(self._log, candidates.shape[0], n_updates)
         masks, counts = exclude_points(
             fps, losses, loss_tol, outlier_tol, unique_tol, distance_norm, verbose
         )
         return FPFilteredResults(fps, losses, masks, counts)
 
-    def _log(self, msg):
-        logger.debug(msg)
+    def _log(self, n_candidates, n_updates):
+        logger.debug(
+            "Optimization of %d candidates finished after %d updates.", n_candidates, n_updates
+        )
 
 
 def exclude_points(
@@ -166,134 +129,64 @@ def exclude_points(
     ord: int | str | None = 2,
     verbose: bool = False,
 ):
-    """Returns array masks of the elements of `points`:
+    """Filter finite points in stages and return cumulative masks and pass counts.
 
-    - whose respective entry in `values` exceeds `value_tol`;
-    - whose nearest neighbouring point is more distant than `outlier_tol`;
-    - which are duplicates of some already-included point, as determined by
-      their distance to that point being less than `unique_tol`.
+    First require a finite value strictly below `value_tol`. If `outlier_tol`
+    is set and multiple points pass, require another passing point within that
+    distance. Then, if `unique_tol` is set, consider the survivors in increasing
+    value order, breaking ties by input order. Retain a point if no previously
+    retained point is within `unique_tol`.
 
-    Arguments:
-        points: Array of points to be filtered.
-        values: Array of values associated with respective points.
-        value_tol: Maximum value for inclusion of a point.
-        outlier_tol: Maximum distance to nearest neighbour for inclusion of a
-            point.
-        unique_tol: Maximum distance between points to be considered
-            duplicates.
-        ord: The order of the norm used to compute distances. See the
-            documentation for `jax.numpy.linalg.norm`.
-        verbose: Whether to report on the number of points excluded by each
-            criterion.
+    Both distance thresholds are inclusive and use the norm specified by `ord`.
+    The masks align with the input rows. A disabled stage passes its input
+    through. When verbose, report how many points each stage rejected.
     """
+    meets_tolerance = jnp.isfinite(values) & (values < value_tol)
+    meets_tolerance &= jnp.all(jnp.isfinite(points), axis=1)
+    not_outlier = meets_tolerance
+    unique = meets_tolerance
     n = len(points)
-    if verbose:
-        print(f"Filtering {n} points:")
 
-    tol_mask = values < value_tol
-    if verbose:
-        print(f"\tPoints with values not meeting tolerance: {n - sum(tol_mask)}/{n}")
-
-    outliers_mask = duplicates_mask = jnp.ones(n, jnp.bool_)
-
-    if (outlier_tol is not None or unique_tol is not None) and len(points) > 1:
+    if n > 1 and (outlier_tol is not None or unique_tol is not None):
         distances = squareform_pdist(points, ord=ord)
 
         if outlier_tol is not None:
-            outliers_mask = find_outliers_mask(distances, outlier_tol)
-            if verbose:
-                print(f"\tOutliers: {sum(outliers_mask)}/{n}")
+            neighbors = (distances <= outlier_tol) & ~jnp.eye(n, dtype=bool)
+            has_neighbor = jnp.any(neighbors & meets_tolerance[None, :], axis=1)
+            not_outlier = meets_tolerance & (has_neighbor | (jnp.sum(meets_tolerance) == 1))
 
+        unique = not_outlier
         if unique_tol is not None:
-            duplicates_mask = find_duplicates_mask(distances, unique_tol)
-            if verbose:
-                print(f"\tDuplicates: {sum(duplicates_mask)}/{n}")
+            order = jnp.argsort(values, stable=True)
 
-        if verbose:
-            print(f"\n\tNote that these categories are not exclusive, so their sum may exceed {n}.")
+            def choose(available, idx):
+                keep = available[idx]
+                available = available & ~(keep & (distances[idx] <= unique_tol))
+                return available, keep
 
-    elif verbose:
-        print(
-            f"\t\nDataset contains {len(points)} points; "
-            "no outlier or duplicate checks were performed."
-        )
+            _, keep_in_order = jax.lax.scan(choose, not_outlier, order)
+            unique = jnp.zeros_like(not_outlier).at[order].set(keep_in_order)
 
     masks = {
-        "meets_all_criteria": tol_mask & outliers_mask & duplicates_mask,
-        "meets_tolerance": tol_mask,
-        "not_outlier": outliers_mask,
-        "unique": duplicates_mask,
+        "meets_all_criteria": unique,
+        "meets_tolerance": meets_tolerance,
+        "not_outlier": not_outlier,
+        "unique": unique,
     }
-
     counts = jt.map(jnp.sum, masks)
 
+    if verbose:
+        jax.debug.print(
+            "Filtering {total} points: {invalid} failed tolerance, "
+            "{outliers} outliers, {duplicates} duplicates, {accepted} accepted.",
+            total=n,
+            invalid=n - counts["meets_tolerance"],
+            outliers=counts["meets_tolerance"] - counts["not_outlier"],
+            duplicates=counts["not_outlier"] - counts["unique"],
+            accepted=counts["meets_all_criteria"],
+        )
+
     return masks, counts
-
-
-def find_outliers_mask(arr, tol):
-    """Returns mask of columns of `arr` -- false when the min element exceeds `tol`."""
-    arr_eyeless = jnp.fill_diagonal(arr, jnp.inf, inplace=False)
-    outlier_mask = jnp.any(arr_eyeless <= tol, axis=0)
-    return outlier_mask
-
-
-def find_duplicates_mask(dists, tol, bound: Literal["low", "high"] = "low"):
-    """Given a distance matrix, return a 1D mask of all duplicate entries,
-    keeping `True` one of each set of duplicates.
-
-    Whether an entry is a duplicate is determined by whether its distance to its nearest
-    neighbour is less than some threshold `tol`.
-
-    Taking the pairwise threshold as a relation, we could partition the points into a set
-    of disconnected graphs, where each member of each graph satisfies the duplicate
-    relation with at least one other member of that graph. Computing these graphs would
-    be relatively complex and annoying, but it would make the result of this function
-    invariant to permutations of the distance matrix (i.e. permutations of the points
-    used to compute the distance matrix).
-
-    On the other hand, a pairwise approach to identifying duplicates would tend
-    to retain whichever member of the pair appeared first in the distance matrix, such that
-    this function would not be permutation invariant.
-
-    We take a middle ground. We start by permuting the distance matrix such that the
-    points appear in order of the number of duplicates they have. Sorting them in
-    descending order, the points with the most duplicates appear first, and thus we tend
-    to exclude the more "peripheral" duplicates. In ascending order, we tend
-    to exclude the more "central" duplicates . At each of these bounds, `'low'` and
-    `'high'` respectively, the result of this function is permutation-invariant.
-
-    !!! Note
-        Generally, you should choose `bound='low'`. In cases where all points are
-        duplicates, `bound='high'` may exclude everything.
-
-    !!! Example
-        ```python
-        xs = jnp.array([
-            [1.0, 2.0],
-            [1.1, 2.1],
-            [1.2, 2.2],
-        ])
-        dists = squareform_pdist(xs)
-
-        find_duplicates_mask(dists, 0.2, bound='low')
-        # array([False, True, False])
-
-        find_duplicates_mask(dists, 0.2, bound='high')
-        # array([True, False, True])
-        ```
-
-    """
-    d = {"low": -1, "high": 1}[bound]
-
-    idx_by_n_dups = jnp.argsort(jnp.sum(dists < tol, axis=0))[::d]
-    invert_idx_by_n_dups = jnp.argsort(idx_by_n_dups)
-    dists = dists[:, idx_by_n_dups][idx_by_n_dups, :]
-
-    tril_idxs = jnp.tril_indices(dists.shape[0], 0, dists.shape[1])
-    dists_triu = dists.at[tril_idxs].set(jnp.inf)
-    duplicate_mask = jnp.all(dists_triu > tol, axis=0)
-
-    return duplicate_mask[invert_idx_by_n_dups]
 
 
 def fp_adam_optimizer(

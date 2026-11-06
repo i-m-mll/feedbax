@@ -1,12 +1,13 @@
 import jax.numpy as jnp
 import jax.random as jr
+import optax
+import pytest
 
 import feedbax.analysis.fps as fps_module
 from feedbax.analysis.fp_finder import (
     FixedPointFinder,
     exclude_points,
     fp_adam_optimizer,
-    get_fp_loss_fn,
 )
 from feedbax.analysis.fps import FixedPoints, FixedPointsPorts
 
@@ -51,18 +52,60 @@ def test_fixed_point_finder_converges_on_linear_fixed_point() -> None:
     assert float(jnp.abs(fixed_points[0, 0])) < 0.05
 
 
-def test_fixed_point_loss_and_filters_are_available_as_low_level_utilities() -> None:
-    loss_fn = get_fp_loss_fn(lambda state: 0.5 * state)
-    losses = loss_fn(jnp.array([[2.0], [4.0]], dtype=jnp.float32))
-
-    masks, counts = exclude_points(
-        points=jnp.array([[0.0], [0.01], [5.0]], dtype=jnp.float32),
-        values=jnp.array([1e-8, 1e-8, 1.0], dtype=jnp.float32),
-        value_tol=jnp.array(1e-6, dtype=jnp.float32),
-        outlier_tol=0.1,
-        unique_tol=0.02,
+@pytest.mark.parametrize(
+    ("budget", "tolerance", "expected_updates"),
+    [
+        pytest.param(3, 0.0, 3, id="partial-final-chunk"),
+        pytest.param(6, 0.2, 2, id="current-chunk-loss-meets-tolerance"),
+        pytest.param(6, 0.7, 2, id="check-only-between-chunks"),
+        pytest.param(6, 2.5, 0, id="initial-loss-meets-tolerance"),
+    ],
+)
+def test_fixed_point_finder_update_boundaries(budget, tolerance, expected_updates) -> None:
+    finder = FixedPointFinder(optax.sgd(learning_rate=0.5))
+    n_updates, points, losses = finder(
+        jnp.zeros_like,
+        jnp.array([[2.0], [1.0]]),
+        jnp.array(tolerance),
+        n_batches=budget,
+        n_batches_per_iter=2,
+        key=jr.PRNGKey(0),
     )
 
-    assert jnp.allclose(losses, jnp.array([1.0, 4.0], dtype=jnp.float32))
-    assert counts["meets_tolerance"] == 2
-    assert counts["meets_all_criteria"] == 1
+    # With two scalar candidates the mean squared loss gives a gradient equal
+    # to each candidate's value, so an SGD step halves both values.
+    expected_points = jnp.array([[1.0], [2.0]]) * 0.5**expected_updates
+    assert int(n_updates) == expected_updates
+    assert jnp.array_equal(points, expected_points)
+    assert jnp.array_equal(losses, expected_points[:, 0] ** 2)
+
+
+@pytest.mark.parametrize("middle_loss", [1.0, 0.25])
+def test_duplicate_chain_keeps_both_separated_roots(middle_loss: float) -> None:
+    masks, _ = exclude_points(
+        points=jnp.array([[0.0], [0.9], [1.8]]),
+        values=jnp.array([0.0, middle_loss, 0.0]),
+        value_tol=jnp.array(0.5),
+        unique_tol=1.0,
+    )
+
+    assert masks["meets_all_criteria"].tolist() == [True, False, True]
+
+
+def test_outlier_needs_an_eligible_neighbor_and_best_duplicate_survives() -> None:
+    masks, counts = exclude_points(
+        points=jnp.array([[0.0], [0.125], [1.75], [1.875]]),
+        values=jnp.array([0.25, 0.0, 0.0, 1.0]),
+        value_tol=jnp.array(0.5),
+        outlier_tol=0.125,
+        unique_tol=0.125,
+    )
+
+    assert masks["not_outlier"].tolist() == [True, True, False, False]
+    assert masks["meets_all_criteria"].tolist() == [False, True, False, False]
+    assert counts == {
+        "meets_tolerance": 3,
+        "not_outlier": 2,
+        "unique": 1,
+        "meets_all_criteria": 1,
+    }
