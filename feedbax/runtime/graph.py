@@ -1533,11 +1533,15 @@ class Graph(Component):
         new_input_bindings = {k: v for k, v in self.input_bindings.items() if v[0] != name}
         new_output_bindings = {k: v for k, v in self.output_bindings.items() if v[0] != name}
 
-        return eqx.tree_at(
+        graph = eqx.tree_at(
             lambda g: (g.nodes, g.wires, g.input_bindings, g.output_bindings),
             self,
             (new_nodes, new_wires, new_input_bindings, new_output_bindings),
         )
+        object.__setattr__(
+            graph, "component_bindings", {k: v for k, v in self.component_bindings.items() if k != name}
+        )
+        return graph
 
     def _with_wires(self, wires: tuple[Wire, ...]) -> "Graph":
         graph = eqx.tree_at(lambda g: g.wires, self, wires)

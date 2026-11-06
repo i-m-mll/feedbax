@@ -13,6 +13,7 @@ from feedbax.compiler import (
     ResolvedGraph,
     compile_graph,
 )
+from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentMigration, ComponentRegistry
 from feedbax.runtime.components import Constant, Gain
 from feedbax.contracts.graph import (
@@ -29,6 +30,30 @@ from feedbax.contracts.graph import (
     AdditiveGraphChannelTargetSpec,
 )
 from feedbax.runtime.graph import init_state_from_component
+
+
+def test_replacing_a_removed_node_does_not_reuse_its_trainability() -> None:
+    registry = ComponentRegistry(load_user_components=False)
+
+    def compile_linear(**params):
+        spec = GraphSpec(
+            nodes={
+                "linear": ComponentSpec(
+                    type="Linear",
+                    params={"input_size": 1, "output_size": 1, **params},
+                    input_ports=["input"],
+                    output_ports=["output"],
+                )
+            }
+        )
+        return compile_graph(GraphDocument(graph=spec), registry).graph
+
+    frozen = compile_linear(trainable=False)
+    fresh = compile_linear().nodes["linear"]
+    replacement = frozen.remove_node("linear").add_node("linear", fresh)
+
+    assert graph_to_spec(frozen, registry).nodes["linear"].params["trainable"] is False
+    assert "trainable" not in graph_to_spec(replacement, registry).nodes["linear"].params
 
 
 def _document() -> GraphDocument:
