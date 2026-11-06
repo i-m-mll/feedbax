@@ -23,6 +23,7 @@ import pytest
 from equinox.nn import StateIndex
 
 import feedbax.training.checkpoint_custody as custody_module
+from feedbax.components.equinox import PReLU
 from feedbax.training import CheckpointForkPlanRelockResult
 from feedbax.contracts.checkpoints import (
     BatchHistory,
@@ -654,6 +655,52 @@ def test_checkpoint_transaction_derives_slots_and_loads_multi_slot_state(tmp_pat
     assert loaded.manifest.transaction_id == result.manifest.transaction_id
     assert loaded.slots["controller"].tolist() == [1.0, 2.0]
     assert loaded.slots["rng"].dtype == jnp.uint32
+
+
+@pytest.mark.parametrize("legacy_slot", [None, "controller", "controller_optimizer"])
+def test_generated_wrapper_checkpoint_requires_current_state_layout(
+    tmp_path: Path, legacy_slot: str | None
+) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    model = PReLU(jnp.asarray(0.5))
+    slots = _minimax_slots()
+    slots["controller"] = model
+    slots["controller_optimizer"] = optax.adam(0.01).init(model)
+    # Recreate the old pickle state, including a None in a filtered optimizer tree.
+    if legacy_slot == "controller":
+        vars(model)["init_alpha"] = 0.25
+    elif legacy_slot == "controller_optimizer":
+        vars(slots["controller_optimizer"][0].mu)["init_alpha"] = None
+
+    published = write_checkpoint_transaction(
+        tmp_path,
+        run_spec=run_spec,
+        phase_program=program,
+        barrier_name="after_warmup",
+        coordinate=_coordinate(),
+        slots=slots,
+    )
+
+    def resume():
+        return load_latest_checkpoint(
+            tmp_path,
+            expected_run_spec=run_spec,
+            expected_phase_program=program,
+            expected_slots=slots,
+        )
+
+    if legacy_slot is not None:
+        with pytest.raises(
+            CheckpointCompatibilityError, match=rf"slot '{legacy_slot}'.*pre-v3.*init_alpha"
+        ):
+            resume()
+        return
+
+    loaded = resume()
+    assert loaded.manifest == published.manifest
+    assert loaded.slots["controller"].init_alpha == 0.5
+    assert loaded.slots["controller_optimizer"][0].mu.init_alpha == 0.0
 
 
 def test_load_reuses_manifest_structural_fingerprints_for_loaded_slots(

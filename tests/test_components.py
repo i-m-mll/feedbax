@@ -2,11 +2,13 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import equinox as eqx
+import optax
 import pytest
 
 import feedbax.components.equinox as graph_eqx
 import feedbax.runtime.components as runtime_components
 import feedbax._vendor.jax_cookbook.tree as jtree
+from feedbax._vendor.jax_cookbook import load, save
 from feedbax._vendor.jax_cookbook.tree import filter_spec_leaves
 from feedbax.runtime.channel import Channel, ChannelSpec
 from feedbax.runtime.components import ElementwiseAffineModulator
@@ -46,7 +48,7 @@ def test_generated_equinox_components_preserve_explicit_float64():
 
 
 def test_generated_equinox_wrapper_contract_metadata_marks_state_and_key_layers():
-    assert graph_eqx.EQUINOX_WRAPPER_SCHEMA_VERSION == "feedbax.equinox_wrappers.v2"
+    assert graph_eqx.EQUINOX_WRAPPER_SCHEMA_VERSION == "feedbax.equinox_wrappers.v3"
     assert graph_eqx.EQUINOX_WRAPPER_EQUINOX_VERSION == eqx.__version__
 
     wrapper_names = {
@@ -69,6 +71,116 @@ def test_generated_equinox_wrapper_contract_metadata_marks_state_and_key_layers(
     }
     assert graph_eqx.Dropout.wrapper_contract["key_handling"] == "forwarded"
     assert graph_eqx.MultiheadAttention.wrapper_contract["key_handling"] == "forwarded"
+
+
+@pytest.mark.parametrize("explicit_weight", [False, True])
+def test_generated_embedding_weight_is_the_live_table(explicit_weight):
+    key = jax.random.key(0)
+    weight = jnp.arange(6, dtype=jnp.float32).reshape(3, 2) if explicit_weight else None
+    component = graph_eqx.Embedding(3, 2, weight=weight, key=key)
+
+    def forward(model):
+        return model({"input": jnp.asarray(1)}, None, key=key)[0]["output"]
+
+    if explicit_weight:
+        assert jnp.array_equal(forward(component), weight[1])
+    assert len(jax.tree.leaves(eqx.filter(component, eqx.is_inexact_array))) == 1
+    replacement = jnp.full((3, 2), 7.0)
+    edited = eqx.tree_at(lambda model: model.weight, component, replacement)
+    assert jnp.array_equal(forward(edited), replacement[1])
+
+    trained = _adam_step(component, lambda model: jnp.sum(forward(model)))
+    assert not jnp.array_equal(trained.weight[1], component.weight[1])
+    assert jnp.array_equal(forward(trained), trained.weight[1])
+
+
+@pytest.mark.parametrize("init_alpha", [0.25, jnp.asarray(0.25)])
+def test_generated_prelu_init_alpha_exposes_live_slope(init_alpha):
+    key = jax.random.key(0)
+    component = graph_eqx.PReLU(init_alpha=init_alpha)
+
+    def forward(model):
+        return model({"input": jnp.asarray(-2.0)}, None, key=key)[0]["output"]
+
+    assert forward(component) == -0.5
+    assert len(jax.tree.leaves(eqx.filter(component, eqx.is_inexact_array))) == 1
+    edited = eqx.tree_at(lambda model: model.init_alpha, component, jnp.asarray(0.75))
+    assert forward(edited) == -1.5
+
+    trained = _adam_step(component, forward)
+    assert trained.init_alpha > component.init_alpha
+    assert forward(trained) == -2 * trained.init_alpha
+
+
+def test_generated_mlp_exposes_live_per_neuron_activations():
+    key = jax.random.key(0)
+    component = graph_eqx.MLP(
+        1,
+        1,
+        2,
+        1,
+        activation=eqx.nn.PReLU(0.25),
+        final_activation=eqx.nn.PReLU(0.5),
+        use_bias=False,
+        use_final_bias=False,
+        key=key,
+    )
+    component = eqx.tree_at(
+        lambda model: tuple(linear.weight for linear in model.layer.layers),
+        component,
+        replace_fn=jnp.ones_like,
+    )
+
+    def forward(model):
+        return model({"input": jnp.asarray([-1.0])}, None, key=key)[0]["output"][0]
+
+    assert component.activation.negative_slope.shape == (1, 2)
+    assert component.final_activation.negative_slope.shape == (1,)
+    assert len(jax.tree.leaves(eqx.filter(component, eqx.is_inexact_array))) == 4
+    assert forward(component) == -0.25
+
+    edited_hidden = eqx.tree_at(
+        lambda model: model.activation.negative_slope,
+        component,
+        jnp.asarray([[0.5, 0.75]]),
+    )
+    assert forward(edited_hidden) == -0.625
+    edited_final = eqx.tree_at(
+        lambda model: model.final_activation.negative_slope, component, jnp.asarray([0.75])
+    )
+    assert forward(edited_final) == -0.375
+
+    trained = _adam_step(component, forward)
+    assert jnp.all(trained.activation.negative_slope > component.activation.negative_slope)
+    assert jnp.all(trained.final_activation.negative_slope > component.final_activation.negative_slope)
+    assert forward(trained) < forward(component)
+
+
+def _adam_step(model, loss):
+    optimizer = optax.adam(0.01)
+    optimizer_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+    updates, _ = optimizer.update(eqx.filter_grad(loss)(model), optimizer_state)
+    return eqx.apply_updates(model, updates)
+
+
+def test_positional_loader_rejects_old_generated_prelu_layout(tmp_path):
+    live_slope = jnp.array([0.5, 0.75])
+    old_shadow = jnp.array([0.1, 0.2])
+    downstream_leaf = jnp.array([1.0, 2.0])
+    checkpoint = tmp_path / "parameters.eqx"
+
+    def setup(*, key):
+        return graph_eqx.PReLU(jnp.zeros_like(live_slope)), jnp.zeros_like(downstream_leaf)
+
+    # The v2 stream placed the shadow slope between the live slope and the next leaf.
+    save(checkpoint, (live_slope, old_shadow, downstream_leaf), hyperparameters={})
+    with pytest.raises(ValueError, match="unread data.*PyTree leaf layout"):
+        load(checkpoint, setup)
+
+    save(checkpoint, (graph_eqx.PReLU(live_slope), downstream_leaf), hyperparameters={})
+    restored, restored_downstream = load(checkpoint, setup)
+    assert jnp.array_equal(restored.init_alpha, live_slope)
+    assert jnp.array_equal(restored_downstream, downstream_leaf)
 
 
 def test_generated_batchnorm_threads_equinox_state():
