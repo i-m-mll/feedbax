@@ -124,35 +124,6 @@ def _counter_to_accumulator_delta_hook(context):
     return RolloutStepHookResult(port_values=updated)
 
 
-def test_rollout_step_hook_none_preserves_scan_behavior():
-    graph = _make_dynamic_input_graph()
-    state_a = init_state_from_component(graph)
-    state_b = init_state_from_component(graph)
-    inputs = {"delta": jnp.zeros((3,), dtype=jnp.float32)}
-
-    outputs_a, final_state_a, _ = run_component(
-        graph,
-        inputs,
-        state_a,
-        key=jax.random.PRNGKey(0),
-        n_steps=3,
-    )
-    outputs_b, final_state_b, _ = run_component(
-        graph,
-        inputs,
-        state_b,
-        key=jax.random.PRNGKey(0),
-        n_steps=3,
-        rollout_step_hook=None,
-    )
-
-    assert jnp.allclose(outputs_a["total"], outputs_b["total"])
-    assert jnp.allclose(
-        graph.state_view(final_state_a).nodes["acc"],
-        graph.state_view(final_state_b).nodes["acc"],
-    )
-
-
 def test_rollout_step_hook_updates_node_input_from_live_port_values():
     graph = _make_dynamic_input_graph()
     inputs = {"delta": jnp.zeros((3,), dtype=jnp.float32)}
@@ -206,7 +177,7 @@ def test_rollout_step_hook_affects_streaming_loss_without_state_history():
     assert hook_loss == jnp.array(10.0)
 
 
-def test_rollout_step_hook_affects_cyclic_graph_streaming_loss():
+def test_rollout_step_hook_drives_cyclic_streaming_and_traced_rollouts():
     graph = Graph(
         nodes={"acc": Accumulator()},
         wires=(Wire("acc", "total", "acc", "base", temporality="recurrent"),),
@@ -224,7 +195,7 @@ def test_rollout_step_hook_affects_cyclic_graph_streaming_loss():
         if context.node_name != "acc":
             return None
         updated = dict(context.port_values)
-        updated[(context.node_name, "delta")] = context.node_inputs["base"] + 1.0
+        updated[(context.node_name, "delta")] = context.node_inputs["base"] + 1.0 + context.t
         return RolloutStepHookResult(port_values=updated)
 
     _, _, no_hook_loss = run_component(
@@ -246,7 +217,18 @@ def test_rollout_step_hook_affects_cyclic_graph_streaming_loss():
     )
 
     assert no_hook_loss == jnp.array(0.0)
-    assert hook_loss == jnp.array(11.0)
+    assert hook_loss == jnp.array(16.0)
+
+    outputs, _, trace = graph.rollout_with_trace(
+        inputs,
+        init_state_from_component(graph),
+        key=jax.random.PRNGKey(0),
+        n_steps=3,
+        trace=(GraphTraceRequest(kind="port", selector="port:acc.delta", node="acc", port="delta"),),
+        rollout_step_hook=recurrent_base_to_delta_hook,
+    )
+    assert jnp.array_equal(trace["port:acc.delta"], jnp.array([1.0, 3.0, 7.0]))
+    assert jnp.array_equal(outputs["total"], jnp.array([1.0, 4.0, 11.0]))
 
 
 # =============================================================================

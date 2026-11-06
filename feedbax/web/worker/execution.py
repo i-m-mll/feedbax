@@ -558,8 +558,6 @@ def rollout_graph(
     key: jax.Array,
 ) -> dict[str, Any]:
     """Roll out one trial through the executable graph boundary."""
-    state = init_state_from_component(graph)
-    cycle_values = graph.initial_cycle_port_values(state)
     task_key, graph_key = jr.split(key)
     task_data = _materialize_task_data(
         compiled.task_binding_spec,
@@ -567,30 +565,25 @@ def rollout_graph(
         compiled.n_steps,
         key=task_key,
     )
-    keys = jr.split(graph_key, compiled.n_steps)
-    input_sequences = {plan.graph_input: task_data[plan.data_id] for plan in compiled.task_inputs}
-
-    def _step_inputs_at(i):
-        return {name: value[i] for name, value in input_sequences.items()}
-
-    step_inputs_seq = jax.vmap(_step_inputs_at)(jnp.arange(compiled.n_steps))
-
-    def _step(carry, args):
-        state, cycle_values = carry
-        step_inputs, step_key = args
-        outputs, state, cycle_values, trace = graph.step_with_trace(
-            step_inputs,
-            state,
-            cycle_values,
-            key=step_key,
-            trace=compiled.trace_requests,
+    initializer_inputs = graph.trial_initializer_input_names
+    inputs = {
+        plan.graph_input: (
+            task_data[plan.data_id][0]
+            if plan.graph_input in initializer_inputs
+            else task_data[plan.data_id]
         )
-        return (state, cycle_values), {"outputs": outputs, "trace": trace}
-
-    (final_state, _), seq = jax.lax.scan(_step, (state, cycle_values), (step_inputs_seq, keys))
+        for plan in compiled.task_inputs
+    }
+    outputs, final_state, trace = graph.rollout_with_trace(
+        inputs,
+        init_state_from_component(graph),
+        key=graph_key,
+        n_steps=compiled.n_steps,
+        trace=compiled.trace_requests,
+    )
     return {
-        "outputs": seq["outputs"],
-        "trace": seq["trace"],
+        "outputs": outputs,
+        "trace": trace,
         "task_data": task_data,
         "final_state": final_state,
     }

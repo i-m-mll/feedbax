@@ -1,6 +1,6 @@
 """Tests for the shared rollout scan harness in ``feedbax.runtime._rollout``.
 
-``Graph._call_with_iteration`` and ``iterate_component`` both drive this
+``Graph._scan_rollout`` and ``iterate_component`` both drive this
 harness; these tests lock in the two properties that let one implementation
 serve both call sites — the step-carry variant is inert when unused, and the
 step-input selection is an identity for time-major inputs while truncating
