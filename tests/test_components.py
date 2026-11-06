@@ -34,8 +34,7 @@ def test_generated_convolution_restores_checkpoint_from_exported_graph(tmp_path)
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 
-    registry = ComponentRegistry(load_user_components=False)
-    registry.ingest(registry.discover_modules(graph_eqx), provenance="feedbax")
+    registry = ComponentRegistry()
     type_id = "feedbax.equinox.Conv2d"
     repo_root = Path(__file__).resolve().parents[1]
     assert registry.component_source_paths(repo_root)[type_id] == (

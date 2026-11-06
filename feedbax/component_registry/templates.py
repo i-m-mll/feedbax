@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from feedbax.compiler.mechanics_templates import (
     mass_spring_damper_template_definition,
@@ -16,7 +16,6 @@ from feedbax.compiler.templates import (
 )
 
 if TYPE_CHECKING:
-    from .declarations import DeclaredComponent
     from .discovery import ComponentPack
 
 
@@ -52,12 +51,3 @@ def builtin_muscle_template_pack() -> ComponentPack:
         ),
         sources=(Path(muscle_representation.__file__), Path(representation.__file__)),
     )
-
-
-class _Registry(Protocol):
-    def register(self, meta: DeclaredComponent) -> None: ...
-
-
-def register_builtin_graph_templates(registry: _Registry) -> None:
-    for factory in _GRAPH_TEMPLATE_FACTORIES:
-        registry.register(factory())

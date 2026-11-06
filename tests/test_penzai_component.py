@@ -30,7 +30,7 @@ from feedbax.components.penzai import (
     list_penzai_builders,
     build_penzai_subgraph,
 )
-from feedbax.compiler.builders import _build_penzai_adapter
+from feedbax.components.penzai import _build_penzai_adapter
 from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report, inspect_penzai_model
 from feedbax.compiler.serialization import graph_to_spec
 
@@ -611,7 +611,6 @@ class TestFactoryRegistry:
 
     def test_runtime_stateful_adapter_error_is_not_notimplemented(self, monkeypatch):
         import feedbax.components.penzai as pc
-        import feedbax.compiler.builders as builders
 
         class FakeStateVariable:
             def __init__(self, value):
@@ -622,7 +621,6 @@ class TestFactoryRegistry:
                 self.running = FakeStateVariable(jnp.array([1.0]))
 
         monkeypatch.setattr(pc, "PENZAI_AVAILABLE", True)
-        monkeypatch.setattr(builders, "PENZAI_AVAILABLE", True)
         monkeypatch.setattr(pc, "StateVariable", FakeStateVariable)
         monkeypatch.setattr(pc, "_require_penzai", lambda: None)
 

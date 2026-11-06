@@ -29,7 +29,7 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.builders import build_component
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.models.cde import cde_controller
-from feedbax.runtime.graph import Component, Graph
+from feedbax.runtime.graph import Component
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 from feedbax.plugins.application import COMPONENTS, new_registration_context
@@ -200,15 +200,11 @@ def test_builtin_registry_has_explicit_builders_and_consistent_port_metadata() -
             assert set(meta.port_types.outputs) == set(meta.output_ports), name
 
 
-def test_unsupported_builtin_builder_contract_fails_clearly() -> None:
+def test_unimplemented_projection_placeholders_are_not_registered() -> None:
     registry = ComponentRegistry()
-    meta = registry.get("MomentArmProjection")
-    assert meta is not None
-    assert callable(meta.builder)
-    assert getattr(meta.builder, "_feedbax_unsupported_builder", False)
-    assert "MomentArmProjection" not in registry.executable_names()
-
-    with pytest.raises(NotImplementedError, match="display-only abstraction"):
+    assert registry.get("MomentArmProjection") is None
+    assert registry.get("RadialForceProjection") is None
+    with pytest.raises(ValueError, match="Unsupported component type 'MomentArmProjection'"):
         build_component("projection", "MomentArmProjection", {}, component_registry=registry)
 
 

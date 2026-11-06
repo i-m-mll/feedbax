@@ -729,17 +729,6 @@ class ComponentMigration:
         return self.target_type, migrated, self.target_param_schema_version
 
 
-@dataclass(frozen=True)
-class ComponentMigrationPack:
-    """Migration pack contributed by a component owner package."""
-
-    owner: str
-    migrations: tuple[ComponentMigration, ...]
-    package: str | None = None
-    version: str | None = None
-    description: str = ""
-
-
 class MigrationRegistry:
     """Small deterministic registry for schema-to-schema migration paths."""
 

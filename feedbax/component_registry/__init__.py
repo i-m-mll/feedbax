@@ -25,16 +25,14 @@ from .registry import (
     format_missing_interior_message,
     required_interior_domain,
 )
-from .cde_templates import register_cde_templates
 from .domains import DomainRegistry, builtin_domain_registry
-from feedbax.contracts.migrations import ComponentMigration, ComponentMigrationPack
+from feedbax.contracts.migrations import ComponentMigration
 
 __all__ = [
     "ComponentBuilder",
     "ComponentPack",
     "component",
     "ComponentMigration",
-    "ComponentMigrationPack",
     "ComponentAuthoringFacet",
     "ComponentCompilerFacet",
     "ComponentConstructorPlan",
@@ -54,7 +52,6 @@ __all__ = [
     "DomainRegistry",
     "builtin_domain_registry",
     "format_missing_interior_message",
-    "register_cde_templates",
     "required_interior_domain",
     "TemplateBuilderIssue",
 ]

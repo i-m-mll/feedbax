@@ -1,52 +1,33 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
-import importlib.util
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, cast
-
-from pydantic import BaseModel
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from feedbax.contracts.component import (
     ComponentDefinition,
     ComponentIdentity,
     ComponentMigrationInfo,
-    DynamicPortPolicy,
     DynamicPortLayout,
-    PortType,
-    PortTypeSpec,
     derive_dynamic_port_layout,
 )
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
-from feedbax.contracts.graph import ParamSchema
 from feedbax.contracts.migrations import (
     ComponentMigration,
-    ComponentMigrationPack,
     MissingComponentOwner,
     UnsupportedComponentMigration,
 )
-from feedbax.contracts.representation import (
-    RepresentationSpec,
-    validate_representation_against_component,
-)
+from feedbax.contracts.representation import validate_representation_against_component
 
 from .migration_routes import migration_route, source_endpoint, validate_migration_routes
-from .declarations import (
-    ComponentBuilder,
-    ComponentParamExtractor,
-    DeclaredComponent,
-    OutputPrototypeFn,
-    declare_component,
-)
+from .declarations import DeclaredComponent
 from .discovery import ComponentPack, compile_owner, discover_modules, source_path
 
 
 logger = logging.getLogger(__name__)
-_REGISTRATION_PROVENANCE: list[str] = []
 _LEGACY_INTERIOR_DOMAINS = {
     "Network": CAUSAL_DOMAIN_ID,
 }
@@ -75,52 +56,13 @@ class TemplateBuilderIssue:
         return f"{template_ref}: {self.node_path} uses {self.node_type!r}, {self.reason}"
 
 
-@contextmanager
-def _registration_provenance(provenance: str | None) -> Iterator[None]:
-    if provenance is None:
-        yield
-        return
-    _REGISTRATION_PROVENANCE.append(provenance)
-    try:
-        yield
-    finally:
-        _REGISTRATION_PROVENANCE.pop()
-
-
-def _current_provenance() -> str | None:
-    return _REGISTRATION_PROVENANCE[-1] if _REGISTRATION_PROVENANCE else None
-
-
-class _BuiltinBatch:
-    """Collect the existing builtin producers into one ingestion transaction."""
-
-    def __init__(self) -> None:
-        self.components: list[DeclaredComponent] = []
-        self.migrations: list[ComponentMigration] = []
-
-    def register(self, meta: DeclaredComponent) -> None:
-        self.components.append(meta)
-
-    def register_migration(self, migration: ComponentMigration) -> None:
-        self.migrations.append(migration)
-
-
 class ComponentRegistry:
-    def __init__(
-        self,
-        *,
-        load_user_components: bool = True,
-        template_packs: Iterable[Callable[[ComponentRegistry], None]] = (),
-    ) -> None:
+    def __init__(self) -> None:
         self._sealed = False
         self._components: Dict[str, DeclaredComponent] = {}
         self._component_migrations: Dict[tuple[str, str | None], ComponentMigration] = {}
         self._migration_owners: Dict[str, set[str]] = {}
         self._register_builtins()
-        for template_pack in template_packs:
-            self.register_template_pack(template_pack)
-        if load_user_components:
-            self.load_user_components(Path.home() / ".feedbax" / "components")
 
     def _register_builtins(self) -> None:
         from .builtins import builtin_component_packs
@@ -129,20 +71,6 @@ class ComponentRegistry:
             self.ingest(pack, provenance="feedbax")
 
     discover_modules = staticmethod(discover_modules)
-
-    def register_template_pack(
-        self,
-        template_pack: Callable[[ComponentRegistry], None],
-        *,
-        provenance: str | None = None,
-    ) -> None:
-        """Register caller-selected composite templates."""
-        self._require_mutable()
-        with _registration_provenance(provenance):
-            template_pack(self)
-
-    def register(self, meta: DeclaredComponent) -> None:
-        self.ingest(ComponentPack(components=(meta,)))
 
     def ingest(self, pack: ComponentPack, *, provenance: str | None = None) -> None:
         """Compile and validate a complete batch before publishing its entries."""
@@ -166,7 +94,7 @@ class ComponentRegistry:
             for declared in definitions:
                 meta = deepcopy(declared)
                 if meta.provenance is None:
-                    origin = provenance or _current_provenance()
+                    origin = provenance
                     if origin is None and owner_class is not None:
                         origin = f"package:{owner_class.__module__.split('.')[0]}"
                     meta = replace(meta, provenance=origin)
@@ -266,163 +194,6 @@ class ComponentRegistry:
     def _require_mutable(self) -> None:
         if self._sealed:
             raise RuntimeError("component registry is sealed")
-
-    def register_component_type(
-        self,
-        name: str,
-        builder: ComponentBuilder,
-        *,
-        category: str = "Custom",
-        description: str = "",
-        param_schema: Iterable[ParamSchema | dict[str, Any]] | None = None,
-        param_model: type[BaseModel] | None = None,
-        runtime_type: type[Any] | None = None,
-        attribute_paths: Mapping[str, str] | None = None,
-        build_context_fields: Iterable[str] = (),
-        extractor: ComponentParamExtractor | None = None,
-        override_reason: str | None = None,
-        input_ports: Iterable[str] = (),
-        output_ports: Iterable[str] = (),
-        icon: str = "box",
-        port_types: PortTypeSpec | dict[str, Any] | None = None,
-        dynamic_port_policy: DynamicPortPolicy | dict[str, Any] | None = None,
-        domain: str = CAUSAL_DOMAIN_ID,
-        interior_domain: str | None = None,
-        is_composite: bool = False,
-        template_graph: Any = None,
-        template_ui_state: Any = None,
-        template_id: str | None = None,
-        template_kind: str | None = None,
-        output_prototype_fn: OutputPrototypeFn | None = None,
-        prototype_depends_on_connected_inputs: bool = False,
-        provenance: str | None = None,
-        owner: str | None = None,
-        param_schema_version: str = "1",
-        supported_param_schema_versions: Iterable[str] | None = None,
-        trainable_by_default: bool = False,
-        representation: RepresentationSpec | dict[str, Any] | None = None,
-    ) -> DeclaredComponent:
-        self._require_mutable()
-        if not callable(builder):
-            raise TypeError(f"Builder for component type {name!r} must be callable")
-        if port_types is not None and not isinstance(port_types, PortTypeSpec):
-            port_types = PortTypeSpec.model_validate(port_types)
-        if dynamic_port_policy is not None and not isinstance(
-            dynamic_port_policy, DynamicPortPolicy
-        ):
-            dynamic_port_policy = DynamicPortPolicy.model_validate(dynamic_port_policy)
-        if representation is not None and not isinstance(representation, RepresentationSpec):
-            representation = RepresentationSpec.model_validate(representation)
-        if param_schema is not None and param_model is not None:
-            raise ValueError(f"Component {name!r} cannot supply both param_model and param_schema")
-        meta = declare_component(
-            name=name,
-            category=category,
-            description=description,
-            param_schema=(
-                [
-                    schema if isinstance(schema, ParamSchema) else ParamSchema(**schema)
-                    for schema in param_schema
-                ]
-                if param_schema is not None
-                else None
-            ),
-            param_model=param_model,
-            input_ports=list(input_ports),
-            output_ports=list(output_ports),
-            icon=icon,
-            port_types=port_types,
-            dynamic_port_policy=dynamic_port_policy,
-            domain=domain,
-            interior_domain=interior_domain,
-            is_composite=is_composite,
-            template_graph=template_graph,
-            template_ui_state=template_ui_state,
-            template_id=template_id,
-            template_kind=template_kind,
-            builder=builder,
-            runtime_type=runtime_type,
-            attribute_paths=attribute_paths,
-            build_context_fields=tuple(build_context_fields),
-            extractor=extractor,
-            override_reason=override_reason or "downstream registered constructor",
-            output_prototype_fn=output_prototype_fn,
-            prototype_depends_on_connected_inputs=prototype_depends_on_connected_inputs,
-            provenance=provenance or _current_provenance(),
-            owner=owner,
-            param_schema_version=param_schema_version,
-            supported_param_schema_versions=(
-                list(supported_param_schema_versions)
-                if supported_param_schema_versions is not None
-                else [param_schema_version]
-            ),
-            trainable_by_default=trainable_by_default,
-            representation=representation,
-        )
-        self.register(meta)
-        registered = self.get(name)
-        assert registered is not None
-        return registered
-
-    def register_builder(
-        self,
-        name: str,
-        builder: ComponentBuilder,
-        *,
-        provenance: str | None = None,
-        owner: str | None = None,
-    ) -> DeclaredComponent:
-        self._require_mutable()
-        if not callable(builder):
-            raise TypeError(f"Builder for component type {name!r} must be callable")
-        meta = self._components.get(name)
-        if meta is None:
-            meta = declare_component(
-                name=name,
-                category="Custom",
-                description="",
-                param_schema=[],
-                input_ports=[],
-                output_ports=[],
-                builder=builder,
-                provenance=provenance or _current_provenance(),
-                owner=owner,
-            )
-        else:
-            if meta.params.builder is not None or meta.params.runtime_type is not None:
-                raise ValueError(f"component builder already registered: {name!r}")
-            from .declarations import ComponentRuntimeFacet
-
-            params = replace(
-                meta.params,
-                builder=builder,
-                override_reason="separately registered constructor",
-            )
-            meta = replace(meta, params=params, runtime=ComponentRuntimeFacet(params.build))
-            self._components[name] = meta
-            self._validate_representation(meta)
-            registered = self.get(name)
-            assert registered is not None
-            return registered
-        self.register(meta)
-        registered = self.get(name)
-        assert registered is not None
-        return registered
-
-    def register_migration(self, migration: ComponentMigration) -> None:
-        self.ingest(ComponentPack(migrations=(migration,)))
-
-    def register_migration_pack(self, pack: ComponentMigrationPack) -> None:
-        """Register migrations declared by an owning downstream package."""
-        if not pack.owner:
-            raise ValueError("Component migration pack owner must be non-empty")
-        for migration in pack.migrations:
-            if migration.owner != pack.owner:
-                raise ValueError(
-                    "Component migration pack owner mismatch: "
-                    f"pack={pack.owner!r}, migration={migration.owner!r}"
-                )
-        self.ingest(ComponentPack(migrations=pack.migrations))
 
     def resolve_component_spec(
         self,
@@ -676,71 +447,6 @@ class ComponentRegistry:
                     )
                 )
         return issues
-
-    def load_user_components(self, path: Path) -> None:
-        if not path.exists():
-            return
-
-        for py_file in path.glob("*.py"):
-            spec = importlib.util.spec_from_file_location(py_file.stem, py_file)
-            if spec is None or spec.loader is None:
-                continue
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-
-            for name in dir(module):
-                obj = getattr(module, name)
-                meta = getattr(obj, "_feedbax_component_meta", None)
-                if not isinstance(meta, dict):
-                    continue
-                builder = meta.get("builder")
-                if builder is None and callable(obj):
-
-                    def _build_user_component(
-                        params: Mapping[str, Any],
-                        component_type: Any = obj,
-                    ):
-                        return component_type(**dict(params))
-
-                    builder = _build_user_component
-                if builder is None:
-                    continue
-                component_builder = cast(ComponentBuilder, builder)
-                port_types = meta.get("port_types")
-                self.register_component_type(
-                    name=meta.get("name", name),
-                    builder=component_builder,
-                    category=meta.get("category", "Custom"),
-                    description=meta.get("description", ""),
-                    param_schema=meta.get("param_schema", []),
-                    input_ports=meta.get("input_ports", []),
-                    output_ports=meta.get("output_ports", []),
-                    icon=meta.get("icon", "box"),
-                    domain=meta.get("domain", CAUSAL_DOMAIN_ID),
-                    interior_domain=meta.get("interior_domain"),
-                    is_composite=bool(meta.get("is_composite", False)),
-                    port_types=(
-                        PortTypeSpec(
-                            inputs={
-                                key: PortType(**value)
-                                for key, value in port_types.get("inputs", {}).items()
-                            },
-                            outputs={
-                                key: PortType(**value)
-                                for key, value in port_types.get("outputs", {}).items()
-                            },
-                        )
-                        if isinstance(port_types, dict)
-                        else port_types
-                    ),
-                    dynamic_port_policy=meta.get("dynamic_port_policy"),
-                    output_prototype_fn=meta.get("output_prototype_fn"),
-                    prototype_depends_on_connected_inputs=meta.get(
-                        "prototype_depends_on_connected_inputs", False
-                    ),
-                    provenance=f"file:{py_file}",
-                    representation=meta.get("representation"),
-                )
 
     def _complete_identity(self, meta: DeclaredComponent) -> DeclaredComponent:
         details = _identity_from_provenance(meta.name, meta.provenance)

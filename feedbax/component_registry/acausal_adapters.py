@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
 
 from feedbax.acausal import _component, mechanics, multibody, rotational, translational
 from feedbax.contracts.acausal_interface import (
@@ -17,14 +16,10 @@ from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ParamSchema
 
 from .declarations import DeclaredComponent, declare_component
-from .discovery import ComponentPack, compile_owner, discover_modules
+from .discovery import ComponentPack, discover_modules
 
 
 ACAUSAL_ELEMENT_MODULES = (mechanics, multibody, rotational, translational)
-
-
-class _Registry(Protocol):
-    def register(self, meta: DeclaredComponent) -> None: ...
 
 
 def acausal_boundary_definitions() -> tuple[DeclaredComponent, ...]:
@@ -120,15 +115,3 @@ def acausal_component_pack() -> ComponentPack:
         components=(*elements.components, *acausal_boundary_definitions()),
         sources=(Path(_component.__file__), Path(__file__)),
     )
-
-
-def register_acausal_components(registry: _Registry) -> None:
-    """Project acausal owners into the legacy built-in definition collector."""
-
-    for owner in acausal_component_pack().components:
-        if isinstance(owner, type):
-            definitions, _, _ = compile_owner(owner)
-            for definition in definitions:
-                registry.register(definition)
-        elif isinstance(owner, DeclaredComponent):
-            registry.register(owner)

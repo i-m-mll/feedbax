@@ -900,7 +900,7 @@ def _build_penzai_adapter(params: Mapping[str, Any]) -> PenzaiSubgraph:
         ) from exc
 
 
-def _extract_penzai_adapter_params(component: PenzaiSubgraph, model: Any) -> Any:
+def _extract_penzai_adapter_params(component: Any, model: Any) -> Any:
     if component.builder_name is None:
         raise ValueError("PenzaiAdapter serialization requires a registered builder name")
     (input_port,) = component.input_ports
