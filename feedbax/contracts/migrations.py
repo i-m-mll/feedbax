@@ -2981,6 +2981,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
     manifest_emitters = ("feedbax.contracts.manifest", "feedbax.integrations.provider")
     studio_schema_emitters = ("feedbax.studio.schema", "feedbax.integrations.provider")
     studio_execution_emitters = ("feedbax.studio.execution", "feedbax.integrations.provider")
+    studio_execution_version = "feedbax.spec.studio.execution.v1"
     objective_emitters = ("feedbax.objective_spec", "feedbax.integrations.provider")
     invocation_emitters = ("feedbax.execution.records", "feedbax.integrations.provider")
     realization_emitters = (
@@ -6023,7 +6024,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     if kind == "WorkspaceReplayProduct"
                     else "feedbax.manifest.studio.execution.v1"
                     if kind.endswith("Result")
-                    else "feedbax.spec.studio.execution.v1"
+                    else studio_execution_version
                 ),
                 owner_module=(
                     "feedbax.contracts.workspace_replay"
@@ -6057,6 +6058,39 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                     )
                     if kind == "WorkspaceReplayProduct"
                     else ("tests/test_structured_spec_migrations.py",)
+                ),
+            )
+        )
+
+    for kind, schema_id, description in (
+        (
+            "StudioNativeTrainingDispatchRequest",
+            "feedbax.spec.studio.native_training_dispatch_request",
+            "Request to dispatch one staged native training row by receipt generation.",
+        ),
+        (
+            "StudioNativeTrainingDispatchAccepted",
+            "feedbax.spec.studio.native_training_dispatch_accepted",
+            "Identity of the admitted native training attempt.",
+        ),
+    ):
+        families.append(
+            _family(
+                kind,
+                schema_id,
+                studio_execution_version,
+                owner_module="feedbax.studio.execution",
+                emitted_by=studio_execution_emitters,
+                consumed_by=("provider HTTP API", "Studio frontend"),
+                durable=False,
+                description=description,
+                required_tests=(
+                    "tests/test_structured_spec_migrations.py",
+                    "tests/test_training_native_row_handoff.py",
+                ),
+                notes=(
+                    "The HTTP payload carries no schema version and has no prior wire format. "
+                    "The v0 entry is a rejection sentinel."
                 ),
             )
         )
