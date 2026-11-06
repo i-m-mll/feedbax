@@ -52,6 +52,7 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.matrix_core import MatrixRow
+from feedbax.persistence.manifest_index import find_manifest_paths_by_id
 
 
 EVALUATION_TYPE = "feedbax.test.batched_matrix"
@@ -784,6 +785,7 @@ def test_batched_matrix_publishes_single_shared_store(
     assert [row.row_id for row in batch.rows] == ["row-0", "row-1", "row-2", "row-3"]
     for row in batch.rows:
         assert row.manifest_path.is_relative_to(output / "manifests")
+        assert find_manifest_paths_by_id(row.result.id, root=output) == [row.manifest_path]
 
 
 def test_batched_matrix_fixed_store_overhead_independent_of_row_count(
