@@ -1,15 +1,16 @@
 """Principal-component analysis of evaluated model states."""
 
 from collections.abc import Sequence
+from math import sqrt
 from typing import Any, Literal, Optional
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.tree as jt
 from jax.core import Tracer
 from feedbax._vendor.jax_cookbook import LDict, is_module, is_type
 from jaxtyping import Array, PyTree
-import numpy as np
 
 from feedbax.analysis.analysis import AbstractAnalysis, NoPorts
 from feedbax.analysis.types import AnalysisInputData
@@ -108,11 +109,35 @@ def _validate_choice(name: str, value: str, choices: tuple[str, ...]) -> None:
         raise ValueError(f"{name} must be one of {choices_text}; got {value!r}")
 
 
-def _as_concrete_numpy(array: Array) -> Optional[np.ndarray]:
-    """Return a NumPy view for eager validation, deferring dynamic tracers."""
-    if isinstance(array, Tracer):
-        return None
-    return np.asarray(array)
+@jax.jit
+def _all_finite(samples: Array) -> Array:
+    if jnp.iscomplexobj(samples):
+        return jnp.all(jnp.isfinite(samples))
+    # Real extrema propagate NaNs and detect infinities without allocating a mask.
+    return jnp.isfinite(jnp.min(samples)) & jnp.isfinite(jnp.max(samples))
+
+
+@jax.jit
+def _center_and_scale(samples: Array, scale: Array | None) -> tuple[Array, Array]:
+    mean = jnp.mean(samples, axis=0)
+    centered = samples - mean
+    # Remove the residual left when the feature mean rounds at a large offset.
+    centered = centered - jnp.mean(centered, axis=0)
+    return (centered if scale is None else centered / scale), mean
+
+
+@jax.jit
+def _projected_variance(samples: Array, basis: Array) -> Array:
+    # Reduce each score column before projecting onto the next axis.
+    return jax.lax.map(lambda axis: jnp.var(samples @ axis, ddof=1), basis)
+
+
+@jax.jit
+def _uncentered_variance(samples: Array, scale: Array | None, basis: Array) -> tuple[Array, Array]:
+    centered, _ = _center_and_scale(samples, scale)
+    # The complete reduced real basis spans the row space, including after centering.
+    total_variance = jnp.sum(jnp.var(centered, axis=0, ddof=1))
+    return _projected_variance(centered, basis), total_variance
 
 
 class StatesPCA(AbstractAnalysis[NoPorts]):
@@ -186,8 +211,7 @@ class StatesPCA(AbstractAnalysis[NoPorts]):
             raise ValueError("PCA requires at least two samples")
         if samples.shape[1] < 1:
             raise ValueError("PCA requires at least one feature")
-        concrete_samples = _as_concrete_numpy(samples)
-        if concrete_samples is not None and not np.all(np.isfinite(concrete_samples)):
+        if not isinstance(samples, Tracer) and not bool(_all_finite(samples)):
             raise ValueError("Selected PCA samples must contain only finite values")
         return selected, samples
 
@@ -202,48 +226,60 @@ class StatesPCA(AbstractAnalysis[NoPorts]):
                 f"min(samples, features)={max_components}"
             )
 
-        if self.centering == "mean":
-            mean = jnp.mean(samples, axis=0)
-        else:
-            mean = jnp.zeros((n_features,), dtype=samples.dtype)
-        centered = samples - mean
-
+        scale = None
         if self.normalization == "standard_deviation":
             scale = jnp.std(samples, axis=0)
-            concrete_scale = _as_concrete_numpy(scale)
-            if concrete_scale is not None and np.any(concrete_scale == 0):
+            if not isinstance(scale, Tracer) and bool(jnp.any(scale == 0)):
                 raise ValueError(
                     "normalization='standard_deviation' is undefined for constant features"
                 )
+        complex_samples = jnp.iscomplexobj(samples)
+        if self.centering == "mean" and not complex_samples:
+            preprocessed, mean = _center_and_scale(samples, scale)
         else:
-            scale = jnp.ones((n_features,), dtype=samples.dtype)
-        preprocessed = centered / scale
+            if self.centering == "mean":
+                mean = jnp.mean(samples, axis=0)
+                preprocessed = samples - mean
+            else:
+                mean = jnp.zeros((n_features,), dtype=samples.dtype)
+                preprocessed = (
+                    samples if jnp.issubdtype(samples.dtype, jnp.inexact) else samples - mean
+                )
+            if scale is not None:
+                preprocessed = preprocessed / scale
 
-        _, _, basis = jnp.linalg.svd(preprocessed, full_matrices=False)
+        _, singular_values, basis = jnp.linalg.svd(preprocessed, full_matrices=False)
+        if complex_samples:
+            # The plain transpose used by transform makes complex score
+            # variance differ from the singular spectrum.
+            spectrum = _projected_variance(preprocessed, basis)
+        elif self.centering == "mean":
+            spectrum = jnp.square(singular_values / sqrt(n_samples - 1))
+        else:
+            spectrum = None
+        basis = basis[:n_components]
+        if spectrum is None:
+            explained_variance, total_variance = _uncentered_variance(samples, scale, basis)
+        else:
+            explained_variance = spectrum[:n_components]
+            total_variance = jnp.sum(spectrum)
+
+        if not isinstance(total_variance, Tracer) and not bool(
+            jnp.isfinite(total_variance) & (total_variance > 0)
+        ):
+            raise ValueError("PCA requires positive finite total variance")
+
         pivot_indices = jnp.argmax(jnp.abs(basis), axis=1)
         pivot_loadings = jnp.take_along_axis(basis, pivot_indices[:, None], axis=1)[:, 0]
         signs = jnp.where(pivot_loadings < 0, -1, 1)
         basis = basis * signs[:, None]
 
-        projected_scores = preprocessed @ basis.T
-        all_explained_variance = jnp.var(projected_scores, axis=0, ddof=1)
-        total_variance = jnp.sum(all_explained_variance)
-        concrete_total_variance = _as_concrete_numpy(total_variance)
-        if concrete_total_variance is not None and (
-            not np.isfinite(concrete_total_variance) or concrete_total_variance <= 0
-        ):
-            raise ValueError("PCA requires positive finite total variance")
-
-        basis = basis[:n_components]
-        explained_variance = all_explained_variance[:n_components]
-        explained_variance_ratio = explained_variance / total_variance
-
         result = PCAResults(
             basis=basis,
             explained_variance=explained_variance,
-            explained_variance_ratio=explained_variance_ratio,
+            explained_variance_ratio=explained_variance / total_variance,
             mean=mean,
-            scale=scale,
+            scale=scale if scale is not None else jnp.ones((n_features,), dtype=samples.dtype),
             states_pc=None,
             state_selector=self.where_states,
             sampling=self.sampling,
@@ -252,8 +288,11 @@ class StatesPCA(AbstractAnalysis[NoPorts]):
             sample_count=n_samples,
             feature_count=n_features,
         )
-        states_pc = result.batch_transform(selected) if self.return_data else None
-        return eqx.tree_at(lambda fitted: fitted.states_pc, result, states_pc)
+        if self.return_data:
+            return eqx.tree_at(
+                lambda fitted: fitted.states_pc, result, result.batch_transform(selected)
+            )
+        return result
 
     def compute(
         self,
