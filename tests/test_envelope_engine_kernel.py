@@ -593,13 +593,18 @@ def test_lock_loader_migrates_attributable_feedbax_v3_execution_identity() -> No
         "package_versions": {"feedbax": "0.2.0"},
     }
 
-    migrated = default_spec_registry.migrate("ExperimentCompileLock", lock)
+    migrated = default_spec_registry.migrate(
+        "ExperimentCompileLock", lock, target_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
+    )
     loaded = load_compile_lock(lock, field="generated/probe.compile-lock.json")
 
     assert migrated.migrated
     assert migrated.payload == loaded
     assert loaded["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
     assert loaded["execution_identity"]["pin_algorithm"] == CANONICAL_PIN_ALGORITHM
+    current = default_spec_registry.migrate("ExperimentCompileLock", lock).payload
+    assert current["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
+    assert current["execution_identity"] == loaded["execution_identity"]
 
 
 @pytest.mark.parametrize(
@@ -913,9 +918,12 @@ def test_the_lock_migration_slot_exists_in_the_shared_spec_registry() -> None:
     assert family.current_version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
     assert family.policy is not None
     assert family.policy.stance == "migrate"
-    assert family.policy.supported_old_versions == (EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,)
+    assert family.policy.supported_old_versions == (
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+        EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+    )
     migrations = default_spec_registry.available_migrations("ExperimentCompileLock")
-    assert len(migrations) == 1
+    assert len(migrations) == 2
     assert migrations[0].source_version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3
     assert migrations[0].target_version == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
 
@@ -1175,6 +1183,7 @@ def test_a_cross_layer_reference_pins_only_pre_run_facts(repo: Path) -> None:
         "product_schema_id",
         "product_schema_version",
         "compiled_content_hash",
+        "producer_execution_identity",
         "role_path",
         "consumer",
     }
@@ -1219,7 +1228,7 @@ def test_v6_complete_receipt_set_lowers_to_the_v4_lock_binding(repo: Path) -> No
         },
     )
     outcome = kernel().compile_envelope_file(path, repo_root=repo)
-    assert outcome.compile_lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
+    assert outcome.compile_lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
     assert outcome.compile_lock["references"][0]["consumer"] == {
         "consumer": "analysis_receipt_set",
         "alias": "evaluation",
@@ -2116,7 +2125,7 @@ def test_alias_child_authenticates_resolved_parent_bytes_before_applying_row_del
         "schema_id": payload["schema_id"],
         "schema_version": payload["schema_version"],
     }
-    assert outcome.compile_lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4
+    assert outcome.compile_lock["schema_version"] == EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION
     assert load_compile_lock(outcome.compile_lock, field="resolved-child.lock")
     with pytest.raises(ExperimentEnvelopeRejection) as prior:
         load_compile_lock(

@@ -22,6 +22,7 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V1,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V2,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
     COMPILE_LOCK_REFERENCE_KINDS,
     AnalysisInputBinding,
     AnalysisReceiptSetBinding,
@@ -42,6 +43,7 @@ from feedbax.contracts.experiment_compile_lock import (
     build_compile_lock,
     compile_lock_plan_edges,
     load_compile_lock,
+    migrate_compile_lock_v4_to_v5,
     parse_compile_lock_reference,
     parse_row_provenance_reference,
 )
@@ -79,6 +81,7 @@ def _planned_product() -> PlannedProductReference:
         product_schema_id="quillon.survey_document",
         product_schema_version="quillon.survey_document.v1",
         compiled_content_hash=DIGEST_B,
+        producer_execution_identity=DIGEST_A,
         role_path="subject.survey",
         consumer=EvaluationSubjectBinding(subject_id="widened"),
     )
@@ -399,6 +402,32 @@ def test_a_planned_product_schema_version_must_extend_its_schema_id() -> None:
     record["product_schema_version"] = "quillon.digest_document.v1"
     with pytest.raises(ExperimentEnvelopeRejection):
         parse_compile_lock_reference(record, field="references[0]")
+
+
+def test_an_unpinned_legacy_product_can_be_read_but_cannot_be_upgraded() -> None:
+    reference = _planned_product().model_dump(mode="json")
+    del reference["producer_execution_identity"]
+    lock = {**build_compile_lock(_inputs([])), "references": [reference]}
+    legacy = {**lock, "schema_version": EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4}
+
+    assert load_compile_lock(legacy, field="legacy") == legacy
+    with pytest.raises(ExperimentEnvelopeRejection, match="Recompile the consumer and its producer"):
+        migrate_compile_lock_v4_to_v5(legacy)
+    with pytest.raises(ExperimentEnvelopeRejection) as reading:
+        load_compile_lock(lock, field="current")
+    assert reading.value.field == "current#references[0].producer_execution_identity"
+    with pytest.raises(ExperimentEnvelopeRejection) as writing:
+        build_compile_lock(_inputs([reference]))
+    assert writing.value.field == "references[0].producer_execution_identity"
+
+
+def test_a_persisted_producer_pin_cannot_change_under_the_same_consumer_identity() -> None:
+    lock = build_compile_lock(_inputs([_planned_product()]))
+    lock["references"][0]["producer_execution_identity"] = DIGEST_B
+
+    with pytest.raises(ExperimentEnvelopeRejection) as caught:
+        load_compile_lock(lock, field="tampered")
+    assert caught.value.field == "tampered#execution_identity.sha256"
 
 
 # -- row provenance is its own block, beside the closed union ---------------

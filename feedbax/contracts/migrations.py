@@ -304,7 +304,9 @@ from feedbax.contracts.experiment_compile_lock import (
     EXPERIMENT_COMPILE_LOCK_SCHEMA_ID,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
     EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+    EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
     migrate_compile_lock_v3_to_v4,
+    migrate_compile_lock_v4_to_v5,
 )
 from feedbax.contracts.experiment_envelope import (
     EXPERIMENT_ENVELOPE_COMPILE_RESULT_SCHEMA_ID,
@@ -3932,7 +3934,10 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "with compiler contract and implementation provenance recorded apart."
             ),
             stance="migrate",
-            supported_old_versions=(EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,),
+            supported_old_versions=(
+                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
+                EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+            ),
             required_tests=("tests/test_envelope_engine_kernel.py",),
             notes=(
                 "v2 adds the optional typed artifact contract a figure runtime input "
@@ -3948,7 +3953,11 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 "canonical_json_v1 and admits the governed_parent compile-time input with "
                 "exact typed parent and artifact byte/schema identity. Only attributable "
                 "built-in Feedbax v3 locks migrate; v1/v2 remain readable, and older "
-                "grammars cannot be relabelled to carry governed_parent."
+                "grammars cannot be relabelled to carry governed_parent. v5 pins the "
+                "producer execution identity in each planned product reference and hashes "
+                "these references into the consumer execution identity. Older locks remain "
+                "readable. Locks with planned products need recompilation before use "
+                "because migration cannot recover the original producer pins."
             ),
         ),
         _family(
@@ -6655,13 +6664,23 @@ default_spec_registry.register_migration(
     "ExperimentCompileLock",
     SchemaMigration(
         source_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V3,
-        target_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
+        target_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
         migration_id="experiment-compile-lock-v3-to-v4-execution-identity-pin",
         migrate=migrate_compile_lock_v3_to_v4,
         description=(
             "Pin execution identity to canonical_json_v1 only when the v3 lock records "
             "attributable built-in Feedbax compiler provenance."
         ),
+    ),
+)
+default_spec_registry.register_migration(
+    "ExperimentCompileLock",
+    SchemaMigration(
+        source_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION_V4,
+        target_version=EXPERIMENT_COMPILE_LOCK_SCHEMA_VERSION,
+        migration_id="experiment-compile-lock-v4-to-v5-without-planned-products",
+        migrate=migrate_compile_lock_v4_to_v5,
+        description="Upgrade locks whose references do not require producer execution pins.",
     ),
 )
 default_spec_registry.register_migration(

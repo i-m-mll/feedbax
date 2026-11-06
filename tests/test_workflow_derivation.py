@@ -18,6 +18,7 @@ are under test:
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ from feedbax.workflow.derivation import (
     derive_workflow_plan,
     read_compiled_outputs,
 )
+from feedbax.workflow.execution import prepare_workflow
 from feedbax.workflow.plan import (
     WORKFLOW_PLAN_SCHEMA_VERSION,
     LogicalKey,
@@ -48,12 +50,22 @@ from feedbax.contracts.experiment_compile_lock import (
     ReportParentBinding,
 )
 from feedbax.contracts.experiment_envelope import ExperimentEnvelopeRejection
+from feedbax.contracts.matrix_core import ContentPinnedJsonBase
 from feedbax.contracts.manifest import (
     ANALYSIS_RUN_SPEC_SCHEMA_ID,
     EVALUATION_RUN_SPEC_SCHEMA_ID,
     REPORT_SPEC_SCHEMA_ID,
 )
+from feedbax.envelope import canonical_sha256, kernel_for
 
+from tests.support.fake_project_experiment import (
+    OUTPUT_DIRECTORY,
+    PROJECT_DECLARATION,
+    REPORT_BASE,
+    envelope_path,
+    write_json,
+    write_repo,
+)
 from tests.support.fake_project_experiment.products import QuillonOutputs, planned
 
 DIGEST = "a" * 64
@@ -410,6 +422,97 @@ def test_a_reference_whose_content_pin_went_stale_refuses(outputs: QuillonOutput
     outputs.probe("moving", stage_note="the probe was re-authored")
     with pytest.raises(CompiledOutputError, match="compiled_content_hash"):
         _plan(outputs, "stale-pin")
+
+
+def test_a_planned_product_refuses_a_different_version_of_the_same_schema(
+    outputs: QuillonOutputs,
+) -> None:
+    probe = outputs.probe("producer")
+    reference = planned(
+        probe, role_path="body.of",
+        consumer=ReportParentBinding(parent_kind="probe", parent_id=probe.name),
+    )
+    outputs.bulletin(
+        "consumer",
+        references=[
+            reference.model_copy(update={"product_schema_version": f"{probe.schema_id}.v999"})
+        ],
+    )
+    with pytest.raises(CompiledOutputError, match="product_schema_version"):
+        _plan(outputs, "consumer")
+
+
+def _kernel_with_figure_policy(repo: Path, height: int):
+    policy = {"overrides": {"assembler_params": {"height": height}}}
+    ref = "figure-policy.json"
+    write_json(repo / ref, policy)
+    return kernel_for(
+        replace(
+            PROJECT_DECLARATION,
+            figure_policy=ContentPinnedJsonBase(ref=ref, sha256=canonical_sha256(policy)),
+        )
+    )
+
+
+def test_a_producer_compiled_under_a_different_policy_refuses_at_its_consumer(
+    tmp_path: Path,
+) -> None:
+    write_repo(tmp_path)
+    base_path = tmp_path / REPORT_BASE
+    report_base = json.loads(base_path.read_text())
+    report_base["params"]["sections"][0]["figures"] = [
+        {"input_role": "span", "caption": "Widened span", "figure_spec_sha256": DIGEST}
+    ]
+    write_json(base_path, report_base)
+    report_path = envelope_path(tmp_path, "widened-report")
+    report = json.loads(report_path.read_text())
+    report["report"]["bindings"] = [
+        {
+            "role_path": "params.sections.0.figures.0",
+            "ref": {"kind": "envelope", "alias": "widened-plot"},
+        }
+    ]
+    write_json(report_path, report)
+
+    figure_path = envelope_path(tmp_path, "widened-plot")
+    output_dir = tmp_path / OUTPUT_DIRECTORY
+    original_kernel = _kernel_with_figure_policy(tmp_path, height=720)
+    original = original_kernel.compile_envelope_file(figure_path, repo_root=tmp_path)
+    paths = original_kernel.write_outputs(original, output_dir)
+    original_report = original_kernel.compile_envelope_file(report_path, repo_root=tmp_path)
+    original_kernel.write_outputs(original_report, output_dir)
+    index = read_compiled_outputs(output_dir)
+    plan = derive_workflow_plan(index, target="widened-report")
+    prepare_workflow(plan, index)
+    original_bytes = paths["document"].read_bytes()
+
+    replacement_kernel = _kernel_with_figure_policy(tmp_path, height=900)
+    replacement = replacement_kernel.compile_envelope_file(figure_path, repo_root=tmp_path)
+    replacement_paths = replacement_kernel.write_outputs(replacement, output_dir)
+    assert replacement_paths["document"].read_bytes() == original_bytes
+    assert replacement.compile_lock["envelope"] == original.compile_lock["envelope"]
+    replacement_index = read_compiled_outputs(output_dir)
+    producer_plan = derive_workflow_plan(replacement_index, target="widened-plot")
+    (producer,) = producer_plan.nodes
+    assert producer.execution_identity != plan.node(producer.key).execution_identity
+
+    with pytest.raises(CompiledOutputError, match="producer_execution_identity"):
+        derive_workflow_plan(replacement_index, target="widened-report")
+    reconciled_nodes = replace(
+        plan, nodes=tuple(producer if node.key == producer.key else node for node in plan.nodes)
+    )
+    with pytest.raises(CompiledOutputError, match="producer_execution_identity"):
+        prepare_workflow(reconciled_nodes, replacement_index)
+
+    rebuilt_report = replacement_kernel.compile_envelope_file(report_path, repo_root=tmp_path)
+    assert rebuilt_report.document == original_report.document
+    assert (
+        rebuilt_report.compile_lock["execution_identity"]["sha256"]
+        != original_report.compile_lock["execution_identity"]["sha256"]
+    )
+    replacement_kernel.write_outputs(rebuilt_report, output_dir)
+    rebuilt_index = read_compiled_outputs(output_dir)
+    prepare_workflow(derive_workflow_plan(rebuilt_index, target="widened-report"), rebuilt_index)
 
 
 def test_a_compiled_document_edited_after_its_compile_refuses_at_read(

@@ -737,8 +737,9 @@ def _reference_for(
         envelope_hash=str(lock["envelope"]["envelope_hash"]),
         product_name=upstream.name,
         product_schema_id=contract.schema_id,
-        product_schema_version=contract.schema_version,
+        product_schema_version=str(upstream.document["schema_version"]),
         compiled_content_hash=str(lock["compiled_document"]["content_hash"]),
+        producer_execution_identity=str(lock["execution_identity"]["sha256"]),
         role_path=role_path,
         consumer=consumer_of(contract.schema_id, upstream.name),
     )

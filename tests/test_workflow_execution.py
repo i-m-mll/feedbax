@@ -418,6 +418,60 @@ def test_a_matrix_receipt_set_executes_analysis_in_row_order_and_rebuilds(
     assert rebuilt.verification_order[-1] == ("analysis:set-consumer")
 
 
+def test_a_deserialized_plan_cannot_downgrade_a_receipt_set_binding(
+    outputs: QuillonOutputs,
+) -> None:
+    matrix = outputs.probe_matrix("set-source")
+    outputs.condensate(
+        "set-consumer",
+        references=[
+            planned(
+                matrix,
+                role_path="inputs.evaluation",
+                consumer=AnalysisReceiptSetBinding(alias="evaluation", role="evaluation"),
+            )
+        ],
+    )
+    index = read_compiled_outputs(outputs.output_directory)
+    plan = derive_workflow_plan(index, target="set-consumer")
+    prepare_workflow(plan, index)
+    (edge,) = plan.edges
+    assert edge.binding == "complete_receipt_set"
+
+    tampered = replace(plan, edges=(replace(edge, binding="single_receipt"),))
+    deserialized = workflow_plan_from_document(json.loads(json.dumps(tampered.document())))
+
+    with pytest.raises(PlanLockDisagreementError, match="binding") as caught:
+        prepare_workflow(deserialized, index)
+    assert caught.value.key == plan.target
+
+
+def test_prepare_rejects_a_producer_with_the_right_key_from_a_different_envelope(
+    outputs: QuillonOutputs,
+) -> None:
+    target = _chain(outputs)
+    index = read_compiled_outputs(outputs.output_directory)
+    plan = derive_workflow_plan(index, target=target)
+    producer = plan.node(LogicalKey("evaluation", "chain-root"))
+    original = index.require(producer.source_ref)
+    alternate_ref = "alternate/chain-root.envelope.json"
+    alternate_lock = {**original.lock, "envelope": {**original.lock["envelope"], "ref": alternate_ref}}
+    (outputs.output_directory / "alternate.compile-lock.json").write_text(
+        json.dumps(alternate_lock), encoding="utf-8"
+    )
+    alternate_index = read_compiled_outputs(outputs.output_directory)
+    redirected = replace(
+        plan,
+        nodes=tuple(
+            replace(node, source_ref=alternate_ref) if node.key == producer.key else node
+            for node in plan.nodes
+        ),
+    )
+
+    with pytest.raises(PlanLockDisagreementError, match="producer_source_ref"):
+        prepare_workflow(redirected, alternate_index)
+
+
 def test_repair_rebuilds_a_set_bound_analysis_from_all_admitted_rows(
     outputs: QuillonOutputs, environment: FulfillmentEnvironment
 ) -> None:
