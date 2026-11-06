@@ -592,8 +592,10 @@ def test_completed_batches_accepts_only_a_fully_attested_authorized_stop() -> No
     assert check_completed_batches(_authorized_stopped_row()).status == "pass"
 
 
+@pytest.mark.parametrize("operator_stop", [False, True])
 def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
     tmp_path: Path,
+    operator_stop: bool,
 ) -> None:
     from feedbax.contracts.manifest import load_manifest
     from feedbax.contracts.artifact_custody import ArtifactBlobIntegrityError
@@ -607,6 +609,7 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
     from feedbax.training import execute_training_run_spec
     from feedbax.training.checkpoint_custody import authenticate_checkpoint_custody_ref
     from feedbax.training.diagnostics import load_method_training_trace
+    from feedbax.training.interruption import CancellationDecision
     from tests.test_orchestration_core import FakeDriver, _bundle, _with_local_realized_proof
     from tests.test_training_run_executor import (
         _execution_context,
@@ -626,6 +629,7 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
     checkpoint_root = collection_root / "checkpoints"
     manifest_root = collection_root / "manifests"
     context = _execution_context(collection_root=collection_root, run_spec=spec)
+    decision = CancellationDecision("stop", "test", GENERATED_AT.timestamp())
     result = execute_training_run_spec(
         spec,
         preparation=_valid_materialized_preparation(spec, initial_batch=10),
@@ -635,6 +639,11 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
         execution_context=context,
         progress_callback=progress.append,
         stop_before_update=lambda: len(progress) == 4,
+        cancellation_probe=(
+            (lambda _coordinate: decision if len(progress) == 3 else None)
+            if operator_stop
+            else None
+        ),
     )
     payload_path = tmp_path / "payload.json"
     payload_path.write_bytes(
@@ -672,6 +681,8 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
 
     state = RunSetState(
         run_set_id=bundle.run_set_id,
+        abort_reason="operator-stop-after-checkpoint" if operator_stop else None,
+        budget_counters={"cancellation": decision.as_provenance()} if operator_stop else {},
         rows={
             row_spec.row_id: RowState(
                 status="stopped", error="operator-stop-after-checkpoint", collected_outputs=outputs
@@ -691,11 +702,15 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
     engine = StageEngine(
         bundle=bundle,
         driver=FakeDriver(),
-        row_conformance_inputs={
-            row_spec.row_id: RowConformanceRuntimeInputs(
-                authorized_batch_stop=AuthorizedBatchStop(stop_after_batches=4)
-            )
-        },
+        row_conformance_inputs=(
+            None
+            if operator_stop
+            else {
+                row_spec.row_id: RowConformanceRuntimeInputs(
+                    authorized_batch_stop=AuthorizedBatchStop(stop_after_batches=4)
+                )
+            }
+        ),
     )
     observed_at = utc_now()
     row = engine._conformance_artifacts(row_spec, state, observed_at=observed_at)
@@ -719,6 +734,11 @@ def test_native_stop_certifies_the_executed_segment_and_absolute_checkpoint(
     )
     with pytest.raises(ValueError, match="failing certificate"):
         assert_certificate_allows_completed_registration(unauthorized)
+    if operator_stop:
+        without_worker_stop = replace(
+            row, manifest_payload={**row.manifest_payload, "provenance": {}}
+        )
+        assert "lacks worker checkpoint-stop" in check_completed_batches(without_worker_stop).detail
 
     diagnostics = row.training_diagnostics
     swapped_counts = {

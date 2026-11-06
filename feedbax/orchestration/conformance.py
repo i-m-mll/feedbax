@@ -85,6 +85,7 @@ class RowConformanceRuntimeInputs(StrictModel):
     """Typed operational inputs available only to row conformance checks."""
 
     authorized_batch_stop: AuthorizedBatchStop | None = None
+    operator_checkpoint_stop: bool = False
 
 
 class CheckEntry(StrictModel):
@@ -1109,16 +1110,28 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
     authorized_stop = (
         row.runtime_inputs.authorized_batch_stop if row.runtime_inputs is not None else None
     )
-    if authorized_stop is None:
+    operator_stop = (
+        authorized_stop is None
+        and row.runtime_inputs is not None
+        and row.runtime_inputs.operator_checkpoint_stop
+        and row.native_batch_frame is not None
+        and row.collected_checkpoint_custody is not None
+    )
+    if authorized_stop is None and not operator_stop:
         return fail_check(check_id, expected=authored_batches, observed=frame.segment)
 
-    stop_batches = authorized_stop.stop_after_batches
+    stop_batches = (
+        authorized_stop.stop_after_batches if authorized_stop is not None else frame.segment
+    )
+    stop_boundary = (
+        "realized_checkpoint_stop_after_batches" if operator_stop else "authorized_stop_after_batches"
+    )
     checkpoint_coordinates = _checkpoint_coordinates(row)
     checkpoint_completed_batches = _checkpoint_completed_batches(row)
     manifest_id = _path(manifest, "id")
     diagnostics_manifest_id = _path(diagnostics, "manifest_id")
     evidence = {
-        "authorized_stop_after_batches": stop_batches,
+        stop_boundary: stop_batches,
         "diagnostics_completed_batches": frame.segment,
         "diagnostics_cumulative_completed_batches": frame.cumulative,
         "diagnostics_terminal_status": (
@@ -1139,7 +1152,7 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
     }
     expected_evidence = {
         "authored_batches": authored_batches,
-        "authorized_stop_after_batches": stop_batches,
+        stop_boundary: stop_batches,
         "terminal_status": "cancelled",
         "row_status": "stopped",
         "row_error": "operator-stop-after-checkpoint",
@@ -1147,6 +1160,12 @@ def check_completed_batches(row: ConformanceRowArtifacts) -> CheckEntry:
         "final_cumulative_batches": frame.origin + stop_batches,
     }
     failures: list[str] = []
+    if operator_stop:
+        cancellation_action = _path(manifest, "provenance", "metadata", "cancellation", "action")
+        if cancellation_action != "stop":
+            failures.append("training manifest lacks worker checkpoint-stop provenance")
+        if stop_batches <= 0:
+            failures.append("operator checkpoint stop requires a new completed batch")
     if stop_batches >= authored_batches:
         failures.append("authorized stop must be earlier than the authored batch budget")
     if frame.segment != stop_batches:

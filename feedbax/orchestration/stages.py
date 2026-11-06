@@ -2204,6 +2204,15 @@ class StageEngine:
         row_state = state.rows[row.row_id]
         outputs = row_state.collected_outputs
         runtime_inputs = self.row_conformance_inputs.get(row.row_id)
+        cancellation = state.budget_counters.get("cancellation")
+        if (
+            state.abort_reason == "operator-stop-after-checkpoint"
+            and isinstance(cancellation, Mapping)
+            and cancellation.get("action") == "stop"
+        ):
+            runtime_inputs = (runtime_inputs or RowConformanceRuntimeInputs()).model_copy(
+                update={"operator_checkpoint_stop": True}
+            )
         run_spec = _row_payload(row)
         collect = state.stage(STAGE_COLLECT)
         custody = collect.outputs.get("checkpoint_custody", {}).get(row.row_id)
@@ -2487,7 +2496,10 @@ class StageEngine:
         row_status_set = set(row_statuses.values())
         if certificate.overall == "fail":
             status = "failed"
-        elif state.abort_reason:
+        elif state.abort_reason and (
+            state.abort_reason != "operator-stop-after-checkpoint"
+            or "stopped" not in row_status_set
+        ):
             status = "aborted"
         elif row_status_set == {"completed"}:
             status = "completed"

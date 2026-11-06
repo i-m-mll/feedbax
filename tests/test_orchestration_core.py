@@ -4477,7 +4477,7 @@ def test_register_accepts_verified_globally_empty_resource_inventory_gate(
                     error="operator-stop-after-checkpoint",
                 ),
             },
-            None,
+            "operator-stop-after-checkpoint",
             "stopped",
             {
                 "row-a": {
