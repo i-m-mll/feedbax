@@ -9,6 +9,7 @@ unpaired markers, and every arrangement of the two conventional agent files.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -42,18 +43,6 @@ def _block(
     )
 
 
-def test_the_block_header_states_its_own_identity() -> None:
-    rendered = ai.render_block()
-    parsed = ai.parse_block(rendered)
-
-    assert parsed is not None
-    assert parsed.schema == ai.AGENT_INSTRUCTIONS_SCHEMA_VERSION
-    assert parsed.template_version == ai.AGENT_INSTRUCTIONS_TEMPLATE_VERSION
-    assert parsed.declared_sha256 == ai.body_sha256(ai.template_body())
-    assert parsed.body == ai.template_body()
-    assert ai.classify(parsed) is ai.BlockStatus.FRESH
-
-
 # --- install and update ------------------------------------------------------
 
 
@@ -67,6 +56,14 @@ def test_a_first_install_prepends_exactly_one_block(tmp_path: Path) -> None:
     assert text.count(ai.BLOCK_START_MARKER) == 1
     assert text.count(ai.BLOCK_END_MARKER) == 1
     assert text.endswith(HUMAN_ABOVE)
+
+    parsed = ai.parse_block(text)
+    assert parsed is not None
+    assert parsed.schema == ai.AGENT_INSTRUCTIONS_SCHEMA_VERSION
+    assert parsed.template_version == ai.AGENT_INSTRUCTIONS_TEMPLATE_VERSION
+    assert parsed.declared_sha256 == hashlib.sha256(parsed.body.encode("utf-8")).hexdigest()
+    assert parsed.body == ai.template_body()
+    assert ai.classify(parsed) is ai.BlockStatus.FRESH
 
 
 def test_an_update_replaces_only_the_bytes_between_the_markers(tmp_path: Path) -> None:

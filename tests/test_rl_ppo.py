@@ -36,11 +36,6 @@ def test_gae_stops_at_episode_boundaries_and_bootstraps_collection_cutoff():
 
 
 class TestActorCritic:
-    def test_init(self, key):
-        policy = ActorCritic(obs_dim=10, action_dim=4, hidden_dim=32, hidden_layers=2, key=key)
-        assert policy.obs_dim == 10
-        assert policy.action_dim == 4
-
     @pytest.mark.parametrize("use_lattice", [False, True], ids=["ordinary", "lattice"])
     def test_public_sampling_preserves_seeded_actions_and_scores(self, key, use_lattice):
         policy = ActorCritic(obs_dim=3, action_dim=3, hidden_dim=4, hidden_layers=1, key=key)
@@ -68,6 +63,8 @@ class TestActorCritic:
 
     def test_dist_and_value(self, key):
         policy = ActorCritic(obs_dim=10, action_dim=4, hidden_dim=32, hidden_layers=2, key=key)
+        assert policy.obs_dim == 10
+        assert policy.action_dim == 4
         obs = jnp.zeros(10)
         dist, value = policy.dist_and_value(obs)
         assert isinstance(dist, BetaParams)

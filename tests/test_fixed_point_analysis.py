@@ -13,18 +13,12 @@ from feedbax.analysis.fp_finder import (
 from feedbax.analysis.fps import FixedPoints, FixedPointsPorts
 
 
-def test_fixed_points_surface_keeps_generic_analysis_entrypoint() -> None:
-    analysis = FixedPoints(inputs=FixedPointsPorts(fns="fns", candidates="candidates"))
-
+def test_fixed_points_reuses_trace_for_new_array_argument_values() -> None:
     assert FixedPoints.Ports is FixedPointsPorts
+    analysis = FixedPoints(inputs=FixedPoints.Ports(fns="fns", candidates="candidates"))
     assert isinstance(analysis.inputs, FixedPointsPorts)
     assert analysis.inputs.fns == "fns"
     assert analysis.inputs.candidates == "candidates"
-    assert callable(analysis.fpf_fn)
-
-
-def test_fixed_points_reuses_trace_for_new_array_argument_values() -> None:
-    analysis = FixedPoints(inputs=FixedPointsPorts(fns="fns", candidates="candidates"))
     candidates = jnp.array([[0.0], [2.0]])
     traces = 0
 

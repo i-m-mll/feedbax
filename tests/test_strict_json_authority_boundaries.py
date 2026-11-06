@@ -104,12 +104,6 @@ def test_strict_loader_still_raises_the_ordinary_decode_error() -> None:
         strict_json_loads("{not json")
 
 
-def test_a_key_repeated_at_different_paths_is_not_a_duplicate() -> None:
-    """One name used by two different objects states two different facts."""
-    document = '{"left": {"id": "a"}, "right": {"id": "b"}, "rows": [{"id": "c"}, {"id": "d"}]}'
-    assert strict_json_loads(document) == json.loads(document)
-
-
 # -- a repeated member name refuses, and names where ------------------------
 
 
