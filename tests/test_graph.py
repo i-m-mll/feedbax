@@ -1116,3 +1116,78 @@ def test_parent_graph_threads_nested_recurrent_carry():
     )
 
     assert jnp.allclose(outputs["out"], jnp.array([1.0, 2.0, 3.0]))
+
+
+def test_wired_nested_reset_does_not_advance_live_source_state():
+    class AutonomousCounter(Counter):
+        input_ports = ()
+
+    graph = Graph(
+        nodes={"source": AutonomousCounter(), "inner": _make_graph_input_initialized_cycle()},
+        wires=(Wire("source", "output", "inner", "seed"),),
+        output_ports=("count", "out"),
+        output_bindings={"count": ("source", "output"), "out": ("inner", "out")},
+    )
+    key = jax.random.PRNGKey(0)
+    first, state, carry = graph.step({}, init_state_from_component(graph), key=key)
+    second, _ = graph({}, state, key=key, n_steps=1, cycle_init=carry)
+
+    assert first["count"] == 1
+    assert first["out"] == 1.5
+    assert second["count"][0] == 2
+    assert second["out"][0] == 1.75
+
+
+def test_wired_nested_reset_rejects_recurrent_upstream_edge():
+    graph = Graph(
+        nodes={"encoder": _Scaler(2.0), "inner": _make_graph_input_initialized_cycle()},
+        wires=(
+            Wire("encoder", "y", "inner", "seed"),
+            Wire(
+                "inner",
+                "out",
+                "encoder",
+                "x",
+                temporality="recurrent",
+                recurrent_initializer={"kind": "constant", "value": 0.0},
+            ),
+        ),
+        output_ports=("out",),
+        output_bindings={"out": ("inner", "out")},
+    )
+    with pytest.raises(ValueError, match=r"initializer input inner\.seed.*recurrent edge"):
+        graph({}, init_state_from_component(graph), key=jax.random.PRNGKey(0), n_steps=1)
+
+
+def test_wired_nested_reset_uses_source_state_before_seed_input():
+    accumulator = Accumulator()
+    inner = Graph(
+        nodes={"acc": accumulator},
+        wires=(
+            Wire(
+                "acc",
+                "total",
+                "acc",
+                "delta",
+                temporality="recurrent",
+                recurrent_initializer={"kind": "graph-input", "source": "seed"},
+            ),
+        ),
+        input_ports=("seed",),
+        output_ports=("out",),
+        output_bindings={"out": ("acc", "total")},
+    )
+    graph = Graph(
+        nodes={"encoder": _Scaler(2.0), "inner": inner},
+        wires=(Wire("encoder", "y", "inner", "seed"),),
+        input_ports=("context",),
+        input_bindings={"context": ("encoder", "x")},
+        output_ports=("out",),
+        output_bindings={"out": ("inner", "out")},
+    )
+    state = init_state_from_component(graph).set(
+        accumulator.state_index, jnp.array(5.0, dtype=jnp.float32)
+    )
+    output, _, _ = graph.step({}, state, key=jax.random.PRNGKey(0))
+
+    assert output["out"] == 10.0
