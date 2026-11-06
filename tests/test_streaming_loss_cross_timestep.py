@@ -1,7 +1,5 @@
 """Streaming-loss tests for cross-timestep finite-difference terms."""
 
-from itertools import product
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -129,28 +127,10 @@ class _TrialSpecs(eqx.Module):
     targets: dict = eqx.field(default_factory=dict)
 
 
-_ROUTINE_SCAN_CASES = {
-    (0, jnp.float32, jnp.float32, False),
-    (0, jnp.float64, jnp.float64, True),
-    (1, jnp.float32, jnp.float64, False),
-    (1, jnp.float64, jnp.float32, True),
-    (2, jnp.float32, jnp.float32, True),
-    (2, jnp.float64, jnp.float64, False),
-}
-
-
-@pytest.mark.parametrize(
-    ("order", "loss_dtype", "state_dtype", "checkpoint"),
-    [
-        pytest.param(*case, marks=() if case in _ROUTINE_SCAN_CASES else pytest.mark.extended)
-        for case in product(
-            (0, 1, 2),
-            (jnp.float32, jnp.float64),
-            (jnp.float32, jnp.float64),
-            (False, True),
-        )
-    ],
-)
+@pytest.mark.parametrize("order", [0, 1, 2])
+@pytest.mark.parametrize("loss_dtype", [jnp.float32, jnp.float64])
+@pytest.mark.parametrize("state_dtype", [jnp.float32, jnp.float64])
+@pytest.mark.parametrize("checkpoint", [False, True])
 def test_scan_streaming_loss_dtype_and_gradient_parity(
     order,
     loss_dtype,

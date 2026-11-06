@@ -10,8 +10,6 @@ import subprocess
 import sys
 import textwrap
 
-import pytest
-
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.base import ParentRef
@@ -239,7 +237,6 @@ def _canonical_run_spec(
     return json.loads(result.stdout)
 
 
-@pytest.mark.extended
 def test_golden_governed_path_restores_one_authenticated_continuation_batch(
     tmp_path: Path, subprocess_dirty_tolerance
 ) -> None:
