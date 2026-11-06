@@ -14,6 +14,7 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.manifest_packet import export_manifest_packet
+from feedbax.persistence.manifest_index import find_manifest_paths_by_id
 from feedbax.web.app import create_app
 
 
@@ -208,3 +209,6 @@ def test_runs_dir_import_reads_only_selected_target_receipts(tmp_path: Path, mon
         "run:existing": 0.2,
     }
     assert target_receipts_read <= {"run_existing", "run_new"}
+    assert find_manifest_paths_by_id("run:existing", root=target) == [
+        canonical_manifest_path("TrainingRunManifest", "run:existing", root=target)
+    ]

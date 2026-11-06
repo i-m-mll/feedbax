@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Optional
 
@@ -51,6 +52,7 @@ from feedbax.persistence.manifest_discovery import (
 from feedbax.persistence.manifest_index import (
     connect_index,
     default_index_path,
+    index_manifest,
     iter_manifest_files,
     rebuild_manifest_index,
     remove_manifest_from_index,
@@ -567,13 +569,21 @@ def _import_runs_dir(source_root: Path, target_root: Path) -> ManifestImportResp
             source_root=source_root,
             source_path=manifest_path,
         )
-        path = write_manifest(imported, root=target_root)
+        path = write_manifest(imported, root=target_root, index=False)
         matches[manifest.id] = imported, path
         imported_ids.append(manifest.id)
 
     index_path = default_index_path(target_root)
-    if not index_path.exists():
-        connect_index(index_path).close()
+    with closing(connect_index(index_path)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for manifest_id, (_manifest, path) in matches.items():
+            current = load_manifest(path)
+            if current.id != manifest_id:
+                raise ValueError(
+                    f"Manifest {manifest_id!r} changed identity at {path}: {current.id!r}"
+                )
+            index_manifest(conn, current, path=path)
+            matches[manifest_id] = current, path
     training_runs, eval_runs = _run_summaries(matches.values())
     return ManifestImportResponse(
         root=str(target_root),
