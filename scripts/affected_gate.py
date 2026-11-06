@@ -46,7 +46,7 @@ def selection(base: str, env: dict[str, str]) -> dict:
     return report
 
 
-def reference(env: dict[str, str], profile_json: Path | None) -> None:
+def reference(env: dict[str, str], profile_json: Path | None, python_junit: Path | None) -> None:
     with TemporaryDirectory(prefix="feedbax-reference-") as directory:
         run(
             [
@@ -69,17 +69,21 @@ def reference(env: dict[str, str], profile_json: Path | None) -> None:
         python = ["scripts/full_suite.sh", "--no-memo"]
         if profile_json is not None:
             python.extend(["--profile-json", str(profile_json)])
+        if python_junit is not None:
+            python.append(f"--junitxml={python_junit}")
         run(python, env=env, timeout=420)
         run(["bun", "run", "test"], cwd=ROOT / "web", env=env)
         run(["bun", "run", "test:e2e"], cwd=ROOT / "web", env=env)
         run(["bun", "run", "build"], cwd=ROOT / "web", env=env)
 
 
-def affected(base: str, env: dict[str, str], profile_json: Path | None) -> None:
+def affected(
+    base: str, env: dict[str, str], profile_json: Path | None, python_junit: Path | None
+) -> None:
     report = selection(base, env)
     print(json.dumps(report, indent=2, sort_keys=True), flush=True)
     if report["mode"] == "full":
-        reference(env, profile_json)
+        reference(env, profile_json, python_junit)
         return
     python_tests = report.get("python_tests")
     studio_tests = report.get("studio_unit_tests")
@@ -94,6 +98,8 @@ def affected(base: str, env: dict[str, str], profile_json: Path | None) -> None:
         python = ["scripts/full_suite.sh", "--affected-base", base, "--no-memo"]
         if profile_json is not None:
             python.extend(["--profile-json", str(profile_json)])
+        if python_junit is not None:
+            python.append(f"--junitxml={python_junit}")
         run(python, env=env, timeout=420)
     if studio_tests:
         files = [str(Path(path).relative_to("web")) for path in studio_tests]
@@ -109,6 +115,7 @@ def main() -> int:
     mode.add_argument("--base", help="Select changes since this Git commit.")
     mode.add_argument("--reference", action="store_true", help="Run every reference gate.")
     parser.add_argument("--profile-json", type=Path, help="Write the Python timing profile.")
+    parser.add_argument("--python-junit", type=Path, help="Write the executed Python test cases.")
     args = parser.parse_args()
     env = os.environ.copy()
     env.setdefault("FEEDBAX_FULL_SUITE_XDIST_WORKERS", "10")
@@ -121,9 +128,9 @@ def main() -> int:
             print(f"shared heavy-suite lock is busy: {HEAVY_LOCK}", file=sys.stderr)
             return 75
         if args.reference:
-            reference(env, args.profile_json)
+            reference(env, args.profile_json, args.python_junit)
         else:
-            affected(args.base, env, args.profile_json)
+            affected(args.base, env, args.profile_json, args.python_junit)
     return 0
 
 
