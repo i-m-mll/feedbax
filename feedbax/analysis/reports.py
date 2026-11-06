@@ -67,13 +67,17 @@ from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     FigureManifest,
     ManifestStatus,
+    RegenerationSpecBuilder,
     ReportManifest,
     ReportSpec,
     SpecPayload,
     report_manifest_id,
     spec_payload,
 )
-from feedbax.persistence.terminal_publication import publish_render_manifest
+from feedbax.persistence.terminal_publication import (
+    RenderPublicationCapture,
+    publish_render_manifest,
+)
 
 REPORT_RENDER_ROLE = "report_render"
 REPORT_RENDER_MEDIA_TYPES = frozenset({"text/markdown", "text/html", "application/json"})
@@ -641,6 +645,8 @@ def execute_report_spec(
     artifact_provider_bindings: Sequence[StagedArtifactProviderRootBinding] = (),
     manifest_root_bindings: Sequence[StagedManifestRootBinding] = (),
     checkpoint_custody_bindings: Sequence[StagedCheckpointCustodyRootBinding] = (),
+    build_regeneration_spec: RegenerationSpecBuilder | None = None,
+    capture: RenderPublicationCapture | None = None,
 ) -> tuple[ReportManifest, Path]:
     """Execute a serialized report spec and write a truthful manifest."""
     report_spec = coerce_report_spec(spec)
@@ -692,13 +698,18 @@ def execute_report_spec(
     try:
         result = recipe(report_spec, root_path, resolved_inputs)
         _validate_report_result(report_spec.report_type, result)
+        completed_regeneration_specs = [*regeneration_specs, *result.regeneration_specs]
+        if build_regeneration_spec is not None:
+            stage_regeneration_spec = build_regeneration_spec(tuple(result.artifacts))
+            if stage_regeneration_spec not in completed_regeneration_specs:
+                completed_regeneration_specs.append(stage_regeneration_spec)
         manifest = _build_report_manifest(
             manifest_id=manifest_id,
             report_spec=report_spec,
             status="completed",
             provenance=prov,
             artifacts=result.artifacts,
-            regeneration_specs=[*regeneration_specs, *result.regeneration_specs],
+            regeneration_specs=completed_regeneration_specs,
             metadata={
                 **manifest_metadata,
                 **result.metadata,
@@ -723,7 +734,7 @@ def execute_report_spec(
         )
         path = publish_render_manifest(manifest, root=root_path)
         raise ReportRecipeExecutionError(manifest, path, exc) from exc
-    path = publish_render_manifest(manifest, root=root_path)
+    path = publish_render_manifest(manifest, root=root_path, capture=capture)
     assert path is not None
     return manifest, path
 
