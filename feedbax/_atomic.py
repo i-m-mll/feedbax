@@ -32,11 +32,16 @@ def write_bytes_atomic(path: Path, data: bytes, *, mode: int = 0o600) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(staging, path)
-        parent = path.parent.resolve(strict=True)
-        for directory in (parent, *parent.parents):
-            _fsync_directory(directory)
+        sync_parent_directories(path)
     finally:
         staging.unlink(missing_ok=True)
+
+
+def sync_parent_directories(path: Path) -> None:
+    """Sync a file's parent directory and all its resolved ancestors."""
+    parent = path.parent.resolve(strict=True)
+    for directory in (parent, *parent.parents):
+        _fsync_directory(directory)
 
 
 def _fsync_directory(path: Path) -> None:

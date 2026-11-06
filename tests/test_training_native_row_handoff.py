@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
@@ -22,6 +22,7 @@ import jax.numpy as jnp
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax import _atomic
 from feedbax.analysis.specs import find_manifest_by_id
 from feedbax.contracts.checkpoints import CheckpointContinuationRequest
 from feedbax.contracts.artifact_custody import ImmutableArtifactBlobProviderSpec
@@ -1086,6 +1087,95 @@ def test_local_shadow_runtime_binding_adds_update_budget_without_mutating_bundle
     assert row.launch.command.count("--update-budget") == 0
 
 
+def _stage_local_training_receipt(bundle: RunBundle, manifest_root: Path) -> tuple[RunBundle, Path]:
+    row = bundle.rows[0]
+    provenance = row.execution.row_provenance
+    assert provenance is not None
+    run_id = provenance.planned_run_id
+    generation = "test-generation"
+    receipt_path = write_manifest(
+        TrainingRunManifest(
+            id=run_id,
+            status="pending",
+            training_spec=spec_payload(
+                "TrainingRunSpec",
+                json.loads(Path(row.execution.payload.uri).read_bytes()),
+            ),
+            metadata={"execution_target": "local", "staging_generation": generation},
+        ),
+        root=manifest_root,
+    )
+    bundle = bundle.model_copy(
+        update={
+            "staged_training": StagedTrainingBinding(
+                manifest_root=str(manifest_root), manifest_id=run_id, generation=generation
+            ),
+        }
+    )
+    return bundle, receipt_path
+
+
+def test_staged_training_replay_requires_receipt_durability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _without_resolved_inputs(_assemble_lowered_bundle(tmp_path / "assembly", gain=2))
+    bundle, receipt_path = _stage_local_training_receipt(bundle, tmp_path / "staged")
+    row = bundle.rows[0]
+    receipt_dir = receipt_path.parent.resolve()
+    sync_allowed = False
+    receipt_dir_synced = False
+    fsync_directory = _atomic._fsync_directory
+
+    def sync_directory(path: Path) -> None:
+        nonlocal receipt_dir_synced
+        if path == receipt_dir:
+            with receipt_path.with_suffix(".lock").open("r+b") as probe:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if not sync_allowed:
+                raise OSError("receipt directory sync failed")
+        fsync_directory(path)
+        if path == receipt_dir:
+            receipt_dir_synced = True
+
+    monkeypatch.setattr(_atomic, "_fsync_directory", sync_directory)
+    driver = LocalOrchestrationDriver(cwd=tmp_path, freeze_lines=[])
+    provision_driver = driver.provision
+
+    def provision(bundle: RunBundle, state: RunSetState) -> Mapping[str, Any]:
+        assert receipt_dir_synced
+        return provision_driver(bundle, state)
+
+    provision_call = Mock(side_effect=provision)
+    launch_call = Mock(return_value={"pid": 12345})
+    monkeypatch.setattr(driver, "provision", provision_call)
+    monkeypatch.setattr(driver, "launch_row", launch_call)
+    engine = StageEngine(bundle=bundle, driver=driver)
+
+    with pytest.raises(OSError, match="receipt directory sync failed"):
+        engine.run(stop_after_stage="LAUNCH")
+    receipt = load_manifest(receipt_path)
+    assert receipt.status == "pending"
+    assert receipt.metadata["staged_attempt"]["run_set_id"] == bundle.run_set_id
+    claimed_bytes = receipt_path.read_bytes()
+    provision_call.assert_not_called()
+    launch_call.assert_not_called()
+
+    with pytest.raises(OSError, match="receipt directory sync failed"):
+        engine.run(stop_after_stage="LAUNCH")
+    assert receipt_path.read_bytes() == claimed_bytes
+    provision_call.assert_not_called()
+    launch_call.assert_not_called()
+
+    sync_allowed = True
+    state = engine.run(stop_after_stage="LAUNCH")
+    assert receipt_path.read_bytes() == claimed_bytes
+    provision_call.assert_called_once()
+    launch_call.assert_called_once()
+    assert state.rows[row.row_id].status == "launched"
+
+
 @pytest.mark.parametrize("winner", ["withdrawal", "admission"])
 def test_staged_training_withdrawal_races_local_admission(
     tmp_path: Path,
@@ -1135,29 +1225,9 @@ def test_staged_training_withdrawal_races_local_admission(
     manifest_root = tmp_path / "staged"
     monkeypatch.setenv("FEEDBAX_RUNS_DIR", str(manifest_root))
     monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "studio-orchestration"))
-    provenance = row.execution.row_provenance
-    assert provenance is not None
-    run_id = provenance.planned_run_id
-    generation = "race-generation"
-    receipt_path = write_manifest(
-        TrainingRunManifest(
-            id=run_id,
-            status="pending",
-            training_spec=spec_payload(
-                "TrainingRunSpec",
-                json.loads(Path(row.execution.payload.uri).read_bytes()),
-            ),
-            metadata={"execution_target": "local", "staging_generation": generation},
-        ),
-        root=manifest_root,
-    )
-    bundle = bundle.model_copy(
-        update={
-            "staged_training": StagedTrainingBinding(
-                manifest_root=str(manifest_root), manifest_id=run_id, generation=generation
-            ),
-        }
-    )
+    bundle, receipt_path = _stage_local_training_receipt(bundle, manifest_root)
+    assert bundle.staged_training is not None
+    run_id = bundle.staged_training.manifest_id
 
     winner_holds_lock = threading.Event()
     loser_observed_lock = threading.Event()
