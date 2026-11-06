@@ -6,12 +6,15 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import equinox as eqx
+from equinox.nn import State
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.contracts.graph import GraphSpec
+from feedbax.models.cde import CDENetwork
 from feedbax.runtime._graph_key_schedule import reset_key
 from feedbax.runtime.graph import Graph, GraphTraceRequest
 
@@ -77,6 +80,49 @@ def _unflatten_array_to_pytree(flat: Array, spec: _FlatTreeSpec) -> PyTree:
     return jt.unflatten(spec.treedef, leaves)
 
 
+def _cde_analysis_nodes(graph: Graph) -> tuple[CDENetwork, ...]:
+    """Find native CDE owners, including those inside nested graphs."""
+
+    def is_native_cde(node):
+        return type(node) is CDENetwork
+
+    owners: dict[object, CDENetwork] = {}
+    for node in jt.leaves(graph, is_leaf=is_native_cde):
+        if not is_native_cde(node):
+            continue
+        if owners.setdefault(node.state_index.marker, node) is not node:
+            raise ValueError(
+                "Graph controller cannot resolve learned h0 for distinct CDENetwork nodes "
+                "sharing one state slot. Use graph.prepare() to give the nodes distinct "
+                "state slots, or Graph.step to retain native shared-state stepping."
+            )
+    return tuple(owners.values())
+
+
+def _project_graph_state(state: State, cde_nodes: tuple[CDENetwork, ...]) -> PyTree:
+    if not cde_nodes:
+        return state
+
+    def coordinates(native_state):
+        slots = (native_state.get(node.state_index) for node in cde_nodes)
+        return tuple(leaf for slot in slots for leaf in (slot.hidden, slot._use_h0))
+
+    resolved = tuple(leaf for node in cde_nodes for leaf in (node.state_view(state).hidden, None))
+    return eqx.tree_at(coordinates, state, resolved)
+
+
+def _restore_graph_state(projected: PyTree, cde_nodes: tuple[CDENetwork, ...]) -> State:
+    if not cde_nodes:
+        return projected
+
+    return eqx.tree_at(
+        lambda state: tuple(state.get(node.state_index)._use_h0 for node in cde_nodes),
+        projected,
+        tuple(jnp.asarray(False) for _ in cde_nodes),
+        is_leaf=lambda leaf: leaf is None,
+    )
+
+
 def _default_key_policy(key: PRNGKeyArray, t: int) -> PRNGKeyArray:
     return jax.random.fold_in(key, t)
 
@@ -98,13 +144,16 @@ class GraphControllerAdapter:
     The adapter packs the executable graph state and recurrent cycle carry into
     a single flat controller state:
 
-    ``h = concat(flatten(equinox.nn.State), flatten(cycle_port_values))``.
+    ``h = concat(flatten(graph_coordinates), flatten(cycle_port_values))``.
 
     Each call to :meth:`step` unpacks that state, executes the graph through the
     public graph step API, and repacks the new graph state and recurrent carry.
-    The vector represents continuous coordinates only. Each state and carry leaf
-    must have a fixed shape and real floating dtype, which is restored before
-    graph execution. For exact stepping with discrete state, use
+    The vector represents continuous coordinates only. Each coordinate and carry
+    leaf must have a fixed shape and real floating dtype, which is restored before
+    graph execution. When packing fresh `CDENetwork` state, the adapter resolves
+    the graph's learned `h0` into the hidden coordinates. Unpacking reconstructs
+    native continuation state with initialization already resolved.
+    For exact stepping with discrete state, use
     :meth:`feedbax.runtime.graph.Graph.step` with the native state and carry.
     """
 
@@ -121,12 +170,13 @@ class GraphControllerAdapter:
     trace: tuple[GraphTraceRequest, ...] = ()
     key_policy: GraphKeyPolicy = _default_key_policy
     dtype: Any = jnp.float64
+    _cde_nodes: tuple[CDENetwork, ...] = ()
 
     def initial_state(self) -> Array:
         """Return the packed initial controller state."""
         return self.h0_flat
 
-    def unpack_state(self, h: Array) -> tuple[PyTree, dict[tuple[str, str], PyTree]]:
+    def unpack_state(self, h: Array) -> tuple[State, dict[tuple[str, str], PyTree]]:
         """Unpack a flat controller state into graph state and recurrent carry."""
         state_size = self.state_spec.size
         expected_shape = (state_size + self.cycle_spec.size,)
@@ -136,16 +186,21 @@ class GraphControllerAdapter:
             )
         state_flat = h[:state_size]
         cycle_flat = h[state_size:]
-        state = _unflatten_array_to_pytree(state_flat, self.state_spec)
+        state = _restore_graph_state(
+            _unflatten_array_to_pytree(state_flat, self.state_spec), self._cde_nodes
+        )
         cycle_port_values = _unflatten_array_to_pytree(cycle_flat, self.cycle_spec)
         return state, cycle_port_values
 
     def pack_state(
-        self, state: PyTree, cycle_port_values: Mapping[tuple[str, str], PyTree]
+        self, state: State, cycle_port_values: Mapping[tuple[str, str], PyTree]
     ) -> Array:
-        """Pack graph state and recurrent carry into a flat controller state."""
+        """Pack graph state and recurrent carry, resolving fresh CDE hidden state."""
         state_flat, _ = _flatten_pytree_to_array(
-            state, dtype=self.dtype, source="graph state", expected=self.state_spec
+            _project_graph_state(state, self._cde_nodes),
+            dtype=self.dtype,
+            source="graph state",
+            expected=self.state_spec,
         )
         cycle_flat, _ = _flatten_pytree_to_array(
             cycle_port_values, dtype=self.dtype, source="recurrent carry", expected=self.cycle_spec
@@ -234,7 +289,9 @@ def graph_controller(
     inputs. ``trace`` exposes retained graph boundary values through
     :meth:`GraphControllerAdapter.step_with_trace`.
     ``dtype`` is the dtype of the flat coordinates. Graph execution uses the
-    native leaf dtypes. Discrete state and carry are unsupported in flat analysis.
+    native leaf dtypes. Fresh `CDENetwork` state resolves learned `h0` at this
+    boundary, before the first flat step. Other discrete state and discrete carry
+    are unsupported in flat analysis.
     """
     if not jnp.issubdtype(dtype, jnp.floating):
         raise ValueError(
@@ -267,7 +324,10 @@ def graph_controller(
         raise ValueError(f"Graph has no external output port {output_port!r}.")
 
     init_state = executable.init_state(key=key)
-    state_flat, state_spec = _flatten_pytree_to_array(init_state, dtype=dtype, source="graph state")
+    cde_nodes = _cde_analysis_nodes(executable)
+    state_flat, state_spec = _flatten_pytree_to_array(
+        _project_graph_state(init_state, cde_nodes), dtype=dtype, source="graph state"
+    )
     cycle_port_values = executable.initial_cycle_port_values(
         init_state,
         dict(cycle_init) if cycle_init is not None else None,
@@ -293,6 +353,7 @@ def graph_controller(
         trace=trace,
         key_policy=key_policy,
         dtype=dtype,
+        _cde_nodes=cde_nodes,
     )
 
 
