@@ -1,1 +1,7 @@
 setup: cd web && bun install --frozen-lockfile
+
+post-merge:
+  - paths: [".bun-version", "web/package.json", "web/bun.lock"]
+    run: cd web && bun install --frozen-lockfile
+  - paths: ["pyproject.toml", "uv.lock"]
+    run: uv sync --locked --extra all
