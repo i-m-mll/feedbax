@@ -325,7 +325,17 @@ CROSS_FIELD_REFINEMENTS.update(
             _typescript_refinement(
                 "dynamic-port.fixed-names",
                 "fixed dynamic port names must be unique and non-empty",
-                "hasDuplicate(value.fixed_input_ports) || hasDuplicate(value.fixed_output_ports) || value.fixed_input_ports.some((name) => name.length === 0) || value.fixed_output_ports.some((name) => name.length === 0)",
+                "hasDuplicate(value.fixed_input_ports ?? []) || hasDuplicate(value.fixed_output_ports ?? []) || value.fixed_input_ports?.some((name) => name.length === 0) || value.fixed_output_ports?.some((name) => name.length === 0)",
+            ),
+            _typescript_refinement(
+                "dynamic-port.auto-resize",
+                "auto resize requires integer input arity and a valid minimum",
+                "value.auto_resize_minimum != null && (value.direction !== 'input' || value.count_mode !== 'integer' || value.auto_resize_minimum < (value.minimum_count ?? 1))",
+            ),
+            _typescript_refinement(
+                "dynamic-port.concatenation",
+                "concatenation requires dynamic inputs and a fixed output port",
+                "value.concatenate_to_output != null && (value.direction !== 'input' || !value.fixed_output_ports?.includes(value.concatenate_to_output))",
             ),
         ),
         "RepresentationStateAnchorSelectorBinding": (
