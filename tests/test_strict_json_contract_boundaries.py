@@ -249,24 +249,16 @@ def test_packet_index_that_states_its_schema_id_twice_is_refused(tmp_path: Path)
     assert str(index_path) in str(excinfo.value)
 
 
-def test_target_manifest_root_document_that_states_a_member_twice_is_refused(
+def test_selected_destination_manifest_that_states_a_member_twice_is_refused(
     tmp_path: Path,
 ) -> None:
-    """The import scan of the destination root reads it as authority too.
-
-    ``load_manifest`` on the same path already refuses this document, so routing
-    the scan's own parse adds no new refusal; it makes the two parses of one
-    file agree instead of disagreeing about which value is authoritative.
-    """
     source = tmp_path / "source"
     manifest_id = _packet_source(source)
     packet = tmp_path / "packet"
     export_manifest_packet([manifest_id], root=source, dest=packet)
 
     target = tmp_path / "target"
-    existing = TrainingRunManifest(
-        id="feedbax-training-run:strict-json-resident", status="completed"
-    )
+    existing = TrainingRunManifest(id=manifest_id, status="completed")
     resident_path = write_manifest(existing, root=target)
     duplicated = _state_member_twice(resident_path.read_text(encoding="utf-8"), "status", "failed")
     _assert_decoy_is_invisible_to_json_loads(duplicated, "status", "completed")
