@@ -23,7 +23,7 @@ import pytest
 from equinox.nn import StateIndex
 
 import feedbax.training.checkpoint_custody as custody_module
-from feedbax.components.equinox import PReLU
+from feedbax.components.equinox import Embedding, MLP, PReLU
 from feedbax.training import CheckpointForkPlanRelockResult
 from feedbax.contracts.checkpoints import (
     BatchHistory,
@@ -701,6 +701,69 @@ def test_generated_wrapper_checkpoint_requires_current_state_layout(
     assert loaded.manifest == published.manifest
     assert loaded.slots["controller"].init_alpha == 0.5
     assert loaded.slots["controller_optimizer"][0].mu.init_alpha == 0.0
+
+
+def _generated_default_slots(seed: int) -> dict[str, object]:
+    key = jax.random.key(seed)
+    slots = _minimax_slots()
+    slots["controller"] = {
+        "embedding": Embedding(4, 3, key=key),
+        "mlp": MLP(3, 2, 4, 1, key=key),
+    }
+    return slots
+
+
+def test_generated_wrapper_defaults_resume_in_fresh_process(tmp_path: Path) -> None:
+    run_spec = _run_spec(minimax=True)
+    program = run_spec.worker_execution.method_contract.phase_program
+    with jax.experimental.enable_x64():
+        write_checkpoint_transaction(
+            tmp_path,
+            run_spec=run_spec,
+            phase_program=program,
+            barrier_name="after_warmup",
+            coordinate=_coordinate(),
+            slots=_generated_default_slots(0),
+        )
+
+    code = """
+import sys
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+from feedbax.training.checkpoint_custody import load_latest_checkpoint
+from tests.test_checkpoint_custody import _generated_default_slots, _run_spec
+
+spec = _run_spec(minimax=True)
+loaded = load_latest_checkpoint(
+    sys.argv[1],
+    expected_run_spec=spec,
+    expected_phase_program=spec.worker_execution.method_contract.phase_program,
+    expected_slots=_generated_default_slots(1),
+)
+key = jax.random.key(0)
+controller = loaded.slots["controller"]
+for name, inputs, original in (
+    ("embedding", jnp.asarray(2), eqx.nn.Embedding(4, 3, dtype=jnp.float32, key=key)),
+    ("mlp", jnp.asarray([1, -2, 3], dtype=jnp.float32),
+     eqx.nn.MLP(3, 2, 4, 1, dtype=jnp.float32, key=key)),
+):
+    outputs, _ = controller[name]({"input": inputs}, None, key=key)
+    assert outputs["output"].dtype == jnp.float32
+    np.testing.assert_array_equal(outputs["output"], original(inputs))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path)],
+        cwd=Path(__file__).parents[1],
+        env={**os.environ, "JAX_ENABLE_X64": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_load_reuses_manifest_structural_fingerprints_for_loaded_slots(
