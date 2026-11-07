@@ -50,7 +50,7 @@ from jaxtyping import Array, ArrayLike, Float, Int, PRNGKeyArray, PyTree, Shaped
 
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.mapping import WhereDict
-from feedbax.runtime.graph import Component, Graph, RolloutStepHook, init_state_from_component
+from feedbax.runtime.graph import Component, GraphNode, Graph, RolloutStepHook, init_state_from_component
 from feedbax.runtime.iteration import run_component
 from feedbax.objectives.loss import (
     AbstractLoss,
@@ -1884,7 +1884,7 @@ class TaskComponentState(Module):
     env_state: Optional[PyTree]
 
 
-class TaskComponent(Component):
+class TaskComponent(GraphNode):
     """Component adapter for tasks/environments in an agent loop."""
 
     input_ports: ClassVar[tuple[str, ...]] = ()

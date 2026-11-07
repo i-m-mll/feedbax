@@ -27,7 +27,7 @@ from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax._ode import ode_init, restore_storage_dtypes
 from feedbax.mechanics.dynamics import LinearSystem
-from feedbax.runtime.graph import Component
+from feedbax.runtime.graph import GraphNode
 from feedbax.mechanics.backend import (
     PhysicsBackend,
     PhysicsState,
@@ -57,7 +57,7 @@ class MechanicsState(Module):
     solver: PyTree
 
 
-class Mechanics(Component):
+class Mechanics(GraphNode):
     """Discretizes and steps a plant model.
 
     When constructed without a ``backend``, uses the legacy Diffrax path

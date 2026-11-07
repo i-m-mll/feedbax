@@ -66,7 +66,7 @@ def test_linear_state_space_graph_spec_round_trips() -> None:
     spec = GraphSpec(
         nodes={
             "mechanics": ComponentSpec(
-                type="LinearStateSpace",
+                type="feedbax.LinearStateSpace",
                 params={
                     "A": [[1.0, 1.0], [0.0, 1.0]],
                     "B": [[0.0], [1.0]],
@@ -113,17 +113,26 @@ def test_linear_state_space_graph_spec_round_trips() -> None:
         )
     )
 
-    assert restored.nodes["mechanics"].type == "LinearStateSpace"
+    assert restored.nodes["mechanics"].type == "feedbax.LinearStateSpace"
     assert restored.nodes["mechanics"].params["A"] == [[1.0, 1.0], [0.0, 1.0]]
     assert restored.nodes["mechanics"].params["pos_slice"] == [0, 1]
 
 
 def test_linear_state_space_is_registered_for_graph_specs() -> None:
-    meta = ComponentRegistry().get("LinearStateSpace")
+    registry = ComponentRegistry()
+    meta = registry.get("feedbax.LinearStateSpace")
 
     assert meta is not None
     assert meta.input_ports == ["force", "epsilon"]
     assert meta.output_ports == ["effector", "state"]
+    assert LinearStateSpace().dt == meta.params.build({}).dt == 1.0
+    legacy = registry.resolve_component_spec("LinearStateSpace", {}, param_schema_version="1")
+    assert legacy.params["dt"] == 0.01
+    assert legacy.revision == 2
+    unversioned = registry.resolve_component_spec(
+        "LinearStateSpace", {}, historical_unversioned=True
+    )
+    assert unversioned.params == legacy.params
     assert {schema.name for schema in meta.param_schema} >= {
         "A",
         "B",
@@ -146,7 +155,7 @@ def _delayed_feedback_graph_spec(*, target_relative: bool = False) -> GraphSpec:
     return GraphSpec(
         nodes={
             "mechanics": ComponentSpec(
-                type="LinearStateSpace",
+                type="feedbax.LinearStateSpace",
                 params={
                     "A": jnp.eye(8).tolist(),
                     "B": jnp.zeros((8, 2)).tolist(),
@@ -158,7 +167,7 @@ def _delayed_feedback_graph_spec(*, target_relative: bool = False) -> GraphSpec:
                 output_ports=["effector", "state"],
             ),
             "selector": ComponentSpec(
-                type="StateFeedbackSelector",
+                type="feedbax.StateFeedbackSelector",
                 params={
                     "expected_state_dim": 8,
                     "state_slices": {
@@ -188,9 +197,7 @@ def _delayed_feedback_graph_spec(*, target_relative: bool = False) -> GraphSpec:
 
 
 def test_state_feedback_selector_materializes_delayed_lss_state_slice() -> None:
-    graph = spec_to_graph(
-        _delayed_feedback_graph_spec(), ComponentRegistry()
-    )
+    graph = spec_to_graph(_delayed_feedback_graph_spec(), ComponentRegistry())
 
     assert isinstance(graph.nodes["selector"], StateFeedbackSelector)
 

@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from typing import Any
 from feedbax.component_registry.history import Change, History, LegacyEndpoint
-from .force_fields import CurlField, ThresholdLatchedForce
+from .force_fields import CurlField, ThresholdLatchedForce, FixedField, DynamicsMatrixPerturb
 
 THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1 = "feedbax.component.threshold_latched_force.v1"
 THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2 = "feedbax.component.threshold_latched_force.v2"
@@ -60,7 +60,29 @@ def _curl_v2_evidence(params):
     return set(params) <= {"scale", "active", "amplitude"}
 
 
+def _fixed_v2_evidence(params):
+    return set(params) <= {"scale", "amplitude", "field", "active"}
+
+
+def _dynamics_v2_evidence(params):
+    return set(params) <= {"scale", "delta_A", "active", "mass"}
+
+
 HISTORIES = {
+    FixedField: History(
+        Change(2, migrate=_drop_label),
+        legacy=(
+            LegacyEndpoint("FixedField", "1", 1, _has_legacy_label),
+            LegacyEndpoint("FixedField", "2", 2, _fixed_v2_evidence),
+        ),
+    ),
+    DynamicsMatrixPerturb: History(
+        Change(2, migrate=_drop_label),
+        legacy=(
+            LegacyEndpoint("DynamicsMatrixPerturb", "1", 1, _has_legacy_label),
+            LegacyEndpoint("DynamicsMatrixPerturb", "2", 2, _dynamics_v2_evidence),
+        ),
+    ),
     CurlField: History(
         Change(2, migrate=_drop_label),
         legacy=(

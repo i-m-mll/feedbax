@@ -21,15 +21,17 @@ from numbers import Number
 from operator import index
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 from equinox import field
 from equinox.nn import State, StateIndex
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax.component_registry.declarations import ParameterField
-from feedbax.component_registry.discovery import component
-from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.component import PortType
 from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import Ports, ComponentOptions
+from typing import Annotated
+from pydantic import Field
 
 
 def thelen_muscle_shape(n_muscles: int) -> tuple[int, ...]:
@@ -68,46 +70,6 @@ def thelen_muscle_output_prototype(
     return dict.fromkeys(RigidTendonHillMuscleThelen.output_ports, proto)
 
 
-@component(
-    "RigidTendonHillMuscleThelen",
-    category="Muscles",
-    description=(
-        "Rigid-tendon Hill muscle with scalar signals for one muscle "
-        "and vectors for multiple muscles."
-    ),
-    parameter_fields=[
-        ParameterField(name="n_muscles", type="int", default=6, min=1, required=True),
-        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-        ParameterField(name="tau_activation", type="float", default=0.015, min=0.0, required=False),
-        ParameterField(
-            name="tau_deactivation", type="float", default=0.05, min=0.0, required=False
-        ),
-        ParameterField(
-            name="max_isometric_force", type="float", default=500.0, min=0.0, required=False
-        ),
-        ParameterField(
-            name="optimal_muscle_length",
-            type="float",
-            default=0.1,
-            min=0.0,
-            required=False,
-        ),
-        ParameterField(
-            name="tendon_slack_length", type="float", default=0.2, min=0.0, required=False
-        ),
-        ParameterField(
-            name="initial_activation", type="float", default=0.001, min=0.0, required=False
-        ),
-    ],
-    icon="Dumbbell",
-    configure=lambda cls: dict(
-        port_types=PortTypeSpec(
-            inputs={port: PortType(dtype="any") for port in cls.input_ports},
-            outputs={port: PortType(dtype="any") for port in cls.output_ports},
-        )
-    ),
-    output_prototype_fn=thelen_muscle_output_prototype,
-)
 class RigidTendonHillMuscleThelen(Component):
     """Thelen 2003 rigid tendon model with pre-computed FV constants.
 
@@ -127,8 +89,17 @@ class RigidTendonHillMuscleThelen(Component):
         dt: Euler integration timestep [s].
     """
 
-    input_ports = ("excitation", "musculotendon_length", "musculotendon_velocity")
-    output_ports = ("force", "activation", "fiber_length", "fiber_velocity")
+    ports = Ports(
+        inputs={
+            name: PortType(dtype="any")
+            for name in ("excitation", "musculotendon_length", "musculotendon_velocity")
+        },
+        outputs={
+            name: PortType(dtype="any")
+            for name in ("force", "activation", "fiber_length", "fiber_velocity")
+        },
+    )
+    component_options = ComponentOptions(output_prototype_fn=thelen_muscle_output_prototype)
 
     max_isometric_force: float
     optimal_muscle_length: float
@@ -163,16 +134,16 @@ class RigidTendonHillMuscleThelen(Component):
 
     def __init__(
         self,
-        max_isometric_force: float = 500.0,
-        optimal_muscle_length: float = 0.1,
-        tendon_slack_length: float = 0.1,
+        max_isometric_force: Annotated[float, Field(ge=0)] = 500.0,
+        optimal_muscle_length: Annotated[float, Field(ge=0)] = 0.1,
+        tendon_slack_length: Annotated[float, Field(ge=0)] = 0.1,
         vmax_factor: float = 10.0,
-        min_activation: float = 0.001,
-        tau_activation: float = 0.015,
-        tau_deactivation: float = 0.05,
-        dt: float = 0.01,
-        initial_activation: float = 0.001,
-        n_muscles: int = 1,
+        min_activation: Annotated[float, Field(ge=0)] = 0.001,
+        tau_activation: Annotated[float, Field(ge=0)] = 0.015,
+        tau_deactivation: Annotated[float, Field(ge=0)] = 0.05,
+        dt: Annotated[float, Field(ge=0)] = 0.01,
+        initial_activation: Annotated[float, Field(ge=0)] = 0.001,
+        n_muscles: Annotated[int, Field(ge=1)] = 1,
     ):
         """Initialize Thelen rigid tendon muscle.
 
@@ -229,9 +200,13 @@ class RigidTendonHillMuscleThelen(Component):
         """Return the shared initializer as a scalar for GraphSpec export."""
         initial = self.state_index.init.reshape(-1)
         value = initial[0]
-        if initial.size > 1 and not bool(jnp.all(initial == value)):
+        if (
+            initial.size > 1
+            and not isinstance(value, jax.core.Tracer)
+            and not bool(jnp.all(initial == value))
+        ):
             raise ValueError("GraphSpec requires the same initial_activation for every muscle")
-        return float(value)
+        return value
 
     def __call__(
         self,

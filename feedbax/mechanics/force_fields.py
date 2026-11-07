@@ -15,17 +15,16 @@ from equinox import field
 from equinox.nn import State, StateIndex
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.component_registry.declarations import (
-    ComponentConstructorPlan,
-    MissingPrototypeInput,
-    ParameterField,
-)
-from feedbax.component_registry.discovery import component
-from feedbax.contracts.component import PortType, PortTypeSpec
-from feedbax.contracts.migrations import ComponentMigration
+from feedbax.contracts.component import PortType
 from feedbax.mechanics.units import require_positive_finite
 from feedbax.runtime.graph import Component
-from feedbax.contracts.portable import ConfigBinding, Ports, ComponentOptions, default_configuration
+from feedbax.contracts.portable import (
+    ConfigBinding,
+    Ports,
+    ComponentOptions,
+    default_configuration,
+    MissingPrototypeInput,
+)
 from feedbax.runtime.signal_transforms import (
     TransformParams,
     _bool_param,
@@ -42,7 +41,9 @@ class CurlFieldParams(TransformParams):
 
 class FixedFieldParams(TransformParams):
     amplitude: Array = field(default_factory=lambda: _float_param(1.0), converter=_float_param)
-    field: Array = field(default_factory=lambda: jnp.array([0.0, 0.0], dtype=jnp.float32))
+    field: Array = field(
+        default_factory=lambda: jnp.array([0.0, 0.0], dtype=jnp.float32), converter=jnp.asarray
+    )
 
 
 class ThresholdLatchedForceParams(TransformParams):
@@ -236,7 +237,9 @@ class DynamicsMatrixPerturbParams(TransformParams):
             velocity row's added derivative. Defaults to a 2D zero matrix.
     """
 
-    delta_A: Array = field(default_factory=lambda: jnp.zeros((2, 4), dtype=jnp.float32))
+    delta_A: Array = field(
+        default_factory=lambda: jnp.zeros((2, 4), dtype=jnp.float32), converter=jnp.asarray
+    )
 
 
 def force_passthrough_output_prototype(
@@ -248,29 +251,6 @@ def force_passthrough_output_prototype(
             "force passthrough output prototype requires input prototype 'force'"
         )
     return {"force": inputs["force"]}
-
-
-def _has_legacy_label(params: Mapping[str, Any]) -> bool:
-    return "label" in params
-
-
-def _drop_transform_label(params: dict[str, Any]) -> dict[str, Any]:
-    return {name: value for name, value in params.items() if name != "label"}
-
-
-def _drop_label_migration(component_id: str) -> tuple[ComponentMigration, ...]:
-    return (
-        ComponentMigration(
-            source_type=component_id,
-            target_type=component_id,
-            owner="feedbax",
-            source_param_schema_version="1",
-            target_param_schema_version="2",
-            migration_id=f"feedbax.component.{component_id}.drop-label",
-            migrate_params=_drop_transform_label,
-            description="Use the graph node identity in place of the legacy parameter label.",
-        ),
-    )
 
 
 class CurlFieldConfig(BaseModel):
@@ -322,54 +302,32 @@ class CurlField(Component):
         return {"force": new_force}, state
 
 
-@component(
-    "FixedField",
-    param_schema_version="2",
-    migrations=_drop_label_migration("FixedField"),
-    constructor=ComponentConstructorPlan(
-        groups={
-            "params": (
-                FixedFieldParams,
-                ("scale", "amplitude", "field", "active"),
-            )
-        },
-        array_conversions={"field": None},
-    ),
-    attribute_paths={
-        "scale": "params_index.init.scale",
-        "amplitude": "params_index.init.amplitude",
-        "field": "params_index.init.field",
-        "active": "params_index.init.active",
-    },
-    category="Mechanics",
-    description="Fixed force field.",
-    parameter_fields=[
-        ParameterField(name="scale", type="float", default=1.0, required=True),
-        ParameterField(name="amplitude", type="float", default=1.0, required=True),
-        ParameterField(name="field", type="array", default=[0.0, 0.0], required=True),
-        ParameterField(name="active", type="bool", default=False, required=False),
-    ],
-    icon="Flag",
-    port_types=PortTypeSpec(
-        inputs={
-            "force": PortType(dtype="vector"),
-            "params_override": PortType(dtype="object"),
-        },
-        outputs={"force": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=force_passthrough_output_prototype,
-)
+class FixedFieldConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    scale: float = 1.0
+    amplitude: float = 1.0
+    field: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = (0.0, 0.0)
+    active: bool = False
+
+
 class FixedField(Component):
     """Adds a fixed force vector to a force signal."""
 
-    input_ports = ("force", "params_override")
-    output_ports = ("force",)
+    config = FixedFieldConfig
+    config_bindings = (
+        ConfigBinding("params_index.init", group=FixedFieldParams, argument="params"),
+    )
+    ports = Ports(
+        inputs={"force": PortType(dtype="vector"), "params_override": PortType(dtype="object")},
+        outputs={"force": PortType(dtype="vector")},
+    )
+    component_options = ComponentOptions(output_prototype_fn=force_passthrough_output_prototype)
 
     params_index: StateIndex
 
     def __init__(self, params: Optional[FixedFieldParams] = None):
         if params is None:
-            params = FixedFieldParams(active=False)
+            params = self.config_bindings[0].materialize(default_configuration(type(self)))
         self.params_index = StateIndex(_strong_typed(params))
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -385,10 +343,6 @@ class FixedField(Component):
 
         new_force = jax.lax.cond(params.active, apply_field, lambda: force)
         return {"force": new_force}, state
-
-
-def _extract_declared_to_params(component: Any, model: Any) -> Any:
-    return type(model).model_validate(component.to_params())
 
 
 class ThresholdLatchedForceConfig(BaseModel):
@@ -565,55 +519,17 @@ class ThresholdLatchedForce(Component):
         return {"force": new_force}, state
 
 
-@component(
-    "DynamicsMatrixPerturb",
-    param_schema_version="2",
-    migrations=_drop_label_migration("DynamicsMatrixPerturb"),
-    constructor=ComponentConstructorPlan(
-        groups={
-            "params": (
-                DynamicsMatrixPerturbParams,
-                ("scale", "delta_A", "active"),
-            )
-        },
-        array_conversions={"delta_A": (2, 4)},
-    ),
-    attribute_paths={
-        "scale": "params_index.init.scale",
-        "delta_A": "params_index.init.delta_A",
-        "active": "params_index.init.active",
-    },
-    category="Mechanics",
-    description="State-feedback dynamics-matrix perturbation in the force channel.",
-    parameter_fields=[
-        ParameterField(name="scale", type="float", default=1.0, required=True),
-        ParameterField(
-            name="delta_A",
-            type="array",
-            default=[[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]],
-            required=True,
-        ),
-        ParameterField(name="active", type="bool", default=False, required=False),
-        ParameterField(
-            name="mass",
-            type="float",
-            default=None,
-            min=0.0,
-            required=True,
-            description="Effector mass in kg; must match the wired plant.",
-        ),
-    ],
-    icon="Activity",
-    port_types=PortTypeSpec(
-        inputs={
-            "effector": PortType(dtype="state"),
-            "force": PortType(dtype="vector"),
-            "params_override": PortType(dtype="object"),
-        },
-        outputs={"force": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=force_passthrough_output_prototype,
-)
+class DynamicsMatrixPerturbConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    scale: float = 1.0
+    delta_A: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = (
+        (0.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.0),
+    )
+    active: bool = False
+    mass: float = Field(gt=0, allow_inf_nan=False)
+
+
 class DynamicsMatrixPerturb(Component):
     """Adds a state-feedback dynamics-matrix perturbation as a force.
 
@@ -636,8 +552,19 @@ class DynamicsMatrixPerturb(Component):
             (typically ``1.0``).
     """
 
-    input_ports = ("effector", "force", "params_override")
-    output_ports = ("force",)
+    config = DynamicsMatrixPerturbConfig
+    config_bindings = (
+        ConfigBinding("params_index.init", group=DynamicsMatrixPerturbParams, argument="params"),
+    )
+    ports = Ports(
+        inputs={
+            "effector": PortType(dtype="state"),
+            "force": PortType(dtype="vector"),
+            "params_override": PortType(dtype="object"),
+        },
+        outputs={"force": PortType(dtype="vector")},
+    )
+    component_options = ComponentOptions(output_prototype_fn=force_passthrough_output_prototype)
 
     params_index: StateIndex
     mass: float = field(static=True)
@@ -653,7 +580,9 @@ class DynamicsMatrixPerturb(Component):
                 "the wired plant; pass mass=<plant mass> at graph construction."
             )
         if params is None:
-            params = DynamicsMatrixPerturbParams(active=False)
+            params = self.config_bindings[0].materialize(
+                default_configuration(type(self), mass=mass)
+            )
         self.params_index = StateIndex(_strong_typed(params))
         self.mass = require_positive_finite("DynamicsMatrixPerturb.mass", mass)
 

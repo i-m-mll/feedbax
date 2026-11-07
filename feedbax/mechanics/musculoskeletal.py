@@ -25,7 +25,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
-from feedbax.runtime.graph import Component
+from feedbax.runtime.graph import GraphNode
 from feedbax.mechanics.dae import DAEComponent
 from feedbax.mechanics.geometry import TwoLinkArmMuscleGeometry
 from feedbax.mechanics.hill_muscles import (
@@ -84,7 +84,7 @@ class MusculoskeletalState(Module):
 # ============================================================================
 
 
-class RigidTendonMusculoskeletalArm(Component):
+class RigidTendonMusculoskeletalArm(GraphNode):
     """Musculoskeletal arm with rigid tendon muscles.
 
     Combines two-link arm dynamics with Hill muscle models using
