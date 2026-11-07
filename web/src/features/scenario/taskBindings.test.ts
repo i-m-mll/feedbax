@@ -18,7 +18,7 @@ import { StudioTaskBindingSpecSchema } from '@/generated/studioContracts';
 const graphWithNetworkInput: GraphSpec = {
   nodes: {
     network: {
-      type: 'Network',
+      type: 'feedbax.Network',
       params: {},
       input_ports: ['input'],
       output_ports: ['output'],
@@ -35,13 +35,13 @@ const graphWithTaskMux: GraphSpec = {
   ...graphWithNetworkInput,
   nodes: {
     task_mux: {
-      type: 'Mux',
+      type: 'feedbax.Mux',
       params: { n_inputs: 3 },
       input_ports: ['in_0', 'in_1', 'in_2'],
       output_ports: ['output'],
     },
     network: {
-      type: 'Network',
+      type: 'feedbax.Network',
       params: {},
       input_ports: ['input'],
       output_ports: ['output'],
@@ -61,7 +61,7 @@ const graphWithNamedMux: GraphSpec = {
   ...graphWithTaskMux,
   nodes: {
     mux: {
-      type: 'Mux',
+      type: 'feedbax.Mux',
       params: { n_inputs: 3 },
       input_ports: ['in_0', 'in_1', 'in_2'],
       output_ports: ['output'],

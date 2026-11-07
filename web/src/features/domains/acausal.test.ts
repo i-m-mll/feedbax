@@ -15,7 +15,7 @@ const registry = new Map<string, ComponentDefinition>([
   [
     'Mass',
     {
-      name: 'Mass',
+      name: 'feedbax.Mass',
       category: 'Mechanics',
       description: 'Mass',
       input_ports: ['flange'],
@@ -31,7 +31,7 @@ const registry = new Map<string, ComponentDefinition>([
   [
     'ActuationInput',
     {
-      name: 'ActuationInput',
+      name: 'feedbax.ActuationInput',
       category: 'Mechanics',
       description: 'Actuation adapter',
       input_ports: ['signal'],
@@ -52,9 +52,9 @@ function acausalGraph(): AcausalGraphSpec {
     physical_domain: 'translational',
     solver: { solver_type: 'implicit_euler', dt: 0.01 },
     nodes: {
-      mass: { type: 'Mass', params: {}, input_ports: ['flange'], output_ports: [] },
+      mass: { type: 'feedbax.Mass', params: {}, input_ports: ['flange'], output_ports: [] },
       adapter: {
-        type: 'ActuationInput',
+        type: 'feedbax.ActuationInput',
         params: {},
         input_ports: ['signal'],
         output_ports: ['flange'],
@@ -90,7 +90,7 @@ describe('acausal domain helpers', () => {
     expect(stableGraphHash({
       ...interior,
       schema_id: 'feedbax.spec.acausal_graph',
-      nodes: { plant: { ...node, param_schema_version: null, input_ports: [], output_ports: [] } },
+      nodes: { plant: { ...node, revision: null, input_ports: [], output_ports: [] } },
       connections: [],
       solver: {
         ...interior.solver,
@@ -140,7 +140,7 @@ describe('acausal domain helpers', () => {
   it('derives stale and rolled-up compile status from reports and current hashes', () => {
     const graph = acausalGraph();
     const staleReport = report(graph, 'ok');
-    graph.nodes!.extra = { type: 'Mass', params: {}, input_ports: ['flange'], output_ports: [] };
+    graph.nodes!.extra = { type: 'feedbax.Mass', params: {}, input_ports: ['flange'], output_ports: [] };
 
     expect(compileStatusForReport(staleReport, stableGraphHash(graph))).toBe('stale');
 

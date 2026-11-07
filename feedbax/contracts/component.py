@@ -103,6 +103,8 @@ def migrate_component_definition_v3_to_v4_payload(
 def migrate_component_definition_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Migrate legacy component definitions to the current schema."""
 
+    if payload.get("schema_version") is None and "revision" in payload:
+        return {**payload, "schema_version": COMPONENT_DEFINITION_SCHEMA_VERSION}
     migrated = migrate_component_definition_v1_to_v2_payload(payload)
     migrated = migrate_component_definition_v2_to_v3_payload(migrated)
     return migrate_component_definition_v3_to_v4_payload(migrated)

@@ -15,33 +15,33 @@ function twoLinkArm(): AcausalGraphSpec {
     schema_version: 'feedbax.spec.acausal_graph.v1',
     physical_domain: 'planar_multibody',
     nodes: {
-      world: { type: 'WorldFrame', params: {}, input_ports: ['frame'], output_ports: [] },
+      world: { type: 'feedbax.WorldFrame', params: {}, input_ports: ['frame'], output_ports: [] },
       anchor: {
-        type: 'Anchor',
+        type: 'feedbax.Anchor',
         params: { world_frame: 'world.frame', frame: 'upper.proximal' },
         input_ports: ['frame', 'world'],
         output_ports: [],
       },
       upper: {
-        type: 'PlanarLink',
+        type: 'feedbax.PlanarLink',
         params: { length: 0.33, mass: 1, com: 0.5, inertia: 0.03 },
         input_ports: ['proximal', 'distal'],
         output_ports: [],
       },
       shoulder: {
-        type: 'RevoluteJoint',
+        type: 'feedbax.RevoluteJoint',
         params: { parent_frame: 'world.frame', child_frame: 'upper.proximal', damping: 0.1 },
         input_ports: ['parent', 'child'],
         output_ports: [],
       },
       forearm: {
-        type: 'PlanarLink',
+        type: 'feedbax.PlanarLink',
         params: { length: 0.27, mass: 1, com: 0.5, inertia: 0.02 },
         input_ports: ['proximal', 'distal'],
         output_ports: [],
       },
       elbow: {
-        type: 'RevoluteJoint',
+        type: 'feedbax.RevoluteJoint',
         params: { parent_frame: 'upper.distal', child_frame: 'forearm.proximal', damping: 0.1 },
         input_ports: ['parent', 'child'],
         output_ports: [],
@@ -50,7 +50,7 @@ function twoLinkArm(): AcausalGraphSpec {
         Array.from({ length: 6 }, (_, index) => [
           `muscle_${index}`,
           {
-            type: 'MusclePath',
+            type: 'feedbax.MusclePath',
             params: {
               path_points: [
                 { frame: 'world.frame', offset: [0, 0] },

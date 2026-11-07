@@ -19,8 +19,8 @@ describe('component catalog transport', () => {
             output_ports: ['output'],
             icon: 'box',
             default_params: { gain: 1.0 },
-            param_schema_version: '1',
-            supported_param_schema_versions: ['1'],
+            revision: 1,
+            supported_revisions: [1],
             migrations: [],
             trainable_by_default: false,
             representation: {

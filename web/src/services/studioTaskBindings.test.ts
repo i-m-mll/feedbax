@@ -16,9 +16,9 @@ const initialWorkspaceState = useWorkspaceStore.getState();
 
 beforeEach(() => {
   const interior: GraphSpec = {
-    schema_id: 'feedbax.spec.graph', schema_version: 'feedbax.spec.graph.v5',
+    schema_id: 'feedbax.spec.graph', schema_version: 'feedbax.spec.graph.v6',
     nodes: {
-      gain: { type: 'Gain', params: { gain: 1 }, input_ports: ['input'], output_ports: ['output'] },
+      gain: { type: 'feedbax.Gain', params: { gain: 1 }, input_ports: ['input'], output_ports: ['output'] },
     },
     wires: [], input_ports: ['input'], output_ports: ['output'],
     input_bindings: { input: ['gain', 'input'] },
@@ -27,14 +27,14 @@ beforeEach(() => {
   const graph: GraphSpec = {
     ...interior,
     nodes: {
-      controller: { type: 'Subgraph', params: {}, input_ports: ['input'], output_ports: ['output'] },
+      controller: { type: 'feedbax.Subgraph', params: {}, input_ports: ['input'], output_ports: ['output'] },
     },
     input_ports: [], output_ports: [], input_bindings: {}, output_bindings: {},
     subgraphs: { controller: interior },
   };
   const uiState: GraphUIState = { viewport: { x: 0, y: 0, zoom: 1 }, node_states: {} };
   useGraphStore.getState().setComponentRegistry([{
-    name: 'Subgraph', category: 'Structure', description: '',
+    name: 'feedbax.Subgraph', category: 'Structure', description: '',
     input_ports: ['input'], output_ports: ['output'], default_params: {},
     is_composite: true, domain: 'feedbax.domain.causal', interior_domain: 'feedbax.domain.causal',
   }]);

@@ -68,8 +68,8 @@ function acausalComponent(name: string): ComponentDefinition {
 
 function installCompositeRegistry() {
   useGraphStore.getState().setComponentRegistry([
-    compositeComponent('Network'),
-    compositeComponent('Subgraph'),
+    compositeComponent('feedbax.Network'),
+    compositeComponent('feedbax.Subgraph'),
   ]);
 }
 
@@ -77,19 +77,19 @@ function graphWithNetworkSubgraph(): GraphSpec {
   return {
     nodes: {
       source: {
-        type: 'Constant',
+        type: 'feedbax.Constant',
         params: {},
         input_ports: [],
         output_ports: ['output'],
       },
       network: {
-        type: 'Network',
+        type: 'feedbax.Network',
         params: {},
         input_ports: ['input', 'feedback'],
         output_ports: ['output'],
       },
       sink: {
-        type: 'Gain',
+        type: 'feedbax.Gain',
         params: {},
         input_ports: ['input'],
         output_ports: ['output'],
@@ -117,13 +117,13 @@ function graphWithNetworkSubgraph(): GraphSpec {
       network: {
         nodes: {
           input_mux: {
-            type: 'Mux',
+            type: 'feedbax.Mux',
             params: { n_inputs: 2 },
             input_ports: ['in_0', 'in_1'],
             output_ports: ['output'],
           },
           cell: {
-            type: 'GRU',
+            type: 'feedbax.GRU',
             params: { input_size: 6, hidden_size: 100 },
             input_ports: ['input', 'hidden'],
             output_ports: ['output', 'hidden'],
@@ -156,13 +156,13 @@ function graphWithTwoNodes(): { graph: GraphSpec; uiState: GraphUIState } {
     graph: {
       nodes: {
         a: {
-          type: 'Gain',
+          type: 'feedbax.Gain',
           params: { gain: 1 },
           input_ports: ['input'],
           output_ports: ['output'],
         },
         b: {
-          type: 'Gain',
+          type: 'feedbax.Gain',
           params: { gain: 1 },
           input_ports: ['input'],
           output_ports: ['output'],
@@ -195,7 +195,7 @@ function graphWithThreeLevelSubgraph(): { graph: GraphSpec; uiState: GraphUIStat
   const innerGraph: GraphSpec = {
     nodes: {
       core: {
-        type: 'Linear',
+        type: 'feedbax.Linear',
         params: {},
         input_ports: ['input'],
         output_ports: ['output'],
@@ -210,7 +210,7 @@ function graphWithThreeLevelSubgraph(): { graph: GraphSpec; uiState: GraphUIStat
   const blockGraph: GraphSpec = {
     nodes: {
       inner: {
-        type: 'Subgraph',
+        type: 'feedbax.Subgraph',
         params: {},
         input_ports: ['input'],
         output_ports: ['output'],
@@ -228,7 +228,7 @@ function graphWithThreeLevelSubgraph(): { graph: GraphSpec; uiState: GraphUIStat
   const networkGraph: GraphSpec = {
     nodes: {
       block: {
-        type: 'Subgraph',
+        type: 'feedbax.Subgraph',
         params: {},
         input_ports: ['input'],
         output_ports: ['output'],
@@ -246,7 +246,7 @@ function graphWithThreeLevelSubgraph(): { graph: GraphSpec; uiState: GraphUIStat
   const graph: GraphSpec = {
     nodes: {
       network: {
-        type: 'Network',
+        type: 'feedbax.Network',
         params: {},
         input_ports: ['input'],
         output_ports: ['output'],
@@ -324,7 +324,7 @@ describe('graphStore boundary aliases', () => {
   it('deletes same-named child nodes without deleting parent graph nodes', () => {
     const graph = graphWithNetworkSubgraph();
     graph.nodes.input_mux = {
-      type: 'Mux',
+      type: 'feedbax.Mux',
       params: { n_inputs: 2 },
       input_ports: ['in_0', 'in_1'],
       output_ports: ['output'],
@@ -351,7 +351,7 @@ describe('graphStore boundary aliases', () => {
 
   it('folds active subgraph edits into the root graph snapshot for persistence', () => {
     const gain: ComponentDefinition = {
-      name: 'Gain',
+      name: 'feedbax.Gain',
       category: 'Math',
       description: 'Gain',
       param_schema: [],
@@ -371,7 +371,7 @@ describe('graphStore boundary aliases', () => {
 
     expect(persisted.graph.nodes.network).toBeDefined();
     expect(persisted.graph.subgraphs?.network.nodes.gain).toMatchObject({
-      type: 'Gain',
+      type: 'feedbax.Gain',
       params: { gain: 1 },
     });
     expect(persisted.uiState.subgraph_states?.network?.node_states.gain.position).toEqual({
@@ -436,7 +436,7 @@ describe('graphStore boundary aliases', () => {
   it('folds three active subgraph layers into the root graph snapshot', () => {
     const { graph, uiState } = graphWithThreeLevelSubgraph();
     const gain: ComponentDefinition = {
-      name: 'Gain',
+      name: 'feedbax.Gain',
       category: 'Math',
       description: 'Gain',
       param_schema: [],
@@ -458,7 +458,7 @@ describe('graphStore boundary aliases', () => {
     expect(
       persisted.graph.subgraphs?.network.subgraphs?.block.subgraphs?.inner.nodes.gain
     ).toMatchObject({
-      type: 'Gain',
+      type: 'feedbax.Gain',
       params: { gain: 3 },
     });
     expect(
@@ -470,7 +470,7 @@ describe('graphStore boundary aliases', () => {
   it('restores the active subgraph path after a persisted graph reload', () => {
     const { graph, uiState } = graphWithThreeLevelSubgraph();
     const gain: ComponentDefinition = {
-      name: 'Gain',
+      name: 'feedbax.Gain',
       category: 'Math',
       description: 'Gain',
       param_schema: [],
@@ -500,7 +500,7 @@ describe('graphStore boundary aliases', () => {
     expect(state.currentGraphLabel).toBe('inner');
     expect(state.currentContext).toBe(CAUSAL_DOMAIN_ID);
     expect(state.graph.nodes.gain).toMatchObject({
-      type: 'Gain',
+      type: 'feedbax.Gain',
       params: { gain: 5 },
     });
     expect(state.uiState.node_states.gain.position).toEqual({ x: 640, y: 180 });
@@ -510,7 +510,7 @@ describe('graphStore boundary aliases', () => {
     const graph: GraphSpec = {
       nodes: {
         system: {
-          type: 'AcausalSystem',
+          type: 'feedbax.AcausalSystem',
           params: {},
           input_ports: ['input'],
           output_ports: ['state'],
@@ -546,7 +546,7 @@ describe('graphStore boundary aliases', () => {
     expect(useGraphStore.getState().currentContext).toBe('top-level');
 
     useGraphStore.getState().setComponentRegistry([
-      compositeComponent('AcausalSystem', ACAUSAL_DOMAIN_ID),
+      compositeComponent('feedbax.AcausalSystem', ACAUSAL_DOMAIN_ID),
     ]);
 
     const state = useGraphStore.getState();
@@ -562,21 +562,21 @@ describe('graphStore boundary aliases', () => {
       physical_domain: 'translational',
       solver: { solver_type: 'implicit_euler', dt: 0.01 },
       nodes: {
-        mass: { type: 'Mass', params: {}, input_ports: ['flange'], output_ports: [] },
+        mass: { type: 'feedbax.Mass', params: {}, input_ports: ['flange'], output_ports: [] },
         spring: {
-          type: 'Spring',
+          type: 'feedbax.Spring',
           params: {},
           input_ports: ['flange', 'flange_2'],
           output_ports: [],
         },
-        ground: { type: 'Ground', params: {}, input_ports: ['flange'], output_ports: [] },
+        ground: { type: 'feedbax.Ground', params: {}, input_ports: ['flange'], output_ports: [] },
       },
       connections: [],
     };
     const graph: GraphSpec = {
       nodes: {
         system: {
-          type: 'AcausalSystem',
+          type: 'feedbax.AcausalSystem',
           params: {},
           input_ports: ['input'],
           output_ports: ['state'],
@@ -607,10 +607,10 @@ describe('graphStore boundary aliases', () => {
     };
 
     useGraphStore.getState().setComponentRegistry([
-      compositeComponent('AcausalSystem', ACAUSAL_DOMAIN_ID),
-      acausalComponent('Mass'),
-      acausalComponent('Spring'),
-      acausalComponent('Ground'),
+      compositeComponent('feedbax.AcausalSystem', ACAUSAL_DOMAIN_ID),
+      acausalComponent('feedbax.Mass'),
+      acausalComponent('feedbax.Spring'),
+      acausalComponent('feedbax.Ground'),
     ]);
     useGraphStore.getState().hydrateGraph(graph, ui, 'graph-1');
     useGraphStore.getState().enterSubgraph('system');
@@ -670,7 +670,7 @@ describe('graphStore boundary aliases', () => {
 
   it('preserves active subgraph undo history across enter and exit', () => {
     const gain: ComponentDefinition = {
-      name: 'Gain',
+      name: 'feedbax.Gain',
       category: 'Math',
       description: 'Gain',
       param_schema: [],
@@ -702,7 +702,7 @@ describe('graphStore boundary aliases', () => {
     const state = useGraphStore.getState();
     expect(state.past).toHaveLength(1);
     expect(state.graph.nodes.network2).toMatchObject({
-      type: 'Network',
+      type: 'feedbax.Network',
       input_ports: ['input', 'feedback'],
       output_ports: ['output'],
     });
@@ -861,7 +861,7 @@ describe('graphStore subgraph entry templates', () => {
   const unpopulatedMuscleGraph: GraphSpec = {
     nodes: {
       muscle: {
-        type: 'Arm6MuscleRigidTendon',
+        type: 'feedbax.Arm6MuscleRigidTendon',
         params: {},
         input_ports: ['excitation', 'angles', 'angular_velocities'],
         output_ports: ['torques'],
@@ -885,9 +885,9 @@ describe('graphStore subgraph entry templates', () => {
     useGraphStore.setState({
       _componentRegistry: new Map([
         [
-          'Arm6MuscleRigidTendon',
+          'feedbax.Arm6MuscleRigidTendon',
           {
-            name: 'Arm6MuscleRigidTendon',
+            name: 'feedbax.Arm6MuscleRigidTendon',
             category: 'Mechanics',
             description: 'Composite metadata while templates load',
             param_schema: [],
@@ -922,7 +922,7 @@ describe('graphStore subgraph entry templates', () => {
   it('reports missing backend templates instead of fabricating frontend subgraphs', () => {
     useGraphStore.getState().setComponentRegistry([
       {
-        name: 'Arm6MuscleRigidTendon',
+        name: 'feedbax.Arm6MuscleRigidTendon',
         category: 'Mechanics',
         description: 'Composite without a loaded template',
         param_schema: [],
@@ -950,7 +950,7 @@ describe('graphStore subgraph entry templates', () => {
     const templateGraph: GraphSpec = {
       nodes: {
         inner: {
-          type: 'Gain',
+          type: 'feedbax.Gain',
           params: { gain: 1 },
           input_ports: ['input'],
           output_ports: ['output'],
@@ -965,7 +965,7 @@ describe('graphStore subgraph entry templates', () => {
 
     useGraphStore.getState().setComponentRegistry([
       {
-        name: 'Arm6MuscleRigidTendon',
+        name: 'feedbax.Arm6MuscleRigidTendon',
         category: 'Mechanics',
         description: 'Composite with a backend template',
         param_schema: [],
@@ -990,10 +990,10 @@ describe('graphStore subgraph entry templates', () => {
 
     const state = useGraphStore.getState();
     const persisted = state.capturePersistedGraph();
-    expect(state.graph.nodes.inner.type).toBe('Gain');
+    expect(state.graph.nodes.inner.type).toBe('feedbax.Gain');
     expect(state.graph.nodes.inner.params).toEqual({ gain: 1 });
     expect(state.lastSubgraphError).toBeNull();
-    expect(persisted.graph.subgraphs?.muscle?.nodes.inner.type).toBe('Gain');
+    expect(persisted.graph.subgraphs?.muscle?.nodes.inner.type).toBe('feedbax.Gain');
     expect(persisted.graph.subgraphs?.muscle?.nodes.activation_dynamics).toBeUndefined();
     expect(persisted.graph.nodes.muscle.params._subgraph).toBeUndefined();
   });
@@ -1005,13 +1005,13 @@ describe('graphStore recurrent connections', () => {
       {
         nodes: {
           a: {
-            type: 'Gain',
+            type: 'feedbax.Gain',
             params: {},
             input_ports: ['input'],
             output_ports: ['output'],
           },
           b: {
-            type: 'Gain',
+            type: 'feedbax.Gain',
             params: {},
             input_ports: ['input'],
             output_ports: ['output'],
@@ -1128,7 +1128,7 @@ describe('graphStore template insertion', () => {
   const baseGraph: GraphSpec = {
     nodes: {
       source: {
-        type: 'Constant',
+        type: 'feedbax.Constant',
         params: {},
         input_ports: [],
         output_ports: ['output'],
@@ -1147,7 +1147,7 @@ describe('graphStore template insertion', () => {
     },
   };
   const templateComponent: ComponentDefinition = {
-    name: 'Recurrent Controller',
+    name: 'feedbax.Recurrent Controller',
     category: 'Neural Networks',
     description: 'Template',
     param_schema: [],
@@ -1160,19 +1160,19 @@ describe('graphStore template insertion', () => {
     template_graph: {
       nodes: {
         input_mux: {
-          type: 'Mux',
+          type: 'feedbax.Mux',
           params: { n_inputs: 2 },
           input_ports: ['in_0', 'in_1'],
           output_ports: ['output'],
         },
         cell: {
-          type: 'GRU',
+          type: 'feedbax.GRU',
           params: { input_size: 2, hidden_size: 3 },
           input_ports: ['input', 'hidden'],
           output_ports: ['output', 'hidden'],
         },
         readout: {
-          type: 'Linear',
+          type: 'feedbax.Linear',
           params: { input_size: 3, output_size: 1 },
           input_ports: ['input'],
           output_ports: ['output'],
@@ -1276,7 +1276,7 @@ describe('graphStore template insertion', () => {
         cell: {
           nodes: {
             inner: {
-              type: 'Linear',
+              type: 'feedbax.Linear',
               params: { input_size: 3, output_size: 3 },
               input_ports: ['input'],
               output_ports: ['output'],
@@ -1333,7 +1333,7 @@ describe('graphStore template insertion', () => {
         target_port: 'input',
       },
     ]);
-    expect(state.graph.subgraphs?.cell?.nodes.inner.type).toBe('Linear');
+    expect(state.graph.subgraphs?.cell?.nodes.inner.type).toBe('feedbax.Linear');
     expect(state.uiState.subgraph_states?.cell?.node_states.inner).toBeDefined();
     expect(state.uiState.node_states.input_mux.position).toEqual({ x: 200, y: 160 });
     const cellNode = state.nodes.find((node) => node.id === 'cell');
@@ -1344,7 +1344,7 @@ describe('graphStore template insertion', () => {
 
   it('keeps later normal component insertion synchronous after template import', () => {
     const gain: ComponentDefinition = {
-      name: 'Gain',
+      name: 'feedbax.Gain',
       category: 'Math',
       description: 'Gain',
       param_schema: [],
@@ -1359,7 +1359,7 @@ describe('graphStore template insertion', () => {
 
     const state = useGraphStore.getState();
     expect(state.graph.nodes.gain).toMatchObject({
-      type: 'Gain',
+      type: 'feedbax.Gain',
       input_ports: ['input'],
       output_ports: ['output'],
     });

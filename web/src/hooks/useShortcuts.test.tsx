@@ -31,13 +31,13 @@ function ShortcutHarness() {
 const graph: GraphSpec = {
   nodes: {
     a: {
-      type: 'Gain',
+      type: 'feedbax.Gain',
       params: {},
       input_ports: ['input'],
       output_ports: ['output'],
     },
     b: {
-      type: 'Gain',
+      type: 'feedbax.Gain',
       params: {},
       input_ports: ['input'],
       output_ports: ['output'],
@@ -179,7 +179,7 @@ describe('useAppShortcuts', () => {
 
   it('replays node deletion against its original training scenario after reassignment', () => {
     const mux = {
-      type: 'Mux',
+      type: 'feedbax.Mux',
       params: { n_inputs: 3 },
       input_ports: ['in_0', 'in_1', 'in_2'],
       output_ports: ['output'],
