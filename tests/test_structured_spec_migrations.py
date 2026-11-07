@@ -87,6 +87,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     GRAPH_SPEC_SCHEMA_VERSION_V3,
     GRAPH_SPEC_SCHEMA_VERSION_V4,
+    GRAPH_SPEC_SCHEMA_VERSION_V5,
     LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     STUDIO_BIOMECHANICS_SCHEMA_ID,
@@ -98,6 +99,7 @@ from feedbax.contracts.graph import (
 from feedbax.contracts.component import (
     COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
     COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+    COMPONENT_DEFINITION_SCHEMA_VERSION_V3,
 )
 from feedbax.contracts.expressions import (
     PATH_EXPRESSION_SCHEMA_ID,
@@ -1935,6 +1937,8 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
                 continue
             for old_version in policy.supported_old_versions:
                 payload = {"schema_version": old_version}
+                if family.kind == "ComponentDefinition":
+                    payload["name"] = "Gain"
                 if family.kind == "StudioValueSpec":
                     payload.update({"mode": "constant", "value": 1, "metadata": {}})
                 if family.kind == "TrainingRunMatrixSpec":
@@ -1972,6 +1976,7 @@ def test_component_definition_policy_supports_v1_and_v2() -> None:
     assert policy.supported_old_versions == (
         COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
         COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+        COMPONENT_DEFINITION_SCHEMA_VERSION_V3,
     )
 
 
@@ -1998,12 +2003,14 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
         GRAPH_SPEC_SCHEMA_VERSION_V2,
         GRAPH_SPEC_SCHEMA_VERSION_V3,
         GRAPH_SPEC_SCHEMA_VERSION_V4,
+        GRAPH_SPEC_SCHEMA_VERSION_V5,
     )
     assert component_definition_policy is not None
     assert component_definition_policy.stance == "migrate"
     assert component_definition_policy.supported_old_versions == (
         COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
         COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+        COMPONENT_DEFINITION_SCHEMA_VERSION_V3,
     )
     assert task_binding_policy is not None
     assert task_binding_policy.stance == "migrate"

@@ -32,7 +32,7 @@ def _setup():
     graph_spec = GraphSpec(
         nodes={
             noise: ComponentSpec(
-                type="Channel",
+                type="feedbax.Channel",
                 params={
                     "delay": 1,
                     "input_shape": [2],

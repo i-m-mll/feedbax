@@ -316,7 +316,7 @@ def test_graph_controller_accepts_recurrent_graph_spec():
     spec = GraphSpec(
         nodes={
             "sum": ComponentSpec(
-                type="Sum",
+                type="feedbax.Sum",
                 params={},
                 input_ports=["a", "b"],
                 output_ports=["output"],
@@ -364,9 +364,9 @@ def test_graph_controller_accepts_recurrent_graph_spec():
 def test_graph_controller_resets_from_static_inputs(entry):
     spec = GraphSpec(
         nodes={
-            "sum": ComponentSpec(type="Sum", input_ports=["a", "b"], output_ports=["output"]),
+            "sum": ComponentSpec(type="feedbax.Sum", input_ports=["a", "b"], output_ports=["output"]),
             "filter": ComponentSpec(
-                type="FirstOrderFilter",
+                type="feedbax.FirstOrderFilter",
                 params={"tau_rise": 0.05, "tau_decay": 0.05, "dt": 0.001},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -409,7 +409,7 @@ def test_graph_controller_resets_from_static_inputs(entry):
         spec = GraphSpec(
             nodes={
                 "child": ComponentSpec(
-                    type="Subgraph", input_ports=spec.input_ports, output_ports=spec.output_ports
+                    type="feedbax.Subgraph", input_ports=spec.input_ports, output_ports=spec.output_ports
                 )
             },
             subgraphs={"child": spec},

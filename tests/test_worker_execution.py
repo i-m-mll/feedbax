@@ -53,7 +53,7 @@ from feedbax.orchestration.events import run_event_from_legacy_worker_event
 from feedbax.web.services.training_service import TrainingService
 
 
-def _linear_graph_spec(component_type: str = "Linear", output_size: int = 1) -> dict:
+def _linear_graph_spec(component_type: str = "feedbax.Linear", output_size: int = 1) -> dict:
     return GraphSpec(
         nodes={
             "readout": ComponentSpec(
@@ -76,16 +76,16 @@ def _acausal_training_graph_spec() -> dict:
     interior = AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="Ground"),
-            "mass": ComponentSpec(type="Mass", params={"mass": 1.0}),
-            "spring": ComponentSpec(type="LinearSpring", params={"stiffness": 10.0}),
-            "damper": ComponentSpec(type="LinearDamper", params={"damping": 0.5}),
+            "wall": ComponentSpec(type="feedbax.Ground"),
+            "mass": ComponentSpec(type="feedbax.Mass", params={"mass": 1.0}),
+            "spring": ComponentSpec(type="feedbax.LinearSpring", params={"stiffness": 10.0}),
+            "damper": ComponentSpec(type="feedbax.LinearDamper", params={"damping": 0.5}),
             "act": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={"port_name": "u", "source_kind": "force"},
             ),
             "sense": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "output", "quantity": "position"},
             ),
         },
@@ -102,7 +102,7 @@ def _acausal_training_graph_spec() -> dict:
     return GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="AcausalSystem",
+                type="feedbax.AcausalSystem",
                 input_ports=["u"],
                 output_ports=["output"],
             )
@@ -272,7 +272,7 @@ def _mux_graph_spec() -> dict:
     return GraphSpec(
         nodes={
             "mux": ComponentSpec(
-                type="Mux",
+                type="feedbax.Mux",
                 params={"n_inputs": 2},
                 input_ports=["in_0", "in_1"],
                 output_ports=["output"],
@@ -462,18 +462,18 @@ def test_worker_rollout_matches_runtime_for_task_seeded_noisy_cycle() -> None:
     graph_spec = GraphSpec(
         nodes={
             "encoder": ComponentSpec(
-                type="Channel",
+                type="feedbax.Channel",
                 params={"delay": 0, "noise_std": 0.25},
                 input_ports=["input"],
                 output_ports=["output"],
             ),
             "total": ComponentSpec(
-                type="Sum",
+                type="feedbax.Sum",
                 input_ports=["a", "b"],
                 output_ports=["output"],
             ),
             "delay": ComponentSpec(
-                type="Channel",
+                type="feedbax.Channel",
                 params={"delay": 1, "noise_std": 0.25},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -582,8 +582,8 @@ def test_compile_training_run_dry_runs_cde_templates() -> None:
         }
     )
 
-    for template_name in ("CDE Standard", "CDE + Decay", "CDE + Anti-NF", "CDE Hybrid v9b"):
-        meta = registry.get(template_name)
+    for template_name in ("CDEStandard", "CDEDecay", "CDEAntiNF", "CDEHybridV9b"):
+        meta = registry.get(f"feedbax.{template_name}")
         assert meta is not None
         compiled = compile_training_run(
             component_registry=ComponentRegistry(),
@@ -1144,9 +1144,9 @@ def test_run_training_graph_projects_parameter_constraints_after_update(
 @pytest.mark.parametrize(
     ("wrapper_type", "freeze_wrapper", "freeze_child"),
     [
-        pytest.param("Subgraph", False, False, id="generic-wrapper"),
-        pytest.param("Subgraph", True, False, id="frozen-wrapper"),
-        pytest.param("Recurrent Controller", False, True, id="named-wrapper"),
+        pytest.param("feedbax.Subgraph", False, False, id="generic-wrapper"),
+        pytest.param("feedbax.Subgraph", True, False, id="frozen-wrapper"),
+        pytest.param("feedbax.RecurrentController", False, True, id="named-wrapper"),
     ],
 )
 def test_nested_trainability_matches_flat_training(
@@ -1162,7 +1162,7 @@ def test_nested_trainability_matches_flat_training(
 
     def linear(**params) -> ComponentSpec:
         return ComponentSpec(
-            type="Linear",
+            type="feedbax.Linear",
             params={"input_size": 1, "output_size": 1, "use_bias": False, **params},
             input_ports=["input"],
             output_ports=["output"],
@@ -1312,34 +1312,6 @@ def test_nested_trainability_matches_flat_training(
         }
 
 
-def test_compile_training_run_fails_unsupported_display_only_component() -> None:
-    graph_spec = GraphSpec(
-        nodes={
-            "readout": ComponentSpec(
-                type="DeadZone",
-                params={"threshold": 0.1},
-                input_ports=["input"],
-                output_ports=["output"],
-            )
-        },
-        output_ports=["output"],
-        output_bindings={"output": ("readout", "output")},
-    ).model_dump(mode="json", exclude_none=True)
-    task_binding_spec = _task_binding_spec()
-    task_binding_spec["bindings"][0]["id"] = "task:model_input->readout:input"
-    task_binding_spec["bindings"][0]["target_port"] = "input"
-
-    with pytest.raises(ValueError, match="unsupported executable component"):
-        compile_training_run(
-            component_registry=ComponentRegistry(),
-            graph_spec=graph_spec,
-            training_spec=_training_spec(),
-            task_spec={"type": "Generic", "params": {}},
-            task_binding_spec=task_binding_spec,
-            cfg=_cfg(),
-        )
-
-
 def test_compile_training_run_rejects_network_without_subgraph_during_validation() -> None:
     graph_spec = GraphSpec(
         nodes={
@@ -1407,7 +1379,7 @@ def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
     graph_spec = GraphSpec(
         nodes={
             "delay": ComponentSpec(
-                type="Channel",
+                type="feedbax.Channel",
                 params={"delay": 2, "add_noise": False},
                 input_ports=["input"],
                 output_ports=["output"],

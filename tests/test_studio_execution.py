@@ -88,7 +88,7 @@ def _graph() -> GraphSpec:
     return GraphSpec(
         nodes={
             "network": {
-                "type": "Gain",
+                "type": "feedbax.Gain",
                 "params": {"gain": 1.0},
                 "input_ports": ["input"],
                 "output_ports": ["output"],

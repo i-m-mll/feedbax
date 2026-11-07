@@ -87,7 +87,7 @@ def test_affine_feedback_controller_graph_spec_round_trips() -> None:
     spec = GraphSpec(
         nodes={
             "controller": ComponentSpec(
-                type="AffineFeedbackController",
+                type="feedbax.AffineFeedbackController",
                 params={
                     "gain": [
                         [[1.0, 0.0], [0.0, 1.0]],
@@ -136,14 +136,14 @@ def test_affine_feedback_controller_graph_spec_round_trips() -> None:
         )
     )
     node = roundtrip.nodes["controller"]
-    assert node.type == "AffineFeedbackController"
+    assert node.type == "feedbax.AffineFeedbackController"
     assert node.params["gain"] == spec.nodes["controller"].params["gain"]
     assert node.params["bias"] == spec.nodes["controller"].params["bias"]
     assert node.params["schedule_policy"] == "hold"
 
 
 def test_affine_feedback_controller_is_registered_for_graph_specs() -> None:
-    meta = ComponentRegistry().get("AffineFeedbackController")
+    meta = ComponentRegistry().get("feedbax.AffineFeedbackController")
 
     assert meta is not None
     assert meta.input_ports == ["feedback", "reference", "feedforward"]
@@ -211,13 +211,13 @@ def test_affine_command_survives_a_delayed_channel(
 ) -> None:
     nodes = {
         "controller": ComponentSpec(
-            type="AffineFeedbackController",
+            type="feedbax.AffineFeedbackController",
             params={"gain": [[1, 0], [0, 1]], **params},
             input_ports=["feedback", "reference", "feedforward"],
             output_ports=["command"],
         ),
         "delay": ComponentSpec(
-            type="Channel",
+            type="feedbax.Channel",
             params={"delay": 1, "add_noise": False},
             input_ports=["input"],
             output_ports=["output"],
@@ -233,7 +233,7 @@ def test_affine_command_survives_a_delayed_channel(
     ]
     if optional_port is not None:
         nodes["source"] = ComponentSpec(
-            type="Constant", params={"value": optional_value}, output_ports=["output"]
+            type="feedbax.Constant", params={"value": optional_value}, output_ports=["output"]
         )
         wires.append(
             WireSpec(
@@ -267,7 +267,7 @@ def test_affine_command_survives_a_delayed_channel(
         spec = GraphSpec(
             nodes={
                 "nested": ComponentSpec(
-                    type="Subgraph",
+                    type="feedbax.Subgraph",
                     input_ports=child.input_ports,
                     output_ports=child.output_ports,
                 )
