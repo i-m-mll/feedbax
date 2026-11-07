@@ -1,7 +1,7 @@
-"""Exact pre-revision wire endpoints for portable owners."""
+"""Frozen component migration records for tasks."""
 
 from feedbax.component_registry.history import History, LegacyEndpoint
-from .reach_components import SimpleReaches, DelayedReaches, Stabilization
+from feedbax.tasks.reach_components import DelayedReaches, SimpleReaches, Stabilization
 
 
 def _matches_SimpleReaches_v1(params):

@@ -139,8 +139,16 @@ def test_declared_component_is_immutable() -> None:
     assert meta.output_prototype_fn is original
 
 
-def test_builtin_registry_has_explicit_builders_and_consistent_port_metadata() -> None:
+def test_builtin_registry_discovers_history_free_owners_with_consistent_contracts(
+    monkeypatch,
+) -> None:
+    from feedbax.component_registry import builtins
+
+    monkeypatch.setattr(builtins, "_PORTABLE_MODULES", (*builtins._PORTABLE_MODULES, __name__))
     registry = ComponentRegistry()
+    owner = registry.get("feedbax._PluginGain")
+    assert owner.owner_class is _PluginGain
+    assert owner.revision == 1
 
     for name in registry.names():
         meta = registry.get(name)
@@ -903,5 +911,3 @@ def test_declared_parameter_model_owns_defaults_required_fields_and_constraints(
         registry.resolve_component_spec("feedbax.Gain", {"gain": 1.0, "scale": 2.0})
     with pytest.raises(ValueError, match="greater than or equal to 1"):
         registry.resolve_component_spec("feedbax.GRU", {"input_size": 0, "hidden_size": 4})
-
-

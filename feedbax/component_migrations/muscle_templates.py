@@ -1,7 +1,7 @@
-"""Exact historical template endpoints."""
+"""Frozen component migration records for muscle templates."""
 
+from feedbax.compiler.muscle_templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
 from feedbax.component_registry.history import History, LegacyEndpoint
-from .muscle_templates import Arm6MuscleRigidTendon, PointMass8MuscleRelu
 
 HISTORIES = {
     Arm6MuscleRigidTendon: History(

@@ -27,7 +27,7 @@ from feedbax.mechanics import (
     StructuralLinearStateSpace,
     structural_linear_transition,
 )
-from feedbax.mechanics.linear_state_space_history import (
+from feedbax.component_migrations.mechanics import (
     STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
 )
 from feedbax.runtime.graph import init_state_from_component

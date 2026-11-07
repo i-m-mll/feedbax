@@ -890,7 +890,7 @@ def _call_multihead_attention_layer(
 
 
 def generate_histories() -> str:
-    """Render frozen legacy evidence beside the current wrapper owners."""
+    """Render frozen legacy evidence for the current wrapper owners."""
     imports = ", ".join(LEGACY_CONFIG_FIELDS)
     records = "\n".join(
         f"    {name}: History(legacy=(LegacyEndpoint('feedbax.equinox.{name}', '1', 1, "
@@ -902,7 +902,7 @@ def generate_histories() -> str:
 from functools import partial
 
 from feedbax.component_registry.history import History, LegacyEndpoint
-from .equinox import {imports}
+from feedbax.components.equinox import {imports}
 
 
 def _revision_one_fields(params, *, fields):
@@ -923,7 +923,7 @@ def main():
     content = generate_all_components()
 
     output_path.write_text(content)
-    history_path = output_path.with_name("equinox_history.py")
+    history_path = output_path.parent.parent / "component_migrations" / "equinox.py"
     history_path.write_text(generate_histories())
     try:
         subprocess.run(["ruff", "format", str(output_path), str(history_path)], check=True)

@@ -3,7 +3,7 @@
 from functools import partial
 
 from feedbax.component_registry.history import History, LegacyEndpoint
-from .equinox import (
+from feedbax.components.equinox import (
     Linear,
     Identity,
     Conv1d,

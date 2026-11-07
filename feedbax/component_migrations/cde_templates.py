@@ -1,7 +1,7 @@
-"""Exact historical template endpoints."""
+"""Frozen component migration records for cde templates."""
 
+from feedbax.compiler.cde_templates import CDEAntiNF, CDEDecay, CDEHybridV9b, CDEStandard
 from feedbax.component_registry.history import History, LegacyEndpoint
-from .cde_templates import CDEStandard, CDEDecay, CDEAntiNF, CDEHybridV9b
 
 HISTORIES = {
     CDEStandard: History(
