@@ -42,7 +42,7 @@ function RestPreview({
   const shoulder = { x: 42, y: 92 };
   const elbow = { x: shoulder.x + upper * scale, y: shoulder.y };
   const wrist = { x: elbow.x + forearm * scale, y: shoulder.y };
-  const muscles = Object.keys(graph.nodes ?? {}).filter((nodeId) => graph.nodes[nodeId].type === 'MusclePath');
+  const muscles = Object.keys(graph.nodes ?? {}).filter((nodeId) => graph.nodes[nodeId].type === 'feedbax.MusclePath');
 
   return (
     <svg

@@ -128,14 +128,14 @@ function validateMissingSubgraphs(
   for (const [nodeId, node] of Object.entries(graph.nodes)) {
     const component = componentMap.get(node.type);
     const requiresSubgraph =
-      node.type === 'Network' ||
-      node.type === 'Subgraph' ||
+      node.type === 'feedbax.Network' ||
+      node.type === 'feedbax.Subgraph' ||
       Boolean(component?.is_composite);
     if (!requiresSubgraph || graph.subgraphs?.[nodeId]) continue;
     issues.push({
       type: 'missing_subgraph',
       message:
-        node.type === 'Network'
+        node.type === 'feedbax.Network'
           ? `Network node '${nodeId}' has no subgraph. Open it in Studio to generate the internal architecture, then save again.`
           : `${node.type} node '${nodeId}' requires a subgraph, but none was provided`,
       severity: 'error',
@@ -379,25 +379,25 @@ function componentPortDimension(
 ): { shape: number[]; metadata: Record<string, unknown> } | null {
   let dimensionParam: string | null = null;
   let dimension: number | null = null;
-  if (componentType === 'Network') {
+  if (componentType === 'feedbax.Network') {
     if (direction === 'output' && port === 'output') {
       dimensionParam = 'out_size';
     } else if (direction === 'output' && port === 'hidden') {
       dimensionParam = 'hidden_size';
     }
-  } else if (componentType === 'Linear' || componentType === 'MLP') {
+  } else if (componentType === 'feedbax.Linear' || componentType === 'feedbax.MLP') {
     if (direction === 'input' && port === 'input') dimensionParam = 'input_size';
     if (direction === 'output' && port === 'output') dimensionParam = 'output_size';
-  } else if (componentType === 'GRU' || componentType === 'LSTM') {
+  } else if (componentType === 'feedbax.GRU' || componentType === 'feedbax.LSTM') {
     if (direction === 'input' && port === 'input') dimensionParam = 'input_size';
     if (port === 'output' || port === 'hidden' || port === 'cell') dimensionParam = 'hidden_size';
-  } else if (['TwoLinkArm', 'PointMass', 'Mechanics'].includes(componentType) && port === 'force') {
+  } else if (['feedbax.TwoLinkArm', 'feedbax.PointMass', 'feedbax.Mechanics'].includes(componentType) && port === 'force') {
     dimension = 2;
-  } else if (componentType === 'Arm6MuscleRigidTendon') {
+  } else if (componentType === 'feedbax.Arm6MuscleRigidTendon') {
     if (port === 'excitation') dimension = 6;
     if (port === 'angles' || port === 'angular_velocities' || port === 'torques') dimension = 2;
     if (port === 'forces' || port === 'activations') dimension = 6;
-  } else if (componentType === 'PointMass8MuscleRelu') {
+  } else if (componentType === 'feedbax.PointMass8MuscleRelu') {
     if (port === 'excitation' || port === 'forces' || port === 'activations') {
       const nPairs = positiveIntParam(nodeParams, 'n_pairs');
       dimension = nPairs === null ? null : nPairs * 2;

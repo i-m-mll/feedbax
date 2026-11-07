@@ -149,7 +149,7 @@ describe('projectsStore local restore state', () => {
     const graph = useGraphStore.getState().graph;
     if (!isCausalGraphSpec(graph)) throw new Error('Expected the restored causal root');
     expect(graph.input_bindings).toEqual({
-      input: ['network', 'target'],
+      target: ['network', 'target'],
     });
   });
 
@@ -231,7 +231,7 @@ describe('projectsStore local restore state', () => {
     const graph: GraphSpec = {
       nodes: {
         network: {
-          type: 'Network',
+          type: 'feedbax.Network',
           params: {},
           input_ports: ['input'],
           output_ports: ['output'],
@@ -252,7 +252,7 @@ describe('projectsStore local restore state', () => {
         network: {
           nodes: {
             inner: {
-              type: 'Subgraph',
+              type: 'feedbax.Subgraph',
               params: {},
               input_ports: ['input'],
               output_ports: ['output'],
@@ -267,7 +267,7 @@ describe('projectsStore local restore state', () => {
             inner: {
               nodes: {
                 core: {
-                  type: 'Gain',
+                  type: 'feedbax.Gain',
                   params: { gain: 2 },
                   input_ports: ['input'],
                   output_ports: ['output'],
@@ -337,7 +337,7 @@ describe('projectsStore local restore state', () => {
 
     const editor = useGraphStore.getState();
     editor.setComponentRegistry([{
-      name: 'Network',
+      name: 'feedbax.Network',
       category: 'Networks',
       description: 'Composite network',
       param_schema: [],

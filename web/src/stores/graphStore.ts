@@ -513,13 +513,13 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
   const graph: GraphSpec = {
     nodes: {
       input_mux: {
-        type: 'Mux',
+        type: 'feedbax.Mux',
         params: { n_inputs: 2 },
         input_ports: ['in_0', 'in_1'],
         output_ports: ['output'],
       },
       cell: {
-        type: 'GRU',
+        type: 'feedbax.GRU',
         params: {
           input_size: 6,
           hidden_size: 100,
@@ -528,7 +528,7 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
         output_ports: ['output', 'hidden'],
       },
       readout: {
-        type: 'Linear',
+        type: 'feedbax.Linear',
         params: {
           input_size: 100,
           output_size: 2,
@@ -539,7 +539,7 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
         output_ports: ['output'],
       },
       mechanics: {
-        type: 'TwoLinkArm',
+        type: 'feedbax.TwoLinkArm',
         params: {
           dt: 0.01,
         },
@@ -547,7 +547,7 @@ export function createInitialGraph(): { graph: GraphSpec; uiState: GraphUIState 
         output_ports: ['effector', 'state'],
       },
       feedback: {
-        type: 'Channel',
+        type: 'feedbax.Channel',
         params: {
           delay: 5,
           noise_std: 0.01,
@@ -756,7 +756,7 @@ function deriveSubgraphPorts(graph: GraphSpec): GraphSpec {
 }
 
 function isInternalStateInput(nodeSpec: ComponentSpec, port: string): boolean {
-  return (nodeSpec.type === 'GRU' || nodeSpec.type === 'LSTM') && (port === 'hidden' || port === 'cell');
+  return (nodeSpec.type === 'feedbax.GRU' || nodeSpec.type === 'feedbax.LSTM') && (port === 'hidden' || port === 'cell');
 }
 
 function arraysEqual<T>(left: T[], right: T[]) {
@@ -778,7 +778,7 @@ function isWrapperGraph(
   const nodeIds = Object.keys(parent.nodes);
   if (nodeIds.length !== 1 || nodeIds[0] !== childNodeId) return false;
   const node = parent.nodes[childNodeId];
-  if (!node || node.type !== 'Subgraph') return false;
+  if (!node || node.type !== 'feedbax.Subgraph') return false;
   if (!parent.subgraphs || parent.subgraphs[childNodeId] !== child) return false;
   if (!arraysEqual(parent.input_ports, node.input_ports)) return false;
   if (!arraysEqual(parent.output_ports, node.output_ports)) return false;
@@ -1007,7 +1007,7 @@ function buildNodes(graph: EditableGraphSpec, uiState: GraphUIState): Node<Graph
 
 function stateSlotsForNodeSpec(spec: ComponentSpec): GraphNodeData['state_slots'] {
   const hiddenSize = typeof spec.params.hidden_size === 'number' ? spec.params.hidden_size : undefined;
-  if (spec.type === 'GRU') {
+  if (spec.type === 'feedbax.GRU') {
     return [
       {
         id: 'hidden',
@@ -1017,7 +1017,7 @@ function stateSlotsForNodeSpec(spec: ComponentSpec): GraphNodeData['state_slots'
       },
     ];
   }
-  if (spec.type === 'LSTM') {
+  if (spec.type === 'feedbax.LSTM') {
     return [
       {
         id: 'hidden',
@@ -1185,7 +1185,8 @@ function withoutRecordKeys<T>(
 }
 
 function createNodeName(graph: EditableGraphSpec, base: string) {
-  const sanitized = base.charAt(0).toLowerCase() + base.slice(1);
+  const localName = base.split('.').at(-1)!;
+  const sanitized = localName.charAt(0).toLowerCase() + localName.slice(1);
   if (!(sanitized in graph.nodes)) {
     return sanitized;
   }
@@ -2499,7 +2500,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       const parentGraph: GraphSpec = {
         nodes: {
           [childNodeId]: {
-            type: 'Subgraph',
+            type: 'feedbax.Subgraph',
             params: {},
             input_ports: derivedCurrent.input_ports,
             output_ports: derivedCurrent.output_ports,
@@ -3620,6 +3621,7 @@ export const useGraphStore = create<GraphStoreState>((baseSet, get) => {
       const name = createNodeName(state.graph, component.name);
       let spec: ComponentSpec = {
         type: component.name,
+        revision: component.revision,
         params: { ...component.default_params },
         input_ports: component.input_ports,
         output_ports: component.output_ports,

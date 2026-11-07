@@ -51,7 +51,7 @@ describe('save conflict summaries', () => {
           ...baseGraph,
           nodes: {
             serverOnly: {
-              type: 'Gain',
+              type: 'feedbax.Gain',
               params: {},
               input_ports: ['input'],
               output_ports: ['output'],

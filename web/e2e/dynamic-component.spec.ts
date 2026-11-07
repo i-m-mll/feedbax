@@ -12,7 +12,7 @@ test('creates and edits an external component using its served port policy', asy
   const timestamp = '2026-01-01T00:00:00.000Z';
   const metadata = { name: 'External policy', created_at: timestamp, updated_at: timestamp, version: '1.0.0', save_revision: 0 };
   let graph: GraphSpec = {
-    schema_id: 'feedbax.spec.graph', schema_version: 'feedbax.spec.graph.v5', metadata,
+    schema_id: 'feedbax.spec.graph', schema_version: 'feedbax.spec.graph.v6', metadata,
     nodes: {}, wires: [], input_ports: [], output_ports: [], input_bindings: {}, output_bindings: {},
   };
   let workspace: StudioWorkspaceSpec | null = null;
@@ -25,6 +25,7 @@ test('creates and edits an external component using its served port policy', asy
   await page.route('**/api/components', (route) => route.fulfill({ json: transport({
     components: [{
       name: 'example.Fanout',
+      revision: 2, supported_revisions: [1, 2],
       category: 'External',
       description: 'External example with configurable output arity.',
       domain,
@@ -76,7 +77,7 @@ test('creates and edits an external component using its served port policy', asy
   await expect.poll(() => page.evaluate(() => window.feedbaxE2E?.graphId())).toBe(graphId);
   await page.getByRole('button', { name: 'External', exact: true }).click();
   await page.getByTitle('Add example.Fanout', { exact: true }).click();
-  const nodeId = 'example.Fanout';
+  const nodeId = 'fanout';
   const node = page.locator(`.react-flow__node[data-id="${nodeId}"]`);
   await expect(node.getByRole('button', { name: 'branch-4', exact: true })).toBeVisible();
   await node.click();
@@ -92,6 +93,7 @@ test('creates and edits an external component using its served port policy', asy
   await expect(node.getByRole('button', { name: 'branch-5', exact: true })).toBeVisible();
   await page.getByTitle('Save', { exact: true }).click();
   expect((await saved).ok()).toBe(true);
+  expect(graph.nodes[nodeId]).toMatchObject({ type: 'example.Fanout', revision: 2, params: { slots: 2 } });
   await page.reload();
   await expect(node.getByRole('button', { name: 'branch-5', exact: true })).toBeVisible();
 });

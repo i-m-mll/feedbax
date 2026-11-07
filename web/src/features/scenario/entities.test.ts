@@ -24,13 +24,13 @@ import type { StudioScenarioSpec } from '@/types/workspace';
 const graph: GraphSpec = {
   nodes: {
     network: {
-      type: 'Network',
+      type: 'feedbax.Network',
       params: {},
       input_ports: ['input'],
       output_ports: ['output'],
     },
     mechanics: {
-      type: 'TwoLinkArm',
+      type: 'feedbax.TwoLinkArm',
       params: {},
       input_ports: ['force'],
       output_ports: ['effector'],
@@ -183,8 +183,8 @@ describe('scenario entity registry', () => {
       schema_version: 'feedbax.spec.acausal_graph.v1',
       physical_domain: 'translational',
       nodes: {
-        mass: { type: 'Mass', params: {}, input_ports: [], output_ports: [] },
-        spring: { type: 'Spring', params: {}, input_ports: [], output_ports: [] },
+        mass: { type: 'feedbax.Mass', params: {}, input_ports: [], output_ports: [] },
+        spring: { type: 'feedbax.Spring', params: {}, input_ports: [], output_ports: [] },
       },
       connections: [{ a: ['mass', 'flange'], b: ['spring', 'flange'] }],
       solver: { solver_type: 'euler', dt: 0.01 },
@@ -214,7 +214,7 @@ describe('scenario entity registry', () => {
     expect(registry.entities[graphNodeEntityId('network')]).toMatchObject({
       kind: 'graph_node',
       label: 'network',
-      summary: 'Network',
+      summary: 'feedbax.Network',
     });
     expect(registry.entities[graphPortEntityId('mechanics', 'output', 'effector')]).toMatchObject({
       kind: 'graph_port',
