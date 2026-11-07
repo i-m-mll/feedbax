@@ -40,7 +40,7 @@ def normalize_graph_for_studio_authoring(
         next_type = _authoring_component_type(node_spec.type)
         if component_registry is not None and component_versions is not None:
             node_spec = resolve_component_node(
-                node_spec.model_copy(update={"type": next_type}),
+                node_spec,
                 component_registry,
                 historical_unversioned=component_versions == "historical",
             )

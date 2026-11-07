@@ -83,7 +83,7 @@ def test_affine_composer_historical_parameters_reach_outer_v3(
     source: str | None, historical_unversioned: bool
 ) -> None:
     registry = ComponentRegistry()
-    current = registry.get("AffineValueComposer")
+    current = registry.get("feedbax.AffineValueComposer")
     assert current is not None
     params = dict(current.default_params)
     if source is None:
@@ -105,7 +105,7 @@ def test_affine_composer_historical_parameters_reach_outer_v3(
 
 def test_threshold_historical_selector_reaches_current_contract() -> None:
     registry = ComponentRegistry()
-    current = registry.get("ThresholdLatchedForce")
+    current = registry.get("feedbax.ThresholdLatchedForce")
     assert current is not None
     params = {
         **current.default_params,

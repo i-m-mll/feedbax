@@ -81,8 +81,10 @@ from feedbax.contracts.component import (
     COMPONENT_DEFINITION_SCHEMA_VERSION,
     COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
     COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+    COMPONENT_DEFINITION_SCHEMA_VERSION_V3,
     migrate_component_definition_v1_to_v2_payload,
     migrate_component_definition_v2_to_v3_payload,
+    migrate_component_definition_v3_to_v4_payload,
 )
 from feedbax.contracts.descriptors import (
     COMPONENT_DESCRIPTOR_SCHEMA_ID,
@@ -4110,6 +4112,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             supported_old_versions=(
                 COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
                 COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
+                COMPONENT_DEFINITION_SCHEMA_VERSION_V3,
             ),
             rejected_old_versions=(),
             required_tests=("tests/test_component_registration.py",),
@@ -7668,12 +7671,24 @@ default_spec_registry.register_migration(
     "ComponentDefinition",
     SchemaMigration(
         source_version=COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
-        target_version=COMPONENT_DEFINITION_SCHEMA_VERSION,
+        target_version=COMPONENT_DEFINITION_SCHEMA_VERSION_V3,
         migration_id=COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
         migrate=migrate_component_definition_v2_to_v3_payload,
         description="Add the optional declarative dynamic-port policy field.",
     ),
 )
+default_spec_registry.register_migration(
+    "ComponentDefinition",
+    SchemaMigration(
+        source_version=COMPONENT_DEFINITION_SCHEMA_VERSION_V3,
+        target_version=COMPONENT_DEFINITION_SCHEMA_VERSION,
+        migration_id="component-definition-v3-to-v4-component-revisions",
+        migrate=migrate_component_definition_v3_to_v4_payload,
+        description="Resolve exact historical component tokens to canonical revisions.",
+    ),
+)
+
+
 default_spec_registry.register_migration(
     "StudioObjectiveSpec",
     SchemaMigration(
