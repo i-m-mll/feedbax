@@ -522,7 +522,16 @@
             "namespace": "feedbax",
             "public_names": [
               "GraphNode",
-              "Component"
+              "Component",
+              "Channel",
+              "Gain",
+              "Input",
+              "Linear",
+              "Mux",
+              "Noise",
+              "StateFeedbackSelector",
+              "Subgraph",
+              "Sum"
             ]
           },
           {
