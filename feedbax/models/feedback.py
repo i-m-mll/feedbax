@@ -10,7 +10,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Union, cast
 
-import diffrax as dfx
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
@@ -18,19 +17,18 @@ from equinox import Module
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
 from feedbax.mechanics import Mechanics, MechanicsState
-from feedbax.mechanics.plant import DirectForceInput
-from feedbax.mechanics.skeleton.pointmass import PointMass
-from feedbax.runtime.channel import ChannelSpec, ChannelState, SignalChannel
+from feedbax.runtime.channel import Channel, ChannelSpec, ChannelState, SignalChannel, _noise_model
 from feedbax.runtime.feedback import (
     FEEDBACK_INPUT,
     FEEDBACK_OUTPUT,
     AssembleFeedback,
+    SelectState,
     StateSelection,
     StateSelector,
     feedback_node_names,
     feedback_wires,
 )
-from feedbax.runtime.filters import FilterState, LowPassFilter
+from feedbax.runtime.filters import FilterState, FirstOrderFilter, LowPassFilter
 from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
 from feedbax.runtime.noise import Normal
 from feedbax.runtime.trial_history import trial_history_plan
@@ -101,8 +99,10 @@ class SimpleFeedback(Graph):
         example_state = mechanics.state_index.init
         nodes: dict[str, Component] = {"feedback_values": AssembleFeedback(layout)}
         for (selector_name, channel_name), spec in zip(feedback_node_names(len(specs)), specs):
-            nodes[selector_name] = StateSelection(spec.where)
-            nodes[channel_name] = SignalChannel(
+            selector_type = SelectState if isinstance(spec.where, StateSelector) else StateSelection
+            nodes[selector_name] = selector_type(spec.where)
+            channel_type = Channel if _noise_model(spec.noise_func) != "custom" else SignalChannel
+            nodes[channel_name] = channel_type(
                 delay=spec.delay,
                 noise_func=spec.noise_func,
                 input_proto=spec.where(example_state),
@@ -110,7 +110,8 @@ class SimpleFeedback(Graph):
                 noise_timing="pre_controller",
             )
 
-        efferent = SignalChannel(
+        efferent_type = Channel if _noise_model(motor_noise_func) != "custom" else SignalChannel
+        efferent = efferent_type(
             delay=motor_delay,
             noise_func=motor_noise_func,
             init_value=0.0,
@@ -126,7 +127,10 @@ class SimpleFeedback(Graph):
         if tau_rise == 0.0 and tau_decay == 0.0:
             force_filter = None
         else:
-            force_filter = LowPassFilter(
+            filter_type = (
+                FirstOrderFilter if hasattr(efferent.input_proto, "shape") else LowPassFilter
+            )
+            force_filter = filter_type(
                 tau_rise=tau_rise,
                 tau_decay=tau_decay,
                 dt=mechanics.dt,
@@ -145,7 +149,7 @@ class SimpleFeedback(Graph):
             output_ports=("effector",),
             input_bindings={"input": FEEDBACK_INPUT},
             output_bindings={"effector": FEEDBACK_OUTPUT},
-            component_bindings=_component_bindings(net, mechanics),
+            component_bindings=_component_bindings(net),
             state_consistency_fn=trial_history_plan(nodes, wires),
             state_view_fn=feedback_state_view(nodes, wires),
         )
@@ -232,14 +236,13 @@ class _FeedbackStateView:
         )
 
 
-def _component_bindings(net: Component, mechanics: Mechanics) -> dict[str, ComponentBinding]:
-    bindings = {"net": ComponentBinding("Subgraph", "1")} if isinstance(net, Graph) else {}
-    if (
-        type(mechanics.plant) is DirectForceInput
-        and mechanics.plant.clip_states
-        and type(mechanics.plant.skeleton) is PointMass
-        and mechanics.backend is None
-        and type(mechanics.solver) is dfx.Euler
-    ):
-        bindings["mechanics"] = ComponentBinding("PointMass", "1")
-    return bindings
+def _component_bindings(net: Component) -> dict[str, ComponentBinding]:
+    if not isinstance(net, Graph):
+        return {}
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.runtime.graph import Subgraph
+
+    owner = ComponentRegistry().get(f"feedbax.{Subgraph.__name__}")
+    if owner is None:
+        raise RuntimeError("The built-in Subgraph owner is unavailable")
+    return {"net": ComponentBinding(owner.name, owner.revision)}

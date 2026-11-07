@@ -97,8 +97,6 @@ def named_activation(activation: str | Callable) -> str:
     raise ValueError(f"Expected a built-in activation, got {activation!r}")
 
 
-
-
 class _ConstantParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -1156,22 +1154,15 @@ class _LinearConfig(BaseModel):
     )
 
 
-class Linear(Component):
+class LinearLayer(GraphNode):
     """Linear layer."""
-
-    config: ClassVar[type[BaseModel]] = _LinearConfig
 
     ports: ClassVar[Ports] = Ports(
         inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
     )
-    component_options: ClassVar[ComponentOptions] = ComponentOptions(
-        output_prototype_fn=linear_output_prototype,
-        build_context_fields=("key",),
-        trainable_by_default=True,
-    )
-    config_bindings: ClassVar[tuple[ConfigBinding, ...]] = (
-        ConfigBinding("activation_name", name="activation"),
-    )
+
+    input_ports: ClassVar = tuple(ports.inputs)
+    output_ports: ClassVar = tuple(ports.outputs)
 
     layer: eqx.nn.Linear
     activation: Callable = field(static=True)
@@ -1229,10 +1220,29 @@ class Linear(Component):
         output = self.activation(self.layer(inputs["input"]))
         return {"output": output}, state
 
+
+class Linear(LinearLayer, Component):
+    """Portable linear layer with a named activation."""
+
+    ports: ClassVar = LinearLayer.ports
+
+    config: ClassVar[type[BaseModel]] = _LinearConfig
+
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=linear_output_prototype,
+        build_context_fields=("key",),
+        trainable_by_default=True,
+    )
+
     @classmethod
     def from_config(cls, config, **context):
         context.setdefault("key", jr.PRNGKey(0))
         return super().from_config(config, **context)
+
+    def configuration_values(self):
+        values = super().configuration_values()
+        values["activation"] = named_activation(self.activation)
+        return values
 
 
 class _MLPConfig(BaseModel):

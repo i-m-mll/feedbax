@@ -81,7 +81,11 @@ def compile_owner(cls, *, namespace, history=None, registry=None):
     )
     from .history import History
 
-    if not issubclass(cls, ComponentOwner) or cls in (ComponentOwner, GraphTemplate) or inspect.isabstract(cls):
+    if (
+        not issubclass(cls, ComponentOwner)
+        or cls in (ComponentOwner, GraphTemplate)
+        or inspect.isabstract(cls)
+    ):
         raise TypeError(f"{cls!r} must be a concrete portable ComponentOwner")
     if not namespace or namespace.startswith(".") or namespace.endswith("."):
         raise ValueError("Component pack requires a stable namespace")
@@ -98,50 +102,87 @@ def compile_owner(cls, *, namespace, history=None, registry=None):
     port_types = ports.types
     if ports.dynamic is not None:
         from feedbax.contracts.component import derive_dynamic_port_layout
-        names = ((*ports.dynamic.input_name_params, *ports.dynamic.output_name_params)
-                 if ports.dynamic.count_mode == "names" else (ports.dynamic.count_param,))
+
+        names = (
+            (*ports.dynamic.input_name_params, *ports.dynamic.output_name_params)
+            if ports.dynamic.count_mode == "names"
+            else (ports.dynamic.count_param,)
+        )
         if all(not model.model_fields[name].is_required() for name in names):
-            defaults = {name: model.model_fields[name].get_default(call_default_factory=True) for name in names}
+            defaults = {
+                name: model.model_fields[name].get_default(call_default_factory=True)
+                for name in names
+            }
             layout = derive_dynamic_port_layout(ports.dynamic, defaults)
             input_ports, output_ports = layout.input_ports, layout.output_ports
             port_types = type(port_types)(
-                inputs={name: ports.inputs[name] if name in ports.inputs else ports.dynamic.dynamic_port_type for name in input_ports},
-                outputs={name: ports.outputs[name] if name in ports.outputs else ports.dynamic.dynamic_port_type for name in output_ports},
+                inputs={
+                    name: ports.inputs[name]
+                    if name in ports.inputs
+                    else ports.dynamic.dynamic_port_type
+                    for name in input_ports
+                },
+                outputs={
+                    name: ports.outputs[name]
+                    if name in ports.outputs
+                    else ports.dynamic.dynamic_port_type
+                    for name in output_ports
+                },
             )
     from .declarations import (
-        ComponentAuthoringFacet, ComponentCompilerFacet, ComponentDeclaration,
-        ComponentParamContract, ComponentRuntimeFacet, ComponentSerializationFacet,
-        ComponentStudioFacet, ComponentTrainingFacet, DeclaredComponent,
+        ComponentAuthoringFacet,
+        ComponentCompilerFacet,
+        ComponentDeclaration,
+        ComponentParamContract,
+        ComponentRuntimeFacet,
+        ComponentSerializationFacet,
+        ComponentStudioFacet,
+        ComponentTrainingFacet,
+        DeclaredComponent,
     )
 
     name = f"{namespace}.{cls.__name__}"
+    explicit_context = frozenset(options.pop("build_context_fields"))
+    prototype_bindings = options.pop("build_output_prototypes") or {}
+    if explicit_context & set(model.model_fields):
+        raise ValueError(f"Component {name!r} cannot author runtime context fields")
+    if prototype_bindings:
+        if options["output_prototype_fn"] is None or set(prototype_bindings.values()) - set(
+            output_ports
+        ):
+            raise ValueError(f"Component {name!r} must infer each output prototype it builds from")
+        if set(prototype_bindings) & (set(model.model_fields) | explicit_context):
+            raise ValueError(f"Component {name!r} cannot author compiler-provided prototypes")
     contract = ComponentParamContract(
         component_type=name,
         model=model,
         revision=history.revision,
         runtime_type=cls,
-        build_context_fields=frozenset(options.pop("build_context_fields")),
+        build_context_fields=explicit_context | frozenset(prototype_bindings),
     )
-    prototype_bindings = options.pop("build_output_prototypes") or {}
-    if prototype_bindings:
-        if options["output_prototype_fn"] is None or set(prototype_bindings.values()) - set(output_ports):
-            raise ValueError(f"Component {name!r} must infer each output prototype it builds from")
-        if set(prototype_bindings) & (set(model.model_fields) | contract.build_context_fields):
-            raise ValueError(f"Component {name!r} cannot author compiler-provided prototypes")
     authoring = ComponentAuthoringFacet(
         options.pop("template_graph"), options.pop("template_id"), options.pop("template_kind")
     )
     training = ComponentTrainingFacet(options.pop("trainable_by_default"))
     if options["is_composite"] and options["interior_domain"] is None:
         options["interior_domain"] = options["domain"]
-    group = next((
-        group for prefix, group in (
-            ("feedbax.tasks.", "Tasks"), ("feedbax.control.", "Control"),
-            ("feedbax.acausal.", "Acausal"), ("feedbax.compiler.", "Templates"),
-            ("feedbax.components.equinox", "Equinox"), ("feedbax.mechanics.", "Mechanics"),
-            ("feedbax.models.", "Models"), ("feedbax.runtime.", "Runtime"),
-        ) if cls.__module__.startswith(prefix)
-    ), namespace)
+    group = next(
+        (
+            group
+            for prefix, group in (
+                ("feedbax.tasks.", "Tasks"),
+                ("feedbax.control.", "Control"),
+                ("feedbax.acausal.", "Acausal"),
+                ("feedbax.compiler.", "Templates"),
+                ("feedbax.components.equinox", "Equinox"),
+                ("feedbax.mechanics.", "Mechanics"),
+                ("feedbax.models.", "Models"),
+                ("feedbax.runtime.", "Runtime"),
+            )
+            if cls.__module__.startswith(prefix)
+        ),
+        namespace,
+    )
     meta = DeclaredComponent(
         declaration=ComponentDeclaration(
             type_id=name,
@@ -161,9 +202,7 @@ def compile_owner(cls, *, namespace, history=None, registry=None):
         serialization=ComponentSerializationFacet(history.revision),
         runtime=ComponentRuntimeFacet(contract.build),
         authoring=authoring,
-        studio=ComponentStudioFacet(
-            group, (inspect.getdoc(cls) or "").split("\n\n", 1)[0]
-        ),
+        studio=ComponentStudioFacet(group, (inspect.getdoc(cls) or "").split("\n\n", 1)[0]),
         training=training,
         owner_class=cls,
     )

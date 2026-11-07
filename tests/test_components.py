@@ -223,7 +223,9 @@ def test_generated_mlp_exposes_live_per_neuron_activations():
 
     trained = _adam_step(component, forward)
     assert jnp.all(trained.activation.negative_slope > component.activation.negative_slope)
-    assert jnp.all(trained.final_activation.negative_slope > component.final_activation.negative_slope)
+    assert jnp.all(
+        trained.final_activation.negative_slope > component.final_activation.negative_slope
+    )
     assert forward(trained) < forward(component)
 
 
@@ -368,7 +370,7 @@ def test_runtime_linear_accepts_custom_activation_callable():
     def square(x):
         return x * x
 
-    linear = runtime_components.Linear(2, 2, activation=square, key=jax.random.PRNGKey(0))
+    linear = runtime_components.LinearLayer(2, 2, activation=square, key=jax.random.PRNGKey(0))
     state = init_state_from_component(linear)
     raw = linear.layer(jnp.array([2.0, 3.0], dtype=jnp.float32))
 
@@ -457,8 +459,13 @@ def test_recurrent_controller_lstm_matches_seeded_cell_encoder_and_readout():
     key = jax.random.key(0)
     key_cell, key_encoder, key_readout = jax.random.split(key, 3)
     net = recurrent_controller(
-        2, 3, out_size=1, encoding_size=4, hidden_type=eqx.nn.LSTMCell,
-        use_bias=False, key=key,
+        2,
+        3,
+        out_size=1,
+        encoding_size=4,
+        hidden_type=eqx.nn.LSTMCell,
+        use_bias=False,
+        key=key,
     )
     cell = eqx.nn.LSTMCell(4, 3, use_bias=False, key=key_cell)
     encoder = eqx.nn.Linear(2, 4, key=key_encoder)
@@ -597,6 +604,53 @@ def test_channel_delay():
     assert (out1["output"] == jnp.array([0.0, 0.0])).all()
     assert (out2["output"] == jnp.array([0.0, 0.0])).all()
     assert (out3["output"] == jnp.array([1.0, 1.0])).all()
+
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.runtime.channel import ChannelState
+
+    reset = ChannelState(
+        output=jnp.full(3, 2.0),
+        queue=(jnp.full(3, 2.0), jnp.full(3, 2.0)),
+        noise=None,
+    )
+    edited = eqx.tree_at(lambda node: node.state_index.init, channel, reset)
+    registry = ComponentRegistry()
+    type_id, params, _ = registry.serialize_component(edited)
+    assert params["init_value"] == 2.0
+    assert params["input_shape"] == [3]
+    rebuilt = registry.get(type_id).params.build(params)
+    assert eqx.tree_equal(rebuilt.state_index.init, reset)
+    reshaped = edited.change_input(jnp.zeros(4))
+    assert jnp.array_equal(reshaped.state_index.init.output, jnp.full(4, 2.0))
+
+    mixed = Channel(
+        delay=1,
+        noise_func=None,
+        input_proto=(jnp.zeros(1, dtype=jnp.float16), jnp.zeros(1, dtype=jnp.bfloat16)),
+        init_value=0.10279028117656708,
+    )
+    _, params, _ = registry.serialize_component(mixed)
+    rebuilt = registry.get(type_id).params.build(
+        {**params, "resolved_input_proto": mixed.input_proto}
+    )
+    assert eqx.tree_equal(rebuilt.state_index.init, mixed.state_index.init)
+
+    reset_gradient = jax.grad(
+        lambda initial: Channel(
+            delay=0, noise_func=None, input_proto=jnp.zeros(2), init_value=initial
+        ).state_index.init.output.sum()
+    )(jnp.asarray(0.5))
+    assert reset_gradient == 2.0
+
+    inconsistent = eqx.tree_at(
+        lambda node: node.state_index.init.queue[0], edited, jnp.array([2.0, 3.0, 2.0])
+    )
+    with pytest.raises(ValueError, match="reset payload cannot be reconstructed"):
+        registry.serialize_component(inconsistent)
+
+    stripped, _ = eqx.nn.make_with_state(Channel)(delay=2, noise_func=None)
+    with pytest.raises(ValueError, match="reset payload was stripped by make_with_state"):
+        registry.serialize_component(stripped)
 
 
 def test_simplefeedback_runs():
