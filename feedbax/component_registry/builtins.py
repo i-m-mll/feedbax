@@ -36,9 +36,11 @@ _PORTABLE_MODULES = (
 def builtin_component_packs() -> tuple[ComponentPack, ...]:
     """Build the fixed set of packages shipped with Feedbax."""
 
-    from feedbax.acausal.system import acausal_system_definition
+    from feedbax.acausal.system import AcausalSystem
+    from feedbax.acausal.system_history import HISTORIES as SYSTEM_HISTORIES
     from feedbax.components.equinox_history import HISTORIES as EQUINOX_HISTORIES
-    from feedbax.runtime.graph import subgraph_definition
+    from feedbax.runtime.graph import Subgraph
+    from feedbax.runtime.graph_history import HISTORIES as GRAPH_HISTORIES
 
     from .acausal_adapters import acausal_component_pack
     from .templates import builtin_graph_template_pack, builtin_muscle_template_pack
@@ -61,10 +63,9 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
             sources=(Path(__file__).resolve().parents[2] / "scripts/generate_eqx_components.py",),
         ),
         ComponentPack(
-            components=(
-                subgraph_definition,
-                acausal_system_definition,
-            )
+            namespace="feedbax",
+            components=(Subgraph, AcausalSystem),
+            histories={**GRAPH_HISTORIES, **SYSTEM_HISTORIES},
         ),
         acausal_component_pack(),
         builtin_graph_template_pack(),
