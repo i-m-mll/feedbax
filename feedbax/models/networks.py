@@ -29,6 +29,8 @@ from feedbax.models.support import (
     interleave_unequal,
 )
 from feedbax.runtime.components import (
+    GRU,
+    LSTM,
     recurrent_output_prototype,
     resolve_activation,
     tanh,
@@ -721,6 +723,10 @@ class VanillaRNN(Component):
 
 
 register_parameter_role_resolver(VanillaRNN, recurrent_parameter_role)
+
+RECURRENT_CELL_TYPE_ALIASES.update(
+    {f"feedbax.{owner.__name__}": owner.__name__ for owner in (GRU, LSTM, VanillaRNN)}
+)
 
 
 def n_layer_linear(
