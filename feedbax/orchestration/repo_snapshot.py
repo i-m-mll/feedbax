@@ -13,11 +13,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from subprocess import CalledProcessError, PIPE, run as subprocess_run
-from typing import Any, Final, Literal
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.execution_schema import (
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_ID,
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1 as REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1,
+    REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V2 as REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V2,
+)
 from feedbax._distribution_provenance import (
     PROVENANCE_PATH,
     DistributionProvenanceError,
@@ -25,11 +31,6 @@ from feedbax._distribution_provenance import (
     verify_provenance_bytes,
 )
 
-
-REPO_SNAPSHOT_MANIFEST_SCHEMA_ID: Final = "feedbax.orchestration.repo_snapshot_manifest"
-REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V1: Final = "feedbax.orchestration.repo_snapshot_manifest.v1"
-REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION_V2: Final = "feedbax.orchestration.repo_snapshot_manifest.v2"
-REPO_SNAPSHOT_MANIFEST_SCHEMA_VERSION: Final = "feedbax.orchestration.repo_snapshot_manifest.v3"
 
 REPO_SNAPSHOT_CACHE_DIR_ENV = "FEEDBAX_REPO_SNAPSHOT_CACHE_DIR"
 

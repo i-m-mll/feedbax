@@ -12,11 +12,12 @@ from feedbax.contracts.base import (
     StrictModel,
     canonical_json_bytes,
 )
+from feedbax.contracts.execution_schema import (
+    INVOCATION_SCHEMA_ID,
+    INVOCATION_SCHEMA_VERSION,
+)
 from feedbax.workflow.plan import LogicalKey, WorkflowPlan
 
-
-INVOCATION_SCHEMA_ID = "feedbax.spec.invocation"
-INVOCATION_SCHEMA_VERSION = "feedbax.spec.invocation.v1"
 
 _REALIZATION_KEYS = frozenset(
     {

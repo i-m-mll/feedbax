@@ -20,36 +20,47 @@ from feedbax.contracts.base import (
     ParentRef,
     StrictModel,
 )
-from feedbax.contracts.run_matrix import TrainingRowProvenance
+from feedbax.contracts.execution_identity import (
+    AuthoredIntentRef as AuthoredIntentRef,
+    ExecutionCapsuleRef as ExecutionCapsuleRef,
+    ExecutionIdentityEnvelope,
+    IdentityArtifactRef as IdentityArtifactRef,
+    ImmutableInputDigest as ImmutableInputDigest,
+    ImmutableInputIdentity,
+    ResolvedSnapshotRef as ResolvedSnapshotRef,
+    SchemaArtifactRef as SchemaArtifactRef,
+    execution_identity_projection as execution_identity_projection,
+)
+from feedbax.contracts.execution_schema import (
+    DEPLOYMENT_POLICY_SCHEMA_ID,
+    DEPLOYMENT_POLICY_SCHEMA_VERSION,
+    DEPLOYMENT_POLICY_SCHEMA_VERSION_V1 as DEPLOYMENT_POLICY_SCHEMA_VERSION_V1,
+    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID as EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID,
+    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION as EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION,
+    EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1 as EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1,
+    RUN_BUNDLE_SCHEMA_ID,
+    RUN_BUNDLE_SCHEMA_VERSION,
+    RUN_BUNDLE_SCHEMA_VERSION_V1 as RUN_BUNDLE_SCHEMA_VERSION_V1,
+    RUN_BUNDLE_SCHEMA_VERSION_V10 as RUN_BUNDLE_SCHEMA_VERSION_V10,
+    RUN_BUNDLE_SCHEMA_VERSION_V11 as RUN_BUNDLE_SCHEMA_VERSION_V11,
+    RUN_BUNDLE_SCHEMA_VERSION_V12 as RUN_BUNDLE_SCHEMA_VERSION_V12,
+    RUN_BUNDLE_SCHEMA_VERSION_V13 as RUN_BUNDLE_SCHEMA_VERSION_V13,
+    RUN_BUNDLE_SCHEMA_VERSION_V2 as RUN_BUNDLE_SCHEMA_VERSION_V2,
+    RUN_BUNDLE_SCHEMA_VERSION_V3 as RUN_BUNDLE_SCHEMA_VERSION_V3,
+    RUN_BUNDLE_SCHEMA_VERSION_V4 as RUN_BUNDLE_SCHEMA_VERSION_V4,
+    RUN_BUNDLE_SCHEMA_VERSION_V5 as RUN_BUNDLE_SCHEMA_VERSION_V5,
+    RUN_BUNDLE_SCHEMA_VERSION_V6 as RUN_BUNDLE_SCHEMA_VERSION_V6,
+    RUN_BUNDLE_SCHEMA_VERSION_V7 as RUN_BUNDLE_SCHEMA_VERSION_V7,
+    RUN_BUNDLE_SCHEMA_VERSION_V8 as RUN_BUNDLE_SCHEMA_VERSION_V8,
+    RUN_BUNDLE_SCHEMA_VERSION_V9 as RUN_BUNDLE_SCHEMA_VERSION_V9,
+)
 from feedbax.contracts.staged_execution import validate_staged_binding_name
 from feedbax.contracts.spec_storage import (
     canonicalize_immutable_input_identities,
-    training_run_execution_hash,
     validate_sha256,
 )
 
 
-RUN_BUNDLE_SCHEMA_ID = "feedbax.orchestration.run_bundle"
-RUN_BUNDLE_SCHEMA_VERSION_V1 = "feedbax.orchestration.run_bundle.v1"
-RUN_BUNDLE_SCHEMA_VERSION_V2 = "feedbax.orchestration.run_bundle.v2"
-RUN_BUNDLE_SCHEMA_VERSION_V3 = "feedbax.orchestration.run_bundle.v3"
-RUN_BUNDLE_SCHEMA_VERSION_V4 = "feedbax.orchestration.run_bundle.v4"
-RUN_BUNDLE_SCHEMA_VERSION_V5 = "feedbax.orchestration.run_bundle.v5"
-RUN_BUNDLE_SCHEMA_VERSION_V6 = "feedbax.orchestration.run_bundle.v6"
-RUN_BUNDLE_SCHEMA_VERSION_V7 = "feedbax.orchestration.run_bundle.v7"
-RUN_BUNDLE_SCHEMA_VERSION_V8 = "feedbax.orchestration.run_bundle.v8"
-RUN_BUNDLE_SCHEMA_VERSION_V9 = "feedbax.orchestration.run_bundle.v9"
-RUN_BUNDLE_SCHEMA_VERSION_V10 = "feedbax.orchestration.run_bundle.v10"
-RUN_BUNDLE_SCHEMA_VERSION_V11 = "feedbax.orchestration.run_bundle.v11"
-RUN_BUNDLE_SCHEMA_VERSION_V12 = "feedbax.orchestration.run_bundle.v12"
-RUN_BUNDLE_SCHEMA_VERSION_V13 = "feedbax.orchestration.run_bundle.v13"
-RUN_BUNDLE_SCHEMA_VERSION = "feedbax.orchestration.run_bundle.v14"
-DEPLOYMENT_POLICY_SCHEMA_ID = "feedbax.spec.deployment_policy"
-DEPLOYMENT_POLICY_SCHEMA_VERSION_V1 = "feedbax.spec.deployment_policy.v1"
-DEPLOYMENT_POLICY_SCHEMA_VERSION = "feedbax.spec.deployment_policy.v2"
-EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID = "feedbax.spec.execution_identity_envelope"
-EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION_V1 = "feedbax.spec.execution_identity_envelope.v1"
-EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION = "feedbax.spec.execution_identity_envelope.v2"
 ROW_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_ID = "feedbax.archive.training_checkpoint_custody"
 CHECKPOINT_CUSTODY_ARCHIVE_FORMAT_VERSION = "feedbax.archive.training_checkpoint_custody.v1"
@@ -107,157 +118,6 @@ def canonical_run_bundle_sha256(bundle: "RunBundle") -> str:
     payload = bundle.model_dump(mode="json", exclude_none=True)
     encoded = canonical_json_v1_bytes(payload)
     return hashlib.sha256(encoded).hexdigest()
-
-
-class SchemaArtifactRef(StrictModel):
-    """Immutable registry reference to a governed structured payload."""
-
-    schema_id: str = Field(min_length=1)
-    schema_version: str = Field(min_length=1)
-    artifact_id: str = Field(min_length=1)
-    sha256: str
-    uri: str | None = None
-
-    @field_validator("sha256")
-    @classmethod
-    def _validate_sha256(cls, value: str) -> str:
-        validate_sha256(value, field_name="sha256")
-        return value
-
-    @field_validator("artifact_id")
-    @classmethod
-    def _reject_mutable_locator(cls, value: str) -> str:
-        if "latest.json" in value:
-            raise ValueError("artifact_id must be an immutable registry-resolvable locator")
-        return value
-
-
-class IdentityArtifactRef(SchemaArtifactRef):
-    """Base immutable artifact reference carrying a separate semantic hash."""
-
-
-class AuthoredIntentRef(IdentityArtifactRef):
-    """Authored document reference and its family-defined intent identity."""
-
-    intent_hash: str
-
-    @field_validator("intent_hash")
-    @classmethod
-    def _validate_intent_hash(cls, value: str) -> str:
-        validate_sha256(value, field_name="intent_hash")
-        return value
-
-
-class ResolvedSnapshotRef(IdentityArtifactRef):
-    """Resolved-semantics snapshot reference and decoded root identity."""
-
-    root_hash: str
-
-    @field_validator("root_hash")
-    @classmethod
-    def _validate_root_hash(cls, value: str) -> str:
-        validate_sha256(value, field_name="root_hash")
-        return value
-
-
-class ExecutionCapsuleRef(IdentityArtifactRef):
-    """Execution capsule reference and derived execution identity."""
-
-    execution_hash: str
-
-    @field_validator("execution_hash")
-    @classmethod
-    def _validate_execution_hash(cls, value: str) -> str:
-        validate_sha256(value, field_name="execution_hash")
-        return value
-
-
-class ImmutableInputDigest(StrictModel):
-    """Digest identifying immutable external input bytes."""
-
-    algorithm: Literal["sha256"] = "sha256"
-    value: str
-
-    @field_validator("value")
-    @classmethod
-    def _validate_value(cls, value: str) -> str:
-        validate_sha256(value, field_name="digest.value")
-        return value
-
-
-class ImmutableInputIdentity(StrictModel):
-    """Canonical identity for one external execution input."""
-
-    role: str = Field(min_length=1)
-    kind: str = Field(min_length=1)
-    identifier: str = Field(min_length=1)
-    digest: ImmutableInputDigest
-    schema_id: str | None = None
-    schema_version: str | None = None
-
-    @model_validator(mode="after")
-    def _validate_schema_pair(self) -> "ImmutableInputIdentity":
-        if (self.schema_id is None) != (self.schema_version is None):
-            raise ValueError("schema_id and schema_version must be supplied together")
-        if "latest.json" in self.identifier:
-            raise ValueError("immutable input identifier must not reference latest.json")
-        return self
-
-
-class ExecutionIdentityEnvelope(StrictModel):
-    """Immutable scientific identity committed by ASSEMBLE for one row."""
-
-    schema_id: Literal["feedbax.spec.execution_identity_envelope"] = (
-        EXECUTION_IDENTITY_ENVELOPE_SCHEMA_ID
-    )
-    schema_version: Literal["feedbax.spec.execution_identity_envelope.v2"] = (
-        EXECUTION_IDENTITY_ENVELOPE_SCHEMA_VERSION
-    )
-    payload: SchemaArtifactRef
-    authored_intent: AuthoredIntentRef
-    resolved_snapshot: ResolvedSnapshotRef
-    execution_capsule: ExecutionCapsuleRef
-    immutable_inputs: list[ImmutableInputIdentity]
-    row_provenance: TrainingRowProvenance | None = None
-
-    @model_validator(mode="after")
-    def _validate_execution_identity(self) -> "ExecutionIdentityEnvelope":
-        canonical = canonicalize_immutable_input_identities(self.immutable_inputs)
-        supplied = [
-            identity.model_dump(mode="json", exclude_none=True)
-            for identity in self.immutable_inputs
-        ]
-        if supplied != canonical:
-            raise ValueError(
-                "immutable_inputs must be in canonical (role, kind, identifier, digest) order"
-            )
-        expected = training_run_execution_hash(self.resolved_snapshot.root_hash, canonical)
-        if self.execution_capsule.execution_hash != expected:
-            raise ValueError(
-                "execution_hash does not match resolved root and canonical immutable inputs; "
-                f"envelope={self.execution_capsule.execution_hash!r}, computed={expected!r}"
-            )
-        if (
-            self.row_provenance is not None
-            and self.row_provenance.lowered_execution_payload_hash != self.payload.sha256
-        ):
-            raise ValueError(
-                "row provenance lowered_execution_payload_hash does not match the "
-                "custodied execution payload"
-            )
-        return self
-
-
-def execution_identity_projection(
-    envelope: ExecutionIdentityEnvelope,
-) -> dict[str, Any]:
-    """Project one execution envelope onto durable manifest identity fields."""
-    return {
-        "intent_hash": envelope.authored_intent.intent_hash,
-        "resolved_semantics_root_hash": envelope.resolved_snapshot.root_hash,
-        "execution_hash": envelope.execution_capsule.execution_hash,
-        "input_data_identities": canonicalize_immutable_input_identities(envelope.immutable_inputs),
-    }
 
 
 class RowLaunchSpec(StrictModel):
