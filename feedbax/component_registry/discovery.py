@@ -119,7 +119,7 @@ def discover_modules(
     namespace: str | None = None,
     histories: Mapping[type, Any] | None = None,
 ) -> ComponentPack:
-    from feedbax.runtime.graph import Component
+    from feedbax.contracts.portable import ComponentOwner, GraphTemplate
 
     loaded = [import_module(module) if isinstance(module, str) else module for module in modules]
     classes = {
@@ -128,7 +128,7 @@ def discover_modules(
         for value in vars(module).values()
         if isinstance(value, type)
         and value.__module__ == module.__name__
-        and ((_MARKER in vars(value)) if namespace is None else issubclass(value, Component))
+        and ((_MARKER in vars(value)) if namespace is None else issubclass(value, ComponentOwner) and value not in (ComponentOwner, GraphTemplate))
         and not inspect.isabstract(value)
     }
     return ComponentPack(
@@ -197,9 +197,10 @@ def compile_owner(
     *,
     namespace: str | None = None,
     history: Any = None,
+    registry: Any = None,
 ) -> tuple[tuple[DeclaredComponent, ...], tuple[Path | None, ...], tuple[ComponentMigration, ...]]:
     if namespace is not None:
-        return _compile_inferred_owner(cls, namespace, history)
+        return _compile_inferred_owner(cls, namespace, history, registry)
     declaration = vars(cls).get(_MARKER)
     if not isinstance(declaration, _ClassDeclaration) or inspect.isabstract(cls):
         raise TypeError(f"Component owner {cls.__qualname__} must declare @component directly")
@@ -258,8 +259,8 @@ def source_path(obj: Any) -> Path | None:
     return Path(path).resolve()
 
 
-def _compile_inferred_owner(cls, namespace, history):
-    from feedbax.runtime.graph import Component
+def _compile_inferred_owner(cls, namespace, history, registry):
+    from feedbax.contracts.portable import ComponentOwner, GraphTemplate
     from feedbax.contracts.portable import (
         ComponentOptions,
         configuration_model,
@@ -267,8 +268,8 @@ def _compile_inferred_owner(cls, namespace, history):
     )
     from .history import History
 
-    if not issubclass(cls, Component) or inspect.isabstract(cls):
-        raise TypeError(f"{cls!r} must be a concrete portable Component")
+    if not issubclass(cls, ComponentOwner) or cls in (ComponentOwner, GraphTemplate) or inspect.isabstract(cls):
+        raise TypeError(f"{cls!r} must be a concrete portable ComponentOwner")
     if not namespace or namespace.startswith(".") or namespace.endswith("."):
         raise ValueError("Component pack requires a stable namespace")
     options = (cls.component_options or ComponentOptions()).as_kwargs()
@@ -300,21 +301,37 @@ def _compile_inferred_owner(cls, namespace, history):
     history = history or History()
     configuration_paths(cls)
     model = configuration_model(cls)
-    ports = cls.ports
-    if ports is None:
-        raise TypeError(f"{cls.__name__} needs one typed Ports declaration")
+    ports = cls.port_contract(registry=registry)
+    if issubclass(cls, GraphTemplate):
+        options["template_graph"] = cls.expand(model())
+    elif options.get("template_graph") is not None and callable(options["template_graph"]):
+        options["template_graph"] = options["template_graph"]()
+    input_ports, output_ports = tuple(ports.inputs), tuple(ports.outputs)
+    port_types = ports.types
+    if ports.dynamic is not None:
+        from feedbax.contracts.component import derive_dynamic_port_layout
+        names = ((*ports.dynamic.input_name_params, *ports.dynamic.output_name_params)
+                 if ports.dynamic.count_mode == "names" else (ports.dynamic.count_param,))
+        if all(not model.model_fields[name].is_required() for name in names):
+            defaults = {name: model.model_fields[name].get_default(call_default_factory=True) for name in names}
+            layout = derive_dynamic_port_layout(ports.dynamic, defaults)
+            input_ports, output_ports = layout.input_ports, layout.output_ports
+            port_types = type(port_types)(
+                inputs={name: ports.inputs[name] if name in ports.inputs else ports.dynamic.dynamic_port_type for name in input_ports},
+                outputs={name: ports.outputs[name] if name in ports.outputs else ports.dynamic.dynamic_port_type for name in output_ports},
+            )
     meta = declare_component(
         name=f"{namespace}.{cls.__name__}",
         runtime_type=cls,
         param_model=model,
-        input_ports=tuple(ports.inputs),
-        output_ports=tuple(ports.outputs),
-        port_types=ports.types,
+        input_ports=input_ports,
+        output_ports=output_ports,
+        port_types=port_types,
         dynamic_port_policy=ports.dynamic,
         param_schema_version=history.revision,
         supported_param_schema_versions=tuple(range(1, history.revision + 1)),
         owner=namespace,
-        description=inspect.getdoc(cls) or "",
+        description=(inspect.getdoc(cls) or "").split("\n\n", 1)[0],
         category=namespace,
         **options,
     )

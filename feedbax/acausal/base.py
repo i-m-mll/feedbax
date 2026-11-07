@@ -21,6 +21,8 @@ Each physical domain (translational, rotational) defines:
 
 from __future__ import annotations
 
+from feedbax.contracts.portable import ComponentOwner, ComponentOptions, Ports
+
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
 from typing import Callable, ClassVar, Optional
@@ -113,7 +115,7 @@ class AcausalEquation:
 # ---------------------------------------------------------------------------
 
 @dataclass
-class AcausalElement:
+class AcausalElement(ComponentOwner):
     """Base for acausal element descriptors (construction-time only).
 
     Subclasses populate ``ports``, ``equations``, and ``params`` during
@@ -132,6 +134,50 @@ class AcausalElement:
         sensor_output: If this element is a sensor, the
             ``(port_name, slot_name)`` it reads.
     """
+    component_options = ComponentOptions(build_context_fields=("name",))
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        import functools
+        import inspect
+        from feedbax.contracts.portable import configuration_model, validate_authoring
+
+        init = vars(cls).get("__init__")
+        if init is None:
+            return
+        signature = inspect.signature(init)
+
+        @functools.wraps(init)
+        def construct(self, *args, **kwargs):
+            bound = signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            values = {name: value for name, value in bound.arguments.items() if name not in ("self", "name")}
+            config = validate_authoring(configuration_model(cls), values)
+            init(self, *args, **kwargs)
+            for name in type(config).model_fields:
+                if f"{self.name}.{name}" not in self.params:
+                    setattr(self, name, getattr(config, name))
+
+        cls.__init__ = construct
+
+    @classmethod
+    def port_contract(cls, *, registry=None):
+        from feedbax.contracts.acausal_interface import conserving_port_type
+
+        physical = cls("__catalogue__").ports
+        return Ports({name: conserving_port_type(
+            physical_domain=port.domain.value,
+            across_vars=port.across_vars,
+            through_var=port.through_var,
+        ) for name, port in sorted(physical.items())}, {})
+
+    def configuration_values(self):
+        from feedbax.contracts.portable import configuration_model
+
+        return {name: self.params[f"{self.name}.{name}"] if f"{self.name}.{name}" in self.params
+                else getattr(self, name)
+                for name in configuration_model(type(self)).model_fields}
+
     source_payload: ClassVar[SourcePayload | None] = None
 
     name: str

@@ -21,6 +21,7 @@ import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.contracts.array_values import ArrayValueSpec
+from feedbax.contracts.portable import ComponentOwner
 from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.runtime._graph import detect_cycles_and_sort
 from feedbax.runtime._graph_key_schedule import (
@@ -134,26 +135,14 @@ class GraphNode(Module):
         return outputs
 
 
-class Component(GraphNode):
+class Component(GraphNode, ComponentOwner):
     """An executable node with a reconstructible typed configuration."""
-
-    config: ClassVar[type | None] = None
-    config_bindings: ClassVar[tuple] = ()
-    ports: ClassVar[object | None] = None
-    component_options: ClassVar[object | None] = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         from feedbax.contracts.portable import install_ports
 
         install_ports(cls)
-
-    @classmethod
-    def from_config(cls, config, **context):
-        """Materialize the typed authoring configuration."""
-        from feedbax.contracts.portable import materialize_configuration
-
-        return cls(**materialize_configuration(cls, config), **context)
 
     def __check_init__(self):
         from feedbax.contracts.component import derive_dynamic_port_layout
@@ -179,17 +168,6 @@ class Component(GraphNode):
             object.__setattr__(self, "input_ports", layout.input_ports)
             object.__setattr__(self, "output_ports", layout.output_ports)
 
-    def configuration_values(self):
-        """Read raw stored authored values; override for a non-field representation."""
-        from feedbax.contracts.portable import configuration_values
-
-        return configuration_values(self)
-
-    def configuration(self):
-        """Read effective construction values, including retained reset payloads."""
-        from feedbax.contracts.portable import extract_configuration
-
-        return extract_configuration(self)
 
 
 class RolloutStepContext(Module):
@@ -1786,17 +1764,22 @@ class Graph(GraphNode):
         return select(self).at(lambda g: g.nodes).at_instances_of(*types)
 
 
-def subgraph_definition():
-    """The authored nested graph contract owned by Graph."""
-    from feedbax.component_registry.declarations import declare_component
+from pydantic import BaseModel, ConfigDict
+from feedbax.contracts.portable import GraphTemplate, ComponentOptions
 
-    return declare_component(
-        name="Subgraph",
-        category="Structure",
-        description="Nested graph container.",
-        parameter_fields=[],
-        input_ports=[],
-        output_ports=[],
-        icon="Layers",
-        is_composite=True,
-    )
+
+class _SubgraphConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class Subgraph(GraphTemplate):
+    """Editable nested graph container."""
+
+    config = _SubgraphConfig
+    component_options = ComponentOptions(is_composite=True)
+
+    @classmethod
+    def expand(cls, config):
+        from feedbax.contracts.graph import GraphSpec
+
+        return GraphSpec()

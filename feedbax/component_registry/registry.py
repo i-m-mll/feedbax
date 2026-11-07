@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
@@ -101,6 +101,8 @@ class ComponentRegistry:
         unknown_history = pack.histories.keys() - {item for item in batch if isinstance(item, type)}
         if unknown_history:
             raise ValueError(f"History supplied for undiscovered owners: {unknown_history!r}")
+        from feedbax.contracts.portable import GraphTemplate
+        batch = tuple(sorted(batch, key=lambda item: isinstance(item, type) and issubclass(item, GraphTemplate)))
         for definition in batch:
             definition_sources: tuple[Path | None, ...] = ()
             owner_class = None
@@ -121,8 +123,14 @@ class ComponentRegistry:
                                 f"Historical component identity {identity!r} is reserved by {reserved_names[identity]!r}"
                             )
                         reserved_names[identity] = definition
+                compilation = copy(self)
+                compilation._components = components
+                compilation._component_migrations = {
+                    **migrations,
+                    **{(edge.source_type, edge.source_param_schema_version): edge for edge in edges},
+                }
                 definitions, definition_sources, owner_edges = compile_owner(
-                    definition, namespace=pack.namespace, history=pack.histories.get(definition)
+                    definition, namespace=pack.namespace, history=pack.histories.get(definition), registry=compilation
                 )
                 edges.extend(owner_edges)
             elif isinstance(definition, DeclaredComponent):
@@ -133,7 +141,7 @@ class ComponentRegistry:
             for declared in definitions:
                 meta = deepcopy(declared)
                 if owner_class in pack.presentation:
-                    meta = replace(meta, studio=pack.presentation[owner_class])
+                    meta = replace(meta, studio=replace(meta.studio, **pack.presentation[owner_class].as_kwargs()))
                     definition_sources = (*definition_sources, meta.studio.source)
                 if meta.provenance is None:
                     origin = provenance
