@@ -108,6 +108,11 @@ def test_api_components_include_acausal_elements_and_boundary_adapters() -> None
         "feedbax.BoundaryPort",
     }
     assert expected_names <= set(definitions)
+    assert definitions["feedbax.AcausalSystem"].is_composite
+    for definition in definitions.values():
+        if definition.is_composite:
+            assert definition.param_schema == []
+            assert definition.default_params == {}
 
     for name in expected_names:
         definition = definitions[name]
