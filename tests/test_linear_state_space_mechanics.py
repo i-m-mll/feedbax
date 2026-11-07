@@ -126,7 +126,7 @@ def test_linear_state_space_is_registered_for_graph_specs() -> None:
     assert meta.input_ports == ["force", "epsilon"]
     assert meta.output_ports == ["effector", "state"]
     assert LinearStateSpace().dt == meta.params.build({}).dt == 1.0
-    legacy = registry.resolve_component_spec("LinearStateSpace", {}, param_schema_version="1")
+    legacy = registry.resolve_component_spec("LinearStateSpace", {}, legacy_token="1")
     assert legacy.params["dt"] == 0.01
     assert legacy.revision == 2
     unversioned = registry.resolve_component_spec(
@@ -233,7 +233,7 @@ def test_state_feedback_selector_materializes_target_relative_lss_feedback() -> 
 def test_state_feedback_selector_prototype_feeds_stateful_materialization() -> None:
     spec = _delayed_feedback_graph_spec()
     spec.nodes["delay"] = ComponentSpec(
-        type="Channel",
+        type="feedbax.Channel",
         params={"delay": 1, "add_noise": False},
         input_ports=["input"],
         output_ports=["output"],
@@ -261,7 +261,7 @@ def test_state_feedback_selector_graph_spec_round_trips() -> None:
     restored = graph_to_spec(graph)
 
     selector = restored.nodes["selector"]
-    assert selector.type == "StateFeedbackSelector"
+    assert selector.type == "feedbax.StateFeedbackSelector"
     assert selector.params["state_slices"]["position"]["delay"] == 1
     assert selector.params["channels"][0]["transform"] == "target_minus"
     assert selector.params["output_size"] == 4

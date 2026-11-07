@@ -61,7 +61,7 @@ def _graph() -> GraphSpec:
                 output_ports=["output", "hidden"],
             ),
             "plant": ComponentSpec(
-                type="PointMass",
+                type="feedbax.PointMass",
                 params={},
                 input_ports=["force"],
                 output_ports=["effector"],
@@ -91,7 +91,7 @@ def _provider_graph() -> GraphSpec:
     return GraphSpec(
         nodes={
             "gain": ComponentSpec(
-                type="Gain",
+                type="feedbax.Gain",
                 params={"gain": 2.0},
                 input_ports=["input"],
                 output_ports=["output"],

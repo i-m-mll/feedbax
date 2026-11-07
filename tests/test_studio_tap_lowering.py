@@ -113,7 +113,7 @@ def test_serialized_recurrent_tap_preserves_owned_state_reset_and_distinguishes_
     spec = {
         "nodes": {
             "plant": {
-                "type": "LinearStateSpace",
+                "type": "feedbax.LinearStateSpace",
                 "params": {
                     "A": [[1.0, 0.0], [0.0, 1.0]],
                     "B": [[1.0, 0.0], [0.0, 1.0]],

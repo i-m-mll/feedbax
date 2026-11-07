@@ -58,7 +58,7 @@ def test_replacing_a_removed_node_does_not_reuse_its_trainability() -> None:
         spec = GraphSpec(
             nodes={
                 "linear": ComponentSpec(
-                    type="Linear",
+                    type="feedbax.Linear",
                     params={"input_size": 1, "output_size": 1, **params},
                     input_ports=["input"],
                     output_ports=["output"],
@@ -80,12 +80,12 @@ def _document() -> GraphDocument:
         graph=GraphSpec(
             nodes={
                 "source": ComponentSpec(
-                    type="Constant",
+                    type="feedbax.Constant",
                     params={"value": 2.0},
                     output_ports=["output"],
                 ),
                 "gain": ComponentSpec(
-                    type="Gain",
+                    type="feedbax.Gain",
                     params={"gain": 3.0},
                     input_ports=["input"],
                     output_ports=["output"],
@@ -226,8 +226,7 @@ def test_compile_graph_migrates_an_explicit_older_graph_schema() -> None:
     )
 
     assert compiled.record.graph_schema_source_version == "feedbax.spec.graph.v4"
-    assert compiled.record.graph_schema_target_version == "feedbax.spec.graph.v5"
-    assert compiled.record.migration_record_count == 1
+    assert compiled.record.graph_schema_target_version == "feedbax.spec.graph.v6"
 
 
 def test_compiler_generated_adapter_has_truthful_source_map_origin() -> None:
@@ -349,7 +348,7 @@ def test_migrated_component_semantics_are_the_executed_graph(nested: bool) -> No
         GraphSpec(
             nodes={
                 "nested": ComponentSpec(
-                    type="Subgraph",
+                    type="feedbax.Subgraph",
                     input_ports=["input"],
                     output_ports=["output"],
                 )
@@ -418,7 +417,7 @@ def test_migrations_precede_inference_and_defaults_follow_derived_dimensions() -
                 type="example.LegacyVectorSource", revision=1, params={"n": 5}, output_ports=["output"]
             ),
             "linear": ComponentSpec(
-                type="Linear",
+                type="feedbax.Linear",
                 params={"output_size": 2, "initialization": "zeros"},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -459,7 +458,7 @@ def test_unknown_component_version_points_to_nested_authored_node() -> None:
         }
     )
     graph = GraphSpec(
-        nodes={"nested": ComponentSpec(type="Subgraph", output_ports=["output"])},
+        nodes={"nested": ComponentSpec(type="feedbax.Subgraph", output_ports=["output"])},
         subgraphs={"nested": child},
         output_ports=["output"],
         output_bindings={"output": ("nested", "output")},

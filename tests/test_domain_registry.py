@@ -84,16 +84,16 @@ def test_component_definitions_carry_domain_metadata() -> None:
     for definition in registry.list_all():
         assert definition.domain.startswith("feedbax.domain.")
 
-    assert registry.get("Subgraph").interior_domain == CAUSAL_DOMAIN_ID  # type: ignore[union-attr]
-    assert registry.get("AcausalSystem").interior_domain == ACAUSAL_DOMAIN_ID  # type: ignore[union-attr]
-    assert registry.get("PenzaiAdapter").interior_domain == PENZAI_DOMAIN_ID  # type: ignore[union-attr]
+    assert registry.get("feedbax.Subgraph").interior_domain == CAUSAL_DOMAIN_ID  # type: ignore[union-attr]
+    assert registry.get("feedbax.AcausalSystem").interior_domain == ACAUSAL_DOMAIN_ID  # type: ignore[union-attr]
+    assert registry.get("feedbax.PenzaiAdapter").interior_domain == PENZAI_DOMAIN_ID  # type: ignore[union-attr]
 
 
 def test_acausal_missing_interior_error_names_domain() -> None:
     graph = GraphSpec(
         nodes={
             "arm": ComponentSpec(
-                type="AcausalSystem",
+                type="feedbax.AcausalSystem",
                 params={"dt": 0.001},
                 input_ports=["input"],
                 output_ports=["state"],
@@ -113,7 +113,7 @@ def test_subgraph_missing_interior_behavior_remains_unchanged() -> None:
     graph = GraphSpec(
         nodes={
             "nested": ComponentSpec(
-                type="Subgraph",
+                type="feedbax.Subgraph",
                 params={},
                 input_ports=[],
                 output_ports=[],
@@ -139,7 +139,7 @@ def test_legacy_network_missing_interior_behavior_remains_unchanged() -> None:
 
     with pytest.raises(
         ValueError,
-        match="Network node 'network' requires a subgraph.*Open it in Studio",
+        match="Subgraph node 'network' requires a subgraph",
     ):
         spec_to_graph(graph, ComponentRegistry())
 

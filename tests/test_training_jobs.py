@@ -1096,7 +1096,7 @@ def test_worker_lifespan_publishes_bootstrap_state_before_routes() -> None:
     app = worker_app.create_app()
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
-        assert app.state.bootstrap_state.bundle.components.get("Gain") is not None
+        assert app.state.bootstrap_state.bundle.components.get("feedbax.Gain") is not None
 
 
 def test_worker_rejects_start_while_job_running(monkeypatch) -> None:

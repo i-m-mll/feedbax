@@ -1267,7 +1267,7 @@ def test_spec_to_graph_rejects_missing_network_subgraph_during_prototype_inferen
         output_bindings={"effector": ("mechanics", "effector")},
     )
 
-    with pytest.raises(ValueError, match="Network node 'network' requires a subgraph"):
+    with pytest.raises(ValueError, match="Subgraph node 'network' requires a subgraph"):
         spec_to_graph(spec, ComponentRegistry())
 
 
