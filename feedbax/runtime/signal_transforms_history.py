@@ -13,6 +13,10 @@ def _drop_clamp_scale(params):
     return {name: value for name, value in params.items() if name != "scale"}
 
 
+def _legacy_addition(params):
+    return set(params) <= {"scale", "active"}
+
+
 HISTORIES = {
     AddNoise: History(
         legacy=(LegacyEndpoint('AddNoise', '1', 1), LegacyEndpoint('AddNoise', None, 1)),
@@ -27,14 +31,14 @@ HISTORIES = {
     NetworkConstantInput: History(
         Change(2, identity=True),
         legacy=(
-            LegacyEndpoint("NetworkConstantInput", "1", 1),
+            LegacyEndpoint("NetworkConstantInput", "1", 1, matches_unversioned=_legacy_addition),
             LegacyEndpoint("NetworkConstantInput", "2", 2),
         ),
     ),
     ConstantInput: History(
         Change(2, identity=True),
         legacy=(
-            LegacyEndpoint("ConstantInput", "1", 1),
+            LegacyEndpoint("ConstantInput", "1", 1, matches_unversioned=_legacy_addition),
             LegacyEndpoint("ConstantInput", "2", 2),
         ),
     ),

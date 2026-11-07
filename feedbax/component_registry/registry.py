@@ -21,6 +21,7 @@ from feedbax.contracts.migrations import (
     UnsupportedComponentMigration,
 )
 from feedbax.contracts.representation import validate_representation_against_component
+from feedbax.registry_errors import RegistryCollisionError
 
 from .migration_routes import migration_route, source_endpoint, validate_migration_routes
 from .declarations import DeclaredComponent
@@ -113,7 +114,7 @@ class ComponentRegistry:
                         identity in reserved_names
                         and reserved_names[identity] is not definition
                     ):
-                        raise ValueError(
+                        raise RegistryCollisionError(
                             f"Historical component identity {identity!r} is reserved by {reserved_names[identity]!r}"
                         )
                     reserved_names[identity] = definition
@@ -145,7 +146,7 @@ class ComponentRegistry:
                 )
                 if meta.name in components:
                     existing = components[meta.name]
-                    raise ValueError(
+                    raise RegistryCollisionError(
                         f"component type already registered: {meta.name!r} "
                         f"({existing.owner!r} from {existing.source_paths!r}; "
                         f"{meta.owner!r} from {component_sources!r})"
@@ -163,7 +164,7 @@ class ComponentRegistry:
                         None,
                     )
                     if conflict is not None:
-                        raise ValueError(
+                        raise RegistryCollisionError(
                             f"component runtime type already registered: {runtime_type!r} "
                             f"({conflict.name!r}, {meta.name!r})"
                         )
@@ -176,7 +177,7 @@ class ComponentRegistry:
             key = (migration.source_type, migration.source_param_schema_version)
             if key in migrations:
                 existing = migrations[key]
-                raise ValueError(
+                raise RegistryCollisionError(
                     "Component migration already registered: "
                     f"{key!r} ({existing.migration_id!r}, {migration.migration_id!r})"
                 )

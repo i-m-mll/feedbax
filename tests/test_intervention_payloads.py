@@ -136,7 +136,7 @@ def test_legacy_intervention_requires_reauthoring_only_when_enabled(
 
     if component_type == "NetworkClamp":
         repaired = _authored_spec(
-            component_type, {"scale": 2.0, "active": True, field: [8.0, None]}
+            component_type, {"active": True, field: [8.0, None]}
         )
         compiled = _compile(registry, repaired)
         _assert_rollout(compiled.graph, [8.0, 3.0])
