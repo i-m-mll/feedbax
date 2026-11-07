@@ -82,7 +82,7 @@ def migrate_component_definition_v3_to_v4_payload(
     resolved = component_registry.resolve_component_spec(
         payload["name"],
         payload.get("default_params", {}),
-        param_schema_version=payload.get("param_schema_version"),
+        legacy_token=payload.get("param_schema_version"),
         complete_params=False,
         historical_unversioned="param_schema_version" not in payload,
     )

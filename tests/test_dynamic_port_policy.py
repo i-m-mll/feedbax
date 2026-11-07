@@ -1,10 +1,12 @@
 from __future__ import annotations
 from feedbax.component_registry import ComponentPack
-from feedbax.component_registry import ParameterField
 from feedbax.contracts.component import DynamicPortPolicy
-from feedbax.component_registry import declare_component
 
-from typing import Any
+from typing import Any, ClassVar
+from types import ModuleType
+
+from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import Ports
 
 import pytest
 from pydantic import ValidationError
@@ -111,35 +113,33 @@ def test_dynamic_port_layout_validation_fails_closed() -> None:
         )
 
 
-def test_registry_exports_external_dynamic_port_policy_in_v3_definition() -> None:
-    registry = ComponentRegistry()
-    registry.ingest(
-        ComponentPack(
-            components=(
-                declare_component(
-                    name="example.VariableFanIn",
-                    builder=lambda params: params,
-                    input_ports=["source_0", "source_1"],
-                    output_ports=["output"],
-                    dynamic_port_policy=DynamicPortPolicy.model_validate(
-                        {
-                            "count_param": "fan_in",
-                            "count_mode": "integer",
-                            "direction": "input",
-                            "fixed_output_ports": ["output"],
-                            "generated_name_template": "source_{index}",
-                            "dynamic_port_type": {"dtype": "vector"},
-                        }
-                    ),
-                    parameter_fields=[
-                        ParameterField(name='fan_in', type='int', default=2)
-                    ],
-                    category="Custom",
-                    override_reason="Synthetic fixture constructor",
-                ),
-            )
+def test_registry_exports_external_dynamic_port_policy_in_current_definition() -> None:
+    module = ModuleType("test_dynamic_policy_owner")
+
+    class VariableFanIn(Component):
+        fan_in: int = 2
+        ports: ClassVar = Ports(
+            inputs={},
+            outputs={"output": PortType(dtype="vector")},
+            dynamic=DynamicPortPolicy(
+                count_param="fan_in",
+                count_mode="integer",
+                direction="input",
+                fixed_output_ports=["output"],
+                generated_name_template="source_{index}",
+                dynamic_port_type=PortType(dtype="vector"),
+            ),
         )
-    )
+
+        def __call__(self, inputs, state, *, key):
+            return {"output": sum(inputs.values())}, state
+
+    VariableFanIn.__module__ = module.__name__
+    module.VariableFanIn = VariableFanIn
+    direct = VariableFanIn(fan_in=3)
+    assert direct.input_ports == ("source_0", "source_1", "source_2")
+    registry = ComponentRegistry()
+    registry.ingest(ComponentPack(namespace="example", modules=(module,)))
 
     definition = next(item for item in registry.list_all() if item.name == "example.VariableFanIn")
     payload = definition.model_dump(mode="json")
@@ -154,7 +154,7 @@ def test_component_definition_v2_migrates_to_optional_dynamic_port_policy() -> N
     payload = {
         "schema_id": COMPONENT_DEFINITION_SCHEMA_ID,
         "schema_version": COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
-        "name": "StaticLegacy",
+        "name": "Gain",
         "category": "Test",
         "description": "A v2 definition without a dynamic-port policy.",
     }
@@ -163,7 +163,8 @@ def test_component_definition_v2_migrates_to_optional_dynamic_port_policy() -> N
     definition = ComponentDefinition.model_validate(result.payload)
 
     assert [record.migration_id for record in result.migration_records] == [
-        COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID
+        COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
+        "component-definition-v3-to-v4-component-revisions",
     ]
     assert definition.schema_version == COMPONENT_DEFINITION_SCHEMA_VERSION
     assert definition.dynamic_port_policy is None
@@ -323,13 +324,13 @@ def test_component_definition_rejects_unknown_schema_version() -> None:
         )
 
 
-def test_component_definition_v1_migration_records_v2_then_v3() -> None:
+def test_component_definition_v1_migration_records_all_format_steps() -> None:
     result = default_spec_registry.migrate(
         "ComponentDefinition",
         {
             "schema_id": COMPONENT_DEFINITION_SCHEMA_ID,
             "schema_version": COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
-            "name": "LegacyDefinition",
+            "name": "Gain",
             "category": "Test",
             "description": "Legacy schema.",
         },
@@ -338,6 +339,7 @@ def test_component_definition_v1_migration_records_v2_then_v3() -> None:
     assert [record.migration_id for record in result.migration_records] == [
         COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID,
         COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID,
+        "component-definition-v3-to-v4-component-revisions",
     ]
     assert result.payload["schema_version"] == COMPONENT_DEFINITION_SCHEMA_VERSION
 

@@ -46,7 +46,7 @@ from feedbax.mechanics.solver_config import resolve_acausal_solver
 
 
 if TYPE_CHECKING:
-    from feedbax.component_registry import DeclaredComponent
+    from feedbax.component_registry.declarations import DeclaredComponent
 
 _ACTUATION_ELEMENT_TYPES = {
     FORCE_PAYLOAD: "ForceSource",
