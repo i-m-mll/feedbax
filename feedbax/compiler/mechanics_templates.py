@@ -24,25 +24,25 @@ def point_mass_template_graph(params: dict[str, Any] | None = None) -> AcausalGr
     return AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="MechanicsGround"),
+            "wall": ComponentSpec(type="feedbax.MechanicsGround"),
             "mass": ComponentSpec(
-                type="MechanicsMass",
+                type="feedbax.MechanicsMass",
                 params={"mass": float(params["mass"])},
             ),
             "damper": ComponentSpec(
-                type="MechanicsLinearDamper",
+                type="feedbax.MechanicsLinearDamper",
                 params={"damping": float(params["damping"])},
             ),
             "force": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={"port_name": "force", "source_kind": "force"},
             ),
             "position": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "position", "quantity": "position"},
             ),
             "velocity": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "velocity", "quantity": "velocity"},
             ),
         },
@@ -69,29 +69,29 @@ def mass_spring_damper_template_graph(
     return AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="MechanicsGround"),
+            "wall": ComponentSpec(type="feedbax.MechanicsGround"),
             "mass": ComponentSpec(
-                type="MechanicsMass",
+                type="feedbax.MechanicsMass",
                 params={"mass": float(params["mass"])},
             ),
             "spring": ComponentSpec(
-                type="MechanicsLinearSpring",
+                type="feedbax.MechanicsLinearSpring",
                 params={"stiffness": float(params["stiffness"])},
             ),
             "damper": ComponentSpec(
-                type="MechanicsLinearDamper",
+                type="feedbax.MechanicsLinearDamper",
                 params={"damping": float(params["damping"])},
             ),
             "force": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={"port_name": "force", "source_kind": "force"},
             ),
             "position": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "position", "quantity": "position"},
             ),
             "velocity": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "velocity", "quantity": "velocity"},
             ),
         },
@@ -121,29 +121,29 @@ def point_mass_with_muscles_template_graph(
     return AcausalGraphSpec(
         physical_domain="translational",
         nodes={
-            "wall": ComponentSpec(type="MechanicsGround"),
+            "wall": ComponentSpec(type="feedbax.MechanicsGround"),
             "mass": ComponentSpec(
-                type="MechanicsMass",
+                type="feedbax.MechanicsMass",
                 params={"mass": float(params["mass"])},
             ),
             "damper": ComponentSpec(
-                type="MechanicsLinearDamper",
+                type="feedbax.MechanicsLinearDamper",
                 params={"damping": float(params["damping"])},
             ),
             "flexor": ComponentSpec(
-                type="RigidTendonHillMuscle",
+                type="feedbax.RigidTendonHillMuscle",
                 params={"max_isometric_force": fmax, "direction": 1.0},
             ),
             "extensor": ComponentSpec(
-                type="RigidTendonHillMuscle",
+                type="feedbax.RigidTendonHillMuscle",
                 params={"max_isometric_force": fmax, "direction": -1.0},
             ),
             "position": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "position", "quantity": "position"},
             ),
             "velocity": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "velocity", "quantity": "velocity"},
             ),
         },
@@ -182,7 +182,7 @@ def two_link_arm_6muscle_template_graph(
 
     muscle_nodes = {
         f"muscle_{index}": ComponentSpec(
-            type="MusclePath",
+            type="feedbax.MusclePath",
             params={
                 "path_points": [
                     {"frame": "world.frame", "offset": [0.0, 0.0]},
@@ -201,13 +201,13 @@ def two_link_arm_6muscle_template_graph(
         schema_version=ACAUSAL_GRAPH_SCHEMA_VERSION,
         physical_domain="planar_multibody",
         nodes={
-            "world": ComponentSpec(type="WorldFrame"),
+            "world": ComponentSpec(type="feedbax.WorldFrame"),
             "anchor": ComponentSpec(
-                type="Anchor",
+                type="feedbax.Anchor",
                 params={"world_frame": "world.frame", "frame": "upper.proximal"},
             ),
             "shoulder": ComponentSpec(
-                type="RevoluteJoint",
+                type="feedbax.RevoluteJoint",
                 params={
                     "parent_frame": "world.frame",
                     "child_frame": "upper.proximal",
@@ -215,7 +215,7 @@ def two_link_arm_6muscle_template_graph(
                 },
             ),
             "elbow": ComponentSpec(
-                type="RevoluteJoint",
+                type="feedbax.RevoluteJoint",
                 params={
                     "parent_frame": "upper.distal",
                     "child_frame": "forearm.proximal",
@@ -223,7 +223,7 @@ def two_link_arm_6muscle_template_graph(
                 },
             ),
             "upper": ComponentSpec(
-                type="PlanarLink",
+                type="feedbax.PlanarLink",
                 params={
                     "length": float(lengths[0]),
                     "mass": float(masses[0]),
@@ -232,7 +232,7 @@ def two_link_arm_6muscle_template_graph(
                 },
             ),
             "forearm": ComponentSpec(
-                type="PlanarLink",
+                type="feedbax.PlanarLink",
                 params={
                     "length": float(lengths[1]),
                     "mass": float(masses[1]),
@@ -242,22 +242,22 @@ def two_link_arm_6muscle_template_graph(
             ),
             **muscle_nodes,
             "excitation": ComponentSpec(
-                type="ActuationInput",
+                type="feedbax.ActuationInput",
                 params={
                     "port_name": "excitation",
                     "source_kind": "muscle_excitation_vector",
                 },
             ),
             "effector": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "effector", "quantity": "effector"},
             ),
             "state": ComponentSpec(
-                type="SensorOutput",
+                type="feedbax.SensorOutput",
                 params={"port_name": "state", "quantity": "state"},
             ),
             "effector_marker": ComponentSpec(
-                type="PointMarker",
+                type="feedbax.PointMarker",
                 params={
                     "frame": "forearm.distal",
                     "offset": [0.0, 0.0],

@@ -303,13 +303,15 @@ def graph_port_contract(graph, *, registry=None) -> Ports:
             {name: payload.port_type() for name, payload in interface.input_payloads.items()},
             {name: signal_port_type() for name in interface.output_ports},
         )
+    if not graph.input_bindings and not graph.output_bindings:
+        return Ports({}, {})
     if registry is None:
         raise ValueError("Causal template port projection requires its compiled registry")
 
     def boundary(bindings, direction):
         result = {}
         for public, (node_id, port) in bindings.items():
-            if node_id in graph.subgraphs:
+            if node_id in (graph.subgraphs or {}):
                 nested = graph_port_contract(graph.subgraphs[node_id], registry=registry)
                 result[public] = getattr(nested, direction)[port]
             else:

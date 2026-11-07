@@ -34,7 +34,12 @@ ACTUATION_PAYLOADS = {
     "prescribed_motion": PRESCRIBED_MOTION_PAYLOAD,
     "muscle_excitation_vector": MUSCLE_EXCITATION_PAYLOAD,
 }
-SIGNAL_INPUT_PAYLOADS = {"RigidTendonHillMuscle": ACTIVATION_PAYLOAD}
+SIGNAL_INPUT_PAYLOADS = {"RigidTendonHillMuscle": ACTIVATION_PAYLOAD, "feedbax.RigidTendonHillMuscle": ACTIVATION_PAYLOAD}
+
+
+def is_acausal_type(type_id: str, builtin: str) -> bool:
+    """Match a fixed built-in compiler role in authored or canonical input."""
+    return type_id in (builtin, f"feedbax.{builtin}")
 
 
 def actuation_source_payload(node: ComponentSpec) -> SourcePayload:
@@ -105,7 +110,7 @@ def _adapter_ports(
 ) -> dict[str, str]:
     entries: list[tuple[int, str, str]] = []
     for node_id, node in graph.nodes.items():
-        if node.type != component_type:
+        if not is_acausal_type(node.type, component_type):
             continue
         params = dict(node.params)
         port_name = _param_string(params, "port_name", default_port_name)
@@ -204,7 +209,7 @@ def normalize_acausal_interfaces_for_graph(graph: GraphSpec) -> GraphSpec:
             normalized = normalize_acausal_graph_interfaces(subgraph)
             normalized_subgraphs[node_id] = normalized
             node = nodes.get(node_id)
-            if node is not None and node.type == ACAUSAL_SYSTEM_TYPE:
+            if node is not None and is_acausal_type(node.type, ACAUSAL_SYSTEM_TYPE):
                 interface = derive_acausal_interface(normalized)
                 nodes[node_id] = node.model_copy(
                     update={
