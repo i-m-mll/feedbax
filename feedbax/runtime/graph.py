@@ -51,8 +51,8 @@ def init_state_from_component(component: "Component") -> State:
 
     return State(component)
 
-class Component(Module):
-    """Base class for all graph nodes."""
+class GraphNode(Module):
+    """Executable graph node, without a promise of portable reconstruction."""
 
     input_ports: ClassVar[tuple[str, ...]] = ()
     output_ports: ClassVar[tuple[str, ...]] = ()
@@ -131,6 +131,32 @@ class Component(Module):
             if hasattr(state_value, port):
                 outputs[port] = attrgetter(port)(state_value)
         return outputs
+
+
+class Component(GraphNode):
+    """An executable node with a reconstructible typed configuration."""
+
+    config: ClassVar[type | None] = None
+    config_bindings: ClassVar[tuple] = ()
+    ports: ClassVar[object | None] = None
+    component_options: ClassVar[object | None] = None
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        from feedbax.contracts.portable import install_ports
+
+        install_ports(cls)
+
+    @classmethod
+    def from_config(cls, config, **context):
+        """Materialize the typed authoring configuration."""
+        return cls(**{name: getattr(config, name) for name in type(config).model_fields}, **context)
+
+    def configuration(self):
+        """Read effective construction values, including retained reset payloads."""
+        from feedbax.contracts.portable import extract_configuration
+
+        return extract_configuration(self)
 
 
 
@@ -264,7 +290,7 @@ class ComponentBinding:
     authored_arrays: tuple[AuthoredArrayEncoding, ...] = dataclasses.field(default=(), repr=False)
 
 
-class Graph(Component):
+class Graph(GraphNode):
     """A computational graph of components."""
 
     # All fields must have defaults to avoid ordering issues with ClassVar
@@ -291,8 +317,8 @@ class Graph(Component):
 
     def _validate_graph(self) -> None:
         for name in self.nodes:
-            if not isinstance(self.nodes[name], Component):
-                raise TypeError(f"Node '{name}' is not a Component")
+            if not isinstance(self.nodes[name], GraphNode):
+                raise TypeError(f"Node '{name}' is not a GraphNode")
 
         for wire in self.wires:
             if wire.source_node not in self.nodes:

@@ -79,8 +79,7 @@ def _unsupported_declared_builder(component_type: str) -> ComponentBuilder:
     return _builder
 
 
-class MissingPrototypeInput(ValueError):
-    """An output prototype needs an input prototype not yet known."""
+from feedbax.contracts.portable import MissingPrototypeInput
 
 
 class ComponentParamValidationError(DynamicPortPolicyError):
@@ -318,6 +317,7 @@ class ComponentParamContract:
     projection: ComponentParamProjection | None = None
     extractor: ComponentParamExtractor | None = None
     override_reason: str | None = None
+    portable: bool = False
 
     @property
     def param_schema(self) -> tuple[ParamSchema, ...]:
@@ -388,6 +388,9 @@ class ComponentParamContract:
     def build_resolved(self, params: Mapping[str, Any]) -> "Component":
         """Construct canonical compiler parameters without reapplying their schema."""
         values = dict(params)
+        if self.portable:
+            context = {name: values.pop(name) for name in tuple(values) if name in self.build_context_fields}
+            return self.runtime_type.from_config(self.model.model_construct(**values), **context)
         if self.builder is not None:
             return self.builder(values)
         if self.runtime_type is None:
@@ -436,6 +439,8 @@ class ComponentParamContract:
         return self.runtime_type(**constructor_values)
 
     def extract(self, component: "Component") -> BaseModel:
+        if self.portable:
+            return component.configuration()
         empty = self.model.model_construct()
         if self.extractor is not None:
             return self.extractor(component, empty)
@@ -482,13 +487,7 @@ class ComponentDeclaration:
             raise ValueError("component declaration identities and owner must be non-empty")
 
 
-@dataclass(frozen=True)
-class InputPrototypeParameter:
-    """A constructor parameter constrained by one input port's prototype."""
-
-    port: str
-    parameter: str
-    resolve: Callable[[Mapping[str, Any], Any | None], Any]
+from feedbax.contracts.portable import InputPrototypeParameter
 
 
 @dataclass(frozen=True)
