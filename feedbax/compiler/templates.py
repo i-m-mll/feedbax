@@ -29,8 +29,6 @@ from feedbax.runtime.feedback import (
 )
 
 
-
-
 def recurrent_zero_initializer(
     width: int | None = None, *, state_slot: str, dtype: str | None = None
 ) -> dict[str, Any]:
@@ -469,11 +467,17 @@ __all__ = [
 ]
 
 
-
 from pydantic import BaseModel, ConfigDict, Field
-from feedbax.contracts.portable import GraphTemplate, ComponentOptions, expansion_configuration, validate_authoring
+from feedbax.contracts.portable import (
+    GraphTemplate,
+    ComponentOptions,
+    expansion_configuration,
+    validate_authoring,
+)
 
-_RecurrentConfig = expansion_configuration(recurrent_controller_template_graph, exclude=("population_structure",))
+_RecurrentConfig = expansion_configuration(
+    recurrent_controller_template_graph, exclude=("population_structure",)
+)
 
 
 class RecurrentControllerConfig(_RecurrentConfig):
@@ -501,7 +505,12 @@ class RecurrentController(GraphTemplate):
     """Explicit Mux, recurrent cell, and readout controller graph."""
 
     config = RecurrentControllerConfig
-    component_options = ComponentOptions(is_composite=True, trainable_by_default=True, template_id="feedbax.templates.recurrent_controller", template_kind="executable")
+    component_options = ComponentOptions(
+        is_composite=True,
+        trainable_by_default=True,
+        template_id="feedbax.templates.recurrent_controller",
+        template_kind="executable",
+    )
 
     @classmethod
     def expand(cls, config):
@@ -512,7 +521,12 @@ class SimpleFeedbackLoop(GraphTemplate):
     """Feedback channel, controller, efferent path, and mechanics loop."""
 
     config = SimpleFeedbackConfig
-    component_options = ComponentOptions(is_composite=True, trainable_by_default=True, template_id="feedbax.templates.simple_feedback", template_kind="executable")
+    component_options = ComponentOptions(
+        is_composite=True,
+        trainable_by_default=True,
+        template_id="feedbax.templates.simple_feedback",
+        template_kind="executable",
+    )
 
     @classmethod
     def expand(cls, config):

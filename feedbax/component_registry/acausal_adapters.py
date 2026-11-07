@@ -14,5 +14,11 @@ def acausal_component_pack() -> ComponentPack:
     return ComponentPack(
         namespace="feedbax",
         modules=(boundaries, mechanics, multibody, rotational, translational),
-        histories={**boundaries_history, **mechanics_history, **multibody_history, **rotational_history, **translational_history},
+        histories={
+            **boundaries_history,
+            **mechanics_history,
+            **multibody_history,
+            **rotational_history,
+            **translational_history,
+        },
     )

@@ -3,9 +3,18 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from feedbax.contracts.portable import ComponentOwner, ComponentOptions, Ports, validate_configuration
+from feedbax.contracts.portable import (
+    ComponentOwner,
+    ComponentOptions,
+    Ports,
+    validate_configuration,
+)
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
-from feedbax.contracts.acausal_interface import conserving_port_type, signal_port_type, FORCE_PAYLOAD
+from feedbax.contracts.acausal_interface import (
+    conserving_port_type,
+    signal_port_type,
+    FORCE_PAYLOAD,
+)
 
 
 @dataclass
@@ -17,7 +26,9 @@ class ActuationInput(ComponentOwner):
     ports = Ports({"u": FORCE_PAYLOAD.port_type(), "flange": conserving_port_type()}, {})
     port_name: str = "u"
     order: int = 0
-    source_kind: Literal["force", "torque", "prescribed_motion", "muscle_excitation_vector"] = "force"
+    source_kind: Literal["force", "torque", "prescribed_motion", "muscle_excitation_vector"] = (
+        "force"
+    )
     units: str | None = None
 
 
@@ -30,7 +41,9 @@ class SensorOutput(ComponentOwner):
     ports = Ports({"flange": conserving_port_type()}, {"y": signal_port_type()})
     port_name: str = "y"
     order: int = 0
-    quantity: Literal["position", "velocity", "force", "torque", "angle", "angular_velocity"] = "position"
+    quantity: Literal["position", "velocity", "force", "torque", "angle", "angular_velocity"] = (
+        "position"
+    )
     units: str | None = None
 
 

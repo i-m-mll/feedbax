@@ -175,13 +175,13 @@ def test_thelen_graph_rollout_and_roundtrip_match_independent_muscles(key):
     spec = GraphSpec(
         nodes={
             "muscle": ComponentSpec(
-                type="RigidTendonHillMuscleThelen",
+                type="feedbax.RigidTendonHillMuscleThelen",
                 params={**params, "n_muscles": 2},
                 input_ports=list(inputs),
                 output_ports=output_ports,
             ),
             "delay": ComponentSpec(
-                type="Channel",
+                type="feedbax.Channel",
                 params={"delay": 1, "add_noise": False},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -293,8 +293,7 @@ class TestThelenMuscle:
             out_con, state_con = thelen_muscle(inputs_con, state_con, key=key)
 
         assert out_con["force"] < out_iso["force"], (
-            f"Concentric force {out_con['force']} should be less than "
-            f"isometric {out_iso['force']}"
+            f"Concentric force {out_con['force']} should be less than isometric {out_iso['force']}"
         )
 
     def test_fv_eccentric_increases_force(self, thelen_muscle, key):
@@ -320,8 +319,7 @@ class TestThelenMuscle:
             out_ecc, state_ecc = thelen_muscle(inputs_ecc, state_ecc, key=key)
 
         assert out_ecc["force"] > out_iso["force"], (
-            f"Eccentric force {out_ecc['force']} should exceed "
-            f"isometric {out_iso['force']}"
+            f"Eccentric force {out_ecc['force']} should exceed isometric {out_iso['force']}"
         )
 
     def test_force_positive(self, thelen_muscle, key):
@@ -378,9 +376,7 @@ class TestPointMassRadialGeometry:
         for i in range(4):
             d_pos = geom.directions[2 * i]
             d_neg = geom.directions[2 * i + 1]
-            assert jnp.allclose(d_pos + d_neg, 0.0, atol=1e-5), (
-                f"Pair {i}: directions not opposite"
-            )
+            assert jnp.allclose(d_pos + d_neg, 0.0, atol=1e-5), f"Pair {i}: directions not opposite"
 
     def test_equal_forces_cancel(self):
         """Equal forces in both directions of a pair should cancel."""
@@ -406,20 +402,20 @@ class TestPointMassRadialGeometry:
 class TestArm6MuscleRigidTendon:
     @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
     def test_wrapping_virtual_work(self, key, dtype):
-        geometry = TwoLinkArmMuscleGeometry((
-            WrappingGeometry(
-                wrap_radius=0.02,
-                attachment_distances=jnp.array([0.12, 0.13], dtype=dtype),
-                reference_length=0.2,
-                joint_index=1,
-            ),
-        ))
+        geometry = TwoLinkArmMuscleGeometry(
+            (
+                WrappingGeometry(
+                    wrap_radius=0.02,
+                    attachment_distances=jnp.array([0.12, 0.13], dtype=dtype),
+                    reference_length=0.2,
+                    joint_index=1,
+                ),
+            )
+        )
         arm = Arm6MuscleRigidTendon(geometry=geometry)
         state = init_state_from_component(arm)
         angular_velocities = jnp.array([-0.2, 0.4], dtype=dtype)
-        poses = jnp.array(
-            [[0.1, q] for q in (0.3, -0.3, 0.005, -0.005, 0.0)], dtype=dtype
-        )
+        poses = jnp.array([[0.1, q] for q in (0.3, -0.3, 0.005, -0.005, 0.0)], dtype=dtype)
 
         @jax.jit
         @jax.vmap
@@ -448,8 +444,10 @@ class TestArm6MuscleRigidTendon:
         assert jnp.all(forces > 0)
         assert jnp.allclose(velocities, length_rates, atol=1e-5)
         assert jnp.allclose(
-            torques @ angular_velocities, -jnp.sum(forces * length_rates, axis=-1),
-            rtol=2e-3, atol=1e-6,
+            torques @ angular_velocities,
+            -jnp.sum(forces * length_rates, axis=-1),
+            rtol=2e-3,
+            atol=1e-6,
         )
 
     def test_100_steps_no_nan(self, arm_template, key):
@@ -515,9 +513,7 @@ class TestArm6MuscleRigidTendon:
             outputs, state = arm_template(inputs, state, key=key)
 
         torques = outputs["torques"]
-        assert jnp.any(jnp.abs(torques) > 1e-3), (
-            f"Expected nonzero torques, got {torques}"
-        )
+        assert jnp.any(jnp.abs(torques) > 1e-3), f"Expected nonzero torques, got {torques}"
 
 
 class TestPointMass8MuscleRelu:
@@ -564,9 +560,7 @@ class TestPointMass8MuscleRelu:
             outputs, state = pointmass_template(inputs, state, key=key)
 
         force_2d = outputs["force_2d"]
-        assert jnp.allclose(force_2d, 0.0, atol=1.0), (
-            f"Expected near-zero force, got {force_2d}"
-        )
+        assert jnp.allclose(force_2d, 0.0, atol=1.0), f"Expected near-zero force, got {force_2d}"
 
     def test_asymmetric_excitation_produces_force(self, pointmass_template, key):
         """Asymmetric excitation should produce nonzero net force."""
@@ -579,9 +573,7 @@ class TestPointMass8MuscleRelu:
             outputs, state = pointmass_template(inputs, state, key=key)
 
         force_2d = outputs["force_2d"]
-        assert jnp.linalg.norm(force_2d) > 1.0, (
-            f"Expected nonzero force, got {force_2d}"
-        )
+        assert jnp.linalg.norm(force_2d) > 1.0, f"Expected nonzero force, got {force_2d}"
 
 
 # ============================================================================

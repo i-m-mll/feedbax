@@ -17,9 +17,10 @@ from feedbax.contracts.graph import (
 )
 
 
-
 def _node(type_: str, inputs: list[str], outputs: list[str], **params) -> ComponentSpec:
-    return ComponentSpec(type=f"feedbax.{type_}", params=params, input_ports=inputs, output_ports=outputs)
+    return ComponentSpec(
+        type=f"feedbax.{type_}", params=params, input_ports=inputs, output_ports=outputs
+    )
 
 
 def _wire(src: str, output: str, dst: str, input_: str, **kwargs) -> WireSpec:
@@ -219,7 +220,6 @@ def cde_controller_spec(
     )
 
 
-
 from pydantic import Field
 from feedbax.contracts.portable import GraphTemplate, ComponentOptions, expansion_configuration
 
@@ -242,7 +242,9 @@ class CDEStandard(GraphTemplate):
     """CDE update from observation increments with a sigmoid action readout."""
 
     config = _CDEConfig
-    component_options = ComponentOptions(is_composite=True, template_id="feedbax.templates.cde_standard", template_kind="executable")
+    component_options = ComponentOptions(
+        is_composite=True, template_id="feedbax.templates.cde_standard", template_kind="executable"
+    )
 
     @classmethod
     def expand(cls, config):
@@ -253,18 +255,26 @@ class CDEDecay(CDEStandard):
     """CDE with fixed hidden-state decay."""
 
     config = _DecayConfig
-    component_options = ComponentOptions(is_composite=True, template_id="feedbax.templates.cde_decay", template_kind="executable")
+    component_options = ComponentOptions(
+        is_composite=True, template_id="feedbax.templates.cde_decay", template_kind="executable"
+    )
 
 
 class CDEAntiNF(CDEStandard):
     """CDE with GRU-gated negative feedback."""
 
     config = _AntiNFConfig
-    component_options = ComponentOptions(is_composite=True, template_id="feedbax.templates.cde_anti_nf", template_kind="executable")
+    component_options = ComponentOptions(
+        is_composite=True, template_id="feedbax.templates.cde_anti_nf", template_kind="executable"
+    )
 
 
 class CDEHybridV9b(CDEStandard):
     """CDE with fixed decay and GRU-gated negative feedback."""
 
     config = _HybridConfig
-    component_options = ComponentOptions(is_composite=True, template_id="feedbax.templates.cde_hybrid_v9b", template_kind="executable")
+    component_options = ComponentOptions(
+        is_composite=True,
+        template_id="feedbax.templates.cde_hybrid_v9b",
+        template_kind="executable",
+    )

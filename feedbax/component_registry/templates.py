@@ -8,7 +8,11 @@ def builtin_graph_template_pack() -> ComponentPack:
     from feedbax.compiler.mechanics_templates_history import HISTORIES as mechanics_history
     from feedbax.compiler.templates_history import HISTORIES as graph_history
 
-    return ComponentPack(namespace="feedbax", modules=(templates, mechanics_templates), histories={**mechanics_history, **graph_history})
+    return ComponentPack(
+        namespace="feedbax",
+        modules=(templates, mechanics_templates),
+        histories={**mechanics_history, **graph_history},
+    )
 
 
 def builtin_muscle_template_pack() -> ComponentPack:

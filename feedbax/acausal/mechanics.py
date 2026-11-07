@@ -26,6 +26,7 @@ class RigidTendonHillMuscle(AcausalElement):
     causal activation signal input. C2 can replace it with a decomposed interior
     once multibody links, joints, and path geometry exist.
     """
+
     component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
     source_payload = ACTIVATION_PAYLOAD
