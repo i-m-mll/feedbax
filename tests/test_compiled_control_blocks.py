@@ -25,7 +25,7 @@ def test_compiled_control_blocks_run_on_float16_vectors() -> None:
     controls = GraphSpec(
         nodes={
             name: ComponentSpec(
-                type=name,
+                type=f"feedbax.{name}",
                 params={"n_dims": 2, **params},
                 input_ports=[port],
                 output_ports=["output"],
@@ -40,10 +40,13 @@ def test_compiled_control_blocks_run_on_float16_vectors() -> None:
     spec = GraphSpec(
         nodes={
             "a_controls": ComponentSpec(
-                type="Subgraph", input_ports=list(blocks), output_ports=list(blocks)
+                type="feedbax.Subgraph", input_ports=list(blocks), output_ports=list(blocks)
             ),
             "z_source": ComponentSpec(
-                type="Gain", params={"gain": 1.0}, input_ports=["input"], output_ports=["output"]
+                type="feedbax.Gain",
+                params={"gain": 1.0},
+                input_ports=["input"],
+                output_ports=["output"],
             ),
         },
         subgraphs={"a_controls": controls},
@@ -98,13 +101,13 @@ def test_compiled_control_rejects_late_incompatible_prototype(shape, dtype, obse
     spec = GraphSpec(
         nodes={
             "a_delay": ComponentSpec(
-                type="UnitDelay",
+                type="feedbax.UnitDelay",
                 params={"n_dims": 2, "input_dtype": "float16"},
                 input_ports=["input"],
                 output_ports=["output"],
             ),
             "z_source": ComponentSpec(
-                type="Gain",
+                type="feedbax.Gain",
                 params={"gain": 2.0},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -148,3 +151,47 @@ def test_programmatic_pid_unbounded_limits_survive_serialization() -> None:
     ).graph
     assert restored.nodes["continuous"].integral_limit == float("inf")
     assert restored.nodes["discrete"].output_limit == float("inf")
+
+
+@pytest.mark.parametrize(
+    "component_name, input_port",
+    [
+        ("PID", "error"),
+        ("PIDDiscrete", "error"),
+        ("Channel", "input"),
+        ("AddNoise", "input"),
+        ("Activation", "input"),
+    ],
+)
+def test_default_python_construction_matches_graphspec(component_name, input_port) -> None:
+    from feedbax.control import pid
+    from feedbax.runtime import channel, components, signal_transforms
+
+    owner = next(
+        getattr(module, component_name)
+        for module in (pid, channel, components, signal_transforms)
+        if hasattr(module, component_name)
+    )
+    direct = owner()
+    registry = ComponentRegistry()
+    spec = GraphSpec(
+        nodes={"block": ComponentSpec(type=f"feedbax.{component_name}")},
+        input_ports=["signal"],
+        input_bindings={"signal": ("block", input_port)},
+        output_ports=["output"],
+        output_bindings={"output": ("block", "output")},
+    )
+    compiled = compile_graph(
+        GraphDocument(graph=spec),
+        registry,
+        input_prototypes={("__graph__", "signal"): jnp.zeros(1)},
+    ).graph
+    direct_type, direct_values, direct_revision = registry.serialize_component(direct)
+    actual_type, actual_values, actual_revision = registry.serialize_component(
+        compiled.nodes["block"]
+    )
+    assert (actual_type, actual_revision, actual_values) == (
+        direct_type,
+        direct_revision,
+        direct_values,
+    )

@@ -81,4 +81,14 @@ def array_input_configuration(component):
         for name in model.model_fields
         if name not in {"input_shape", "input_dtype"}
     }
-    return {**values, **prototype_params(component.input_proto)}
+    try:
+        prototype = component.input_proto
+    except AttributeError as exc:
+        raise ValueError(
+            f"{type(component).__name__} reset payload was stripped by make_with_state; preserve initial payloads for export"
+        ) from exc
+    if not hasattr(prototype, "shape"):
+        raise ValueError(
+            f"{type(component).__name__} needs a retained single-array reset prototype; make_with_state strips reset data"
+        )
+    return {**values, **prototype_params(prototype)}

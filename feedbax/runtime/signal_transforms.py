@@ -245,10 +245,12 @@ def _vector_intervention_configuration(
     *,
     payload_field: str,
 ) -> BaseModel:
-    params = cast(
-        ConstantInputParams | NetworkValueParams,
-        cast(_VectorTransform, component).params_index.init,
-    )
+    index = cast(_VectorTransform, component).params_index
+    if not isinstance(index.init, (ConstantInputParams, NetworkValueParams)):
+        raise ValueError(
+            f"{type(component).__name__} reset payload was stripped by make_with_state; preserve initial payloads for export"
+        )
+    params = cast(ConstantInputParams | NetworkValueParams, index.init)
     payload = getattr(params, payload_field)
     values: dict[str, Any] = {
         "active": params.active,
