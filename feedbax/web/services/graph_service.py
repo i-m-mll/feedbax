@@ -383,7 +383,7 @@ class GraphService:
         with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
         canonical_json_v2_bytes(data)
-        data = migrate_graph_project_payload(data)
+        data = migrate_graph_project_payload(data, component_registry=component_registry)
         project = normalize_project_for_studio_authoring(
             GraphProject.model_validate(data),
             component_registry=component_registry,

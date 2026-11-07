@@ -4,7 +4,7 @@ Acausal components are construction-time equation descriptors (plain Python
 dataclasses) that get compiled into a single ``vector_field(t, y, args)``
 at ``__init__`` time.  The resulting ``AcausalSystem`` is a standard
 ``DAEComponent`` that the feedbax Graph treats like any other component.
-Durable acausal identity belongs to ``feedbax.spec.acausal_graph.v1`` contract
+Durable acausal identity belongs to ``feedbax.spec.acausal_graph.v2`` contract
 payloads, not to these runtime construction objects.
 
 Domains

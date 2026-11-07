@@ -48,7 +48,7 @@ const registry = new Map<string, ComponentDefinition>([
 function acausalGraph(): AcausalGraphSpec {
   return {
     schema_id: 'feedbax.spec.acausal_graph',
-    schema_version: 'feedbax.spec.acausal_graph.v1',
+    schema_version: 'feedbax.spec.acausal_graph.v2',
     physical_domain: 'translational',
     solver: { solver_type: 'implicit_euler', dt: 0.01 },
     nodes: {

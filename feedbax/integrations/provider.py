@@ -1114,7 +1114,10 @@ def validate_graph_spec(
     migration_records: list[ArtifactMigrationRecord] = []
     parsed: GraphSpec | None = None
     try:
-        migrated = migrate_graph_spec(payload)
+        migrated = migrate_graph_spec(
+            payload, component_registry=component_registry,
+            historical_unversioned=historical_unversioned,
+        )
         migration_records = migrated.migration_records
         parsed = GraphSpec.model_validate(migrated.payload)
         spec = normalize_graph_for_studio_authoring(
@@ -1326,7 +1329,7 @@ def validate_graph_spec_manifest(
         manifest_obj = manifest
 
     try:
-        load_result = load_graph_spec_from_manifest(manifest_obj)
+        load_result = load_graph_spec_from_manifest(manifest_obj, component_registry=component_registry)
     except UnsupportedSpecVersion as exc:
         return ProviderValidationResult(
             valid=False,
@@ -1337,6 +1340,16 @@ def validate_graph_spec_manifest(
                     location={"path": "/graph_spec/schema_version"},
                 )
             ],
+            migration_status="rejected",
+        )
+    except UnsupportedComponentMigration as exc:
+        return ProviderValidationResult(
+            valid=False,
+            errors=[ValidationIssue(
+                type="unsupported_component_migration",
+                message=str(exc),
+                location={"path": "/graph_spec"},
+            )],
             migration_status="rejected",
         )
     except (TypeError, ValueError, FileNotFoundError) as exc:

@@ -59,7 +59,7 @@ function graphFixture(hiddenSize: number) {
     subgraphs: {
       system: {
         schema_id: 'feedbax.spec.acausal_graph',
-        schema_version: 'feedbax.spec.acausal_graph.v1',
+        schema_version: 'feedbax.spec.acausal_graph.v2',
         physical_domain: 'translational',
         nodes: {},
         connections: [],

@@ -75,7 +75,7 @@ describe('graph authoring normalization', () => {
   it('preserves acausal interiors both as active graphs and inside causal graphs', () => {
     const interior: AcausalGraphSpec = {
       schema_id: 'feedbax.spec.acausal_graph',
-      schema_version: 'feedbax.spec.acausal_graph.v1',
+      schema_version: 'feedbax.spec.acausal_graph.v2',
       physical_domain: 'translational',
       nodes: {
         mass: { type: 'feedbax.Mass', params: { mass: 2 }, input_ports: [], output_ports: [] },

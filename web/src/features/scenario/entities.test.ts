@@ -180,7 +180,7 @@ describe('scenario entity registry', () => {
   it('matches acausal canvas connection identity without fabricating causal selectors', () => {
     const interior: AcausalGraphSpec = {
       schema_id: 'feedbax.spec.acausal_graph',
-      schema_version: 'feedbax.spec.acausal_graph.v1',
+      schema_version: 'feedbax.spec.acausal_graph.v2',
       physical_domain: 'translational',
       nodes: {
         mass: { type: 'feedbax.Mass', params: {}, input_ports: [], output_ports: [] },

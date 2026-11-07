@@ -18,7 +18,6 @@ from feedbax.acausal import (
 )
 from feedbax.component_registry import ComponentPack, ComponentRegistry
 from feedbax.contracts.acausal import AcausalGraphSpec, SolverConfigSpec
-from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.acausal_compiler import (
@@ -670,7 +669,6 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
 
     spec = AcausalGraphSpec(
         schema_id="feedbax.spec.acausal_graph",
-        schema_version="feedbax.spec.acausal_graph.v1",
         physical_domain="rotational",
         nodes={
             "a": ComponentSpec(type="feedbax.Inertia", params={"inertia": 2.0}),
@@ -753,6 +751,9 @@ def test_persisted_v1_gear_has_reduced_report_and_physical_bound_outputs(nested,
     import json
 
     payload = json.loads(spec.model_dump_json())
+    payload["schema_version"] = "feedbax.spec.acausal_graph.v1"
+    for nested_payload in (payload.get("subgraphs") or {}).values():
+        nested_payload["schema_version"] = "feedbax.spec.acausal_graph.v1"
     loaded = AcausalGraphSpec.model_validate(migrate_acausal_graph_spec(payload).payload)
     report = compile_acausal_authoring_report(
         loaded, node_path=["plant"], component_registry=_registry()

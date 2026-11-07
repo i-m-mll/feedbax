@@ -12,7 +12,7 @@ import {
 function twoLinkArm(): AcausalGraphSpec {
   return {
     schema_id: 'feedbax.spec.acausal_graph',
-    schema_version: 'feedbax.spec.acausal_graph.v1',
+    schema_version: 'feedbax.spec.acausal_graph.v2',
     physical_domain: 'planar_multibody',
     nodes: {
       world: { type: 'feedbax.WorldFrame', params: {}, input_ports: ['frame'], output_ports: [] },
