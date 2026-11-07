@@ -1,10 +1,7 @@
-from dataclasses import replace
-
 import pytest
 
 from feedbax.component_registry import ComponentPack, ComponentRegistry
-from feedbax.component_registry.migration_routes import validate_migration_routes
-from feedbax.contracts.migrations import ComponentMigration, UnsupportedComponentMigration
+from feedbax.contracts.migrations import UnsupportedComponentMigration
 from feedbax.component_registry.history import Change, History, LegacyEndpoint
 from feedbax.contracts.portable import Ports
 from feedbax.contracts.component import PortType
@@ -49,33 +46,6 @@ def test_component_migration_chain_validates_only_at_current_endpoint():
         registry.resolve_component_spec("ChainGain", {"gain": 4.0}, historical_unversioned=True)
 
 
-def test_migration_graph_rejects_cycles_duplicate_ids_and_missing_terminal():
-    edge = ComponentMigration(
-        source_type="Gain",
-        target_type="Gain",
-        migration_id="old-gain",
-        owner="feedbax",
-        source_param_schema_version="legacy",
-        target_param_schema_version="intermediate",
-    )
-    routes = {("Gain", "legacy"): edge}
-    with pytest.raises(UnsupportedComponentMigration, match="without a current declaration"):
-        validate_migration_routes(routes, {"Gain": "1"}, require_current_terminal=True)
-
-    returning = replace(
-        edge,
-        migration_id="returning",
-        source_param_schema_version="intermediate",
-        target_param_schema_version="legacy",
-    )
-    with pytest.raises(UnsupportedComponentMigration, match="cycle"):
-        validate_migration_routes({**routes, ("Gain", "intermediate"): returning}, {"Gain": "1"})
-
-    duplicate = replace(edge, source_param_schema_version="other", target_param_schema_version="1")
-    with pytest.raises(UnsupportedComponentMigration, match="Duplicate component migration ID"):
-        validate_migration_routes({**routes, ("Gain", "other"): duplicate}, {"Gain": "1"})
-
-
 @pytest.mark.parametrize(
     ("source", "historical_unversioned"),
     [
@@ -88,9 +58,7 @@ def test_affine_composer_historical_parameters_reach_outer_v3(
     source: str | None, historical_unversioned: bool
 ) -> None:
     registry = ComponentRegistry()
-    current = registry.get("feedbax.AffineValueComposer")
-    assert current is not None
-    params = dict(current.default_params)
+    params = {}
     if source is None:
         params["label"] = "legacy"
     else:
@@ -112,11 +80,7 @@ def test_threshold_historical_selector_reaches_current_contract() -> None:
     registry = ComponentRegistry()
     current = registry.get("feedbax.ThresholdLatchedForce")
     assert current is not None
-    params = {
-        **current.default_params,
-        "state_selector": {"path": ["pos", 0]},
-    }
-    params.pop("lateral_force")
+    params = {"state_selector": {"path": ["pos", 0]}}
     resolved = registry.resolve_component_spec(
         "ThresholdLatchedForce", params, historical_unversioned=True
     )

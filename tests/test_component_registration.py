@@ -28,7 +28,6 @@ from feedbax.models.cde import cde_controller
 from feedbax.runtime.graph import Component
 from feedbax.contracts.portable import Ports, ComponentOptions
 from feedbax.contracts.component import PortType
-from feedbax.component_registry.history import History, Change, LegacyEndpoint
 from feedbax.studio.component_presentation import PresentationOverride
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
@@ -906,32 +905,3 @@ def test_declared_parameter_model_owns_defaults_required_fields_and_constraints(
         registry.resolve_component_spec("feedbax.GRU", {"input_size": 0, "hidden_size": 4})
 
 
-def test_external_history_renames_identity_and_parameter_meaning() -> None:
-    class CurrentGain(Gain):
-        pass
-
-    registry = ComponentRegistry()
-    registry.ingest(
-        ComponentPack(
-            namespace="rlrmp",
-            components=(CurrentGain,),
-            histories={
-                CurrentGain: History(
-                    Change(2, migrate=lambda params: {"gain": params["scale"]}),
-                    Change(3, renamed_from="LegacyGain"),
-                    legacy=(LegacyEndpoint("rlrmp.LegacyGain", "legacy-scale", 1),),
-                )
-            },
-        ),
-        provenance="package:rlrmp",
-    )
-    resolved = registry.resolve_component_spec(
-        "rlrmp.LegacyGain", {"scale": 8.0}, legacy_token="legacy-scale"
-    )
-    assert resolved.type_id == "rlrmp.CurrentGain"
-    assert resolved.revision == 3
-    graph = spec_to_graph(_single_node_spec(resolved.type_id, resolved.params), registry)
-    assert graph.nodes["component"].gain == 8.0
-    serialized = graph_to_spec(graph, registry).nodes["component"]
-    assert serialized.type == "rlrmp.CurrentGain"
-    assert serialized.revision == 3

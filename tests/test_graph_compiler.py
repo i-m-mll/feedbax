@@ -392,6 +392,10 @@ def test_migrated_component_semantics_are_the_executed_graph(nested: bool) -> No
     )
     assert float(outputs["output"]) == 24.0
     assert child.nodes["gain"].type == "example.LegacyGain"
+    exported = graph_to_spec(compiled.graph, registry)
+    exported_child = exported.subgraphs["nested"] if nested else exported
+    saved = exported_child.nodes["gain"]
+    assert (saved.type, saved.revision, saved.params) == ("example.ScaledGain", 2, {"gain": 8.0})
 
 
 def test_migrations_precede_inference_and_defaults_follow_derived_dimensions() -> None:
