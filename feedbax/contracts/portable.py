@@ -44,6 +44,7 @@ class ConfigBinding:
     path: str
     name: str | None = None
     group: type | None = None
+    argument: str | None = None
 
     def __post_init__(self):
         if (self.name is None) == (self.group is None):
@@ -55,8 +56,29 @@ class ConfigBinding:
             return {self.name: self.path}
         import dataclasses
 
-        names = (item.name for item in dataclasses.fields(self.group))
+        names = self.group.model_fields if issubclass(self.group, BaseModel) else (item.name for item in dataclasses.fields(self.group))
         return {name: f"{self.path}.{name}" for name in names}
+
+
+    def materialize(self, config):
+        if self.group is None:
+            return getattr(config, self.name)
+        return self.group(**{name: getattr(config, name) for name in self.projections})
+
+
+def default_configuration(cls, **values):
+    """Apply the single host authoring contract to direct constructor settings."""
+    return configuration_model(cls).model_validate(values)
+
+
+def materialize_configuration(cls, config):
+    values = {name: getattr(config, name) for name in type(config).model_fields}
+    for binding in cls.config_bindings:
+        if binding.group is not None and binding.argument is not None:
+            for name in binding.projections:
+                values.pop(name)
+            values[binding.argument] = binding.materialize(config)
+    return values
 
 
 def install_ports(cls):

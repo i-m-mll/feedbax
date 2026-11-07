@@ -150,7 +150,23 @@ class Component(GraphNode):
     @classmethod
     def from_config(cls, config, **context):
         """Materialize the typed authoring configuration."""
-        return cls(**{name: getattr(config, name) for name in type(config).model_fields}, **context)
+        from feedbax.contracts.portable import materialize_configuration
+
+        return cls(**materialize_configuration(cls, config), **context)
+
+    def __check_init__(self):
+        from feedbax.contracts.component import derive_dynamic_port_layout
+        from feedbax.contracts.portable import configuration_paths
+
+        ports = type(self).ports
+        if ports is not None and ports.dynamic is not None:
+            name = ports.dynamic.count_param
+            value = self
+            for part in configuration_paths(type(self)).get(name, name).split("."):
+                value = getattr(value, part)
+            layout = derive_dynamic_port_layout(ports.dynamic, {name: value})
+            object.__setattr__(self, "input_ports", layout.input_ports)
+            object.__setattr__(self, "output_ports", layout.output_ports)
 
     def configuration(self):
         """Read effective construction values, including retained reset payloads."""

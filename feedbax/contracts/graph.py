@@ -6,9 +6,9 @@ import hashlib
 import math
 import uuid
 from collections.abc import Iterator
-from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
+from typing import Annotated, Any, Dict, List, Literal, Mapping, Optional, Tuple, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
@@ -22,7 +22,8 @@ GRAPH_SPEC_SCHEMA_ID = "feedbax.spec.graph"
 GRAPH_SPEC_SCHEMA_VERSION_V2 = "feedbax.spec.graph.v2"
 GRAPH_SPEC_SCHEMA_VERSION_V3 = "feedbax.spec.graph.v3"
 GRAPH_SPEC_SCHEMA_VERSION_V4 = "feedbax.spec.graph.v4"
-GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v5"
+GRAPH_SPEC_SCHEMA_VERSION_V5 = "feedbax.spec.graph.v5"
+GRAPH_SPEC_SCHEMA_VERSION = "feedbax.spec.graph.v6"
 LEGACY_GRAPH_SPEC_SCHEMA_VERSION = "1.0.0"
 ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_ID = "feedbax.spec.analysis_data_product_requirement"
 ANALYSIS_DATA_PRODUCT_REQUIREMENT_SCHEMA_VERSION = (
@@ -100,7 +101,7 @@ class ComponentSpec(BaseModel):
 
     type: str
     params: Dict[str, ParamValue] = Field(default_factory=dict)
-    param_schema_version: Optional[str] = None
+    revision: Optional[Annotated[StrictInt, Field(gt=0)]] = None
     input_ports: List[str] = Field(default_factory=list)
     output_ports: List[str] = Field(default_factory=list)
 
