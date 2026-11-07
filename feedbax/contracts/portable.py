@@ -98,6 +98,12 @@ def install_ports(cls):
         raise ValueError(f"{cls.__name__} declares port names twice")
     cls.input_ports = tuple(ports.inputs)
     cls.output_ports = tuple(ports.outputs)
+    if ports.dynamic is not None:
+        from equinox import field
+        cls.__annotations__ = {**vars(cls).get("__annotations__", {}),
+                               "input_ports": tuple[str, ...], "output_ports": tuple[str, ...]}
+        cls.input_ports = field(default=tuple(ports.inputs), static=True)
+        cls.output_ports = field(default=tuple(ports.outputs), static=True)
 
 
 def configuration_model(cls):
