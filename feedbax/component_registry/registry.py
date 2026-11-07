@@ -87,8 +87,17 @@ class ComponentRegistry:
         migration_owners = {owner: set(types) for owner, types in self._migration_owners.items()}
         reserved_names = dict(self._history_names)
         edges = list(pack.migrations)
-        discovered = discover_modules(*pack.modules, namespace=pack.namespace, histories=pack.histories) if pack.modules else None
-        batch = tuple({id(item): item for item in (*pack.components, *(discovered.components if discovered else ()))}.values())
+        discovered = (
+            discover_modules(*pack.modules, namespace=pack.namespace, histories=pack.histories)
+            if pack.modules
+            else None
+        )
+        batch = tuple(
+            {
+                id(item): item
+                for item in (*pack.components, *(discovered.components if discovered else ()))
+            }.values()
+        )
         unknown_history = pack.histories.keys() - {item for item in batch if isinstance(item, type)}
         if unknown_history:
             raise ValueError(f"History supplied for undiscovered owners: {unknown_history!r}")
@@ -101,11 +110,20 @@ class ComponentRegistry:
                     from .history import History
 
                     history = pack.histories.get(definition, History())
-                    for identity, _revision in history.endpoints(pack.namespace, definition.__name__).values():
-                        if identity in reserved_names and reserved_names[identity] is not definition:
-                            raise ValueError(f"Historical component identity {identity!r} is reserved by {reserved_names[identity]!r}")
+                    for identity, _revision in history.endpoints(
+                        pack.namespace, definition.__name__
+                    ).values():
+                        if (
+                            identity in reserved_names
+                            and reserved_names[identity] is not definition
+                        ):
+                            raise ValueError(
+                                f"Historical component identity {identity!r} is reserved by {reserved_names[identity]!r}"
+                            )
                         reserved_names[identity] = definition
-                definitions, definition_sources, owner_edges = compile_owner(definition, namespace=pack.namespace, history=pack.histories.get(definition))
+                definitions, definition_sources, owner_edges = compile_owner(
+                    definition, namespace=pack.namespace, history=pack.histories.get(definition)
+                )
                 edges.extend(owner_edges)
             elif isinstance(definition, DeclaredComponent):
                 definitions = (definition,)
@@ -116,6 +134,7 @@ class ComponentRegistry:
                 meta = deepcopy(declared)
                 if owner_class in pack.presentation:
                     meta = replace(meta, studio=pack.presentation[owner_class])
+                    definition_sources = (*definition_sources, meta.studio.source)
                 if meta.provenance is None:
                     origin = provenance
                     if origin is None and owner_class is not None:
@@ -188,7 +207,10 @@ class ComponentRegistry:
         for edge in self._component_migrations.values():
             if edge.migrate_params is not None:
                 origin = source_path(edge.migrate_params)
-                if origin is None and getattr(edge.migrate_params, "__module__", None) == "builtins":
+                if (
+                    origin is None
+                    and getattr(edge.migrate_params, "__module__", None) == "builtins"
+                ):
                     continue
                 for type_id in {edge.source_type, edge.target_type}:
                     migration_sources.setdefault(type_id, []).append(origin)
@@ -237,9 +259,11 @@ class ComponentRegistry:
             if param_schema_version is not None:
                 raise ValueError("Supply a canonical revision or a legacy token, never both")
             param_schema_version = revision
+
         def current_version(name: str) -> str | None:
             component = self._components.get(name)
             return component.param_schema_version if component is not None else None
+
         source = source_endpoint(
             self._component_migrations,
             current_version,
@@ -274,7 +298,9 @@ class ComponentRegistry:
                 migrated, source_param_schema_version=edge.source_param_schema_version
             )
         context = {
-            name: value for name, value in migrated.items() if name in meta.params.build_context_fields
+            name: value
+            for name, value in migrated.items()
+            if name in meta.params.build_context_fields
         }
         authored = {name: value for name, value in migrated.items() if name not in context}
         effective = (
@@ -297,7 +323,10 @@ class ComponentRegistry:
     ) -> bool:
         if type_id in self._components:
             return True
-        if (type_id, revision if revision is not None else param_schema_version) in self._component_migrations:
+        if (
+            type_id,
+            revision if revision is not None else param_schema_version,
+        ) in self._component_migrations:
             return True
         if param_schema_version is not None:
             return True
@@ -337,7 +366,9 @@ class ComponentRegistry:
         from feedbax.runtime.graph import Component
 
         if not isinstance(component, Component):
-            raise ValueError(f"GraphNode {type(component).__name__!r} executes in Python but has no portable Component contract")
+            raise ValueError(
+                f"GraphNode {type(component).__name__!r} executes in Python but has no portable Component contract"
+            )
         if type_id is not None:
             meta = self._components.get(type_id)
             if meta is None:
@@ -578,9 +609,15 @@ class ComponentRegistry:
             owner=migration.owner,
             source_type=migration.source_type,
             target_type=migration.target_type,
-            source_revision=migration.source_param_schema_version if type(migration.source_param_schema_version) is int else None,
-            target_revision=migration.target_param_schema_version if type(migration.target_param_schema_version) is int else None,
-            source_token=migration.source_param_schema_version if isinstance(migration.source_param_schema_version, str) else None,
+            source_revision=migration.source_param_schema_version
+            if type(migration.source_param_schema_version) is int
+            else None,
+            target_revision=migration.target_param_schema_version
+            if type(migration.target_param_schema_version) is int
+            else None,
+            source_token=migration.source_param_schema_version
+            if isinstance(migration.source_param_schema_version, str)
+            else None,
             description=migration.description,
         )
 

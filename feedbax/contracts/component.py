@@ -69,7 +69,9 @@ def migrate_component_definition_v2_to_v3_payload(payload: Dict[str, Any]) -> Di
     return migrated
 
 
-def migrate_component_definition_v3_to_v4_payload(payload: Dict[str, Any], *, component_registry=None) -> Dict[str, Any]:
+def migrate_component_definition_v3_to_v4_payload(
+    payload: Dict[str, Any], *, component_registry=None
+) -> Dict[str, Any]:
     """Resolve exact historical component metadata through its owning registry."""
     if payload.get("schema_version") != COMPONENT_DEFINITION_SCHEMA_VERSION_V3:
         return dict(payload)
@@ -77,17 +79,24 @@ def migrate_component_definition_v3_to_v4_payload(payload: Dict[str, Any], *, co
         from feedbax.component_registry import ComponentRegistry
 
         component_registry = ComponentRegistry()
-    resolved = component_registry.resolve_component_spec(payload["name"], payload.get("default_params", {}),
-        param_schema_version=payload.get("param_schema_version"), complete_params=False,
-        historical_unversioned="param_schema_version" not in payload)
+    resolved = component_registry.resolve_component_spec(
+        payload["name"],
+        payload.get("default_params", {}),
+        param_schema_version=payload.get("param_schema_version"),
+        complete_params=False,
+        historical_unversioned="param_schema_version" not in payload,
+    )
     migrated = dict(payload)
     migrated.pop("param_schema_version", None)
     migrated.pop("supported_param_schema_versions", None)
-    migrated.update(schema_version=COMPONENT_DEFINITION_SCHEMA_VERSION,
-        name=resolved.type_id, revision=resolved.revision,
+    migrated.update(
+        schema_version=COMPONENT_DEFINITION_SCHEMA_VERSION,
+        name=resolved.type_id,
+        revision=resolved.revision,
         supported_revisions=resolved.meta.supported_revisions,
         default_params=resolved.params,
-        migrations=[item.model_dump(mode="json") for item in resolved.meta.migrations])
+        migrations=[item.model_dump(mode="json") for item in resolved.meta.migrations],
+    )
     return migrated
 
 
@@ -165,14 +174,24 @@ class DynamicPortPolicy(BaseModel):
         ):
             raise ValueError("concatenation requires dynamic inputs and a fixed output port")
         if self.count_mode == "names":
-            if self.count_param is not None or self.direction is not None or self.generated_name_template is not None or self.fixed_input_ports or self.fixed_output_ports:
+            if (
+                self.count_param is not None
+                or self.direction is not None
+                or self.generated_name_template is not None
+            ):
                 raise ValueError("Named dynamic ports cannot also declare a count/generated layout")
             if not self.input_name_params and not self.output_name_params:
                 raise ValueError("Named dynamic ports require input or output name parameters")
             _validate_fixed_port_names(self.input_name_params, direction="input parameter")
             _validate_fixed_port_names(self.output_name_params, direction="output parameter")
             return self
-        if self.input_name_params or self.output_name_params or self.count_param is None or self.direction is None or self.generated_name_template is None:
+        if (
+            self.input_name_params
+            or self.output_name_params
+            or self.count_param is None
+            or self.direction is None
+            or self.generated_name_template is None
+        ):
             raise ValueError("Count-based dynamic ports require count, direction and template only")
         template = self.generated_name_template
         non_tokens = template.replace("{index}", "")
@@ -260,13 +279,19 @@ def derive_dynamic_port_layout(
     """Derive the complete port layout declared by ``policy``."""
 
     if policy.count_mode == "names":
+
         def names(fields, direction):
             values = tuple(params.get(name) for name in fields)
             if any(not isinstance(name, str) or not name for name in values):
                 raise DynamicPortPolicyError(f"Dynamic {direction} names must be nonempty strings")
             _validate_fixed_port_names(values, direction=direction)
             return values
-        return DynamicPortLayout(input_ports=names(policy.input_name_params, "input"), output_ports=names(policy.output_name_params, "output"))
+
+        inputs = (*policy.fixed_input_ports, *names(policy.input_name_params, "input"))
+        outputs = (*policy.fixed_output_ports, *names(policy.output_name_params, "output"))
+        _validate_fixed_port_names(inputs, direction="input")
+        _validate_fixed_port_names(outputs, direction="output")
+        return DynamicPortLayout(input_ports=inputs, output_ports=outputs)
     count = derive_dynamic_port_count(policy, params)
     generated = tuple(
         _format_generated_port_name(policy, policy.generated_index_origin + offset)
@@ -373,7 +398,9 @@ class ComponentDefinition(BaseModel):
     identity: Optional[ComponentIdentity] = None
     owner: Optional[str] = None
     revision: Annotated[StrictInt, Field(gt=0)] = 1
-    supported_revisions: List[Annotated[StrictInt, Field(gt=0)]] = Field(default_factory=lambda: [1])
+    supported_revisions: List[Annotated[StrictInt, Field(gt=0)]] = Field(
+        default_factory=lambda: [1]
+    )
     migrations: List[ComponentMigrationInfo] = Field(default_factory=list)
     trainable_by_default: bool = False
     representation: Optional[RepresentationSpec] = None
