@@ -37,15 +37,10 @@ _LEGACY_INTERIOR_DOMAINS = {
 class ComponentResolution:
     type_id: str
     params: dict[str, Any]
-    param_schema_version: str | None
+    revision: int
     meta: DeclaredComponent
     migrations: tuple[ComponentMigrationInfo, ...] = ()
 
-    @property
-    def revision(self) -> int:
-        from .history import require_revision
-
-        return require_revision(self.param_schema_version)
 
 
 @dataclass(frozen=True)
@@ -86,7 +81,7 @@ class ComponentRegistry:
         migrations = dict(self._component_migrations)
         migration_owners = {owner: set(types) for owner, types in self._migration_owners.items()}
         reserved_names = dict(self._history_names)
-        edges = list(pack.migrations)
+        edges = []
         discovered = (
             discover_modules(*pack.modules, namespace=pack.namespace, histories=pack.histories)
             if pack.modules
@@ -106,38 +101,32 @@ class ComponentRegistry:
         for definition in batch:
             definition_sources: tuple[Path | None, ...] = ()
             owner_class = None
-            if isinstance(definition, type):
-                owner_class = definition
-                if pack.namespace is not None:
-                    from .history import History
+            owner_class = definition
+            if pack.namespace is not None:
+                from .history import History
 
-                    history = pack.histories.get(definition, History())
-                    for identity, _revision in history.endpoints(
-                        pack.namespace, definition.__name__
-                    ).values():
-                        if (
-                            identity in reserved_names
-                            and reserved_names[identity] is not definition
-                        ):
-                            raise ValueError(
-                                f"Historical component identity {identity!r} is reserved by {reserved_names[identity]!r}"
-                            )
-                        reserved_names[identity] = definition
-                compilation = copy(self)
-                compilation._components = components
-                compilation._component_migrations = {
-                    **migrations,
-                    **{(edge.source_type, edge.source_param_schema_version): edge for edge in edges},
-                }
-                definitions, definition_sources, owner_edges = compile_owner(
-                    definition, namespace=pack.namespace, history=pack.histories.get(definition), registry=compilation
-                )
-                edges.extend(owner_edges)
-            elif isinstance(definition, DeclaredComponent):
-                definitions = (definition,)
-            else:
-                definitions = (definition(),)
-                definition_sources = (source_path(definition),)
+                history = pack.histories.get(definition, History())
+                for identity, _revision in history.endpoints(
+                    pack.namespace, definition.__name__
+                ).values():
+                    if (
+                        identity in reserved_names
+                        and reserved_names[identity] is not definition
+                    ):
+                        raise ValueError(
+                            f"Historical component identity {identity!r} is reserved by {reserved_names[identity]!r}"
+                        )
+                    reserved_names[identity] = definition
+            compilation = copy(self)
+            compilation._components = components
+            compilation._component_migrations = {
+                **migrations,
+                **{(edge.source_type, edge.source_param_schema_version): edge for edge in edges},
+            }
+            definitions, definition_sources, owner_edges = compile_owner(
+                definition, namespace=pack.namespace, history=pack.histories.get(definition), registry=compilation
+            )
+            edges.extend(owner_edges)
             for declared in definitions:
                 meta = deepcopy(declared)
                 if owner_class in pack.presentation:
@@ -196,7 +185,7 @@ class ComponentRegistry:
             changed_targets.add(migration.target_type)
         validate_migration_routes(
             migrations,
-            {name: meta.param_schema_version for name, meta in components.items()},
+            {name: meta.revision for name, meta in components.items()},
         )
         for target in changed_targets & components.keys():
             components[target] = self._with_migrations(
@@ -240,7 +229,7 @@ class ComponentRegistry:
     def seal(self) -> None:
         validate_migration_routes(
             self._component_migrations,
-            {name: meta.param_schema_version for name, meta in self._components.items()},
+            {name: meta.revision for name, meta in self._components.items()},
             require_current_terminal=True,
         )
         self._sealed = True
@@ -254,7 +243,7 @@ class ComponentRegistry:
         type_id: str,
         params: Mapping[str, Any],
         *,
-        param_schema_version: str | None = None,
+        legacy_token: str | None = None,
         revision: int | None = None,
         complete_params: bool = True,
         historical_unversioned: bool = False,
@@ -264,27 +253,27 @@ class ComponentRegistry:
             from .history import require_revision
 
             require_revision(revision)
-            if param_schema_version is not None:
+            if legacy_token is not None:
                 raise ValueError("Supply a canonical revision or a legacy token, never both")
-            param_schema_version = revision
+        endpoint = revision if revision is not None else legacy_token
 
-        def current_version(name: str) -> str | None:
+        def current_revision(name: str) -> int | None:
             component = self._components.get(name)
-            return component.param_schema_version if component is not None else None
+            return component.revision if component is not None else None
 
         source = source_endpoint(
             self._component_migrations,
-            current_version,
+            current_revision,
             type_id,
-            param_schema_version,
+            endpoint,
             params,
             historical_unversioned=historical_unversioned,
         )
         (resolved_type, resolved_version), chain = migration_route(
-            self._component_migrations, current_version, source
+            self._component_migrations, current_revision, source
         )
         meta = self._components.get(resolved_type)
-        if meta is None or resolved_version != meta.param_schema_version:
+        if meta is None or resolved_version != meta.revision:
             owner = self._owner_for_missing_type(resolved_type, meta)
             if owner is not None and not self._has_owner(owner):
                 raise MissingComponentOwner(
@@ -296,8 +285,8 @@ class ComponentRegistry:
             raise UnsupportedComponentMigration(
                 "No component migration registered to a current declaration: "
                 f"type={type_id!r}{owner_context}, "
-                f"source_param_schema_version={param_schema_version!r}, "
-                f"current_param_schema_version={current_version(type_id)!r}, "
+                f"source_legacy_token={legacy_token!r}, "
+                f"current_revision={current_revision(type_id)!r}, "
                 f"terminal={(resolved_type, resolved_version)!r}"
             )
         migrated = dict(params)
@@ -317,7 +306,7 @@ class ComponentRegistry:
         return ComponentResolution(
             type_id=resolved_type,
             params={**effective, **context},
-            param_schema_version=meta.param_schema_version,
+            revision=meta.revision,
             meta=deepcopy(meta),
             migrations=tuple(self._migration_info(edge) for edge in chain),
         )
@@ -326,17 +315,17 @@ class ComponentRegistry:
         self,
         type_id: str,
         *,
-        param_schema_version: str | None = None,
+        legacy_token: str | None = None,
         revision: int | None = None,
     ) -> bool:
         if type_id in self._components:
             return True
         if (
             type_id,
-            revision if revision is not None else param_schema_version,
+            revision if revision is not None else legacy_token,
         ) in self._component_migrations:
             return True
-        if param_schema_version is not None:
+        if legacy_token is not None:
             return True
         return "." in type_id
 
@@ -362,7 +351,6 @@ class ComponentRegistry:
         component: Any,
         *,
         type_id: str | None = None,
-        param_schema_version: str | None = None,
         revision: int | None = None,
     ) -> tuple[str, dict[str, Any], int]:
         """Serialize one runtime leaf through the declaration that owns it."""
@@ -370,7 +358,7 @@ class ComponentRegistry:
         if revision is not None:
             from .history import require_revision
 
-            param_schema_version = require_revision(revision)
+            require_revision(revision)
         from feedbax.runtime.graph import Component
 
         if not isinstance(component, Component):
@@ -381,11 +369,11 @@ class ComponentRegistry:
             meta = self._components.get(type_id)
             if meta is None:
                 raise ValueError(f"Unknown bound component type {type_id!r}")
-            if param_schema_version != meta.param_schema_version:
+            if revision != meta.revision:
                 raise UnsupportedComponentMigration(
-                    "Runtime component binding has unsupported parameter schema version: "
-                    f"type={type_id!r}, bound={param_schema_version!r}, "
-                    f"current={meta.param_schema_version!r}"
+                    "Runtime component binding has unsupported revision: "
+                    f"type={type_id!r}, bound={revision!r}, "
+                    f"current={meta.revision!r}"
                 )
         else:
             matches = [
@@ -648,11 +636,7 @@ def _declared_source_paths(meta: DeclaredComponent) -> tuple[Path | None, ...]:
     params = meta.params
     rules = (
         params.runtime_type,
-        params.builder,
-        params.extractor,
-        params.projection,
         meta.output_prototype_fn,
-        *(group for group, _ in params.constructor.groups.values()),
         *(
             ()
             if meta.compiler.input_prototype_parameter is None

@@ -60,18 +60,18 @@ def lower_legacy_feedback(graph: GraphSpec, *, recurse: bool = True) -> GraphSpe
             },
         }
         nodes[name] = node.model_copy(
-            update={"type": "Subgraph", "params": {}, "revision": None}
+            update={"type": "feedbax.Subgraph", "params": {}, "revision": None}
         )
         subgraphs[name] = GraphSpec(
             nodes={
                 "select": ComponentSpec(
-                    type="SelectState",
+                    type="feedbax.SelectState",
                     params={"paths": list(paths)},
                     input_ports=["state"],
                     output_ports=["output"],
                 ),
                 "channel": ComponentSpec(
-                    type="Channel",
+                    type="feedbax.Channel",
                     params=channel_params,
                     revision=2,
                     input_ports=["input"],
