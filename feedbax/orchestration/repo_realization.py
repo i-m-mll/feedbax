@@ -15,18 +15,16 @@ from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.execution_schema import (
+    REPO_REALIZATION_PLAN_SCHEMA_ID,
+    REPO_REALIZATION_PLAN_SCHEMA_VERSION,
+)
 from feedbax.orchestration.repo_snapshot import (
     RepoSnapshotError,
     RepoSnapshotManifest,
     RepoSnapshotRecord,
     SealedRepoSnapshot,
     seal_repo_snapshots,
-)
-
-
-REPO_REALIZATION_PLAN_SCHEMA_ID = "feedbax.orchestration.repo_realization_plan"
-REPO_REALIZATION_PLAN_SCHEMA_VERSION = (
-    "feedbax.orchestration.repo_realization_plan.v1"
 )
 
 

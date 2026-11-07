@@ -8,7 +8,7 @@ import sys
 import textwrap
 
 
-def test_governed_document_validation_imports_do_not_load_jax() -> None:
+def test_governed_document_validation_imports_stay_in_the_contract_layer() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(repo_root), env.get("PYTHONPATH"))))
@@ -21,12 +21,15 @@ def test_governed_document_validation_imports_do_not_load_jax() -> None:
         for module_name in (
             "feedbax.contracts",
             "feedbax.contracts.migrations",
+            "feedbax.contracts.execution_context",
+            "feedbax.contracts.evaluation_lifecycle",
             "feedbax.contracts.run_matrix",
             "feedbax.contracts.run_composition",
         ):
             importlib.import_module(module_name)
 
-        print(json.dumps({"jax_loaded": "jax" in sys.modules}))
+        forbidden = {"jax", "feedbax.execution", "feedbax.orchestration"}
+        print(json.dumps(sorted(forbidden.intersection(sys.modules))))
         """
     )
 
@@ -40,4 +43,4 @@ def test_governed_document_validation_imports_do_not_load_jax() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"jax_loaded": False}
+    assert json.loads(result.stdout) == []

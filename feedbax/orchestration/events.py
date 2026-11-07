@@ -19,13 +19,19 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.execution_schema import (
+    MAPPED_METRIC_VALUE_SCHEMA_ID,
+    MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+    RUN_EVENT_SCHEMA_ID,
+    RUN_EVENT_SCHEMA_VERSION,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID,
+    STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION,
+)
 from feedbax.contracts.strict_json import StrictJsonError, strict_json_loads
 from feedbax.contracts.metric_values import NumericBooleanJsonValue
 from feedbax.contracts.worker import MaterializedSlotAxisBinding, ProgressCoordinate
 
 
-RUN_EVENT_SCHEMA_ID = "feedbax.run_event"
-RUN_EVENT_SCHEMA_VERSION = "feedbax.run_event.v2"
 RUN_EVENT_TERMINAL_TYPES = frozenset({"complete", "failed"})
 RUN_EVENT_EXTENSION_TYPES = frozenset({"log", "trajectory"})
 RUN_EVENT_CORE_TYPES = frozenset(
@@ -39,10 +45,6 @@ RUN_EVENT_CORE_TYPES = frozenset(
         "failed",
     }
 )
-MAPPED_METRIC_VALUE_SCHEMA_ID = "feedbax.manifest.mapped_metric_value"
-MAPPED_METRIC_VALUE_SCHEMA_VERSION = "feedbax.manifest.mapped_metric_value.v1"
-STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_ID = "feedbax.manifest.structured_mapped_metric_value"
-STRUCTURED_MAPPED_METRIC_VALUE_SCHEMA_VERSION = "feedbax.manifest.structured_mapped_metric_value.v1"
 
 
 class MappedMetricValue(StrictModel):
