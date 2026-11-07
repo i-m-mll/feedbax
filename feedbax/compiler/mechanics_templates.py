@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_VERSION
 from feedbax.contracts.acausal import AcausalGraphSpec
@@ -15,25 +15,23 @@ from feedbax.mechanics.muscle_config import (
 )
 
 
-if TYPE_CHECKING:
-    from feedbax.component_registry.declarations import DeclaredComponent
 
 
 def point_mass_template_graph(params: dict[str, Any] | None = None) -> AcausalGraphSpec:
     """Build a driven translational point-mass mechanics interior."""
 
-    params = dict(params or {})
+    params = validate_authoring(PointMassTemplateConfig, params or {}).model_dump()
     return AcausalGraphSpec(
         physical_domain="translational",
         nodes={
             "wall": ComponentSpec(type="MechanicsGround"),
             "mass": ComponentSpec(
                 type="MechanicsMass",
-                params={"mass": float(params.get("mass", 1.0))},
+                params={"mass": float(params["mass"])},
             ),
             "damper": ComponentSpec(
                 type="MechanicsLinearDamper",
-                params={"damping": float(params.get("damping", 0.0))},
+                params={"damping": float(params["damping"])},
             ),
             "force": ComponentSpec(
                 type="ActuationInput",
@@ -56,8 +54,8 @@ def point_mass_template_graph(params: dict[str, Any] | None = None) -> AcausalGr
             {"a": ("velocity", "flange"), "b": ("mass", "flange")},
         ],
         solver={
-            "solver_type": str(params.get("solver_type", "euler")),
-            "dt": float(params.get("dt", 0.001)),
+            "solver_type": str(params["solver_type"]),
+            "dt": float(params["dt"]),
         },
     )
 
@@ -67,22 +65,22 @@ def mass_spring_damper_template_graph(
 ) -> AcausalGraphSpec:
     """Build a grounded mass-spring-damper mechanics interior."""
 
-    params = dict(params or {})
+    params = validate_authoring(MassSpringDamperConfig, params or {}).model_dump()
     return AcausalGraphSpec(
         physical_domain="translational",
         nodes={
             "wall": ComponentSpec(type="MechanicsGround"),
             "mass": ComponentSpec(
                 type="MechanicsMass",
-                params={"mass": float(params.get("mass", 1.0))},
+                params={"mass": float(params["mass"])},
             ),
             "spring": ComponentSpec(
                 type="MechanicsLinearSpring",
-                params={"stiffness": float(params.get("stiffness", 10.0))},
+                params={"stiffness": float(params["stiffness"])},
             ),
             "damper": ComponentSpec(
                 type="MechanicsLinearDamper",
-                params={"damping": float(params.get("damping", 0.5))},
+                params={"damping": float(params["damping"])},
             ),
             "force": ComponentSpec(
                 type="ActuationInput",
@@ -107,8 +105,8 @@ def mass_spring_damper_template_graph(
             {"a": ("velocity", "flange"), "b": ("mass", "flange")},
         ],
         solver={
-            "solver_type": str(params.get("solver_type", "euler")),
-            "dt": float(params.get("dt", 0.001)),
+            "solver_type": str(params["solver_type"]),
+            "dt": float(params["dt"]),
         },
     )
 
@@ -118,19 +116,19 @@ def point_mass_with_muscles_template_graph(
 ) -> AcausalGraphSpec:
     """Build a point mass driven by one antagonistic muscle pair."""
 
-    params = dict(params or {})
-    fmax = float(params.get("max_isometric_force", 1.0))
+    params = validate_authoring(PointMassWithMusclesConfig, params or {}).model_dump()
+    fmax = float(params["max_isometric_force"])
     return AcausalGraphSpec(
         physical_domain="translational",
         nodes={
             "wall": ComponentSpec(type="MechanicsGround"),
             "mass": ComponentSpec(
                 type="MechanicsMass",
-                params={"mass": float(params.get("mass", 1.0))},
+                params={"mass": float(params["mass"])},
             ),
             "damper": ComponentSpec(
                 type="MechanicsLinearDamper",
-                params={"damping": float(params.get("damping", 0.0))},
+                params={"damping": float(params["damping"])},
             ),
             "flexor": ComponentSpec(
                 type="RigidTendonHillMuscle",
@@ -158,8 +156,8 @@ def point_mass_with_muscles_template_graph(
             {"a": ("velocity", "flange"), "b": ("mass", "flange")},
         ],
         solver={
-            "solver_type": str(params.get("solver_type", "euler")),
-            "dt": float(params.get("dt", 0.001)),
+            "solver_type": str(params["solver_type"]),
+            "dt": float(params["dt"]),
         },
     )
 
@@ -173,14 +171,14 @@ def two_link_arm_6muscle_template_graph(
 ) -> AcausalGraphSpec:
     """Build an editable planar multibody interior for the canonical arm."""
 
-    params = dict(params or {})
+    params = validate_authoring(TwoLinkArm6MuscleConfig, params or {}).model_dump()
     bounds = default_2link_bounds()
     lengths = (bounds.segment_lengths_min + bounds.segment_lengths_max) / 2.0
     masses = (bounds.segment_masses_min + bounds.segment_masses_max) / 2.0
     damping = (bounds.joint_damping_min + bounds.joint_damping_max) / 2.0
     moment_arms = default_6muscle_2link_moment_arms()
     reference_lengths = default_6muscle_2link_reference_lengths()
-    fmax = float(params.get("max_isometric_force", 1.0))
+    fmax = float(params["max_isometric_force"])
 
     muscle_nodes = {
         f"muscle_{index}": ComponentSpec(
@@ -276,8 +274,8 @@ def two_link_arm_6muscle_template_graph(
             {"a": ("elbow", "child"), "b": ("forearm", "proximal")},
         ],
         solver={
-            "solver_type": str(params.get("solver_type", "euler")),
-            "dt": float(params.get("dt", 0.01)),
+            "solver_type": str(params["solver_type"]),
+            "dt": float(params["dt"]),
         },
     )
 
@@ -290,116 +288,65 @@ __all__ = [
 ]
 
 
-def mass_spring_damper_template_definition() -> DeclaredComponent:
-    from feedbax.component_registry.declarations import declare_component
-    from feedbax.contracts.component import PortType, PortTypeSpec
-    from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 
-    graph = mass_spring_damper_template_graph()
-    interface = derive_acausal_interface(graph)
-    return declare_component(
-        name="MassSpringDamper",
-        category="Templates",
-        description="Executable mechanics mass-spring-damper template.",
-        param_schema=[],
-        input_ports=interface.input_ports,
-        output_ports=interface.output_ports,
-        icon="Waves",
-        domain=MECHANICS_DOMAIN_ID,
-        interior_domain=MECHANICS_DOMAIN_ID,
-        is_composite=True,
-        port_types=PortTypeSpec(
-            inputs={"force": PortType(dtype="scalar")},
-            outputs={
-                "position": PortType(dtype="scalar"),
-                "velocity": PortType(dtype="scalar"),
-            },
-        ),
-        template_graph=graph,
-        template_id="feedbax.templates.mechanics.mass_spring_damper",
-        template_kind="executable",
-    )
+from pydantic import BaseModel, ConfigDict, Field
+from feedbax.contracts.portable import GraphTemplate, ComponentOptions, validate_authoring
+from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 
 
-def point_mass_with_muscles_template_definition() -> DeclaredComponent:
-    from feedbax.component_registry.declarations import declare_component
-    from feedbax.contracts.component import PortType, PortTypeSpec
-    from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
-
-    graph = point_mass_with_muscles_template_graph()
-    interface = derive_acausal_interface(graph)
-    return declare_component(
-        name="PointMassWithMuscles",
-        category="Templates",
-        description="Executable mechanics point mass with one antagonistic muscle pair.",
-        param_schema=[],
-        input_ports=interface.input_ports,
-        output_ports=interface.output_ports,
-        icon="Dumbbell",
-        domain=MECHANICS_DOMAIN_ID,
-        interior_domain=MECHANICS_DOMAIN_ID,
-        is_composite=True,
-        port_types=PortTypeSpec(
-            inputs={
-                "flexor": PortType(dtype="scalar"),
-                "extensor": PortType(dtype="scalar"),
-            },
-            outputs={
-                "position": PortType(dtype="scalar"),
-                "velocity": PortType(dtype="scalar"),
-            },
-        ),
-        template_graph=graph,
-        template_id="feedbax.templates.mechanics.point_mass_with_muscles",
-        template_kind="executable",
-    )
+class _SolverConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    solver_type: str = "euler"
+    dt: float = Field(default=0.001, gt=0, allow_inf_nan=False)
 
 
-def two_link_arm_6muscle_template_definition() -> DeclaredComponent:
-    from feedbax.component_registry.declarations import _template_ui_state, declare_component
-    from feedbax.contracts.component import PortType, PortTypeSpec
-    from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
-    from feedbax.contracts.acausal_interface import MUSCLE_EXCITATION_PAYLOAD
+class PointMassTemplateConfig(_SolverConfig):
+    mass: float = Field(default=1.0, ge=0)
+    damping: float = Field(default=0.0, ge=0)
 
-    graph = two_link_arm_6muscle_template_graph()
-    interface = derive_acausal_interface(graph)
-    return declare_component(
-        name="TwoLinkArm6Muscle",
-        category="Templates",
-        description=("Editable planar multibody two-link arm with six rigid-tendon muscle paths."),
-        param_schema=[],
-        input_ports=interface.input_ports,
-        output_ports=interface.output_ports,
-        icon="Activity",
-        domain=MECHANICS_DOMAIN_ID,
-        interior_domain=MECHANICS_DOMAIN_ID,
-        is_composite=True,
-        port_types=PortTypeSpec(
-            inputs={"excitation": MUSCLE_EXCITATION_PAYLOAD.port_type()},
-            outputs={
-                "effector": PortType(dtype="state"),
-                "state": PortType(dtype="state"),
-            },
-        ),
-        template_graph=graph,
-        template_ui_state=_template_ui_state(
-            {
-                "world": (40, 140),
-                "anchor": (180, 140),
-                "shoulder": (320, 80),
-                "upper": (460, 80),
-                "elbow": (600, 80),
-                "forearm": (740, 80),
-                "excitation": (320, 300),
-                "effector": (900, 80),
-                "state": (900, 190),
-                "effector_marker": (900, 300),
-                **{
-                    f"muscle_{index}": (460 + (index % 3) * 140, 250 + (index // 3) * 90)
-                    for index in range(6)
-                },
-            }
-        ),
-        template_id="feedbax.templates.mechanics.two_link_arm_6muscle",
-        template_kind="executable",
-    )
+
+class MassSpringDamperConfig(PointMassTemplateConfig):
+    stiffness: float = Field(default=10.0, ge=0)
+    damping: float = Field(default=0.5, ge=0)
+
+
+class PointMassWithMusclesConfig(PointMassTemplateConfig):
+    max_isometric_force: float = Field(default=1.0, ge=0)
+
+
+class TwoLinkArm6MuscleConfig(_SolverConfig):
+    dt: float = Field(default=0.01, gt=0, allow_inf_nan=False)
+    max_isometric_force: float = Field(default=1.0, ge=0)
+
+
+class MassSpringDamper(GraphTemplate):
+    """Executable grounded mass-spring-damper mechanics interior."""
+
+    config = MassSpringDamperConfig
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, interior_domain=MECHANICS_DOMAIN_ID, is_composite=True, template_id="feedbax.templates.mechanics.mass_spring_damper", template_kind="executable")
+
+    @classmethod
+    def expand(cls, config):
+        return mass_spring_damper_template_graph(config.model_dump())
+
+
+class PointMassWithMuscles(GraphTemplate):
+    """Point mass driven by one antagonistic muscle pair."""
+
+    config = PointMassWithMusclesConfig
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, interior_domain=MECHANICS_DOMAIN_ID, is_composite=True, template_id="feedbax.templates.mechanics.point_mass_with_muscles", template_kind="executable")
+
+    @classmethod
+    def expand(cls, config):
+        return point_mass_with_muscles_template_graph(config.model_dump())
+
+
+class TwoLinkArm6Muscle(GraphTemplate):
+    """Editable planar multibody arm with six rigid-tendon muscle paths."""
+
+    config = TwoLinkArm6MuscleConfig
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, interior_domain=MECHANICS_DOMAIN_ID, is_composite=True, template_id="feedbax.templates.mechanics.two_link_arm_6muscle", template_kind="executable")
+
+    @classmethod
+    def expand(cls, config):
+        return two_link_arm_6muscle_template_graph(config.model_dump())

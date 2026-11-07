@@ -20,7 +20,19 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal
+from feedbax.contracts.portable import ComponentOwner, ComponentOptions, Ports
+from feedbax.contracts.component import PortType
+from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
 from feedbax._acausal_payload import SourcePayload
+
+
+class AcausalSystemConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    dt: float = Field(default=0.01, gt=0, allow_inf_nan=False)
+    domain: Literal["translational", "rotational"] = "translational"
+
 from feedbax.mechanics.dae import DAEComponent
 from feedbax.acausal.assembly import assemble_system
 from feedbax.acausal.base import (
@@ -58,7 +70,7 @@ class AcausalParams(Module):
 # AcausalSystem
 # ---------------------------------------------------------------------------
 
-class AcausalSystem(DAEComponent[AcausalSystemState]):
+class AcausalSystem(DAEComponent[AcausalSystemState], ComponentOwner):
     """Assembled acausal system as a standard DAE component.
 
     Construction-time:
@@ -71,6 +83,20 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
     Attributes:
         params: Trainable physical parameters (mass, stiffness, ...).
     """
+
+    config = AcausalSystemConfig
+    component_options = ComponentOptions(
+        is_composite=True, interior_domain=ACAUSAL_DOMAIN_ID,
+        build_context_fields=("elements", "connections", "solver_type", "root_finder", "input_bindings", "output_bindings", "key"),
+    )
+    ports = Ports({"input": PortType(dtype="vector")}, {"state": PortType(dtype="state")})
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return cls(dt=config.dt, **context)
+
+    def configuration_values(self):
+        raise ValueError("AcausalSystem export requires its authoritative graph interior")
 
     # Override ClassVar with instance fields so each instance can differ.
     input_ports: tuple[str, ...]
@@ -284,33 +310,3 @@ class AcausalSystem(DAEComponent[AcausalSystemState]):
         return jnp.zeros(self.input_size)
 
 
-def acausal_system_definition():
-    """The authored acausal assembly contract owned by AcausalSystem."""
-    from feedbax.component_registry.declarations import ParameterField, declare_component
-    from feedbax.contracts.component import PortType, PortTypeSpec
-    from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
-
-    return declare_component(
-        name="AcausalSystem",
-        category="Mechanics",
-        description="Assembled acausal mechanical system (mass-spring-damper etc.).",
-        parameter_fields=[
-            ParameterField(name="dt", type="float", default=0.001, min=0.0001, required=True),
-            ParameterField(
-                name="domain",
-                type="enum",
-                options=["translational", "rotational"],
-                default="translational",
-                required=False,
-            ),
-        ],
-        input_ports=["input"],
-        output_ports=["state"],
-        icon="Cog",
-        interior_domain=ACAUSAL_DOMAIN_ID,
-        port_types=PortTypeSpec(
-            inputs={"input": PortType(dtype="vector")},
-            outputs={"state": PortType(dtype="state")},
-        ),
-        is_composite=True,
-    )
