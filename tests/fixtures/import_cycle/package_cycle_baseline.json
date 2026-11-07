@@ -2,52 +2,28 @@
   "schema": "feedbax.import_cycle_baseline.v1",
   "description": "Upper bound on import-cycle edges between top-level subpackages, root modules, and the root facade. This set may shrink, never grow. Regenerate deliberately with: uv run --no-sync python scripts/import_cycle_baseline.py --write",
   "summary": {
-    "classified_import_edges": 2017,
-    "cross_package_import_edges": 1165,
+    "classified_import_edges": 2073,
+    "cross_package_import_edges": 1201,
     "packages": 41,
-    "package_edges": 165,
-    "packages_in_largest_cycle": 20,
-    "mutually_dependent_package_pairs": 9,
-    "cycle_package_edges": 70,
+    "package_edges": 164,
+    "packages_in_largest_cycle": 8,
+    "mutually_dependent_package_pairs": 6,
+    "cycle_package_edges": 20,
     "largest_cycle_packages": [
-      "acausal",
       "analysis",
-      "compiler",
-      "component_registry",
-      "components",
       "config",
-      "contracts",
-      "control",
       "execution",
-      "mechanics",
-      "models",
-      "objectives",
       "orchestration",
-      "persistence",
       "plot",
       "plugins",
-      "runtime",
-      "tasks",
       "training",
       "workflow"
     ]
   },
   "cycle_edges": [
     [
-      "acausal",
-      "mechanics"
-    ],
-    [
       "analysis",
       "config"
-    ],
-    [
-      "analysis",
-      "contracts"
-    ],
-    [
-      "analysis",
-      "persistence"
     ],
     [
       "analysis",
@@ -59,87 +35,11 @@
     ],
     [
       "analysis",
-      "runtime"
-    ],
-    [
-      "analysis",
-      "tasks"
-    ],
-    [
-      "analysis",
       "training"
     ],
     [
       "analysis",
       "workflow"
-    ],
-    [
-      "compiler",
-      "acausal"
-    ],
-    [
-      "compiler",
-      "component_registry"
-    ],
-    [
-      "compiler",
-      "components"
-    ],
-    [
-      "compiler",
-      "contracts"
-    ],
-    [
-      "compiler",
-      "mechanics"
-    ],
-    [
-      "compiler",
-      "models"
-    ],
-    [
-      "compiler",
-      "objectives"
-    ],
-    [
-      "compiler",
-      "runtime"
-    ],
-    [
-      "compiler",
-      "tasks"
-    ],
-    [
-      "component_registry",
-      "acausal"
-    ],
-    [
-      "component_registry",
-      "compiler"
-    ],
-    [
-      "component_registry",
-      "contracts"
-    ],
-    [
-      "component_registry",
-      "control"
-    ],
-    [
-      "component_registry",
-      "mechanics"
-    ],
-    [
-      "component_registry",
-      "models"
-    ],
-    [
-      "component_registry",
-      "runtime"
-    ],
-    [
-      "components",
-      "runtime"
     ],
     [
       "config",
@@ -147,67 +47,15 @@
     ],
     [
       "contracts",
-      "execution"
-    ],
-    [
-      "contracts",
-      "orchestration"
-    ],
-    [
-      "contracts",
       "persistence"
-    ],
-    [
-      "control",
-      "runtime"
-    ],
-    [
-      "execution",
-      "contracts"
     ],
     [
       "execution",
       "workflow"
     ],
     [
-      "mechanics",
-      "contracts"
-    ],
-    [
-      "mechanics",
-      "runtime"
-    ],
-    [
-      "models",
-      "contracts"
-    ],
-    [
-      "models",
-      "mechanics"
-    ],
-    [
-      "models",
-      "runtime"
-    ],
-    [
-      "objectives",
-      "contracts"
-    ],
-    [
-      "objectives",
-      "runtime"
-    ],
-    [
-      "orchestration",
-      "contracts"
-    ],
-    [
       "orchestration",
       "execution"
-    ],
-    [
-      "orchestration",
-      "persistence"
     ],
     [
       "orchestration",
@@ -222,32 +70,8 @@
       "config"
     ],
     [
-      "plot",
-      "contracts"
-    ],
-    [
-      "plot",
-      "models"
-    ],
-    [
-      "plot",
-      "objectives"
-    ],
-    [
-      "plot",
-      "runtime"
-    ],
-    [
       "plugins",
       "analysis"
-    ],
-    [
-      "plugins",
-      "component_registry"
-    ],
-    [
-      "plugins",
-      "contracts"
     ],
     [
       "plugins",
@@ -262,32 +86,8 @@
       "training"
     ],
     [
-      "runtime",
-      "contracts"
-    ],
-    [
-      "tasks",
-      "objectives"
-    ],
-    [
-      "tasks",
-      "runtime"
-    ],
-    [
       "training",
       "config"
-    ],
-    [
-      "training",
-      "contracts"
-    ],
-    [
-      "training",
-      "mechanics"
-    ],
-    [
-      "training",
-      "objectives"
     ],
     [
       "training",
@@ -298,20 +98,8 @@
       "plugins"
     ],
     [
-      "training",
-      "runtime"
-    ],
-    [
-      "training",
-      "tasks"
-    ],
-    [
       "workflow",
       "analysis"
-    ],
-    [
-      "workflow",
-      "contracts"
     ]
   ]
 }
