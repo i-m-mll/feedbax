@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import inspect
-from typing import Any, get_type_hints
+from typing import Any, ClassVar, get_type_hints
+from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, ConfigDict, create_model
 
@@ -168,6 +169,12 @@ def configuration_values(component):
                     )
                 raise AttributeError(f"{cls.__name__} has no configuration storage path {path!r}")
             value = getattr(value, part)
+            if part == "init":
+                from equinox.nn._stateful import _Sentinel
+                if isinstance(value, _Sentinel):
+                    raise ValueError(
+                        f"{cls.__name__} reset payload at {path!r} was stripped by make_with_state; preserve initial payloads for export"
+                    )
         values[name] = value
     return values
 
@@ -240,3 +247,94 @@ def validate_configuration(component):
         TypeAdapter(field.rebuild_annotation()).validate_json(json.dumps(values[name]), strict=True)
     if not traced:
         validate_authoring(model, values)
+
+
+class ComponentOwner:
+    """A reconstructible typed authoring contract, independent of execution."""
+
+    config: ClassVar[type | None] = None
+    config_bindings: ClassVar[tuple[ConfigBinding, ...]] = ()
+    ports: ClassVar[Ports | None] = None
+    component_options: ClassVar[ComponentOptions | None] = None
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return cls(**materialize_configuration(cls, config), **context)
+
+    @classmethod
+    def port_contract(cls, *, registry=None) -> Ports:
+        if not isinstance(cls.ports, Ports):
+            raise TypeError(f"{cls.__name__} needs one typed Ports declaration")
+        return cls.ports
+
+    def configuration_values(self):
+        return configuration_values(self)
+
+    def configuration(self):
+        return extract_configuration(self)
+
+
+class GraphTemplate(ComponentOwner, ABC):
+    """Expand one canonical typed configuration into an editable graph."""
+
+    @classmethod
+    @abstractmethod
+    def expand(cls, config):
+        """Return the graph whose expanded contents are the save authority."""
+        raise NotImplementedError
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return cls.expand(config)
+
+    @classmethod
+    def port_contract(cls, *, registry=None) -> Ports:
+        return graph_port_contract(cls.expand(configuration_model(cls)()), registry=registry)
+
+
+def graph_port_contract(graph, *, registry=None) -> Ports:
+    """Project a graph boundary from existing compiler metadata."""
+    from feedbax.contracts.acausal import AcausalGraphSpec
+    from feedbax.contracts.acausal_interface import derive_acausal_interface, signal_port_type
+
+    if isinstance(graph, AcausalGraphSpec):
+        interface = derive_acausal_interface(graph)
+        return Ports(
+            {name: payload.port_type() for name, payload in interface.input_payloads.items()},
+            {name: signal_port_type() for name in interface.output_ports},
+        )
+    if registry is None:
+        raise ValueError("Causal template port projection requires its compiled registry")
+
+    def boundary(bindings, direction):
+        result = {}
+        for public, (node_id, port) in bindings.items():
+            if node_id in graph.subgraphs:
+                nested = graph_port_contract(graph.subgraphs[node_id], registry=registry)
+                result[public] = getattr(nested, direction)[port]
+            else:
+                node = graph.nodes[node_id]
+                resolved = registry.resolve_component_spec(node.type, node.params, revision=node.revision, complete_params=False)
+                types = getattr(resolved.meta.port_types, direction)
+                if port in types:
+                    result[public] = types[port]
+                elif resolved.meta.dynamic_port_policy is not None:
+                    result[public] = resolved.meta.dynamic_port_policy.dynamic_port_type
+                else:
+                    raise ValueError(f"Template boundary {public!r} references an untyped port {node.type}.{port}")
+        return result
+
+    return Ports(boundary(graph.input_bindings, "inputs"), boundary(graph.output_bindings, "outputs"))
+
+
+def expansion_configuration(expand, *, exclude=()):
+    """Derive a template config from its typed graph-building operation."""
+    hints = get_type_hints(expand, include_extras=True)
+    fields = {
+        name: (hints[name], ... if parameter.default is parameter.empty else parameter.default)
+        for name, parameter in inspect.signature(expand).parameters.items()
+        if name not in exclude
+    }
+    return create_model(
+        f"{expand.__name__}Config", __config__=ConfigDict(extra="forbid", strict=True), **fields
+    )
