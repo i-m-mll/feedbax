@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from string import Formatter
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.acausal import AcausalGraphSpec
@@ -17,7 +17,8 @@ from feedbax.contracts.representation import RepresentationSpec
 COMPONENT_DEFINITION_SCHEMA_ID = "feedbax.spec.component_definition"
 COMPONENT_DEFINITION_SCHEMA_VERSION_V1 = "feedbax.spec.component_definition.v1"
 COMPONENT_DEFINITION_SCHEMA_VERSION_V2 = "feedbax.spec.component_definition.v2"
-COMPONENT_DEFINITION_SCHEMA_VERSION = "feedbax.spec.component_definition.v3"
+COMPONENT_DEFINITION_SCHEMA_VERSION_V3 = "feedbax.spec.component_definition.v3"
+COMPONENT_DEFINITION_SCHEMA_VERSION = "feedbax.spec.component_definition.v4"
 COMPONENT_DEFINITION_PORT_KIND_MIGRATION_ID = "component-definition-v1-to-v2-port-kind"
 COMPONENT_DEFINITION_DYNAMIC_PORT_POLICY_MIGRATION_ID = (
     "component-definition-v2-to-v3-dynamic-port-policy"
@@ -63,7 +64,7 @@ def migrate_component_definition_v2_to_v3_payload(payload: Dict[str, Any]) -> Di
     if payload.get("schema_version") != COMPONENT_DEFINITION_SCHEMA_VERSION_V2:
         return dict(payload)
     migrated = dict(payload)
-    migrated["schema_version"] = COMPONENT_DEFINITION_SCHEMA_VERSION
+    migrated["schema_version"] = COMPONENT_DEFINITION_SCHEMA_VERSION_V3
     migrated.setdefault("dynamic_port_policy", None)
     return migrated
 
@@ -293,8 +294,9 @@ class ComponentMigrationInfo(BaseModel):
     owner: str
     source_type: str
     target_type: str
-    source_param_schema_version: Optional[str] = None
-    target_param_schema_version: Optional[str] = None
+    source_revision: Optional[Annotated[StrictInt, Field(gt=0)]] = None
+    target_revision: Optional[Annotated[StrictInt, Field(gt=0)]] = None
+    source_token: Optional[str] = None
     description: str = ""
 
 
@@ -327,8 +329,8 @@ class ComponentDefinition(BaseModel):
     provenance: Optional[str] = None
     identity: Optional[ComponentIdentity] = None
     owner: Optional[str] = None
-    param_schema_version: str = "1"
-    supported_param_schema_versions: List[str] = Field(default_factory=lambda: ["1"])
+    revision: Annotated[StrictInt, Field(gt=0)] = 1
+    supported_revisions: List[Annotated[StrictInt, Field(gt=0)]] = Field(default_factory=lambda: [1])
     migrations: List[ComponentMigrationInfo] = Field(default_factory=list)
     trainable_by_default: bool = False
     representation: Optional[RepresentationSpec] = None

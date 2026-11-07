@@ -482,7 +482,7 @@ class ComponentDeclaration:
     owner: str
 
     def __post_init__(self) -> None:
-        identities = (self.type_id, self.schema_id, self.schema_version, self.owner)
+        identities = (self.type_id, self.schema_id, self.owner)
         if any(not value.strip() for value in identities):
             raise ValueError("component declaration identities and owner must be non-empty")
 
@@ -643,6 +643,16 @@ class DeclaredComponent:
     @property
     def representation(self) -> RepresentationSpec | None:
         return self.studio.representation if self.studio is not None else None
+
+    @property
+    def revision(self) -> int:
+        from .history import require_revision
+
+        return require_revision(self.serialization.param_schema_version)
+
+    @property
+    def supported_revisions(self) -> list[int]:
+        return list(range(1, self.revision + 1))
 
     @property
     def param_schema_version(self) -> str:

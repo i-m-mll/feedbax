@@ -102,6 +102,7 @@ class ComponentPack:
     namespace: str | None = None
     modules: tuple[str | ModuleType, ...] = ()
     histories: Mapping[type, Any] = field(default_factory=dict)
+    presentation: Mapping[type, Any] = field(default_factory=dict)
     components: tuple[PackComponent, ...] = ()
     migrations: tuple[ComponentMigration, ...] = ()
     sources: tuple[Path, ...] = ()
