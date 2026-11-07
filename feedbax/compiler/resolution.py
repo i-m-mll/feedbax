@@ -127,7 +127,7 @@ def _complete_component_node(
     }
     effective = meta.params.require(
         {key: value for key, value in params.items() if key not in context}
-    ).model_dump(mode="python")
+    ).model_dump(mode="json")
     params = {**effective, **context}
     inputs, outputs = _validate_dynamic_component_ports(
         node_name,
