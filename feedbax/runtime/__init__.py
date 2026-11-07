@@ -31,6 +31,7 @@ from feedbax.runtime.components import (
 )
 from feedbax.runtime.graph import (
     Component,
+    GraphNode,
     Graph,
     GraphState,
     GraphTraceRequest,
@@ -62,6 +63,7 @@ __all__ = [
     "ChannelSpec",
     "ChannelState",
     "Component",
+    "GraphNode",
     "Constant",
     "DeadZone",
     "DelayLine",

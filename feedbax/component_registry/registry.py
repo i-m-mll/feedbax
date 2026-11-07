@@ -79,12 +79,17 @@ class ComponentRegistry:
         migrations = dict(self._component_migrations)
         migration_owners = {owner: set(types) for owner, types in self._migration_owners.items()}
         edges = list(pack.migrations)
-        for definition in pack.components:
+        discovered = discover_modules(*pack.modules, namespace=pack.namespace, histories=pack.histories) if pack.modules else None
+        batch = tuple({id(item): item for item in (*pack.components, *(discovered.components if discovered else ()))}.values())
+        unknown_history = pack.histories.keys() - {item for item in batch if isinstance(item, type)}
+        if unknown_history:
+            raise ValueError(f"History supplied for undiscovered owners: {unknown_history!r}")
+        for definition in batch:
             definition_sources: tuple[Path | None, ...] = ()
             owner_class = None
             if isinstance(definition, type):
                 owner_class = definition
-                definitions, definition_sources, owner_edges = compile_owner(definition)
+                definitions, definition_sources, owner_edges = compile_owner(definition, namespace=pack.namespace, history=pack.histories.get(definition))
                 edges.extend(owner_edges)
             elif isinstance(definition, DeclaredComponent):
                 definitions = (definition,)
@@ -523,7 +528,7 @@ class ComponentRegistry:
                 key=lambda item: (
                     item.owner,
                     item.source_type,
-                    item.source_param_schema_version or "",
+                    str(item.source_param_schema_version or ""),
                     item.target_type,
                 ),
             )

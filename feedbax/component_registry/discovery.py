@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from functools import partial
 from importlib import import_module
 import inspect
@@ -99,12 +99,17 @@ class ComponentPack:
     or a plugin entry point that composes owner modules.
     """
 
+    namespace: str | None = None
+    modules: tuple[str | ModuleType, ...] = ()
+    histories: Mapping[type, Any] = field(default_factory=dict)
     components: tuple[PackComponent, ...] = ()
     migrations: tuple[ComponentMigration, ...] = ()
     sources: tuple[Path, ...] = ()
 
 
-def discover_modules(*modules: str | ModuleType) -> ComponentPack:
+def discover_modules(*modules: str | ModuleType, namespace: str | None = None, histories: Mapping[type, Any] | None = None) -> ComponentPack:
+    from feedbax.runtime.graph import Component
+
     loaded = [import_module(module) if isinstance(module, str) else module for module in modules]
     classes = {
         value
@@ -112,10 +117,11 @@ def discover_modules(*modules: str | ModuleType) -> ComponentPack:
         for value in vars(module).values()
         if isinstance(value, type)
         and value.__module__ == module.__name__
-        and _MARKER in vars(value)
+        and ((_MARKER in vars(value)) if namespace is None else issubclass(value, Component))
         and not inspect.isabstract(value)
     }
     return ComponentPack(
+        namespace=namespace, histories=histories or {},
         components=tuple(sorted(classes, key=lambda cls: (cls.__module__, cls.__qualname__)))
     )
 
@@ -176,7 +182,10 @@ def _port_names(cls: type, attribute: str) -> tuple[str, ...]:
 
 def compile_owner(
     cls: type,
+    *, namespace: str | None = None, history: Any = None,
 ) -> tuple[tuple[DeclaredComponent, ...], tuple[Path | None, ...], tuple[ComponentMigration, ...]]:
+    if namespace is not None:
+        return _compile_inferred_owner(cls, namespace, history)
     declaration = vars(cls).get(_MARKER)
     if not isinstance(declaration, _ClassDeclaration) or inspect.isabstract(cls):
         raise TypeError(f"Component owner {cls.__qualname__} must declare @component directly")
@@ -233,3 +242,34 @@ def source_path(obj: Any) -> Path | None:
     if path is None or path.startswith("<"):
         return None
     return Path(path).resolve()
+
+
+def _compile_inferred_owner(cls, namespace, history):
+    from feedbax.runtime.graph import Component
+    from feedbax.contracts.portable import ComponentOptions, configuration_model, configuration_paths
+    from .history import History
+
+    if not issubclass(cls, Component) or inspect.isabstract(cls):
+        raise TypeError(f"{cls!r} must be a concrete portable Component")
+    if not namespace or namespace.startswith(".") or namespace.endswith("."):
+        raise ValueError("Component pack requires a stable namespace")
+    options = (cls.component_options or ComponentOptions()).as_kwargs()
+    forbidden = {"name", "runtime_type", "param_model", "parameter_fields", "param_schema", "constructor", "builder", "extractor", "attribute_paths", "param_schema_version", "supported_param_schema_versions", "migrations", "input_ports", "output_ports", "port_types", "dynamic_port_policy", "description", "category", "owner", "identity", "override_reason"}
+    if conflict := forbidden & options.keys():
+        raise ValueError(f"{cls.__name__} has competing declarations: {sorted(conflict)}")
+    history = history or History()
+    configuration_paths(cls)
+    model = configuration_model(cls)
+    ports = cls.ports
+    if ports is None:
+        raise TypeError(f"{cls.__name__} needs one typed Ports declaration")
+    meta = declare_component(name=f"{namespace}.{cls.__name__}", runtime_type=cls,
+        param_model=model, input_ports=tuple(ports.inputs), output_ports=tuple(ports.outputs),
+        port_types=ports.types, dynamic_port_policy=ports.dynamic,
+        param_schema_version=history.revision, supported_param_schema_versions=tuple(range(1, history.revision + 1)),
+        owner=namespace, description=inspect.getdoc(cls) or "", category=namespace,
+        **options)
+    contract = replace(meta.params, portable=True)
+    meta = replace(meta, params=contract, compiler=replace(meta.compiler, parameter_contract=contract),
+        runtime=replace(meta.runtime, builder=contract.build), owner_class=cls)
+    return (meta,), (source_path(cls), source_path(model)), history.compile(namespace, cls.__name__)
