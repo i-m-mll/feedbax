@@ -327,7 +327,7 @@ class ComponentParamContract:
     @property
     def default_params(self) -> dict[str, Any]:
         values = {
-            name: model_field.default
+            name: model_field.get_default(call_default_factory=True)
             for name, model_field in self.model.model_fields.items()
             if not model_field.is_required()
         }
