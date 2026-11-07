@@ -7,6 +7,7 @@ from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.runtime.signal_transforms import (
     ConstantInput,
     ConstantInputParams,
@@ -71,7 +72,7 @@ def _legacy_spec(component_type, params, version):
     node.pop("revision", None)
     if version is not None:
         node["param_schema_version"] = version
-    return GraphSpec.model_validate(payload)
+    return GraphSpec.model_validate(migrate_graph_spec(payload).payload)
 
 
 @pytest.mark.parametrize(
@@ -129,8 +130,8 @@ def test_legacy_intervention_requires_reauthoring_only_when_enabled(
         disabled = _legacy_spec(component_type, {"scale": 2.0, "active": False}, version)
         _assert_rollout(_compile(registry, disabled).graph, [2.0, 3.0])
 
-        enabled = _legacy_spec(component_type, {"scale": 2.0, "active": True}, version)
-        with pytest.raises(GraphCompilationError, match=field):
+        with pytest.raises((GraphCompilationError, ValueError), match=field):
+            enabled = _legacy_spec(component_type, {"scale": 2.0, "active": True}, version)
             _compile(registry, enabled)
 
     if component_type == "NetworkClamp":

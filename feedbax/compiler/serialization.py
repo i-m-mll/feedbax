@@ -28,8 +28,8 @@ from feedbax.contracts.array_values import (
     _parse_array_value_payload,
     materialize_array_value,
 )
+from feedbax.component_registry.declarations import DeclaredComponent
 from feedbax.component_registry import (
-    DeclaredComponent,
     format_missing_interior_message,
     required_interior_domain,
 )

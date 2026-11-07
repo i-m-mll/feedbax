@@ -2025,7 +2025,7 @@ def _decode_component_revisions(
             resolution = component_registry.resolve_component_spec(
                 node["type"],
                 node.get("params", {}),
-                param_schema_version=token,
+                legacy_token=token,
                 complete_params=False,
             )
             node.update(type=resolution.type_id, params=resolution.params, revision=resolution.revision)

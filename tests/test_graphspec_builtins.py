@@ -598,7 +598,7 @@ def _point_mass_feedback_spec(**feedback_params: Any) -> GraphSpec:
                 output_ports=["effector", "state"],
             ),
             "feedback": ComponentSpec(
-                type="feedbax.FeedbackChannels",
+                type="FeedbackChannels",
                 params=feedback_params,
                 input_ports=["mechanics"],
                 output_ports=["feedback"],
@@ -764,7 +764,7 @@ def test_point_mass_feedback_rejects_invalid_selector_path_at_compile_time() -> 
 
 def test_nested_feedback_rollout_preserves_mixed_state_dtypes() -> None:
     feedback = _single_node_spec(
-        "feedbax.FeedbackChannels",
+        "FeedbackChannels",
         {"selector": "plant_skeleton", "delay": 1},
         input_ports=["mechanics"],
         output_ports=["feedback"],
@@ -956,7 +956,7 @@ def test_force_field_registry_exposes_params_override_ports_and_builders() -> No
         assert meta.output_ports == ["force"]
         if component_type == "feedbax.DynamicsMatrixPerturb":
             assert "delta_A" in meta.default_params
-            assert "mass" in meta.default_params
+            assert next(field for field in meta.param_schema if field.name == "mass").required
 
 
 @pytest.mark.parametrize(
