@@ -273,33 +273,40 @@ def _literal_python_path(node: ast.AST, source: Path) -> Path | str | None:
     return None
 
 
-def _fixture_consumers(root: Path, fixture: str) -> tuple[set[str], set[str]]:
+def _fixture_consumers(root: Path, fixture: str) -> tuple[set[str], set[str], bool, bool]:
     source = (root / fixture).resolve()
     python: set[str] = set()
     studio: set[str] = set()
+    unresolved_python = unresolved_studio = False
     basename = source.name
     for path in (root / "tests").rglob("*.py"):
         contents = path.read_text(encoding="utf-8")
         if basename not in contents:
             continue
         syntax = ast.parse(contents, filename=str(path))
-        if any(
+        resolved = any(
             isinstance(resolved, Path) and resolved.resolve() == source
             for node in ast.walk(syntax)
             if (resolved := _literal_python_path(node, path)) is not None
-        ):
+        )
+        if resolved:
             python.add(path.relative_to(root).as_posix())
+        else:
+            unresolved_python = True
     url_pattern = re.compile(r"new\s+URL\(\s*(['\"])([^'\"]+)\1\s*,\s*import\.meta\.url\s*\)")
     for path in (root / "web" / "src").rglob("*.ts*"):
         contents = path.read_text(encoding="utf-8")
         if basename not in contents:
             continue
-        if any(
+        resolved = any(
             (path.parent / relative).resolve() == source
             for _, relative in url_pattern.findall(contents)
-        ):
+        )
+        if resolved:
             studio.add(path.relative_to(root).as_posix())
-    return python, studio
+        else:
+            unresolved_studio = True
+    return python, studio, unresolved_python, unresolved_studio
 
 
 def _component_projection(root: Path) -> dict[str, tuple[str, ...] | None] | None:
@@ -330,7 +337,9 @@ def _component_literal_witnesses(root: Path, ids: set[str]) -> list[str]:
             value = stack.pop()
             if isinstance(value, dict):
                 if isinstance(value.get("type"), str) and value["type"] in ids:
-                    python, studio = _fixture_consumers(root, path.relative_to(root).as_posix())
+                    python, studio, _, _ = _fixture_consumers(
+                        root, path.relative_to(root).as_posix()
+                    )
                     witnesses.update(python | studio)
                     break
                 stack.extend(value.values())
@@ -408,13 +417,15 @@ def _selection(root: Path, changes: list[Change], *, external: bool) -> GatePlan
             python_reason = studio_reason = f"shared or unproved dependency: {path}"
             browser = build = contracts = clean_wheel = True
     for fixture in fixtures:
-        python_consumers, studio_consumers = _fixture_consumers(root, fixture)
-        if not python_consumers:
-            python_reason = f"fixture has no proven Python consumer: {fixture}"
+        python_consumers, studio_consumers, unresolved_python, unresolved_studio = (
+            _fixture_consumers(root, fixture)
+        )
+        if not python_consumers or unresolved_python:
+            python_reason = f"fixture has unresolved Python consumers: {fixture}"
         else:
             python.update(python_consumers)
-        if not studio_consumers:
-            studio_reason = f"fixture has no proven Studio consumer: {fixture}"
+        if not studio_consumers or unresolved_studio:
+            studio_reason = f"fixture has unresolved Studio consumers: {fixture}"
         else:
             studio.update(studio_consumers)
     python_tests = _python_related(root, python) if python and not python_reason else []
