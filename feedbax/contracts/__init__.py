@@ -41,6 +41,7 @@ from feedbax.contracts.staged_execution import (
 from feedbax.contracts.acausal import (  # noqa: F401
     ACAUSAL_GRAPH_SCHEMA_ID,
     ACAUSAL_GRAPH_SCHEMA_VERSION,
+    ACAUSAL_GRAPH_SCHEMA_VERSION_V1,
     AcausalConnectionSpec,
     AcausalGraphSpec,
     RootFinderSpec,

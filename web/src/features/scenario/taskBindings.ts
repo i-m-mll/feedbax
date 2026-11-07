@@ -315,7 +315,7 @@ function delayedReachMuxEntry(
 ): [string, GraphSpec['nodes'][string]] | null {
   const candidates = Object.entries(graph.nodes).filter(
     ([, node]) =>
-      node.type === 'Mux' &&
+      node.type === 'feedbax.Mux' &&
       node.output_ports.includes('output') &&
       requiredPorts.every((port) => node.input_ports.includes(port))
   );

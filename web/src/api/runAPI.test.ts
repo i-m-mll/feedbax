@@ -149,12 +149,9 @@ describe('runAPI failure behavior', () => {
       id: 'feedbax-evaluation-run:completed',
       evaluation_spec: { inline: { evaluation_type: 'feedbax.validation.default' } },
     });
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/api/runs/evaluation/feedbax-evaluation-run%3Acompleted/manifest',
-      expect.objectContaining({
-        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
-      }),
-    );
+    const [path, options] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(path).toBe('/api/runs/evaluation/feedbax-evaluation-run%3Acompleted/manifest');
+    expect(new Headers(options.headers).get('Content-Type')).toBe('application/json');
   });
 
   it('does not fabricate successful training-run creation', async () => {

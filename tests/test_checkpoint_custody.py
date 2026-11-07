@@ -112,7 +112,7 @@ from feedbax.orchestration.input_materialization import (
     materialize_content_input_projection,
 )
 from feedbax.persistence import ImmutableArtifactBlobProvider
-from feedbax.runtime.components import Activation, GRU, identity_activation
+from feedbax.runtime.components import CallableActivation, GRU, identity_activation
 from feedbax.runtime.graph import Graph
 from tests.support.checkpoint_minimax_plugin import (
     PLUGIN_MODULE as CHECKPOINT_MINIMAX_PLUGIN,
@@ -3532,7 +3532,7 @@ def test_stable_top_level_callable_resumes_in_fresh_process(tmp_path: Path) -> N
     run_spec = _run_spec(minimax=True)
     program = run_spec.worker_execution.method_contract.phase_program
     slots = _minimax_slots()
-    slots["controller"] = Activation("identity", identity_activation)
+    slots["controller"] = CallableActivation("identity", identity_activation)
     result = write_checkpoint_transaction(
         tmp_path,
         run_spec=run_spec,
@@ -3587,7 +3587,7 @@ def test_checkpoint_resume_rejects_different_stable_callable(tmp_path: Path) -> 
     run_spec = _run_spec(minimax=True)
     program = run_spec.worker_execution.method_contract.phase_program
     slots = _minimax_slots()
-    slots["controller"] = Activation("identity", identity_activation)
+    slots["controller"] = CallableActivation("identity", identity_activation)
     write_checkpoint_transaction(
         tmp_path,
         run_spec=run_spec,
@@ -3597,7 +3597,7 @@ def test_checkpoint_resume_rejects_different_stable_callable(tmp_path: Path) -> 
         slots=slots,
     )
     expected_slots = dict(slots)
-    expected_slots["controller"] = Activation("identity", _different_stable_activation)
+    expected_slots["controller"] = CallableActivation("identity", _different_stable_activation)
 
     with pytest.raises(CheckpointCompatibilityError, match="structural ABI mismatch"):
         load_latest_checkpoint(
@@ -3619,7 +3619,7 @@ def test_checkpoint_resume_rejects_different_stable_callable(tmp_path: Path) -> 
 def test_ambiguous_callable_identity_remains_process_local(
     activation_factory,
 ) -> None:
-    value = Activation("ambiguous", activation_factory())
+    value = CallableActivation("ambiguous", activation_factory())
     fingerprint = custody_module.structural_abi_fingerprint(value)
     changed_treedef, replacement_count = re.subn(
         r"0x[0-9a-fA-F]+",
@@ -3642,20 +3642,20 @@ def test_ambiguous_callable_identity_remains_process_local(
     ("recorded", "actual"),
     [
         pytest.param(
-            Activation("partial", partial(_offset_activation, offset=1)),
-            Activation("partial", partial(_offset_activation, offset=2)),
+            CallableActivation("partial", partial(_offset_activation, offset=1)),
+            CallableActivation("partial", partial(_offset_activation, offset=2)),
             id="partial-bound-value",
         ),
         pytest.param(
-            Activation("callable-object", _CallableActivation(scale=1)),
-            Activation("callable-object", _CallableActivation(scale=2)),
+            CallableActivation("callable-object", _CallableActivation(scale=1)),
+            CallableActivation("callable-object", _CallableActivation(scale=2)),
             id="callable-object-structure",
         ),
     ],
 )
 def test_ambiguous_callables_with_different_state_reject(
-    recorded: Activation,
-    actual: Activation,
+    recorded: CallableActivation,
+    actual: CallableActivation,
 ) -> None:
     assert custody_module._semantic_structural_abi_sha256(
         custody_module.structural_abi_fingerprint(recorded),

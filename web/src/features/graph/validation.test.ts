@@ -7,13 +7,13 @@ function twoNodeCycle(recurrent = false): GraphSpec {
   return {
     nodes: {
       a: {
-        type: 'Gain',
+        type: 'feedbax.Gain',
         params: {},
         input_ports: ['input'],
         output_ports: ['output'],
       },
       b: {
-        type: 'Gain',
+        type: 'feedbax.Gain',
         params: {},
         input_ports: ['input'],
         output_ports: ['output'],
@@ -55,7 +55,7 @@ describe('validateGraph recurrence', () => {
         Array.from({ length: nodeCount }, (_, index) => [
           `node_${index}`,
           {
-            type: 'Gain',
+            type: 'feedbax.Gain',
             params: {},
             input_ports: ['input'],
             output_ports: ['output'],

@@ -1,21 +1,10 @@
-"""Opt-in catalogue pack for the built-in CDE graph variants."""
+"""Composition of CDE graph template owners and histories."""
 
-from __future__ import annotations
-
-from functools import partial
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .discovery import ComponentPack
+from .discovery import ComponentPack
 
 
 def cde_template_pack() -> ComponentPack:
-    from feedbax.compiler.cde_templates import CDE_TEMPLATE_VARIANTS, _cde_template_definition
+    from feedbax.compiler import cde_templates
+    from feedbax.compiler.cde_templates_history import HISTORIES
 
-    from .discovery import ComponentPack
-
-    return ComponentPack(
-        components=tuple(
-            partial(_cde_template_definition, *variant) for variant in CDE_TEMPLATE_VARIANTS
-        ),
-    )
+    return ComponentPack(namespace="feedbax", modules=(cde_templates,), histories=HISTORIES)

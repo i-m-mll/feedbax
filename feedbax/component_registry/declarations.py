@@ -2,23 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import UnionType
 from typing import (
     TYPE_CHECKING,
-    Annotated,
     Any,
     Literal,
     Union,
     get_args,
     get_origin,
-    get_type_hints,
 )
 
-import jax.numpy as jnp
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, create_model
+from pydantic import BaseModel, ValidationError
 
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.component import (
@@ -36,51 +33,21 @@ from feedbax.contracts.graph import (
     NodeUIState,
     ParamSchema,
 )
+from feedbax.contracts.portable import (
+    MissingPrototypeInput as MissingPrototypeInput,
+    InputPrototypeParameter,
+)
 from feedbax.contracts.representation import RepresentationSpec
 
 if TYPE_CHECKING:
     from feedbax.contracts.graph import ParamValue
     from feedbax.runtime.graph import Component
+    from feedbax.contracts.portable import ComponentOwner
 
 
 ComponentBuilder = Callable[[Mapping[str, Any]], "Component"]
 OutputPrototypeFn = Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]]
 ComponentParamModel = type[BaseModel]
-ComponentParamExtractor = Callable[["Component", BaseModel], BaseModel]
-ComponentParamProjection = Callable[[Mapping[str, Any]], Mapping[str, Any]]
-
-
-@dataclass(frozen=True)
-class ComponentConstructorPlan:
-    """Declarative projection from validated fields to constructor arguments."""
-
-    renames: Mapping[str, str] = field(default_factory=dict)
-    omit: frozenset[str] = frozenset()
-    injections: Mapping[str, Any] = field(default_factory=dict)
-    groups: Mapping[str, tuple[type[Any], tuple[str, ...]]] = field(default_factory=dict)
-    context_adapters: Mapping[str, tuple[str, Literal["array_prototype"]]] = field(
-        default_factory=dict
-    )
-    array_conversions: Mapping[str, tuple[int, ...] | None] = field(default_factory=dict)
-
-
-def _unsupported_declared_builder(component_type: str) -> ComponentBuilder:
-    message = (
-        f"Component type {component_type!r} has no runtime builder. "
-        "It is a display-only abstraction used in composite subgraph templates."
-    )
-
-    def _builder(params: Mapping[str, Any]) -> "Component":
-        del params
-        raise NotImplementedError(message)
-
-    _builder._feedbax_unsupported_builder = True  # type: ignore[attr-defined]
-    _builder._feedbax_unsupported_builder_message = message  # type: ignore[attr-defined]
-    return _builder
-
-
-class MissingPrototypeInput(ValueError):
-    """An output prototype needs an input prototype not yet known."""
 
 
 class ComponentParamValidationError(DynamicPortPolicyError):
@@ -90,11 +57,11 @@ class ComponentParamValidationError(DynamicPortPolicyError):
         self,
         *,
         component_type: str,
-        schema_version: str,
+        revision: int,
         failures: tuple["ComponentParamFailure", ...],
     ) -> None:
         self.component_type = component_type
-        self.schema_version = schema_version
+        self.revision = revision
         self.failures = failures
         details = "; ".join(
             f"{'.'.join(str(part) for part in failure.path) or '<root>'}: "
@@ -103,12 +70,12 @@ class ComponentParamValidationError(DynamicPortPolicyError):
         )
         canonical_hint = (
             " Only canonical Channel noise parameters are accepted."
-            if component_type == "Channel"
+            if component_type == "feedbax.Channel"
             else ""
         )
         super().__init__(
-            f"Invalid parameters for component {component_type!r} schema "
-            f"{schema_version!r}: {details}.{canonical_hint}"
+            f"Invalid parameters for component {component_type!r} revision "
+            f"{revision!r}: {details}.{canonical_hint}"
         )
 
 
@@ -127,102 +94,6 @@ class ComponentParamValidation:
     @property
     def ok(self) -> bool:
         return self.value is not None
-
-
-class ParameterField(ParamSchema):
-    """One authoritative parameter field declaration.
-
-    Feedbax built-ins declare these fields once. The declaration is compiled to
-    both the strict runtime model and the public Studio ``ParamSchema`` view.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-def _dtype_name(value: Any) -> str:
-    try:
-        return jnp.dtype(value).name
-    except TypeError as exc:
-        raise ValueError(f"Invalid dtype {value!r}") from exc
-
-
-def _field_annotation(parameter: ParamSchema) -> Any:
-    annotation: Any
-    if parameter.type == "bool":
-        annotation = bool
-    elif parameter.type == "int":
-        annotation = int
-    elif parameter.type == "float":
-        annotation = float
-    elif parameter.type == "str":
-        annotation = (
-            Annotated[str, BeforeValidator(_dtype_name)] if parameter.name == "dtype" else str
-        )
-    elif parameter.type == "enum" and parameter.options:
-        annotation = Literal.__getitem__(tuple(parameter.options))
-    elif parameter.type == "bounds2d":
-        annotation = list[list[float]]
-    elif parameter.type == "array":
-        annotation = list[Any] if isinstance(parameter.default, list) else Any
-    elif parameter.type == "object":
-        # ``object`` is the GraphSpec spelling for structured JSON.  Some
-        # declarations accept more than one JSON shape (for example sparse
-        # object or dense array), so their nested schema remains the authority.
-        annotation = Any
-    else:
-        annotation = Any
-    if parameter.default is None and get_origin(annotation) not in (Union, UnionType):
-        annotation = annotation | None
-    return annotation
-
-
-def _model_from_param_schema(
-    component_type: str,
-    param_schema: Sequence[ParamSchema],
-) -> ComponentParamModel:
-    fields: dict[str, tuple[Any, Any]] = {}
-    for parameter in param_schema:
-        default = parameter.default
-        field_info = Field(
-            default=default,
-            ge=parameter.min,
-            le=parameter.max,
-            description=parameter.description or None,
-            json_schema_extra={
-                "feedbax": {
-                    "type": parameter.type,
-                    "required": parameter.required,
-                    "step": parameter.step,
-                    "options": parameter.options,
-                    "option_descriptions": parameter.option_descriptions,
-                    "nested_schema": [
-                        item.model_dump(mode="json") for item in parameter.nested_schema
-                    ]
-                    if parameter.nested_schema
-                    else None,
-                }
-            },
-        )
-        fields[parameter.name] = (_field_annotation(parameter), field_info)
-    return create_model(
-        f"{component_type.replace('.', '_')}Params",
-        __config__=ConfigDict(extra="forbid", strict=True),
-        **fields,
-    )
-
-
-def _strict_param_model(component_type: str, model: ComponentParamModel) -> ComponentParamModel:
-    """Compile a caller model into the registry's closed validation boundary."""
-
-    config = dict(model.model_config)
-    if config.get("extra") == "forbid" and config.get("strict") is True:
-        return model
-    config.update(extra="forbid", strict=True)
-    return type(
-        f"{component_type.replace('.', '_')}StrictParams",
-        (model,),
-        {"model_config": ConfigDict(**config)},
-    )
 
 
 def _param_schema_from_model(model: ComponentParamModel) -> tuple[ParamSchema, ...]:
@@ -277,47 +148,15 @@ def _param_schema_from_model(model: ComponentParamModel) -> tuple[ParamSchema, .
     return tuple(schemas)
 
 
-def _json_value(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if isinstance(value, Mapping):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    if hasattr(value, "tolist"):
-        return value.tolist()
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    raise TypeError(f"Component parameter value is not canonical JSON: {type(value).__name__}")
-
-
-def _read_attribute_path(component: "Component", path: str) -> Any:
-    value: Any = component
-    for part in path.split("."):
-        if not hasattr(value, part):
-            raise AttributeError(
-                f"component {type(component).__name__!r} has no declared parameter path {path!r}"
-            )
-        value = getattr(value, part)
-    return value
-
-
 @dataclass(frozen=True)
 class ComponentParamContract:
     """Closed authority for one component's build and serialization parameters."""
 
     component_type: str
     model: ComponentParamModel
-    schema_version: str
-    required_fields: frozenset[str] = frozenset()
+    revision: int
+    runtime_type: type["ComponentOwner"]
     build_context_fields: frozenset[str] = frozenset()
-    builder: ComponentBuilder | None = None
-    runtime_type: type["Component"] | None = None
-    constructor: ComponentConstructorPlan = field(default_factory=ComponentConstructorPlan)
-    attribute_paths: Mapping[str, str] = field(default_factory=dict)
-    projection: ComponentParamProjection | None = None
-    extractor: ComponentParamExtractor | None = None
-    override_reason: str | None = None
 
     @property
     def param_schema(self) -> tuple[ParamSchema, ...]:
@@ -326,7 +165,7 @@ class ComponentParamContract:
     @property
     def default_params(self) -> dict[str, Any]:
         values = {
-            name: model_field.default
+            name: model_field.get_default(call_default_factory=True)
             for name, model_field in self.model.model_fields.items()
             if not model_field.is_required()
         }
@@ -337,22 +176,14 @@ class ComponentParamContract:
 
     @property
     def classification(self) -> str:
-        if self.runtime_type is None and self.builder is None:
-            return "unsupported"
-        return "custom" if self.builder is not None or self.extractor is not None else "generic"
+        return "generic"
 
     def validate(self, params: Mapping[str, Any]) -> ComponentParamValidation:
-        projected = dict(self.projection(params)) if self.projection is not None else dict(params)
-        missing = self.required_fields - set(projected)
-        if missing:
-            return ComponentParamValidation(
-                failures=tuple(
-                    ComponentParamFailure((name,), "missing", "Field required")
-                    for name in sorted(missing)
-                )
-            )
         try:
-            return ComponentParamValidation(value=self.model.model_validate(projected))
+            from feedbax.contracts.portable import validate_authoring
+
+            value = validate_authoring(self.model, params)
+            return ComponentParamValidation(value=value)
         except ValidationError as exc:
             return ComponentParamValidation(
                 failures=tuple(
@@ -370,10 +201,15 @@ class ComponentParamContract:
         if result.value is None:
             raise ComponentParamValidationError(
                 component_type=self.component_type,
-                schema_version=self.schema_version,
+                revision=self.revision,
                 failures=result.failures,
             )
         return result.value
+
+    def require_effective(self, params: Mapping[str, Any]) -> BaseModel:
+        from feedbax.contracts.portable import validate_effective
+
+        return validate_effective(self.model, params)
 
     def build(self, params: Mapping[str, Any]) -> "Component":
         context = {
@@ -381,89 +217,25 @@ class ComponentParamContract:
         }
         authored = {name: value for name, value in params.items() if name not in context}
         validated = self.require(authored)
-        values = validated.model_dump(mode="python")
-        values.update(context)
-        return self.build_resolved(values)
+        return self.runtime_type.from_config(validated, **context)
 
-    def build_resolved(self, params: Mapping[str, Any]) -> "Component":
+    def build_resolved(
+        self, params: Mapping[str, Any], *, config: BaseModel | None = None
+    ) -> "Component":
         """Construct canonical compiler parameters without reapplying their schema."""
         values = dict(params)
-        if self.builder is not None:
-            return self.builder(values)
-        if self.runtime_type is None:
-            raise NotImplementedError(
-                f"Component type {self.component_type!r} is registered for metadata "
-                "but has no executable builder"
-            )
-        constructor_values = {
-            self.constructor.renames.get(name, name): value
-            for name, value in values.items()
-            if name not in self.constructor.omit and name not in self.constructor.context_adapters
+        context = {
+            name: values.pop(name) for name in tuple(values) if name in self.build_context_fields
         }
-        if "input_shape" in self.constructor.context_adapters:
-            constructor_values.pop("input_dtype", None)
-        for source, (target, adapter) in self.constructor.context_adapters.items():
-            if adapter == "array_prototype":
-                from feedbax.component_registry.prototypes import array_prototype
+        return self.runtime_type.from_config(
+            config if config is not None else self.require_effective(values), **context
+        )
 
-                constructor_values[target] = array_prototype(
-                    {"input_shape": values.get(source), "input_dtype": values.get("input_dtype")}
-                )
-        if self.constructor.array_conversions:
-            import jax.numpy as jnp
-
-            for source, expected_shape in self.constructor.array_conversions.items():
-                target = self.constructor.renames.get(source, source)
-                converted = jnp.asarray(constructor_values[target])
-                if expected_shape is not None and converted.shape != expected_shape:
-                    raise ValueError(
-                        f"{self.component_type} {source} must have shape "
-                        f"{expected_shape!r}; got {converted.shape!r}"
-                    )
-                constructor_values[target] = converted
-        for target, (group_type, names) in self.constructor.groups.items():
-            constructor_values[target] = group_type(
-                **{
-                    self.constructor.renames.get(name, name): constructor_values.pop(
-                        self.constructor.renames.get(name, name)
-                    )
-                    for name in names
-                }
-            )
-        for name, value in self.constructor.injections.items():
-            if name not in self.build_context_fields or name not in constructor_values:
-                constructor_values[name] = value
-        return self.runtime_type(**constructor_values)
-
-    def extract(self, component: "Component") -> BaseModel:
-        empty = self.model.model_construct()
-        if self.extractor is not None:
-            return self.extractor(component, empty)
-        raw = {}
-        for name, model_field in self.model.model_fields.items():
-            path = self.attribute_paths.get(name, name)
-            if name == "input_dtype" and "input_shape" in self.constructor.context_adapters:
-                from feedbax.component_registry.prototypes import prototype_params
-
-                target, _ = self.constructor.context_adapters["input_shape"]
-                value = prototype_params(_read_attribute_path(component, target))[name]
-            elif name in self.constructor.context_adapters:
-                target, adapter = self.constructor.context_adapters[name]
-                if adapter == "array_prototype":
-                    from feedbax.component_registry.prototypes import prototype_params
-
-                    value = prototype_params(_read_attribute_path(component, target))["input_shape"]
-            else:
-                value = (
-                    model_field.default
-                    if path == "$default"
-                    else _read_attribute_path(component, path)
-                )
-            raw[name] = _json_value(value)
-        return self.require(raw)
+    def extract(self, component: "ComponentOwner") -> BaseModel:
+        return component.configuration()
 
     def dump(self, component: "Component") -> dict[str, Any]:
-        return self.extract(component).model_dump(mode="json")
+        return self.extract(component).model_dump(mode="json", warnings="error")
 
 
 @dataclass(frozen=True)
@@ -471,24 +243,13 @@ class ComponentDeclaration:
     """Identity and capabilities owned by one component declaration."""
 
     type_id: str
-    schema_id: str
-    schema_version: str
-    capabilities: frozenset[str]
+    revision: int
     owner: str
 
     def __post_init__(self) -> None:
-        identities = (self.type_id, self.schema_id, self.schema_version, self.owner)
+        identities = (self.type_id, self.owner)
         if any(not value.strip() for value in identities):
             raise ValueError("component declaration identities and owner must be non-empty")
-
-
-@dataclass(frozen=True)
-class InputPrototypeParameter:
-    """A constructor parameter constrained by one input port's prototype."""
-
-    port: str
-    parameter: str
-    resolve: Callable[[Mapping[str, Any], Any | None], Any]
 
 
 @dataclass(frozen=True)
@@ -531,12 +292,20 @@ class ComponentStudioFacet:
     icon: str = "box"
     template_ui_state: GraphUIState | None = None
     representation: RepresentationSpec | None = None
+    source: Path | None = field(default=None, compare=False)
+
+    def __post_init__(self):
+        import inspect
+
+        frame = inspect.currentframe().f_back.f_back
+        filename = frame.f_code.co_filename
+        if self.source is None and not filename.startswith("<"):
+            object.__setattr__(self, "source", Path(filename).resolve())
 
 
 @dataclass(frozen=True)
 class ComponentSerializationFacet:
-    param_schema_version: str
-    supported_param_schema_versions: tuple[str, ...]
+    revision: int
     migrations: tuple[ComponentMigrationInfo, ...] = ()
 
 
@@ -621,8 +390,6 @@ class DeclaredComponent:
 
     @property
     def builder(self) -> ComponentBuilder | None:
-        if self.params.classification == "unsupported":
-            return _unsupported_declared_builder(self.name)
         return self.params.build
 
     @property
@@ -646,12 +413,12 @@ class DeclaredComponent:
         return self.studio.representation if self.studio is not None else None
 
     @property
-    def param_schema_version(self) -> str:
-        return self.serialization.param_schema_version
+    def revision(self) -> int:
+        return self.serialization.revision
 
     @property
-    def supported_param_schema_versions(self) -> list[str]:
-        return list(self.serialization.supported_param_schema_versions)
+    def supported_revisions(self) -> list[int]:
+        return list(range(1, self.revision + 1))
 
     @property
     def migrations(self) -> list[ComponentMigrationInfo]:
@@ -664,158 +431,6 @@ class DeclaredComponent:
     @property
     def default_params(self) -> dict[str, ParamValue]:
         return self.params.default_params
-
-
-def declare_component(
-    *,
-    name: str,
-    param_schema: Sequence[ParamSchema] | None = None,
-    parameter_fields: Sequence[ParameterField] | None = None,
-    param_model: ComponentParamModel | None = None,
-    input_ports: Sequence[str],
-    output_ports: Sequence[str],
-    category: str = "",
-    description: str = "",
-    icon: str = "box",
-    port_types: PortTypeSpec | None = None,
-    dynamic_port_policy: DynamicPortPolicy | None = None,
-    domain: str = CAUSAL_DOMAIN_ID,
-    interior_domain: str | None = None,
-    is_composite: bool = False,
-    template_graph: GraphSpec | AcausalGraphSpec | None = None,
-    template_ui_state: GraphUIState | None = None,
-    template_id: str | None = None,
-    template_kind: str | None = None,
-    builder: ComponentBuilder | None = None,
-    runtime_type: type["Component"] | None = None,
-    constructor: ComponentConstructorPlan | None = None,
-    attribute_paths: Mapping[str, str] | None = None,
-    build_context_fields: Sequence[str] = (),
-    param_projection: ComponentParamProjection | None = None,
-    extractor: ComponentParamExtractor | None = None,
-    override_reason: str | None = None,
-    output_prototype_fn: OutputPrototypeFn | None = None,
-    prototype_depends_on_connected_inputs: bool = False,
-    input_prototype_parameter: InputPrototypeParameter | None = None,
-    build_output_prototypes: Mapping[str, str] | None = None,
-    provenance: str | None = None,
-    identity: ComponentIdentity | None = None,
-    owner: str | None = None,
-    param_schema_version: str = "1",
-    supported_param_schema_versions: Sequence[str] = (),
-    migrations: Sequence[ComponentMigrationInfo] = (),
-    trainable_by_default: bool = False,
-    representation: RepresentationSpec | None = None,
-) -> DeclaredComponent:
-    """Declare only the component facets supplied by its owning layers."""
-    schema_sources = sum(
-        source is not None for source in (param_schema, parameter_fields, param_model)
-    )
-    if schema_sources > 1:
-        raise ValueError(f"Component {name!r} must declare exactly one parameter schema source")
-    source_schema = tuple(param_schema or parameter_fields or ())
-    model = (
-        _strict_param_model(name, param_model)
-        if param_model is not None
-        else _model_from_param_schema(name, source_schema)
-    )
-    public_schema = _param_schema_from_model(model)
-    required_fields = frozenset(schema.name for schema in public_schema if schema.required)
-    prototype_bindings = dict(build_output_prototypes or {})
-    if prototype_bindings:
-        if output_prototype_fn is None or set(prototype_bindings.values()) - set(output_ports):
-            raise ValueError(f"Component {name!r} must infer each output prototype it builds from")
-        if set(prototype_bindings) & (set(model.model_fields) | set(build_context_fields)):
-            raise ValueError(f"Component {name!r} cannot author compiler-provided prototypes")
-    if extractor is not None and override_reason is None:
-        raise ValueError(f"Component {name!r} extractor override requires a reason")
-    if override_reason is not None and builder is None and extractor is None:
-        raise ValueError(f"Component {name!r} override reason has no override")
-    if runtime_type is None and builder is not None:
-        from feedbax.runtime.graph import Component
-
-        inferred = get_type_hints(builder).get("return")
-        if isinstance(inferred, type) and issubclass(inferred, Component):
-            runtime_type = inferred
-    param_contract = ComponentParamContract(
-        component_type=name,
-        model=model,
-        schema_version=param_schema_version,
-        required_fields=required_fields,
-        build_context_fields=frozenset(build_context_fields),
-        builder=builder,
-        runtime_type=runtime_type,
-        constructor=constructor or ComponentConstructorPlan(),
-        attribute_paths=dict(attribute_paths or {}),
-        projection=param_projection,
-        extractor=extractor,
-        override_reason=override_reason,
-    )
-    if is_composite and interior_domain is None:
-        interior_domain = CAUSAL_DOMAIN_ID
-    supported = tuple(dict.fromkeys((*supported_param_schema_versions, param_schema_version)))
-    capabilities = {"compile", "serialize"}
-    if builder is not None:
-        capabilities.add("runtime")
-    if runtime_type is not None:
-        capabilities.add("runtime")
-    if template_graph is not None:
-        capabilities.add("authoring")
-    if category or description or representation is not None or template_ui_state is not None:
-        capabilities.add("studio")
-    if trainable_by_default:
-        capabilities.add("training")
-    declaration = ComponentDeclaration(
-        type_id=name,
-        schema_id=f"{owner or provenance or 'local'}.component.{name}",
-        schema_version=param_schema_version,
-        capabilities=frozenset(capabilities),
-        owner=owner or provenance or "local",
-    )
-    from .discovery import source_path
-
-    return DeclaredComponent(
-        declaration=declaration,
-        params=param_contract,
-        compiler=ComponentCompilerFacet(
-            parameter_contract=param_contract,
-            input_ports=tuple(input_ports),
-            output_ports=tuple(output_ports),
-            port_types=port_types,
-            dynamic_port_policy=dynamic_port_policy,
-            domain=domain,
-            interior_domain=interior_domain,
-            is_composite=is_composite,
-            output_prototype_fn=output_prototype_fn,
-            prototype_depends_on_connected_inputs=prototype_depends_on_connected_inputs,
-            input_prototype_parameter=input_prototype_parameter,
-            build_output_prototypes=prototype_bindings,
-        ),
-        serialization=ComponentSerializationFacet(
-            param_schema_version=param_schema_version,
-            supported_param_schema_versions=supported,
-            migrations=tuple(migrations),
-        ),
-        runtime=(
-            ComponentRuntimeFacet(param_contract.build)
-            if builder is not None or runtime_type is not None
-            else None
-        ),
-        authoring=(
-            ComponentAuthoringFacet(template_graph, template_id, template_kind)
-            if template_graph is not None or template_id is not None or template_kind is not None
-            else None
-        ),
-        studio=(
-            ComponentStudioFacet(category, description, icon, template_ui_state, representation)
-            if "studio" in capabilities
-            else None
-        ),
-        training=(ComponentTrainingFacet(True) if trainable_by_default else None),
-        provenance=provenance,
-        identity=identity,
-        source_paths=(source_path(param_model),) if param_model is not None else (),
-    )
 
 
 def _template_ui_state(

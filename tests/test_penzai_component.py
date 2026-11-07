@@ -30,7 +30,7 @@ from feedbax.components.penzai import (
     list_penzai_builders,
     build_penzai_subgraph,
 )
-from feedbax.components.penzai import _build_penzai_adapter
+from feedbax.components.penzai import PenzaiAdapter
 from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report, inspect_penzai_model
 from feedbax.compiler.serialization import graph_to_spec
 
@@ -627,7 +627,7 @@ class TestFactoryRegistry:
         try:
             register_penzai_builder("test_runtime_stateful", lambda params: FakeModel(), {})
             with pytest.raises(ValueError, match="penzai.stateful_unsupported") as exc_info:
-                _build_penzai_adapter({"builder_name": "test_runtime_stateful"})
+                PenzaiAdapter(builder_name="test_runtime_stateful")
             assert not isinstance(exc_info.value, NotImplementedError)
         finally:
             pc._PENZAI_MODEL_BUILDERS.pop("test_runtime_stateful", None)
@@ -728,29 +728,38 @@ class TestFactoryRegistry:
                 graph=GraphSpec(
                     nodes={
                         "projection": ComponentSpec(
-                            type="PenzaiAdapter",
-                            params={"builder_name": builder_name},
-                            input_ports=["input"],
-                            output_ports=["output"],
+                            type="feedbax.PenzaiAdapter",
+                            params={
+                                "builder_name": builder_name,
+                                "input_port": "features",
+                                "output_port": "projection",
+                            },
+                            input_ports=["features"],
+                            output_ports=["projection"],
                         )
                     },
-                    input_ports=["input"],
-                    output_ports=["output"],
-                    input_bindings={"input": ("projection", "input")},
-                    output_bindings={"output": ("projection", "output")},
+                    input_ports=["features"],
+                    output_ports=["projection"],
+                    input_bindings={"features": ("projection", "features")},
+                    output_bindings={"projection": ("projection", "projection")},
                 )
             )
             registry = ComponentRegistry()
             graph = compile_graph(document, registry).graph
             outputs, _ = graph(
-                {"input": jnp.array([2.0])},
+                {"features": jnp.array([2.0])},
                 init_state_from_component(graph),
                 key=jax.random.PRNGKey(0),
             )
-            assert jnp.array_equal(outputs["output"], jnp.array([6.0]))
+            assert jnp.array_equal(outputs["projection"], jnp.array([6.0]))
             serialized = graph_to_spec(graph, registry).nodes["projection"]
-            assert serialized.type == "PenzaiAdapter"
+            assert serialized.type == "feedbax.PenzaiAdapter"
             assert serialized.params["builder_name"] == builder_name
+            assert serialized.params["input_port"] == "features"
+            assert serialized.params["output_port"] == "projection"
+            assert registry.dynamic_port_layout(
+                "feedbax.PenzaiAdapter", serialized.params
+            ).input_ports == ("features",)
             assert constructions == 1
         finally:
             pc._PENZAI_MODEL_BUILDERS.pop(builder_name, None)
@@ -789,7 +798,7 @@ class TestFactoryRegistry:
                 GraphSpec(
                     nodes={
                         "projection": ComponentSpec(
-                            type="PenzaiAdapter",
+                            type="feedbax.PenzaiAdapter",
                             params={"builder_name": builder_name},
                             input_ports=["input"],
                             output_ports=["output"],

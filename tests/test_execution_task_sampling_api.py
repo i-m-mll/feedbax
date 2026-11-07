@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.web.app import create_app
+from feedbax.tasks.reach_components import SimpleReaches
 
 
 @pytest.fixture
@@ -12,10 +13,13 @@ def client():
         yield test_client
 
 
-def test_sample_task_trials_is_deterministic_for_simple_reaches(client: TestClient) -> None:
+@pytest.mark.parametrize("task_type", ["SimpleReaches", f"feedbax.{SimpleReaches.__name__}"])
+def test_sample_task_trials_is_deterministic_for_simple_reaches(
+    client: TestClient, task_type: str
+) -> None:
     request = {
         "task_spec": {
-            "type": "SimpleReaches",
+            "type": task_type,
             "params": {
                 "n_steps": 12,
                 "workspace": [[-0.5, -0.25], [0.5, 0.25]],

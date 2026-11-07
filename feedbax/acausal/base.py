@@ -4,7 +4,7 @@ Acausal components are construction-time equation descriptors (plain Python
 dataclasses) that get compiled into a single ``vector_field(t, y, args)``
 at ``__init__`` time.  The resulting ``AcausalSystem`` is a standard
 ``DAEComponent`` that the feedbax Graph treats like any other component.
-Durable acausal identity belongs to ``feedbax.spec.acausal_graph.v1`` contract
+Durable acausal identity belongs to ``feedbax.spec.acausal_graph.v2`` contract
 payloads, not to these runtime construction objects.
 
 Domains
@@ -21,6 +21,8 @@ Each physical domain (translational, rotational) defines:
 
 from __future__ import annotations
 
+from feedbax.contracts.portable import ComponentOwner, ComponentOptions, Ports
+
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
 from typing import Callable, ClassVar, Optional
@@ -32,8 +34,10 @@ from feedbax._acausal_payload import SourcePayload
 # Domain
 # ---------------------------------------------------------------------------
 
+
 class Domain(Enum):
     """Physical domain for acausal ports."""
+
     TRANSLATIONAL = "translational"
     ROTATIONAL = "rotational"
     PLANAR_MULTIBODY = "planar_multibody"
@@ -42,6 +46,7 @@ class Domain(Enum):
 # ---------------------------------------------------------------------------
 # Port / Variable / Equation descriptors
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class AcausalPort:
@@ -55,6 +60,7 @@ class AcausalPort:
         through_var: Name of the through-variable slot.
             E.g. ``"force"`` for translational.
     """
+
     name: str
     domain: Domain
     across_vars: tuple[str, ...]
@@ -75,6 +81,7 @@ class AcausalVar:
         is_input: ``True`` when the variable is driven by a causal input.
         initial_value: Starting value for the variable.
     """
+
     name: str
     is_differential: bool = True
     is_eliminated: bool = False
@@ -102,6 +109,7 @@ class AcausalEquation:
         is_through_def: If ``True``, this equation *defines* a through
             variable (force/torque) rather than a time derivative.
     """
+
     lhs_var: str
     rhs_fn: Callable
     depends_on: tuple[str, ...]
@@ -112,8 +120,9 @@ class AcausalEquation:
 # Element / Connection
 # ---------------------------------------------------------------------------
 
+
 @dataclass
-class AcausalElement:
+class AcausalElement(ComponentOwner):
     """Base for acausal element descriptors (construction-time only).
 
     Subclasses populate ``ports``, ``equations``, and ``params`` during
@@ -132,6 +141,64 @@ class AcausalElement:
         sensor_output: If this element is a sensor, the
             ``(port_name, slot_name)`` it reads.
     """
+
+    component_options = ComponentOptions(build_context_fields=("name",))
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        import functools
+        import inspect
+        from feedbax.contracts.portable import configuration_model, validate_authoring
+
+        init = vars(cls).get("__init__")
+        if init is None:
+            return
+        signature = inspect.signature(init)
+
+        @functools.wraps(init)
+        def construct(self, *args, **kwargs):
+            bound = signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            values = {
+                name: value
+                for name, value in bound.arguments.items()
+                if name not in ("self", "name")
+            }
+            config = validate_authoring(configuration_model(cls), values)
+            init(self, *args, **kwargs)
+            for name in type(config).model_fields:
+                if f"{self.name}.{name}" not in self.params:
+                    setattr(self, name, getattr(config, name))
+
+        cls.__init__ = construct
+
+    @classmethod
+    def port_contract(cls, *, registry=None):
+        from feedbax.contracts.acausal_interface import conserving_port_type
+
+        physical = cls("__catalogue__").ports
+        return Ports(
+            {
+                name: conserving_port_type(
+                    physical_domain=port.domain.value,
+                    across_vars=port.across_vars,
+                    through_var=port.through_var,
+                )
+                for name, port in sorted(physical.items())
+            },
+            {},
+        )
+
+    def configuration_values(self):
+        from feedbax.contracts.portable import configuration_model
+
+        return {
+            name: self.params[f"{self.name}.{name}"]
+            if f"{self.name}.{name}" in self.params
+            else getattr(self, name)
+            for name in configuration_model(type(self)).model_fields
+        }
+
     source_payload: ClassVar[SourcePayload | None] = None
 
     name: str
@@ -153,6 +220,7 @@ class AcausalConnection:
         element_b: Name of the second element.
         port_b: Port name on the second element.
     """
+
     element_a: str
     port_a: str
     element_b: str
@@ -171,6 +239,7 @@ class AcausalConnection:
 # ---------------------------------------------------------------------------
 # State layout (output of the assembly step)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class StateLayout:
@@ -192,6 +261,7 @@ class StateLayout:
         _outputs: ``output_label -> var_name`` for sensor readings.
         total_size: Length of the flat state vector.
     """
+
     _vars: dict[str, AcausalVar]
     _differential: list[str]
     _algebraic: list[str]

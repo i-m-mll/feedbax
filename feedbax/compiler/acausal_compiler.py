@@ -30,6 +30,7 @@ from feedbax.contracts.acausal_interface import (
     PRESCRIBED_MOTION_PAYLOAD,
     TORQUE_PAYLOAD,
     actuation_source_payload,
+    is_acausal_type,
     derive_acausal_interface,
     signal_port_type,
 )
@@ -45,7 +46,7 @@ from feedbax.mechanics.solver_config import resolve_acausal_solver
 
 
 if TYPE_CHECKING:
-    from feedbax.component_registry import DeclaredComponent
+    from feedbax.component_registry.declarations import DeclaredComponent
 
 _ACTUATION_ELEMENT_TYPES = {
     FORCE_PAYLOAD: "ForceSource",
@@ -278,7 +279,7 @@ def _diagnose_acausal_spec(
             )
             diagnostics.extend(_diagnose_flattened_domains(graph, flattened, path))
             has_external_nodes = nested and any(
-                node.type == "BoundaryPort" for node in graph.nodes.values()
+                is_acausal_type(node.type, "BoundaryPort") for node in graph.nodes.values()
             )
             if not has_external_nodes and not any(
                 diagnostic.severity == "error" for diagnostic in diagnostics
@@ -332,13 +333,22 @@ def _diagnose_component_types(
     path: str,
 ) -> list[DomainDiagnostic]:
     diagnostics: list[DomainDiagnostic] = []
-    get_meta = getattr(component_registry, "get", None)
     for node_id, node_spec in graph.nodes.items():
-        if node_spec.type in {ACTUATION_INPUT_TYPE, SENSOR_OUTPUT_TYPE, BOUNDARY_PORT_TYPE}:
+        if any(
+            is_acausal_type(node_spec.type, role)
+            for role in (ACTUATION_INPUT_TYPE, SENSOR_OUTPUT_TYPE, BOUNDARY_PORT_TYPE)
+        ):
             continue
-        if node_spec.type == ACAUSAL_SYSTEM_TYPE:
+        if is_acausal_type(node_spec.type, ACAUSAL_SYSTEM_TYPE):
             continue
-        meta = get_meta(node_spec.type) if callable(get_meta) else None
+        from feedbax.contracts.migrations import UnsupportedComponentMigration
+
+        try:
+            meta = component_registry.resolve_component_spec(
+                node_spec.type, node_spec.params, revision=node_spec.revision, complete_params=False
+            ).meta
+        except UnsupportedComponentMigration:
+            meta = None
         if meta is not None and getattr(meta, "domain", None) not in {
             ACAUSAL_DOMAIN_ID,
             MECHANICS_DOMAIN_ID,
@@ -406,7 +416,7 @@ def _diagnose_boundary_ports(graph: AcausalGraphSpec, path: str) -> list[DomainD
         node for connection in graph.connections for node in (connection.a[0], connection.b[0])
     }
     for node_id, node_spec in graph.nodes.items():
-        if node_spec.type != BOUNDARY_PORT_TYPE:
+        if not is_acausal_type(node_spec.type, BOUNDARY_PORT_TYPE):
             continue
         port_name = _string_param(node_spec, "port_name", default="port", node_path=node_id)
         if port_name in seen:
@@ -453,7 +463,7 @@ def _diagnose_adapter_units(graph: AcausalGraphSpec, path: str) -> list[DomainDi
     }
     for node_id, node_spec in graph.nodes.items():
         params = dict(node_spec.params)
-        if node_spec.type == ACTUATION_INPUT_TYPE:
+        if is_acausal_type(node_spec.type, ACTUATION_INPUT_TYPE):
             source_kind = str(params.get("source_kind", "force"))
             if source_kind not in allowed_sources[graph.physical_domain]:
                 diagnostics.append(
@@ -467,7 +477,7 @@ def _diagnose_adapter_units(graph: AcausalGraphSpec, path: str) -> list[DomainDi
                         node_ids=[node_id],
                     )
                 )
-        elif node_spec.type == SENSOR_OUTPUT_TYPE:
+        elif is_acausal_type(node_spec.type, SENSOR_OUTPUT_TYPE):
             quantity = str(params.get("quantity", "position"))
             if quantity not in allowed_sensors[graph.physical_domain]:
                 diagnostics.append(
@@ -504,7 +514,7 @@ def _compile_planar_multibody_graph(
         raise ValueError(f"Planar multibody graph {node_name!r} is not compilable: {messages}")
     return build_component(
         node_name,
-        "AnalyticalMusculoskeletalPlant",
+        "feedbax.AnalyticalMusculoskeletalPlant",
         {"dt": graph.solver.dt, "n_steps": 1, "solver_type": graph.solver.solver_type},
         component_registry=component_registry,
     )
@@ -517,10 +527,10 @@ def _frame_ref(node_id: str, port_name: str) -> str:
 def _valid_planar_frames(graph: AcausalGraphSpec) -> set[str]:
     frames: set[str] = set()
     for node_id, node_spec in graph.nodes.items():
-        if node_spec.type == "PlanarLink":
+        if is_acausal_type(node_spec.type, "PlanarLink"):
             frames.add(_frame_ref(node_id, "proximal"))
             frames.add(_frame_ref(node_id, "distal"))
-        elif node_spec.type == "WorldFrame":
+        elif is_acausal_type(node_spec.type, "WorldFrame"):
             frames.add(_frame_ref(node_id, "frame"))
     return frames
 
@@ -535,10 +545,20 @@ def _diagnose_planar_multibody_graph(
     path: str,
 ) -> list[DomainDiagnostic]:
     diagnostics: list[DomainDiagnostic] = []
-    link_ids = [node_id for node_id, node in graph.nodes.items() if node.type == "PlanarLink"]
-    joint_ids = [node_id for node_id, node in graph.nodes.items() if node.type == "RevoluteJoint"]
-    world_ids = [node_id for node_id, node in graph.nodes.items() if node.type == "WorldFrame"]
-    anchor_ids = [node_id for node_id, node in graph.nodes.items() if node.type == "Anchor"]
+    link_ids = [
+        node_id for node_id, node in graph.nodes.items() if is_acausal_type(node.type, "PlanarLink")
+    ]
+    joint_ids = [
+        node_id
+        for node_id, node in graph.nodes.items()
+        if is_acausal_type(node.type, "RevoluteJoint")
+    ]
+    world_ids = [
+        node_id for node_id, node in graph.nodes.items() if is_acausal_type(node.type, "WorldFrame")
+    ]
+    anchor_ids = [
+        node_id for node_id, node in graph.nodes.items() if is_acausal_type(node.type, "Anchor")
+    ]
     valid_frames = _valid_planar_frames(graph)
 
     if not world_ids or not anchor_ids:
@@ -615,7 +635,7 @@ def _diagnose_planar_multibody_graph(
         )
 
     for node_id, node_spec in graph.nodes.items():
-        if node_spec.type != "MusclePath":
+        if not is_acausal_type(node_spec.type, "MusclePath"):
             continue
         path_points = node_spec.params.get("path_points", [])
         if not isinstance(path_points, list) or len(path_points) < 2:
@@ -659,7 +679,9 @@ def _diagnose_planar_multibody_graph(
             counts={
                 "n_dof": len(joint_ids),
                 "n_links": len(link_ids),
-                "n_muscles": sum(1 for node in graph.nodes.values() if node.type == "MusclePath"),
+                "n_muscles": sum(
+                    1 for node in graph.nodes.values() if is_acausal_type(node.type, "MusclePath")
+                ),
             },
         )
     )
@@ -751,7 +773,9 @@ def _compile_summary(
 
 
 def _compile_planar_multibody_summary(graph: AcausalGraphSpec) -> dict[str, int]:
-    n_joints = sum(1 for node in graph.nodes.values() if node.type == "RevoluteJoint")
+    n_joints = sum(
+        1 for node in graph.nodes.values() if is_acausal_type(node.type, "RevoluteJoint")
+    )
     return {
         "n_equations": 0,
         "n_unknowns": 0,
@@ -759,7 +783,9 @@ def _compile_planar_multibody_summary(graph: AcausalGraphSpec) -> dict[str, int]
         "n_networks": 1 if graph.nodes else 0,
         "n_elements": len(graph.nodes),
         "n_dof": n_joints,
-        "n_muscles": sum(1 for node in graph.nodes.values() if node.type == "MusclePath"),
+        "n_muscles": sum(
+            1 for node in graph.nodes.values() if is_acausal_type(node.type, "MusclePath")
+        ),
     }
 
 
@@ -777,7 +803,7 @@ def _flatten_acausal_graph(
     for node_id, node_spec in graph.nodes.items():
         node_type = node_spec.type
         node_path = f"{path}.{node_id}" if path else node_id
-        if node_type == BOUNDARY_PORT_TYPE:
+        if is_acausal_type(node_type, BOUNDARY_PORT_TYPE):
             boundary_nodes[node_id] = _string_param(
                 node_spec,
                 "port_name",
@@ -786,7 +812,7 @@ def _flatten_acausal_graph(
             )
             continue
 
-        if node_type == ACAUSAL_SYSTEM_TYPE:
+        if is_acausal_type(node_type, ACAUSAL_SYSTEM_TYPE):
             subgraph = (graph.subgraphs or {}).get(node_id)
             if subgraph is None:
                 raise ValueError(
@@ -888,7 +914,7 @@ def _instantiate_node(
     node_type = node_spec.type
     meta = _require_acausal_component_meta(node_type, component_registry, node_path)
 
-    if node_type == ACTUATION_INPUT_TYPE:
+    if is_acausal_type(node_type, ACTUATION_INPUT_TYPE):
         element_type = _ACTUATION_ELEMENT_TYPES.get(actuation_source_payload(node_spec))
         if element_type is None:
             raise ValueError(f"Unsupported acausal source at {node_path!r}")
@@ -901,7 +927,7 @@ def _instantiate_node(
             node_path,
         )
 
-    if node_type == SENSOR_OUTPUT_TYPE:
+    if is_acausal_type(node_type, SENSOR_OUTPUT_TYPE):
         quantity = str(node_spec.params.get("quantity", "position"))
         element_type = _SENSOR_ELEMENT_TYPES.get(quantity)
         if element_type is None:
@@ -949,8 +975,7 @@ def _require_acausal_component_meta(
     component_registry: Any,
     node_path: str,
 ) -> DeclaredComponent:
-    get_meta = getattr(component_registry, "get", None)
-    meta = get_meta(node_type) if callable(get_meta) else None
+    meta = component_registry.resolve_component_spec(node_type, {}, complete_params=False).meta
     if meta is None:
         raise ValueError(
             f"Unsupported acausal component type {node_type!r} at {node_path!r}: "

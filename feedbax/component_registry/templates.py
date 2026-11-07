@@ -1,52 +1,22 @@
-"""Composition of the built-in graph template owners."""
+"""Composition of built-in graph template owners and histories."""
 
-from __future__ import annotations
-
-from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .discovery import ComponentPack
+from .discovery import ComponentPack
 
 
 def builtin_graph_template_pack() -> ComponentPack:
-    from feedbax.compiler.mechanics_templates import (
-        mass_spring_damper_template_definition,
-        point_mass_with_muscles_template_definition,
-        two_link_arm_6muscle_template_definition,
-    )
-    from feedbax.compiler.templates import (
-        recurrent_controller_template_definition,
-        simple_feedback_template_definition,
-    )
-
-    from .discovery import ComponentPack
+    from feedbax.compiler import mechanics_templates, templates
+    from feedbax.compiler.mechanics_templates_history import HISTORIES as mechanics_history
+    from feedbax.compiler.templates_history import HISTORIES as graph_history
 
     return ComponentPack(
-        components=(
-            recurrent_controller_template_definition,
-            mass_spring_damper_template_definition,
-            point_mass_with_muscles_template_definition,
-            two_link_arm_6muscle_template_definition,
-            simple_feedback_template_definition,
-        ),
+        namespace="feedbax",
+        modules=(templates, mechanics_templates),
+        histories={**mechanics_history, **graph_history},
     )
 
 
 def builtin_muscle_template_pack() -> ComponentPack:
-    from feedbax.compiler.muscle_templates import (
-        arm_6muscle_rigid_tendon_template_definition,
-        point_mass_8muscle_relu_template_definition,
-    )
-    from feedbax.mechanics import muscle_representation
+    from feedbax.compiler import muscle_templates
+    from feedbax.compiler.muscle_templates_history import HISTORIES
 
-    from . import representation
-    from .discovery import ComponentPack
-
-    return ComponentPack(
-        components=(
-            arm_6muscle_rigid_tendon_template_definition,
-            point_mass_8muscle_relu_template_definition,
-        ),
-        sources=(Path(muscle_representation.__file__), Path(representation.__file__)),
-    )
+    return ComponentPack(namespace="feedbax", modules=(muscle_templates,), histories=HISTORIES)

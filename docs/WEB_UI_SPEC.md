@@ -1416,14 +1416,14 @@ A protocol 2 plugin can opt a concrete component into Studio through its existin
 
 ```python
 from feedbax import Component
-from feedbax.component_registry import ComponentPack, component
+from feedbax.component_registry import ComponentPack
+from feedbax.contracts.portable import Ports
+from feedbax.contracts.component import PortType
 from feedbax.plugins import COMPONENTS, RegistrationContext
 
 
-@component("example.Scale", category="Custom")
 class Scale(Component):
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports({"input": PortType(dtype="any")}, {"output": PortType(dtype="any")})
     factor: float
 
     def __init__(self, factor: float = 1.0):
@@ -1434,7 +1434,7 @@ class Scale(Component):
 
 
 def register(context: RegistrationContext) -> None:
-    context.registry(COMPONENTS).ingest(ComponentPack(components=(Scale,)))
+    context.registry(COMPONENTS).ingest(ComponentPack(namespace="example", components=(Scale,)))
 ```
 
 ### 9.4 Component Properties Panel

@@ -21,6 +21,7 @@ import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.contracts.array_values import ArrayValueSpec
+from feedbax.contracts.portable import ComponentOwner
 from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.runtime._graph import detect_cycles_and_sort
 from feedbax.runtime._graph_key_schedule import (
@@ -51,8 +52,9 @@ def init_state_from_component(component: "Component") -> State:
 
     return State(component)
 
-class Component(Module):
-    """Base class for all graph nodes."""
+
+class GraphNode(Module):
+    """Executable graph node, without a promise of portable reconstruction."""
 
     input_ports: ClassVar[tuple[str, ...]] = ()
     output_ports: ClassVar[tuple[str, ...]] = ()
@@ -131,6 +133,40 @@ class Component(Module):
             if hasattr(state_value, port):
                 outputs[port] = attrgetter(port)(state_value)
         return outputs
+
+
+class Component(GraphNode, ComponentOwner):
+    """An executable node with a reconstructible typed configuration."""
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        from feedbax.contracts.portable import install_ports
+
+        install_ports(cls)
+
+    def __check_init__(self):
+        from feedbax.contracts.component import derive_dynamic_port_layout
+        from feedbax.contracts.portable import configuration_paths, validate_configuration
+
+        ports = type(self).ports
+        if ports is not None:
+            validate_configuration(self)
+        if ports is not None and ports.dynamic is not None:
+            names = (
+                (*ports.dynamic.input_name_params, *ports.dynamic.output_name_params)
+                if ports.dynamic.count_mode == "names"
+                else (ports.dynamic.count_param,)
+            )
+            values = {}
+            paths = configuration_paths(type(self))
+            for name in names:
+                value = self
+                for part in paths.get(name, name).split("."):
+                    value = getattr(value, part)
+                values[name] = value
+            layout = derive_dynamic_port_layout(ports.dynamic, values)
+            object.__setattr__(self, "input_ports", layout.input_ports)
+            object.__setattr__(self, "output_ports", layout.output_ports)
 
 
 
@@ -258,13 +294,13 @@ class ComponentBinding:
     """Registry identity and explicit graph-owned controls for one node."""
 
     type_id: str
-    param_schema_version: str
+    revision: int
     # Checkpoint slot fingerprints include the binding's repr via the PyTree definition.
     trainable_override: bool | None = dataclasses.field(default=None, repr=False)
     authored_arrays: tuple[AuthoredArrayEncoding, ...] = dataclasses.field(default=(), repr=False)
 
 
-class Graph(Component):
+class Graph(GraphNode):
     """A computational graph of components."""
 
     # All fields must have defaults to avoid ordering issues with ClassVar
@@ -278,8 +314,12 @@ class Graph(Component):
     input_ports: tuple[str, ...] = ()
     output_ports: tuple[str, ...] = ()
 
-    state_view_fn: Optional[Callable[[dict[str, PyTree]], PyTree]] = field(default=None, static=True)
-    state_consistency_fn: Optional[Callable[[Graph, State], State]] = field(default=None, static=True)
+    state_view_fn: Optional[Callable[[dict[str, PyTree]], PyTree]] = field(
+        default=None, static=True
+    )
+    state_consistency_fn: Optional[Callable[[Graph, State], State]] = field(
+        default=None, static=True
+    )
     checkpoint: bool = eqx.field(default=False, static=True)
     parameter_constraints: tuple[object, ...] = field(default_factory=tuple, static=True)
     component_bindings: dict[str, ComponentBinding] = field(default_factory=dict, static=True)
@@ -291,8 +331,8 @@ class Graph(Component):
 
     def _validate_graph(self) -> None:
         for name in self.nodes:
-            if not isinstance(self.nodes[name], Component):
-                raise TypeError(f"Node '{name}' is not a Component")
+            if not isinstance(self.nodes[name], GraphNode):
+                raise TypeError(f"Node '{name}' is not a GraphNode")
 
         for wire in self.wires:
             if wire.source_node not in self.nodes:
@@ -567,7 +607,9 @@ class Graph(Component):
             raise TypeError("state_view_fn must be callable")
         return self._with_runtime_callback("state_view_fn", state_view_fn)
 
-    def with_state_consistency(self, state_consistency_fn: Callable[[Graph, State], State]) -> "Graph":
+    def with_state_consistency(
+        self, state_consistency_fn: Callable[[Graph, State], State]
+    ) -> "Graph":
         """Return a copy with a callback receiving the current graph and State."""
 
         if not callable(state_consistency_fn):
@@ -1601,7 +1643,9 @@ class Graph(Component):
             (new_nodes, new_wires, new_input_bindings, new_output_bindings),
         )
         object.__setattr__(
-            graph, "component_bindings", {k: v for k, v in self.component_bindings.items() if k != name}
+            graph,
+            "component_bindings",
+            {k: v for k, v in self.component_bindings.items() if k != name},
         )
         object.__setattr__(
             graph,
@@ -1720,17 +1764,22 @@ class Graph(Component):
         return select(self).at(lambda g: g.nodes).at_instances_of(*types)
 
 
-def subgraph_definition():
-    """The authored nested graph contract owned by Graph."""
-    from feedbax.component_registry.declarations import declare_component
+from pydantic import BaseModel, ConfigDict
+from feedbax.contracts.portable import GraphTemplate, ComponentOptions
 
-    return declare_component(
-        name="Subgraph",
-        category="Structure",
-        description="Nested graph container.",
-        parameter_fields=[],
-        input_ports=[],
-        output_ports=[],
-        icon="Layers",
-        is_composite=True,
-    )
+
+class _SubgraphConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class Subgraph(GraphTemplate):
+    """Editable nested graph container."""
+
+    config = _SubgraphConfig
+    component_options = ComponentOptions(is_composite=True)
+
+    @classmethod
+    def expand(cls, config):
+        from feedbax.contracts.graph import GraphSpec
+
+        return GraphSpec()

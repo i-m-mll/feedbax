@@ -18,7 +18,8 @@ if TYPE_CHECKING:
 
 
 ACAUSAL_GRAPH_SCHEMA_ID = "feedbax.spec.acausal_graph"
-ACAUSAL_GRAPH_SCHEMA_VERSION = "feedbax.spec.acausal_graph.v1"
+ACAUSAL_GRAPH_SCHEMA_VERSION_V1 = "feedbax.spec.acausal_graph.v1"
+ACAUSAL_GRAPH_SCHEMA_VERSION = "feedbax.spec.acausal_graph.v2"
 AcausalPhysicalDomain = Literal["translational", "rotational", "planar_multibody"]
 SolverType = Literal["euler", "implicit_euler", "kvaerno5", "tsit5"]
 

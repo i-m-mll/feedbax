@@ -8,9 +8,9 @@ from typing import cast
 
 from equinox.nn import State
 
-from feedbax.runtime.channel import Channel
+from feedbax.runtime.channel import SignalChannel
 from feedbax.runtime.components import Ravel
-from feedbax.runtime.feedback import SelectState
+from feedbax.runtime.feedback import StateSelection
 from feedbax.runtime.graph import Component, Graph, Wire
 
 
@@ -35,7 +35,7 @@ def trial_history_plan(
         if wire.temporality != "recurrent" or initializer.get("kind") != "state_output":
             raise ValueError(f"{wire} seed_channel_history requires a recurrent state_output")
         channel = wire.target_node
-        adapter = channel if isinstance(nodes[channel], (Ravel, SelectState)) else None
+        adapter = channel if isinstance(nodes[channel], (Ravel, StateSelection)) else None
         if adapter is not None:
             targets = [
                 edge.target_node
@@ -44,14 +44,14 @@ def trial_history_plan(
                 and edge.source_port == "output"
                 and edge.target_port == "input"
                 and edge.temporality == "instant"
-                and isinstance(nodes[edge.target_node], Channel)
+                and isinstance(nodes[edge.target_node], SignalChannel)
             ]
             if len(targets) != 1:
                 raise ValueError(
                     f"{wire} seed_channel_history requires one Channel after the selection or flattening node"
                 )
             channel = targets[0]
-        if not isinstance(nodes[channel], Channel):
+        if not isinstance(nodes[channel], SignalChannel):
             raise ValueError(
                 f"{wire} seed_channel_history must feed a Channel, optionally through Ravel or SelectState"
             )
@@ -87,12 +87,12 @@ class _TrialHistoryPlan:
                 )
             value = outputs[source_port]
             adapter = graph.nodes[adapter_name] if adapter_name is not None else None
-            if isinstance(adapter, SelectState):
+            if isinstance(adapter, StateSelection):
                 value = adapter.where(value)
             elif isinstance(adapter, Ravel):
                 value = adapter.flatten(value)
             samples[channel_name] = value
 
         for channel_name, sample in samples.items():
-            state = cast(Channel, graph.nodes[channel_name]).fill_history(state, sample)
+            state = cast(SignalChannel, graph.nodes[channel_name]).fill_history(state, sample)
         return state

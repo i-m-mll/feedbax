@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from feedbax.component_registry import ComponentPack
-from feedbax.component_registry import declare_component
+from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import Ports
 
 import asyncio
 from dataclasses import FrozenInstanceError, dataclass
@@ -350,25 +351,24 @@ def test_failed_registration_never_publishes_partial_state() -> None:
 
 
 def test_failed_bootstrap_seals_plugin_retained_registry() -> None:
+    class Late(Component):
+        ports = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
+    class Retained(Component):
+        ports = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
     retained = []
 
     def retain(context: RegistrationContext) -> None:
         registry = context.registry(COMPONENTS)
         retained.append(registry)
-        registry.ingest(
-            ComponentPack(
-                components=(
-                    declare_component(
-                        name="pkg.Retained",
-                        builder=lambda _params: object(),
-                        input_ports=(),
-                        output_ports=(),
-                        category="Custom",
-                        override_reason="Synthetic fixture constructor",
-                    ),
-                )
-            )
-        )
+        registry.ingest(ComponentPack(namespace="pkg", components=(Retained,)))
 
     retain_plugin = PluginRegistration(
         PluginDeclaration(
@@ -391,20 +391,7 @@ def test_failed_bootstrap_seals_plugin_retained_registry() -> None:
         )
 
     with pytest.raises(RuntimeError, match="component registry is sealed"):
-        retained[0].ingest(
-            ComponentPack(
-                components=(
-                    declare_component(
-                        name="pkg.Late",
-                        builder=lambda _params: object(),
-                        input_ports=(),
-                        output_ports=(),
-                        category="Custom",
-                        override_reason="Synthetic fixture constructor",
-                    ),
-                )
-            )
-        )
+        retained[0].ingest(ComponentPack(namespace="pkg", components=(Late,)))
 
 
 def test_plugin_can_only_access_declared_families() -> None:
@@ -620,22 +607,15 @@ def test_duplicate_dependency_declaration_is_invalid() -> None:
 
 
 def test_published_concrete_registries_are_sealed() -> None:
+    class X(Component):
+        ports = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
     state = asyncio.run(bootstrap_application(_context(), registrations=()))
     with pytest.raises(RuntimeError, match="component registry is sealed"):
-        state.bundle.components.ingest(
-            ComponentPack(
-                components=(
-                    declare_component(
-                        name="pkg.X",
-                        builder=lambda _params: object(),
-                        input_ports=(),
-                        output_ports=(),
-                        category="Custom",
-                        override_reason="Synthetic fixture constructor",
-                    ),
-                )
-            )
-        )
+        state.bundle.components.ingest(ComponentPack(namespace="pkg", components=(X,)))
     with pytest.raises(RuntimeError, match="experiment registry is sealed"):
         state.bundle.experiment_packages.register_package(
             "pkg", __import__("types"), (), "analysis", "training", "config"
@@ -649,18 +629,16 @@ def test_published_concrete_registries_are_sealed() -> None:
 
 
 def test_published_registry_metadata_is_detached() -> None:
+    class Snapshot(Component):
+        ports = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
     class Params(BaseModel):
         value: int = 1
 
-    component_meta = declare_component(
-        name="pkg.Snapshot",
-        category="Original",
-        description="snapshot",
-        param_schema=[],
-        input_ports=[],
-        output_ports=[],
-        builder=lambda _params: object(),
-    )
+    component_meta = Snapshot
     routing = {"paths": ["original"]}
     template = SimpleNamespace(name="pkg.template", metadata={"values": ["original"]})
     piece = SimpleNamespace(name="pkg.piece", style={"values": ["original"]})
@@ -672,7 +650,9 @@ def test_published_registry_metadata_is_detached() -> None:
     )
 
     def register(context: RegistrationContext) -> None:
-        context.registry(COMPONENTS).ingest(ComponentPack(components=(component_meta,)))
+        context.registry(COMPONENTS).ingest(
+            ComponentPack(namespace="pkg", components=(component_meta,))
+        )
         context.registry(EXPERIMENT_PACKAGES).register_package(
             "pkg", __import__("types"), (), "analysis", "training", "config", routing
         )
@@ -694,8 +674,6 @@ def test_published_registry_metadata_is_detached() -> None:
     )
     state = asyncio.run(bootstrap_application(_context(), registrations=(plugin,)))
 
-    with pytest.raises(FrozenInstanceError):
-        component_meta.category = "mutated-input"
     routing["paths"].append("mutated-input")
     template.metadata["values"].append("mutated-input")
     piece.style["values"].append("mutated-input")
@@ -715,7 +693,7 @@ def test_published_registry_metadata_is_detached() -> None:
     assert returned_schema is not None
     returned_schema.axis_profiles[0]["condition"] = ("mutated-output",)
 
-    assert state.bundle.components.get("pkg.Snapshot").category == "Original"
+    assert state.bundle.components.get("pkg.Snapshot").category == "pkg"
     assert state.bundle.experiment_packages.get_figure_routing("pkg") == {"paths": ["original"]}
     assert state.bundle.figures.template("pkg.template").metadata == {"values": ["original"]}
     assert state.bundle.figures.piece("pkg.piece").style == {"values": ["original"]}
@@ -725,6 +703,12 @@ def test_published_registry_metadata_is_detached() -> None:
 
 
 def test_component_and_plugin_namespace_collisions_are_typed() -> None:
+    class Gain(Component):
+        ports = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
     component_plugin = PluginRegistration(
         PluginDeclaration(
             "pkg.component",
@@ -733,18 +717,7 @@ def test_component_and_plugin_namespace_collisions_are_typed() -> None:
             families=(FamilyRequirement(COMPONENTS.family),),
         ),
         lambda context: context.registry(COMPONENTS).ingest(
-            ComponentPack(
-                components=(
-                    declare_component(
-                        name="Gain",
-                        builder=lambda _params: object(),
-                        input_ports=(),
-                        output_ports=(),
-                        category="Custom",
-                        override_reason="Synthetic fixture constructor",
-                    ),
-                )
-            )
+            ComponentPack(namespace="feedbax", components=(Gain,))
         ),
     )
     with pytest.raises(BootstrapError) as component_error:

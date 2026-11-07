@@ -54,6 +54,13 @@ GATE_EXEMPT_MODULES = frozenset({"feedbax/contracts/strict_json.py"})
 #: value states why the bytes carry no external authority. Adding an entry here
 #: is a deliberate, reviewable claim — not a way to silence the gate.
 TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
+    ("feedbax/contracts/portable.py", "validate_authoring"): (
+        "Validation consumes json.dumps of the in-memory authoring mapping; "
+        "the serializer emits each member once."
+    ),
+    ("feedbax/contracts/portable.py", "validate_configuration"): (
+        "Field validation consumes json.dumps of the current in-memory runtime value."
+    ),
     (
         "feedbax/contracts/manifest.py",
         "TrainingManifestMetadataProjectionCustody._validate_custody",

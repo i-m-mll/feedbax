@@ -10,7 +10,14 @@ from jaxtyping import PRNGKeyArray
 from feedbax.models.feedback import feedback_state_view
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.trial_history import trial_history_plan
-from feedbax.runtime.graph import AuthoredArrayEncoding, Component, ComponentBinding, Graph, Wire
+from feedbax.runtime.graph import (
+    AuthoredArrayEncoding,
+    Component,
+    ComponentBinding,
+    Graph,
+    GraphNode,
+    Wire,
+)
 from feedbax.contracts.component import (
     DynamicPortPolicyError,
     derive_dynamic_port_layout,
@@ -28,8 +35,8 @@ from feedbax.contracts.array_values import (
     _parse_array_value_payload,
     materialize_array_value,
 )
+from feedbax.component_registry.declarations import DeclaredComponent
 from feedbax.component_registry import (
-    DeclaredComponent,
     format_missing_interior_message,
     required_interior_domain,
 )
@@ -185,22 +192,24 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
                 raise ValueError(
                     f"Runtime Graph node {name!r} is not bound to a declared composite type"
                 )
-            if binding.param_schema_version != meta.param_schema_version:
+            if binding.revision != meta.revision:
                 raise ValueError(
-                    f"Composite node {name!r} has unsupported bound parameter schema version "
-                    f"{binding.param_schema_version!r}"
+                    f"Composite node {name!r} has unsupported bound revision {binding.revision!r}"
                 )
             type_id = binding.type_id
             params = {}
-            param_schema_version = binding.param_schema_version
+            revision = binding.revision
             subgraphs[name] = graph_to_spec(component, registry)
         else:
-            type_id, params, param_schema_version = registry.serialize_component(
+            if not isinstance(component, Component):
+                raise ValueError(
+                    f"Graph node {name!r} ({type(component).__name__}) is Python-only: "
+                    "portable export requires a Component with a reconstructible configuration"
+                )
+            type_id, params, revision = registry.serialize_component(
                 component,
                 type_id=binding.type_id if binding is not None else None,
-                param_schema_version=(
-                    binding.param_schema_version if binding is not None else None
-                ),
+                revision=(binding.revision if binding is not None else None),
             )
 
         layout = registry.dynamic_port_layout(type_id, params)
@@ -223,7 +232,7 @@ def graph_to_spec(graph: Any, component_registry: Any | None = None) -> GraphSpe
         nodes[name] = ComponentSpec(
             type=type_id,
             params=params,
-            param_schema_version=param_schema_version,
+            revision=revision,
             input_ports=list(component.input_ports),
             output_ports=list(component.output_ports),
         )
@@ -276,16 +285,16 @@ def _instantiate_graph(
     metadata_registry = component_registry
     spec, authored_array_values = _materialize_graph_component_params(spec)
 
-    nodes: dict[str, Component] = {}
+    nodes: dict[str, GraphNode] = {}
     component_bindings: dict[str, ComponentBinding] = {}
     for node_name, node_spec in spec.nodes.items():
         node_keys = keys_by_node.pop(node_name, {})
         node_type = node_spec.type
         node_params, lowering_metadata = _split_lowering_metadata(node_spec, metadata_registry)
-        if node_spec.param_schema_version is not None:
+        if node_spec.revision is not None:
             component_bindings[node_name] = ComponentBinding(
                 type_id=node_type,
-                param_schema_version=node_spec.param_schema_version,
+                revision=node_spec.revision,
                 trainable_override=lowering_metadata.get("trainable"),
             )
         required_domain = required_interior_domain(node_type, metadata_registry)
@@ -312,9 +321,9 @@ def _instantiate_graph(
         if required_domain is not None:
             subgraph = (spec.subgraphs or {}).get(node_name)
             if subgraph is None:
-                if node_type == "Subgraph":
+                if node_type == "feedbax.Subgraph":
                     raise ValueError(f"Missing subgraph spec for '{node_name}'")
-                if node_type == "Network":
+                if node_type == "feedbax.Network":
                     raise ValueError(
                         f"Network node {node_name!r} has no subgraph. "
                         "Open it in Studio to generate the internal architecture, then save again."
@@ -411,12 +420,23 @@ def _instantiate_graph(
             params = {**params, "key": node_keys[()]}
         elif meta is not None and "key" in meta.params.build_context_fields:
             params = {**params, "key": derive_key(construction_key, "construction", node_name)}
+        config = resolution.node_configs.get(node_name)
+        if config is not None:
+            config = config.model_copy(
+                update={
+                    name: _materialize_component_param_value(
+                        getattr(config, name), declarations={}, path=()
+                    )
+                    for name in type(config).model_fields
+                }
+            )
         component = build_component(
             node_name,
             node_type,
             params,
             component_registry=execution_registry,
             params_resolved=True,
+            config=config,
         )
         if (
             tuple(component.input_ports) != declared_input_ports
@@ -484,7 +504,7 @@ def _split_lowering_metadata(
     """Separate graph-level controls from the component's own parameters."""
     params = dict(node_spec.params)
     lowering_metadata = {}
-    if node_spec.type == "Sum" and "channel_adapter" in params:
+    if node_spec.type in ("Sum", "feedbax.Sum") and "channel_adapter" in params:
         lowering_metadata["channel_adapter"] = params.pop("channel_adapter")
     if isinstance(params.get("trainable"), bool):
         declaration = component_registry.get(node_spec.type)

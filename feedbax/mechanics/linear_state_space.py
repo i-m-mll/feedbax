@@ -11,10 +11,11 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.component_registry import ParameterField, component
-from feedbax.contracts.component import PortType, PortTypeSpec
-from feedbax.contracts.migrations import ComponentMigration
+from feedbax.contracts.component import PortType
 from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import Ports, ConfigBinding, ComponentOptions
+from typing import Annotated
+from pydantic import Field
 from feedbax.runtime.state import CartesianState
 from feedbax.contracts.array_values import (
     ARRAY_VALUE_SCHEMA_ID,
@@ -22,14 +23,6 @@ from feedbax.contracts.array_values import (
     SparseCooArrayValueSpec,
     SparseCooEntrySpec,
     materialize_array_value,
-)
-
-
-STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION_V1 = (
-    "feedbax.component.structural_linear_state_space.v1"
-)
-STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION = (
-    "feedbax.component.structural_linear_state_space.v2"
 )
 
 
@@ -154,63 +147,15 @@ def linear_state_space_output_prototype(
     }
 
 
-_LINEAR_MATRIX_FIELDS = [
-    ParameterField(
-        name="A",
-        type="array",
-        default=[
-            [1.0, 0.0, 0.01, 0.0],
-            [0.0, 1.0, 0.0, 0.01],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ],
-        required=True,
-    ),
-    ParameterField(
-        name="B",
-        type="array",
-        default=[
-            [0.0, 0.0],
-            [0.0, 0.0],
-            [0.01, 0.0],
-            [0.0, 0.01],
-        ],
-        required=True,
-    ),
-    ParameterField(name="B_w", type="array", default=None, required=False),
-]
-_LINEAR_INITIALIZATION_FIELDS = [
-    ParameterField(name="dt", type="float", default=0.01, min=0.0, required=False),
-    ParameterField(
-        name="initial_state",
-        type="array",
-        default=[0.0, 0.0, 0.0, 0.0],
-        required=False,
-    ),
-    ParameterField(name="pos_slice", type="array", default=[0, 2], required=False),
-    ParameterField(name="vel_slice", type="array", default=[2, 4], required=False),
-]
-_LINEAR_STATE_SPACE_PORT_TYPES = PortTypeSpec(
-    inputs={
-        "force": PortType(dtype="vector"),
-        "epsilon": PortType(dtype="vector"),
-    },
-    outputs={
-        "effector": PortType(dtype="state"),
-        "state": PortType(dtype="vector"),
-    },
+_DEFAULT_A = (
+    (1.0, 0.0, 0.01, 0.0),
+    (0.0, 1.0, 0.0, 0.01),
+    (0.0, 0.0, 1.0, 0.0),
+    (0.0, 0.0, 0.0, 1.0),
 )
+_DEFAULT_B = ((0.0, 0.0), (0.0, 0.0), (0.01, 0.0), (0.0, 0.01))
 
 
-@component(
-    "LinearStateSpace",
-    category="Mechanics",
-    description="Discrete linear state-space mechanics.",
-    parameter_fields=[*_LINEAR_MATRIX_FIELDS, *_LINEAR_INITIALIZATION_FIELDS],
-    icon="Grid3x3",
-    port_types=_LINEAR_STATE_SPACE_PORT_TYPES,
-    output_prototype_fn=linear_state_space_output_prototype,
-)
 class LinearStateSpace(Component):
     """Discrete linear state-space mechanics.
 
@@ -232,8 +177,12 @@ class LinearStateSpace(Component):
         vel_slice: Half-open slice selecting effector velocity from the state.
     """
 
-    input_ports = ("force", "epsilon")
-    output_ports = ("effector", "state")
+    ports = Ports(
+        inputs={"force": PortType(dtype="vector"), "epsilon": PortType(dtype="vector")},
+        outputs={"effector": PortType(dtype="state"), "state": PortType(dtype="vector")},
+    )
+    config_bindings = (ConfigBinding(path="state_index.init.vector", name="initial_state"),)
+    component_options = ComponentOptions(output_prototype_fn=linear_state_space_output_prototype)
 
     A: Array
     B: Array
@@ -241,16 +190,17 @@ class LinearStateSpace(Component):
     dt: float
     pos_slice: tuple[int, int] = field(static=True)
     vel_slice: tuple[int, int] = field(static=True)
-    initial_state: tuple[float, ...] = field(static=True)
     state_index: StateIndex
 
     def __init__(
         self,
-        A: Array,
-        B: Array,
-        B_w: Array | None = None,
-        dt: float = 1.0,
-        initial_state: Array | None = None,
+        A: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_A,
+        B: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_B,
+        B_w: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = None,
+        dt: Annotated[float, Field(ge=0)] = 1.0,
+        initial_state: Annotated[
+            Any, Field(json_schema_extra={"feedbax": {"type": "array"}})
+        ] = None,
         pos_slice: tuple[int, int] = (0, 2),
         vel_slice: tuple[int, int] = (2, 4),
     ):
@@ -280,7 +230,6 @@ class LinearStateSpace(Component):
             if vector.shape != (n_state,):
                 raise ValueError("initial_state must have shape [n_state].")
 
-        self.initial_state = tuple(float(x) for x in vector.tolist())
         self.state_index = StateIndex(LinearStateSpaceState(vector=vector))
 
     def _effector(self, vector: Array, force: Array) -> CartesianState:
@@ -339,7 +288,7 @@ class LinearStateSpace(Component):
         }
 
 
-_DEFAULT_STRUCTURAL_DELTA_A = SparseCooArrayValueSpec(
+_DEFAULT_DELTA_A = SparseCooArrayValueSpec(
     schema_id=ARRAY_VALUE_SCHEMA_ID,
     schema_version=ARRAY_VALUE_SCHEMA_VERSION,
     encoding="sparse_coo",
@@ -351,50 +300,6 @@ _DEFAULT_STRUCTURAL_DELTA_A = SparseCooArrayValueSpec(
 ).model_dump(mode="json")
 
 
-def _drop_structural_label(params: dict[str, Any]) -> dict[str, Any]:
-    return {name: value for name, value in params.items() if name != "label"}
-
-
-@component(
-    "StructuralLinearStateSpace",
-    category="Mechanics",
-    description="Discrete linear mechanics with a trial-selectable structural delta_A.",
-    parameter_fields=[
-        *_LINEAR_MATRIX_FIELDS,
-        ParameterField(
-            name="delta_A",
-            type="object",
-            default=_DEFAULT_STRUCTURAL_DELTA_A,
-            description="Versioned sparse COO or constant array declaration; dense square arrays remain accepted.",
-            required=True,
-        ),
-        ParameterField(name="scale", type="float", default=1.0, required=False),
-        ParameterField(name="active", type="bool", default=False, required=False),
-        *_LINEAR_INITIALIZATION_FIELDS,
-    ],
-    icon="Grid3x3",
-    port_types=_LINEAR_STATE_SPACE_PORT_TYPES,
-    output_prototype_fn=linear_state_space_output_prototype,
-    param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
-    attribute_paths={
-        "delta_A": "structural_params_index.init.delta_A",
-        "scale": "structural_params_index.init.scale",
-        "active": "structural_params_index.init.active",
-    },
-    migrations=(
-        ComponentMigration(
-            source_type="StructuralLinearStateSpace",
-            target_type="StructuralLinearStateSpace",
-            owner="feedbax",
-            source_param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION_V1,
-            target_param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
-            migration_id="feedbax.component.StructuralLinearStateSpace.drop-label",
-            migrate_params=_drop_structural_label,
-            description="Use the graph node identity in place of the legacy parameter label.",
-            matches_unversioned=lambda params: "label" in params,
-        ),
-    ),
-)
 class StructuralLinearStateSpace(LinearStateSpace):
     """Discrete linear mechanics with a task-selectable structural ``delta_A``.
 
@@ -404,21 +309,32 @@ class StructuralLinearStateSpace(LinearStateSpace):
     trial initial state.
     """
 
+    config_bindings = (
+        *LinearStateSpace.config_bindings,
+        ConfigBinding(
+            path="structural_params_index.init", group=StructuralLinearDynamicsPerturbation
+        ),
+    )
+
     structural_params_index: StateIndex
 
     def __init__(
         self,
-        A: Array,
-        B: Array,
+        A: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_A,
+        B: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_B,
         *,
-        delta_A: Array,
-        B_w: Array | None = None,
-        dt: float = 1.0,
-        initial_state: Array | None = None,
+        delta_A: Annotated[
+            Any, Field(json_schema_extra={"feedbax": {"type": "object"}})
+        ] = _DEFAULT_DELTA_A,
+        B_w: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = None,
+        dt: Annotated[float, Field(ge=0)] = 1.0,
+        initial_state: Annotated[
+            Any, Field(json_schema_extra={"feedbax": {"type": "array"}})
+        ] = None,
         pos_slice: tuple[int, int] = (0, 2),
         vel_slice: tuple[int, int] = (2, 4),
-        scale: float | Array = 1.0,
-        active: bool | Array = False,
+        scale: float = 1.0,
+        active: bool = False,
     ):
         super().__init__(
             A=A,
@@ -429,6 +345,8 @@ class StructuralLinearStateSpace(LinearStateSpace):
             pos_slice=pos_slice,
             vel_slice=vel_slice,
         )
+        if isinstance(delta_A, Mapping):
+            delta_A = materialize_array_value(delta_A)
         params = StructuralLinearDynamicsPerturbation(
             delta_A=jnp.asarray(delta_A, dtype=self.A.dtype),
             scale=scale,

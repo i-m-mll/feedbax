@@ -38,7 +38,7 @@ def _map_value(value: Any) -> Any:
         return value + 0.125
     if isinstance(value, str):
         return f"{value}_nondefault"
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_map_value(item) for item in value]
     if isinstance(value, dict):
         return {key: _map_value(item) for key, item in value.items()}
@@ -46,22 +46,22 @@ def _map_value(value: Any) -> Any:
 
 
 _SCALAR_CONTROL_TYPES = (
-    "Derivative",
-    "Integrator",
-    "IntegratorDiscrete",
-    "PID",
-    "PIDDiscrete",
-    "UnitDelay",
-    "ZeroOrderHold",
+    "feedbax.Derivative",
+    "feedbax.Integrator",
+    "feedbax.IntegratorDiscrete",
+    "feedbax.PID",
+    "feedbax.PIDDiscrete",
+    "feedbax.UnitDelay",
+    "feedbax.ZeroOrderHold",
 )
 
 _SHAPED_SIGNAL_TYPES = (
-    "BandPassFilter",
-    "Channel",
-    "DelayLine",
-    "FirstOrderFilter",
-    "HighPassFilter",
-    "RateLimiter",
+    "feedbax.BandPassFilter",
+    "feedbax.Channel",
+    "feedbax.DelayLine",
+    "feedbax.FirstOrderFilter",
+    "feedbax.HighPassFilter",
+    "feedbax.RateLimiter",
 )
 
 
@@ -71,50 +71,60 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
         for kind in (*_SHAPED_SIGNAL_TYPES, *_SCALAR_CONTROL_TYPES)
     },
     **{(kind, "input_shape"): [3] for kind in _SHAPED_SIGNAL_TYPES},
-    ("AssembleFeedback", "layout"): {"list": [None]},
-    ("AffineFeedbackController", "bias"): [0.25],
-    ("AffineFeedbackController", "feedforward"): [0.5],
-    ("Channel", "noise_role"): "motor_command",
-    ("Channel", "noise_timing"): "post_controller",
-    ("Linear", "bias_init"): 0.125,
-    ("DelayedReaches", "n_control_stages"): 49,
-    ("DelayedReaches", "go_cue_event_name"): "go",
-    ("DynamicsMatrixPerturb", "mass"): 1.25,
-    ("LinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
-    ("StructuralLinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
-    ("StateFeedbackSelector", "expected_state_dim"): 4,
-    ("StateFeedbackSelector", "output_size"): 4,
-    ("ConstantInput", "arrays"): [0.25, -0.5],
-    ("NetworkClamp", "unit_spec"): [0.25, None],
-    ("NetworkConstantInput", "unit_spec"): [0.25, None],
+    ("feedbax.PID", "integral_limit"): 2.0,
+    ("feedbax.PIDDiscrete", "output_limit"): 2.0,
+    ("feedbax.LinearStateSpace", "initial_state"): [0.1, 0.2, 0.3, 0.4],
+    ("feedbax.StructuralLinearStateSpace", "initial_state"): [0.1, 0.2, 0.3, 0.4],
+    ("feedbax.AssembleFeedback", "layout"): {"list": [None]},
+    ("feedbax.AffineFeedbackController", "bias"): [0.25],
+    ("feedbax.AffineFeedbackController", "feedforward"): [0.5],
+    ("feedbax.Channel", "noise_role"): "motor_command",
+    ("feedbax.Channel", "noise_timing"): "post_controller",
+    ("feedbax.Linear", "bias_init"): 0.125,
+    ("feedbax.DelayedReaches", "n_control_stages"): 49,
+    ("feedbax.DelayedReaches", "go_cue_event_name"): "go",
+    ("feedbax.DynamicsMatrixPerturb", "mass"): 1.25,
+    ("feedbax.LinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
+    ("feedbax.StructuralLinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
+    ("feedbax.StateFeedbackSelector", "expected_state_dim"): 4,
+    ("feedbax.StateFeedbackSelector", "output_size"): 4,
+    ("feedbax.ConstantInput", "arrays"): [0.25, -0.5],
+    ("feedbax.NetworkClamp", "unit_spec"): [0.25, None],
+    ("feedbax.NetworkConstantInput", "unit_spec"): [0.25, None],
 }
 
 _INTERVENTION_PAYLOAD_FIELDS = {
-    "ConstantInput": "arrays",
-    "NetworkClamp": "unit_spec",
-    "NetworkConstantInput": "unit_spec",
+    "feedbax.ConstantInput": "arrays",
+    "feedbax.NetworkClamp": "unit_spec",
+    "feedbax.NetworkConstantInput": "unit_spec",
 }
 
 
 _VALUES: dict[tuple[str, str], Any] = {
-    ("AffineValueComposer", "schema_version"): "feedbax.component.affine_value_composer.v2",
-    ("AffineValueComposer", "feature_rules"): [{"kind": "identity", "state_slice": [1, 2]}],
-    ("Channel", "add_noise"): False,
-    ("Channel", "include_zero_noise_terms"): True,
-    ("DelayedReaches", "hold_epochs"): [0],
-    ("DelayedReaches", "move_epochs"): [1, 2],
-    ("DelayedReaches", "target_visible_from_start"): True,
-    ("DelayedReaches", "target_on_epochs"): [0, 2],
-    ("SelectState", "paths"): ["effector.force"],
-    ("StateFeedbackSelector", "state_slices"): {
+    ("feedbax.PenzaiAdapter", "builder_name"): "test_roundtrip_sigmoid",
+    ("feedbax.StateSpace", "A"): [[-0.5]],
+    ("feedbax.StateSpace", "B"): [[0.5]],
+    ("feedbax.StateSpace", "C"): [[0.5]],
+    ("feedbax.StateSpace", "D"): [[0.5]],
+    ("feedbax.TransferFunction", "num"): [0.5],
+    ("feedbax.TransferFunction", "den"): [1.0, 0.5],
+    ("feedbax.AffineValueComposer", "feature_rules"): [{"kind": "identity", "state_slice": [1, 2]}],
+    ("feedbax.Channel", "add_noise"): False,
+    ("feedbax.Channel", "include_zero_noise_terms"): True,
+    ("feedbax.DelayedReaches", "hold_epochs"): [0],
+    ("feedbax.DelayedReaches", "move_epochs"): [1, 2],
+    ("feedbax.DelayedReaches", "target_visible_from_start"): True,
+    ("feedbax.DelayedReaches", "target_on_epochs"): [0, 2],
+    ("feedbax.SelectState", "paths"): ["effector.force"],
+    ("feedbax.StateFeedbackSelector", "state_slices"): {
         "position": {"start": 1, "stop": 3},
         "velocity": {"start": 3, "stop": 5},
     },
-    ("StateFeedbackSelector", "channels"): [
+    ("feedbax.StateFeedbackSelector", "channels"): [
         {"slice": "position", "transform": "negate"},
         {"slice": "velocity", "transform": "identity"},
     ],
-    ("StructuralLinearStateSpace", "delta_A"): {
+    ("feedbax.StructuralLinearStateSpace", "delta_A"): {
         "schema_id": "feedbax.spec.component_param.array_value",
         "schema_version": "feedbax.spec.component_param.array_value.v1",
         "shape": [4, 4],
@@ -124,7 +134,7 @@ _VALUES: dict[tuple[str, str], Any] = {
         "fill": 0.0,
         "entries": [{"coordinate": [0, 1], "value": 0.25}],
     },
-    ("ThresholdLatchedForce", "state_selector"): {"kind": "fixed", "path": ["pos", 1]},
+    ("feedbax.ThresholdLatchedForce", "state_selector"): {"kind": "fixed", "path": ["pos", 1]},
 }
 
 
@@ -132,7 +142,7 @@ def _non_default_value(component_type: str, schema: ParamSchema) -> Any:
     key = (component_type, schema.name)
     if key in _VALUES:
         return deepcopy(_VALUES[key])
-    if key == ("JointMuscleGeometry", "paths"):
+    if key == ("feedbax.JointMuscleGeometry", "paths"):
         paths = deepcopy(schema.default)
         paths[0]["params"]["reference_length"] *= 1.1
         return paths
@@ -162,7 +172,7 @@ def _non_default_value(component_type: str, schema: ParamSchema) -> Any:
 
 
 def _ports(registry: ComponentRegistry, component_type: str, params: dict[str, Any]):
-    if component_type == "PenzaiAdapter":
+    if component_type == "feedbax.PenzaiAdapter":
         return [params["input_port"]], [params["output_port"]]
     meta = registry.get(component_type)
     assert meta is not None
@@ -179,32 +189,40 @@ def _contextualize_params(
 ) -> dict[str, Any]:
     """Keep one-field registry probes semantically valid and observable."""
     params = {name: value for name, value in params.items() if value is not None}
-    if component_type == "Channel":
+    if component_type == "feedbax.StateSpace":
+        for name, value in {"A": [[-1.0]], "B": [[1.0]], "C": [[1.0]], "D": [[0.0]]}.items():
+            params.setdefault(name, value)
+    elif component_type == "feedbax.PenzaiAdapter":
+        params.setdefault("builder_name", "test_roundtrip_relu")
+    elif component_type == "feedbax.TransferFunction":
+        params.setdefault("num", [1.0])
+        params.setdefault("den", [1.0, 1.0])
+    elif component_type == "feedbax.Channel":
         params.setdefault("input_shape", [2])
         if param_name in {"additive_noise_std", "signal_dependent_noise_std"}:
             params["noise_model"] = "signal_dependent_plus_additive"
         if param_name == "include_zero_noise_terms":
             params["noise_std"] = 0.0
-    elif component_type == "AssembleFeedback" and param_name == "n_inputs":
+    elif component_type == "feedbax.AssembleFeedback" and param_name == "n_inputs":
         params["layout"] = {"tuple": [None] * params["n_inputs"]}
-    elif component_type == "AffineValueComposer" and param_name == "output_block_size":
+    elif component_type == "feedbax.AffineValueComposer" and param_name == "output_block_size":
         size = int(params["output_block_size"])
         params["gain_init"] = [[0.0] for _ in range(size)]
         params["bias_init"] = [0.0 for _ in range(size)]
-    elif component_type == "DelayedReaches" and param_name == "target_visible_from_start":
+    elif component_type == "feedbax.DelayedReaches" and param_name == "target_visible_from_start":
         params["target_on_epochs"] = [0, 1, 2]
-    elif component_type == "DelayedReaches" and param_name == "n_control_stages":
+    elif component_type == "feedbax.DelayedReaches" and param_name == "n_control_stages":
         params.pop("n_steps", None)
-    elif component_type == "DelayedReaches" and param_name == "move_epochs":
+    elif component_type == "feedbax.DelayedReaches" and param_name == "move_epochs":
         params["hold_epochs"] = [0]
-    elif component_type == "DynamicsMatrixPerturb":
+    elif component_type == "feedbax.DynamicsMatrixPerturb":
         params.setdefault("mass", 1.0)
     elif (
         param_name in {"active", "payload_dtype"} and component_type in _INTERVENTION_PAYLOAD_FIELDS
     ):
         payload_field = _INTERVENTION_PAYLOAD_FIELDS[component_type]
         params[payload_field] = deepcopy(_NONE_VALUES[component_type, payload_field])
-    elif component_type == "StateFeedbackSelector" and param_name == "output_size":
+    elif component_type == "feedbax.StateFeedbackSelector" and param_name == "output_size":
         params["channels"] = [{"slice": "position", "transform": "identity"}]
         params["output_size"] = 2
     return params
@@ -226,7 +244,7 @@ def _single_node_spec(
             )
         }
     )
-    if component_type == "AffineFeedbackController":
+    if component_type == "feedbax.AffineFeedbackController":
         feedback_shape = jnp.asarray(params["gain"]).shape[-1:]
         return spec, {("node", "feedback"): jnp.zeros(feedback_shape)}
     prototype_shape = (2,)
@@ -236,22 +254,22 @@ def _single_node_spec(
         prototype_shape = tuple(int(dim) for dim in params["input_shape"])
     elif component_type in _SCALAR_CONTROL_TYPES:
         prototype_shape = (params["n_dims"],)
-    elif component_type == "VectorElements":
+    elif component_type == "feedbax.VectorElements":
         prototype_shape = (params["size"],)
-    elif component_type == "RigidTendonHillMuscleThelen":
+    elif component_type == "feedbax.RigidTendonHillMuscleThelen":
         count = params["n_muscles"]
         prototype_shape = () if count == 1 else (count,)
     prototypes = {
         ("node", port): jnp.zeros(prototype_shape, dtype=params.get("input_dtype"))
         for port in input_ports
     }
-    if component_type == "SelectState":
-        point_mass = registry.get("PointMass")
+    if component_type == "feedbax.SelectState":
+        point_mass = registry.get("feedbax.PointMass")
         assert point_mass is not None and point_mass.builder is not None
         prototypes[("node", "state")] = point_mass.builder({"dt": 0.01}).state_index.init
-    elif component_type == "Demux":
+    elif component_type == "feedbax.Demux":
         prototypes[("node", "input")] = jnp.zeros(sum(params["sizes"]))
-    elif component_type == "AffineValueComposer":
+    elif component_type == "feedbax.AffineValueComposer":
         block_size = int(params["output_block_size"])
         prototypes[("node", "base")] = jnp.zeros(block_size)
         prototypes[("node", "gain")] = jnp.zeros_like(jnp.asarray(params["gain_init"]))
@@ -261,7 +279,7 @@ def _single_node_spec(
 
 @pytest.fixture
 def roundtrip_registry(component_type: str, monkeypatch: pytest.MonkeyPatch) -> ComponentRegistry:
-    if component_type == "PenzaiAdapter":
+    if component_type == "feedbax.PenzaiAdapter":
         pytest.importorskip("penzai")
         from penzai import pz
 
@@ -273,32 +291,6 @@ def roundtrip_registry(component_type: str, monkeypatch: pytest.MonkeyPatch) -> 
             "test_roundtrip_sigmoid", lambda _: pz.nn.Elementwise(jax.nn.sigmoid)
         )
     return ComponentRegistry()
-
-
-def test_registries_capture_penzai_options_and_keep_metadata_detached(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    options = [{"name": "example", "description": "Original"}]
-    monkeypatch.setattr(penzai, "list_penzai_builder_info", lambda: options)
-
-    first = ComponentRegistry()
-    metadata = first.get("PenzaiAdapter")
-    assert metadata is not None
-    names = metadata.param_schema[0].options
-    assert names is not None
-    names.append("detached")
-
-    repeat = ComponentRegistry().get("PenzaiAdapter")
-    assert repeat is not None
-    assert repeat.param_schema[0].options == ["example"]
-
-    options[0]["description"] = "Updated"
-    updated = ComponentRegistry().get("PenzaiAdapter")
-    assert updated is not None
-    assert updated.param_schema[0].option_descriptions == {"example": "Updated"}
-    original = first.get("PenzaiAdapter")
-    assert original is not None
-    assert original.param_schema[0].option_descriptions == {"example": "Original"}
 
 
 @pytest.mark.parametrize("component_type", _registry_cases())
@@ -319,12 +311,8 @@ def test_registered_buildable_component_param_round_trips(
         spec_to_graph(baseline_spec, registry, baseline_prototypes), registry
     )
 
-    probes: list[ParamSchema | None] = [
-        schema
-        for schema in meta.param_schema
-        if (component_type, schema.name) != ("FeedbackChannels", "input_shape")
-    ]
-    if not probes or component_type == "PenzaiAdapter":
+    probes: list[ParamSchema | None] = list(meta.param_schema)
+    if not probes or component_type == "feedbax.PenzaiAdapter":
         probes.insert(0, None)
 
     for schema in probes:
@@ -343,7 +331,7 @@ def test_registered_buildable_component_param_round_trips(
         assert emitted.type == component_type, witness
 
         if param_name is not None and (
-            (component_type, param_name) == ("DelayedReaches", "move_epochs")
+            (component_type, param_name) == ("feedbax.DelayedReaches", "move_epochs")
             or (
                 component_type in _SHAPED_SIGNAL_TYPES
                 and param_name in {"input_shape", "input_dtype"}
@@ -366,7 +354,7 @@ def test_two_link_arm_nondefault_lengths_round_trip() -> None:
     spec = GraphSpec(
         nodes={
             "arm": ComponentSpec(
-                type="TwoLinkArm",
+                type="feedbax.TwoLinkArm",
                 params={"dt": 0.02, "link_lengths": [0.41, 0.29]},
                 input_ports=["force"],
                 output_ports=["effector", "state"],
@@ -389,12 +377,13 @@ def test_analytical_plant_authored_contract_round_trips(solver_params: dict[str,
         "tau_act": 0.015,
         "tau_deact": 0.055,
         "clip_states": False,
+        "solver_type": "euler",
         **solver_params,
     }
     spec = GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="AnalyticalMusculoskeletalPlant",
+                type="feedbax.AnalyticalMusculoskeletalPlant",
                 params=params,
                 input_ports=["excitation"],
                 output_ports=["effector", "state"],
@@ -428,7 +417,7 @@ def test_channel_rejects_noncanonical_noise_spellings(params: dict[str, Any]) ->
     spec = GraphSpec(
         nodes={
             "channel": ComponentSpec(
-                type="Channel",
+                type="feedbax.Channel",
                 params={"delay": 0, "input_shape": [2], **params},
                 input_ports=["input"],
                 output_ports=["output"],

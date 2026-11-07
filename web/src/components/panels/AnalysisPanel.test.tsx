@@ -45,13 +45,13 @@ function AnalysisShortcutHarness() {
 const graph: GraphSpec = {
   nodes: {
     a: {
-      type: 'Gain',
+      type: 'feedbax.Gain',
       params: {},
       input_ports: ['input'],
       output_ports: ['output'],
     },
     b: {
-      type: 'Gain',
+      type: 'feedbax.Gain',
       params: {},
       input_ports: ['input'],
       output_ports: ['output'],

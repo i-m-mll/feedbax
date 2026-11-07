@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 
+from feedbax.runtime.components import Sum
 from feedbax.contracts.graph import (
     AdditiveGraphChannelAdapterSpec,
     ComponentSpec,
@@ -186,7 +187,7 @@ def _sum_node_spec(adapter: AdditiveGraphChannelAdapterSpec) -> ComponentSpec:
         }
     }
     return ComponentSpec(
-        type="Sum",
+        type=f"feedbax.{Sum.__name__}",
         params=params,
         input_ports=["a", "b"],
         output_ports=["output"],

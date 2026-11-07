@@ -21,16 +21,15 @@ from feedbax.contracts.migrations import UnsupportedComponentMigration
 from feedbax.mechanics.force_fields import (
     PlanarTargetRelativeSelector,
     StateSelector,
-    THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION,
-    THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,
 )
+from feedbax.mechanics.force_fields_history import THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1
 from feedbax.runtime.state import CartesianState
 from feedbax.tasks import TaskTrialSpec, TrialTimeline, prepare_trial
 
 
-SCHEMA_VERSION = THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION
+REVISION = 3
 
 
 def _component(
@@ -78,12 +77,12 @@ def _run(
     return forces
 
 
-def _graph_spec(*, param_schema_version: str = SCHEMA_VERSION) -> GraphSpec:
+def _graph_spec(*, revision: int = REVISION) -> GraphSpec:
     input_ports = ["state", "target", "force", "params_override"]
     return GraphSpec(
         nodes={
             "load": ComponentSpec(
-                type="ThresholdLatchedForce",
+                type="feedbax.ThresholdLatchedForce",
                 params={
                     "state_selector": {"kind": "fixed", "path": ["pos", 0]},
                     "direction": "increasing",
@@ -94,9 +93,8 @@ def _graph_spec(*, param_schema_version: str = SCHEMA_VERSION) -> GraphSpec:
                     "scale": 1.0,
                     "active": True,
                     "dt": 0.1,
-
                 },
-                param_schema_version=param_schema_version,
+                revision=revision,
                 input_ports=input_ports,
                 output_ports=["force"],
             )
@@ -159,7 +157,7 @@ def _target_relative_graph_spec() -> GraphSpec:
     return GraphSpec(
         nodes={
             "load": ComponentSpec(
-                type="ThresholdLatchedForce",
+                type="feedbax.ThresholdLatchedForce",
                 params={
                     "state_selector": {
                         "kind": "planar_target_relative",
@@ -174,9 +172,8 @@ def _target_relative_graph_spec() -> GraphSpec:
                     "scale": 1.0,
                     "active": True,
                     "dt": 0.1,
-
                 },
-                param_schema_version=SCHEMA_VERSION,
+                revision=REVISION,
                 input_ports=input_ports,
                 output_ports=["force"],
             )
@@ -326,8 +323,8 @@ def test_graphspec_round_trip_preserves_trigger_latch_ramp_and_selector_identity
 
     roundtrip = graph_to_spec(graph)
     node = roundtrip.nodes["load"]
-    assert node.type == "ThresholdLatchedForce"
-    assert node.param_schema_version == SCHEMA_VERSION
+    assert node.type == "feedbax.ThresholdLatchedForce"
+    assert node.revision == REVISION
     assert node.params == {
         "state_selector": {"kind": "fixed", "path": ["pos", 0]},
         "direction": "increasing",
@@ -338,14 +335,11 @@ def test_graphspec_round_trip_preserves_trigger_latch_ramp_and_selector_identity
         "scale": 1.0,
         "active": True,
         "dt": pytest.approx(0.1),
-
     }
 
 
 def test_target_relative_graphspec_round_trip_preserves_frame_selectors() -> None:
-    graph = spec_to_graph(
-        _target_relative_graph_spec(), ComponentRegistry()
-    )
+    graph = spec_to_graph(_target_relative_graph_spec(), ComponentRegistry())
     component = graph.nodes["load"]
 
     assert component.state_selector == PlanarTargetRelativeSelector(
@@ -353,7 +347,7 @@ def test_target_relative_graphspec_round_trip_preserves_frame_selectors() -> Non
         target_path=("goal",),
     )
     node = graph_to_spec(graph).nodes["load"]
-    assert node.param_schema_version == SCHEMA_VERSION
+    assert node.revision == REVISION
     assert node.params["state_selector"] == {
         "kind": "planar_target_relative",
         "position_path": ["pos"],
@@ -368,7 +362,7 @@ def compiled_target_relative_rollout():
     graph = spec_to_graph(_target_relative_graph_spec(), registry)
     stabilization = build_component(
         "hold",
-        "Stabilization",
+        "feedbax.Stabilization",
         {"n_steps": 4, "workspace": [[-1.0, -1.0], [1.0, 1.0]]},
         component_registry=registry,
     )
@@ -476,7 +470,7 @@ def test_task_authored_trial_variant_initializes_native_component_state() -> Non
 
 
 def test_v1_fixed_selector_migrates_to_v2() -> None:
-    spec = _graph_spec(param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1)
+    spec = _graph_spec()
     node = spec.nodes["load"]
     node.params["label"] = "historical label"
     node.params.pop("lateral_force")
@@ -485,11 +479,18 @@ def test_v1_fixed_selector_migrates_to_v2() -> None:
     spec.input_ports.remove("target")
     del spec.input_bindings["target"]
 
-    graph = spec_to_graph(spec, ComponentRegistry())
+    registry = ComponentRegistry()
+    resolved = registry.resolve_component_spec(
+        "ThresholdLatchedForce",
+        node.params,
+        legacy_token=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
+    )
+    node.type, node.params, node.revision = resolved.type_id, resolved.params, resolved.revision
+    graph = spec_to_graph(spec, registry)
 
     assert graph.nodes["load"].state_selector == StateSelector(("pos", 0))
     migrated = graph_to_spec(graph).nodes["load"]
-    assert migrated.param_schema_version == SCHEMA_VERSION
+    assert migrated.revision == REVISION
     assert migrated.params["state_selector"] == {"kind": "fixed", "path": ["pos", 0]}
     assert migrated.params["lateral_force"] == pytest.approx(0.0)
 
@@ -499,7 +500,7 @@ def test_unknown_parameter_schema_version_is_rejected_without_a_migration() -> N
 
     with pytest.raises(GraphCompilationError, match="No component migration registered") as exc:
         spec_to_graph(
-            _graph_spec(param_schema_version="feedbax.component.threshold_latched_force.v0"),
+            _graph_spec(revision=99),
             component_registry=registry,
         )
 
@@ -507,3 +508,34 @@ def test_unknown_parameter_schema_version_is_rejected_without_a_migration() -> N
     diagnostic = exc.value.record.diagnostics[0]
     assert diagnostic.code == "compiler.type_resolution.unresolved_component_type"
     assert diagnostic.actionable_context["exception_type"] == "UnsupportedComponentMigration"
+
+
+@pytest.mark.parametrize("dt", [0.0, -0.01, float("inf"), float("nan")])
+def test_python_and_registry_share_positive_finite_timestep(dt) -> None:
+    registry = ComponentRegistry()
+    with pytest.raises(ValueError):
+        ThresholdLatchedForce(dt=dt)
+    with pytest.raises(ValueError):
+        registry.resolve_component_spec("feedbax.ThresholdLatchedForce", {"dt": dt})
+
+
+def test_portable_defaults_reset_edits_and_legacy_evidence_share_contract() -> None:
+    from feedbax.mechanics.force_fields import CurlField
+
+    registry = ComponentRegistry()
+    direct = ThresholdLatchedForce().prepare()
+    built = registry.get("feedbax.ThresholdLatchedForce").params.build({})
+    assert direct.configuration() == built.configuration()
+    assert not bool(direct.params_index.init.active)
+    changed = eqx.tree_at(lambda item: item.params_index.init.threshold, direct, jnp.array(0.75))
+    assert registry.serialize_component(changed)[1]["threshold"] == pytest.approx(0.75)
+    assert direct.input_ports == ("state", "target", "force", "params_override")
+    curl = registry.resolve_component_spec(
+        "CurlField", {"label": "legacy"}, historical_unversioned=True
+    )
+    assert (curl.type_id, curl.revision) == ("feedbax.CurlField", 2)
+    assert "label" not in curl.params
+    assert registry.serialize_component(CurlField())[0] == "feedbax.CurlField"
+    stripped, _ = eqx.nn.make_with_state(ThresholdLatchedForce)()
+    with pytest.raises(ValueError, match="stripped by make_with_state"):
+        stripped.configuration()

@@ -6,10 +6,9 @@ from dataclasses import dataclass
 
 import jax.numpy as jnp
 
-from feedbax.acausal._component import element_options
 from feedbax.acausal.base import AcausalElement, AcausalEquation, AcausalPort, Domain
 from feedbax._acausal_payload import ACTIVATION_PAYLOAD
-from feedbax.component_registry.discovery import component
+from feedbax.contracts.portable import ComponentOptions
 from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 
 
@@ -17,13 +16,6 @@ def _fqn(element: str, port: str, slot: str) -> str:
     return f"{element}.{port}.{slot}"
 
 
-@component(
-    "RigidTendonHillMuscle",
-    configure=element_options,
-    category="Muscles",
-    icon="Dumbbell",
-    domain=MECHANICS_DOMAIN_ID,
-)
 @dataclass
 class RigidTendonHillMuscle(AcausalElement):
     """Preformed rigid-tendon Hill muscle leaf for mechanics interiors.
@@ -34,6 +26,8 @@ class RigidTendonHillMuscle(AcausalElement):
     causal activation signal input. C2 can replace it with a decomposed interior
     once multibody links, joints, and path geometry exist.
     """
+
+    component_options = ComponentOptions(domain=MECHANICS_DOMAIN_ID, build_context_fields=("name",))
 
     source_payload = ACTIVATION_PAYLOAD
 

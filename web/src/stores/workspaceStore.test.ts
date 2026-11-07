@@ -234,7 +234,7 @@ describe('buildWorkspaceSnapshot', () => {
       ...graph,
       nodes: {
         network: {
-          type: 'Network',
+          type: 'feedbax.Network',
           params: {},
           input_ports: ['input'],
           output_ports: ['output'],
@@ -244,7 +244,7 @@ describe('buildWorkspaceSnapshot', () => {
         network: {
           nodes: {
             gain: {
-              type: 'Gain',
+              type: 'feedbax.Gain',
               params: { gain: 2 },
               input_ports: ['input'],
               output_ports: ['output'],
@@ -357,7 +357,7 @@ describe('buildWorkspaceSnapshot', () => {
         ...graph,
         nodes: {
           network: {
-            type: 'Network',
+            type: 'feedbax.Network',
             params: {},
             input_ports: ['input'],
             output_ports: ['output'],
@@ -868,7 +868,7 @@ describe('buildWorkspaceSnapshot', () => {
         ...graph,
         nodes: {
           network: {
-            type: 'Network',
+            type: 'feedbax.Network',
             params: {},
             input_ports: ['input'],
             output_ports: ['output'],
@@ -955,7 +955,7 @@ describe('buildWorkspaceSnapshot', () => {
         ...graph,
         nodes: {
           network: {
-            type: 'Network',
+            type: 'feedbax.Network',
             params: {},
             input_ports: ['input'],
             output_ports: ['output'],

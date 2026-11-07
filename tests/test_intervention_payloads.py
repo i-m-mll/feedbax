@@ -1,3 +1,4 @@
+import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -7,6 +8,7 @@ from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.contracts.migrations import migrate_graph_spec
 from feedbax.runtime.signal_transforms import (
     ConstantInput,
     ConstantInputParams,
@@ -46,13 +48,12 @@ def _assert_rollout(graph, expected, signal=_INPUT):
     assert outputs["output"].tolist() == [expected, expected]
 
 
-def _authored_spec(component_type, params, *, version=None):
+def _authored_spec(component_type, params):
     return GraphSpec(
         nodes={
             "intervention": ComponentSpec(
-                type=component_type,
+                type=f"feedbax.{component_type}",
                 params=params,
-                param_schema_version=version,
                 input_ports=["input"],
                 output_ports=["output"],
             )
@@ -62,6 +63,17 @@ def _authored_spec(component_type, params, *, version=None):
         input_bindings=_INPUT_PORT,
         output_bindings=_OUTPUT_PORT,
     )
+
+
+def _legacy_spec(component_type, params, version):
+    payload = _authored_spec(component_type, params).model_dump(mode="json")
+    payload["schema_version"] = "feedbax.spec.graph.v5"
+    node = payload["nodes"]["intervention"]
+    node["type"] = component_type
+    node.pop("revision", None)
+    if version is not None:
+        node["param_schema_version"] = version
+    return GraphSpec.model_validate(migrate_graph_spec(payload).payload)
 
 
 @pytest.mark.parametrize(
@@ -116,17 +128,15 @@ def test_legacy_intervention_requires_reauthoring_only_when_enabled(
     registry, component_type, field
 ):
     for version in ("1", None):
-        disabled = _authored_spec(component_type, {"scale": 2.0, "active": False}, version=version)
+        disabled = _legacy_spec(component_type, {"scale": 2.0, "active": False}, version)
         _assert_rollout(_compile(registry, disabled).graph, [2.0, 3.0])
 
-        enabled = _authored_spec(component_type, {"scale": 2.0, "active": True}, version=version)
-        with pytest.raises(GraphCompilationError, match=field):
+        with pytest.raises((GraphCompilationError, ValueError), match=field):
+            enabled = _legacy_spec(component_type, {"scale": 2.0, "active": True}, version)
             _compile(registry, enabled)
 
     if component_type == "NetworkClamp":
-        repaired = _authored_spec(
-            component_type, {"scale": 2.0, "active": True, field: [8.0, None]}
-        )
+        repaired = _authored_spec(component_type, {"active": True, field: [8.0, None]})
         compiled = _compile(registry, repaired)
         _assert_rollout(compiled.graph, [8.0, 3.0])
         assert "scale" not in graph_to_spec(compiled.graph, registry).nodes["intervention"].params
@@ -145,9 +155,7 @@ def test_intervention_payload_preserves_state_dtype_and_precision(registry):
         graph = Graph(
             nodes={
                 "intervention": NetworkClamp(
-                    NetworkValueParams(
-                        unit_spec=jnp.array([value, jnp.nan], dtype=jnp.float64)
-                    )
+                    NetworkValueParams(unit_spec=jnp.array([value, jnp.nan], dtype=jnp.float64))
                 )
             },
             input_ports=("input",),
@@ -163,3 +171,33 @@ def test_intervention_payload_preserves_state_dtype_and_precision(registry):
 
     with disable_x64(), pytest.raises(GraphCompilationError, match="float64"):
         _compile(registry, exported)
+
+
+@pytest.mark.parametrize(
+    ("component_cls", "params_cls", "field"),
+    [
+        (NetworkClamp, NetworkValueParams, "unit_spec"),
+        (NetworkConstantInput, NetworkValueParams, "unit_spec"),
+        (ConstantInput, ConstantInputParams, "arrays"),
+    ],
+)
+def test_runtime_vector_constraints_remain_on_traced_construction(component_cls, params_cls, field):
+    @eqx.filter_jit
+    def construct(payload):
+        component = component_cls(params_cls(active=True, **{field: payload}))
+        return getattr(component.params_index.init, field)
+
+    vector = jnp.array([1.0, 2.0])
+    assert jnp.array_equal(construct(vector), vector)
+    with pytest.raises((ValueError, eqx.EquinoxRuntimeError), match="nonfinite"):
+        construct(vector.at[0].set(jnp.inf))
+
+
+def test_missing_runtime_vector_rejects_traced_activation():
+    @eqx.filter_jit
+    def construct(active):
+        return NetworkClamp(NetworkValueParams(active=active)).params_index.init.active
+
+    assert not construct(jnp.array(False))
+    with pytest.raises((ValueError, eqx.EquinoxRuntimeError), match="unit_spec is required"):
+        construct(jnp.array(True))

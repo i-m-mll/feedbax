@@ -14,6 +14,8 @@ from feedbax.contracts.graph import (
     WireSpec,
 )
 from feedbax.runtime.graph import init_state_from_component
+from feedbax.mechanics.linear_state_space import LinearStateSpace
+from feedbax.runtime.components import Constant, Gain, Sum
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.integrations.provider import validate_graph_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
@@ -56,13 +58,13 @@ def test_edge_additive_channel_adapter_materializes_sum_and_runs() -> None:
     spec = GraphSpec(
         nodes={
             "source": ComponentSpec(
-                type="Constant",
+                type=f"feedbax.{Constant.__name__}",
                 params={"value": 1.0},
                 input_ports=[],
                 output_ports=["output"],
             ),
             "readout": ComponentSpec(
-                type="Gain",
+                type=f"feedbax.{Gain.__name__}",
                 params={"gain": 2.0},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -129,7 +131,7 @@ def test_edge_additive_channel_adapter_materializes_sum_and_runs() -> None:
         adapter_id,
         "b",
     )
-    assert adapter_node.type == "Sum"
+    assert adapter_node.type == f"feedbax.{Sum.__name__}"
     assert adapter_node.params["channel_adapter"]["payload_shape"] == [2]
     assert {
         (wire.source_node, wire.source_port, wire.target_node, wire.target_port)
@@ -158,7 +160,7 @@ def test_input_additive_channel_adapter_wraps_existing_input_binding() -> None:
     spec = GraphSpec(
         nodes={
             "readout": ComponentSpec(
-                type="Gain",
+                type=f"feedbax.{Gain.__name__}",
                 params={"gain": 1.0},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -207,7 +209,7 @@ def test_input_additive_channel_adapter_binds_direct_model_input() -> None:
     spec = GraphSpec(
         nodes={
             "mechanics": ComponentSpec(
-                type="LinearStateSpace",
+                type=f"feedbax.{LinearStateSpace.__name__}",
                 params={
                     "A": [[1.0, 0.0], [0.0, 1.0]],
                     "B": [[1.0], [0.0]],

@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 from jax.typing import DTypeLike
 
-from feedbax.component_registry.declarations import InputPrototypeParameter, ParameterField
+from feedbax.contracts.portable import InputPrototypeParameter
 
 _Vector = TypeVar("_Vector")
 _CONTROL_DTYPES = frozenset(
@@ -104,12 +104,4 @@ _CONTROL_INPUT_PROTOTYPE = InputPrototypeParameter(
 
 _CONTROL_ERROR_PROTOTYPE = InputPrototypeParameter(
     "error", "input_dtype", partial(_control_input_dtype, port="error")
-)
-
-
-_CONTROL_INPUT_DTYPE = ParameterField(
-    name="input_dtype",
-    type="str",
-    default=None,
-    description="Real floating-point dtype. Defaults to the connected signal dtype when known.",
 )

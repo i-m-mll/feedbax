@@ -36,10 +36,6 @@ from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.compiler.templates import network_template_graph
 from feedbax.runtime.graph import Graph
-from feedbax.runtime.components import (
-    LINEAR_PARAM_SCHEMA_VERSION,
-    LINEAR_PARAM_SCHEMA_VERSION_V1,
-)
 from feedbax.web.worker.diagnostics import GraphCompilationError
 from feedbax.web.worker.execution import compile_training_run
 
@@ -59,7 +55,7 @@ def _gain_interior(gain: float, *, in_port: str, out_port: str) -> GraphSpec:
     return GraphSpec(
         nodes={
             "scale": ComponentSpec(
-                type="Gain",
+                type="feedbax.Gain",
                 params={"gain": gain},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -106,7 +102,7 @@ def test_causal_composite_builds_from_subgraph_not_outer_params() -> None:
     """Outer params on a composite must not reach the built artifact."""
     interior = _gain_interior(7.0, in_port="excitation", out_port="force_2d")
     spec = _composite_spec(
-        "PointMass8MuscleRelu",
+        "feedbax.PointMass8MuscleRelu",
         # Stale outer params describing a completely different plant.
         {"n_pairs": 4, "max_isometric_force": 500.0, "dt": 0.01},
         interior,
@@ -140,7 +136,7 @@ def test_editing_the_subgraph_changes_the_built_artifact() -> None:
     built_gains = []
     for gain in (2.0, 11.0):
         spec = _composite_spec(
-            "PointMass8MuscleRelu",
+            "feedbax.PointMass8MuscleRelu",
             outer_params,
             _gain_interior(gain, in_port="excitation", out_port="force_2d"),
             in_port="excitation",
@@ -219,7 +215,7 @@ def test_acausal_composite_uses_interior_solver_not_outer_dt() -> None:
     spec = GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="AcausalSystem",
+                type="feedbax.AcausalSystem",
                 params={"dt": 0.5},  # stale outer value
                 input_ports=["u"],
                 output_ports=["output"],
@@ -278,7 +274,7 @@ def test_missing_subgraph_raises_for_every_composite_type(node_type: str) -> Non
 
 
 def test_missing_subgraph_raises_for_legacy_network_node() -> None:
-    """``Network`` is not in the component registry but is still spec-reachable."""
+    """The historical Network wrapper still requires its authoritative interior."""
     spec = GraphSpec(
         nodes={"net": ComponentSpec(type="Network", params={"hidden_size": 100})}
     )
@@ -288,10 +284,10 @@ def test_missing_subgraph_raises_for_legacy_network_node() -> None:
 
     message = str(exc_info.value)
     assert "net" in message
-    assert "no subgraph" in message
+    assert "subgraph" in message.lower()
 
 
-@pytest.mark.parametrize("node_type", ["Recurrent Controller", "Simple Feedback Loop"])
+@pytest.mark.parametrize("node_type", ["feedbax.RecurrentController", "feedbax.SimpleFeedbackLoop"])
 def test_missing_subgraph_is_not_filled_from_the_registered_template(node_type: str) -> None:
     """A registered ``template_graph`` is authoring scaffolding, not a fallback."""
     registry = _registry()
@@ -323,13 +319,13 @@ def _two_node_spec() -> GraphSpec:
     return GraphSpec(
         nodes={
             "gain": ComponentSpec(
-                type="Gain",
+                type="feedbax.Gain",
                 params={"gain": 2.5},
                 input_ports=["input"],
                 output_ports=["output"],
             ),
             "lin": ComponentSpec(
-                type="Linear",
+                type="feedbax.Linear",
                 params={
                     "input_size": 3,
                     "output_size": 2,
@@ -394,14 +390,14 @@ def test_linear_zero_initialization_is_compiled_executed_and_serialized() -> Non
     def linear_spec(
         params: dict[str, Any],
         *,
-        param_schema_version: str | None = None,
+        revision: int | None = None,
     ) -> GraphSpec:
         return GraphSpec(
             nodes={
                 "linear": ComponentSpec(
-                    type="Linear",
+                    type="feedbax.Linear",
                     params={"input_size": 3, "output_size": 2, **params},
-                    param_schema_version=param_schema_version,
+                    revision=revision,
                     input_ports=["input"],
                     output_ports=["output"],
                 )
@@ -425,11 +421,11 @@ def test_linear_zero_initialization_is_compiled_executed_and_serialized() -> Non
     assert jnp.array_equal(outputs["output"], jnp.zeros((2,), dtype=jnp.float32))
 
     serialized = graph_to_spec(graph).nodes["linear"]
-    assert serialized.param_schema_version == LINEAR_PARAM_SCHEMA_VERSION
+    assert serialized.revision == 2
     assert serialized.params["initialization"] == "zeros"
 
     legacy = spec_to_graph(
-        linear_spec({}, param_schema_version=LINEAR_PARAM_SCHEMA_VERSION_V1),
+        linear_spec({}, revision=1),
         _registry(),
     )
     default = spec_to_graph(linear_spec({}), _registry())
@@ -447,8 +443,8 @@ def test_round_trip_preserves_node_types_and_topology() -> None:
     round_tripped = graph_to_spec(graph)
 
     assert {name: node.type for name, node in round_tripped.nodes.items()} == {
-        "gain": "Gain",
-        "lin": "Linear",
+        "gain": "feedbax.Gain",
+        "lin": "feedbax.Linear",
     }
     assert [
         (wire.source_node, wire.source_port, wire.target_node, wire.target_port)
@@ -498,7 +494,7 @@ def _worker_linear_graph_spec(input_size: int = 1) -> dict:
     return GraphSpec(
         nodes={
             "readout": ComponentSpec(
-                type="Linear",
+                type="feedbax.Linear",
                 params={
                     "input_size": input_size,
                     "output_size": 1,
@@ -601,7 +597,7 @@ def test_unknown_activation_name_is_not_silently_relu() -> None:
     spec = GraphSpec(
         nodes={
             "lin": ComponentSpec(
-                type="Linear",
+                type="feedbax.Linear",
                 params={"input_size": 2, "output_size": 2, "activation": "gelu"},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -711,7 +707,7 @@ def test_composite_with_a_subgraph_does_not_require_unused_outer_params() -> Non
     """If the interior is authoritative, the outer params cannot gate the build."""
     interior = _gain_interior(3.0, in_port="excitation", out_port="torques")
     spec = _composite_spec(
-        "Arm6MuscleRigidTendon",
+        "feedbax.Arm6MuscleRigidTendon",
         {},  # no outer params at all; nothing here is used to build
         interior,
         in_port="excitation",
@@ -731,7 +727,7 @@ def test_unrecognized_component_param_is_not_silently_dropped() -> None:
     spec = GraphSpec(
         nodes={
             "lin": ComponentSpec(
-                type="Linear",
+                type="feedbax.Linear",
                 params={
                     "input_size": 2,
                     "output_size": 2,

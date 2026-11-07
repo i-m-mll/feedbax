@@ -18,7 +18,6 @@ from feedbax.web.config import GRAPHS_DIR, ensure_dirs
 from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
     normalize_project_for_studio_authoring,
-    normalize_workspace_for_studio_authoring,
 )
 from feedbax.contracts.migrations import migrate_graph_project_payload
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
@@ -114,11 +113,6 @@ class GraphService:
         if graph.metadata is None:
             graph.metadata = metadata
         semantic_workspace = workspace or build_default_studio_workspace(label=metadata.name)
-        semantic_workspace = normalize_workspace_for_studio_authoring(
-            semantic_workspace,
-            graph,
-            component_registry=component_registry,
-        )
         presentation = self._workspace_document(
             graph,
             workspace=semantic_workspace,
@@ -197,11 +191,7 @@ class GraphService:
             project.graph = normalized_graph
         presentation = workspace_document or project.workspace_document
         if workspace is not None:
-            project.workspace = normalize_workspace_for_studio_authoring(
-                workspace,
-                project.graph,
-                component_registry=component_registry,
-            )
+            project.workspace = workspace
         updated_at = datetime.now(timezone.utc).isoformat()
         next_revision = current_revision + 1
         project.metadata.updated_at = updated_at
@@ -383,7 +373,7 @@ class GraphService:
         with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
         canonical_json_v2_bytes(data)
-        data = migrate_graph_project_payload(data)
+        data = migrate_graph_project_payload(data, component_registry=component_registry)
         project = normalize_project_for_studio_authoring(
             GraphProject.model_validate(data),
             component_registry=component_registry,
@@ -419,11 +409,6 @@ class GraphService:
         component_registry: object | None = None,
     ) -> None:
         project.graph = normalize_graph_for_studio_authoring(
-            project.graph,
-            component_registry=component_registry,
-        )
-        project.workspace = normalize_workspace_for_studio_authoring(
-            project.workspace,
             project.graph,
             component_registry=component_registry,
         )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from math import prod
-from typing import Annotated, Any, Callable, Literal, Sequence
+from typing import Any, Callable, ClassVar, Literal, Sequence
 
 import equinox as eqx
 import jax
@@ -17,27 +17,25 @@ from equinox.nn import State, StateIndex
 from jax.flatten_util import ravel_pytree
 from jaxtyping import Array, PRNGKeyArray, PyTree
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import Field as ConfigField
 
-from feedbax.component_registry import component
-from feedbax.component_registry.declarations import (
-    ComponentConstructorPlan,
+from feedbax.contracts.component import DynamicPortPolicy, PortType
+from feedbax.contracts.portable import (
+    ComponentOptions,
+    ConfigBinding,
     MissingPrototypeInput,
-    ParameterField,
+    Ports,
 )
-from feedbax.component_registry.prototypes import (
+from feedbax.runtime.graph import Component, GraphNode
+from feedbax.runtime.prototypes import (
     _missing_input,
     _required_input,
+    array_input_configuration,
     array_prototype,
     input_passthrough_output_prototype,
-    migrate_stateful_v1,
+    materialize_array_input,
     stateful_passthrough_output_prototype,
 )
-from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
-from feedbax.contracts.migrations import ComponentMigration
-from feedbax.runtime.graph import Component
-
-LINEAR_PARAM_SCHEMA_VERSION_V1 = "1"
-LINEAR_PARAM_SCHEMA_VERSION = "2"
 
 
 def identity_activation(x: Any) -> Any:
@@ -99,9 +97,6 @@ def named_activation(activation: str | Callable) -> str:
     raise ValueError(f"Expected a built-in activation, got {activation!r}")
 
 
-_RequiredFloat = Annotated[float, Field(json_schema_extra={"feedbax": {"required": True}})]
-
-
 class _ConstantParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -109,12 +104,12 @@ class _ConstantParams(BaseModel):
 
     value: JsonValue = Field(
         default=0.0,
-        json_schema_extra={"feedbax": {"type": "object", "required": True}},
+        json_schema_extra={
+            "feedbax": {
+                "type": "object",
+            }
+        },
     )
-
-
-def _migrate_linear_v1(params: dict[str, Any]) -> dict[str, Any]:
-    return {**params, "initialization": "random"}
 
 
 def _shape_from_single_array(proto: Any, *, component: str, port: str) -> tuple[int, ...]:
@@ -420,37 +415,19 @@ def stateful_vector_output_prototype(
     return {"output": stateful_vector_prototype(int(params.get("n_dims", 1)), proto)}
 
 
-_STATEFUL_VECTOR_CONSTRUCTOR = ComponentConstructorPlan(
-    context_adapters={"input_shape": ("input_proto", "array_prototype")}
-)
-
-
-_STATEFUL_VECTOR_PROTOTYPE_FIELDS = (
-    ParameterField(name="input_shape", type="array", default=None, required=False),
-    ParameterField(name="input_dtype", type="str", default=None, required=False),
-)
-
-
-@component(
-    "Gain",
-    category="Math",
-    description="Multiply input by constant.",
-    icon="SlidersHorizontal",
-    output_prototype_fn=input_passthrough_output_prototype,
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-)
 class Gain(Component):
     """Multiply input by a constant gain."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=input_passthrough_output_prototype
+    )
 
     gain: float
 
-    def __init__(self, gain: _RequiredFloat = 1.0):
+    def __init__(self, gain: float = 1.0):
         self.gain = float(gain)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -458,44 +435,44 @@ class Gain(Component):
         return {"output": output}, state
 
 
-@component(
-    "Input",
-    category="Sources",
-    description="Pass an external graph input through a source-like node.",
-    parameter_fields=[
-        ParameterField(name="output_port", type="str", default="output", required=True),
-    ],
-    input_ports=["input"],
-    output_ports=["output"],
-    icon="LogIn",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=input_node_output_prototype,
-)
+class _InputConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    output_port: str = ConfigField(default="output")
+
+
 class Input(Component):
     """Pass a graph input through a source-like node."""
 
-    input_ports: tuple[str, ...] = field(static=True)
-    output_ports: tuple[str, ...] = field(static=True)
+    config: ClassVar[type[BaseModel]] = _InputConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="any")},
+        outputs={},
+        dynamic=DynamicPortPolicy(
+            count_mode="names",
+            fixed_input_ports=("input",),
+            output_name_params=("output_port",),
+            dynamic_port_type=PortType(dtype="any"),
+        ),
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=input_node_output_prototype
+    )
+
     output_port: str = field(static=True)
 
-    def __init__(self, output_port: str = "output"):
-        self.input_ports = ("input",)
+    def __init__(self, output_port: str = _InputConfig.model_fields["output_port"].default):
         self.output_port = str(output_port)
-        self.output_ports = (self.output_port,)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         return {self.output_port: inputs["input"]}, state
 
 
-@component(
-    "Sum",
-    category="Math",
-    description="Add present inputs.",
-    icon="Sigma",
-    port_types=PortTypeSpec(
+class Sum(Component):
+    """Sum present inputs."""
+
+    ports: ClassVar[Ports] = Ports(
         inputs={
             "a": PortType(dtype="any"),
             "b": PortType(dtype="any"),
@@ -503,14 +480,10 @@ class Input(Component):
             "d": PortType(dtype="any"),
         },
         outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=sum_output_prototype,
-)
-class Sum(Component):
-    """Sum present inputs."""
-
-    input_ports = ("a", "b", "c", "d")
-    output_ports = ("output",)
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=sum_output_prototype
+    )
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         values = [inputs[port] for port in self.input_ports if port in inputs]
@@ -522,73 +495,59 @@ class Sum(Component):
         return {"output": output}, state
 
 
-@component(
-    "Subtract",
-    category="Math",
-    description="Subtract input b from input a.",
-    icon="Minus",
-    port_types=PortTypeSpec(
-        inputs={"a": PortType(dtype="any"), "b": PortType(dtype="any")},
-        outputs={"out": PortType(dtype="any")},
-    ),
-    output_prototype_fn=subtract_output_prototype,
-)
 class Subtract(Component):
     """Subtract input ``b`` from input ``a``."""
 
-    input_ports = ("a", "b")
-    output_ports = ("out",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"a": PortType(dtype="any"), "b": PortType(dtype="any")},
+        outputs={"out": PortType(dtype="any")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=subtract_output_prototype
+    )
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         output = jt.map(lambda a, b: a - b, inputs["a"], inputs["b"])
         return {"out": output}, state
 
 
-@component(
-    "Multiply",
-    category="Math",
-    description="Element-wise product.",
-    icon="X",
-    port_types=PortTypeSpec(
-        inputs={"a": PortType(dtype="any"), "b": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=binary_elementwise_output_prototype,
-)
 class Multiply(Component):
     """Element-wise product of two inputs."""
 
-    input_ports = ("a", "b")
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"a": PortType(dtype="any"), "b": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=binary_elementwise_output_prototype
+    )
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         output = jt.map(lambda a, b: a * b, inputs["a"], inputs["b"])
         return {"output": output}, state
 
 
-@component(
-    "Reshape",
-    category="Math",
-    description="Reshape an array to a fixed output shape.",
-    parameter_fields=[
-        ParameterField(name="shape", type="array", default=[1, 1], required=True),
-    ],
-    icon="Rows3",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="array")},
-    ),
-    output_prototype_fn=reshape_output_prototype,
-)
+class _ReshapeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    shape: Any = ConfigField(default=[1, 1], json_schema_extra={"feedbax": {"type": "array"}})
+
+
 class Reshape(Component):
     """Reshape an array input to a configured shape."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _ReshapeConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="array")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=reshape_output_prototype
+    )
 
     shape: tuple[int, ...] = field(static=True)
 
-    def __init__(self, shape: Sequence[int] = (1, 1)):
+    def __init__(self, shape: Sequence[int] = _ReshapeConfig.model_fields["shape"].default):
         parsed = tuple(int(dim) for dim in shape)
         if not parsed:
             raise ValueError("Reshape shape must contain at least one dimension")
@@ -598,52 +557,48 @@ class Reshape(Component):
         return {"output": jnp.reshape(inputs["input"], self.shape)}, state
 
 
-@component(
-    "MatMul",
-    category="Math",
-    description="Matrix multiply a and b.",
-    icon="Table2",
-    port_types=PortTypeSpec(
-        inputs={"a": PortType(dtype="array"), "b": PortType(dtype="array")},
-        outputs={"out": PortType(dtype="array")},
-    ),
-    output_prototype_fn=matmul_output_prototype,
-)
 class MatMul(Component):
     """Matrix multiply inputs ``a`` and ``b``."""
 
-    input_ports = ("a", "b")
-    output_ports = ("out",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"a": PortType(dtype="array"), "b": PortType(dtype="array")},
+        outputs={"out": PortType(dtype="array")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=matmul_output_prototype
+    )
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         return {"out": jnp.matmul(inputs["a"], inputs["b"])}, state
 
 
-@component(
-    "Scale",
-    category="Math",
-    description="Multiply input by a scalar or broadcastable scale.",
-    parameter_fields=[
-        ParameterField(name="scale", type="float", default=1.0, required=True),
-        ParameterField(name="fixed", type="bool", default=False, required=False),
-    ],
-    icon="Scaling",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=input_passthrough_output_prototype,
-)
+class _ScaleConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    scale: Any = ConfigField(default=1.0)
+    fixed: bool = ConfigField(default=False)
+
+
 class Scale(Component):
     """Multiply input by a scalar or broadcastable scale."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _ScaleConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=input_passthrough_output_prototype
+    )
 
     scale: PyTree
     fixed: bool = field(static=True)
 
-    def __init__(self, scale: PyTree = 1.0, fixed: bool = False):
+    def __init__(
+        self,
+        scale: PyTree = _ScaleConfig.model_fields["scale"].default,
+        fixed: bool = _ScaleConfig.model_fields["fixed"].default,
+    ):
         self.fixed = fixed
         self.scale = float(scale) if fixed else jnp.asarray(scale)
 
@@ -653,59 +608,46 @@ class Scale(Component):
         return {"output": output}, state
 
 
-@component(
-    "Sigmoid",
-    category="Math",
-    description="Apply a logistic sigmoid elementwise.",
-    icon="Activity",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=input_passthrough_output_prototype,
-)
 class Sigmoid(Component):
     """Apply a logistic sigmoid elementwise."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=input_passthrough_output_prototype
+    )
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         return {"output": jt.map(jax.nn.sigmoid, inputs["input"])}, state
 
 
-@component(
-    "Activation",
-    constructor=ComponentConstructorPlan(renames={"activation": "activation_name"}),
-    attribute_paths={"activation": "activation_name"},
-    category="Math",
-    description="Apply a named elementwise activation.",
-    parameter_fields=[
-        ParameterField(
-            name="activation",
-            type="enum",
-            options=["identity", "tanh", "relu", "sigmoid", "softmax"],
-            default="identity",
-            required=True,
-        ),
-    ],
-    icon="Activity",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=input_passthrough_output_prototype,
-)
-class Activation(Component):
+class _ActivationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    activation: Literal["identity", "tanh", "relu", "sigmoid", "softmax"] = ConfigField(
+        default="identity"
+    )
+
+
+class CallableActivation(GraphNode):
     """Apply one named activation elementwise without introducing parameters."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+    )
+
+    input_ports: ClassVar = tuple(ports.inputs)
+    output_ports: ClassVar = tuple(ports.outputs)
 
     activation_name: str = field(static=True)
     activation: Callable = field(static=True)
 
-    def __init__(self, activation_name: str, activation: Callable | None = None):
+    def __init__(
+        self,
+        activation_name: str = _ActivationConfig.model_fields["activation"].default,
+        activation: Callable | None = None,
+    ):
         if activation is None:
             try:
                 activation = NAMED_ACTIVATIONS[activation_name]
@@ -716,6 +658,25 @@ class Activation(Component):
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         return {"output": jt.map(self.activation, inputs["input"])}, state
+
+
+class Activation(CallableActivation, Component):
+    """Portable Activation with a reconstructible typed configuration."""
+
+    ports: ClassVar = CallableActivation.ports
+
+    config: ClassVar[type[BaseModel]] = _ActivationConfig
+
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=input_passthrough_output_prototype
+    )
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return cls(activation_name=config.activation)
+
+    def configuration_values(self):
+        return {"activation": named_activation(self.activation)}
 
 
 def _affine_param(value: PyTree, shape: tuple[int, ...], name: str) -> PyTree:
@@ -730,32 +691,16 @@ def _affine_param(value: PyTree, shape: tuple[int, ...], name: str) -> PyTree:
     return jnp.broadcast_to(array, shape)
 
 
-@component(
-    "ElementwiseAffineModulator",
-    attribute_paths={"gain_init": "gain", "bias_init": "bias"},
-    category="Math",
-    description=(
-        "Per-element affine modulation: signal * (baseline + gain * modulator) + bias * modulator."
-    ),
-    parameter_fields=[
-        ParameterField(name="signal_shape", type="array", default=[1], required=True),
-        ParameterField(name="baseline", type="array", default=1.0, required=False),
-        ParameterField(name="gain_init", type="array", default=0.0, required=False),
-        ParameterField(name="bias_init", type="array", default=0.0, required=False),
-        ParameterField(name="trainable", type="bool", default=True, required=False),
-    ],
-    icon="SlidersHorizontal",
-    port_types=PortTypeSpec(
-        inputs={
-            "signal": PortType(dtype="vector"),
-            "modulator": PortType(dtype="vector"),
-            "scale": PortType(dtype="vector"),
-            "bias": PortType(dtype="vector"),
-        },
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=elementwise_affine_output_prototype,
-)
+class _ElementwiseAffineModulatorConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    signal_shape: Any = ConfigField(default=[1], json_schema_extra={"feedbax": {"type": "array"}})
+    baseline: Any = ConfigField(default=1.0, json_schema_extra={"feedbax": {"type": "array"}})
+    gain_init: Any = ConfigField(default=0.0, json_schema_extra={"feedbax": {"type": "array"}})
+    bias_init: Any = ConfigField(default=0.0, json_schema_extra={"feedbax": {"type": "array"}})
+    trainable: bool = ConfigField(default=True)
+
+
 class ElementwiseAffineModulator(Component):
     """Apply per-element affine modulation to a signal.
 
@@ -765,8 +710,24 @@ class ElementwiseAffineModulator(Component):
     ``modulator`` may be scalar or broadcastable to the configured signal shape.
     """
 
-    input_ports = ("signal", "modulator", "scale", "bias")
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _ElementwiseAffineModulatorConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={
+            "signal": PortType(dtype="vector"),
+            "modulator": PortType(dtype="vector"),
+            "scale": PortType(dtype="vector"),
+            "bias": PortType(dtype="vector"),
+        },
+        outputs={"output": PortType(dtype="vector")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=elementwise_affine_output_prototype
+    )
+    config_bindings: ClassVar[tuple[ConfigBinding, ...]] = (
+        ConfigBinding("gain", name="gain_init"),
+        ConfigBinding("bias", name="bias_init"),
+    )
 
     baseline: Array
     gain: Array
@@ -776,11 +737,13 @@ class ElementwiseAffineModulator(Component):
 
     def __init__(
         self,
-        signal_shape: Sequence[int],
-        baseline: PyTree = 1.0,
-        gain_init: PyTree = 0.0,
-        bias_init: PyTree = 0.0,
-        trainable: bool = True,
+        signal_shape: Sequence[int] = _ElementwiseAffineModulatorConfig.model_fields[
+            "signal_shape"
+        ].default,
+        baseline: PyTree = _ElementwiseAffineModulatorConfig.model_fields["baseline"].default,
+        gain_init: PyTree = _ElementwiseAffineModulatorConfig.model_fields["gain_init"].default,
+        bias_init: PyTree = _ElementwiseAffineModulatorConfig.model_fields["bias_init"].default,
+        trainable: bool = _ElementwiseAffineModulatorConfig.model_fields["trainable"].default,
     ):
         shape = tuple(int(dim) for dim in signal_shape)
         if not shape:
@@ -815,27 +778,20 @@ class ElementwiseAffineModulator(Component):
         return {"output": output}, state
 
 
-@component(
-    "Saturation",
-    category="Signal Processing",
-    description="Clamp to min/max range.",
-    icon="SlidersHorizontal",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=input_passthrough_output_prototype,
-)
 class Saturation(Component):
     """Clamp input to a min/max range."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=input_passthrough_output_prototype
+    )
 
     min_val: float
     max_val: float
 
-    def __init__(self, min_val: _RequiredFloat = -1.0, max_val: _RequiredFloat = 1.0):
+    def __init__(self, min_val: float = -1.0, max_val: float = 1.0):
         self.min_val = float(min_val)
         self.max_val = float(max_val)
 
@@ -844,28 +800,23 @@ class Saturation(Component):
         return {"output": output}, state
 
 
-@component(
-    "Constant",
-    category="Sources",
-    description="Constant value output.",
-    param_model=_ConstantParams,
-    input_ports=[],
-    icon="Circle",
-    port_types=PortTypeSpec(
-        inputs={},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=source_value_output_prototype,
-)
 class Constant(Component):
     """Constant value output."""
 
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(inputs={}, outputs={"output": PortType(dtype="any")})
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=source_value_output_prototype
+    )
+    config: ClassVar[type[BaseModel]] = _ConstantParams
 
     value: PyTree
     dtype: str | None = field(static=True)
 
-    def __init__(self, value: PyTree = 0.0, dtype: str | None = None):
+    def __init__(
+        self,
+        value: PyTree = _ConstantParams.model_fields["value"].default,
+        dtype: str | None = _ConstantParams.model_fields["dtype"].default,
+    ):
         self.dtype = dtype
         if dtype is not None:
             value = jnp.asarray(value, dtype=dtype)
@@ -875,22 +826,15 @@ class Constant(Component):
         return {"output": self.value}, state
 
 
-@component(
-    "Ravel",
-    category="Signal Processing",
-    description="Flatten a PyTree value into a vector.",
-    icon="Layers",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=ravel_output_prototype,
-)
 class Ravel(Component):
     """Flatten a PyTree input to a vector."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=ravel_output_prototype
+    )
 
     @staticmethod
     def flatten(value: PyTree) -> Array:
@@ -901,7 +845,7 @@ class Ravel(Component):
         return {"output": self.flatten(inputs["input"])}, state
 
 
-class _StepSource(Component):
+class _StepSource(GraphNode):
     """Base class for sources driven by a step counter."""
 
     step_index: StateIndex
@@ -917,32 +861,33 @@ class _StepSource(Component):
         return step, state.set(self.step_index, step + 1)
 
 
-@component(
-    "Ramp",
-    category="Sources",
-    description="Linear ramp over time.",
-    parameter_fields=[
-        ParameterField(name="slope", type="float", default=1.0, required=True),
-        ParameterField(name="intercept", type="float", default=0.0, required=True),
-        ParameterField(name="dt", type="float", default=0.01, required=True),
-    ],
-    input_ports=[],
-    icon="TrendingUp",
-    port_types=PortTypeSpec(
-        inputs={},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=step_source_output_prototype,
-)
-class Ramp(_StepSource):
+class _RampConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    slope: Any = ConfigField(default=1.0)
+    intercept: Any = ConfigField(default=0.0)
+    dt: float = ConfigField(default=0.01)
+
+
+class Ramp(_StepSource, Component):
     """Linear ramp over time."""
 
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _RampConfig
+
+    ports: ClassVar[Ports] = Ports(inputs={}, outputs={"output": PortType(dtype="any")})
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=step_source_output_prototype
+    )
 
     slope: PyTree
     intercept: PyTree
 
-    def __init__(self, slope: PyTree = 1.0, intercept: PyTree = 0.0, dt: float = 0.01):
+    def __init__(
+        self,
+        slope: PyTree = _RampConfig.model_fields["slope"].default,
+        intercept: PyTree = _RampConfig.model_fields["intercept"].default,
+        dt: float = _RampConfig.model_fields["dt"].default,
+    ):
         super().__init__(dt=dt)
         self.slope = jt.map(jnp.asarray, slope)
         self.intercept = jt.map(jnp.asarray, intercept)
@@ -954,29 +899,25 @@ class Ramp(_StepSource):
         return {"output": output}, state
 
 
-@component(
-    "Sine",
-    category="Sources",
-    description="Sinusoidal signal.",
-    parameter_fields=[
-        ParameterField(name="amplitude", type="float", default=1.0, required=True),
-        ParameterField(name="frequency", type="float", default=1.0, required=True),
-        ParameterField(name="phase", type="float", default=0.0, required=False),
-        ParameterField(name="offset", type="float", default=0.0, required=False),
-        ParameterField(name="dt", type="float", default=0.01, required=True),
-    ],
-    input_ports=[],
-    icon="AudioWaveform",
-    port_types=PortTypeSpec(
-        inputs={},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=step_source_output_prototype,
-)
-class Sine(_StepSource):
+class _SineConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    amplitude: Any = ConfigField(default=1.0)
+    frequency: float = ConfigField(default=1.0)
+    phase: float = ConfigField(default=0.0)
+    offset: Any = ConfigField(default=0.0)
+    dt: float = ConfigField(default=0.01)
+
+
+class Sine(_StepSource, Component):
     """Sinusoidal signal."""
 
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _SineConfig
+
+    ports: ClassVar[Ports] = Ports(inputs={}, outputs={"output": PortType(dtype="any")})
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=step_source_output_prototype
+    )
 
     amplitude: PyTree
     frequency: float
@@ -985,11 +926,11 @@ class Sine(_StepSource):
 
     def __init__(
         self,
-        amplitude: PyTree = 1.0,
-        frequency: float = 1.0,
-        phase: float = 0.0,
-        offset: PyTree = 0.0,
-        dt: float = 0.01,
+        amplitude: PyTree = _SineConfig.model_fields["amplitude"].default,
+        frequency: float = _SineConfig.model_fields["frequency"].default,
+        phase: float = _SineConfig.model_fields["phase"].default,
+        offset: PyTree = _SineConfig.model_fields["offset"].default,
+        dt: float = _SineConfig.model_fields["dt"].default,
     ):
         super().__init__(dt=dt)
         self.amplitude = jt.map(jnp.asarray, amplitude)
@@ -1009,29 +950,25 @@ class Sine(_StepSource):
         return {"output": output}, state
 
 
-@component(
-    "Pulse",
-    category="Sources",
-    description="Pulse/square wave.",
-    parameter_fields=[
-        ParameterField(name="amplitude", type="float", default=1.0, required=True),
-        ParameterField(name="period", type="float", default=1.0, required=True),
-        ParameterField(name="duty_cycle", type="float", default=0.5, required=True),
-        ParameterField(name="offset", type="float", default=0.0, required=False),
-        ParameterField(name="dt", type="float", default=0.01, required=True),
-    ],
-    input_ports=[],
-    icon="Activity",
-    port_types=PortTypeSpec(
-        inputs={},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=step_source_output_prototype,
-)
-class Pulse(_StepSource):
+class _PulseConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    amplitude: Any = ConfigField(default=1.0)
+    period: float = ConfigField(default=1.0)
+    duty_cycle: float = ConfigField(default=0.5)
+    offset: Any = ConfigField(default=0.0)
+    dt: float = ConfigField(default=0.01)
+
+
+class Pulse(_StepSource, Component):
     """Pulse/square wave."""
 
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _PulseConfig
+
+    ports: ClassVar[Ports] = Ports(inputs={}, outputs={"output": PortType(dtype="any")})
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=step_source_output_prototype
+    )
 
     amplitude: PyTree
     period: float
@@ -1040,11 +977,11 @@ class Pulse(_StepSource):
 
     def __init__(
         self,
-        amplitude: PyTree = 1.0,
-        period: float = 1.0,
-        duty_cycle: float = 0.5,
-        offset: PyTree = 0.0,
-        dt: float = 0.01,
+        amplitude: PyTree = _PulseConfig.model_fields["amplitude"].default,
+        period: float = _PulseConfig.model_fields["period"].default,
+        duty_cycle: float = _PulseConfig.model_fields["duty_cycle"].default,
+        offset: PyTree = _PulseConfig.model_fields["offset"].default,
+        dt: float = _PulseConfig.model_fields["dt"].default,
     ):
         super().__init__(dt=dt)
         self.amplitude = jt.map(jnp.asarray, amplitude)
@@ -1064,33 +1001,34 @@ class Pulse(_StepSource):
         return {"output": output}, state
 
 
-@component(
-    "Noise",
-    category="Signal Processing",
-    description="Random noise source.",
-    parameter_fields=[
-        ParameterField(name="mean", type="float", default=0.0, required=False),
-        ParameterField(name="std", type="float", default=1.0, required=True),
-        ParameterField(name="shape", type="array", default=[1], required=False),
-    ],
-    input_ports=[],
-    icon="Sparkles",
-    port_types=PortTypeSpec(
-        inputs={},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=noise_output_prototype,
-)
+class _NoiseConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    mean: float = ConfigField(default=0.0)
+    std: float = ConfigField(default=1.0)
+    shape: Any = ConfigField(default=[1], json_schema_extra={"feedbax": {"type": "array"}})
+
+
 class Noise(Component):
     """Random noise source."""
 
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _NoiseConfig
+
+    ports: ClassVar[Ports] = Ports(inputs={}, outputs={"output": PortType(dtype="any")})
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=noise_output_prototype
+    )
 
     mean: float
     std: float
     shape: tuple[int, ...] = field(static=True)
 
-    def __init__(self, mean: float = 0.0, std: float = 1.0, shape: Sequence[int] = (1,)):
+    def __init__(
+        self,
+        mean: float = _NoiseConfig.model_fields["mean"].default,
+        std: float = _NoiseConfig.model_fields["std"].default,
+        shape: Sequence[int] = _NoiseConfig.model_fields["shape"].default,
+    ):
         self.mean = float(mean)
         self.std = float(std)
         self.shape = tuple(int(x) for x in shape)
@@ -1100,26 +1038,20 @@ class Noise(Component):
         return {"output": sample}, state
 
 
-@component(
-    "Spring",
-    category="Mechanics",
-    description="Linear spring.",
-    icon="Move",
-    port_types=PortTypeSpec(
-        inputs={"displacement": PortType(dtype="vector")},
-        outputs={"force": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=spring_output_prototype,
-)
 class Spring(Component):
     """Linear spring: F = k * displacement."""
 
-    input_ports = ("displacement",)
-    output_ports = ("force",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"displacement": PortType(dtype="vector")},
+        outputs={"force": PortType(dtype="vector")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=spring_output_prototype
+    )
 
     stiffness: float
 
-    def __init__(self, stiffness: _RequiredFloat = 1.0):
+    def __init__(self, stiffness: float = 1.0):
         self.stiffness = float(stiffness)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -1127,26 +1059,19 @@ class Spring(Component):
         return {"force": output}, state
 
 
-@component(
-    "Damper",
-    category="Mechanics",
-    description="Viscous damper.",
-    icon="Move",
-    port_types=PortTypeSpec(
-        inputs={"velocity": PortType(dtype="vector")},
-        outputs={"force": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=damper_output_prototype,
-)
 class Damper(Component):
     """Viscous damper: F = b * velocity."""
 
-    input_ports = ("velocity",)
-    output_ports = ("force",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"velocity": PortType(dtype="vector")}, outputs={"force": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=damper_output_prototype
+    )
 
     damping: float
 
-    def __init__(self, damping: _RequiredFloat = 1.0):
+    def __init__(self, damping: float = 1.0):
         self.damping = float(damping)
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -1154,51 +1079,38 @@ class Damper(Component):
         return {"force": output}, state
 
 
-@component(
-    "DelayLine",
-    constructor=ComponentConstructorPlan(
-        context_adapters={"input_shape": ("input_proto", "array_prototype")}
-    ),
-    param_schema_version="2",
-    category="Signal Processing",
-    description="Discrete delay buffer.",
-    parameter_fields=[
-        ParameterField(name="delay", type="int", default=1, min=0, required=True),
-        ParameterField(name="init_value", type="float", default=0.0, required=False),
-        ParameterField(name="input_shape", type="array", default=None, required=False),
-        ParameterField(name="input_dtype", type="str", default=None, required=False),
-    ],
-    icon="Clock",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=stateful_passthrough_output_prototype,
-    migrations=(
-        ComponentMigration(
-            source_type="DelayLine",
-            target_type="DelayLine",
-            owner="feedbax",
-            source_param_schema_version="1",
-            target_param_schema_version="2",
-            migration_id="feedbax.component.DelayLine.params.v1-to-v2",
-            migrate_params=migrate_stateful_v1,
-            description="Preserve stateful declarations with optional inferred input dtype.",
-        ),
-    ),
-)
+class _DelayLineConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    delay: int = ConfigField(default=1, ge=0)
+    init_value: float = ConfigField(default=0.0)
+    input_shape: Any = ConfigField(default=None, json_schema_extra={"feedbax": {"type": "array"}})
+    input_dtype: str | None = ConfigField(default=None)
+
+
 class DelayLine(Component):
     """Discrete delay buffer."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _DelayLineConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=stateful_passthrough_output_prototype
+    )
 
     delay: int
     init_value: float
     input_proto: PyTree
     state_index: StateIndex
 
-    def __init__(self, delay: int = 1, init_value: float = 0.0, input_proto: PyTree | None = None):
+    def __init__(
+        self,
+        delay: int = _DelayLineConfig.model_fields["delay"].default,
+        init_value: float = _DelayLineConfig.model_fields["init_value"].default,
+        input_proto: PyTree | None = None,
+    ):
         self.delay = int(delay)
         self.init_value = float(init_value)
         if input_proto is None:
@@ -1220,61 +1132,37 @@ class DelayLine(Component):
         state = state.set(self.state_index, (next_output, next_queue))
         return {"output": next_output}, state
 
+    @classmethod
+    def from_config(cls, config, **context):
+        return materialize_array_input(cls, config, **context)
 
-@component(
-    "Linear",
-    build_context_fields=("key",),
-    constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
-    attribute_paths={"activation": "activation_name"},
-    category="Neural Networks",
-    description="Linear layer.",
-    parameter_fields=[
-        ParameterField(name="dtype", type="str", default="float32", required=False),
-        ParameterField(name="input_size", type="int", default=1, min=1, required=True),
-        ParameterField(name="output_size", type="int", default=1, min=1, required=True),
-        ParameterField(name="use_bias", type="bool", default=True, required=False),
-        ParameterField(name="bias_init", type="float", default=None, required=False),
-        ParameterField(
-            name="initialization",
-            type="enum",
-            options=["random", "zero_bias", "zeros"],
-            default="random",
-            required=False,
-        ),
-        ParameterField(
-            name="activation",
-            type="enum",
-            options=["identity", "tanh", "relu", "sigmoid", "softmax"],
-            default="identity",
-            required=False,
-        ),
-    ],
-    icon="Minus",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=linear_output_prototype,
-    param_schema_version=LINEAR_PARAM_SCHEMA_VERSION,
-    trainable_by_default=True,
-    migrations=(
-        ComponentMigration(
-            source_type="Linear",
-            target_type="Linear",
-            owner="feedbax",
-            source_param_schema_version=LINEAR_PARAM_SCHEMA_VERSION_V1,
-            target_param_schema_version=LINEAR_PARAM_SCHEMA_VERSION,
-            migration_id="feedbax.component.Linear.params.v1-to-v2",
-            migrate_params=_migrate_linear_v1,
-            description="Make the existing random Linear initialization explicit.",
-        ),
-    ),
-)
-class Linear(Component):
+    def configuration_values(self):
+        return array_input_configuration(self)
+
+
+class _LinearConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dtype: str = ConfigField(default="float32")
+    input_size: int = ConfigField(default=1, ge=1)
+    output_size: int = ConfigField(default=1, ge=1)
+    use_bias: bool = ConfigField(default=True)
+    bias_init: float | None = ConfigField(default=None)
+    initialization: Literal["random", "zero_bias", "zeros"] = ConfigField(default="random")
+    activation: Literal["identity", "tanh", "relu", "sigmoid", "softmax"] = ConfigField(
+        default="identity"
+    )
+
+
+class LinearLayer(GraphNode):
     """Linear layer."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+
+    input_ports: ClassVar = tuple(ports.inputs)
+    output_ports: ClassVar = tuple(ports.outputs)
 
     layer: eqx.nn.Linear
     activation: Callable = field(static=True)
@@ -1288,13 +1176,15 @@ class Linear(Component):
 
     def __init__(
         self,
-        input_size: int,
-        output_size: int,
-        use_bias: bool = True,
-        activation: str | Callable = "identity",
-        initialization: Literal["random", "zero_bias", "zeros"] = "random",
-        dtype: Any = jnp.float32,
-        bias_init: float | None = None,
+        input_size: int = _LinearConfig.model_fields["input_size"].default,
+        output_size: int = _LinearConfig.model_fields["output_size"].default,
+        use_bias: bool = _LinearConfig.model_fields["use_bias"].default,
+        activation: str | Callable = _LinearConfig.model_fields["activation"].default,
+        initialization: Literal["random", "zero_bias", "zeros"] = _LinearConfig.model_fields[
+            "initialization"
+        ].default,
+        dtype: Any = _LinearConfig.model_fields["dtype"].default,
+        bias_init: float | None = _LinearConfig.model_fields["bias_init"].default,
         *,
         key: PRNGKeyArray,
     ):
@@ -1331,49 +1221,58 @@ class Linear(Component):
         return {"output": output}, state
 
 
-@component(
-    "MLP",
-    build_context_fields=("key",),
-    constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
-    attribute_paths={
-        "activation": "activation_name",
-        "final_activation": "final_activation_name",
-    },
-    category="Neural Networks",
-    description="Multi-layer perceptron.",
-    parameter_fields=[
-        ParameterField(name="dtype", type="str", default="float32", required=False),
-        ParameterField(name="input_size", type="int", default=4, min=1, required=True),
-        ParameterField(name="output_size", type="int", default=2, min=1, required=True),
-        ParameterField(name="hidden_sizes", type="array", default=[64], required=False),
-        ParameterField(
-            name="activation",
-            type="enum",
-            options=["relu", "tanh", "identity"],
-            default="relu",
-            required=False,
-        ),
-        ParameterField(
-            name="final_activation",
-            type="enum",
-            options=["identity", "tanh", "relu"],
-            default="identity",
-            required=False,
-        ),
-    ],
-    icon="Brain",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=linear_output_prototype,
-    trainable_by_default=True,
-)
+class Linear(LinearLayer, Component):
+    """Portable linear layer with a named activation."""
+
+    ports: ClassVar = LinearLayer.ports
+
+    config: ClassVar[type[BaseModel]] = _LinearConfig
+
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=linear_output_prototype,
+        build_context_fields=("key",),
+        trainable_by_default=True,
+    )
+
+    @classmethod
+    def from_config(cls, config, **context):
+        context.setdefault("key", jr.PRNGKey(0))
+        return super().from_config(config, **context)
+
+    def configuration_values(self):
+        values = super().configuration_values()
+        values["activation"] = named_activation(self.activation)
+        return values
+
+
+class _MLPConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dtype: str = ConfigField(default="float32")
+    input_size: int = ConfigField(default=4, ge=1)
+    output_size: int = ConfigField(default=2, ge=1)
+    hidden_sizes: Any = ConfigField(default=[64], json_schema_extra={"feedbax": {"type": "array"}})
+    activation: Literal["relu", "tanh", "identity"] = ConfigField(default="relu")
+    final_activation: Literal["identity", "tanh", "relu"] = ConfigField(default="identity")
+
+
 class MLP(Component):
     """Multi-layer perceptron."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _MLPConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=linear_output_prototype,
+        build_context_fields=("key",),
+        trainable_by_default=True,
+    )
+    config_bindings: ClassVar[tuple[ConfigBinding, ...]] = (
+        ConfigBinding("activation_name", name="activation"),
+        ConfigBinding("final_activation_name", name="final_activation"),
+    )
 
     linears: tuple[eqx.nn.Linear, ...]
     activation: Callable = field(static=True)
@@ -1387,12 +1286,12 @@ class MLP(Component):
 
     def __init__(
         self,
-        input_size: int,
-        output_size: int,
-        hidden_sizes: Sequence[int] = (64,),
-        activation: str | Callable = "relu",
-        final_activation: str | Callable = "identity",
-        dtype: Any = jnp.float32,
+        input_size: int = _MLPConfig.model_fields["input_size"].default,
+        output_size: int = _MLPConfig.model_fields["output_size"].default,
+        hidden_sizes: Sequence[int] = _MLPConfig.model_fields["hidden_sizes"].default,
+        activation: str | Callable = _MLPConfig.model_fields["activation"].default,
+        final_activation: str | Callable = _MLPConfig.model_fields["final_activation"].default,
+        dtype: Any = _MLPConfig.model_fields["dtype"].default,
         *,
         key: PRNGKeyArray,
     ):
@@ -1419,6 +1318,11 @@ class MLP(Component):
                 x = self.final_activation(x)
         return {"output": x}, state
 
+    @classmethod
+    def from_config(cls, config, **context):
+        context.setdefault("key", jr.PRNGKey(0))
+        return super().from_config(config, **context)
+
 
 class GRUState(Module):
     """State view for a leaf GRU cell."""
@@ -1427,33 +1331,33 @@ class GRUState(Module):
     output: Array
 
 
-@component(
-    "GRU",
-    build_context_fields=("key",),
-    constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
-    attribute_paths={"use_bias": "cell.use_bias"},
-    category="Neural Networks",
-    description="GRU cell.",
-    parameter_fields=[
-        ParameterField(name="dtype", type="str", default="float32", required=False),
-        ParameterField(name="input_size", type="int", default=4, min=1, required=True),
-        ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
-        ParameterField(name="use_bias", type="bool", default=True, required=False),
-        ParameterField(name="stateful", type="bool", default=True, required=False),
-    ],
-    icon="BrainCircuit",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=recurrent_output_prototype,
-    trainable_by_default=True,
-)
+class _GRUConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dtype: str = ConfigField(default="float32")
+    input_size: int = ConfigField(default=4, ge=1)
+    hidden_size: int = ConfigField(default=4, ge=1)
+    use_bias: bool = ConfigField(default=True)
+    stateful: bool = ConfigField(default=True)
+
+
 class GRU(Component):
     """Standalone GRU cell."""
 
-    input_ports = ("input", "hidden")
-    output_ports = ("output", "hidden")
+    config: ClassVar[type[BaseModel]] = _GRUConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
+        outputs={"output": PortType(dtype="vector"), "hidden": PortType(dtype="vector")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=recurrent_output_prototype,
+        build_context_fields=("key",),
+        trainable_by_default=True,
+    )
+    config_bindings: ClassVar[tuple[ConfigBinding, ...]] = (
+        ConfigBinding("cell.use_bias", name="use_bias"),
+    )
 
     cell: eqx.nn.GRUCell
     input_size: int = field(static=True)
@@ -1463,12 +1367,12 @@ class GRU(Component):
 
     def __init__(
         self,
-        input_size: int,
-        hidden_size: int,
-        dtype: Any = jnp.float32,
-        stateful: bool = True,
+        input_size: int = _GRUConfig.model_fields["input_size"].default,
+        hidden_size: int = _GRUConfig.model_fields["hidden_size"].default,
+        dtype: Any = _GRUConfig.model_fields["dtype"].default,
+        stateful: bool = _GRUConfig.model_fields["stateful"].default,
         *,
-        use_bias: bool = True,
+        use_bias: bool = _GRUConfig.model_fields["use_bias"].default,
         key: PRNGKeyArray,
     ):
         self.input_size = int(input_size)
@@ -1498,6 +1402,11 @@ class GRU(Component):
             state = state.set(self.state_index, GRUState(hidden=new_hidden, output=new_hidden))
         return {"output": new_hidden, "hidden": new_hidden}, state
 
+    @classmethod
+    def from_config(cls, config, **context):
+        context.setdefault("key", jr.PRNGKey(0))
+        return super().from_config(config, **context)
+
 
 class LSTMState(Module):
     """State view for a leaf LSTM cell."""
@@ -1507,21 +1416,21 @@ class LSTMState(Module):
     output: Array
 
 
-@component(
-    "LSTM",
-    build_context_fields=("key",),
-    constructor=ComponentConstructorPlan(injections={"key": jr.PRNGKey(0)}),
-    attribute_paths={"use_bias": "cell.use_bias"},
-    category="Neural Networks",
-    description="LSTM cell.",
-    parameter_fields=[
-        ParameterField(name="dtype", type="str", default="float32", required=False),
-        ParameterField(name="input_size", type="int", default=4, min=1, required=True),
-        ParameterField(name="hidden_size", type="int", default=4, min=1, required=True),
-        ParameterField(name="use_bias", type="bool", default=True, required=False),
-    ],
-    icon="BrainCircuit",
-    port_types=PortTypeSpec(
+class _LSTMConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dtype: str = ConfigField(default="float32")
+    input_size: int = ConfigField(default=4, ge=1)
+    hidden_size: int = ConfigField(default=4, ge=1)
+    use_bias: bool = ConfigField(default=True)
+
+
+class LSTM(Component):
+    """Standalone LSTM cell."""
+
+    config: ClassVar[type[BaseModel]] = _LSTMConfig
+
+    ports: ClassVar[Ports] = Ports(
         inputs={
             "input": PortType(dtype="vector"),
             "hidden": PortType(dtype="vector"),
@@ -1532,15 +1441,15 @@ class LSTMState(Module):
             "hidden": PortType(dtype="vector"),
             "cell": PortType(dtype="vector"),
         },
-    ),
-    output_prototype_fn=lstm_output_prototype,
-    trainable_by_default=True,
-)
-class LSTM(Component):
-    """Standalone LSTM cell."""
-
-    input_ports = ("input", "hidden", "cell")
-    output_ports = ("output", "hidden", "cell")
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=lstm_output_prototype,
+        build_context_fields=("key",),
+        trainable_by_default=True,
+    )
+    config_bindings: ClassVar[tuple[ConfigBinding, ...]] = (
+        ConfigBinding("cell.use_bias", name="use_bias"),
+    )
 
     cell: eqx.nn.LSTMCell
     input_size: int = field(static=True)
@@ -1550,11 +1459,11 @@ class LSTM(Component):
 
     def __init__(
         self,
-        input_size: int,
-        hidden_size: int,
-        dtype: Any = jnp.float32,
+        input_size: int = _LSTMConfig.model_fields["input_size"].default,
+        hidden_size: int = _LSTMConfig.model_fields["hidden_size"].default,
+        dtype: Any = _LSTMConfig.model_fields["dtype"].default,
         *,
-        use_bias: bool = True,
+        use_bias: bool = _LSTMConfig.model_fields["use_bias"].default,
         key: PRNGKeyArray,
     ):
         self.input_size = int(input_size)
@@ -1579,36 +1488,19 @@ class LSTM(Component):
         )
         return {"output": new_hidden, "hidden": new_hidden, "cell": new_cell}, state
 
+    @classmethod
+    def from_config(cls, config, **context):
+        context.setdefault("key", jr.PRNGKey(0))
+        return super().from_config(config, **context)
 
-@component(
-    "Mux",
-    category="Signal Processing",
-    description="Concatenate inputs into single vector.",
-    parameter_fields=[
-        ParameterField(name="dtype", type="str", default=None, required=False),
-        ParameterField(name="n_inputs", type="int", default=2, min=1, required=True),
-    ],
-    input_ports=["in_0", "in_1"],
-    icon="GitMerge",
-    port_types=PortTypeSpec(
-        inputs={
-            "in_0": PortType(dtype="vector"),
-            "in_1": PortType(dtype="vector"),
-        },
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    dynamic_port_policy=DynamicPortPolicy(
-        count_param="n_inputs",
-        count_mode="integer",
-        direction="input",
-        fixed_output_ports=("output",),
-        generated_name_template="in_{index}",
-        dynamic_port_type=PortType(dtype="vector"),
-        auto_resize_minimum=2,
-        concatenate_to_output="output",
-    ),
-    output_prototype_fn=mux_output_prototype,
-)
+
+class _MuxConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dtype: str | None = ConfigField(default=None)
+    n_inputs: int = ConfigField(default=2, ge=1)
+
+
 class Mux(Component):
     """Concatenate multiple inputs into a single vector.
 
@@ -1619,16 +1511,37 @@ class Mux(Component):
         n_inputs: Number of input ports to create.
     """
 
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _MuxConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={},
+        outputs={"output": PortType(dtype="vector")},
+        dynamic=DynamicPortPolicy(
+            count_param="n_inputs",
+            count_mode="integer",
+            direction="input",
+            fixed_output_ports=("output",),
+            generated_name_template="in_{index}",
+            dynamic_port_type=PortType(dtype="vector"),
+            auto_resize_minimum=2,
+            concatenate_to_output="output",
+        ),
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=mux_output_prototype
+    )
 
     n_inputs: int = field(static=True)
-    input_ports: tuple[str, ...]
     dtype: Any = field(static=True)
 
-    def __init__(self, n_inputs: int = 2, *, dtype: Any = None):
+    def __init__(
+        self,
+        n_inputs: int = _MuxConfig.model_fields["n_inputs"].default,
+        *,
+        dtype: Any = _MuxConfig.model_fields["dtype"].default,
+    ):
         self.dtype = jnp.dtype(dtype).name if dtype is not None else None
         self.n_inputs = int(n_inputs)
-        self.input_ports = tuple(f"in_{i}" for i in range(self.n_inputs))
 
     def __call__(
         self,
@@ -1650,32 +1563,12 @@ class Mux(Component):
         return {"output": output}, state
 
 
-@component(
-    "Demux",
-    category="Signal Processing",
-    description="Split vector into multiple outputs.",
-    parameter_fields=[
-        ParameterField(name="sizes", type="array", default=[1, 1], required=True),
-    ],
-    output_ports=["out_0", "out_1"],
-    icon="GitBranch",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={
-            "out_0": PortType(dtype="vector"),
-            "out_1": PortType(dtype="vector"),
-        },
-    ),
-    dynamic_port_policy=DynamicPortPolicy(
-        count_param="sizes",
-        count_mode="sequence_length",
-        direction="output",
-        fixed_input_ports=("input",),
-        generated_name_template="out_{index}",
-        dynamic_port_type=PortType(dtype="vector"),
-    ),
-    output_prototype_fn=demux_output_prototype,
-)
+class _DemuxConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    sizes: Any = ConfigField(default=[1, 1], json_schema_extra={"feedbax": {"type": "array"}})
+
+
 class Demux(Component):
     """Split a vector into multiple outputs by size.
 
@@ -1685,18 +1578,32 @@ class Demux(Component):
         sizes: Tuple of sizes for each output slice along the last axis.
     """
 
-    input_ports = ("input",)
+    config: ClassVar[type[BaseModel]] = _DemuxConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")},
+        outputs={},
+        dynamic=DynamicPortPolicy(
+            count_param="sizes",
+            count_mode="sequence_length",
+            direction="output",
+            fixed_input_ports=("input",),
+            generated_name_template="out_{index}",
+            dynamic_port_type=PortType(dtype="vector"),
+        ),
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=demux_output_prototype
+    )
 
     sizes: tuple[int, ...] = field(static=True)
-    output_ports: tuple[str, ...]
 
-    def __init__(self, sizes: Sequence[int]):
+    def __init__(self, sizes: Sequence[int] = _DemuxConfig.model_fields["sizes"].default):
         self.sizes = tuple(int(s) for s in sizes)
         if not self.sizes:
             raise ValueError("Demux sizes must contain at least one output size")
         if any(size <= 0 for size in self.sizes):
             raise ValueError("Demux sizes must be positive integers")
-        self.output_ports = tuple(f"out_{i}" for i in range(len(self.sizes)))
 
     def __call__(
         self,
@@ -1719,25 +1626,12 @@ class Demux(Component):
         return outputs, state
 
 
-@component(
-    "Switch",
-    runtime_type=None,
-    category="Signal Processing",
-    description="Route signal by threshold condition.",
-    parameter_fields=[
-        ParameterField(name="threshold", type="float", default=0.0, required=True),
-    ],
-    icon="GitCompare",
-    port_types=PortTypeSpec(
-        inputs={
-            "condition": PortType(dtype="scalar"),
-            "true_input": PortType(dtype="any"),
-            "false_input": PortType(dtype="any"),
-        },
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=switch_output_prototype,
-)
+class _SwitchConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    threshold: float = ConfigField(default=0.0)
+
+
 class Switch(Component):
     """Route signal based on a threshold condition.
 
@@ -1748,12 +1642,23 @@ class Switch(Component):
         threshold: Comparison threshold for routing.
     """
 
-    input_ports = ("condition", "true_input", "false_input")
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _SwitchConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={
+            "condition": PortType(dtype="scalar"),
+            "true_input": PortType(dtype="any"),
+            "false_input": PortType(dtype="any"),
+        },
+        outputs={"output": PortType(dtype="any")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=switch_output_prototype
+    )
 
     threshold: float
 
-    def __init__(self, threshold: float = 0.0):
+    def __init__(self, threshold: float = _SwitchConfig.model_fields["threshold"].default):
         self.threshold = float(threshold)
 
     def __call__(
@@ -1772,21 +1677,12 @@ class Switch(Component):
         return {"output": output}, state
 
 
-@component(
-    "DeadZone",
-    runtime_type=None,
-    category="Signal Processing",
-    description="Zero output for small inputs.",
-    parameter_fields=[
-        ParameterField(name="threshold", type="float", default=0.1, min=0.0, required=True),
-    ],
-    icon="MinusSquare",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=input_passthrough_output_prototype,
-)
+class _DeadZoneConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    threshold: float = ConfigField(default=0.1, ge=0.0)
+
+
 class DeadZone(Component):
     """Dead-zone nonlinearity: zero output for small inputs.
 
@@ -1797,12 +1693,18 @@ class DeadZone(Component):
         threshold: Half-width of the dead band.
     """
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _DeadZoneConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=input_passthrough_output_prototype
+    )
 
     threshold: float
 
-    def __init__(self, threshold: float = 0.1):
+    def __init__(self, threshold: float = _DeadZoneConfig.model_fields["threshold"].default):
         self.threshold = float(threshold)
 
     def __call__(
@@ -1832,25 +1734,17 @@ def stateful_vector_prototype(n_dims: int, input_proto: Array | None = None) -> 
     return input_proto
 
 
-@component(
-    "RateLimiter",
-    constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
-    category="Signal Processing",
-    description="Limit rate of change of signal.",
-    parameter_fields=[
-        ParameterField(name="max_rate", type="float", default=1.0, min=0.0, required=True),
-        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-        ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
-        ParameterField(name="initial_value", type="float", default=0.0, required=False),
-        *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
-    ],
-    icon="Gauge",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=stateful_vector_output_prototype,
-)
+class _RateLimiterConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    max_rate: float = ConfigField(default=1.0, ge=0.0)
+    dt: float = ConfigField(default=0.01, ge=0.0)
+    n_dims: int = ConfigField(default=1, ge=1)
+    initial_value: float = ConfigField(default=0.0)
+    input_shape: list[int] | None = None
+    input_dtype: str | None = None
+
+
 class RateLimiter(Component):
     """Limit the rate of change of a signal.
 
@@ -1864,8 +1758,14 @@ class RateLimiter(Component):
         input_proto: Shape and dtype of the signal.
     """
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _RateLimiterConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=stateful_vector_output_prototype
+    )
 
     max_rate: float
     dt: float
@@ -1875,10 +1775,10 @@ class RateLimiter(Component):
 
     def __init__(
         self,
-        max_rate: float = 1.0,
-        dt: float = 0.01,
-        n_dims: int = 1,
-        initial_value: float = 0.0,
+        max_rate: float = _RateLimiterConfig.model_fields["max_rate"].default,
+        dt: float = _RateLimiterConfig.model_fields["dt"].default,
+        n_dims: int = _RateLimiterConfig.model_fields["n_dims"].default,
+        initial_value: float = _RateLimiterConfig.model_fields["initial_value"].default,
         *,
         input_proto: Array | None = None,
     ):
@@ -1915,3 +1815,10 @@ class RateLimiter(Component):
         output = prev + delta
         state = state.set(self.state_index, output)
         return {"output": output}, state
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return materialize_array_input(cls, config, **context)
+
+    def configuration_values(self):
+        return array_input_configuration(self)

@@ -27,7 +27,6 @@ from feedbax.studio.protocol import (
 )
 from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
-    normalize_task_binding_spec_for_studio_authoring,
 )
 from feedbax.compiler.prototypes import (
     DerivedDimensionConflict,
@@ -309,10 +308,6 @@ def enumerate_studio_schema_registry(
 
     task_binding_spec = scenario.task_binding_spec
     authoring_graph = normalize_graph_for_studio_authoring(graph)
-    task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
-        task_binding_spec,
-        authoring_graph,
-    )
     resolution = resolve_graph_parameters(
         authoring_graph,
         prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
@@ -538,7 +533,7 @@ def _missing_subgraph_issues(
         required_domain = required_interior_domain(node.type, registry)
         if required_domain is None or node_id in subgraphs:
             continue
-        if node.type == "Network":
+        if node.type == "feedbax.Network":
             message = (
                 f"Network node {node_id!r} has no subgraph. Open it in Studio to "
                 "generate the internal architecture, then save again."
@@ -610,7 +605,7 @@ def _mux_connected_input_issues(
     occupied_ports = graph_input_ports | wired_ports | task_bound_ports
 
     for node_id, node in graph.nodes.items():
-        if node.type != "Mux":
+        if node.type != "feedbax.Mux":
             continue
         connected_inputs = {port for port in node.input_ports if (node_id, port) in occupied_ports}
         if len(connected_inputs) >= 2:
@@ -1096,31 +1091,31 @@ def _component_port_dimension(
 ) -> Optional[dict[str, Any]]:
     dimension_param: Optional[str] = None
     dimension: Optional[int] = None
-    if component_type == "Network":
+    if component_type == "feedbax.Network":
         if direction == "output" and port == "output":
             dimension_param = "out_size"
         elif direction == "output" and port == "hidden":
             dimension_param = "hidden_size"
-    elif component_type in {"Linear", "MLP"}:
+    elif component_type in {"feedbax.Linear", "feedbax.MLP"}:
         if direction == "input" and port == "input":
             dimension_param = "input_size"
         elif direction == "output" and port == "output":
             dimension_param = "output_size"
-    elif component_type in {"GRU", "LSTM"}:
+    elif component_type in {"feedbax.GRU", "feedbax.LSTM"}:
         if direction == "input" and port == "input":
             dimension_param = "input_size"
         elif port in {"output", "hidden", "cell"}:
             dimension_param = "hidden_size"
-    elif component_type in {"TwoLinkArm", "PointMass", "Mechanics"} and port == "force":
+    elif component_type in {"feedbax.TwoLinkArm", "feedbax.PointMass", "feedbax.Mechanics"} and port == "force":
         dimension = 2
-    elif component_type == "Arm6MuscleRigidTendon":
+    elif component_type == "feedbax.Arm6MuscleRigidTendon":
         if port == "excitation":
             dimension = 6
         elif port in {"angles", "angular_velocities", "torques"}:
             dimension = 2
         elif port in {"forces", "activations"}:
             dimension = 6
-    elif component_type == "PointMass8MuscleRelu":
+    elif component_type == "feedbax.PointMass8MuscleRelu":
         if port == "excitation":
             n_pairs = _positive_int_param(node_params, "n_pairs")
             dimension = n_pairs * 2 if n_pairs is not None else None
@@ -1129,7 +1124,7 @@ def _component_port_dimension(
         elif port in {"forces", "activations"}:
             n_pairs = _positive_int_param(node_params, "n_pairs")
             dimension = n_pairs * 2 if n_pairs is not None else None
-    elif component_type == "Demux":
+    elif component_type == "feedbax.Demux":
         sizes = node_params.get("sizes")
         if isinstance(sizes, (list, tuple)) and all(
             isinstance(size, int) and size > 0 for size in sizes
@@ -1234,7 +1229,7 @@ def _apply_mux_output_shapes(
             input_sources[(binding.target_node_id, binding.target_port)] = source
 
     for port in ports:
-        if port.component_type != "Mux" or port.direction != "output" or port.port != "output":
+        if port.component_type != "feedbax.Mux" or port.direction != "output" or port.port != "output":
             continue
         node = graph.nodes.get(port.node_id or "")
         if node is None:

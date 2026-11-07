@@ -35,7 +35,7 @@ it('keeps an external component’s wired and task-bound ports through graph rel
     },
   });
   const graph: GraphSpec = {
-    nodes: { source: { type: 'Constant', params: {}, input_ports: [], output_ports: ['output'] } },
+    nodes: { source: { type: 'feedbax.Constant', params: {}, input_ports: [], output_ports: ['output'] } },
     wires: [],
     input_ports: [],
     output_ports: [],
@@ -70,4 +70,30 @@ it('keeps an external component’s wired and task-bound ports through graph rel
   expect(useGraphStore.getState().graph.nodes[target].input_ports).toEqual(['signal-7', 'signal-8']);
   editor.resizeDynamicInputs({ ...bindings, bindings: [] });
   expect(useGraphStore.getState().graph.nodes[target].input_ports).toEqual(['signal-7']);
+});
+
+it('edits configured port names and preserves canonical revision through save and reload', () => {
+  const component = ComponentDefinitionSchema.parse({
+    name: 'example.NamedAdapter', revision: 3, supported_revisions: [1, 2, 3],
+    category: 'External', description: '',
+    default_params: { input_port: 'value', output_port: 'result' },
+    input_ports: ['value'], output_ports: ['result'],
+    dynamic_port_policy: {
+      count_mode: 'names', input_name_params: ['input_port'], output_name_params: ['output_port'],
+    },
+  });
+  const editor = useGraphStore.getState();
+  editor.setComponentRegistry([component]);
+  editor.hydrateGraph({ nodes: {}, wires: [], input_ports: [], output_ports: [], input_bindings: {}, output_bindings: {} },
+    { viewport: { x: 0, y: 0, zoom: 1 }, node_states: {} }, 'named');
+  editor.addNodeFromComponent(component, { x: 0, y: 0 });
+  editor.updateNodeParams('namedAdapter', 'input_port', 'signal');
+  editor.updateNodeParams('namedAdapter', 'output_port', 'response');
+  const saved = editor.capturePersistedGraph();
+  editor.hydrateGraph(GraphSpecSchema.parse(JSON.parse(JSON.stringify(saved.graph))), saved.uiState, 'named');
+  expect(useGraphStore.getState().graph.nodes.namedAdapter).toMatchObject({
+    type: 'example.NamedAdapter', revision: 3,
+    params: { input_port: 'signal', output_port: 'response' },
+    input_ports: ['signal'], output_ports: ['response'],
+  });
 });

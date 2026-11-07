@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
@@ -21,6 +21,7 @@ from feedbax.contracts.migrations import (
     UnsupportedComponentMigration,
 )
 from feedbax.contracts.representation import validate_representation_against_component
+from feedbax.registry_errors import RegistryCollisionError
 
 from .migration_routes import migration_route, source_endpoint, validate_migration_routes
 from .declarations import DeclaredComponent
@@ -28,18 +29,16 @@ from .discovery import ComponentPack, compile_owner, discover_modules, source_pa
 
 
 logger = logging.getLogger(__name__)
-_LEGACY_INTERIOR_DOMAINS = {
-    "Network": CAUSAL_DOMAIN_ID,
-}
 
 
 @dataclass(frozen=True)
 class ComponentResolution:
     type_id: str
     params: dict[str, Any]
-    param_schema_version: str | None
+    revision: int
     meta: DeclaredComponent
     migrations: tuple[ComponentMigrationInfo, ...] = ()
+
 
 
 @dataclass(frozen=True)
@@ -60,8 +59,9 @@ class ComponentRegistry:
     def __init__(self) -> None:
         self._sealed = False
         self._components: Dict[str, DeclaredComponent] = {}
-        self._component_migrations: Dict[tuple[str, str | None], ComponentMigration] = {}
+        self._component_migrations: Dict[tuple[str, int | str | None], ComponentMigration] = {}
         self._migration_owners: Dict[str, set[str]] = {}
+        self._history_names: dict[str, type] = {}
         self._register_builtins()
 
     def _register_builtins(self) -> None:
@@ -78,21 +78,62 @@ class ComponentRegistry:
         components = dict(self._components)
         migrations = dict(self._component_migrations)
         migration_owners = {owner: set(types) for owner, types in self._migration_owners.items()}
-        edges = list(pack.migrations)
-        for definition in pack.components:
+        reserved_names = dict(self._history_names)
+        edges = []
+        discovered = (
+            discover_modules(*pack.modules, namespace=pack.namespace, histories=pack.histories)
+            if pack.modules
+            else None
+        )
+        batch = tuple(
+            {
+                id(item): item
+                for item in (*pack.components, *(discovered.components if discovered else ()))
+            }.values()
+        )
+        unknown_history = pack.histories.keys() - {item for item in batch if isinstance(item, type)}
+        if unknown_history:
+            raise ValueError(f"History supplied for undiscovered owners: {unknown_history!r}")
+        from feedbax.contracts.portable import GraphTemplate
+        batch = tuple(sorted(batch, key=lambda item: isinstance(item, type) and issubclass(item, GraphTemplate)))
+        for definition in batch:
             definition_sources: tuple[Path | None, ...] = ()
             owner_class = None
-            if isinstance(definition, type):
-                owner_class = definition
-                definitions, definition_sources, owner_edges = compile_owner(definition)
-                edges.extend(owner_edges)
-            elif isinstance(definition, DeclaredComponent):
-                definitions = (definition,)
-            else:
-                definitions = (definition(),)
-                definition_sources = (source_path(definition),)
+            owner_class = definition
+            if pack.namespace is not None:
+                from .history import History
+
+                history = pack.histories.get(definition, History())
+                identities = {
+                    identity
+                    for identity, _revision in history.endpoints(
+                        pack.namespace, definition.__name__
+                    ).values()
+                } | {endpoint.type_id for endpoint in history.legacy}
+                for identity in sorted(identities):
+                    if (
+                        identity in reserved_names
+                        and reserved_names[identity] is not definition
+                    ):
+                        raise RegistryCollisionError(
+                            f"Historical component identity {identity!r} is reserved by {reserved_names[identity]!r}"
+                        )
+                    reserved_names[identity] = definition
+            compilation = copy(self)
+            compilation._components = components
+            compilation._component_migrations = {
+                **migrations,
+                **{(edge.source_type, edge.source_param_schema_version): edge for edge in edges},
+            }
+            definitions, definition_sources, owner_edges = compile_owner(
+                definition, namespace=pack.namespace, history=pack.histories.get(definition), registry=compilation
+            )
+            edges.extend(owner_edges)
             for declared in definitions:
                 meta = deepcopy(declared)
+                if owner_class in pack.presentation:
+                    meta = replace(meta, studio=replace(meta.studio, **pack.presentation[owner_class].as_kwargs()))
+                    definition_sources = (*definition_sources, meta.studio.source)
                 if meta.provenance is None:
                     origin = provenance
                     if origin is None and owner_class is not None:
@@ -106,7 +147,7 @@ class ComponentRegistry:
                 )
                 if meta.name in components:
                     existing = components[meta.name]
-                    raise ValueError(
+                    raise RegistryCollisionError(
                         f"component type already registered: {meta.name!r} "
                         f"({existing.owner!r} from {existing.source_paths!r}; "
                         f"{meta.owner!r} from {component_sources!r})"
@@ -124,7 +165,7 @@ class ComponentRegistry:
                         None,
                     )
                     if conflict is not None:
-                        raise ValueError(
+                        raise RegistryCollisionError(
                             f"component runtime type already registered: {runtime_type!r} "
                             f"({conflict.name!r}, {meta.name!r})"
                         )
@@ -137,7 +178,7 @@ class ComponentRegistry:
             key = (migration.source_type, migration.source_param_schema_version)
             if key in migrations:
                 existing = migrations[key]
-                raise ValueError(
+                raise RegistryCollisionError(
                     "Component migration already registered: "
                     f"{key!r} ({existing.migration_id!r}, {migration.migration_id!r})"
                 )
@@ -146,7 +187,7 @@ class ComponentRegistry:
             changed_targets.add(migration.target_type)
         validate_migration_routes(
             migrations,
-            {name: meta.param_schema_version for name, meta in components.items()},
+            {name: meta.revision for name, meta in components.items()},
         )
         for target in changed_targets & components.keys():
             components[target] = self._with_migrations(
@@ -155,6 +196,7 @@ class ComponentRegistry:
         self._components = components
         self._component_migrations = migrations
         self._migration_owners = migration_owners
+        self._history_names = reserved_names
 
     def component_source_paths(self, root: Path) -> dict[str, tuple[str, ...] | None]:
         """Project owner sources inside a checkout; None denotes incomplete coverage."""
@@ -164,7 +206,10 @@ class ComponentRegistry:
         for edge in self._component_migrations.values():
             if edge.migrate_params is not None:
                 origin = source_path(edge.migrate_params)
-                if origin is None and getattr(edge.migrate_params, "__module__", None) == "builtins":
+                if (
+                    origin is None
+                    and getattr(edge.migrate_params, "__module__", None) == "builtins"
+                ):
                     continue
                 for type_id in {edge.source_type, edge.target_type}:
                     migration_sources.setdefault(type_id, []).append(origin)
@@ -186,7 +231,7 @@ class ComponentRegistry:
     def seal(self) -> None:
         validate_migration_routes(
             self._component_migrations,
-            {name: meta.param_schema_version for name, meta in self._components.items()},
+            {name: meta.revision for name, meta in self._components.items()},
             require_current_terminal=True,
         )
         self._sealed = True
@@ -200,27 +245,39 @@ class ComponentRegistry:
         type_id: str,
         params: Mapping[str, Any],
         *,
-        param_schema_version: str | None = None,
+        legacy_token: str | None = None,
+        revision: int | None = None,
         complete_params: bool = True,
         historical_unversioned: bool = False,
     ) -> ComponentResolution:
         """Resolve migration edges before optionally completing the current contract."""
-        def current_version(name: str) -> str | None:
+        if legacy_token is not None and not isinstance(legacy_token, str):
+            raise ValueError(f"Legacy component version token must be a string: {legacy_token!r}")
+        if revision is not None:
+            from .history import require_revision
+
+            require_revision(revision)
+            if legacy_token is not None:
+                raise ValueError("Supply a canonical revision or a legacy token, never both")
+        endpoint = revision if revision is not None else legacy_token
+
+        def current_revision(name: str) -> int | None:
             component = self._components.get(name)
-            return component.param_schema_version if component is not None else None
+            return component.revision if component is not None else None
+
         source = source_endpoint(
             self._component_migrations,
-            current_version,
+            current_revision,
             type_id,
-            param_schema_version,
+            endpoint,
             params,
             historical_unversioned=historical_unversioned,
         )
         (resolved_type, resolved_version), chain = migration_route(
-            self._component_migrations, current_version, source
+            self._component_migrations, current_revision, source
         )
         meta = self._components.get(resolved_type)
-        if meta is None or resolved_version != meta.param_schema_version:
+        if meta is None or resolved_version != meta.revision:
             owner = self._owner_for_missing_type(resolved_type, meta)
             if owner is not None and not self._has_owner(owner):
                 raise MissingComponentOwner(
@@ -232,8 +289,8 @@ class ComponentRegistry:
             raise UnsupportedComponentMigration(
                 "No component migration registered to a current declaration: "
                 f"type={type_id!r}{owner_context}, "
-                f"source_param_schema_version={param_schema_version!r}, "
-                f"current_param_schema_version={current_version(type_id)!r}, "
+                f"source_legacy_token={legacy_token!r}, "
+                f"current_revision={current_revision(type_id)!r}, "
                 f"terminal={(resolved_type, resolved_version)!r}"
             )
         migrated = dict(params)
@@ -242,16 +299,18 @@ class ComponentRegistry:
                 migrated, source_param_schema_version=edge.source_param_schema_version
             )
         context = {
-            name: value for name, value in migrated.items() if name in meta.params.build_context_fields
+            name: value
+            for name, value in migrated.items()
+            if name in meta.params.build_context_fields
         }
         authored = {name: value for name, value in migrated.items() if name not in context}
         effective = (
-            meta.params.require(authored).model_dump(mode="python") if complete_params else authored
+            meta.params.require(authored).model_dump(mode="json") if complete_params else authored
         )
         return ComponentResolution(
             type_id=resolved_type,
             params={**effective, **context},
-            param_schema_version=meta.param_schema_version,
+            revision=meta.revision,
             meta=deepcopy(meta),
             migrations=tuple(self._migration_info(edge) for edge in chain),
         )
@@ -260,13 +319,17 @@ class ComponentRegistry:
         self,
         type_id: str,
         *,
-        param_schema_version: str | None = None,
+        legacy_token: str | None = None,
+        revision: int | None = None,
     ) -> bool:
         if type_id in self._components:
             return True
-        if (type_id, param_schema_version) in self._component_migrations:
+        if (
+            type_id,
+            revision if revision is not None else legacy_token,
+        ) in self._component_migrations:
             return True
-        if param_schema_version is not None:
+        if legacy_token is not None:
             return True
         return "." in type_id
 
@@ -292,19 +355,29 @@ class ComponentRegistry:
         component: Any,
         *,
         type_id: str | None = None,
-        param_schema_version: str | None = None,
-    ) -> tuple[str, dict[str, Any], str]:
+        revision: int | None = None,
+    ) -> tuple[str, dict[str, Any], int]:
         """Serialize one runtime leaf through the declaration that owns it."""
 
+        if revision is not None:
+            from .history import require_revision
+
+            require_revision(revision)
+        from feedbax.runtime.graph import Component
+
+        if not isinstance(component, Component):
+            raise ValueError(
+                f"GraphNode {type(component).__name__!r} executes in Python but has no portable Component contract"
+            )
         if type_id is not None:
             meta = self._components.get(type_id)
             if meta is None:
                 raise ValueError(f"Unknown bound component type {type_id!r}")
-            if param_schema_version != meta.param_schema_version:
+            if revision != meta.revision:
                 raise UnsupportedComponentMigration(
-                    "Runtime component binding has unsupported parameter schema version: "
-                    f"type={type_id!r}, bound={param_schema_version!r}, "
-                    f"current={meta.param_schema_version!r}"
+                    "Runtime component binding has unsupported revision: "
+                    f"type={type_id!r}, bound={revision!r}, "
+                    f"current={meta.revision!r}"
                 )
         else:
             matches = [
@@ -320,7 +393,7 @@ class ComponentRegistry:
                     f"matches={names!r}"
                 )
             meta = matches[0]
-        return meta.name, meta.params.dump(component), meta.param_schema_version
+        return meta.name, meta.params.dump(component), meta.revision
 
     def component_classification(self) -> dict[str, str]:
         """Return the registry-wide parameter-contract classification."""
@@ -474,11 +547,11 @@ class ComponentRegistry:
             name=meta.name,
             category=meta.category,
             description=meta.description,
-            param_schema=meta.param_schema,
+            param_schema=[] if meta.is_composite else meta.param_schema,
             input_ports=meta.input_ports,
             output_ports=meta.output_ports,
             icon=meta.icon,
-            default_params=meta.default_params,
+            default_params={} if meta.is_composite else meta.default_params,
             port_types=meta.port_types,
             dynamic_port_policy=meta.dynamic_port_policy,
             domain=meta.domain,
@@ -491,8 +564,8 @@ class ComponentRegistry:
             provenance=meta.provenance,
             identity=meta.identity,
             owner=meta.owner,
-            param_schema_version=meta.param_schema_version,
-            supported_param_schema_versions=list(meta.supported_param_schema_versions),
+            revision=meta.revision,
+            supported_revisions=meta.supported_revisions,
             migrations=list(meta.migrations),
             trainable_by_default=meta.trainable_by_default,
             representation=meta.representation,
@@ -523,7 +596,7 @@ class ComponentRegistry:
                 key=lambda item: (
                     item.owner,
                     item.source_type,
-                    item.source_param_schema_version or "",
+                    str(item.source_param_schema_version or ""),
                     item.target_type,
                 ),
             )
@@ -536,8 +609,15 @@ class ComponentRegistry:
             owner=migration.owner,
             source_type=migration.source_type,
             target_type=migration.target_type,
-            source_param_schema_version=migration.source_param_schema_version,
-            target_param_schema_version=migration.target_param_schema_version,
+            source_revision=migration.source_param_schema_version
+            if type(migration.source_param_schema_version) is int
+            else None,
+            target_revision=migration.target_param_schema_version
+            if type(migration.target_param_schema_version) is int
+            else None,
+            source_token=migration.source_param_schema_version
+            if isinstance(migration.source_param_schema_version, str)
+            else None,
             description=migration.description,
         )
 
@@ -560,11 +640,7 @@ def _declared_source_paths(meta: DeclaredComponent) -> tuple[Path | None, ...]:
     params = meta.params
     rules = (
         params.runtime_type,
-        params.builder,
-        params.extractor,
-        params.projection,
         meta.output_prototype_fn,
-        *(group for group, _ in params.constructor.groups.values()),
         *(
             ()
             if meta.compiler.input_prototype_parameter is None
@@ -637,7 +713,7 @@ def required_interior_domain(node_type: str, registry: Any) -> str | None:
                     meta = item
                     break
     if meta is None:
-        return _LEGACY_INTERIOR_DOMAINS.get(node_type)
+        return None
     is_composite = (
         bool(meta.get("is_composite", False))
         if isinstance(meta, Mapping)

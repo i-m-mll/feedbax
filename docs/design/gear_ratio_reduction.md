@@ -23,11 +23,7 @@ for unsupported free massless coordinates.
 
 ## Saved graphs
 
-`feedbax.spec.acausal_graph.v1` is unchanged. The correction implements the
-existing ideal-lossless gear intent and ratio convention; it changes incorrect
-numerical trajectories, not the authored type, ports, parameters, units, topology,
-or serialization. No legacy numerical execution mode is provided. Raw reduced
-state arrays from an older solver are not asserted to be compatible.
+`feedbax.spec.acausal_graph.v1` remains readable through the v2 component-history reader. The correction implements the existing ideal-lossless gear intent and ratio convention; it changes incorrect numerical trajectories, not the authored type, ports, parameters, units, topology, or serialization. No legacy numerical execution mode is provided. Raw reduced state arrays from an older solver are not asserted to be compatible.
 
 The consumer audit examined rlrmp2 revision
 `7d60e2b36f5c163c2d5acdce9d5ac8788a61bd34`, 23,738 local rlrmp2 JSON/YAML/JSONL

@@ -2,10 +2,9 @@
 
 from itertools import chain, zip_longest
 
+from feedbax._vendor.jax_cookbook import identity as identity_func
 
-def identity_func(x):
-    """Return ``x`` unchanged."""
-    return x
+__all__ = ["identity_func", "interleave_unequal"]
 
 
 def interleave_unequal(*args):

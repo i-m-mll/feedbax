@@ -10,7 +10,9 @@ from feedbax.runtime.noise import Normal
 
 @pytest.mark.parametrize("legacy_carry", [False, True], ids=["fresh-carry", "legacy-carry"])
 def test_direct_channel_can_toggle_noise_in_a_jitted_scan(legacy_carry: bool):
-    channel = Channel(delay=0, noise_func=Normal(std=0.7))
+    channel = eqx.filter_jit(
+        lambda std, initial: Channel(delay=0, noise_func=Normal(std=std), init_value=initial)
+    )(jnp.asarray(0.7), jnp.asarray(0.0))
     disabled = toggle_channel_noise(channel, False)
     restored = toggle_channel_noise(disabled, True)
     signal = jnp.arange(6, dtype=jnp.float32).reshape(6, 1)

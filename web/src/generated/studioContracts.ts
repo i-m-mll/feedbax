@@ -49,7 +49,7 @@ export interface ParamSchema {
 export interface ComponentSpec {
   type: string;
   params?: Record<string, number | string | boolean | null | unknown[] | Record<string, unknown>>;
-  param_schema_version?: string | null;
+  revision?: number | null;
   input_ports?: string[];
   output_ports?: string[];
 }
@@ -74,7 +74,7 @@ export interface SolverConfigSpec {
 
 export interface AcausalGraphSpec {
   schema_id?: "feedbax.spec.acausal_graph";
-  schema_version?: "feedbax.spec.acausal_graph.v1";
+  schema_version?: "feedbax.spec.acausal_graph.v2";
   physical_domain: "translational" | "rotational" | "planar_multibody";
   nodes?: Record<string, ComponentSpec>;
   connections?: AcausalConnectionSpec[];
@@ -264,7 +264,7 @@ export interface GraphMetadata {
 
 export interface GraphSpec {
   schema_id?: "feedbax.spec.graph";
-  schema_version?: "feedbax.spec.graph.v5";
+  schema_version?: "feedbax.spec.graph.v6";
   nodes?: Record<string, ComponentSpec>;
   wires?: WireSpec[];
   additive_channel_adapters?: AdditiveGraphChannelAdapterSpec[];
@@ -708,21 +708,24 @@ export interface ComponentMigrationInfo {
   owner: string;
   source_type: string;
   target_type: string;
-  source_param_schema_version?: string | null;
-  target_param_schema_version?: string | null;
+  source_revision?: number | null;
+  target_revision?: number | null;
+  source_token?: string | null;
   description?: string;
 }
 
 export interface DynamicPortPolicy {
-  count_param: string;
-  count_mode: "integer" | "sequence_length";
-  direction: "input" | "output";
+  count_param?: string | null;
+  count_mode: "integer" | "sequence_length" | "names";
+  direction?: "input" | "output" | null;
+  input_name_params?: string[];
+  output_name_params?: string[];
   fixed_input_ports?: string[];
   fixed_output_ports?: string[];
-  generated_name_template: string;
+  generated_name_template?: string | null;
   generated_index_origin?: number;
   minimum_count?: number;
-  dynamic_port_type: PortType;
+  dynamic_port_type?: PortType;
   auto_resize_minimum?: number | null;
   concatenate_to_output?: string | null;
 }
@@ -1024,7 +1027,7 @@ export interface ResolvedWorkspaceReplayScene {
 
 export interface ComponentDefinition {
   schema_id?: "feedbax.spec.component_definition";
-  schema_version?: "feedbax.spec.component_definition.v3";
+  schema_version?: "feedbax.spec.component_definition.v4";
   name: string;
   category: string;
   description: string;
@@ -1045,8 +1048,8 @@ export interface ComponentDefinition {
   provenance?: string | null;
   identity?: ComponentIdentity | null;
   owner?: string | null;
-  param_schema_version?: string;
-  supported_param_schema_versions?: string[];
+  revision?: number;
+  supported_revisions?: number[];
   migrations?: ComponentMigrationInfo[];
   trainable_by_default?: boolean;
   representation?: RepresentationSpec | null;
@@ -1986,7 +1989,7 @@ export interface InspectionStatusResponse {
 export const acausalReportDefaults = {
   "AcausalGraphSpec": {
     "schema_id": "feedbax.spec.acausal_graph",
-    "schema_version": "feedbax.spec.acausal_graph.v1",
+    "schema_version": "feedbax.spec.acausal_graph.v2",
     "nodes": {},
     "connections": [],
     "subgraphs": null,
@@ -1994,7 +1997,7 @@ export const acausalReportDefaults = {
   },
   "ComponentSpec": {
     "params": {},
-    "param_schema_version": null,
+    "revision": null,
     "input_ports": [],
     "output_ports": []
   },
@@ -2168,7 +2171,7 @@ export const ComponentSpecSchema: z.ZodType<ComponentSpec> = z.lazy(() =>
     .object({
       "type": z.string(),
       "params": z.record(z.string(), z.union([z.number().int().safe(), z.number().finite(), z.string(), z.boolean(), z.null(), z.array(z.unknown()), z.record(z.string(), z.unknown())])).optional(),
-      "param_schema_version": z.string().nullable().optional(),
+      "revision": z.number().int().safe().gt(0).nullable().optional(),
       "input_ports": z.array(z.string()).optional(),
       "output_ports": z.array(z.string()).optional(),
     })
@@ -2225,7 +2228,7 @@ export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.acausal_graph").optional(),
-      "schema_version": z.literal("feedbax.spec.acausal_graph.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.acausal_graph.v2").optional(),
       "physical_domain": z.union([z.literal("translational"), z.literal("rotational"), z.literal("planar_multibody")]),
       "nodes": z.record(z.string(), ComponentSpecSchema).optional(),
       "connections": z.array(AcausalConnectionSpecSchema).optional(),
@@ -2535,7 +2538,7 @@ export const GraphSpecSchema: z.ZodType<GraphSpec> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.graph").optional(),
-      "schema_version": z.literal("feedbax.spec.graph.v5").optional(),
+      "schema_version": z.literal("feedbax.spec.graph.v6").optional(),
       "nodes": z.record(z.string(), ComponentSpecSchema).optional(),
       "wires": z.array(WireSpecSchema).optional(),
       "additive_channel_adapters": z.array(AdditiveGraphChannelAdapterSpecSchema).optional(),
@@ -3355,8 +3358,9 @@ export const ComponentMigrationInfoSchema: z.ZodType<ComponentMigrationInfo> = z
       "owner": z.string(),
       "source_type": z.string(),
       "target_type": z.string(),
-      "source_param_schema_version": z.string().nullable().optional(),
-      "target_param_schema_version": z.string().nullable().optional(),
+      "source_revision": z.number().int().safe().gt(0).nullable().optional(),
+      "target_revision": z.number().int().safe().gt(0).nullable().optional(),
+      "source_token": z.string().nullable().optional(),
       "description": z.string().optional(),
     })
     .strict()
@@ -3365,21 +3369,35 @@ export const ComponentMigrationInfoSchema: z.ZodType<ComponentMigrationInfo> = z
 export const DynamicPortPolicySchema: z.ZodType<DynamicPortPolicy> = z.lazy(() =>
   z
     .object({
-      "count_param": z.string().min(1),
-      "count_mode": z.union([z.literal("integer"), z.literal("sequence_length")]),
-      "direction": z.union([z.literal("input"), z.literal("output")]),
+      "count_param": z.string().min(1).nullable().optional(),
+      "count_mode": z.union([z.literal("integer"), z.literal("sequence_length"), z.literal("names")]),
+      "direction": z.union([z.literal("input"), z.literal("output")]).nullable().optional(),
+      "input_name_params": z.array(z.string()).optional(),
+      "output_name_params": z.array(z.string()).optional(),
       "fixed_input_ports": z.array(z.string()).optional(),
       "fixed_output_ports": z.array(z.string()).optional(),
-      "generated_name_template": z.string().min(1),
+      "generated_name_template": z.string().min(1).nullable().optional(),
       "generated_index_origin": z.number().int().safe().optional(),
       "minimum_count": z.number().int().safe().gte(0).optional(),
-      "dynamic_port_type": PortTypeSchema,
+      "dynamic_port_type": PortTypeSchema.optional(),
       "auto_resize_minimum": z.number().int().safe().gte(0).nullable().optional(),
       "concatenate_to_output": z.string().nullable().optional(),
     })
     .strict()
     .superRefine((value, ctx) => {
-      if (!validGeneratedPortTemplate(value.generated_name_template)) {
+      if (value.count_mode === 'names' && (value.count_param != null || value.direction != null || value.generated_name_template != null || !(value.input_name_params?.length || value.output_name_params?.length) || hasDuplicate(value.input_name_params ?? []) || hasDuplicate(value.output_name_params ?? []) || value.input_name_params?.some((name) => !name) || value.output_name_params?.some((name) => !name))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Named dynamic ports require name parameters and cannot declare a count/generated layout",
+        });
+      }
+      if (value.count_mode !== 'names' && (value.count_param == null || value.direction == null || value.generated_name_template == null || !!value.input_name_params?.length || !!value.output_name_params?.length)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Count-based dynamic ports require count, direction and template only",
+        });
+      }
+      if (value.count_mode !== 'names' && (value.generated_name_template == null || !validGeneratedPortTemplate(value.generated_name_template))) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message: "generated_name_template must contain only the {index} replacement field",
@@ -3953,7 +3971,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
   z
     .object({
       "schema_id": z.literal("feedbax.spec.component_definition").optional(),
-      "schema_version": z.literal("feedbax.spec.component_definition.v3").optional(),
+      "schema_version": z.literal("feedbax.spec.component_definition.v4").optional(),
       "name": z.string(),
       "category": z.string(),
       "description": z.string(),
@@ -3974,8 +3992,8 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "provenance": z.string().nullable().optional(),
       "identity": ComponentIdentitySchema.nullable().optional(),
       "owner": z.string().nullable().optional(),
-      "param_schema_version": z.string().optional(),
-      "supported_param_schema_versions": z.array(z.string()).optional(),
+      "revision": z.number().int().safe().gt(0).optional(),
+      "supported_revisions": z.array(z.number().int().safe().gt(0)).optional(),
       "migrations": z.array(ComponentMigrationInfoSchema).optional(),
       "trainable_by_default": z.boolean().optional(),
       "representation": RepresentationSpecSchema.nullable().optional(),

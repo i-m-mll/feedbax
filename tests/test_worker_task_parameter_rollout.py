@@ -16,9 +16,8 @@ def test_studio_rollout_matches_trial_preparation_with_constant_parameter() -> N
     graph_spec = GraphSpec(
         nodes={
             "field": ComponentSpec(
-                type="AffineValueComposer",
+                type="feedbax.AffineValueComposer",
                 params={
-                    "schema_version": "feedbax.component.affine_value_composer.v2",
                     "output_block_size": 1,
                     "feature_rules": [{"kind": "identity", "state_slice": [0, 1]}],
                     "gain_init": [[2.0]],

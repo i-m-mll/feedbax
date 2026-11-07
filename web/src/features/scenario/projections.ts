@@ -196,7 +196,7 @@ function componentForTask(
 ): ComponentDefinition | null {
   return (
     componentsByName.get(taskType) ??
-    (taskType === 'ReachingTask' ? componentsByName.get('SimpleReaches') : undefined) ??
+    (taskType === 'ReachingTask' ? componentsByName.get('feedbax.SimpleReaches') : undefined) ??
     null
   );
 }

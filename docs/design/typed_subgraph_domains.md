@@ -139,7 +139,9 @@ subgraphs: Optional[Dict[str, CausalGraphSpec | AcausalGraphSpec | ...]]
 
 (GraphSpec v4; migration rule: v3 payloads' subgraph values are all causal.)
 
-`AcausalGraphSpec` (`feedbax.spec.acausal_graph.v1`):
+`AcausalGraphSpec` (`feedbax.spec.acausal_graph.v2`) resolves component identities and integer revisions. Its v1 reader interprets unversioned components through their historical evidence; current v2 authoring may omit a revision to select the current owner. Persisted readers require an explicit revision or unique historical evidence even within v2, because component revisions evolve independently of the document format.
+
+The payload contains:
 
 - `nodes: Dict[str, ComponentSpec]` — **reuse `ComponentSpec` unchanged.**
   Node types resolve to registered acausal element components. This is what
@@ -400,7 +402,7 @@ New/changed spec families, all registered with `SpecSchemaRegistry` under
 | Change | Identity | Migration stance |
 |---|---|---|
 | `GraphSpec` v3 → v4 (discriminated subgraph union, `interior_domain` refs) | `feedbax.spec.graph.v4` | migrate: v3 subgraph values tagged causal; recursive, parent-before-child (existing machinery) |
-| Acausal interior | `feedbax.spec.acausal_graph.v1` | new family; reject unknown |
+| Acausal interior | `feedbax.spec.acausal_graph.v2` | migrate v1 component histories; reject unknown |
 | Boundary adapters, solver config | nested in acausal family | — |
 | Domain registry payload | `feedbax.spec.domain.v1` | new family |
 | Compile report (cache) | `feedbax.spec.domain_compile_report.v1` | new family; cache-invalidate rather than migrate is acceptable (derived data) |

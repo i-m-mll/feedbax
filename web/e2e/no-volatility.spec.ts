@@ -33,7 +33,7 @@ function transport<T extends Record<string, unknown>>(data: T) {
 function graphFixture(hiddenSize: number) {
   return {
     schema_id: 'feedbax.spec.graph',
-    schema_version: 'feedbax.spec.graph.v5',
+    schema_version: 'feedbax.spec.graph.v6',
     nodes: {
       cell: {
         type: 'GRUCell',
@@ -45,7 +45,7 @@ function graphFixture(hiddenSize: number) {
         output_ports: ['hidden'],
       },
       system: {
-        type: 'AcausalSystem',
+        type: 'feedbax.AcausalSystem',
         params: {},
         input_ports: ['input'],
         output_ports: ['state'],
@@ -59,7 +59,7 @@ function graphFixture(hiddenSize: number) {
     subgraphs: {
       system: {
         schema_id: 'feedbax.spec.acausal_graph',
-        schema_version: 'feedbax.spec.acausal_graph.v1',
+        schema_version: 'feedbax.spec.acausal_graph.v2',
         physical_domain: 'translational',
         nodes: {},
         connections: [],
@@ -129,7 +129,7 @@ async function installMockApi(page: Page, initialWorkspace: StudioWorkspaceSpec 
             default_params: { input_size: 6, hidden_size: 100 },
           },
           {
-            name: 'Subgraph',
+            name: 'feedbax.Subgraph',
             category: 'Structure',
             description: 'Nested causal graph',
             param_schema: [],
@@ -142,7 +142,7 @@ async function installMockApi(page: Page, initialWorkspace: StudioWorkspaceSpec 
             is_composite: true,
           },
           {
-            name: 'AcausalSystem',
+            name: 'feedbax.AcausalSystem',
             category: 'Mechanics',
             description: 'Assembled acausal system',
             param_schema: [],
@@ -490,7 +490,7 @@ test('reload restores acausal domain context and rejects causal subgraph drops',
     const target = document.querySelector('.react-flow');
     if (!target) throw new Error('React Flow canvas not found');
     const dataTransfer = new DataTransfer();
-    dataTransfer.setData('application/feedbax-component', 'Subgraph');
+    dataTransfer.setData('application/feedbax-component', 'feedbax.Subgraph');
     target.dispatchEvent(new DragEvent('drop', {
       bubbles: true,
       cancelable: true,
@@ -501,7 +501,7 @@ test('reload restores acausal domain context and rejects causal subgraph drops',
   });
 
   await expect(page.getByText(
-    "Acausal interiors accept acausal-domain components only; 'Subgraph' is causal."
+    "Acausal interiors accept acausal-domain components only; 'feedbax.Subgraph' is causal."
   )).toBeVisible();
   await page.evaluate(() => window.feedbaxE2E?.exitToRoot());
   await expect(taskHandles).not.toHaveCount(0);

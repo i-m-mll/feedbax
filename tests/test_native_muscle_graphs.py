@@ -36,6 +36,19 @@ def test_native_muscles_match_independent_actuator_steps(registry, custom, arm):
             params.update(optimal_muscle_length=0.11, tendon_slack_length=0.0)
         graph = Arm6MuscleRigidTendon(**params, geometry=geometry)
         reference = RigidTendonHillMuscleThelen(**params)
+        if not custom:
+            portable = registry.get("feedbax.RigidTendonHillMuscleThelen").params.build({})
+            assert portable.n_muscles == reference.n_muscles == 1
+            assert portable.tendon_slack_length == reference.tendon_slack_length == 0.1
+            legacy = registry.resolve_component_spec(
+                "RigidTendonHillMuscleThelen", {}, legacy_token="1"
+            )
+            assert legacy.params["n_muscles"] == 6
+            assert legacy.params["tendon_slack_length"] == 0.2
+            unversioned = registry.resolve_component_spec(
+                "RigidTendonHillMuscleThelen", {}, historical_unversioned=True
+            )
+            assert unversioned.params == legacy.params
         output = "torques"
     else:
         if custom:
@@ -91,13 +104,13 @@ def test_native_muscles_match_independent_actuator_steps(registry, custom, arm):
     [("Arm6MuscleRigidTendon", 6, "torques"), ("PointMass8MuscleRelu", 8, "force_2d")],
 )
 def test_registry_muscle_template_executes_rewired_interior(registry, name, count, force_port):
-    meta = registry.get(name)
+    meta = registry.get(f"feedbax.{name}")
     template = meta.template_graph
     assert meta.template_kind == "executable"
     spec = GraphSpec(
         nodes={
             "generator": ComponentSpec(
-                type=name,
+                type=f"feedbax.{name}",
                 input_ports=template.input_ports,
                 output_ports=template.output_ports,
             )

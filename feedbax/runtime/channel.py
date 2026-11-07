@@ -8,28 +8,29 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from typing import Any, Generic, Optional, Tuple, TypeVar
+from typing import Any, ClassVar, Generic, Literal, Optional, Tuple, TypeVar
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.tree as jt
 from equinox import Module, field
 from equinox.nn import State, StateIndex
 from jaxtyping import Array, PRNGKeyArray, PyTree
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as ConfigField
 
 import feedbax._vendor.jax_cookbook.tree as jtree
-from feedbax.component_registry import component
-from feedbax.component_registry.declarations import ParameterField
-from feedbax.component_registry.prototypes import (
+from feedbax._vendor.jax_cookbook import identity
+from feedbax.contracts.component import PortType
+from feedbax.contracts.portable import ComponentOptions, Ports
+from feedbax.runtime.graph import Component, GraphNode
+from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
+from feedbax.runtime.prototypes import (
     array_prototype,
-    migrate_stateful_v1,
     prototype_params,
     stateful_passthrough_output_prototype,
 )
-from feedbax.contracts.component import PortType, PortTypeSpec
-from feedbax.contracts.migrations import ComponentMigration
-from feedbax.runtime.graph import Component
-from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
 
 logger = logging.getLogger(__name__)
 
@@ -71,25 +72,29 @@ class ChannelSpec(Module, Generic[StateT]):
 def _noise_model(noise_func: Callable | None) -> str:
     if noise_func is None:
         return "none"
-    if isinstance(noise_func, Normal):
+    if (
+        type(noise_func) is Normal
+        and not isinstance(noise_func.mean, jax.core.Tracer)
+        and noise_func.mean == 0.0
+    ):
         return "additive_gaussian"
-    if isinstance(noise_func, Multiplicative):
+    if (
+        type(noise_func) is Multiplicative
+        and noise_func.scale_func is identity
+        and _noise_model(noise_func.noise_func) == "additive_gaussian"
+    ):
         return "signal_dependent_gaussian"
-    if isinstance(noise_func, CompositeNoise):
+    if type(noise_func) is CompositeNoise:
         if (
             len(noise_func.terms) == 2
-            and isinstance(noise_func.terms[0], Multiplicative)
-            and isinstance(noise_func.terms[1], Normal)
+            and _noise_model(noise_func.terms[0]) == "signal_dependent_gaussian"
+            and _noise_model(noise_func.terms[1]) == "additive_gaussian"
         ):
             return "signal_dependent_plus_additive"
     return "custom"
 
 
 def _channel_noise_values(channel: Any) -> dict[str, Any]:
-    from feedbax._vendor.jax_cookbook import identity
-    from feedbax.runtime.channel import _noise_model
-    from feedbax.runtime.noise import CompositeNoise, Multiplicative, Normal
-
     additive_std = 0.0
     signal_dependent_std = 0.0
     noise_func = channel.noise_func
@@ -112,26 +117,23 @@ def _channel_noise_values(channel: Any) -> dict[str, Any]:
     for term in terms:
         if term is None:
             continue
-        if type(term) is Normal and term.mean == 0.0:
-            additive_std = float(term.std)
-        elif (
-            type(term) is Multiplicative
-            and type(term.noise_func) is Normal
-            and term.noise_func.mean == 0.0
-            and term.scale_func is identity
-        ):
-            signal_dependent_std = float(term.noise_func.std)
+        if type(term) is Normal:
+            additive_std = term.std
         else:
-            raise ValueError("Channel noise parameters do not represent a portable Gaussian term")
-    include_zero = noise_func is not None and (
-        (actual_model == "additive_gaussian" and not additive_std)
-        or (actual_model == "signal_dependent_gaussian" and not signal_dependent_std)
-        or (
-            actual_model == "signal_dependent_plus_additive"
-            and not (additive_std and signal_dependent_std)
-        )
-    )
-    if include_zero and declared_model != actual_model:
+            signal_dependent_std = term.noise_func.std
+    if actual_model == "additive_gaussian":
+        include_zero = additive_std == 0
+    elif actual_model == "signal_dependent_gaussian":
+        include_zero = signal_dependent_std == 0
+    elif actual_model == "signal_dependent_plus_additive":
+        include_zero = (additive_std == 0) | (signal_dependent_std == 0)
+    else:
+        include_zero = False
+    if (
+        declared_model != actual_model
+        and not isinstance(include_zero, jax.core.Tracer)
+        and include_zero
+    ):
         raise ValueError("Channel noise model cannot recover the declared zero-strength terms")
     return {
         "noise_model": declared_model,
@@ -145,20 +147,56 @@ def _channel_noise_values(channel: Any) -> dict[str, Any]:
     }
 
 
+def _channel_reset_value(component: SignalChannel, reset: ChannelState):
+    leaves = [leaf for leaf in jt.leaves(reset.output) if leaf.size]
+
+    def precision(leaf):
+        return (
+            jnp.issubdtype(leaf.dtype, jnp.inexact),
+            jnp.finfo(leaf.dtype).nmant
+            if jnp.issubdtype(leaf.dtype, jnp.inexact)
+            else leaf.dtype.itemsize,
+        )
+
+    candidates = []
+    for leaf in sorted(leaves, key=precision, reverse=True):
+        value = leaf.reshape(-1)[0].real
+        value = jnp.asarray(
+            value, dtype=jnp.result_type(value, jax.dtypes.canonicalize_dtype(float))
+        )
+        # A finer leaf can land exactly on a coarser dtype's rounding boundary.
+        candidates.append(value)
+        if not isinstance(value, jax.core.Tracer):
+            candidates.extend((jnp.nextafter(value, -jnp.inf), jnp.nextafter(value, jnp.inf)))
+    if not candidates:
+        candidates.append(_ChannelConfig.model_fields["init_value"].default)
+    for candidate in candidates:
+        expected = component._initial_state_value(reset.output, init_value=candidate)
+        same_reset = eqx.tree_equal(reset, expected, typematch=True)
+        if isinstance(same_reset, jax.core.Tracer) or same_reset:
+            return candidate
+    raise ValueError(
+        "Channel reset payload cannot be reconstructed from one scalar init_value, delay, and noise model"
+    )
+
+
 def _extract_channel_params(component: Any, model: Any) -> Any:
+    reset = component.state_index.init
+    if not isinstance(reset, ChannelState):
+        raise ValueError(
+            "Channel reset payload was stripped by make_with_state; preserve initial payloads for export"
+        )
     values = {
-        "delay": int(component.delay),
+        "delay": component.delay,
         **_channel_noise_values(component),
-        "input_shape": None,
-        "input_dtype": None,
-        "init_value": component.init_value,
+        "init_value": _channel_reset_value(component, reset),
         **(
-            prototype_params(component.input_proto)
-            if hasattr(component.input_proto, "shape")
-            else {}
+            prototype_params(reset.output)
+            if hasattr(reset.output, "shape")
+            else {"input_shape": None, "input_dtype": None}
         ),
     }
-    return type(model).model_validate({name: values[name] for name in type(model).model_fields})
+    return {name: values[name] for name in type(model).model_fields}
 
 
 def _noise_params(params: Mapping[str, Any]) -> dict[str, Any]:
@@ -236,100 +274,56 @@ def _build_noise_func(noise: Mapping[str, Any]):
     raise AssertionError(f"Unhandled Channel noise_model {model!r}")
 
 
-def _build_channel(params: Mapping[str, Any]) -> Channel:
+def _build_channel(params: Mapping[str, Any], *, runtime_type: type[Channel]) -> Channel:
     delay = int(params.get("delay", 0))
     noise = _noise_params(params)
     noise_func = _build_noise_func(noise)
     input_proto = params.get("resolved_input_proto")
     if input_proto is None:
         input_proto = array_prototype(params)
-    return Channel(
+    return runtime_type(
         delay=delay,
         noise_func=noise_func,
         add_noise=bool(noise["add_noise"]),
         input_proto=input_proto,
-        init_value=float(params.get("init_value", 0.0)),
+        init_value=params.get("init_value", 0.0),
         noise_model=str(noise["model"]),
         noise_role=None if noise["role"] is None else str(noise["role"]),
         noise_timing=None if noise["timing"] is None else str(noise["timing"]),
     )
 
 
-@component(
-    "Channel",
-    builder=_build_channel,
-    extractor=_extract_channel_params,
-    override_reason="noise composition and prototype shape require authored recovery",
-    param_schema_version="2",
-    category="Channels",
-    description="Delay and noise for a signal.",
-    parameter_fields=[
-        ParameterField(name="init_value", type="float", default=0.0, required=False),
-        ParameterField(name="delay", type="int", default=5, min=0, required=True),
-        ParameterField(
-            name="noise_model",
-            type="enum",
-            options=[
-                "none",
-                "additive_gaussian",
-                "signal_dependent_gaussian",
-                "signal_dependent_plus_additive",
-            ],
-            default="additive_gaussian",
-            required=False,
-        ),
-        ParameterField(name="noise_std", type="float", default=0.01, min=0, required=False),
-        ParameterField(
-            name="additive_noise_std",
-            type="float",
-            default=0.0,
-            min=0,
-            required=False,
-        ),
-        ParameterField(
-            name="signal_dependent_noise_std",
-            type="float",
-            default=0.0,
-            min=0,
-            required=False,
-        ),
-        ParameterField(
-            name="include_zero_noise_terms",
-            type="bool",
-            default=False,
-            required=False,
-        ),
-        ParameterField(name="add_noise", type="bool", default=True, required=False),
-        ParameterField(name="noise_role", type="str", default=None, required=False),
-        ParameterField(name="noise_timing", type="str", default=None, required=False),
-        ParameterField(name="input_shape", type="array", default=None, required=False),
-        ParameterField(name="input_dtype", type="str", default=None, required=False),
-    ],
-    icon="Signal",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=stateful_passthrough_output_prototype,
-    build_output_prototypes={"resolved_input_proto": "output"},
-    migrations=(
-        ComponentMigration(
-            source_type="Channel",
-            target_type="Channel",
-            owner="feedbax",
-            source_param_schema_version="1",
-            target_param_schema_version="2",
-            migration_id="feedbax.component.Channel.params.v1-to-v2",
-            migrate_params=migrate_stateful_v1,
-            description="Preserve stateful declarations with optional inferred input dtype.",
-        ),
-    ),
-)
-class Channel(Component):
+class _ChannelConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    init_value: float = ConfigField(default=0.0)
+    delay: int = ConfigField(default=5, ge=0)
+    noise_model: Literal[
+        "none", "additive_gaussian", "signal_dependent_gaussian", "signal_dependent_plus_additive"
+    ] = ConfigField(default="additive_gaussian")
+    noise_std: float = ConfigField(default=0.01, ge=0)
+    additive_noise_std: float = ConfigField(default=0.0, ge=0)
+    signal_dependent_noise_std: float = ConfigField(default=0.0, ge=0)
+    include_zero_noise_terms: bool = ConfigField(default=False)
+    add_noise: bool = ConfigField(default=True)
+    noise_role: str | None = ConfigField(default=None)
+    noise_timing: str | None = ConfigField(default=None)
+    input_shape: Any = ConfigField(default=None, json_schema_extra={"feedbax": {"type": "array"}})
+    input_dtype: str | None = ConfigField(default=None)
+
+
+_DEFAULT_CHANNEL_NOISE = object()
+
+
+class SignalChannel(GraphNode):
     """A noisy delay line."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+    )
+
+    input_ports: ClassVar = tuple(ports.inputs)
+    output_ports: ClassVar = tuple(ports.outputs)
 
     delay: int
     noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]]
@@ -343,15 +337,20 @@ class Channel(Component):
 
     def __init__(
         self,
-        delay: int,
-        noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]] = Normal(),
-        add_noise: bool = True,
+        delay: int = _ChannelConfig.model_fields["delay"].default,
+        noise_func: Optional[Callable[[PRNGKeyArray, Array], Array]] = _DEFAULT_CHANNEL_NOISE,
+        add_noise: bool = _ChannelConfig.model_fields["add_noise"].default,
         input_proto: Optional[PyTree[Array]] = None,
-        init_value: float = 0.0,
+        init_value: float = _ChannelConfig.model_fields["init_value"].default,
         noise_model: str | None = None,
-        noise_role: Optional[str] = None,
-        noise_timing: Optional[str] = None,
+        noise_role: Optional[str] = _ChannelConfig.model_fields["noise_role"].default,
+        noise_timing: Optional[str] = _ChannelConfig.model_fields["noise_timing"].default,
     ):
+        if noise_func is _DEFAULT_CHANNEL_NOISE:
+            defaults = _ChannelConfig().model_dump(mode="python")
+            if noise_model is not None:
+                defaults["noise_model"] = noise_model
+            noise_func = _build_noise_func(_noise_params(defaults))
         if not isinstance(delay, int):
             raise ValueError("Delay must be an integer")
         self.delay = delay
@@ -365,11 +364,11 @@ class Channel(Component):
         self.noise_role = noise_role
         self.noise_timing = noise_timing
 
-        initial_state = self._initial_state_value(input_proto)
+        initial_state = self._initial_state_value(input_proto, init_value=init_value)
         self.state_index = StateIndex(initial_state)
 
-    def _initial_state_value(self, input_proto: PyTree[Array]) -> ChannelState:
-        input_init = jt.map(lambda x: jnp.full_like(x, self.init_value), input_proto)
+    def _initial_state_value(self, input_proto: PyTree[Array], *, init_value) -> ChannelState:
+        input_init = jt.map(lambda x: jnp.full_like(x, init_value), input_proto)
         noise_init = jt.map(jnp.zeros_like, input_init) if self.noise_func is not None else None
         return self._state_with_history(input_init, noise_init)
 
@@ -420,7 +419,7 @@ class Channel(Component):
 
     def change_input(self, input_proto: PyTree[Array]) -> "Channel":
         """Return a similar Channel with a changed input structure."""
-        return Channel(
+        return type(self)(
             delay=self.delay,
             noise_func=self.noise_func,
             add_noise=self.add_noise,
@@ -432,6 +431,29 @@ class Channel(Component):
         )
 
 
+class Channel(SignalChannel, Component):
+    """Portable Channel with a reconstructible typed configuration."""
+
+    ports: ClassVar = SignalChannel.ports
+
+    config: ClassVar[type[BaseModel]] = _ChannelConfig
+
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=stateful_passthrough_output_prototype,
+        build_output_prototypes={"resolved_input_proto": "output"},
+    )
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return _build_channel({**config.model_dump(mode="python"), **context}, runtime_type=cls)
+
+    def configuration_values(self):
+        return _extract_channel_params(self, self.config.model_construct())
+
+    def change_input(self, input_proto: PyTree[Array]) -> "Channel":
+        return type(self).from_config(self.configuration(), resolved_input_proto=input_proto)
+
+
 def toggle_channel_noise(tree: ModelT, enabled: Optional[bool] = None) -> ModelT:
     """Set the noise flag on every Channel in a PyTree, or invert each flag.
 
@@ -439,9 +461,9 @@ def toggle_channel_noise(tree: ModelT, enabled: Optional[bool] = None) -> ModelT
     """
 
     def replace_channel(leaf):
-        if not isinstance(leaf, Channel):
+        if not isinstance(leaf, SignalChannel):
             return leaf
         add_noise = not leaf.add_noise if enabled is None else enabled
         return eqx.tree_at(lambda channel: channel.add_noise, leaf, replace=add_noise)
 
-    return jt.map(replace_channel, tree, is_leaf=lambda leaf: isinstance(leaf, Channel))
+    return jt.map(replace_channel, tree, is_leaf=lambda leaf: isinstance(leaf, SignalChannel))

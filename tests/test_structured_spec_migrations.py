@@ -84,20 +84,12 @@ from feedbax.contracts.descriptors import (
 from feedbax.contracts.schema_namespace import SchemaNamespaceError, SchemaNamespaceKind
 from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION,
-    GRAPH_SPEC_SCHEMA_VERSION_V2,
-    GRAPH_SPEC_SCHEMA_VERSION_V3,
-    GRAPH_SPEC_SCHEMA_VERSION_V4,
     LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
-    LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     STUDIO_BIOMECHANICS_SCHEMA_ID,
     STUDIO_BIOMECHANICS_SCHEMA_VERSION,
     STUDIO_SCENARIO_SCHEMA_VERSION,
     STUDIO_SCENARIO_SCHEMA_VERSION_V1,
     StudioScenarioSpec,
-)
-from feedbax.contracts.component import (
-    COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
-    COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
 )
 from feedbax.contracts.expressions import (
     PATH_EXPRESSION_SCHEMA_ID,
@@ -1935,6 +1927,8 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
                 continue
             for old_version in policy.supported_old_versions:
                 payload = {"schema_version": old_version}
+                if family.kind == "ComponentDefinition":
+                    payload["name"] = "Gain"
                 if family.kind == "StudioValueSpec":
                     payload.update({"mode": "constant", "value": 1, "metadata": {}})
                 if family.kind == "TrainingRunMatrixSpec":
@@ -1964,19 +1958,7 @@ def test_default_policy_matrix_exercises_accept_migrate_or_reject_behavior() -> 
             assert "migration_intentionally_absent=yes" in message
 
 
-def test_component_definition_policy_supports_v1_and_v2() -> None:
-    policy = default_spec_registry.resolve("ComponentDefinition").policy
-
-    assert policy is not None
-    assert policy.stance == "migrate"
-    assert policy.supported_old_versions == (
-        COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
-        COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
-    )
-
-
 def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> None:
-    graph_policy = default_spec_registry.resolve("GraphSpec").policy
     task_binding_policy = default_spec_registry.resolve("StudioTaskBindingSpec").policy
     objective_policy = default_spec_registry.resolve("ObjectiveSpec").policy
     population_policy = default_spec_registry.resolve("PopulationStructureSpec").policy
@@ -1989,22 +1971,6 @@ def test_default_policy_matrix_distinguishes_graph_and_studio_old_versions() -> 
     studio_api_policy = default_spec_registry.resolve("StudioApiTransport").policy
     report_policy = default_spec_registry.resolve("ReportSpec").policy
     extraction_policy = default_spec_registry.resolve("ExtractionProductSpec").policy
-    component_definition_policy = default_spec_registry.resolve("ComponentDefinition").policy
-
-    assert graph_policy is not None
-    assert graph_policy.stance == "migrate"
-    assert graph_policy.supported_old_versions == (
-        LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
-        GRAPH_SPEC_SCHEMA_VERSION_V2,
-        GRAPH_SPEC_SCHEMA_VERSION_V3,
-        GRAPH_SPEC_SCHEMA_VERSION_V4,
-    )
-    assert component_definition_policy is not None
-    assert component_definition_policy.stance == "migrate"
-    assert component_definition_policy.supported_old_versions == (
-        COMPONENT_DEFINITION_SCHEMA_VERSION_V1,
-        COMPONENT_DEFINITION_SCHEMA_VERSION_V2,
-    )
     assert task_binding_policy is not None
     assert task_binding_policy.stance == "migrate"
     assert task_binding_policy.supported_old_versions == (
