@@ -333,7 +333,6 @@ def _diagnose_component_types(
     path: str,
 ) -> list[DomainDiagnostic]:
     diagnostics: list[DomainDiagnostic] = []
-    get_meta = getattr(component_registry, "get", None)
     for node_id, node_spec in graph.nodes.items():
         if any(is_acausal_type(node_spec.type, role) for role in (ACTUATION_INPUT_TYPE, SENSOR_OUTPUT_TYPE, BOUNDARY_PORT_TYPE)):
             continue
