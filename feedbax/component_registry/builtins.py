@@ -5,10 +5,10 @@ from __future__ import annotations
 from importlib import import_module
 from pathlib import Path
 
-from .discovery import ComponentPack, discover_modules
+from .discovery import ComponentPack
 
 
-_OWNER_MODULES = (
+_PORTABLE_MODULES = (
     "feedbax.runtime.components",
     "feedbax.runtime.channel",
     "feedbax.runtime.filters",
@@ -21,9 +21,6 @@ _OWNER_MODULES = (
     "feedbax.control.pid",
     "feedbax.control.affine",
     "feedbax.models.networks",
-)
-
-_PORTABLE_MODULES = (
     "feedbax.mechanics.force_fields",
     "feedbax.mechanics.linear_state_space",
     "feedbax.mechanics.muscles.relu_muscle",
@@ -52,7 +49,6 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
         for owner, history in import_module(f"{module}_history").HISTORIES.items()
     }
     return (
-        discover_modules(*_OWNER_MODULES),
         ComponentPack(
             namespace="feedbax",
             modules=_PORTABLE_MODULES,
