@@ -101,6 +101,7 @@ _INTERVENTION_PAYLOAD_FIELDS = {
 
 
 _VALUES: dict[tuple[str, str], Any] = {
+    ("feedbax.PenzaiAdapter", "builder_name"): "test_roundtrip_sigmoid",
     ("feedbax.StateSpace", "A"): [[-0.5]],
     ("feedbax.StateSpace", "B"): [[0.5]],
     ("feedbax.StateSpace", "C"): [[0.5]],
@@ -191,6 +192,8 @@ def _contextualize_params(
     if component_type == "feedbax.StateSpace":
         for name, value in {"A": [[-1.0]], "B": [[1.0]], "C": [[1.0]], "D": [[0.0]]}.items():
             params.setdefault(name, value)
+    elif component_type == "feedbax.PenzaiAdapter":
+        params.setdefault("builder_name", "test_roundtrip_relu")
     elif component_type == "feedbax.TransferFunction":
         params.setdefault("num", [1.0])
         params.setdefault("den", [1.0, 1.0])
