@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from feedbax.acausal import _component, mechanics, multibody, rotational, translational
 from feedbax.contracts.acausal_interface import (
     ACTUATION_PAYLOADS,
     FORCE_PAYLOAD,
@@ -17,9 +16,6 @@ from feedbax.contracts.graph import ParamSchema
 
 from .declarations import DeclaredComponent, declare_component
 from .discovery import ComponentPack, discover_modules
-
-
-ACAUSAL_ELEMENT_MODULES = (mechanics, multibody, rotational, translational)
 
 
 def acausal_boundary_definitions() -> tuple[DeclaredComponent, ...]:
@@ -110,7 +106,9 @@ def acausal_boundary_definitions() -> tuple[DeclaredComponent, ...]:
 def acausal_component_pack() -> ComponentPack:
     """Compose the built-in acausal element owners and boundary descriptors."""
 
-    elements = discover_modules(*ACAUSAL_ELEMENT_MODULES)
+    from feedbax.acausal import _component, mechanics, multibody, rotational, translational
+
+    elements = discover_modules(mechanics, multibody, rotational, translational)
     return ComponentPack(
         components=(*elements.components, *acausal_boundary_definitions()),
         sources=(Path(_component.__file__), Path(__file__)),

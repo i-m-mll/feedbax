@@ -97,6 +97,7 @@ from feedbax.web.worker.app import (
     _run_training,
     _write_job_manifest,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.provider_contract]
 

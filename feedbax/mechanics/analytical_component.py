@@ -10,13 +10,6 @@ import jax.numpy as jnp
 import jax.random as jr
 from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
 
-from feedbax.compiler.solver_config import (
-    DEFAULT_PLANAR_SOLVER,
-    MIN_PLANAR_DT,
-    PlanarSolverType,
-    planar_solver_name,
-    resolve_acausal_solver,
-)
 from feedbax.component_registry.declarations import DeclaredComponent, declare_component
 from feedbax.component_registry.discovery import source_path
 from feedbax.contracts.acausal_interface import MUSCLE_EXCITATION_PAYLOAD
@@ -29,6 +22,13 @@ from feedbax.mechanics.model_builder import ChainConfig
 from feedbax.mechanics.muscle_config import (
     default_6muscle_2link_segment_lengths,
     default_6muscle_2link_topology,
+)
+from feedbax.mechanics.solver_config import (
+    DEFAULT_PLANAR_SOLVER,
+    MIN_PLANAR_DT,
+    PlanarSolverType,
+    planar_solver_name,
+    resolve_acausal_solver,
 )
 
 

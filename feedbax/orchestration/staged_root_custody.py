@@ -24,6 +24,10 @@ from feedbax.contracts.artifact_custody import (
 )
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.execution_schema import (
+    STAGED_ROOT_CUSTODY_SCHEMA_ID,
+    STAGED_ROOT_CUSTODY_SCHEMA_VERSION,
+)
 from feedbax.contracts.staged_execution import (
     STAGED_CHECKPOINT_CUSTODY_BACKEND,
     STAGED_EXECUTION_DESCRIPTOR_SCHEMA_ID,
@@ -41,8 +45,6 @@ if TYPE_CHECKING:
     )
 
 
-STAGED_ROOT_CUSTODY_SCHEMA_ID = "feedbax.orchestration.staged_root_custody"
-STAGED_ROOT_CUSTODY_SCHEMA_VERSION = "feedbax.orchestration.staged_root_custody.v1"
 STAGED_ROOT_CUSTODY_REF_PREFIX = "staged-root://sha256/"
 StagedRootKind = Literal["manifest-store", "artifact-provider", "checkpoint-custody"]
 

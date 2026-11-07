@@ -23,6 +23,26 @@ from typing import Any, Literal, Protocol, get_args
 from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.base import StrictModel, canonical_json_bytes
+from feedbax.contracts.execution_migrations import (
+    ControllerProtocolError,
+    migrate_controller_event_v1_document,
+)
+from feedbax.contracts.execution_schema import (
+    CONTROLLER_EVENT_SCHEMA_ID,
+    CONTROLLER_EVENT_SCHEMA_VERSION,
+    CONTROLLER_EVENT_SCHEMA_VERSION_V1,
+    CONTROLLER_PROJECTION_SCHEMA_ID,
+    CONTROLLER_PROJECTION_SCHEMA_VERSION,
+    CONTROLLER_PROJECTION_SCHEMA_VERSION_V1 as CONTROLLER_PROJECTION_SCHEMA_VERSION_V1,
+    EFFECT_RESERVATION_SCHEMA_ID,
+    EFFECT_RESERVATION_SCHEMA_VERSION,
+    ORPHAN_HANDLING_POLICY_SCHEMA_ID,
+    ORPHAN_HANDLING_POLICY_SCHEMA_VERSION,
+    PROVIDER_INVENTORY_SCHEMA_ID,
+    PROVIDER_INVENTORY_SCHEMA_VERSION,
+    RUN_INTENT_SCHEMA_ID,
+    RUN_INTENT_SCHEMA_VERSION,
+)
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.execution.records import Invocation, invocation_from_document
 from feedbax.orchestration.realization import (
@@ -34,21 +54,6 @@ from feedbax.orchestration.realization import (
 )
 from feedbax.orchestration.transition_authority import TransitionAuthority
 
-
-RUN_INTENT_SCHEMA_ID = "feedbax.orchestration.run_intent"
-RUN_INTENT_SCHEMA_VERSION = "feedbax.orchestration.run_intent.v1"
-EFFECT_RESERVATION_SCHEMA_ID = "feedbax.orchestration.effect_reservation"
-EFFECT_RESERVATION_SCHEMA_VERSION = "feedbax.orchestration.effect_reservation.v1"
-CONTROLLER_EVENT_SCHEMA_ID = "feedbax.orchestration.controller_event"
-CONTROLLER_EVENT_SCHEMA_VERSION_V1 = "feedbax.orchestration.controller_event.v1"
-CONTROLLER_EVENT_SCHEMA_VERSION = "feedbax.orchestration.controller_event.v2"
-CONTROLLER_PROJECTION_SCHEMA_ID = "feedbax.orchestration.controller_projection"
-CONTROLLER_PROJECTION_SCHEMA_VERSION_V1 = "feedbax.orchestration.controller_projection.v1"
-CONTROLLER_PROJECTION_SCHEMA_VERSION = "feedbax.orchestration.controller_projection.v2"
-PROVIDER_INVENTORY_SCHEMA_ID = "feedbax.orchestration.provider_inventory_observation"
-PROVIDER_INVENTORY_SCHEMA_VERSION = "feedbax.orchestration.provider_inventory_observation.v1"
-ORPHAN_HANDLING_POLICY_SCHEMA_ID = "feedbax.orchestration.orphan_handling_policy"
-ORPHAN_HANDLING_POLICY_SCHEMA_VERSION = "feedbax.orchestration.orphan_handling_policy.v1"
 
 ControllerEventType = Literal[
     "intent_admitted",
@@ -87,36 +92,6 @@ CONTROLLER_TRANSITION_AUTHORITY = TransitionAuthority(
     identity_field="intent_id",
     transitions=frozenset(get_args(ControllerEventType)),
 )
-_CONTROLLER_EVENT_TYPES_V1 = frozenset(
-    {
-        "intent_admitted",
-        "intent_rejected",
-        "intent_cancelled",
-        "intent_superseded",
-        "backend_plan_selected",
-        "backend_plan_rejected",
-        "effect_reservation_created",
-        "effect_reservation_authenticated",
-        "effect_reservation_expired",
-        "effect_reservation_cancelled",
-        "effect_reservation_invalidated",
-        "external_effect_dispatched",
-        "external_effect_observed",
-        "external_effect_reconciled",
-        "external_effect_abandoned",
-        "attempt_started",
-        "attempt_heartbeat_observed",
-        "attempt_terminal_observed",
-        "attempt_state_unknown",
-        "output_staged",
-        "publication_committed",
-        "publication_failed",
-        "invocation_satisfied",
-        "retry_admitted",
-        "invocation_permanently_failed",
-        "operator_action_required",
-    }
-)
 ReservationStatus = Literal[
     "inert",
     "authenticated",
@@ -133,10 +108,6 @@ AttemptStatus = Literal["pending", "running", "succeeded", "failed", "cancelled"
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-class ControllerProtocolError(ValueError):
-    """A durable controller document or transition violates the protocol."""
 
 
 class ControllerConflictError(ControllerProtocolError):
@@ -607,24 +578,6 @@ def controller_event_from_document(document: Any) -> ControllerEvent:
         schema_version=CONTROLLER_EVENT_SCHEMA_VERSION,
         label="ControllerEvent",
     )
-
-
-def migrate_controller_event_v1_document(document: Mapping[str, Any]) -> dict[str, Any]:
-    migrated = dict(document)
-    declared_schema_id = migrated.get("schema_id")
-    if declared_schema_id not in {None, CONTROLLER_EVENT_SCHEMA_ID}:
-        raise ControllerProtocolError(
-            f"unsupported ControllerEvent schema_id {declared_schema_id!r}; "
-            f"expected {CONTROLLER_EVENT_SCHEMA_ID!r}"
-        )
-    event_type = migrated.get("event_type")
-    if event_type is not None and event_type not in _CONTROLLER_EVENT_TYPES_V1:
-        raise ControllerProtocolError(
-            f"ControllerEvent v1 does not define event_type {event_type!r}"
-        )
-    migrated.setdefault("schema_id", CONTROLLER_EVENT_SCHEMA_ID)
-    migrated["schema_version"] = CONTROLLER_EVENT_SCHEMA_VERSION
-    return migrated
 
 
 def provider_inventory_from_document(document: Any) -> ProviderInventoryObservation:

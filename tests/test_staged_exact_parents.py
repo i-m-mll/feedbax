@@ -72,6 +72,7 @@ from tests.test_checkpoint_custody import (
 )
 from feedbax.persistence.artifact_custody import open_immutable_artifact_blob_provider
 from feedbax.plugins.bootstrap import BootstrapState
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.analysis_recipe_contract]

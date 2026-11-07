@@ -13,14 +13,7 @@ import jax
 import pytest
 
 import feedbax
-from feedbax.analysis.evaluation import EvaluationRecipeRegistry
-from feedbax.analysis.specs import AnalysisRecipeRegistry
 from feedbax.orchestration import revision as _revision
-from feedbax.orchestration.repo_snapshot import REPO_SNAPSHOT_CACHE_DIR_ENV
-from feedbax.plugins.application import (
-    ApplicationRegistryBundle,
-    new_application_registry_bundle,
-)
 
 
 pytest_plugins = ["scripts.pytest_jax_cache"]
@@ -29,22 +22,6 @@ pytest_plugins = ["scripts.pytest_jax_cache"]
 @pytest.hookimpl(optionalhook=True)
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     return auto_worker_count()
-
-
-@pytest.fixture
-def application_registry_bundle() -> ApplicationRegistryBundle:
-    """Return fresh caller-owned registries for explicit lifecycle tests."""
-    return new_application_registry_bundle()
-
-
-@pytest.fixture
-def evaluation_registry() -> EvaluationRecipeRegistry:
-    return EvaluationRecipeRegistry()
-
-
-@pytest.fixture
-def analysis_registry() -> AnalysisRecipeRegistry:
-    return AnalysisRecipeRegistry()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -58,7 +35,7 @@ def _isolated_repo_snapshot_cache(tmp_path_factory: pytest.TempPathFactory) -> I
     """
     cache_dir = tmp_path_factory.mktemp("repo-snapshot-cache", numbered=False)
     with pytest.MonkeyPatch.context() as patch:
-        patch.setenv(REPO_SNAPSHOT_CACHE_DIR_ENV, str(cache_dir))
+        patch.setenv("FEEDBAX_REPO_SNAPSHOT_CACHE_DIR", str(cache_dir))
         yield
     # Sealed snapshot directories are read-only by design, which defeats pytest's own
     # temporary-directory pruning, so restore owner write permission before removal.

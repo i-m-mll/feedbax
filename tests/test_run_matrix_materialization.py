@@ -50,6 +50,7 @@ from feedbax.training.run_matrix import (
     render_spec_lock_table,
     write_materialized_matrix,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 def _minimal_graph() -> dict[str, object]:

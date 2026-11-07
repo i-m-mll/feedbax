@@ -60,6 +60,7 @@ from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_re
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.plot.constructors import FigureRegistry
 from feedbax.contracts.value_schema import ValueSchema
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [pytest.mark.feedbax_contract]
 

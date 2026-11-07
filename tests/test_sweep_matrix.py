@@ -22,6 +22,7 @@ from feedbax.studio.sweep_matrix import (
     expand_sweep_matrix,
     materialize_sweep_matrix,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 def _base_specs() -> tuple[dict, dict, dict]:

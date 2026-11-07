@@ -8,7 +8,7 @@ from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.worker import AxisCoordinateSpec
-from feedbax.orchestration.bundle import ExecutionIdentityEnvelope
+from feedbax.contracts.execution_identity import ExecutionIdentityEnvelope
 
 
 NATIVE_EXECUTION_PRODUCER_CONTEXT_SCHEMA_ID = "feedbax.spec.native_execution_context"

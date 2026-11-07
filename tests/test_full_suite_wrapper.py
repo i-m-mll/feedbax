@@ -28,6 +28,55 @@ def load_full_suite_module():
     return module
 
 
+def test_affected_collection_omits_an_unrelated_failing_test(tmp_path: Path) -> None:
+    root = make_full_suite_repo(tmp_path / "repo")
+    test_file = root / "tests" / "test_affected_sentinel.py"
+    test_file.write_text(
+        "def test_unrelated_failure():\n    assert False\n",
+        encoding="utf-8",
+    )
+    scripts = root / "scripts"
+    scripts.mkdir()
+    (scripts / "affected_tests.py").write_text(
+        'print(\'{"python": {"scope": "selected", '
+        '"tests": ["tests/test_placeholder.py"], "reason": ""}}\')\n',
+        encoding="utf-8",
+    )
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve().parents[1] / "scripts" / "full_suite.py"),
+    ]
+    environment = {
+        **os.environ,
+        "FEEDBAX_FULL_SUITE_DISABLE_XDIST": "1",
+        "FULL_SUITE_LOCK_DIR": str(tmp_path / "locks"),
+    }
+    affected = subprocess.run(
+        [*command, "--affected-base", "HEAD", "--no-memo"],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=25,
+    )
+    reference = subprocess.run(
+        [*command, "--no-memo"],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=25,
+    )
+
+    assert affected.returncode == 0, affected.stdout + affected.stderr
+    assert "1 passed" in affected.stdout
+    assert "test_affected_sentinel.py" not in affected.stdout
+    assert reference.returncode == 1
+    assert "1 failed, 1 passed" in reference.stdout
+
+
 def make_full_suite_repo(repo: Path) -> Path:
     repo.mkdir()
     run_fixture_git(repo, "init")

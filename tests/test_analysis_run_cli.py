@@ -54,6 +54,7 @@ from tests.support.analysis_fixtures import (
     build_toy_analysis_data,
     execute_toy_evaluation,
 )
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [pytest.mark.feedbax_contract]
 

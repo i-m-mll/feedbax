@@ -5,13 +5,13 @@ from __future__ import annotations
 from functools import partial
 from typing import TYPE_CHECKING
 
-from feedbax.compiler.cde_templates import CDE_TEMPLATE_VARIANTS, _cde_template_definition
-
 if TYPE_CHECKING:
     from .discovery import ComponentPack
 
 
 def cde_template_pack() -> ComponentPack:
+    from feedbax.compiler.cde_templates import CDE_TEMPLATE_VARIANTS, _cde_template_definition
+
     from .discovery import ComponentPack
 
     return ComponentPack(

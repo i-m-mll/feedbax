@@ -277,42 +277,7 @@ afterEach(() => {
 });
 
 describe('document-scoped Studio persistence transactions', () => {
-  it('keeps the newest exact timeline value through a delayed acknowledgement and retry', async () => {
-    const first = deferred<StudioPersistenceResult>();
-    const second = deferred<StudioPersistenceResult>();
-    const persist = vi
-      .fn<StudioPersistenceDependencies['persist']>()
-      .mockImplementationOnce(() => first.promise)
-      .mockImplementationOnce(() => second.promise);
-    const { coordinator } = harness(persist);
-
-    coordinator.documentChanged(draft({
-      localRevision: 1,
-      workspaceSpec: workspaceWithEpochValue(1),
-    }));
-    const firstSave = coordinator.save(draft({
-      localRevision: 1,
-      workspaceSpec: workspaceWithEpochValue(1),
-    }), 'manual');
-    coordinator.documentChanged(draft({
-      localRevision: 2,
-      workspaceSpec: workspaceWithEpochValue(7),
-    }));
-
-    first.resolve(result(5));
-    await expect(firstSave).resolves.toMatchObject({ ok: true, localRevision: 1 });
-    await flushPromises();
-    const latestTimeline = persist.mock.calls[1][1].workspace!.scenarios['scenario:train']
-      .task_spec!.timeline!;
-    expect(latestTimeline.epoch_value_specs.find(
-      (entry) => entry.target_id === 'hold' && entry.epoch_id === 'epoch:0'
-    )?.value_spec.value).toBe(7);
-
-    second.resolve(result(6));
-    await flushPromises();
-  });
-
-  it('keeps a newer autosave edit dirty and submits it after the stale success', async () => {
+  it('saves the newest timeline edit after an older autosave succeeds', async () => {
     vi.useFakeTimers();
     const first = deferred<StudioPersistenceResult>();
     const second = deferred<StudioPersistenceResult>();
@@ -322,11 +287,17 @@ describe('document-scoped Studio persistence transactions', () => {
       .mockImplementationOnce(() => second.promise);
     const { coordinator, acknowledged } = harness(persist);
 
-    coordinator.documentChanged(draft({ localRevision: 1 }));
+    coordinator.documentChanged(draft({
+      localRevision: 1,
+      workspaceSpec: workspaceWithEpochValue(1),
+    }));
     await vi.advanceTimersByTimeAsync(25);
     expect(persist).toHaveBeenCalledTimes(1);
 
-    coordinator.documentChanged(draft({ localRevision: 2 }));
+    coordinator.documentChanged(draft({
+      localRevision: 2,
+      workspaceSpec: workspaceWithEpochValue(7),
+    }));
     await vi.advanceTimersByTimeAsync(25);
     expect(persist).toHaveBeenCalledTimes(1);
 
@@ -335,6 +306,11 @@ describe('document-scoped Studio persistence transactions', () => {
     expect(acknowledged[0].draft.localRevision).toBe(1);
     expect(persist).toHaveBeenCalledTimes(2);
     expect(persist.mock.calls[1][1].expected_save_revision).toBe(5);
+    const latestTimeline = persist.mock.calls[1][1].workspace!.scenarios['scenario:train']
+      .task_spec!.timeline!;
+    expect(latestTimeline.epoch_value_specs.find(
+      (entry) => entry.target_id === 'hold' && entry.epoch_id === 'epoch:0'
+    )?.value_spec.value).toBe(7);
 
     second.resolve(result(6));
     await flushPromises();

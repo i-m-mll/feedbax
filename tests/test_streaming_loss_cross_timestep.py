@@ -100,29 +100,6 @@ def test_streaming_order_two_matches_retained_value_and_gradient(feature_shape):
     assert jnp.allclose(streamed_grad, full_grad)
 
 
-def test_streaming_uses_max_order_for_composite_cross_timestep_terms():
-    t = jnp.arange(10, dtype=jnp.float32)[:, None]
-    values = jnp.concatenate([jnp.sin(0.2 * t), t**2], axis=-1)
-    first = NthDifferenceLoss(label="first", order=1, where=lambda s: s.x)
-    second = NthDifferenceLoss(label="second", order=2, where=lambda s: s.x)
-    loss = CompositeLoss(
-        terms={"first": first, "second": second},
-        weights={"first": 0.5, "second": 2.0},
-    )
-
-    streaming_fn = make_streaming_loss_fn(
-        loss,
-        trial_specs=None,
-        model=None,
-        n_steps=values.shape[0],
-    )
-    full = loss(_full_state(values), trial_specs=None, model=None).total
-    streamed = _stream_loss(loss, values)
-
-    assert streaming_fn.streaming_order == 2
-    assert jnp.allclose(streamed, full, atol=1e-6)
-
-
 class _TrialSpecs(eqx.Module):
     targets: dict = eqx.field(default_factory=dict)
 
@@ -263,7 +240,10 @@ def test_mixed_streaming_objective_matches_retained_rollout():
             x = scale * step_input
             return x, state.set(index, x), carry
 
-        step_loss = make_streaming_loss_fn(loss, trial, scale, n_steps) if streaming else None
+        step_loss = None
+        if streaming:
+            step_loss = make_streaming_loss_fn(loss, trial, scale, n_steps)
+            assert step_loss.streaming_order == 2
         outputs, state, aux = scan_rollout(
             step_fn,
             State(index),

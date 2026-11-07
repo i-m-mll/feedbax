@@ -47,6 +47,7 @@ from feedbax.contracts.manifest import (
     write_manifest,
 )
 from feedbax.contracts.selection import SelectionSpec
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 
 EXACT_EVALUATION_TYPE = "feedbax.test.identity_gate_eval"

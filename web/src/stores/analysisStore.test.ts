@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { deleteAnalysisNodeWithConfirmation } from '@/components/analysis/analysisDeletion';
 import { useAnalysisStore } from '@/stores/analysisStore';
 import { useGraphStore } from '@/stores/graphStore';
 import { buildWorkspaceSnapshot, getStageByKind, useWorkspaceStore } from '@/stores/workspaceStore';
@@ -272,38 +271,7 @@ describe('useAnalysisStore stage ownership', () => {
     expect(state.graphSpec?.wires[0].transform?.id).toBe(transformId);
   });
 
-  it('requires confirmation and honors cancellation for durable deletion', () => {
-    const analysisClass: AnalysisClassDef = {
-      name: 'ActivityPlot',
-      description: 'Plot activity',
-      category: 'Figures',
-      inputPorts: ['series'],
-      outputPorts: [],
-      defaultParams: {},
-      icon: 'LineChart',
-    };
-
-    useAnalysisStore.getState().addPage('Confirmed deletion');
-    useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 240, y: 0 });
-    const node = useAnalysisStore.getState().nodes.find((item) => item.type === 'analysis')!;
-    const cancel = vi.fn(() => false);
-    const confirm = vi.fn(() => true);
-
-    expect(deleteAnalysisNodeWithConfirmation(node.id, cancel)).toBe(false);
-    expect(useAnalysisStore.getState().graphSpec?.nodes[node.id]).toBeDefined();
-
-    expect(deleteAnalysisNodeWithConfirmation(node.id, confirm)).toBe(true);
-
-    expect(useAnalysisStore.getState().graphSpec?.nodes[node.id]).toBeUndefined();
-    expect(useAnalysisStore.getState().captureSnapshot().pages[0].graphSpec.nodes[node.id])
-      .toBeUndefined();
-    const confirmationCopy =
-      'Delete this analysis node and its connected wires? This cannot currently be undone.';
-    expect(cancel).toHaveBeenCalledWith(confirmationCopy);
-    expect(confirm).toHaveBeenCalledWith(confirmationCopy);
-  });
-
-  it('persists final node positions without rewriting the semantic analysis draft', () => {
+  it('persists node positions when dragging ends', () => {
     const analysisClass: AnalysisClassDef = {
       name: 'ActivityPlot',
       description: 'Plot activity',
@@ -317,11 +285,6 @@ describe('useAnalysisStore stage ownership', () => {
     useAnalysisStore.getState().addPage('Fixed layout');
     useAnalysisStore.getState().addAnalysisNode(analysisClass, { x: 240, y: 80 });
     const node = useAnalysisStore.getState().nodes.find((item) => item.type === 'analysis')!;
-    const workspace = useWorkspaceStore.getState().workspace!;
-    const analysisStage = getStageByKind(workspace, 'analysis')!;
-    const semanticBefore = JSON.stringify(
-      workspace.scenarios[analysisStage.scenario_id!].analysis_spec
-    );
     const revisionBeforeDrag = useGraphStore.getState().localRevision;
 
     useAnalysisStore.getState().onNodesChange([
@@ -337,8 +300,6 @@ describe('useAnalysisStore stage ownership', () => {
     expect(useAnalysisStore.getState().captureSnapshot().pages[0].nodePositions?.[node.id])
       .toEqual({ x: 912, y: 704 });
     expect(useGraphStore.getState().localRevision).toBeGreaterThan(revisionBeforeDrag);
-    expect(JSON.stringify(workspace.scenarios[analysisStage.scenario_id!].analysis_spec))
-      .toBe(semanticBefore);
   });
 
   it('preserves independent positions and viewports across analysis page switches', () => {

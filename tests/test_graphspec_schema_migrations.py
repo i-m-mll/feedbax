@@ -52,6 +52,7 @@ from feedbax.contracts.migrations import (
     migrate_structured_spec_payload,
 )
 from feedbax.integrations.provider import validate_graph_spec_manifest, validate_spec
+from tests.support.application_registry import registry_bundle_fixture as registry_bundle_fixture
 
 pytestmark = [
     pytest.mark.feedbax_contract,

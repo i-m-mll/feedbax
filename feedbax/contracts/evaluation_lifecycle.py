@@ -403,7 +403,7 @@ class EvaluationReplayIdentity(StrictModel):
 
     @model_validator(mode="after")
     def _validate_execution_envelope(self) -> "EvaluationReplayIdentity":
-        from feedbax.orchestration.bundle import ExecutionIdentityEnvelope
+        from feedbax.contracts.execution_identity import ExecutionIdentityEnvelope
 
         envelope = ExecutionIdentityEnvelope.model_validate(self.execution_envelope)
         if canonical_json_bytes(self.execution_envelope) != canonical_json_bytes(
