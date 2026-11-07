@@ -24,7 +24,7 @@ from feedbax.mechanics.force_fields import (
     ThresholdLatchedForce,
     ThresholdLatchedForceParams,
 )
-from feedbax.mechanics.force_fields_history import THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1
+from feedbax.component_migrations.mechanics import THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1
 from feedbax.runtime.state import CartesianState
 from feedbax.tasks import TaskTrialSpec, TrialTimeline, prepare_trial
 
