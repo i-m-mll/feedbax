@@ -10,28 +10,24 @@ To regenerate:
 from __future__ import annotations
 
 from collections.abc import Hashable, Mapping
-from functools import partial
-from pathlib import Path
-from typing import Annotated, Any, Callable, Literal, Optional, Sequence, Union
+from typing import Any, Callable, Literal, Optional, Sequence, Union
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from equinox.nn import State
 from jaxtyping import Array, Float, PRNGKeyArray, PyTree
-from pydantic import BaseModel, Field
 
 from feedbax._checkpoint_errors import _LegacyWrapperLayoutError
-from feedbax.component_registry import component
-from feedbax.component_registry.declarations import MissingPrototypeInput
+from feedbax.contracts.component import PortType
+from feedbax.contracts.portable import ComponentOptions, ConfigBinding, MissingPrototypeInput, Ports
 from feedbax.runtime.components import identity_activation, relu
-from feedbax.runtime.graph import Component
+from feedbax.runtime.graph import Component, GraphNode
 
 
 EQUINOX_WRAPPER_SCHEMA_VERSION = "feedbax.equinox_wrappers.v3"
 EQUINOX_WRAPPER_GENERATOR = "scripts/generate_eqx_components.py"
 EQUINOX_WRAPPER_EQUINOX_VERSION = eqx.__version__
-_GENERATOR_SOURCE = Path(__file__).resolve().parents[2] / EQUINOX_WRAPPER_GENERATOR
 
 
 __all__ = [
@@ -228,11 +224,6 @@ EQUINOX_WRAPPER_CONTRACTS = {
 }
 
 
-_SpatialDimensions = list[int]
-_PaddingPair = Annotated[list[int], Field(min_length=2, max_length=2)]
-_PaddingPairs = list[_PaddingPair]
-
-
 def _spatial_tuple(value: Any) -> Any:
     return tuple(map(_spatial_tuple, value)) if isinstance(value, list) else value
 
@@ -241,15 +232,8 @@ def _owner_options(
     cls: type[Component],
     *,
     has_key: bool = False,
-    spatial_settings: tuple[str, ...] = (),
-) -> dict[str, Any]:
-    def build(params: Mapping[str, Any]) -> Component:
-        settings = dict(params)
-        for name in spatial_settings:
-            if name in settings:
-                settings[name] = _spatial_tuple(settings[name])
-        return cls(**settings)
-
+    trainable: bool = False,
+) -> ComponentOptions:
     def output_prototype(params: Mapping[str, Any], inputs: Mapping[str, Any]) -> dict[str, Any]:
         missing = set(cls.input_ports) - inputs.keys()
         if missing:
@@ -260,25 +244,24 @@ def _owner_options(
             settings["key"] = key
 
         def forward(values):
-            layer, state = eqx.nn.make_with_state(build)(settings)
+            layer, state = eqx.nn.make_with_state(cls)(**settings)
             return layer(values, state, key=key)[0]
 
         return jax.eval_shape(forward, dict(inputs))
 
-    options = {
-        "output_prototype_fn": output_prototype,
-        "prototype_depends_on_connected_inputs": True,
-    }
-    if spatial_settings:
-        options.update(builder=build, override_reason="Convert JSON dimensions to Equinox tuples")
-    return options
+    return ComponentOptions(
+        output_prototype_fn=output_prototype,
+        prototype_depends_on_connected_inputs=True,
+        build_context_fields=("key",) if has_key else (),
+        trainable_by_default=trainable,
+    )
 
 
 _PickleState = dict[str, Any] | tuple[dict[str, Any] | None, dict[str, Any]]
 
 
 def _restore_wrapper_state(
-    component: Component, state: _PickleState, former_fields: tuple[str, ...]
+    component: GraphNode, state: _PickleState, former_fields: tuple[str, ...]
 ) -> None:
     attrs, slots = state if isinstance(state, tuple) else (state, {})
     obsolete = ((attrs or {}).keys() | slots.keys()).intersection(former_fields)
@@ -295,7 +278,7 @@ def _restore_wrapper_state(
 
 
 def _call_single_input_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -306,7 +289,7 @@ def _call_single_input_layer(
 
 
 def _call_single_input_keyed_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -317,7 +300,7 @@ def _call_single_input_keyed_layer(
 
 
 def _call_batch_norm_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -328,7 +311,7 @@ def _call_batch_norm_layer(
 
 
 def _call_gru_cell_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -340,7 +323,7 @@ def _call_gru_cell_layer(
 
 
 def _call_lstm_cell_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -353,7 +336,7 @@ def _call_lstm_cell_layer(
 
 
 def _call_multihead_attention_layer(
-    component: Component,
+    component: GraphNode,
     inputs: dict[str, PyTree],
     state: State,
     *,
@@ -373,28 +356,12 @@ def _call_multihead_attention_layer(
 # ============================================================
 
 
-class _LinearParams(BaseModel):
-    in_features: Union[int, Literal["scalar"]]
-    out_features: Union[int, Literal["scalar"]]
-    use_bias: bool = True
-    dtype: str | None = "float32"
-
-
-@component(
-    "feedbax.equinox.Linear",
-    category="Equinox",
-    configure=partial(_owner_options, has_key=True),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_LinearParams,
-    build_context_fields=("key",),
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class Linear(Component):
     """Linear transformation layer."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -404,23 +371,17 @@ class Linear(Component):
     }
 
     layer: eqx.nn.Linear
-    in_features: Union[int, Literal["scalar"]]
-    out_features: Union[int, Literal["scalar"]]
-    use_bias: bool
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
         in_features: Union[int, Literal["scalar"]],
         out_features: Union[int, Literal["scalar"]],
         use_bias: bool = True,
-        dtype="float32",
+        dtype: str | None = "float32",
         *,
         key: PRNGKeyArray,
     ):
-        self.in_features = in_features
-        self.out_features = out_features
-        self.use_bias = use_bias
         self.dtype = dtype
         self.layer = eqx.nn.Linear(
             in_features=in_features,
@@ -429,6 +390,20 @@ class Linear(Component):
             dtype=dtype,
             key=key,
         )
+
+    @property
+    def in_features(self) -> Union[int, Literal["scalar"]]:
+        return self.layer.in_features
+
+    @property
+    def out_features(self) -> Union[int, Literal["scalar"]]:
+        return self.layer.out_features
+
+    @property
+    def use_bias(self) -> bool:
+        return self.layer.use_bias
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -444,17 +419,15 @@ class Linear(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-@component(
-    "feedbax.equinox.Identity",
-    category="Equinox",
-    configure=_owner_options,
-    sources=(_GENERATOR_SOURCE,),
-)
+Linear.component_options = _owner_options(Linear, has_key=True, trainable=True)
+
+
 class Identity(Component):
     """Identity layer (passes input through unchanged)."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -478,7 +451,10 @@ class Identity(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class MLP(Component):
+Identity.component_options = _owner_options(Identity, has_key=False, trainable=False)
+
+
+class MLP(GraphNode):
     """Multi-layer perceptron with configurable depth and activations.
 
     The constructor's `activation` and `final_activation` seed the layer's
@@ -566,38 +542,12 @@ class MLP(Component):
 # ============================================================
 
 
-class _Conv1dParams(BaseModel):
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = 1
-    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = 0
-    dilation: Union[int, _SpatialDimensions] = 1
-    groups: int = 1
-    use_bias: bool = True
-    padding_mode: str = "ZEROS"
-    dtype: str | None = "float32"
-
-
-@component(
-    "feedbax.equinox.Conv1d",
-    category="Equinox",
-    configure=partial(
-        _owner_options,
-        spatial_settings=("kernel_size", "stride", "padding", "dilation"),
-        has_key=True,
-    ),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_Conv1dParams,
-    build_context_fields=("key",),
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class Conv1d(Component):
     """1D convolution layer."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -607,16 +557,7 @@ class Conv1d(Component):
     }
 
     layer: eqx.nn.Conv1d
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]]
-    dilation: Union[int, Sequence[int]]
-    groups: int
-    use_bias: bool
-    padding_mode: str
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
@@ -629,33 +570,62 @@ class Conv1d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype="float32",
+        dtype: str | None = "float32",
         *,
         key: PRNGKeyArray,
     ):
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.use_bias = use_bias
-        self.padding_mode = padding_mode
         self.dtype = dtype
         self.layer = eqx.nn.Conv1d(
             in_channels=in_channels,
             out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            dilation=dilation,
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            padding=_spatial_tuple(padding),
+            dilation=_spatial_tuple(dilation),
             groups=groups,
             use_bias=use_bias,
             padding_mode=padding_mode,
             dtype=dtype,
             key=key,
         )
+
+    @property
+    def in_channels(self) -> int:
+        return self.layer.in_channels
+
+    @property
+    def out_channels(self) -> int:
+        return self.layer.out_channels
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def padding(self) -> Union[str, int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def dilation(self) -> Union[int, Sequence[int]]:
+        return self.layer.dilation
+
+    @property
+    def groups(self) -> int:
+        return self.layer.groups
+
+    @property
+    def use_bias(self) -> bool:
+        return self.layer.use_bias
+
+    @property
+    def padding_mode(self) -> str:
+        return self.layer.padding_mode
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -671,38 +641,15 @@ class Conv1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _Conv2dParams(BaseModel):
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = [1, 1]
-    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = [0, 0]
-    dilation: Union[int, _SpatialDimensions] = [1, 1]
-    groups: int = 1
-    use_bias: bool = True
-    padding_mode: str = "ZEROS"
-    dtype: str | None = "float32"
+Conv1d.component_options = _owner_options(Conv1d, has_key=True, trainable=True)
 
 
-@component(
-    "feedbax.equinox.Conv2d",
-    category="Equinox",
-    configure=partial(
-        _owner_options,
-        spatial_settings=("kernel_size", "stride", "padding", "dilation"),
-        has_key=True,
-    ),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_Conv2dParams,
-    build_context_fields=("key",),
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class Conv2d(Component):
     """2D convolution layer."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -712,16 +659,7 @@ class Conv2d(Component):
     }
 
     layer: eqx.nn.Conv2d
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]]
-    dilation: Union[int, Sequence[int]]
-    groups: int
-    use_bias: bool
-    padding_mode: str
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
@@ -734,33 +672,62 @@ class Conv2d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype="float32",
+        dtype: str | None = "float32",
         *,
         key: PRNGKeyArray,
     ):
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.use_bias = use_bias
-        self.padding_mode = padding_mode
         self.dtype = dtype
         self.layer = eqx.nn.Conv2d(
             in_channels=in_channels,
             out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            dilation=dilation,
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            padding=_spatial_tuple(padding),
+            dilation=_spatial_tuple(dilation),
             groups=groups,
             use_bias=use_bias,
             padding_mode=padding_mode,
             dtype=dtype,
             key=key,
         )
+
+    @property
+    def in_channels(self) -> int:
+        return self.layer.in_channels
+
+    @property
+    def out_channels(self) -> int:
+        return self.layer.out_channels
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def padding(self) -> Union[str, int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def dilation(self) -> Union[int, Sequence[int]]:
+        return self.layer.dilation
+
+    @property
+    def groups(self) -> int:
+        return self.layer.groups
+
+    @property
+    def use_bias(self) -> bool:
+        return self.layer.use_bias
+
+    @property
+    def padding_mode(self) -> str:
+        return self.layer.padding_mode
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -776,38 +743,15 @@ class Conv2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _Conv3dParams(BaseModel):
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = [1, 1, 1]
-    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = [0, 0, 0]
-    dilation: Union[int, _SpatialDimensions] = [1, 1, 1]
-    groups: int = 1
-    use_bias: bool = True
-    padding_mode: str = "ZEROS"
-    dtype: str | None = "float32"
+Conv2d.component_options = _owner_options(Conv2d, has_key=True, trainable=True)
 
 
-@component(
-    "feedbax.equinox.Conv3d",
-    category="Equinox",
-    configure=partial(
-        _owner_options,
-        spatial_settings=("kernel_size", "stride", "padding", "dilation"),
-        has_key=True,
-    ),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_Conv3dParams,
-    build_context_fields=("key",),
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class Conv3d(Component):
     """3D convolution layer."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -817,16 +761,7 @@ class Conv3d(Component):
     }
 
     layer: eqx.nn.Conv3d
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]]
-    dilation: Union[int, Sequence[int]]
-    groups: int
-    use_bias: bool
-    padding_mode: str
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
@@ -839,33 +774,62 @@ class Conv3d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype="float32",
+        dtype: str | None = "float32",
         *,
         key: PRNGKeyArray,
     ):
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.use_bias = use_bias
-        self.padding_mode = padding_mode
         self.dtype = dtype
         self.layer = eqx.nn.Conv3d(
             in_channels=in_channels,
             out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            dilation=dilation,
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            padding=_spatial_tuple(padding),
+            dilation=_spatial_tuple(dilation),
             groups=groups,
             use_bias=use_bias,
             padding_mode=padding_mode,
             dtype=dtype,
             key=key,
         )
+
+    @property
+    def in_channels(self) -> int:
+        return self.layer.in_channels
+
+    @property
+    def out_channels(self) -> int:
+        return self.layer.out_channels
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def padding(self) -> Union[str, int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def dilation(self) -> Union[int, Sequence[int]]:
+        return self.layer.dilation
+
+    @property
+    def groups(self) -> int:
+        return self.layer.groups
+
+    @property
+    def use_bias(self) -> bool:
+        return self.layer.use_bias
+
+    @property
+    def padding_mode(self) -> str:
+        return self.layer.padding_mode
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -881,39 +845,15 @@ class Conv3d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _ConvTranspose1dParams(BaseModel):
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = 1
-    output_padding: Union[int, _SpatialDimensions] = 0
-    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = 0
-    dilation: Union[int, _SpatialDimensions] = 1
-    groups: int = 1
-    use_bias: bool = True
-    padding_mode: str = "ZEROS"
-    dtype: str | None = "float32"
+Conv3d.component_options = _owner_options(Conv3d, has_key=True, trainable=True)
 
 
-@component(
-    "feedbax.equinox.ConvTranspose1d",
-    category="Equinox",
-    configure=partial(
-        _owner_options,
-        spatial_settings=("kernel_size", "stride", "output_padding", "padding", "dilation"),
-        has_key=True,
-    ),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_ConvTranspose1dParams,
-    build_context_fields=("key",),
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class ConvTranspose1d(Component):
     """1D transposed convolution (deconvolution) layer."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -923,17 +863,7 @@ class ConvTranspose1d(Component):
     }
 
     layer: eqx.nn.ConvTranspose1d
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    output_padding: Union[int, Sequence[int]]
-    padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]]
-    dilation: Union[int, Sequence[int]]
-    groups: int
-    use_bias: bool
-    padding_mode: str
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
@@ -947,35 +877,67 @@ class ConvTranspose1d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype="float32",
+        dtype: str | None = "float32",
         *,
         key: PRNGKeyArray,
     ):
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.output_padding = output_padding
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.use_bias = use_bias
-        self.padding_mode = padding_mode
         self.dtype = dtype
         self.layer = eqx.nn.ConvTranspose1d(
             in_channels=in_channels,
             out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            output_padding=output_padding,
-            padding=padding,
-            dilation=dilation,
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            output_padding=_spatial_tuple(output_padding),
+            padding=_spatial_tuple(padding),
+            dilation=_spatial_tuple(dilation),
             groups=groups,
             use_bias=use_bias,
             padding_mode=padding_mode,
             dtype=dtype,
             key=key,
         )
+
+    @property
+    def in_channels(self) -> int:
+        return self.layer.in_channels
+
+    @property
+    def out_channels(self) -> int:
+        return self.layer.out_channels
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def output_padding(self) -> Union[int, Sequence[int]]:
+        return self.layer.output_padding
+
+    @property
+    def padding(self) -> Union[str, int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def dilation(self) -> Union[int, Sequence[int]]:
+        return self.layer.dilation
+
+    @property
+    def groups(self) -> int:
+        return self.layer.groups
+
+    @property
+    def use_bias(self) -> bool:
+        return self.layer.use_bias
+
+    @property
+    def padding_mode(self) -> str:
+        return self.layer.padding_mode
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -991,39 +953,15 @@ class ConvTranspose1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _ConvTranspose2dParams(BaseModel):
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = [1, 1]
-    output_padding: Union[int, _SpatialDimensions] = [0, 0]
-    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = [0, 0]
-    dilation: Union[int, _SpatialDimensions] = [1, 1]
-    groups: int = 1
-    use_bias: bool = True
-    padding_mode: str = "ZEROS"
-    dtype: str | None = "float32"
+ConvTranspose1d.component_options = _owner_options(ConvTranspose1d, has_key=True, trainable=True)
 
 
-@component(
-    "feedbax.equinox.ConvTranspose2d",
-    category="Equinox",
-    configure=partial(
-        _owner_options,
-        spatial_settings=("kernel_size", "stride", "output_padding", "padding", "dilation"),
-        has_key=True,
-    ),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_ConvTranspose2dParams,
-    build_context_fields=("key",),
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class ConvTranspose2d(Component):
     """2D transposed convolution (deconvolution) layer."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1033,17 +971,7 @@ class ConvTranspose2d(Component):
     }
 
     layer: eqx.nn.ConvTranspose2d
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    output_padding: Union[int, Sequence[int]]
-    padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]]
-    dilation: Union[int, Sequence[int]]
-    groups: int
-    use_bias: bool
-    padding_mode: str
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
@@ -1057,35 +985,67 @@ class ConvTranspose2d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype="float32",
+        dtype: str | None = "float32",
         *,
         key: PRNGKeyArray,
     ):
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.output_padding = output_padding
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.use_bias = use_bias
-        self.padding_mode = padding_mode
         self.dtype = dtype
         self.layer = eqx.nn.ConvTranspose2d(
             in_channels=in_channels,
             out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            output_padding=output_padding,
-            padding=padding,
-            dilation=dilation,
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            output_padding=_spatial_tuple(output_padding),
+            padding=_spatial_tuple(padding),
+            dilation=_spatial_tuple(dilation),
             groups=groups,
             use_bias=use_bias,
             padding_mode=padding_mode,
             dtype=dtype,
             key=key,
         )
+
+    @property
+    def in_channels(self) -> int:
+        return self.layer.in_channels
+
+    @property
+    def out_channels(self) -> int:
+        return self.layer.out_channels
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def output_padding(self) -> Union[int, Sequence[int]]:
+        return self.layer.output_padding
+
+    @property
+    def padding(self) -> Union[str, int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def dilation(self) -> Union[int, Sequence[int]]:
+        return self.layer.dilation
+
+    @property
+    def groups(self) -> int:
+        return self.layer.groups
+
+    @property
+    def use_bias(self) -> bool:
+        return self.layer.use_bias
+
+    @property
+    def padding_mode(self) -> str:
+        return self.layer.padding_mode
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -1101,39 +1061,15 @@ class ConvTranspose2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _ConvTranspose3dParams(BaseModel):
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = [1, 1, 1]
-    output_padding: Union[int, _SpatialDimensions] = [0, 0, 0]
-    padding: Union[str, int, _SpatialDimensions, _PaddingPairs] = [0, 0, 0]
-    dilation: Union[int, _SpatialDimensions] = [1, 1, 1]
-    groups: int = 1
-    use_bias: bool = True
-    padding_mode: str = "ZEROS"
-    dtype: str | None = "float32"
+ConvTranspose2d.component_options = _owner_options(ConvTranspose2d, has_key=True, trainable=True)
 
 
-@component(
-    "feedbax.equinox.ConvTranspose3d",
-    category="Equinox",
-    configure=partial(
-        _owner_options,
-        spatial_settings=("kernel_size", "stride", "output_padding", "padding", "dilation"),
-        has_key=True,
-    ),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_ConvTranspose3dParams,
-    build_context_fields=("key",),
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class ConvTranspose3d(Component):
     """3D transposed convolution (deconvolution) layer."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1143,17 +1079,7 @@ class ConvTranspose3d(Component):
     }
 
     layer: eqx.nn.ConvTranspose3d
-    in_channels: int
-    out_channels: int
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    output_padding: Union[int, Sequence[int]]
-    padding: Union[str, int, Sequence[int], Sequence[tuple[int, int]]]
-    dilation: Union[int, Sequence[int]]
-    groups: int
-    use_bias: bool
-    padding_mode: str
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
@@ -1167,35 +1093,67 @@ class ConvTranspose3d(Component):
         groups: int = 1,
         use_bias: bool = True,
         padding_mode: str = "ZEROS",
-        dtype="float32",
+        dtype: str | None = "float32",
         *,
         key: PRNGKeyArray,
     ):
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.output_padding = output_padding
-        self.padding = padding
-        self.dilation = dilation
-        self.groups = groups
-        self.use_bias = use_bias
-        self.padding_mode = padding_mode
         self.dtype = dtype
         self.layer = eqx.nn.ConvTranspose3d(
             in_channels=in_channels,
             out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            output_padding=output_padding,
-            padding=padding,
-            dilation=dilation,
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            output_padding=_spatial_tuple(output_padding),
+            padding=_spatial_tuple(padding),
+            dilation=_spatial_tuple(dilation),
             groups=groups,
             use_bias=use_bias,
             padding_mode=padding_mode,
             dtype=dtype,
             key=key,
         )
+
+    @property
+    def in_channels(self) -> int:
+        return self.layer.in_channels
+
+    @property
+    def out_channels(self) -> int:
+        return self.layer.out_channels
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def output_padding(self) -> Union[int, Sequence[int]]:
+        return self.layer.output_padding
+
+    @property
+    def padding(self) -> Union[str, int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def dilation(self) -> Union[int, Sequence[int]]:
+        return self.layer.dilation
+
+    @property
+    def groups(self) -> int:
+        return self.layer.groups
+
+    @property
+    def use_bias(self) -> bool:
+        return self.layer.use_bias
+
+    @property
+    def padding_mode(self) -> str:
+        return self.layer.padding_mode
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -1211,33 +1169,20 @@ class ConvTranspose3d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+ConvTranspose3d.component_options = _owner_options(ConvTranspose3d, has_key=True, trainable=True)
+
 # ============================================================
 # RNN LAYERS
 # ============================================================
 
 
-class _GRUCellParams(BaseModel):
-    input_size: int
-    hidden_size: int
-    use_bias: bool = True
-    dtype: str | None = "float32"
-
-
-@component(
-    "feedbax.equinox.GRUCell",
-    category="Equinox",
-    configure=partial(_owner_options, has_key=True),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_GRUCellParams,
-    build_context_fields=("key",),
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class GRUCell(Component):
     """Gated Recurrent Unit cell."""
 
-    input_ports = ("input", "hidden")
-    output_ports = ("output", "hidden")
+    ports = Ports(
+        inputs={"input": PortType(dtype="array"), "hidden": PortType(dtype="array")},
+        outputs={"output": PortType(dtype="array"), "hidden": PortType(dtype="array")},
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1247,27 +1192,35 @@ class GRUCell(Component):
     }
 
     layer: eqx.nn.GRUCell
-    input_size: int
-    hidden_size: int
-    use_bias: bool
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
         input_size: int,
         hidden_size: int,
         use_bias: bool = True,
-        dtype="float32",
+        dtype: str | None = "float32",
         *,
         key: PRNGKeyArray,
     ):
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.use_bias = use_bias
         self.dtype = dtype
         self.layer = eqx.nn.GRUCell(
             input_size=input_size, hidden_size=hidden_size, use_bias=use_bias, dtype=dtype, key=key
         )
+
+    @property
+    def input_size(self) -> int:
+        return self.layer.input_size
+
+    @property
+    def hidden_size(self) -> int:
+        return self.layer.hidden_size
+
+    @property
+    def use_bias(self) -> bool:
+        return self.layer.use_bias
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -1283,28 +1236,24 @@ class GRUCell(Component):
         return _call_gru_cell_layer(self, inputs, state, key=key)
 
 
-class _LSTMCellParams(BaseModel):
-    input_size: int
-    hidden_size: int
-    use_bias: bool = True
-    dtype: str | None = "float32"
+GRUCell.component_options = _owner_options(GRUCell, has_key=True, trainable=True)
 
 
-@component(
-    "feedbax.equinox.LSTMCell",
-    category="Equinox",
-    configure=partial(_owner_options, has_key=True),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_LSTMCellParams,
-    build_context_fields=("key",),
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class LSTMCell(Component):
     """Long Short-Term Memory cell."""
 
-    input_ports = ("input", "hidden", "cell")
-    output_ports = ("output", "hidden", "cell")
+    ports = Ports(
+        inputs={
+            "input": PortType(dtype="array"),
+            "hidden": PortType(dtype="array"),
+            "cell": PortType(dtype="array"),
+        },
+        outputs={
+            "output": PortType(dtype="array"),
+            "hidden": PortType(dtype="array"),
+            "cell": PortType(dtype="array"),
+        },
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1314,27 +1263,35 @@ class LSTMCell(Component):
     }
 
     layer: eqx.nn.LSTMCell
-    input_size: int
-    hidden_size: int
-    use_bias: bool
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
         input_size: int,
         hidden_size: int,
         use_bias: bool = True,
-        dtype="float32",
+        dtype: str | None = "float32",
         *,
         key: PRNGKeyArray,
     ):
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.use_bias = use_bias
         self.dtype = dtype
         self.layer = eqx.nn.LSTMCell(
             input_size=input_size, hidden_size=hidden_size, use_bias=use_bias, dtype=dtype, key=key
         )
+
+    @property
+    def input_size(self) -> int:
+        return self.layer.input_size
+
+    @property
+    def hidden_size(self) -> int:
+        return self.layer.hidden_size
+
+    @property
+    def use_bias(self) -> bool:
+        return self.layer.use_bias
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -1350,34 +1307,19 @@ class LSTMCell(Component):
         return _call_lstm_cell_layer(self, inputs, state, key=key)
 
 
+LSTMCell.component_options = _owner_options(LSTMCell, has_key=True, trainable=True)
+
 # ============================================================
 # NORM LAYERS
 # ============================================================
 
 
-class _LayerNormParams(BaseModel):
-    shape: Union[int, _SpatialDimensions]
-    eps: float = 1e-05
-    use_weight: bool = True
-    use_bias: bool = True
-    dtype: str | None = "float32"
-    elementwise_affine: Optional[bool] = None
-
-
-@component(
-    "feedbax.equinox.LayerNorm",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("shape",)),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_LayerNormParams,
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class LayerNorm(Component):
     """Layer normalization."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1387,12 +1329,7 @@ class LayerNorm(Component):
     }
 
     layer: eqx.nn.LayerNorm
-    shape: Union[int, Sequence[int]]
-    eps: float
-    use_weight: bool
-    use_bias: bool
-    dtype: Any
-    elementwise_affine: Optional[bool]
+    dtype: str | None
 
     def __init__(
         self,
@@ -1400,23 +1337,40 @@ class LayerNorm(Component):
         eps: float = 1e-05,
         use_weight: bool = True,
         use_bias: bool = True,
-        dtype="float32",
+        dtype: str | None = "float32",
         elementwise_affine: Optional[bool] = None,
     ):
-        self.shape = shape
-        self.eps = eps
-        self.use_weight = use_weight
-        self.use_bias = use_bias
         self.dtype = dtype
-        self.elementwise_affine = elementwise_affine
         self.layer = eqx.nn.LayerNorm(
-            shape=shape,
+            shape=_spatial_tuple(shape),
             eps=eps,
             use_weight=use_weight,
             use_bias=use_bias,
             dtype=dtype,
             elementwise_affine=elementwise_affine,
         )
+
+    @property
+    def shape(self) -> Union[int, Sequence[int]]:
+        return self.layer.shape
+
+    @property
+    def eps(self) -> float:
+        return self.layer.eps
+
+    @property
+    def use_weight(self) -> bool:
+        return self.layer.use_weight
+
+    @property
+    def use_bias(self) -> bool:
+        return self.layer.use_bias
+
+    @property
+    def elementwise_affine(self) -> None:
+        return None
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -1432,28 +1386,15 @@ class LayerNorm(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _RMSNormParams(BaseModel):
-    shape: Union[int, _SpatialDimensions]
-    eps: float = 1e-05
-    use_weight: bool = True
-    use_bias: bool = True
-    dtype: str | None = "float32"
+LayerNorm.component_options = _owner_options(LayerNorm, has_key=False, trainable=True)
 
 
-@component(
-    "feedbax.equinox.RMSNorm",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("shape",)),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_RMSNormParams,
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class RMSNorm(Component):
     """Root Mean Square normalization."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1463,11 +1404,7 @@ class RMSNorm(Component):
     }
 
     layer: eqx.nn.RMSNorm
-    shape: Union[int, Sequence[int]]
-    eps: float
-    use_weight: bool
-    use_bias: bool
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
@@ -1475,16 +1412,34 @@ class RMSNorm(Component):
         eps: float = 1e-05,
         use_weight: bool = True,
         use_bias: bool = True,
-        dtype="float32",
+        dtype: str | None = "float32",
     ):
-        self.shape = shape
-        self.eps = eps
-        self.use_weight = use_weight
-        self.use_bias = use_bias
         self.dtype = dtype
         self.layer = eqx.nn.RMSNorm(
-            shape=shape, eps=eps, use_weight=use_weight, use_bias=use_bias, dtype=dtype
+            shape=_spatial_tuple(shape),
+            eps=eps,
+            use_weight=use_weight,
+            use_bias=use_bias,
+            dtype=dtype,
         )
+
+    @property
+    def shape(self) -> Union[int, Sequence[int]]:
+        return self.layer.shape
+
+    @property
+    def eps(self) -> float:
+        return self.layer.eps
+
+    @property
+    def use_weight(self) -> bool:
+        return self.layer.use_weight
+
+    @property
+    def use_bias(self) -> bool:
+        return self.layer.use_bias
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -1500,28 +1455,15 @@ class RMSNorm(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _GroupNormParams(BaseModel):
-    groups: int
-    channels: Optional[int] = None
-    eps: float = 1e-05
-    channelwise_affine: bool = True
-    dtype: str | None = "float32"
+RMSNorm.component_options = _owner_options(RMSNorm, has_key=False, trainable=True)
 
 
-@component(
-    "feedbax.equinox.GroupNorm",
-    category="Equinox",
-    configure=_owner_options,
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_GroupNormParams,
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class GroupNorm(Component):
     """Group normalization."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1531,11 +1473,7 @@ class GroupNorm(Component):
     }
 
     layer: eqx.nn.GroupNorm
-    groups: int
-    channels: Optional[int]
-    eps: float
-    channelwise_affine: bool
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
@@ -1543,12 +1481,8 @@ class GroupNorm(Component):
         channels: Optional[int] = None,
         eps: float = 1e-05,
         channelwise_affine: bool = True,
-        dtype="float32",
+        dtype: str | None = "float32",
     ):
-        self.groups = groups
-        self.channels = channels
-        self.eps = eps
-        self.channelwise_affine = channelwise_affine
         self.dtype = dtype
         self.layer = eqx.nn.GroupNorm(
             groups=groups,
@@ -1559,6 +1493,24 @@ class GroupNorm(Component):
         )
 
     @property
+    def groups(self) -> int:
+        return self.layer.groups
+
+    @property
+    def channels(self) -> Optional[int]:
+        return self.layer.channels
+
+    @property
+    def eps(self) -> float:
+        return self.layer.eps
+
+    @property
+    def channelwise_affine(self) -> bool:
+        return self.layer.channelwise_affine
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
+
+    @property
     def _graph_dtype(self) -> str | None:
         return None if self.dtype is None else jnp.dtype(self.dtype).name
 
@@ -1572,7 +1524,10 @@ class GroupNorm(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class BatchNorm(Component):
+GroupNorm.component_options = _owner_options(GroupNorm, has_key=False, trainable=True)
+
+
+class BatchNorm(GraphNode):
     """Batch normalization with explicit Equinox State threading."""
 
     input_ports = ("input",)
@@ -1613,7 +1568,7 @@ class BatchNorm(Component):
         self.dtype = dtype
         self.layer = eqx.nn.BatchNorm(
             input_size=input_size,
-            axis_name=axis_name,
+            axis_name=_spatial_tuple(axis_name),
             eps=eps,
             channelwise_affine=channelwise_affine,
             momentum=momentum,
@@ -1636,25 +1591,12 @@ class BatchNorm(Component):
 # ============================================================
 
 
-class _MaxPool1dParams(BaseModel):
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = 1
-    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
-    use_ceil: bool = False
-
-
-@component(
-    "feedbax.equinox.MaxPool1d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_MaxPool1dParams,
-)
 class MaxPool1d(Component):
     """1D max pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1664,10 +1606,6 @@ class MaxPool1d(Component):
     }
 
     layer: eqx.nn.MaxPool1d
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
-    use_ceil: bool
 
     def __init__(
         self,
@@ -1676,13 +1614,28 @@ class MaxPool1d(Component):
         padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
         use_ceil: bool = False,
     ):
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.use_ceil = use_ceil
         self.layer = eqx.nn.MaxPool1d(
-            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            padding=_spatial_tuple(padding),
+            use_ceil=use_ceil,
         )
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def padding(self) -> Union[int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def use_ceil(self) -> bool:
+        return self.layer.use_ceil
 
     def __call__(
         self,
@@ -1694,25 +1647,15 @@ class MaxPool1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _MaxPool2dParams(BaseModel):
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = 1
-    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
-    use_ceil: bool = False
+MaxPool1d.component_options = _owner_options(MaxPool1d, has_key=False, trainable=False)
 
 
-@component(
-    "feedbax.equinox.MaxPool2d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_MaxPool2dParams,
-)
 class MaxPool2d(Component):
     """2D max pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1722,10 +1665,6 @@ class MaxPool2d(Component):
     }
 
     layer: eqx.nn.MaxPool2d
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
-    use_ceil: bool
 
     def __init__(
         self,
@@ -1734,13 +1673,28 @@ class MaxPool2d(Component):
         padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
         use_ceil: bool = False,
     ):
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.use_ceil = use_ceil
         self.layer = eqx.nn.MaxPool2d(
-            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            padding=_spatial_tuple(padding),
+            use_ceil=use_ceil,
         )
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def padding(self) -> Union[int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def use_ceil(self) -> bool:
+        return self.layer.use_ceil
 
     def __call__(
         self,
@@ -1752,25 +1706,15 @@ class MaxPool2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _MaxPool3dParams(BaseModel):
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = 1
-    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
-    use_ceil: bool = False
+MaxPool2d.component_options = _owner_options(MaxPool2d, has_key=False, trainable=False)
 
 
-@component(
-    "feedbax.equinox.MaxPool3d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_MaxPool3dParams,
-)
 class MaxPool3d(Component):
     """3D max pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1780,10 +1724,6 @@ class MaxPool3d(Component):
     }
 
     layer: eqx.nn.MaxPool3d
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
-    use_ceil: bool
 
     def __init__(
         self,
@@ -1792,13 +1732,28 @@ class MaxPool3d(Component):
         padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
         use_ceil: bool = False,
     ):
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.use_ceil = use_ceil
         self.layer = eqx.nn.MaxPool3d(
-            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            padding=_spatial_tuple(padding),
+            use_ceil=use_ceil,
         )
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def padding(self) -> Union[int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def use_ceil(self) -> bool:
+        return self.layer.use_ceil
 
     def __call__(
         self,
@@ -1810,25 +1765,15 @@ class MaxPool3d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _AvgPool1dParams(BaseModel):
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = 1
-    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
-    use_ceil: bool = False
+MaxPool3d.component_options = _owner_options(MaxPool3d, has_key=False, trainable=False)
 
 
-@component(
-    "feedbax.equinox.AvgPool1d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_AvgPool1dParams,
-)
 class AvgPool1d(Component):
     """1D average pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1838,10 +1783,6 @@ class AvgPool1d(Component):
     }
 
     layer: eqx.nn.AvgPool1d
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
-    use_ceil: bool
 
     def __init__(
         self,
@@ -1850,13 +1791,28 @@ class AvgPool1d(Component):
         padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
         use_ceil: bool = False,
     ):
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.use_ceil = use_ceil
         self.layer = eqx.nn.AvgPool1d(
-            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            padding=_spatial_tuple(padding),
+            use_ceil=use_ceil,
         )
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def padding(self) -> Union[int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def use_ceil(self) -> bool:
+        return self.layer.use_ceil
 
     def __call__(
         self,
@@ -1868,25 +1824,15 @@ class AvgPool1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _AvgPool2dParams(BaseModel):
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = 1
-    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
-    use_ceil: bool = False
+AvgPool1d.component_options = _owner_options(AvgPool1d, has_key=False, trainable=False)
 
 
-@component(
-    "feedbax.equinox.AvgPool2d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_AvgPool2dParams,
-)
 class AvgPool2d(Component):
     """2D average pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1896,10 +1842,6 @@ class AvgPool2d(Component):
     }
 
     layer: eqx.nn.AvgPool2d
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
-    use_ceil: bool
 
     def __init__(
         self,
@@ -1908,13 +1850,28 @@ class AvgPool2d(Component):
         padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
         use_ceil: bool = False,
     ):
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.use_ceil = use_ceil
         self.layer = eqx.nn.AvgPool2d(
-            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            padding=_spatial_tuple(padding),
+            use_ceil=use_ceil,
         )
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def padding(self) -> Union[int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def use_ceil(self) -> bool:
+        return self.layer.use_ceil
 
     def __call__(
         self,
@@ -1926,25 +1883,15 @@ class AvgPool2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _AvgPool3dParams(BaseModel):
-    kernel_size: Union[int, _SpatialDimensions]
-    stride: Union[int, _SpatialDimensions] = 1
-    padding: Union[int, _SpatialDimensions, _PaddingPairs] = 0
-    use_ceil: bool = False
+AvgPool2d.component_options = _owner_options(AvgPool2d, has_key=False, trainable=False)
 
 
-@component(
-    "feedbax.equinox.AvgPool3d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("kernel_size", "stride", "padding")),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_AvgPool3dParams,
-)
 class AvgPool3d(Component):
     """3D average pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -1954,10 +1901,6 @@ class AvgPool3d(Component):
     }
 
     layer: eqx.nn.AvgPool3d
-    kernel_size: Union[int, Sequence[int]]
-    stride: Union[int, Sequence[int]]
-    padding: Union[int, Sequence[int], Sequence[tuple[int, int]]]
-    use_ceil: bool
 
     def __init__(
         self,
@@ -1966,13 +1909,28 @@ class AvgPool3d(Component):
         padding: Union[int, Sequence[int], Sequence[tuple[int, int]]] = 0,
         use_ceil: bool = False,
     ):
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.use_ceil = use_ceil
         self.layer = eqx.nn.AvgPool3d(
-            kernel_size=kernel_size, stride=stride, padding=padding, use_ceil=use_ceil
+            kernel_size=_spatial_tuple(kernel_size),
+            stride=_spatial_tuple(stride),
+            padding=_spatial_tuple(padding),
+            use_ceil=use_ceil,
         )
+
+    @property
+    def kernel_size(self) -> Union[int, Sequence[int]]:
+        return self.layer.kernel_size
+
+    @property
+    def stride(self) -> Union[int, Sequence[int]]:
+        return self.layer.stride
+
+    @property
+    def padding(self) -> Union[int, Sequence[int], Sequence[tuple[int, int]]]:
+        return self.layer.padding
+
+    @property
+    def use_ceil(self) -> bool:
+        return self.layer.use_ceil
 
     def __call__(
         self,
@@ -1984,22 +1942,15 @@ class AvgPool3d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _AdaptiveMaxPool1dParams(BaseModel):
-    target_shape: Union[int, _SpatialDimensions]
+AvgPool3d.component_options = _owner_options(AvgPool3d, has_key=False, trainable=False)
 
 
-@component(
-    "feedbax.equinox.AdaptiveMaxPool1d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("target_shape",)),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_AdaptiveMaxPool1dParams,
-)
 class AdaptiveMaxPool1d(Component):
     """1D adaptive max pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -2009,11 +1960,13 @@ class AdaptiveMaxPool1d(Component):
     }
 
     layer: eqx.nn.AdaptiveMaxPool1d
-    target_shape: Union[int, Sequence[int]]
 
     def __init__(self, target_shape: Union[int, Sequence[int]]):
-        self.target_shape = target_shape
-        self.layer = eqx.nn.AdaptiveMaxPool1d(target_shape=target_shape)
+        self.layer = eqx.nn.AdaptiveMaxPool1d(target_shape=_spatial_tuple(target_shape))
+
+    @property
+    def target_shape(self) -> Union[int, Sequence[int]]:
+        return self.layer.target_shape
 
     def __call__(
         self,
@@ -2025,22 +1978,17 @@ class AdaptiveMaxPool1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _AdaptiveMaxPool2dParams(BaseModel):
-    target_shape: Union[int, _SpatialDimensions]
-
-
-@component(
-    "feedbax.equinox.AdaptiveMaxPool2d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("target_shape",)),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_AdaptiveMaxPool2dParams,
+AdaptiveMaxPool1d.component_options = _owner_options(
+    AdaptiveMaxPool1d, has_key=False, trainable=False
 )
+
+
 class AdaptiveMaxPool2d(Component):
     """2D adaptive max pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -2050,11 +1998,13 @@ class AdaptiveMaxPool2d(Component):
     }
 
     layer: eqx.nn.AdaptiveMaxPool2d
-    target_shape: Union[int, Sequence[int]]
 
     def __init__(self, target_shape: Union[int, Sequence[int]]):
-        self.target_shape = target_shape
-        self.layer = eqx.nn.AdaptiveMaxPool2d(target_shape=target_shape)
+        self.layer = eqx.nn.AdaptiveMaxPool2d(target_shape=_spatial_tuple(target_shape))
+
+    @property
+    def target_shape(self) -> Union[int, Sequence[int]]:
+        return self.layer.target_shape
 
     def __call__(
         self,
@@ -2066,22 +2016,17 @@ class AdaptiveMaxPool2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _AdaptiveMaxPool3dParams(BaseModel):
-    target_shape: Union[int, _SpatialDimensions]
-
-
-@component(
-    "feedbax.equinox.AdaptiveMaxPool3d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("target_shape",)),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_AdaptiveMaxPool3dParams,
+AdaptiveMaxPool2d.component_options = _owner_options(
+    AdaptiveMaxPool2d, has_key=False, trainable=False
 )
+
+
 class AdaptiveMaxPool3d(Component):
     """3D adaptive max pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -2091,11 +2036,13 @@ class AdaptiveMaxPool3d(Component):
     }
 
     layer: eqx.nn.AdaptiveMaxPool3d
-    target_shape: Union[int, Sequence[int]]
 
     def __init__(self, target_shape: Union[int, Sequence[int]]):
-        self.target_shape = target_shape
-        self.layer = eqx.nn.AdaptiveMaxPool3d(target_shape=target_shape)
+        self.layer = eqx.nn.AdaptiveMaxPool3d(target_shape=_spatial_tuple(target_shape))
+
+    @property
+    def target_shape(self) -> Union[int, Sequence[int]]:
+        return self.layer.target_shape
 
     def __call__(
         self,
@@ -2107,22 +2054,17 @@ class AdaptiveMaxPool3d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _AdaptiveAvgPool1dParams(BaseModel):
-    target_shape: Union[int, _SpatialDimensions]
-
-
-@component(
-    "feedbax.equinox.AdaptiveAvgPool1d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("target_shape",)),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_AdaptiveAvgPool1dParams,
+AdaptiveMaxPool3d.component_options = _owner_options(
+    AdaptiveMaxPool3d, has_key=False, trainable=False
 )
+
+
 class AdaptiveAvgPool1d(Component):
     """1D adaptive average pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -2132,11 +2074,13 @@ class AdaptiveAvgPool1d(Component):
     }
 
     layer: eqx.nn.AdaptiveAvgPool1d
-    target_shape: Union[int, Sequence[int]]
 
     def __init__(self, target_shape: Union[int, Sequence[int]]):
-        self.target_shape = target_shape
-        self.layer = eqx.nn.AdaptiveAvgPool1d(target_shape=target_shape)
+        self.layer = eqx.nn.AdaptiveAvgPool1d(target_shape=_spatial_tuple(target_shape))
+
+    @property
+    def target_shape(self) -> Union[int, Sequence[int]]:
+        return self.layer.target_shape
 
     def __call__(
         self,
@@ -2148,22 +2092,17 @@ class AdaptiveAvgPool1d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _AdaptiveAvgPool2dParams(BaseModel):
-    target_shape: Union[int, _SpatialDimensions]
-
-
-@component(
-    "feedbax.equinox.AdaptiveAvgPool2d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("target_shape",)),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_AdaptiveAvgPool2dParams,
+AdaptiveAvgPool1d.component_options = _owner_options(
+    AdaptiveAvgPool1d, has_key=False, trainable=False
 )
+
+
 class AdaptiveAvgPool2d(Component):
     """2D adaptive average pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -2173,11 +2112,13 @@ class AdaptiveAvgPool2d(Component):
     }
 
     layer: eqx.nn.AdaptiveAvgPool2d
-    target_shape: Union[int, Sequence[int]]
 
     def __init__(self, target_shape: Union[int, Sequence[int]]):
-        self.target_shape = target_shape
-        self.layer = eqx.nn.AdaptiveAvgPool2d(target_shape=target_shape)
+        self.layer = eqx.nn.AdaptiveAvgPool2d(target_shape=_spatial_tuple(target_shape))
+
+    @property
+    def target_shape(self) -> Union[int, Sequence[int]]:
+        return self.layer.target_shape
 
     def __call__(
         self,
@@ -2189,22 +2130,17 @@ class AdaptiveAvgPool2d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-class _AdaptiveAvgPool3dParams(BaseModel):
-    target_shape: Union[int, _SpatialDimensions]
-
-
-@component(
-    "feedbax.equinox.AdaptiveAvgPool3d",
-    category="Equinox",
-    configure=partial(_owner_options, spatial_settings=("target_shape",)),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_AdaptiveAvgPool3dParams,
+AdaptiveAvgPool2d.component_options = _owner_options(
+    AdaptiveAvgPool2d, has_key=False, trainable=False
 )
+
+
 class AdaptiveAvgPool3d(Component):
     """3D adaptive average pooling."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -2214,11 +2150,13 @@ class AdaptiveAvgPool3d(Component):
     }
 
     layer: eqx.nn.AdaptiveAvgPool3d
-    target_shape: Union[int, Sequence[int]]
 
     def __init__(self, target_shape: Union[int, Sequence[int]]):
-        self.target_shape = target_shape
-        self.layer = eqx.nn.AdaptiveAvgPool3d(target_shape=target_shape)
+        self.layer = eqx.nn.AdaptiveAvgPool3d(target_shape=_spatial_tuple(target_shape))
+
+    @property
+    def target_shape(self) -> Union[int, Sequence[int]]:
+        return self.layer.target_shape
 
     def __call__(
         self,
@@ -2230,43 +2168,26 @@ class AdaptiveAvgPool3d(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+AdaptiveAvgPool3d.component_options = _owner_options(
+    AdaptiveAvgPool3d, has_key=False, trainable=False
+)
+
 # ============================================================
 # ATTENTION LAYERS
 # ============================================================
 
 
-class _MultiheadAttentionParams(BaseModel):
-    num_heads: int
-    query_size: int
-    key_size: Optional[int] = None
-    value_size: Optional[int] = None
-    output_size: Optional[int] = None
-    qk_size: Optional[int] = None
-    vo_size: Optional[int] = None
-    use_query_bias: bool = False
-    use_key_bias: bool = False
-    use_value_bias: bool = False
-    use_output_bias: bool = False
-    dropout_p: float = 0.0
-    inference: bool = False
-    dtype: str | None = "float32"
-
-
-@component(
-    "feedbax.equinox.MultiheadAttention",
-    category="Equinox",
-    configure=partial(_owner_options, has_key=True),
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_MultiheadAttentionParams,
-    build_context_fields=("key",),
-    attribute_paths={"dtype": "_graph_dtype"},
-    trainable_by_default=True,
-)
 class MultiheadAttention(Component):
     """Multi-head attention layer."""
 
-    input_ports = ("query", "key_", "value")
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={
+            "query": PortType(dtype="array"),
+            "key_": PortType(dtype="array"),
+            "value": PortType(dtype="array"),
+        },
+        outputs={"output": PortType(dtype="array")},
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -2276,20 +2197,7 @@ class MultiheadAttention(Component):
     }
 
     layer: eqx.nn.MultiheadAttention
-    num_heads: int
-    query_size: int
-    key_size: Optional[int]
-    value_size: Optional[int]
-    output_size: Optional[int]
-    qk_size: Optional[int]
-    vo_size: Optional[int]
-    use_query_bias: bool
-    use_key_bias: bool
-    use_value_bias: bool
-    use_output_bias: bool
-    dropout_p: float
-    inference: bool
-    dtype: Any
+    dtype: str | None
 
     def __init__(
         self,
@@ -2306,23 +2214,10 @@ class MultiheadAttention(Component):
         use_output_bias: bool = False,
         dropout_p: float = 0.0,
         inference: bool = False,
-        dtype="float32",
+        dtype: str | None = "float32",
         *,
         key: PRNGKeyArray,
     ):
-        self.num_heads = num_heads
-        self.query_size = query_size
-        self.key_size = key_size
-        self.value_size = value_size
-        self.output_size = output_size
-        self.qk_size = qk_size
-        self.vo_size = vo_size
-        self.use_query_bias = use_query_bias
-        self.use_key_bias = use_key_bias
-        self.use_value_bias = use_value_bias
-        self.use_output_bias = use_output_bias
-        self.dropout_p = dropout_p
-        self.inference = inference
         self.dtype = dtype
         self.layer = eqx.nn.MultiheadAttention(
             num_heads=num_heads,
@@ -2343,6 +2238,60 @@ class MultiheadAttention(Component):
         )
 
     @property
+    def num_heads(self) -> int:
+        return self.layer.num_heads
+
+    @property
+    def query_size(self) -> int:
+        return self.layer.query_size
+
+    @property
+    def key_size(self) -> Optional[int]:
+        return self.layer.key_size
+
+    @property
+    def value_size(self) -> Optional[int]:
+        return self.layer.value_size
+
+    @property
+    def output_size(self) -> Optional[int]:
+        return self.layer.output_size
+
+    @property
+    def qk_size(self) -> Optional[int]:
+        return self.layer.qk_size
+
+    @property
+    def vo_size(self) -> Optional[int]:
+        return self.layer.vo_size
+
+    @property
+    def use_query_bias(self) -> bool:
+        return self.layer.use_query_bias
+
+    @property
+    def use_key_bias(self) -> bool:
+        return self.layer.use_key_bias
+
+    @property
+    def use_value_bias(self) -> bool:
+        return self.layer.use_value_bias
+
+    @property
+    def use_output_bias(self) -> bool:
+        return self.layer.use_output_bias
+
+    @property
+    def dropout_p(self) -> float:
+        return self.layer.dropout.p
+
+    @property
+    def inference(self) -> bool:
+        return self.layer.dropout.inference
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
+
+    @property
     def _graph_dtype(self) -> str | None:
         return None if self.dtype is None else jnp.dtype(self.dtype).name
 
@@ -2356,25 +2305,17 @@ class MultiheadAttention(Component):
         return _call_multihead_attention_layer(self, inputs, state, key=key)
 
 
-class _RotaryPositionalEmbeddingParams(BaseModel):
-    embedding_size: int
-    theta: float = 10000.0
-    dtype: str | None = None
-
-
-@component(
-    "feedbax.equinox.RotaryPositionalEmbedding",
-    category="Equinox",
-    configure=_owner_options,
-    sources=(_GENERATOR_SOURCE,),
-    param_model=_RotaryPositionalEmbeddingParams,
-    attribute_paths={"dtype": "_graph_dtype"},
+MultiheadAttention.component_options = _owner_options(
+    MultiheadAttention, has_key=True, trainable=True
 )
+
+
 class RotaryPositionalEmbedding(Component):
     """Rotary positional embedding for attention."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -2384,17 +2325,25 @@ class RotaryPositionalEmbedding(Component):
     }
 
     layer: eqx.nn.RotaryPositionalEmbedding
-    embedding_size: int
-    theta: float
-    dtype: Any
 
-    def __init__(self, embedding_size: int, theta: float = 10000.0, dtype: Any = None):
-        self.embedding_size = embedding_size
-        self.theta = theta
-        self.dtype = dtype
+    def __init__(self, embedding_size: int, theta: float = 10000.0, dtype: str | None = None):
         self.layer = eqx.nn.RotaryPositionalEmbedding(
             embedding_size=embedding_size, theta=theta, dtype=dtype
         )
+
+    @property
+    def embedding_size(self) -> int:
+        return self.layer.embedding_size
+
+    @property
+    def theta(self) -> float:
+        return self.layer.theta
+
+    @property
+    def dtype(self) -> Any:
+        return self.layer.dtype
+
+    config_bindings = (ConfigBinding(name="dtype", path="_graph_dtype"),)
 
     @property
     def _graph_dtype(self) -> str | None:
@@ -2410,12 +2359,16 @@ class RotaryPositionalEmbedding(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
+RotaryPositionalEmbedding.component_options = _owner_options(
+    RotaryPositionalEmbedding, has_key=False, trainable=False
+)
+
 # ============================================================
 # OTHER LAYERS
 # ============================================================
 
 
-class Embedding(Component):
+class Embedding(GraphNode):
     """Embedding layer for discrete tokens.
 
     The optional constructor `weight` seeds the embedding table. The
@@ -2474,17 +2427,12 @@ class Embedding(Component):
         return _call_single_input_layer(self, inputs, state, key=key)
 
 
-@component(
-    "feedbax.equinox.Dropout",
-    category="Equinox",
-    configure=_owner_options,
-    sources=(_GENERATOR_SOURCE,),
-)
 class Dropout(Component):
     """Dropout layer that honors its configured inference/deterministic settings."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports(
+        inputs={"input": PortType(dtype="array")}, outputs={"output": PortType(dtype="array")}
+    )
     generated_wrapper_schema_version = EQUINOX_WRAPPER_SCHEMA_VERSION
     generated_for_equinox_version = EQUINOX_WRAPPER_EQUINOX_VERSION
     wrapper_contract = {
@@ -2494,17 +2442,23 @@ class Dropout(Component):
     }
 
     layer: eqx.nn.Dropout
-    p: float
-    inference: bool
-    deterministic: Optional[bool]
 
     def __init__(
         self, p: float = 0.5, inference: bool = False, deterministic: Optional[bool] = None
     ):
-        self.p = p
-        self.inference = inference
-        self.deterministic = deterministic
         self.layer = eqx.nn.Dropout(p=p, inference=inference, deterministic=deterministic)
+
+    @property
+    def p(self) -> float:
+        return self.layer.p
+
+    @property
+    def inference(self) -> bool:
+        return self.layer.inference
+
+    @property
+    def deterministic(self) -> None:
+        return None
 
     def __call__(
         self,
@@ -2516,7 +2470,10 @@ class Dropout(Component):
         return _call_single_input_keyed_layer(self, inputs, state, key=key)
 
 
-class PReLU(Component):
+Dropout.component_options = _owner_options(Dropout, has_key=False, trainable=False)
+
+
+class PReLU(GraphNode):
     """Parametric ReLU activation.
 
     The constructor `init_alpha` seeds the negative slope. The
