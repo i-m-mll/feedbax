@@ -501,7 +501,7 @@ test('reload restores acausal domain context and rejects causal subgraph drops',
   });
 
   await expect(page.getByText(
-    "Acausal interiors accept acausal-domain components only; 'Subgraph' is causal."
+    "Acausal interiors accept acausal-domain components only; 'feedbax.Subgraph' is causal."
   )).toBeVisible();
   await page.evaluate(() => window.feedbaxE2E?.exitToRoot());
   await expect(taskHandles).not.toHaveCount(0);

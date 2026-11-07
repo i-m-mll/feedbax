@@ -5,7 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError as PydanticValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    ValidationError as PydanticValidationError,
+)
 
 import feedbax.analysis as analysis_pkg
 from feedbax._delayed_reaches import (
@@ -147,8 +153,6 @@ from feedbax.contracts.training import (
 )
 from feedbax.contracts.run_matrix import TrainingRunMatrixSpec
 from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
-
-TASK_COMPONENT_TYPES = {"ReachingTask", "SimpleReaches", "DelayedReaches", "Stabilization"}
 
 
 class ProviderModel(BaseModel):
@@ -1160,7 +1164,10 @@ def validate_graph_spec(
                     ValidationIssue(
                         type="graph_input_occupied",
                         message=str(conflict),
-                        location={"path": conflict.authored_path, "occupied_by": conflict.occupied_by},
+                        location={
+                            "path": conflict.authored_path,
+                            "occupied_by": conflict.occupied_by,
+                        },
                     )
                     for conflict in conflicts
                 ),
@@ -1168,11 +1175,13 @@ def validate_graph_spec(
                     type="invalid_additive_channel_adapter",
                     message=str(exc),
                     location={"path": "/additive_channel_adapters"},
-                )
+                ),
             ],
             migration_status="feedbax_migrated" if migration_records else "current",
             migration_records=migration_records,
         )
+
+    from feedbax.tasks.task import TaskComponent
 
     registry = component_registry
     errors: list[ValidationIssue] = []
@@ -1181,7 +1190,12 @@ def validate_graph_spec(
     def _validate_graph(graph: GraphSpec, prefix: str = "") -> None:
         for node_name, node_spec in graph.nodes.items():
             node_path = f"{prefix}/nodes/{node_name}"
-            if node_spec.type in TASK_COMPONENT_TYPES:
+            meta = registry.get(node_spec.type)
+            if (
+                meta is not None
+                and meta.owner_class is not None
+                and issubclass(meta.owner_class, TaskComponent)
+            ):
                 errors.append(
                     ValidationIssue(
                         type="task_node_not_allowed",
@@ -1193,7 +1207,6 @@ def validate_graph_spec(
                     )
                 )
                 continue
-            meta = registry.get(node_spec.type)
             if meta is None:
                 errors.append(
                     ValidationIssue(

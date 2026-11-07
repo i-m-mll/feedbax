@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from feedbax.component_registry import ComponentPack
-from feedbax.component_registry import ParameterField
-from feedbax.component_registry import declare_component
 from feedbax.contracts.representation import RepresentationSpec
+
+from feedbax.runtime.components import Gain
+from feedbax.runtime.graph import Component
+from feedbax.contracts.portable import Ports
+from feedbax.studio.component_presentation import PresentationOverride
 
 from dataclasses import replace
 from pathlib import Path
@@ -339,17 +342,16 @@ def test_training_error_and_resync_events_have_stable_coordinates() -> None:
 
 
 def test_component_api_serves_representation_contract() -> None:
+    class ApiRepresentedGain(Gain):
+        """API represented component fixture."""
+
     registry = ComponentRegistry()
     registry.ingest(
         ComponentPack(
-            components=(
-                declare_component(
-                    name="ApiRepresentedGain",
-                    builder=lambda params: None,
-                    category="Test",
-                    description="API represented component fixture.",
-                    input_ports=["input"],
-                    output_ports=["output"],
+            namespace="example",
+            components=(ApiRepresentedGain,),
+            presentation={
+                ApiRepresentedGain: PresentationOverride(
                     representation=RepresentationSpec.model_validate(
                         {
                             "anchors": [
@@ -372,13 +374,9 @@ def test_component_api_serves_representation_contract() -> None:
                                 }
                             ],
                         }
-                    ),
-                    parameter_fields=[
-                        ParameterField(name='gain', type='float', default=1.0)
-                    ],
-                    override_reason="Synthetic fixture constructor",
-                ),
-            )
+                    )
+                )
+            },
         )
     )
     app = create_app()
@@ -393,7 +391,7 @@ def test_component_api_serves_representation_contract() -> None:
     assert response.status_code == 200
     contract = ComponentListResponse.model_validate(response.json())
     represented = next(
-        item for item in contract.data.components if item.name == "ApiRepresentedGain"
+        item for item in contract.data.components if item.name == "example.ApiRepresentedGain"
     )
     assert represented.representation is not None
     assert represented.representation.schema_version == REPRESENTATION_SCHEMA_VERSION
@@ -407,18 +405,17 @@ def test_component_refresh_atomically_swaps_whole_bootstrap_state(
     with TestClient(app) as client:
         original = app.state.bootstrap_state
         replacement_registry = ComponentRegistry()
+
+        class RefreshOnlyComponent(Component):
+            ports = Ports({}, {})
+
+            def __call__(self, inputs, state, *, key):
+                return {}, state
+
         replacement_registry.ingest(
             ComponentPack(
-                components=(
-                    declare_component(
-                        name="RefreshOnlyComponent",
-                        builder=lambda _params: None,
-                        input_ports=(),
-                        output_ports=(),
-                        category="Custom",
-                        override_reason="Synthetic fixture constructor",
-                    ),
-                )
+                namespace="example",
+                components=(RefreshOnlyComponent,),
             )
         )
         replacement_registry.seal()
@@ -508,7 +505,7 @@ def test_graph_validate_endpoint_returns_domain_diagnostics() -> None:
 def test_graph_validate_endpoint_names_competing_external_inputs() -> None:
     client = TestClient(create_app())
     graph = GraphSpec(
-        nodes={"gain": ComponentSpec(type="Gain", input_ports=["input"])},
+        nodes={"gain": ComponentSpec(type="feedbax.Gain", input_ports=["input"])},
         input_ports=["command", "override"],
         input_bindings={"command": ("gain", "input"), "override": ("gain", "input")},
     )
