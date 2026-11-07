@@ -392,6 +392,7 @@ from feedbax.contracts.graph import (
     GRAPH_SPEC_SCHEMA_VERSION_V2,
     GRAPH_SPEC_SCHEMA_VERSION_V3,
     GRAPH_SPEC_SCHEMA_VERSION_V4,
+    GRAPH_SPEC_SCHEMA_VERSION_V5,
     LEGACY_STUDIO_SCENARIO_SCHEMA_VERSION,
     LEGACY_GRAPH_SPEC_SCHEMA_VERSION,
     STUDIO_GRAPH_PROJECT_SCHEMA_ID,
@@ -1999,6 +2000,37 @@ def _migrate_studio_graph_project_unversioned_payload(
     }
 
 
+def _decode_component_revisions(
+    payload: dict[str, Any], component_registry: Any | None
+) -> dict[str, Any]:
+    nodes = payload.get("nodes")
+    if not isinstance(nodes, Mapping):
+        return payload
+    decoded = {}
+    for name, raw_node in nodes.items():
+        if not isinstance(raw_node, Mapping) or "param_schema_version" not in raw_node:
+            decoded[name] = raw_node
+            continue
+        node = dict(raw_node)
+        token = node.pop("param_schema_version")
+        if "revision" in node:
+            raise ValueError(f"Component node {name!r} declares both revision and legacy param_schema_version")
+        if token is not None:
+            if component_registry is None:
+                from feedbax.component_registry import ComponentRegistry
+
+                component_registry = ComponentRegistry()
+            resolution = component_registry.resolve_component_spec(
+                node["type"],
+                node.get("params", {}),
+                param_schema_version=token,
+                complete_params=False,
+            )
+            node.update(type=resolution.type_id, params=resolution.params, revision=resolution.revision)
+        decoded[name] = node
+    return {**payload, "nodes": decoded}
+
+
 def migrate_graph_spec(
     payload: Mapping[str, Any] | GraphSpec,
     *,
@@ -2006,6 +2038,7 @@ def migrate_graph_spec(
     target_version: str | None = None,
     path: str = "graph",
     registry: SpecSchemaRegistry | None = None,
+    component_registry: Any | None = None,
 ) -> SpecMigrationResult:
     """Migrate a GraphSpec payload through the public registered schema path.
 
@@ -2025,7 +2058,7 @@ def migrate_graph_spec(
         source_version=resolved_source,
         target_version=resolved_target,
     )
-    migrated_payload = dict(result.payload)
+    migrated_payload = _decode_component_revisions(dict(result.payload), component_registry)
     migrated_payload.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
     migrated_payload.setdefault("schema_version", resolved_target)
     records = [_record_with_graph_path(record, path) for record in result.migration_records]
@@ -2060,6 +2093,7 @@ def migrate_graph_spec(
                     source_version=nested_source,
                     path=nested_path,
                     registry=registry,
+                    component_registry=component_registry,
                 )
             else:
                 nested = migrate_graph_spec(
@@ -2068,6 +2102,7 @@ def migrate_graph_spec(
                     target_version=resolved_target,
                     path=nested_path,
                     registry=registry,
+                    component_registry=component_registry,
                 )
             migrated_subgraphs[str(node_id)] = nested.payload
             records.extend(nested.migration_records)
@@ -2099,6 +2134,7 @@ def migrate_acausal_graph_spec(
     target_version: str | None = None,
     path: str = "graph",
     registry: SpecSchemaRegistry | None = None,
+    component_registry: Any | None = None,
 ) -> SpecMigrationResult:
     """Accept or migrate an AcausalGraphSpec payload and its nested acausal graphs."""
     registry = registry or default_spec_registry
@@ -2112,7 +2148,7 @@ def migrate_acausal_graph_spec(
         source_version=source_version,
         target_version=resolved_target,
     )
-    migrated_payload = dict(result.payload)
+    migrated_payload = _decode_component_revisions(dict(result.payload), component_registry)
     migrated_payload.setdefault("schema_id", ACAUSAL_GRAPH_SCHEMA_ID)
     migrated_payload.setdefault("schema_version", resolved_target)
     records = [_record_with_graph_path(record, path) for record in result.migration_records]
@@ -2137,6 +2173,7 @@ def migrate_acausal_graph_spec(
                 target_version=resolved_target,
                 path=f"{path}.subgraphs[{node_id!r}]",
                 registry=registry,
+                component_registry=component_registry,
             )
             migrated_subgraphs[str(node_id)] = nested.payload
             records.extend(nested.migration_records)
@@ -3650,6 +3687,7 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
                 GRAPH_SPEC_SCHEMA_VERSION_V2,
                 GRAPH_SPEC_SCHEMA_VERSION_V3,
                 GRAPH_SPEC_SCHEMA_VERSION_V4,
+                GRAPH_SPEC_SCHEMA_VERSION_V5,
             ),
             rejected_old_versions=(),
             required_tests=("tests/test_graphspec_schema_migrations.py",),
@@ -7595,7 +7633,7 @@ default_spec_registry.register_migration(
     "GraphSpec",
     SchemaMigration(
         source_version=GRAPH_SPEC_SCHEMA_VERSION_V4,
-        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION_V5,
         migration_id="graph-spec-v4-to-v5-component-param-array-values",
         migrate=_migrate_graph_spec_v4_to_v5_payload,
         description=(
@@ -7604,6 +7642,18 @@ default_spec_registry.register_migration(
         ),
     ),
 )
+default_spec_registry.register_migration(
+    "GraphSpec",
+    SchemaMigration(
+        source_version=GRAPH_SPEC_SCHEMA_VERSION_V5,
+        target_version=GRAPH_SPEC_SCHEMA_VERSION,
+        migration_id="graph-spec-v5-to-v6-component-revisions",
+        migrate=dict,
+        description="Use canonical integer component revisions.",
+    )
+)
+
+
 default_spec_registry.register_migration(
     "ComponentDefinition",
     SchemaMigration(

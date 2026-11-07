@@ -60,16 +60,18 @@ pytestmark = [
     pytest.mark.migration_contract,
 ]
 
-GRAPH_V1_TO_V5_MIGRATIONS = [
+GRAPH_V1_TO_V6_MIGRATIONS = [
     "graph-spec-legacy-v1-to-v2",
     "graph-spec-v2-to-v3-derived-dimensions",
     "graph-spec-v3-to-v4-discriminated-subgraphs",
     "graph-spec-v4-to-v5-component-param-array-values",
+    "graph-spec-v5-to-v6-component-revisions",
 ]
-GRAPH_V2_TO_V5_MIGRATIONS = [
+GRAPH_V2_TO_V6_MIGRATIONS = [
     "graph-spec-v2-to-v3-derived-dimensions",
     "graph-spec-v3-to-v4-discriminated-subgraphs",
     "graph-spec-v4-to-v5-component-param-array-values",
+    "graph-spec-v5-to-v6-component-revisions",
 ]
 
 
@@ -354,7 +356,7 @@ def test_legacy_graph_spec_migration_records_builtin_rewrites() -> None:
     assert result.payload["wires"][0]["source_port"] == "input"
     assert result.payload["wires"][0]["target_port"] == "input"
     assert result.payload["input_bindings"]["target"] == ("network", "input")
-    assert [record.migration_id for record in result.migration_records] == GRAPH_V1_TO_V5_MIGRATIONS
+    assert [record.migration_id for record in result.migration_records] == GRAPH_V1_TO_V6_MIGRATIONS
     assert result.migration_records[0].metadata["graph_path"] == "graph"
     assert result.payload["derived_dimensions"] == []
 
@@ -371,7 +373,7 @@ def test_graph_spec_v2_migration_adds_derived_dimensions_field() -> None:
 
     assert result.payload["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
     assert result.payload["derived_dimensions"] == []
-    assert [record.migration_id for record in result.migration_records] == GRAPH_V2_TO_V5_MIGRATIONS
+    assert [record.migration_id for record in result.migration_records] == GRAPH_V2_TO_V6_MIGRATIONS
 
 
 def test_graph_spec_v4_migration_preserves_dense_and_unrelated_shape_entry_dicts() -> None:
@@ -502,7 +504,7 @@ def test_graph_spec_manifest_load_attaches_feedbax_migration_records() -> None:
         ).sha256
     )
     assert [record.migration_id for record in result.applied_migration_records] == (
-        GRAPH_V1_TO_V5_MIGRATIONS
+        GRAPH_V1_TO_V6_MIGRATIONS
     )
     assert result.migration_records == loaded_manifest.migration_records
 
@@ -572,7 +574,7 @@ def test_provider_validation_reports_manifest_migration_custody_states(
     assert migrated.migration_status == "feedbax_migrated"
     assert [
         record.migration_id for record in migrated.migration_records
-    ] == GRAPH_V1_TO_V5_MIGRATIONS
+    ] == GRAPH_V1_TO_V6_MIGRATIONS
     routed = validate_spec(
         "graph_manifest",
         GraphSpecManifest(
@@ -676,7 +678,7 @@ def test_compile_graph_invokes_public_graph_spec_migration(monkeypatch: pytest.M
         output_bindings={"output": ("constant", "output")},
     ).model_dump(mode="json")
 
-    def fake_migrate_graph_spec(payload: GraphSpec) -> SpecMigrationResult:
+    def fake_migrate_graph_spec(payload: GraphSpec, *, component_registry=None) -> SpecMigrationResult:
         nonlocal called
         called = True
         assert isinstance(payload, GraphSpec)

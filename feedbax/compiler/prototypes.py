@@ -25,12 +25,12 @@ from feedbax.component_registry.prototypes import array_prototype, prototype_par
 
 
 STATEFUL_PROTOTYPE_TYPES = {
-    "BandPassFilter",
-    "Channel",
-    "DelayLine",
-    "FirstOrderFilter",
-    "HighPassFilter",
-    "RateLimiter",
+    "feedbax.BandPassFilter",
+    "feedbax.Channel",
+    "feedbax.DelayLine",
+    "feedbax.FirstOrderFilter",
+    "feedbax.HighPassFilter",
+    "feedbax.RateLimiter",
 }
 
 
@@ -181,7 +181,7 @@ def validate_or_add_input_shape(
             "Connect it to a source with a known output shape or provide input_shape."
         )
     if (
-        node_type == "Channel"
+        node_type == "feedbax.Channel"
         and not hasattr(proto, "shape")
         and all(next_params.get(field) is None for field in ("input_shape", "input_dtype"))
     ):

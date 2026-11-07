@@ -78,14 +78,14 @@ def resolve_component_node(
         and callable(should_resolve)
         and should_resolve(
             node.type,
-            param_schema_version=node.param_schema_version,
+            revision=node.revision,
         )
     ):
         params, lowering_metadata = _split_lowering_metadata(node, registry)
         resolution = resolver(
             node.type,
             params,
-            param_schema_version=node.param_schema_version,
+            revision=node.revision,
             complete_params=False,
             historical_unversioned=historical_unversioned,
         )
@@ -93,7 +93,7 @@ def resolve_component_node(
             update={
                 "type": resolution.type_id,
                 "params": {**resolution.params, **lowering_metadata},
-                "param_schema_version": resolution.param_schema_version,
+                "revision": resolution.revision,
             }
         )
     if required_interior_domain(node.type, registry) is not None:
@@ -417,7 +417,7 @@ class _Completion:
         node = self.completed[name]
         domain = required_interior_domain(node.type, self.registry)
         if domain is not None and name not in (self.graph.subgraphs or {}):
-            if node.type == "Network":
+            if node.type == "feedbax.Network":
                 raise ValueError(
                     f"Network node {name!r} requires a subgraph; no subgraph was provided. "
                     "Open it in Studio to generate the internal architecture, then save again."

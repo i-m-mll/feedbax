@@ -28,7 +28,7 @@ def lower_legacy_feedback(graph: GraphSpec, *, recurse: bool = True) -> GraphSpe
             node.input_ports != ["mechanics"]
             or node.output_ports != ["feedback"]
             or "channels" in node.params
-            or node.param_schema_version not in (None, "1")
+            or node.revision not in (None, 1)
             or name in subgraphs
         ):
             raise ValueError(
@@ -60,7 +60,7 @@ def lower_legacy_feedback(graph: GraphSpec, *, recurse: bool = True) -> GraphSpe
             },
         }
         nodes[name] = node.model_copy(
-            update={"type": "Subgraph", "params": {}, "param_schema_version": None}
+            update={"type": "Subgraph", "params": {}, "revision": None}
         )
         subgraphs[name] = GraphSpec(
             nodes={
@@ -73,7 +73,7 @@ def lower_legacy_feedback(graph: GraphSpec, *, recurse: bool = True) -> GraphSpe
                 "channel": ComponentSpec(
                     type="Channel",
                     params=channel_params,
-                    param_schema_version="2",
+                    revision=2,
                     input_ports=["input"],
                     output_ports=["output"],
                 ),

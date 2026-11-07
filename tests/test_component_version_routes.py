@@ -5,48 +5,43 @@ import pytest
 from feedbax.component_registry import ComponentPack, ComponentRegistry
 from feedbax.component_registry.migration_routes import validate_migration_routes
 from feedbax.contracts.migrations import ComponentMigration, UnsupportedComponentMigration
-from feedbax.runtime.affine_composer import (
-    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1,
-    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2,
-    AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V3,
-)
+from feedbax.component_registry.history import Change, History, LegacyEndpoint
+from feedbax.contracts.portable import Ports
+from feedbax.contracts.component import PortType
+from feedbax.runtime.graph import Component
+from types import ModuleType
+from typing import ClassVar
+
+AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V1 = "feedbax.component.affine_value_composer.v1"
+AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V2 = "feedbax.component.affine_value_composer.v2"
 
 
 def test_component_migration_chain_validates_only_at_current_endpoint():
-    registry = ComponentRegistry()
-    first = ComponentMigration(
-        source_type="Gain",
-        target_type="Gain",
-        migration_id="old-gain-stage-1",
-        owner="feedbax",
-        source_param_schema_version="legacy",
-        target_param_schema_version="intermediate",
-        migrate_params=lambda params: {"intermediate_value": params["scale"] * 2},
-        matches_unversioned=lambda params: "scale" in params,
-    )
-    last = ComponentMigration(
-        source_type="Gain",
-        target_type="Gain",
-        migration_id="old-gain-stage-2",
-        owner="feedbax",
-        source_param_schema_version="intermediate",
-        target_param_schema_version="1",
-        migrate_params=lambda params: {"gain": params["intermediate_value"] + 1},
-    )
-    registry.ingest(ComponentPack(migrations=(first,)))
-    registry.ingest(ComponentPack(migrations=(last,)))
+    class ChainGain(Component):
+        gain: float
+        ports: ClassVar = Ports({"input": PortType()}, {"output": PortType()})
 
+        def __call__(self, inputs, state, *, key):
+            return {"output": self.gain * inputs["input"]}, state
+
+    history = History(
+        Change(2, migrate=lambda params: {"intermediate_value": params["scale"] * 2}),
+        Change(3, migrate=lambda params: {"gain": params["intermediate_value"] + 1}),
+        legacy=(LegacyEndpoint("ChainGain", "legacy", 1,
+                               matches_unversioned=lambda params: "scale" in params),),
+    )
+    module = ModuleType("test_chain_owners")
+    ChainGain.__module__ = module.__name__
+    module.ChainGain = ChainGain
+    registry = ComponentRegistry()
+    registry.ingest(ComponentPack(namespace="example", modules=(module,), histories={ChainGain: history}))
     resolution = registry.resolve_component_spec(
-        "Gain", {"scale": 4.0}, historical_unversioned=True
+        "ChainGain", {"scale": 4.0}, historical_unversioned=True
     )
     assert resolution.params == {"gain": 9.0}
-    assert resolution.param_schema_version == "1"
-    assert [edge.migration_id for edge in resolution.migrations] == [
-        "old-gain-stage-1",
-        "old-gain-stage-2",
-    ]
+    assert resolution.revision == 3
     with pytest.raises(UnsupportedComponentMigration, match="Ambiguous unversioned"):
-        registry.resolve_component_spec("Gain", {"gain": 4.0}, historical_unversioned=True)
+        registry.resolve_component_spec("ChainGain", {"gain": 4.0}, historical_unversioned=True)
 
 
 def test_migration_graph_rejects_cycles_duplicate_ids_and_missing_terminal():
@@ -103,7 +98,7 @@ def test_affine_composer_historical_parameters_reach_outer_v3(
         param_schema_version=source,
         historical_unversioned=historical_unversioned,
     )
-    assert resolved.param_schema_version == AFFINE_VALUE_COMPOSER_SCHEMA_VERSION_V3
+    assert resolved.revision == 3
     assert "schema_version" not in resolved.params
     assert "label" not in resolved.params
 
@@ -120,6 +115,6 @@ def test_threshold_historical_selector_reaches_current_contract() -> None:
     resolved = registry.resolve_component_spec(
         "ThresholdLatchedForce", params, historical_unversioned=True
     )
-    assert resolved.param_schema_version == current.param_schema_version
+    assert resolved.revision == current.revision
     assert resolved.params["state_selector"] == {"kind": "fixed", "path": ["pos", 0]}
     assert resolved.params["lateral_force"] == 0.0

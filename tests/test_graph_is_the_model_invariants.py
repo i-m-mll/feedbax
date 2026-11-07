@@ -36,10 +36,6 @@ from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.compiler.templates import network_template_graph
 from feedbax.runtime.graph import Graph
-from feedbax.runtime.components import (
-    LINEAR_PARAM_SCHEMA_VERSION,
-    LINEAR_PARAM_SCHEMA_VERSION_V1,
-)
 from feedbax.web.worker.diagnostics import GraphCompilationError
 from feedbax.web.worker.execution import compile_training_run
 
@@ -394,14 +390,14 @@ def test_linear_zero_initialization_is_compiled_executed_and_serialized() -> Non
     def linear_spec(
         params: dict[str, Any],
         *,
-        param_schema_version: str | None = None,
+        revision: int | None = None,
     ) -> GraphSpec:
         return GraphSpec(
             nodes={
                 "linear": ComponentSpec(
                     type="Linear",
                     params={"input_size": 3, "output_size": 2, **params},
-                    param_schema_version=param_schema_version,
+                    revision=revision,
                     input_ports=["input"],
                     output_ports=["output"],
                 )
@@ -425,11 +421,11 @@ def test_linear_zero_initialization_is_compiled_executed_and_serialized() -> Non
     assert jnp.array_equal(outputs["output"], jnp.zeros((2,), dtype=jnp.float32))
 
     serialized = graph_to_spec(graph).nodes["linear"]
-    assert serialized.param_schema_version == LINEAR_PARAM_SCHEMA_VERSION
+    assert serialized.revision == 2
     assert serialized.params["initialization"] == "zeros"
 
     legacy = spec_to_graph(
-        linear_spec({}, param_schema_version=LINEAR_PARAM_SCHEMA_VERSION_V1),
+        linear_spec({}, revision=1),
         _registry(),
     )
     default = spec_to_graph(linear_spec({}), _registry())
@@ -447,8 +443,8 @@ def test_round_trip_preserves_node_types_and_topology() -> None:
     round_tripped = graph_to_spec(graph)
 
     assert {name: node.type for name, node in round_tripped.nodes.items()} == {
-        "gain": "Gain",
-        "lin": "Linear",
+        "gain": "feedbax.Gain",
+        "lin": "feedbax.Linear",
     }
     assert [
         (wire.source_node, wire.source_port, wire.target_node, wire.target_port)

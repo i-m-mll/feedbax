@@ -284,11 +284,13 @@ def _require_version(family: str, value: str, current: str) -> str:
     return value
 
 
-def migrate_graph_spec(payload: GraphSpec | Mapping[str, Any]) -> Any:
+def migrate_graph_spec(
+    payload: GraphSpec | Mapping[str, Any], *, component_registry: Any | None = None
+) -> Any:
     """Call the public migration boundary without creating an import cycle."""
     from feedbax.contracts.migrations import migrate_graph_spec as migrate
 
-    return migrate(payload)
+    return migrate(payload, component_registry=component_registry)
 
 
 T = TypeVar("T")
@@ -532,7 +534,7 @@ def compile_graph(
     )
 
     def parse_graph() -> tuple[Any, GraphSpec]:
-        migration = migrate_graph_spec(document.graph)
+        migration = migrate_graph_spec(document.graph, component_registry=component_registry)
         graph = GraphSpec.model_validate(migration.payload)
         if conflict := next(graph_input_driver_conflicts(graph, "/graph"), None):
             raise conflict
@@ -579,7 +581,7 @@ def compile_graph(
             lowered,
             lambda _graph_path, node: (
                 resolve_component_node(node, component_registry)
-                if node.param_schema_version is None
+                if node.revision is None
                 else node
             ),
             document_sha256=document_sha256,
