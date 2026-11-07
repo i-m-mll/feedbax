@@ -46,13 +46,12 @@ def _assert_rollout(graph, expected, signal=_INPUT):
     assert outputs["output"].tolist() == [expected, expected]
 
 
-def _authored_spec(component_type, params, *, version=None):
+def _authored_spec(component_type, params):
     return GraphSpec(
         nodes={
             "intervention": ComponentSpec(
-                type=component_type,
+                type=f"feedbax.{component_type}",
                 params=params,
-                param_schema_version=version,
                 input_ports=["input"],
                 output_ports=["output"],
             )
@@ -62,6 +61,17 @@ def _authored_spec(component_type, params, *, version=None):
         input_bindings=_INPUT_PORT,
         output_bindings=_OUTPUT_PORT,
     )
+
+
+def _legacy_spec(component_type, params, version):
+    payload = _authored_spec(component_type, params).model_dump(mode="json")
+    payload["schema_version"] = "feedbax.spec.graph.v5"
+    node = payload["nodes"]["intervention"]
+    node["type"] = component_type
+    node.pop("revision", None)
+    if version is not None:
+        node["param_schema_version"] = version
+    return GraphSpec.model_validate(payload)
 
 
 @pytest.mark.parametrize(
@@ -116,10 +126,10 @@ def test_legacy_intervention_requires_reauthoring_only_when_enabled(
     registry, component_type, field
 ):
     for version in ("1", None):
-        disabled = _authored_spec(component_type, {"scale": 2.0, "active": False}, version=version)
+        disabled = _legacy_spec(component_type, {"scale": 2.0, "active": False}, version)
         _assert_rollout(_compile(registry, disabled).graph, [2.0, 3.0])
 
-        enabled = _authored_spec(component_type, {"scale": 2.0, "active": True}, version=version)
+        enabled = _legacy_spec(component_type, {"scale": 2.0, "active": True}, version)
         with pytest.raises(GraphCompilationError, match=field):
             _compile(registry, enabled)
 

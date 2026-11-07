@@ -91,7 +91,7 @@ def _force_field_cases():
     delta_A = [[0.1, 0.0, 0.5, 0.0], [0.0, -0.2, 0.0, 0.25]]
     return (
         (
-            "FixedField",
+            "feedbax.FixedField",
             FixedField(
                 params=FixedFieldParams(
                     scale=2.0,
@@ -110,7 +110,7 @@ def _force_field_cases():
             ["force", "params_override"],
         ),
         (
-            "CurlField",
+            "feedbax.CurlField",
             CurlField(
                 params=CurlFieldParams(scale=1.25, amplitude=0.75, active=True),
             ),
@@ -123,7 +123,7 @@ def _force_field_cases():
             ["effector", "force", "params_override"],
         ),
         (
-            "DynamicsMatrixPerturb",
+            "feedbax.DynamicsMatrixPerturb",
             DynamicsMatrixPerturb(
                 params=DynamicsMatrixPerturbParams(
                     scale=0.5,
@@ -148,17 +148,17 @@ def _force_field_cases():
     ("component_type", "params", "effect"),
     [
         (
-            "FixedField",
+            "feedbax.FixedField",
             {"amplitude": 1.0, "field": [2.0002, -2.0002]},
             [2.0002, -2.0002],
         ),
-        ("CurlField", {"amplitude": 1.0}, [-4.0, 2.0]),
+        ("feedbax.CurlField", {"amplitude": 1.0}, [-4.0, 2.0]),
         (
-            "DynamicsMatrixPerturb",
+            "feedbax.DynamicsMatrixPerturb",
             {"mass": 1.5, "delta_A": [[1.0, 0.0, 1.0, 0.0], [0.0, 1.0, -1.0, 0.0]]},
             [6.0, -9.0],
         ),
-        ("AddNoise", {}, None),
+        ("feedbax.AddNoise", {}, None),
     ],
     ids=["fixed", "curl", "dynamics", "noise"],
 )
@@ -171,7 +171,7 @@ def test_registered_intervention_rollout_preserves_signal_dtype_and_gradients(
         registry = _components()
         metadata = registry.get(component_type)
         input_port, output_port = (
-            ("input", "output") if component_type == "AddNoise" else ("force", "force")
+            ("input", "output") if component_type == "feedbax.AddNoise" else ("force", "force")
         )
         signal = jnp.array([[-1.0, 1.0], [0.0, 0.0]], dtype=dtype)
         inputs = {input_port: signal}
@@ -243,7 +243,7 @@ def test_elementwise_affine_modulator_graphspec_round_trips_and_runs() -> None:
     spec = GraphSpec(
         nodes={
             "modulate": ComponentSpec(
-                type="ElementwiseAffineModulator",
+                type="feedbax.ElementwiseAffineModulator",
                 params={
                     "signal_shape": [3],
                     "baseline": 1.0,
@@ -286,7 +286,7 @@ def test_elementwise_affine_modulator_graphspec_round_trips_and_runs() -> None:
 
     roundtrip = graph_to_spec(graph)
     params = roundtrip.nodes["modulate"].params
-    assert roundtrip.nodes["modulate"].type == "ElementwiseAffineModulator"
+    assert roundtrip.nodes["modulate"].type == "feedbax.ElementwiseAffineModulator"
     assert roundtrip.nodes["modulate"].input_ports == ["signal", "modulator", "scale", "bias"]
     assert params["signal_shape"] == [3]
     assert params["baseline"] == [1.0, 1.0, 1.0]
@@ -325,25 +325,25 @@ def test_task_data_reference_vector_composes_into_affine_controller_reference() 
     spec = GraphSpec(
         nodes={
             "zero_velocity": ComponentSpec(
-                type="Constant",
+                type="feedbax.Constant",
                 params={"value": [0.0, 0.0]},
                 input_ports=[],
                 output_ports=["output"],
             ),
             "zero_feedback": ComponentSpec(
-                type="Constant",
+                type="feedbax.Constant",
                 params={"value": [0.0, 0.0, 0.0, 0.0]},
                 input_ports=[],
                 output_ports=["output"],
             ),
             "reference_mux": ComponentSpec(
-                type="Mux",
+                type="feedbax.Mux",
                 params={"n_inputs": 2},
                 input_ports=["in_0", "in_1"],
                 output_ports=["output"],
             ),
             "controller": ComponentSpec(
-                type="AffineFeedbackController",
+                type="feedbax.AffineFeedbackController",
                 params={
                     "gain": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
                     "schedule_policy": "hold",
@@ -396,8 +396,8 @@ def test_task_data_reference_vector_composes_into_affine_controller_reference() 
 
     assert jnp.allclose(outputs["command"], jnp.asarray([1.5, -2.0]))
     roundtrip = graph_to_spec(graph)
-    assert roundtrip.nodes["zero_velocity"].type == "Constant"
-    assert roundtrip.nodes["controller"].type == "AffineFeedbackController"
+    assert roundtrip.nodes["zero_velocity"].type == "feedbax.Constant"
+    assert roundtrip.nodes["controller"].type == "feedbax.AffineFeedbackController"
     assert roundtrip.input_bindings[plans[0].graph_input] == ("reference_mux", "in_0")
 
 
@@ -408,13 +408,13 @@ def _derived_mux_gru_spec(declared_input_size: Any = "__missing__") -> GraphSpec
     return GraphSpec(
         nodes={
             "input_mux": ComponentSpec(
-                type="Mux",
+                type="feedbax.Mux",
                 params={"n_inputs": 2},
                 input_ports=["in_0", "in_1"],
                 output_ports=["output"],
             ),
             "cell": ComponentSpec(
-                type="GRU",
+                type="feedbax.GRU",
                 params=cell_params,
                 input_ports=["input", "hidden"],
                 output_ports=["output", "hidden"],
@@ -455,7 +455,7 @@ def _derived_mux_task_bindings(
             "exposed_data": [
                 {
                     "id": "kinematics",
-                    "label": "Kinematics",
+                    "label": "feedbax.Kinematics",
                     "kind": "signal",
                     "role": "model_input",
                     "path": "inputs.kinematics",
@@ -559,7 +559,7 @@ def test_point_mass_graphspec_preserves_mass_damping_and_dt() -> None:
     spec = GraphSpec(
         nodes={
             "mechanics": ComponentSpec(
-                type="PointMass",
+                type="feedbax.PointMass",
                 params={"dt": 0.02, "mass": 0.75, "damping": 4.5},
                 input_ports=["force"],
                 output_ports=["effector", "state"],
@@ -592,13 +592,13 @@ def _point_mass_feedback_spec(**feedback_params: Any) -> GraphSpec:
     return GraphSpec(
         nodes={
             "mechanics": ComponentSpec(
-                type="PointMass",
+                type="feedbax.PointMass",
                 params={"dt": 0.01, "mass": 1.0, "damping": 2.0},
                 input_ports=["force"],
                 output_ports=["effector", "state"],
             ),
             "feedback": ComponentSpec(
-                type="FeedbackChannels",
+                type="feedbax.FeedbackChannels",
                 params=feedback_params,
                 input_ports=["mechanics"],
                 output_ports=["feedback"],
@@ -627,7 +627,7 @@ def _point_mass_feedback_spec(**feedback_params: Any) -> GraphSpec:
 @pytest.mark.parametrize("noise_model", ["additive_gaussian", "none"])
 def test_disabled_channel_roundtrip_preserves_authored_noise(noise_model: str) -> None:
     spec = _single_node_spec(
-        "Channel",
+        "feedbax.Channel",
         {"delay": 0, "add_noise": False, "noise_model": noise_model, "noise_std": 0.7},
         input_ports=["input"],
         output_ports=["output"],
@@ -764,7 +764,7 @@ def test_point_mass_feedback_rejects_invalid_selector_path_at_compile_time() -> 
 
 def test_nested_feedback_rollout_preserves_mixed_state_dtypes() -> None:
     feedback = _single_node_spec(
-        "FeedbackChannels",
+        "feedbax.FeedbackChannels",
         {"selector": "plant_skeleton", "delay": 1},
         input_ports=["mechanics"],
         output_ports=["feedback"],
@@ -772,7 +772,7 @@ def test_nested_feedback_rollout_preserves_mixed_state_dtypes() -> None:
     spec = GraphSpec(
         nodes={
             "nested": ComponentSpec(
-                type="Subgraph", input_ports=["mechanics"], output_ports=["feedback"]
+                type="feedbax.Subgraph", input_ports=["mechanics"], output_ports=["feedback"]
             )
         },
         subgraphs={"nested": feedback},
@@ -815,7 +815,7 @@ def test_channel_structured_motor_noise_round_trips() -> None:
     spec = GraphSpec(
         nodes={
             "efferent": ComponentSpec(
-                type="Channel",
+                type="feedbax.Channel",
                 params={
                     "delay": 0,
                     "noise_model": "signal_dependent_plus_additive",
@@ -865,7 +865,7 @@ def test_channel_can_express_plant_process_force_noise_role() -> None:
         GraphSpec(
             nodes={
                 "plant_noise": ComponentSpec(
-                    type="Channel",
+                    type="feedbax.Channel",
                     params={
                         "delay": 0,
                         "noise_model": "additive_gaussian",
@@ -930,12 +930,12 @@ def test_force_field_graphspec_builders_preserve_contract_and_runtime(
     assert node.input_ports == input_ports
     assert node.output_ports == ["force"]
     assert bool(node.params["active"]) is True
-    if component_type == "FixedField":
+    if component_type == "feedbax.FixedField":
         assert node.params["field"] == pytest.approx(params["field"])
         assert node.params["amplitude"] == pytest.approx(params["amplitude"])
-    if component_type == "CurlField":
+    if component_type == "feedbax.CurlField":
         assert node.params["amplitude"] == pytest.approx(params["amplitude"])
-    if component_type == "DynamicsMatrixPerturb":
+    if component_type == "feedbax.DynamicsMatrixPerturb":
         assert jnp.allclose(jnp.asarray(node.params["delta_A"]), jnp.asarray(params["delta_A"]))
         assert node.params["mass"] == pytest.approx(params["mass"])
 
@@ -944,9 +944,9 @@ def test_force_field_registry_exposes_params_override_ports_and_builders() -> No
     registry = ComponentRegistry()
 
     expected = {
-        "FixedField": {"force", "params_override"},
-        "CurlField": {"effector", "force", "params_override"},
-        "DynamicsMatrixPerturb": {"effector", "force", "params_override"},
+        "feedbax.FixedField": {"force", "params_override"},
+        "feedbax.CurlField": {"effector", "force", "params_override"},
+        "feedbax.DynamicsMatrixPerturb": {"effector", "force", "params_override"},
     }
     for component_type, input_ports in expected.items():
         meta = registry.get(component_type)
@@ -954,7 +954,7 @@ def test_force_field_registry_exposes_params_override_ports_and_builders() -> No
         assert meta.builder is not None
         assert set(meta.input_ports) == input_ports
         assert meta.output_ports == ["force"]
-        if component_type == "DynamicsMatrixPerturb":
+        if component_type == "feedbax.DynamicsMatrixPerturb":
             assert "delta_A" in meta.default_params
             assert "mass" in meta.default_params
 
@@ -962,9 +962,9 @@ def test_force_field_registry_exposes_params_override_ports_and_builders() -> No
 @pytest.mark.parametrize(
     ("component_type", "input_ports"),
     [
-        ("FixedField", ["force", "params_override"]),
-        ("CurlField", ["effector", "force", "params_override"]),
-        ("DynamicsMatrixPerturb", ["effector", "force", "params_override"]),
+        ("feedbax.FixedField", ["force", "params_override"]),
+        ("feedbax.CurlField", ["effector", "force", "params_override"]),
+        ("feedbax.DynamicsMatrixPerturb", ["effector", "force", "params_override"]),
     ],
 )
 def test_force_field_output_prototypes_passthrough_force(
@@ -994,9 +994,9 @@ def test_force_field_output_prototypes_passthrough_force(
 @pytest.mark.parametrize(
     ("component_type", "input_ports"),
     [
-        ("FixedField", ["force", "params_override"]),
-        ("CurlField", ["effector", "force", "params_override"]),
-        ("DynamicsMatrixPerturb", ["effector", "force", "params_override"]),
+        ("feedbax.FixedField", ["force", "params_override"]),
+        ("feedbax.CurlField", ["effector", "force", "params_override"]),
+        ("feedbax.DynamicsMatrixPerturb", ["effector", "force", "params_override"]),
     ],
 )
 def test_force_field_output_prototypes_require_force_input(
@@ -1047,28 +1047,28 @@ def _registered_outputs(
     "case",
     [
         {
-            "type": "Gain",
+            "type": "feedbax.Gain",
             "inputs": {"input": jnp.zeros((3,))},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((3,),)},
         },
         {
-            "type": "Sum",
+            "type": "feedbax.Sum",
             "inputs": {"a": jnp.zeros((2,))},
             "input_ports": ["a", "b"],
             "output_ports": ["output"],
             "shapes": {"output": ((2,),)},
         },
         {
-            "type": "Multiply",
+            "type": "feedbax.Multiply",
             "inputs": {"b": jnp.zeros((4,))},
             "input_ports": ["a", "b"],
             "output_ports": ["output"],
             "shapes": {"output": ((4,),)},
         },
         {
-            "type": "ElementwiseAffineModulator",
+            "type": "feedbax.ElementwiseAffineModulator",
             "params": {"signal_shape": [5]},
             "inputs": {},
             "input_ports": ["signal", "modulator", "scale", "bias"],
@@ -1076,49 +1076,49 @@ def _registered_outputs(
             "shapes": {"output": ((5,),)},
         },
         {
-            "type": "Constant",
+            "type": "feedbax.Constant",
             "params": {"value": 1.0},
             "input_ports": [],
             "output_ports": ["output"],
             "shapes": {"output": ((),)},
         },
         {
-            "type": "Ramp",
+            "type": "feedbax.Ramp",
             "params": {"slope": 1.0},
             "input_ports": [],
             "output_ports": ["output"],
             "shapes": {"output": ((),)},
         },
         {
-            "type": "Sine",
+            "type": "feedbax.Sine",
             "params": {"amplitude": 1.0},
             "input_ports": [],
             "output_ports": ["output"],
             "shapes": {"output": ((),)},
         },
         {
-            "type": "Pulse",
+            "type": "feedbax.Pulse",
             "params": {"amplitude": 1.0},
             "input_ports": [],
             "output_ports": ["output"],
             "shapes": {"output": ((),)},
         },
         {
-            "type": "Noise",
+            "type": "feedbax.Noise",
             "params": {"shape": [2, 3]},
             "input_ports": [],
             "output_ports": ["output"],
             "shapes": {"output": ((2, 3),)},
         },
         {
-            "type": "Saturation",
+            "type": "feedbax.Saturation",
             "inputs": {"input": jnp.zeros((3,))},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((3,),)},
         },
         {
-            "type": "DelayLine",
+            "type": "feedbax.DelayLine",
             "params": {"input_shape": [2]},
             "inputs": {},
             "input_ports": ["input"],
@@ -1126,111 +1126,111 @@ def _registered_outputs(
             "shapes": {"output": ((2,),)},
         },
         {
-            "type": "MLP",
+            "type": "feedbax.MLP",
             "params": {"output_size": 7},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((7,),)},
         },
         {
-            "type": "Linear",
+            "type": "feedbax.Linear",
             "params": {"output_size": 6},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((6,),)},
         },
         {
-            "type": "GRU",
+            "type": "feedbax.GRU",
             "params": {"hidden_size": 4},
             "input_ports": ["input", "hidden"],
             "output_ports": ["output", "hidden"],
             "shapes": {"output": ((4,),), "hidden": ((4,),)},
         },
         {
-            "type": "VanillaRNN",
+            "type": "feedbax.VanillaRNN",
             "params": {"hidden_size": 4},
             "input_ports": ["input", "hidden"],
             "output_ports": ["output", "hidden"],
             "shapes": {"output": ((4,),), "hidden": ((4,),)},
         },
         {
-            "type": "LSTM",
+            "type": "feedbax.LSTM",
             "params": {"hidden_size": 4},
             "input_ports": ["input", "hidden", "cell"],
             "output_ports": ["output", "hidden", "cell"],
             "shapes": {"output": ((4,),), "hidden": ((4,),), "cell": ((4,),)},
         },
         {
-            "type": "Spring",
+            "type": "feedbax.Spring",
             "inputs": {"displacement": jnp.zeros((2,))},
             "input_ports": ["displacement"],
             "output_ports": ["force"],
             "shapes": {"force": ((2,),)},
         },
         {
-            "type": "Damper",
+            "type": "feedbax.Damper",
             "inputs": {"velocity": jnp.zeros((2,))},
             "input_ports": ["velocity"],
             "output_ports": ["force"],
             "shapes": {"force": ((2,),)},
         },
         {
-            "type": "Channel",
+            "type": "feedbax.Channel",
             "params": {"input_shape": [3]},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((3,),)},
         },
         {
-            "type": "FirstOrderFilter",
+            "type": "feedbax.FirstOrderFilter",
             "inputs": {"input": jnp.zeros((4,))},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((4,),)},
         },
         {
-            "type": "AddNoise",
+            "type": "feedbax.AddNoise",
             "inputs": {"input": jnp.zeros((4,))},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((4,),)},
         },
         {
-            "type": "NetworkClamp",
+            "type": "feedbax.NetworkClamp",
             "inputs": {"input": jnp.zeros((4,))},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((4,),)},
         },
         {
-            "type": "ReluMuscle",
+            "type": "feedbax.ReluMuscle",
             "input_ports": ["excitation"],
             "output_ports": ["force", "activation"],
             "shapes": {"force": ((),), "activation": ((),)},
         },
         {
-            "type": "NetworkConstantInput",
+            "type": "feedbax.NetworkConstantInput",
             "inputs": {"input": jnp.zeros((4,))},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((4,),)},
         },
         {
-            "type": "ConstantInput",
+            "type": "feedbax.ConstantInput",
             "inputs": {"input": jnp.zeros((4,))},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((4,),)},
         },
         {
-            "type": "Integrator",
+            "type": "feedbax.Integrator",
             "params": {"n_dims": 3},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((3,),)},
         },
         {
-            "type": "Derivative",
+            "type": "feedbax.Derivative",
             "params": {"n_dims": 2},
             "inputs": {"input": jnp.zeros((2,))},
             "input_ports": ["input"],
@@ -1238,14 +1238,14 @@ def _registered_outputs(
             "shapes": {"output": ((2,),)},
         },
         {
-            "type": "PID",
+            "type": "feedbax.PID",
             "params": {"n_dims": 2},
             "input_ports": ["error"],
             "output_ports": ["output"],
             "shapes": {"output": ((2,),)},
         },
         {
-            "type": "PIDDiscrete",
+            "type": "feedbax.PIDDiscrete",
             "params": {"n_dims": 5},
             "inputs": {"error": jnp.zeros((5,))},
             "input_ports": ["error"],
@@ -1253,14 +1253,14 @@ def _registered_outputs(
             "shapes": {"output": ((5,),)},
         },
         {
-            "type": "IntegratorDiscrete",
+            "type": "feedbax.IntegratorDiscrete",
             "params": {"n_dims": 2},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((2,),)},
         },
         {
-            "type": "UnitDelay",
+            "type": "feedbax.UnitDelay",
             "params": {"n_dims": 3},
             "inputs": {"input": jnp.zeros((3,))},
             "input_ports": ["input"],
@@ -1268,14 +1268,14 @@ def _registered_outputs(
             "shapes": {"output": ((3,),)},
         },
         {
-            "type": "ZeroOrderHold",
+            "type": "feedbax.ZeroOrderHold",
             "params": {"n_dims": 4},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((4,),)},
         },
         {
-            "type": "Mux",
+            "type": "feedbax.Mux",
             "params": {"n_inputs": 3},
             "inputs": {
                 "in_0": jnp.zeros((2,)),
@@ -1287,14 +1287,14 @@ def _registered_outputs(
             "shapes": {"output": ((7,),)},
         },
         {
-            "type": "Ravel",
+            "type": "feedbax.Ravel",
             "inputs": {"input": {"x": jnp.zeros((2, 3)), "y": jnp.zeros((1,))}},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((7,),)},
         },
         {
-            "type": "Switch",
+            "type": "feedbax.Switch",
             "inputs": {
                 "true_input": jnp.zeros((3,)),
                 "false_input": jnp.zeros((3,)),
@@ -1304,28 +1304,28 @@ def _registered_outputs(
             "shapes": {"output": ((3,),)},
         },
         {
-            "type": "DeadZone",
+            "type": "feedbax.DeadZone",
             "inputs": {"input": jnp.zeros((3,))},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((3,),)},
         },
         {
-            "type": "RateLimiter",
+            "type": "feedbax.RateLimiter",
             "params": {"n_dims": 2},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((2,),)},
         },
         {
-            "type": "HighPassFilter",
+            "type": "feedbax.HighPassFilter",
             "inputs": {"input": jnp.zeros((3,))},
             "input_ports": ["input"],
             "output_ports": ["output"],
             "shapes": {"output": ((3,),)},
         },
         {
-            "type": "BandPassFilter",
+            "type": "feedbax.BandPassFilter",
             "params": {"n_dims": 2},
             "input_ports": ["input"],
             "output_ports": ["output"],
@@ -1347,7 +1347,7 @@ def test_registered_builtin_output_prototypes(case: dict[str, Any]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("component_type", "skeleton_leaves"), [("TwoLinkArm", 4), ("PointMass", 3)]
+    ("component_type", "skeleton_leaves"), [("feedbax.TwoLinkArm", 4), ("feedbax.PointMass", 3)]
 )
 def test_registered_mechanics_state_output_prototypes(
     component_type: str, skeleton_leaves: int
@@ -1368,7 +1368,7 @@ def test_registered_mechanics_state_output_prototypes(
 
 def test_registered_linear_state_space_output_prototype() -> None:
     outputs = _registered_outputs(
-        "LinearStateSpace",
+        "feedbax.LinearStateSpace",
         {
             "A": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             "B": [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]],
@@ -1389,7 +1389,7 @@ def test_registered_linear_state_space_output_prototype() -> None:
 
 def test_demux_output_prototype_splits_input_final_dimension() -> None:
     outputs = _registered_outputs(
-        "Demux",
+        "feedbax.Demux",
         {"sizes": [2, 1, 3]},
         {"input": jnp.zeros((4, 6))},
         input_ports=["input"],
@@ -1404,7 +1404,7 @@ def test_demux_output_prototype_splits_input_final_dimension() -> None:
 def test_demux_output_prototype_requires_input_prototype() -> None:
     with pytest.raises(ValueError, match="Demux output prototype requires input prototype 'input'"):
         _registered_outputs(
-            "Demux",
+            "feedbax.Demux",
             {"sizes": [2, 1]},
             {},
             input_ports=["input"],
@@ -1415,7 +1415,7 @@ def test_demux_output_prototype_requires_input_prototype() -> None:
 def test_demux_output_prototype_rejects_width_mismatch() -> None:
     with pytest.raises(ValueError, match="Demux input final dimension 4.*sum\\(sizes\\) 5"):
         _registered_outputs(
-            "Demux",
+            "feedbax.Demux",
             {"sizes": [2, 3]},
             {"input": jnp.zeros((4,))},
             input_ports=["input"],
@@ -1428,25 +1428,25 @@ def test_demux_output_prototype_infers_through_graph_with_deferred_input() -> No
     spec = GraphSpec(
         nodes={
             "join": ComponentSpec(
-                type="Mux",
+                type="feedbax.Mux",
                 params={"n_inputs": 2},
                 input_ports=["in_0", "in_1"],
                 output_ports=["output"],
             ),
             "split": ComponentSpec(
-                type="Demux",
+                type="feedbax.Demux",
                 params={"sizes": [2, 3]},
                 input_ports=["input"],
                 output_ports=["out_0", "out_1"],
             ),
             "left": ComponentSpec(
-                type="Gain",
+                type="feedbax.Gain",
                 params={"gain": 1.0},
                 input_ports=["input"],
                 output_ports=["output"],
             ),
             "right": ComponentSpec(
-                type="Gain",
+                type="feedbax.Gain",
                 params={"gain": 1.0},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -1493,7 +1493,7 @@ def test_demux_output_prototype_infers_through_graph_with_deferred_input() -> No
 def test_fixed_field_graphspec_preserves_params_override_semantics() -> None:
     graph = spec_to_graph(
         _single_node_spec(
-            "FixedField",
+            "feedbax.FixedField",
             {
                 "scale": 1.0,
                 "amplitude": 1.0,
@@ -1527,7 +1527,7 @@ def test_dynamics_matrix_perturb_graphspec_rejects_bad_delta_shape() -> None:
     with pytest.raises(ValueError, match="delta_A must have shape"):
         spec_to_graph(
             _single_node_spec(
-                "DynamicsMatrixPerturb",
+                "feedbax.DynamicsMatrixPerturb",
                 {
                     "scale": 1.0,
                     "delta_A": [[1.0, 2.0, 3.0]],
@@ -1545,7 +1545,7 @@ def test_dynamics_matrix_perturb_graphspec_requires_explicit_mass() -> None:
     with pytest.raises(GraphCompilationError) as caught:
         spec_to_graph(
             _single_node_spec(
-                "DynamicsMatrixPerturb",
+                "feedbax.DynamicsMatrixPerturb",
                 {"scale": 1.0, "delta_A": [[1.0, 0.0], [0.0, 1.0]], "active": True},
                 input_ports=["effector", "force", "params_override"],
                 output_ports=["force"],
@@ -1560,7 +1560,6 @@ def test_dynamics_matrix_perturb_graphspec_requires_explicit_mass() -> None:
 
 def _affine_composer_params() -> dict[str, Any]:
     return {
-        "schema_version": "feedbax.component.affine_value_composer.v2",
         "output_block_size": 2,
         "feature_rules": [
             {
@@ -1613,7 +1612,7 @@ def test_affine_value_composer_runtime_and_trainable_defaults() -> None:
 
 def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides() -> None:
     spec = _single_node_spec(
-        "AffineValueComposer",
+        "feedbax.AffineValueComposer",
         _affine_composer_params(),
         input_ports=["base", "state", "target", "gain", "bias"],
         output_ports=["value"],
@@ -1635,8 +1634,8 @@ def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides(
 
     roundtrip = graph_to_spec(graph)
     node = roundtrip.nodes["field"]
-    assert node.type == "AffineValueComposer"
-    assert node.param_schema_version == "feedbax.component.affine_value_composer.v3"
+    assert node.type == "feedbax.AffineValueComposer"
+    assert node.revision == 3
     assert "schema_version" not in node.params
     assert node.params["output_block_size"] == 2
     assert node.params["feature_rules"] == _affine_composer_params()["feature_rules"]
@@ -1653,7 +1652,7 @@ def test_affine_value_composer_graphspec_materializes_round_trips_and_overrides(
 def test_affine_value_composer_output_prototypes_and_negative_validation() -> None:
     registry = ComponentRegistry()
     node_spec = ComponentSpec(
-        type="AffineValueComposer",
+        type="feedbax.AffineValueComposer",
         params=_affine_composer_params(),
         input_ports=["base", "state", "target", "gain", "bias"],
         output_ports=["value"],
@@ -1713,11 +1712,11 @@ def test_affine_value_composer_output_prototypes_and_negative_validation() -> No
 
 def test_affine_value_composer_registry_metadata() -> None:
     registry = ComponentRegistry()
-    meta = registry.get("AffineValueComposer")
+    meta = registry.get("feedbax.AffineValueComposer")
 
     assert meta is not None
     assert meta.output_prototype_fn is not None
-    assert meta.param_schema_version == "feedbax.component.affine_value_composer.v3"
+    assert meta.revision == 3
     assert set(meta.input_ports) == {"base", "state", "target", "gain", "bias"}
     assert meta.output_ports == ["value"]
     assert "schema_version" not in meta.default_params
@@ -1729,7 +1728,7 @@ def test_channel_rejects_unknown_noise_model() -> None:
             GraphSpec(
                 nodes={
                     "channel": ComponentSpec(
-                        type="Channel",
+                        type="feedbax.Channel",
                         params={"delay": 0, "noise_model": "unsupported", "input_shape": [2]},
                         input_ports=["input"],
                         output_ports=["output"],
@@ -1754,7 +1753,7 @@ def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
     spec = GraphSpec(
         nodes={
             "split": ComponentSpec(
-                type="Demux",
+                type="feedbax.Demux",
                 params={"sizes": [2, 1, 3]},
                 input_ports=["input"],
                 output_ports=["out_0", "out_1", "out_2"],
@@ -1786,7 +1785,7 @@ def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
 
     roundtrip = graph_to_spec(graph)
     node = roundtrip.nodes["split"]
-    assert node.type == "Demux"
+    assert node.type == "feedbax.Demux"
     assert node.params["sizes"] == [2, 1, 3]
     assert node.input_ports == ["input"]
     assert node.output_ports == ["out_0", "out_1", "out_2"]
@@ -1796,8 +1795,8 @@ def test_demux_graphspec_materializes_and_round_trips_dynamic_ports() -> None:
 def test_graphspec_build_materializes_omitted_dynamic_ports_from_policy() -> None:
     spec = GraphSpec(
         nodes={
-            "join": ComponentSpec(type="Mux", params={"n_inputs": 2}),
-            "split": ComponentSpec(type="Demux", params={"sizes": [2, 1]}),
+            "join": ComponentSpec(type="feedbax.Mux", params={"n_inputs": 2}),
+            "split": ComponentSpec(type="feedbax.Demux", params={"sizes": [2, 1]}),
         },
         wires=[
             WireSpec(
@@ -1833,7 +1832,7 @@ def test_mux_graphspec_rejects_n_inputs_port_count_mismatch() -> None:
             GraphSpec(
                 nodes={
                     "join": ComponentSpec(
-                        type="Mux",
+                        type="feedbax.Mux",
                         params={"n_inputs": 2},
                         input_ports=["in_0", "in_1", "in_2"],
                         output_ports=["output"],
@@ -1852,7 +1851,7 @@ def test_demux_graphspec_rejects_sizes_output_port_count_mismatch() -> None:
             GraphSpec(
                 nodes={
                     "split": ComponentSpec(
-                        type="Demux",
+                        type="feedbax.Demux",
                         params={"sizes": [2, 1, 3]},
                         input_ports=["input"],
                         output_ports=["out_0", "out_1"],
@@ -1871,13 +1870,13 @@ def test_demux_graphspec_executes_as_internal_node() -> None:
     spec = GraphSpec(
         nodes={
             "join": ComponentSpec(
-                type="Mux",
+                type="feedbax.Mux",
                 params={"n_inputs": 2},
                 input_ports=["in_0", "in_1"],
                 output_ports=["output"],
             ),
             "split": ComponentSpec(
-                type="Demux",
+                type="feedbax.Demux",
                 params={"sizes": [2, 1]},
                 input_ports=["input"],
                 output_ports=["out_0", "out_1"],
@@ -1912,9 +1911,9 @@ def test_demux_graphspec_executes_as_internal_node() -> None:
 @pytest.mark.usefixtures("enable_jax_x64")
 def test_stateful_signal_blocks_compile_and_round_trip_with_float32_carry() -> None:
     stages = {
-        "limiter": ("RateLimiter", {"max_rate": 2.0, "n_dims": 2, "initial_value": 0.1}),
-        "highpass": ("HighPassFilter", {"tau": 0.2}),
-        "bandpass": ("BandPassFilter", {"tau_low": 0.4, "tau_high": 0.2}),
+        "limiter": ("feedbax.RateLimiter", {"max_rate": 2.0, "n_dims": 2, "initial_value": 0.1}),
+        "highpass": ("feedbax.HighPassFilter", {"tau": 0.2}),
+        "bandpass": ("feedbax.BandPassFilter", {"tau_low": 0.4, "tau_high": 0.2}),
     }
     spec = GraphSpec(
         nodes={
@@ -1989,9 +1988,9 @@ def test_registered_bandpass_attenuates_nyquist_and_remains_bounded_at_small_tau
         _, output = jax.lax.scan(step, graph.init_state(key=key), samples)
         return output
 
-    highpass = run("HighPassFilter", {})
-    bandpass = run("BandPassFilter", {})
-    small_tau = run("BandPassFilter", {"tau_high": 0.003, "dt": 0.01})
+    highpass = run("feedbax.HighPassFilter", {})
+    bandpass = run("feedbax.BandPassFilter", {})
+    small_tau = run("feedbax.BandPassFilter", {"tau_high": 0.003, "dt": 0.01})
     assert jnp.linalg.norm(bandpass[-8:]) < 0.5 * jnp.linalg.norm(highpass[-8:])
     assert jnp.all(jnp.abs(small_tau) <= 1.0)
 
@@ -2002,7 +2001,7 @@ def test_demux_graphspec_rejects_invalid_sizes() -> None:
             GraphSpec(
                 nodes={
                     "split": ComponentSpec(
-                        type="Demux",
+                        type="feedbax.Demux",
                         params={"sizes": [2, 0]},
                         input_ports=["input"],
                         output_ports=["out_0", "out_1"],
@@ -2022,7 +2021,7 @@ def test_demux_rejects_mismatched_input_width() -> None:
         GraphSpec(
             nodes={
                 "split": ComponentSpec(
-                    type="Demux",
+                    type="feedbax.Demux",
                     params={"sizes": [2, 2]},
                     input_ports=["input"],
                     output_ports=["out_0", "out_1"],
@@ -2046,16 +2045,16 @@ def test_connected_sum_and_reshape_preserve_input_prototype(use_registry: bool) 
     spec = GraphSpec(
         nodes={
             "sum": ComponentSpec(
-                type="Sum", input_ports=["a", "b", "c", "d"], output_ports=["output"]
+                type="feedbax.Sum", input_ports=["a", "b", "c", "d"], output_ports=["output"]
             ),
             "reshape": ComponentSpec(
-                type="Reshape",
+                type="feedbax.Reshape",
                 params={"shape": [1, 3]},
                 input_ports=["input"],
                 output_ports=["output"],
             ),
             "delay": ComponentSpec(
-                type="DelayLine",
+                type="feedbax.DelayLine",
                 params={"delay": 1},
                 input_ports=["input"],
                 output_ports=["output"],
@@ -2089,13 +2088,13 @@ def test_connected_sum_and_reshape_preserve_input_prototype(use_registry: bool) 
 
 @pytest.mark.parametrize("strict", [False, True])
 def test_supplied_registry_without_prototype_rule_is_refused(strict: bool) -> None:
-    node = ComponentSpec(type="Constant", params={"value": 1}, output_ports=["output"])
+    node = ComponentSpec(type="feedbax.Constant", params={"value": 1}, output_ports=["output"])
     with pytest.raises(ValueError, match="Constant.*no registered output prototype rule"):
         output_prototypes_for_node("source", node, {}, {}, {}, strict=strict)
 
 
 def test_registered_missing_input_defers_until_strict_resolution() -> None:
-    node = ComponentSpec(type="Reshape", input_ports=["input"], output_ports=["output"])
+    node = ComponentSpec(type="feedbax.Reshape", input_ports=["input"], output_ports=["output"])
     assert output_prototypes_for_node("reshape", node, {}, {}, strict=False) == {}
     with pytest.raises(ValueError, match="reshape.*input prototype 'input'"):
         output_prototypes_for_node("reshape", node, {}, {})
