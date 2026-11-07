@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from typing import Any
 from feedbax.component_registry.history import Change, History, LegacyEndpoint
-from .force_fields import CurlField, ThresholdLatchedForce
+from .force_fields import CurlField, ThresholdLatchedForce, FixedField, DynamicsMatrixPerturb
 
 THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1 = "feedbax.component.threshold_latched_force.v1"
 THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2 = "feedbax.component.threshold_latched_force.v2"
@@ -38,7 +38,6 @@ def _migrate_threshold_latched_force_v2(params: dict[str, Any]) -> dict[str, Any
     return {name: value for name, value in params.items() if name != "label"}
 
 
-
 def _has_legacy_label(params):
     return "label" in params
 
@@ -48,16 +47,43 @@ def _drop_label(params):
 
 
 HISTORIES = {
-    CurlField: History(Change(2, migrate=_drop_label), legacy=(
-        LegacyEndpoint("CurlField", "1", 1, _has_legacy_label),
-        LegacyEndpoint("CurlField", "2", 2),
-    )),
+    FixedField: History(
+        Change(2, migrate=_drop_label),
+        legacy=(
+            LegacyEndpoint("FixedField", "1", 1, _has_legacy_label),
+            LegacyEndpoint("FixedField", "2", 2),
+        ),
+    ),
+    DynamicsMatrixPerturb: History(
+        Change(2, migrate=_drop_label),
+        legacy=(
+            LegacyEndpoint("DynamicsMatrixPerturb", "1", 1, _has_legacy_label),
+            LegacyEndpoint("DynamicsMatrixPerturb", "2", 2),
+        ),
+    ),
+    CurlField: History(
+        Change(2, migrate=_drop_label),
+        legacy=(
+            LegacyEndpoint("CurlField", "1", 1, _has_legacy_label),
+            LegacyEndpoint("CurlField", "2", 2),
+        ),
+    ),
     ThresholdLatchedForce: History(
         Change(2, migrate=_migrate_threshold_latched_force_v1),
         Change(3, migrate=_migrate_threshold_latched_force_v2),
         legacy=(
-            LegacyEndpoint("ThresholdLatchedForce", THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1, 1, _threshold_v1_evidence),
-            LegacyEndpoint("ThresholdLatchedForce", THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2, 2, _threshold_v2_evidence),
+            LegacyEndpoint(
+                "ThresholdLatchedForce",
+                THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
+                1,
+                _threshold_v1_evidence,
+            ),
+            LegacyEndpoint(
+                "ThresholdLatchedForce",
+                THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V2,
+                2,
+                _threshold_v2_evidence,
+            ),
             LegacyEndpoint("ThresholdLatchedForce", THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION, 3),
         ),
     ),

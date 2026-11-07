@@ -66,7 +66,7 @@ def test_linear_state_space_graph_spec_round_trips() -> None:
     spec = GraphSpec(
         nodes={
             "mechanics": ComponentSpec(
-                type="LinearStateSpace",
+                type="feedbax.LinearStateSpace",
                 params={
                     "A": [[1.0, 1.0], [0.0, 1.0]],
                     "B": [[0.0], [1.0]],
@@ -113,13 +113,13 @@ def test_linear_state_space_graph_spec_round_trips() -> None:
         )
     )
 
-    assert restored.nodes["mechanics"].type == "LinearStateSpace"
+    assert restored.nodes["mechanics"].type == "feedbax.LinearStateSpace"
     assert restored.nodes["mechanics"].params["A"] == [[1.0, 1.0], [0.0, 1.0]]
     assert restored.nodes["mechanics"].params["pos_slice"] == [0, 1]
 
 
 def test_linear_state_space_is_registered_for_graph_specs() -> None:
-    meta = ComponentRegistry().get("LinearStateSpace")
+    meta = ComponentRegistry().get("feedbax.LinearStateSpace")
 
     assert meta is not None
     assert meta.input_ports == ["force", "epsilon"]
@@ -146,7 +146,7 @@ def _delayed_feedback_graph_spec(*, target_relative: bool = False) -> GraphSpec:
     return GraphSpec(
         nodes={
             "mechanics": ComponentSpec(
-                type="LinearStateSpace",
+                type="feedbax.LinearStateSpace",
                 params={
                     "A": jnp.eye(8).tolist(),
                     "B": jnp.zeros((8, 2)).tolist(),
@@ -158,7 +158,7 @@ def _delayed_feedback_graph_spec(*, target_relative: bool = False) -> GraphSpec:
                 output_ports=["effector", "state"],
             ),
             "selector": ComponentSpec(
-                type="StateFeedbackSelector",
+                type="feedbax.StateFeedbackSelector",
                 params={
                     "expected_state_dim": 8,
                     "state_slices": {

@@ -23,11 +23,11 @@ from feedbax.compiler.serialization import graph_to_spec
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.migrations import UnsupportedComponentMigration, migrate_graph_spec
 from feedbax.mechanics import (
-    STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
     StructuralLinearDynamicsPerturbation,
     StructuralLinearStateSpace,
     structural_linear_transition,
 )
+from feedbax.mechanics.linear_state_space_history import STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.tasks import TaskTrialSpec, TrialTimeline, prepare_trial
 
@@ -36,7 +36,7 @@ def _spec(*, active: bool = False) -> GraphSpec:
     return GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="StructuralLinearStateSpace",
+                type="feedbax.StructuralLinearStateSpace",
                 params={
                     "A": [[1.0, 0.25], [0.0, 1.0]],
                     "B": [[0.0], [1.0]],
@@ -49,7 +49,7 @@ def _spec(*, active: bool = False) -> GraphSpec:
                     "pos_slice": [0, 1],
                     "vel_slice": [1, 2],
                 },
-                param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+                revision=3,
                 input_ports=["force", "epsilon"],
                 output_ports=["effector", "state"],
             )
@@ -71,7 +71,7 @@ def _sparse_spec() -> GraphSpec:
     return GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="StructuralLinearStateSpace",
+                type="feedbax.StructuralLinearStateSpace",
                 params={
                     "A": jnp.eye(4).tolist(),
                     "B": [[0.0], [0.0], [0.0], [0.0]],
@@ -93,7 +93,7 @@ def _sparse_spec() -> GraphSpec:
                     "pos_slice": [0, 2],
                     "vel_slice": [2, 4],
                 },
-                param_schema_version=STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+                revision=3,
                 input_ports=["force", "epsilon"],
                 output_ports=["effector", "state"],
             )
@@ -282,8 +282,8 @@ def test_graphspec_round_trip_preserves_structural_identity() -> None:
     round_tripped = graph_to_spec(graph)
     node = round_tripped.nodes["plant"]
 
-    assert node.type == "StructuralLinearStateSpace"
-    assert node.param_schema_version == STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION
+    assert node.type == "feedbax.StructuralLinearStateSpace"
+    assert node.revision == 3
     assert node.params["delta_A"] == [[0.0, 0.5], [0.0, 0.0]]
     assert node.params["active"] is True
 
@@ -483,7 +483,7 @@ def test_sparse_graphspec_rejects_invalid_entries(
 def test_structural_component_rejects_unknown_parameter_schema_version() -> None:
     spec = _spec()
     node = spec.nodes["plant"].model_copy(
-        update={"param_schema_version": "feedbax.component.structural_linear_state_space.v0"}
+        update={"revision": 999}
     )
     incompatible = spec.model_copy(update={"nodes": {"plant": node}})
 

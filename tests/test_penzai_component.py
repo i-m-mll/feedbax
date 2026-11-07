@@ -30,7 +30,7 @@ from feedbax.components.penzai import (
     list_penzai_builders,
     build_penzai_subgraph,
 )
-from feedbax.components.penzai import _build_penzai_adapter
+from feedbax.components.penzai import PenzaiAdapter
 from feedbax.compiler.penzai_compiler import compile_penzai_authoring_report, inspect_penzai_model
 from feedbax.compiler.serialization import graph_to_spec
 
@@ -627,7 +627,7 @@ class TestFactoryRegistry:
         try:
             register_penzai_builder("test_runtime_stateful", lambda params: FakeModel(), {})
             with pytest.raises(ValueError, match="penzai.stateful_unsupported") as exc_info:
-                _build_penzai_adapter({"builder_name": "test_runtime_stateful"})
+                PenzaiAdapter(builder_name="test_runtime_stateful")
             assert not isinstance(exc_info.value, NotImplementedError)
         finally:
             pc._PENZAI_MODEL_BUILDERS.pop("test_runtime_stateful", None)
@@ -728,7 +728,7 @@ class TestFactoryRegistry:
                 graph=GraphSpec(
                     nodes={
                         "projection": ComponentSpec(
-                            type="PenzaiAdapter",
+                            type="feedbax.PenzaiAdapter",
                             params={"builder_name": builder_name},
                             input_ports=["input"],
                             output_ports=["output"],
@@ -749,7 +749,7 @@ class TestFactoryRegistry:
             )
             assert jnp.array_equal(outputs["output"], jnp.array([6.0]))
             serialized = graph_to_spec(graph, registry).nodes["projection"]
-            assert serialized.type == "PenzaiAdapter"
+            assert serialized.type == "feedbax.PenzaiAdapter"
             assert serialized.params["builder_name"] == builder_name
             assert constructions == 1
         finally:
@@ -789,7 +789,7 @@ class TestFactoryRegistry:
                 GraphSpec(
                     nodes={
                         "projection": ComponentSpec(
-                            type="PenzaiAdapter",
+                            type="feedbax.PenzaiAdapter",
                             params={"builder_name": builder_name},
                             input_ports=["input"],
                             output_ports=["output"],

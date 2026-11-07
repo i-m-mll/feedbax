@@ -27,7 +27,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 import optimistix as optx
 
 from feedbax._ode import ode_init, ode_step
-from feedbax.runtime.graph import Component
+from feedbax.runtime.graph import GraphNode
 
 
 
@@ -47,7 +47,7 @@ class DAEState(Module, Generic[StateT]):
     solver: PyTree
 
 
-class DAEComponent(Component, Generic[StateT]):
+class DAEComponent(GraphNode, Generic[StateT]):
     """Base class for components that use implicit/DAE integration.
 
     DAE components are used when the dynamics are stiff or involve
