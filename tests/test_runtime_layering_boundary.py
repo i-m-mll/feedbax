@@ -145,7 +145,7 @@ def test_parameter_role_resolvers_are_declared_by_component_types() -> None:
     networks = importlib.import_module("feedbax.models.networks")
 
     resolvers = parameter_constraints._PARAMETER_ROLE_RESOLVERS
-    assert resolvers[components.Linear] is parameter_constraints.linear_parameter_role
+    assert resolvers[components.LinearLayer] is parameter_constraints.linear_parameter_role
     assert resolvers[components.GRU] is parameter_constraints.recurrent_parameter_role
     assert resolvers[components.LSTM] is parameter_constraints.recurrent_parameter_role
     # Declared next to the network type, not hardcoded in the runtime.
