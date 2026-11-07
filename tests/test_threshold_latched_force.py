@@ -362,7 +362,7 @@ def compiled_target_relative_rollout():
     graph = spec_to_graph(_target_relative_graph_spec(), registry)
     stabilization = build_component(
         "hold",
-        "Stabilization",
+        "feedbax.Stabilization",
         {"n_steps": 4, "workspace": [[-1.0, -1.0], [1.0, 1.0]]},
         component_registry=registry,
     )
@@ -483,7 +483,7 @@ def test_v1_fixed_selector_migrates_to_v2() -> None:
     resolved = registry.resolve_component_spec(
         "ThresholdLatchedForce",
         node.params,
-        param_schema_version=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
+        legacy_token=THRESHOLD_LATCHED_FORCE_SCHEMA_VERSION_V1,
     )
     node.type, node.params, node.revision = resolved.type_id, resolved.params, resolved.revision
     graph = spec_to_graph(spec, registry)

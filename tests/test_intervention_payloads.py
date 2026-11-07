@@ -1,3 +1,4 @@
+import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -135,9 +136,7 @@ def test_legacy_intervention_requires_reauthoring_only_when_enabled(
             _compile(registry, enabled)
 
     if component_type == "NetworkClamp":
-        repaired = _authored_spec(
-            component_type, {"active": True, field: [8.0, None]}
-        )
+        repaired = _authored_spec(component_type, {"active": True, field: [8.0, None]})
         compiled = _compile(registry, repaired)
         _assert_rollout(compiled.graph, [8.0, 3.0])
         assert "scale" not in graph_to_spec(compiled.graph, registry).nodes["intervention"].params
@@ -156,9 +155,7 @@ def test_intervention_payload_preserves_state_dtype_and_precision(registry):
         graph = Graph(
             nodes={
                 "intervention": NetworkClamp(
-                    NetworkValueParams(
-                        unit_spec=jnp.array([value, jnp.nan], dtype=jnp.float64)
-                    )
+                    NetworkValueParams(unit_spec=jnp.array([value, jnp.nan], dtype=jnp.float64))
                 )
             },
             input_ports=("input",),
@@ -174,3 +171,33 @@ def test_intervention_payload_preserves_state_dtype_and_precision(registry):
 
     with disable_x64(), pytest.raises(GraphCompilationError, match="float64"):
         _compile(registry, exported)
+
+
+@pytest.mark.parametrize(
+    ("component_cls", "params_cls", "field"),
+    [
+        (NetworkClamp, NetworkValueParams, "unit_spec"),
+        (NetworkConstantInput, NetworkValueParams, "unit_spec"),
+        (ConstantInput, ConstantInputParams, "arrays"),
+    ],
+)
+def test_runtime_vector_constraints_remain_on_traced_construction(component_cls, params_cls, field):
+    @eqx.filter_jit
+    def construct(payload):
+        component = component_cls(params_cls(active=True, **{field: payload}))
+        return getattr(component.params_index.init, field)
+
+    vector = jnp.array([1.0, 2.0])
+    assert jnp.array_equal(construct(vector), vector)
+    with pytest.raises((ValueError, eqx.EquinoxRuntimeError), match="nonfinite"):
+        construct(vector.at[0].set(jnp.inf))
+
+
+def test_missing_runtime_vector_rejects_traced_activation():
+    @eqx.filter_jit
+    def construct(active):
+        return NetworkClamp(NetworkValueParams(active=active)).params_index.init.active
+
+    assert not construct(jnp.array(False))
+    with pytest.raises((ValueError, eqx.EquinoxRuntimeError), match="unit_spec is required"):
+        construct(jnp.array(True))

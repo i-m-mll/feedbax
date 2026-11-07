@@ -26,7 +26,7 @@ from feedbax.contracts.portable import (
     Ports,
     default_configuration,
 )
-from feedbax.runtime.graph import Component
+from feedbax.runtime.graph import Component, GraphNode
 from feedbax.runtime.noise import Normal
 from feedbax.runtime.prototypes import input_passthrough_output_prototype
 
@@ -173,12 +173,12 @@ class _VectorTransformParams(BaseModel):
 
     @model_validator(mode="after")
     def validate_payload(self) -> Self:
-        payload = getattr(self, self.payload_field)
-        if payload is None:
-            if self.active:
-                raise ValueError(f"{self.payload_field} is required when active is true")
-        else:
-            _validate_transform_vector_range(payload, jnp.dtype(self.payload_dtype))
+        _checked_vector_values(
+            self.active,
+            getattr(self, self.payload_field),
+            jnp.dtype(self.payload_dtype),
+            payload_field=self.payload_field,
+        )
         return self
 
 
@@ -214,6 +214,61 @@ def _validate_transform_vector_range(values: list[float | None], dtype: Any) -> 
     limit = float(jnp.finfo(dtype).max)
     if any(value is not None and abs(value) > limit for value in values):
         raise ValueError(f"Intervention vector contains values outside the range of {dtype}")
+
+
+def _check_vector_value(value, invalid, message):
+    if isinstance(invalid, jax.core.Tracer):
+        return eqx.error_if(value, invalid, message)
+    if bool(jnp.any(invalid)):
+        raise ValueError(message)
+    return value
+
+
+def _checked_vector_values(active, payload, dtype, *, payload_field):
+    active = jnp.asarray(active, dtype=bool)
+    if payload is None:
+        return _check_vector_value(
+            active, active, f"{payload_field} is required when active is true"
+        ), None
+    if isinstance(payload, (list, tuple)):
+        payload = [float("nan") if item is None else item for item in payload]
+    payload = jnp.asarray(payload)
+    if payload.ndim != 1 or not jnp.issubdtype(payload.dtype, jnp.floating):
+        raise ValueError("Intervention payload must be a real floating vector")
+    invalid = ~jnp.isfinite(payload)
+    if payload_field == "unit_spec":
+        invalid = invalid & ~jnp.isnan(payload)
+    invalid = invalid | (jnp.abs(payload) > jnp.finfo(dtype).max)
+    payload = _check_vector_value(
+        payload,
+        jnp.any(invalid),
+        f"Intervention vector contains nonfinite values or values outside the range of {dtype}",
+    )
+    return active, payload
+
+
+def _checked_vector_params(params, config):
+    payload = getattr(params, config.payload_field)
+    dtype = (
+        _transform_payload_dtype(payload.dtype.name)
+        if payload is not None
+        else _transform_payload_dtype(config.model_fields["payload_dtype"].default)
+    )
+    active, payload = _checked_vector_values(
+        params.active, payload, dtype, payload_field=config.payload_field
+    )
+    params = eqx.tree_at(lambda item: item.active, params, active)
+    if payload is not None:
+        params = eqx.tree_at(lambda item: getattr(item, config.payload_field), params, payload)
+    if "scale" in config.model_fields:
+        scale = params.scale
+        scale = _check_vector_value(
+            scale,
+            ~jnp.isfinite(scale) | (jnp.abs(scale) > _FLOAT32_MAX),
+            "Intervention scale must be finite and within float32 range",
+        )
+        params = eqx.tree_at(lambda item: item.scale, params, scale)
+    return params
 
 
 def _vector_runtime_params(values: Mapping[str, Any], payload_field: str):
@@ -335,10 +390,12 @@ class NetworkClamp(Component):
     ):
         if params is None:
             params = _default_vector_params(type(self))
-        self.params_index = StateIndex(_strong_typed(params))
+        self.params_index = StateIndex(_checked_vector_params(_strong_typed(params), self.config))
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        params: NetworkValueParams = state.get(self.params_index)
+        params: NetworkValueParams = _checked_vector_params(
+            state.get(self.params_index), self.config
+        )
         signal = inputs["input"]
 
         def apply():
@@ -390,10 +447,12 @@ class NetworkConstantInput(Component):
     ):
         if params is None:
             params = _default_vector_params(type(self))
-        self.params_index = StateIndex(_strong_typed(params))
+        self.params_index = StateIndex(_checked_vector_params(_strong_typed(params), self.config))
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
-        params: NetworkValueParams = state.get(self.params_index)
+        params: NetworkValueParams = _checked_vector_params(
+            state.get(self.params_index), self.config
+        )
         signal = inputs["input"]
 
         def apply():
@@ -422,19 +481,11 @@ class NetworkConstantInput(Component):
         )
 
 
-class ConstantInput(Component):
-    """Adds a constant array to a signal."""
+class ConstantInputTransform(GraphNode):
+    """Add an array-native constant PyTree to a matching signal PyTree."""
 
-    ports: ClassVar[Ports] = Ports(
-        inputs=_VECTOR_PORT_TYPES.inputs, outputs=_VECTOR_PORT_TYPES.outputs
-    )
-    component_options: ClassVar[ComponentOptions] = ComponentOptions(
-        output_prototype_fn=partial(
-            _vector_transform_output_prototype,
-            component="ConstantInput",
-            payload_field=_ConstantInputParams.payload_field,
-        )
-    )
+    input_ports: ClassVar = ("input",)
+    output_ports: ClassVar = ("output",)
     config: ClassVar[type[BaseModel]] = _ConstantInputParams
 
     params_index: StateIndex
@@ -463,6 +514,31 @@ class ConstantInput(Component):
             )
 
         return jax.lax.cond(params.active, apply, lambda: signal)
+
+
+class ConstantInput(ConstantInputTransform, Component):
+    """Adds a constant array to a signal."""
+
+    ports: ClassVar[Ports] = Ports(
+        inputs=_VECTOR_PORT_TYPES.inputs, outputs=_VECTOR_PORT_TYPES.outputs
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=partial(
+            _vector_transform_output_prototype,
+            component="ConstantInput",
+            payload_field=_ConstantInputParams.payload_field,
+        )
+    )
+    config: ClassVar[type[BaseModel]] = _ConstantInputParams
+
+    def __init__(self, params: Optional[ConstantInputParams] = None):
+        if params is None:
+            params = _default_vector_params(type(self))
+        super().__init__(_checked_vector_params(_strong_typed(params), self.config))
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        params = _checked_vector_params(state.get(self.params_index), self.config)
+        return {"output": self._apply(inputs["input"], params)}, state
 
     @classmethod
     def from_config(cls, config, **context):

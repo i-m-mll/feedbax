@@ -853,6 +853,37 @@ def test_downstream_typed_model_is_the_only_schema_source() -> None:
         registry.resolve_component_spec("downstream._TypedGain", {"gain": "4.5"})
 
 
+def test_effective_tuple_from_array_exports_without_authoring_normalizers():
+    from pydantic import BaseModel, field_validator
+
+    calls = []
+
+    class ShapeConfig(BaseModel):
+        shape: tuple[int, ...]
+
+        @field_validator("shape")
+        @classmethod
+        def canonical_shape(cls, shape):
+            calls.append(shape)
+            return shape
+
+    class ArrayShape(Component):
+        config = ShapeConfig
+        ports = Ports({}, {})
+        shape: jax.Array
+
+        def __init__(self, shape):
+            self.shape = jnp.asarray(shape)
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
+    component = ArrayShape.from_config(ShapeConfig(shape=(2, 3)))
+    assert component.configuration().shape == (2, 3)
+    assert component.configuration().model_dump(mode="json", warnings="error") == {"shape": [2, 3]}
+    assert calls == [(2, 3)]
+
+
 def test_component_pack_rejects_ambiguous_runtime_owner() -> None:
     registry = ComponentRegistry()
     registry.ingest(ComponentPack(namespace="downstream", components=(_TypedGain,)))

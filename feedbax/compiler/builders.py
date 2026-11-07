@@ -58,6 +58,7 @@ def build_component(
     *,
     component_registry: Any,
     params_resolved: bool = False,
+    config: Any = None,
 ) -> GraphNode:
     """Build a leaf component from a GraphSpec node."""
     meta = component_registry.get(node_type)
@@ -80,7 +81,11 @@ def build_component(
     if unsupported_message is not None:
         raise NotImplementedError(unsupported_message)
     try:
-        return meta.params.build_resolved(params) if params_resolved else meta.builder(params)
+        return (
+            meta.params.build_resolved(params, config=config)
+            if params_resolved
+            else meta.builder(params)
+        )
     except ValueError as exc:
         if node_type == "feedbax.PenzaiAdapter" and "builder_name" in str(exc):
             raise ValueError(
