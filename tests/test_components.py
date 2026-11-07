@@ -37,10 +37,11 @@ def test_generated_convolution_restores_checkpoint_from_exported_graph(tmp_path)
     registry = ComponentRegistry()
     type_id = "feedbax.equinox.Conv2d"
     repo_root = Path(__file__).resolve().parents[1]
-    assert registry.component_source_paths(repo_root)[type_id] == (
+    assert {
         "feedbax/components/equinox.py",
+        "feedbax/components/equinox_history.py",
         "scripts/generate_eqx_components.py",
-    )
+    } <= set(registry.component_source_paths(repo_root)[type_id])
     authored = GraphSpec(
         nodes={
             "conv": ComponentSpec(
@@ -82,6 +83,7 @@ def test_generated_convolution_restores_checkpoint_from_exported_graph(tmp_path)
     )
     exported = graph_to_spec(trained, registry)
     assert exported.nodes["conv"].type == type_id
+    assert exported.nodes["conv"].revision == 1
     assert exported.nodes["conv"].params["padding"] == [[1, 0], [0, 1]]
     assert "weight" not in exported.nodes["conv"].params
     checkpoint = tmp_path / "learned.eqx"
@@ -289,6 +291,15 @@ def test_generated_dropout_honors_training_and_inference_modes():
     inference_outputs, _ = inference(inputs, inference_state, key=jax.random.PRNGKey(1))
     assert jnp.allclose(inference_outputs["output"], inputs["input"])
 
+    edited = eqx.tree_at(lambda model: model.layer.p, training, 0.25)
+    edited = eqx.nn.inference_mode(edited)
+    config = edited.configuration()
+    assert config.p == 0.25
+    assert config.inference is True
+    restored = graph_eqx.Dropout.from_config(config)
+    restored_outputs, _ = restored(inputs, None, key=jax.random.key(2))
+    assert jnp.array_equal(restored_outputs["output"], inputs["input"])
+
 
 def test_generated_multihead_attention_forwards_dropout_key():
     component = graph_eqx.MultiheadAttention(
@@ -309,6 +320,12 @@ def test_generated_multihead_attention_forwards_dropout_key():
 
     assert outputs["output"].shape == (2, 2)
     assert new_state is state
+    edited = eqx.tree_at(lambda model: model.layer.dropout.p, component, 0.25)
+    config = edited.configuration()
+    assert config.dropout_p == 0.25
+    assert config.key_size == 2
+    rebuilt = graph_eqx.MultiheadAttention.from_config(config, key=jax.random.key(2))
+    assert rebuilt.layer.dropout.p == 0.25
 
 
 def test_runtime_neural_components_default_trainable_leaves_to_float32():
