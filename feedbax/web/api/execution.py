@@ -12,6 +12,7 @@ from feedbax.contracts.graph import GraphSpec
 from feedbax.compiler.builders import build_component
 from feedbax.contracts.training import TaskSpec
 from feedbax.tasks import TaskTrialSpec
+from feedbax.tasks.reach_components import DelayedReaches, SimpleReaches
 
 router = APIRouter()
 
@@ -58,9 +59,14 @@ class TaskTrialSampleResponse(BaseModel):
 
 
 def _normal_task_type(task_type: str) -> str:
-    if task_type in {"ReachingTask", "feedbax.task.ReachingTask", "feedbax.task.SimpleReaches"}:
+    if task_type in {
+        "ReachingTask",
+        "feedbax.task.ReachingTask",
+        "feedbax.task.SimpleReaches",
+        f"feedbax.{SimpleReaches.__name__}",
+    }:
         return "SimpleReaches"
-    if task_type == "feedbax.task.DelayedReaches":
+    if task_type in {"feedbax.task.DelayedReaches", f"feedbax.{DelayedReaches.__name__}"}:
         return "DelayedReaches"
     return task_type
 
@@ -139,10 +145,11 @@ async def sample_task_trials(
             detail=f"Task type {payload.task_spec.type!r} is not supported for sampled preview",
         )
 
+    owner = {"SimpleReaches": SimpleReaches, "DelayedReaches": DelayedReaches}[task_type]
     try:
         component = build_component(
             "preview_task",
-            task_type,
+            f"feedbax.{owner.__name__}",
             payload.task_spec.params,
             component_registry=request.app.state.bootstrap_state.bundle.components,
         )
