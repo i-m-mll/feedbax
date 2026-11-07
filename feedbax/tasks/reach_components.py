@@ -4,9 +4,14 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 import jax.numpy as jnp
 import jax.random as jr
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from feedbax.contracts.component import PortType
-from feedbax.contracts.portable import Ports, ConfigBinding, configuration_model
+from feedbax.contracts.portable import (
+    Ports,
+    ConfigBinding,
+    configuration_model,
+    default_configuration,
+)
 from feedbax.runtime.graph import Component
 from feedbax.objectives.loss import CompositeLoss
 from feedbax.tasks.task import (
@@ -84,35 +89,49 @@ class Stabilization(TaskComponent, Component):
         )
 
 
+class DelayedReachesConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    n_steps: PositiveInt = DEFAULT_DELAYED_N_STEPS
+    n_control_stages: PositiveInt | None = None
+    workspace: Workspace = ((-1.0, -1.0), (1.0, 1.0))
+    preset: Literal["default", "delayed_center_out"] = "default"
+    train_endpoint_mode: Literal["workspace", "center_out"] = "workspace"
+    epoch_len_ranges: ArrayConfig = DEFAULT_DELAYED_EPOCH_LEN_RANGES
+    epoch_names: ArrayConfig = ("hold", "target_on", "movement")
+    target_on_epochs: ArrayConfig = (1, 2)
+    hold_epochs: ArrayConfig = (0, 1)
+    move_epochs: ArrayConfig = DEFAULT_DELAYED_MOVE_EPOCHS
+    target_visible_from_start: bool = False
+    go_cue_event_name: str | None = None
+    p_catch_trial: Annotated[float, Field(ge=0, le=1)] = 0.5
+    catch_metadata_policy: Literal["none", "flag"] = "none"
+    eval_n_directions: PositiveInt = 7
+    eval_reach_length: float = 0.5
+    eval_grid_n: PositiveInt = 1
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_preset(cls, values):
+        return apply_delayed_reaches_preset(values)
+
+    @model_validator(mode="after")
+    def _materialize_steps(self):
+        self.n_steps = delayed_reaches_n_steps_from_params(
+            {"n_steps": self.n_steps, "n_control_stages": self.n_control_stages}
+        )
+        return self
+
+
 class DelayedReaches(TaskComponent, Component):
     """Reaches with a delay period before movement."""
 
     ports = _TASK_PORTS
+    config = DelayedReachesConfig
 
-    def __init__(
-        self,
-        n_steps: PositiveInt = DEFAULT_DELAYED_N_STEPS,
-        n_control_stages: PositiveInt | None = None,
-        workspace: Workspace = ((-1.0, -1.0), (1.0, 1.0)),
-        preset: Literal["default", "delayed_center_out"] = "default",
-        train_endpoint_mode: Literal["workspace", "center_out"] = "workspace",
-        epoch_len_ranges: ArrayConfig = DEFAULT_DELAYED_EPOCH_LEN_RANGES,
-        epoch_names: ArrayConfig = ("hold", "target_on", "movement"),
-        target_on_epochs: ArrayConfig = (1, 2),
-        hold_epochs: ArrayConfig = (0, 1),
-        move_epochs: ArrayConfig = DEFAULT_DELAYED_MOVE_EPOCHS,
-        target_visible_from_start: bool = False,
-        go_cue_event_name: str | None = None,
-        p_catch_trial: Annotated[float, Field(ge=0, le=1)] = 0.5,
-        catch_metadata_policy: Literal["none", "flag"] = "none",
-        eval_n_directions: PositiveInt = 7,
-        eval_reach_length: float = 0.5,
-        eval_grid_n: PositiveInt = 1,
-    ):
-        params = {name: value for name, value in locals().items() if name != "self"}
-        params = apply_delayed_reaches_preset(params) if preset == "delayed_center_out" else params
-        params["n_steps"] = delayed_reaches_n_steps_from_params(params)
-        params.pop("n_control_stages", None)
+    def __init__(self, **values):
+        config = default_configuration(type(self), **values)
+        params = {name: getattr(config, name) for name in type(config).model_fields}
+        params.pop("n_control_stages")
         params["workspace"] = jnp.asarray(params["workspace"])
         _initialize_task(self, DelayedReachTask(loss_func=CompositeLoss(()), **params))
 

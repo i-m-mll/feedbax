@@ -729,28 +729,37 @@ class TestFactoryRegistry:
                     nodes={
                         "projection": ComponentSpec(
                             type="feedbax.PenzaiAdapter",
-                            params={"builder_name": builder_name},
-                            input_ports=["input"],
-                            output_ports=["output"],
+                            params={
+                                "builder_name": builder_name,
+                                "input_port": "features",
+                                "output_port": "projection",
+                            },
+                            input_ports=["features"],
+                            output_ports=["projection"],
                         )
                     },
-                    input_ports=["input"],
-                    output_ports=["output"],
-                    input_bindings={"input": ("projection", "input")},
-                    output_bindings={"output": ("projection", "output")},
+                    input_ports=["features"],
+                    output_ports=["projection"],
+                    input_bindings={"features": ("projection", "features")},
+                    output_bindings={"projection": ("projection", "projection")},
                 )
             )
             registry = ComponentRegistry()
             graph = compile_graph(document, registry).graph
             outputs, _ = graph(
-                {"input": jnp.array([2.0])},
+                {"features": jnp.array([2.0])},
                 init_state_from_component(graph),
                 key=jax.random.PRNGKey(0),
             )
-            assert jnp.array_equal(outputs["output"], jnp.array([6.0]))
+            assert jnp.array_equal(outputs["projection"], jnp.array([6.0]))
             serialized = graph_to_spec(graph, registry).nodes["projection"]
             assert serialized.type == "feedbax.PenzaiAdapter"
             assert serialized.params["builder_name"] == builder_name
+            assert serialized.params["input_port"] == "features"
+            assert serialized.params["output_port"] == "projection"
+            assert registry.dynamic_port_layout(
+                "feedbax.PenzaiAdapter", serialized.params
+            ).input_ports == ("features",)
             assert constructions == 1
         finally:
             pc._PENZAI_MODEL_BUILDERS.pop(builder_name, None)

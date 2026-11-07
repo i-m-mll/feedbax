@@ -60,19 +60,27 @@ def _curl_v2_evidence(params):
     return set(params) <= {"scale", "active", "amplitude"}
 
 
+def _fixed_v2_evidence(params):
+    return set(params) <= {"scale", "amplitude", "field", "active"}
+
+
+def _dynamics_v2_evidence(params):
+    return set(params) <= {"scale", "delta_A", "active", "mass"}
+
+
 HISTORIES = {
     FixedField: History(
         Change(2, migrate=_drop_label),
         legacy=(
             LegacyEndpoint("FixedField", "1", 1, _has_legacy_label),
-            LegacyEndpoint("FixedField", "2", 2),
+            LegacyEndpoint("FixedField", "2", 2, _fixed_v2_evidence),
         ),
     ),
     DynamicsMatrixPerturb: History(
         Change(2, migrate=_drop_label),
         legacy=(
             LegacyEndpoint("DynamicsMatrixPerturb", "1", 1, _has_legacy_label),
-            LegacyEndpoint("DynamicsMatrixPerturb", "2", 2),
+            LegacyEndpoint("DynamicsMatrixPerturb", "2", 2, _dynamics_v2_evidence),
         ),
     ),
     CurlField: History(

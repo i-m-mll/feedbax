@@ -119,11 +119,20 @@ def test_linear_state_space_graph_spec_round_trips() -> None:
 
 
 def test_linear_state_space_is_registered_for_graph_specs() -> None:
-    meta = ComponentRegistry().get("feedbax.LinearStateSpace")
+    registry = ComponentRegistry()
+    meta = registry.get("feedbax.LinearStateSpace")
 
     assert meta is not None
     assert meta.input_ports == ["force", "epsilon"]
     assert meta.output_ports == ["effector", "state"]
+    assert LinearStateSpace().dt == meta.params.build({}).dt == 1.0
+    legacy = registry.resolve_component_spec("LinearStateSpace", {}, param_schema_version="1")
+    assert legacy.params["dt"] == 0.01
+    assert legacy.revision == 2
+    unversioned = registry.resolve_component_spec(
+        "LinearStateSpace", {}, historical_unversioned=True
+    )
+    assert unversioned.params == legacy.params
     assert {schema.name for schema in meta.param_schema} >= {
         "A",
         "B",
@@ -188,9 +197,7 @@ def _delayed_feedback_graph_spec(*, target_relative: bool = False) -> GraphSpec:
 
 
 def test_state_feedback_selector_materializes_delayed_lss_state_slice() -> None:
-    graph = spec_to_graph(
-        _delayed_feedback_graph_spec(), ComponentRegistry()
-    )
+    graph = spec_to_graph(_delayed_feedback_graph_spec(), ComponentRegistry())
 
     assert isinstance(graph.nodes["selector"], StateFeedbackSelector)
 

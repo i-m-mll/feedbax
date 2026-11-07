@@ -36,6 +36,19 @@ def test_native_muscles_match_independent_actuator_steps(registry, custom, arm):
             params.update(optimal_muscle_length=0.11, tendon_slack_length=0.0)
         graph = Arm6MuscleRigidTendon(**params, geometry=geometry)
         reference = RigidTendonHillMuscleThelen(**params)
+        if not custom:
+            portable = registry.get("feedbax.RigidTendonHillMuscleThelen").params.build({})
+            assert portable.n_muscles == reference.n_muscles == 1
+            assert portable.tendon_slack_length == reference.tendon_slack_length == 0.1
+            legacy = registry.resolve_component_spec(
+                "RigidTendonHillMuscleThelen", {}, param_schema_version="1"
+            )
+            assert legacy.params["n_muscles"] == 6
+            assert legacy.params["tendon_slack_length"] == 0.2
+            unversioned = registry.resolve_component_spec(
+                "RigidTendonHillMuscleThelen", {}, historical_unversioned=True
+            )
+            assert unversioned.params == legacy.params
         output = "torques"
     else:
         if custom:

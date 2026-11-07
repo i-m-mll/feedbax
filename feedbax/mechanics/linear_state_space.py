@@ -41,9 +41,9 @@ class StructuralLinearDynamicsPerturbation(Module):
 
     def __init__(
         self,
-        delta_A: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "object"}})],
+        delta_A: Array,
         *,
-        scale: float = 1.0,
+        scale: float | Array = 1.0,
         active: bool | Array = True,
     ):
         delta_A = jnp.asarray(delta_A)
@@ -65,7 +65,7 @@ class StructuralLinearDynamicsPerturbation(Module):
         shape: Sequence[int],
         entries: Sequence[tuple[int, int, float]],
         *,
-        scale: float = 1.0,
+        scale: float | Array = 1.0,
         active: bool | Array = True,
     ) -> StructuralLinearDynamicsPerturbation:
         """Construct a dense runtime perturbation from sparse authored entries."""
@@ -197,7 +197,7 @@ class LinearStateSpace(Component):
         A: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_A,
         B: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_B,
         B_w: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = None,
-        dt: float = 1.0,
+        dt: Annotated[float, Field(ge=0)] = 1.0,
         initial_state: Annotated[
             Any, Field(json_schema_extra={"feedbax": {"type": "array"}})
         ] = None,
@@ -288,6 +288,18 @@ class LinearStateSpace(Component):
         }
 
 
+_DEFAULT_DELTA_A = SparseCooArrayValueSpec(
+    schema_id=ARRAY_VALUE_SCHEMA_ID,
+    schema_version=ARRAY_VALUE_SCHEMA_VERSION,
+    encoding="sparse_coo",
+    shape=(4, 4),
+    dtype="float32",
+    nonfinite="forbid",
+    fill=0.0,
+    entries=(),
+).model_dump(mode="json")
+
+
 class StructuralLinearStateSpace(LinearStateSpace):
     """Discrete linear mechanics with a task-selectable structural ``delta_A``.
 
@@ -311,9 +323,11 @@ class StructuralLinearStateSpace(LinearStateSpace):
         A: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_A,
         B: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = _DEFAULT_B,
         *,
-        delta_A: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "object"}})],
+        delta_A: Annotated[
+            Any, Field(json_schema_extra={"feedbax": {"type": "object"}})
+        ] = _DEFAULT_DELTA_A,
         B_w: Annotated[Any, Field(json_schema_extra={"feedbax": {"type": "array"}})] = None,
-        dt: float = 1.0,
+        dt: Annotated[float, Field(ge=0)] = 1.0,
         initial_state: Annotated[
             Any, Field(json_schema_extra={"feedbax": {"type": "array"}})
         ] = None,
@@ -331,6 +345,8 @@ class StructuralLinearStateSpace(LinearStateSpace):
             pos_slice=pos_slice,
             vel_slice=vel_slice,
         )
+        if isinstance(delta_A, Mapping):
+            delta_A = materialize_array_value(delta_A)
         params = StructuralLinearDynamicsPerturbation(
             delta_A=jnp.asarray(delta_A, dtype=self.A.dtype),
             scale=scale,

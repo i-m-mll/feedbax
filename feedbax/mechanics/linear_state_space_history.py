@@ -27,10 +27,29 @@ def _has_legacy_label(params):
     return "label" in params
 
 
+def _linear_v1_evidence(params):
+    return set(params) <= {"A", "B", "B_w", "dt", "initial_state", "pos_slice", "vel_slice"}
+
+
+def _structural_v2_evidence(params):
+    return set(params) <= {
+        "A",
+        "B",
+        "B_w",
+        "dt",
+        "initial_state",
+        "pos_slice",
+        "vel_slice",
+        "delta_A",
+        "scale",
+        "active",
+    }
+
+
 HISTORIES = {
     LinearStateSpace: History(
         Change(2, migrate=_materialize_linear_v1_defaults),
-        legacy=(LegacyEndpoint("LinearStateSpace", "1", 1),),
+        legacy=(LegacyEndpoint("LinearStateSpace", "1", 1, _linear_v1_evidence),),
     ),
     StructuralLinearStateSpace: History(
         Change(2, migrate=_drop_structural_label),
@@ -43,7 +62,10 @@ HISTORIES = {
                 _has_legacy_label,
             ),
             LegacyEndpoint(
-                "StructuralLinearStateSpace", STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION, 2
+                "StructuralLinearStateSpace",
+                STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+                2,
+                _structural_v2_evidence,
             ),
         ),
     ),

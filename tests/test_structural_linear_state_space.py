@@ -27,7 +27,9 @@ from feedbax.mechanics import (
     StructuralLinearStateSpace,
     structural_linear_transition,
 )
-from feedbax.mechanics.linear_state_space_history import STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION
+from feedbax.mechanics.linear_state_space_history import (
+    STRUCTURAL_LINEAR_STATE_SPACE_PARAM_SCHEMA_VERSION,
+)
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.tasks import TaskTrialSpec, TrialTimeline, prepare_trial
 
@@ -151,9 +153,7 @@ def test_sparse_transition_uses_nominal_precision_under_jit() -> None:
             )
             expected = effective if active else nominal
             applied = matrix(transition, perturbation)
-            result, (state_grad, params_grad) = value_and_grad(
-                transition, state, perturbation
-            )
+            result, (state_grad, params_grad) = value_and_grad(transition, state, perturbation)
 
             assert applied.dtype == result.dtype == state_grad.dtype == jnp.float64
             assert applied.item() == state_grad.item() == expected
@@ -168,9 +168,7 @@ def test_sparse_transition_uses_nominal_precision_under_jit() -> None:
         disabled_nonfinite = StructuralLinearDynamicsPerturbation(
             jnp.full((1, 1), jnp.nan, dtype=jnp.float32), scale=jnp.nan, active=False
         )
-        result, (state_grad, params_grad) = value_and_grad(
-            transition, state, disabled_nonfinite
-        )
+        result, (state_grad, params_grad) = value_and_grad(transition, state, disabled_nonfinite)
         assert result.item() == 2.0 * nominal
         assert state_grad.item() == nominal
         assert params_grad.delta_A.item() == params_grad.scale.item() == 0.0
@@ -178,16 +176,14 @@ def test_sparse_transition_uses_nominal_precision_under_jit() -> None:
 
 @pytest.mark.parametrize("dtype", [jnp.int32, jnp.bool_, jnp.complex64])
 def test_structural_transition_requires_floating_point_nominal_matrix(dtype) -> None:
-    perturbation = StructuralLinearDynamicsPerturbation.from_entries(
-        (1, 1), [(0, 0, 0.25)]
-    )
+    perturbation = StructuralLinearDynamicsPerturbation.from_entries((1, 1), [(0, 0, 0.25)])
 
     with pytest.raises(TypeError, match="floating-point dtype"):
         perturbation.effective_transition(jnp.ones((1, 1), dtype=dtype))
 
 
 def test_structural_registry_advertises_sparse_delta_a_authoring() -> None:
-    meta = ComponentRegistry().get("StructuralLinearStateSpace")
+    meta = ComponentRegistry().get("feedbax.StructuralLinearStateSpace")
     assert meta is not None
     delta_A_schema = next(schema for schema in meta.param_schema if schema.name == "delta_A")
 
@@ -228,11 +224,13 @@ def test_signed_and_nominal_structural_variants(
             vel_slice=(1, 2),
         )
         trial = TaskTrialSpec(
-            inits=WhereDict({
-                "structural_params_index": StructuralLinearDynamicsPerturbation.from_entries(
-                    (2, 2), [(0, 1, 0.5)], scale=scale, active=active
-                )
-            }),
+            inits=WhereDict(
+                {
+                    "structural_params_index": StructuralLinearDynamicsPerturbation.from_entries(
+                        (2, 2), [(0, 1, 0.5)], scale=scale, active=active
+                    )
+                }
+            ),
             targets=WhereDict(),
             inputs={"force": jnp.zeros((1, 1)), "epsilon": jnp.zeros((1, 0))},
         )
@@ -251,12 +249,14 @@ def test_task_trial_selects_one_constant_structural_variant() -> None:
     graph = spec_to_graph(_spec(), ComponentRegistry())
     component = graph.nodes["plant"]
     trial = TaskTrialSpec(
-        inits=WhereDict({
-            "plant.structural_params_index": StructuralLinearDynamicsPerturbation(
-                delta_A=jnp.asarray([[0.0, -0.5], [0.0, 0.0]]),
-                active=True,
-            )
-        }),
+        inits=WhereDict(
+            {
+                "plant.structural_params_index": StructuralLinearDynamicsPerturbation(
+                    delta_A=jnp.asarray([[0.0, -0.5], [0.0, 0.0]]),
+                    active=True,
+                )
+            }
+        ),
         targets=WhereDict(),
         inputs={
             "force": jnp.zeros((3, 1)),
@@ -279,6 +279,7 @@ def test_task_trial_selects_one_constant_structural_variant() -> None:
 def test_graphspec_round_trip_preserves_structural_identity() -> None:
     registry = ComponentRegistry()
     graph = spec_to_graph(_spec(active=True), registry)
+    graph = eqx.tree_at(lambda model: model.nodes["plant"].state_index.init.vector, graph, jnp.array([3.0, 4.0]))
     round_tripped = graph_to_spec(graph)
     node = round_tripped.nodes["plant"]
 
@@ -286,6 +287,7 @@ def test_graphspec_round_trip_preserves_structural_identity() -> None:
     assert node.revision == 3
     assert node.params["delta_A"] == [[0.0, 0.5], [0.0, 0.0]]
     assert node.params["active"] is True
+    assert node.params["initial_state"] == [3.0, 4.0]
 
 
 def test_sparse_graphspec_round_trip_preserves_canonical_entry_identity() -> None:
@@ -482,9 +484,7 @@ def test_sparse_graphspec_rejects_invalid_entries(
 
 def test_structural_component_rejects_unknown_parameter_schema_version() -> None:
     spec = _spec()
-    node = spec.nodes["plant"].model_copy(
-        update={"revision": 999}
-    )
+    node = spec.nodes["plant"].model_copy(update={"revision": 999})
     incompatible = spec.model_copy(update={"nodes": {"plant": node}})
 
     with pytest.raises(GraphCompilationError, match="No component migration registered") as exc:
