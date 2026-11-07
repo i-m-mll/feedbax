@@ -169,6 +169,7 @@ def compile_owner(cls, *, namespace, history=None, registry=None):
     )
     sources = (
         source_path(cls),
+        source_path(configuration_model),
         *((source_path(cls.config),) if cls.config else ()),
         *(
             source_path(binding.group)
