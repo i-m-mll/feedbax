@@ -9,18 +9,19 @@ Provides discrete-time accumulators, unit delays, and zero-order holds.
 from __future__ import annotations
 
 from functools import partial
+from typing import ClassVar
 
 import jax.numpy as jnp
 from equinox import field
 from equinox.nn import State, StateIndex
 from jax.typing import DTypeLike
 from jaxtyping import PRNGKeyArray, PyTree
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as ConfigField
 
-from feedbax.component_registry import component
-from feedbax.component_registry.declarations import ParameterField
-from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.component import PortType
+from feedbax.contracts.portable import ComponentOptions, Ports
 from feedbax.control._vector import (
-    _CONTROL_INPUT_DTYPE,
     _CONTROL_INPUT_PROTOTYPE,
     _control_output_prototype,
     initial_control_vector,
@@ -29,24 +30,17 @@ from feedbax.control._vector import (
 from feedbax.runtime.graph import Component
 
 
-@component(
-    "IntegratorDiscrete",
-    category="Discrete",
-    description="Discrete-time accumulator.",
-    parameter_fields=[
-        ParameterField(name="dt", type="float", default=1.0, min=0.0, required=True),
-        ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
-        ParameterField(name="initial_value", type="float", default=0.0, required=False),
-        _CONTROL_INPUT_DTYPE,
-    ],
-    icon="PlusSquare",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=partial(_control_output_prototype, port="input"),
-    input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
-)
+class _IntegratorDiscreteConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dt: float = ConfigField(default=1.0, ge=0.0)
+    n_dims: int = ConfigField(default=1, ge=1)
+    initial_value: float = ConfigField(
+        default=0.0
+    )
+    input_dtype: str | None = None
+
+
 class IntegratorDiscrete(Component):
     """Discrete-time accumulator (summation).
 
@@ -59,8 +53,15 @@ class IntegratorDiscrete(Component):
         input_dtype: Real floating dtype of the input and carry.
     """
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _IntegratorDiscreteConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=partial(_control_output_prototype, port="input"),
+        input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
+    )
 
     dt: float
     n_dims: int = field(static=True)
@@ -70,11 +71,13 @@ class IntegratorDiscrete(Component):
 
     def __init__(
         self,
-        dt: float = 1.0,
-        n_dims: int = 1,
-        initial_value: float = 0.0,
+        dt: float = _IntegratorDiscreteConfig.model_fields["dt"].default,
+        n_dims: int = _IntegratorDiscreteConfig.model_fields["n_dims"].default,
+        initial_value: float = _IntegratorDiscreteConfig.model_fields["initial_value"].default,
         *,
-        input_dtype: DTypeLike | None = None,
+        input_dtype: DTypeLike | None = _IntegratorDiscreteConfig.model_fields[
+            "input_dtype"
+        ].default,
     ):
         self.dt = float(dt)
         self.initial_value = float(initial_value)
@@ -97,23 +100,16 @@ class IntegratorDiscrete(Component):
         return {"output": y_new}, state
 
 
-@component(
-    "UnitDelay",
-    category="Discrete",
-    description="Unit delay (z^-1).",
-    parameter_fields=[
-        ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
-        ParameterField(name="initial_value", type="float", default=0.0, required=False),
-        _CONTROL_INPUT_DTYPE,
-    ],
-    icon="Clock",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=partial(_control_output_prototype, port="input"),
-    input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
-)
+class _UnitDelayConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    n_dims: int = ConfigField(default=1, ge=1)
+    initial_value: float = ConfigField(
+        default=0.0
+    )
+    input_dtype: str | None = None
+
+
 class UnitDelay(Component):
     """Unit delay (z^{-1}): output is the previous input.
 
@@ -125,8 +121,15 @@ class UnitDelay(Component):
         input_dtype: Real floating dtype of the input and carry.
     """
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _UnitDelayConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=partial(_control_output_prototype, port="input"),
+        input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
+    )
 
     n_dims: int = field(static=True)
     input_dtype: str = field(static=True)
@@ -135,10 +138,10 @@ class UnitDelay(Component):
 
     def __init__(
         self,
-        n_dims: int = 1,
-        initial_value: float = 0.0,
+        n_dims: int = _UnitDelayConfig.model_fields["n_dims"].default,
+        initial_value: float = _UnitDelayConfig.model_fields["initial_value"].default,
         *,
-        input_dtype: DTypeLike | None = None,
+        input_dtype: DTypeLike | None = _UnitDelayConfig.model_fields["input_dtype"].default,
     ):
         self.initial_value = float(initial_value)
         initial_state = initial_control_vector(n_dims, input_dtype, self.initial_value)
@@ -159,24 +162,19 @@ class UnitDelay(Component):
         return {"output": prev}, state
 
 
-@component(
-    "ZeroOrderHold",
-    category="Discrete",
-    description="Sample and hold every N steps.",
-    parameter_fields=[
-        ParameterField(name="hold_steps", type="int", default=1, min=1, required=True),
-        ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
-        ParameterField(name="initial_value", type="float", default=0.0, required=False),
-        _CONTROL_INPUT_DTYPE,
-    ],
-    icon="Pause",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=partial(_control_output_prototype, port="input"),
-    input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
-)
+class _ZeroOrderHoldConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    hold_steps: int = ConfigField(
+        default=1, ge=1
+    )
+    n_dims: int = ConfigField(default=1, ge=1)
+    initial_value: float = ConfigField(
+        default=0.0
+    )
+    input_dtype: str | None = None
+
+
 class ZeroOrderHold(Component):
     """Zero-order hold: sample input every N steps, hold between samples.
 
@@ -187,8 +185,15 @@ class ZeroOrderHold(Component):
         input_dtype: Real floating dtype of the input and carry.
     """
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _ZeroOrderHoldConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=partial(_control_output_prototype, port="input"),
+        input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
+    )
 
     hold_steps: int = field(static=True)
     n_dims: int = field(static=True)
@@ -198,11 +203,11 @@ class ZeroOrderHold(Component):
 
     def __init__(
         self,
-        hold_steps: int = 1,
-        n_dims: int = 1,
-        initial_value: float = 0.0,
+        hold_steps: int = _ZeroOrderHoldConfig.model_fields["hold_steps"].default,
+        n_dims: int = _ZeroOrderHoldConfig.model_fields["n_dims"].default,
+        initial_value: float = _ZeroOrderHoldConfig.model_fields["initial_value"].default,
         *,
-        input_dtype: DTypeLike | None = None,
+        input_dtype: DTypeLike | None = _ZeroOrderHoldConfig.model_fields["input_dtype"].default,
     ):
         self.hold_steps = int(hold_steps)
         self.initial_value = float(initial_value)

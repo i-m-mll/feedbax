@@ -19,7 +19,7 @@ _PROBE = dedent(
     import jax.numpy as jnp
     import jax.tree as jt
     import numpy as np
-    from feedbax.runtime.filters import FirstOrderFilter
+    from feedbax.runtime.filters import LowPassFilter
 
     class CacheHits(logging.Handler):
         def __init__(self):
@@ -47,7 +47,7 @@ _PROBE = dedent(
         values = {}
         for solver in [dfx.Heun, dfx.Tsit5]:
             for compiled in [False, True]:
-                model = FirstOrderFilter(tau_rise=.2, tau_decay=.3, dt=.001,
+                model = LowPassFilter(tau_rise=.2, tau_decay=.3, dt=.001,
                                          solver_type=solver, init_value=2)
                 model = model.change_input(prototype).prepare()
                 state = model.init_state(key=jax.random.PRNGKey(0))
@@ -64,7 +64,7 @@ _PROBE = dedent(
                 values[f'{solver.__name__}-{compiled}'] = float(outputs['output']['y'][0])
 
         def response(tau):
-            model = FirstOrderFilter(tau_rise=tau, dt=.001, solver_type=dfx.Tsit5,
+            model = LowPassFilter(tau_rise=tau, dt=.001, solver_type=dfx.Tsit5,
                                      input_proto=jnp.zeros(1), init_value=2).prepare()
             outputs, _ = model({'input': jnp.full(1, 4.)},
                                model.init_state(key=jax.random.PRNGKey(0)),

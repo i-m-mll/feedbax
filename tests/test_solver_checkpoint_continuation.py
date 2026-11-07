@@ -20,7 +20,7 @@ from feedbax.mechanics import DiffraxBackend, Mechanics
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.skeleton.pointmass_dae import PointMassDAE
-from feedbax.runtime.filters import FirstOrderFilter
+from feedbax.runtime.filters import LowPassFilter
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.state import CartesianState
 from feedbax.training.checkpoint_custody import (
@@ -65,7 +65,7 @@ def _build(kind, solver_type, parameter):
         ).prepare()
     parameter = jnp.asarray(parameter, dtype=jnp.float64)
     if kind == "filter":
-        return FirstOrderFilter(
+        return LowPassFilter(
             tau_rise=parameter,
             tau_decay=parameter,
             init_value=jnp.asarray(1 + 1e-10, dtype=jnp.float64),

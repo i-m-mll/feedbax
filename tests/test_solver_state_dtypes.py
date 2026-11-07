@@ -13,7 +13,7 @@ from feedbax.mechanics.dae import DAEComponent
 from feedbax.mechanics.plant import DirectForceInput
 from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.mechanics.skeleton.pointmass_dae import PointMassDAE
-from feedbax.runtime.filters import FirstOrderFilter
+from feedbax.runtime.filters import LowPassFilter
 from feedbax.runtime.state import CartesianState
 from feedbax.training.rl.env import RLEnvConfig, _physics_substep
 
@@ -50,7 +50,7 @@ def test_filter_sampled_response_and_reset(solver_type, mixed, compiled):
         "y": jnp.zeros(3, dtype=jnp.float64),
     }
     model = (
-        FirstOrderFilter(
+        LowPassFilter(
             tau_rise=0.2, tau_decay=0.3, dt=0.001, solver_type=solver_type, init_value=2
         )
         .change_input(prototype)
@@ -206,7 +206,7 @@ def test_decay_dae_scan_training_gradient_and_precision(solver_type):
 @pytest.mark.parametrize("solver_type", [dfx.Euler, dfx.Heun, dfx.Tsit5])
 def test_homogeneous_f32_filter_scan(x64, solver_type):
     with jax.experimental.enable_x64(x64):
-        model = FirstOrderFilter(
+        model = LowPassFilter(
             dt=0.001, solver_type=solver_type, input_proto=jnp.zeros(2, dtype=jnp.float32)
         ).prepare()
 

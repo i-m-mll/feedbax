@@ -11,29 +11,29 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Union, cast
 
 import diffrax as dfx
-from equinox import Module
 import jax.numpy as jnp
 import jax.random as jr
 import jax.tree as jt
+from equinox import Module
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.runtime.channel import Channel, ChannelSpec, ChannelState
-from feedbax.runtime.filters import FilterState, FirstOrderFilter
+from feedbax.mechanics import Mechanics, MechanicsState
+from feedbax.mechanics.plant import DirectForceInput
+from feedbax.mechanics.skeleton.pointmass import PointMass
+from feedbax.runtime.channel import ChannelSpec, ChannelState, SignalChannel
 from feedbax.runtime.feedback import (
-    AssembleFeedback,
     FEEDBACK_INPUT,
     FEEDBACK_OUTPUT,
-    SelectState,
+    AssembleFeedback,
+    StateSelection,
     StateSelector,
     feedback_node_names,
     feedback_wires,
 )
+from feedbax.runtime.filters import FilterState, LowPassFilter
 from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
-from feedbax.runtime.trial_history import trial_history_plan
-from feedbax.mechanics import Mechanics, MechanicsState
-from feedbax.mechanics.plant import DirectForceInput
-from feedbax.mechanics.skeleton.pointmass import PointMass
 from feedbax.runtime.noise import Normal
+from feedbax.runtime.trial_history import trial_history_plan
 
 if TYPE_CHECKING:
     from feedbax.tasks import AbstractTask
@@ -101,8 +101,8 @@ class SimpleFeedback(Graph):
         example_state = mechanics.state_index.init
         nodes: dict[str, Component] = {"feedback_values": AssembleFeedback(layout)}
         for (selector_name, channel_name), spec in zip(feedback_node_names(len(specs)), specs):
-            nodes[selector_name] = SelectState(spec.where)
-            nodes[channel_name] = Channel(
+            nodes[selector_name] = StateSelection(spec.where)
+            nodes[channel_name] = SignalChannel(
                 delay=spec.delay,
                 noise_func=spec.noise_func,
                 input_proto=spec.where(example_state),
@@ -110,7 +110,7 @@ class SimpleFeedback(Graph):
                 noise_timing="pre_controller",
             )
 
-        efferent = Channel(
+        efferent = SignalChannel(
             delay=motor_delay,
             noise_func=motor_noise_func,
             init_value=0.0,
@@ -126,7 +126,7 @@ class SimpleFeedback(Graph):
         if tau_rise == 0.0 and tau_decay == 0.0:
             force_filter = None
         else:
-            force_filter = FirstOrderFilter(
+            force_filter = LowPassFilter(
                 tau_rise=tau_rise,
                 tau_decay=tau_decay,
                 dt=mechanics.dt,
@@ -159,12 +159,12 @@ class SimpleFeedback(Graph):
         return self.nodes["net"]
 
     @property
-    def efferent_channel(self) -> Channel:
-        return cast(Channel, self.nodes["efferent"])
+    def efferent_channel(self) -> SignalChannel:
+        return cast(SignalChannel, self.nodes["efferent"])
 
     @property
-    def force_lp(self) -> Optional[FirstOrderFilter]:
-        return cast(FirstOrderFilter | None, self.nodes.get("force_filter"))
+    def force_lp(self) -> Optional[LowPassFilter]:
+        return cast(LowPassFilter | None, self.nodes.get("force_filter"))
 
     @staticmethod
     def get_nn_input_size(
@@ -198,8 +198,8 @@ def feedback_state_view(
     if not isinstance(assembly, AssembleFeedback):
         if (
             set(nodes) == {"select", "channel"}
-            and isinstance(nodes["select"], SelectState)
-            and isinstance(nodes["channel"], Channel)
+            and isinstance(nodes["select"], StateSelection)
+            and isinstance(nodes["channel"], SignalChannel)
             and tuple(wires) == (Wire("select", "output", "channel", "input"),)
             and input_bindings == {"mechanics": ("select", "state")}
             and output_bindings == {"feedback": ("channel", "output")}

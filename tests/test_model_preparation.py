@@ -14,7 +14,7 @@ import pytest
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.runtime.components import GRU, RateLimiter
-from feedbax.runtime.filters import FirstOrderFilter
+from feedbax.runtime.filters import LowPassFilter
 from feedbax.runtime.graph import Graph
 from feedbax.web.worker.execution import _compile_trainability
 
@@ -100,7 +100,7 @@ def test_filter_change_input_preserves_solver_configuration_and_mixed_float_rese
     solver_type, first_dtype
 ):
     with jax.experimental.enable_x64():
-        original = FirstOrderFilter(
+        original = LowPassFilter(
             tau_rise=0.2, tau_decay=0.3, dt=0.01, solver_type=solver_type, init_value=2
         ).prepare()
         proto = {"x": jnp.zeros(2, dtype=first_dtype), "y": jnp.zeros(3, dtype=jnp.float64)}

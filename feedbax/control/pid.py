@@ -9,6 +9,7 @@ Provides continuous and discrete PID controllers with anti-windup.
 from __future__ import annotations
 
 from functools import partial
+from typing import ClassVar
 
 import jax.numpy as jnp
 from equinox import field
@@ -18,11 +19,10 @@ from jaxtyping import PRNGKeyArray, PyTree
 from pydantic import BaseModel
 from pydantic import Field as ConfigField
 
-from feedbax.component_registry import component
-from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.component import PortType
+from feedbax.contracts.portable import ComponentOptions, ConfigBinding, Ports
 from feedbax.control._vector import (
     _CONTROL_ERROR_PROTOTYPE,
-    _CONTROL_INPUT_DTYPE,
     _control_output_prototype,
     initial_control_vector,
     require_control_vector,
@@ -31,38 +31,25 @@ from feedbax.runtime.graph import Component
 
 
 class _PIDParams(BaseModel):
-    Kp: float = ConfigField(default=1.0, json_schema_extra={"feedbax": {"required": True}})
+    Kp: float = ConfigField(default=1.0)
     Ki: float = 0.0
     Kd: float = 0.0
-    dt: float = ConfigField(default=0.01, ge=0.0, json_schema_extra={"feedbax": {"required": True}})
-    n_dims: int = ConfigField(default=1, ge=1, json_schema_extra={"feedbax": {"required": True}})
+    dt: float = ConfigField(default=0.01, ge=0.0)
+    n_dims: int = ConfigField(default=1, ge=1)
     input_dtype: str | None = ConfigField(
-        default=None, description=_CONTROL_INPUT_DTYPE.description
+        default=None,
+        description="Real floating-point dtype inferred from the connected signal when omitted.",
     )
 
 
 class _ContinuousPIDParams(_PIDParams):
-    integral_limit: float | None = 1000.0
+    integral_limit: float | None = None
 
 
 class _DiscretePIDParams(_PIDParams):
-    output_limit: float | None = 1000.0
+    output_limit: float | None = None
 
 
-@component(
-    "PID",
-    category="Control",
-    description="Continuous PID with anti-windup.",
-    param_model=_ContinuousPIDParams,
-    attribute_paths={"integral_limit": "integral_limit_param"},
-    icon="Gauge",
-    port_types=PortTypeSpec(
-        inputs={"error": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=partial(_control_output_prototype, port="error"),
-    input_prototype_parameter=_CONTROL_ERROR_PROTOTYPE,
-)
 class PID(Component):
     """Continuous PID controller with anti-windup clamping.
 
@@ -82,8 +69,17 @@ class PID(Component):
         input_dtype: Real floating dtype of the input and carry.
     """
 
-    input_ports = ("error",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"error": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=partial(_control_output_prototype, port="error"),
+        input_prototype_parameter=_CONTROL_ERROR_PROTOTYPE,
+    )
+    config: ClassVar[type[BaseModel]] = _ContinuousPIDParams
+    config_bindings: ClassVar[tuple[ConfigBinding, ...]] = (
+        ConfigBinding("integral_limit_param", name="integral_limit"),
+    )
 
     Kp: float
     Ki: float
@@ -96,14 +92,14 @@ class PID(Component):
 
     def __init__(
         self,
-        Kp: float = 1.0,
-        Ki: float = 0.0,
-        Kd: float = 0.0,
-        dt: float = 0.01,
-        integral_limit: float | None = float("inf"),
-        n_dims: int = 1,
+        Kp: float = _ContinuousPIDParams.model_fields["Kp"].default,
+        Ki: float = _ContinuousPIDParams.model_fields["Ki"].default,
+        Kd: float = _ContinuousPIDParams.model_fields["Kd"].default,
+        dt: float = _ContinuousPIDParams.model_fields["dt"].default,
+        integral_limit: float | None = _ContinuousPIDParams.model_fields["integral_limit"].default,
+        n_dims: int = _ContinuousPIDParams.model_fields["n_dims"].default,
         *,
-        input_dtype: DTypeLike | None = None,
+        input_dtype: DTypeLike | None = _ContinuousPIDParams.model_fields["input_dtype"].default,
     ):
         self.Kp = float(Kp)
         self.Ki = float(Ki)
@@ -147,20 +143,6 @@ class PID(Component):
         return {"output": output}, state
 
 
-@component(
-    "PIDDiscrete",
-    category="Control",
-    description="Discrete PID (velocity form).",
-    param_model=_DiscretePIDParams,
-    attribute_paths={"output_limit": "output_limit_param"},
-    icon="Gauge",
-    port_types=PortTypeSpec(
-        inputs={"error": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=partial(_control_output_prototype, port="error"),
-    input_prototype_parameter=_CONTROL_ERROR_PROTOTYPE,
-)
 class PIDDiscrete(Component):
     """Discrete PID controller in velocity (incremental) form.
 
@@ -180,8 +162,17 @@ class PIDDiscrete(Component):
         input_dtype: Real floating dtype of the input and carry.
     """
 
-    input_ports = ("error",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"error": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=partial(_control_output_prototype, port="error"),
+        input_prototype_parameter=_CONTROL_ERROR_PROTOTYPE,
+    )
+    config: ClassVar[type[BaseModel]] = _DiscretePIDParams
+    config_bindings: ClassVar[tuple[ConfigBinding, ...]] = (
+        ConfigBinding("output_limit_param", name="output_limit"),
+    )
 
     Kp: float
     Ki: float
@@ -194,14 +185,14 @@ class PIDDiscrete(Component):
 
     def __init__(
         self,
-        Kp: float = 1.0,
-        Ki: float = 0.0,
-        Kd: float = 0.0,
-        dt: float = 0.01,
-        output_limit: float | None = float("inf"),
-        n_dims: int = 1,
+        Kp: float = _DiscretePIDParams.model_fields["Kp"].default,
+        Ki: float = _DiscretePIDParams.model_fields["Ki"].default,
+        Kd: float = _DiscretePIDParams.model_fields["Kd"].default,
+        dt: float = _DiscretePIDParams.model_fields["dt"].default,
+        output_limit: float | None = _DiscretePIDParams.model_fields["output_limit"].default,
+        n_dims: int = _DiscretePIDParams.model_fields["n_dims"].default,
         *,
-        input_dtype: DTypeLike | None = None,
+        input_dtype: DTypeLike | None = _DiscretePIDParams.model_fields["input_dtype"].default,
     ):
         self.Kp = float(Kp)
         self.Ki = float(Ki)

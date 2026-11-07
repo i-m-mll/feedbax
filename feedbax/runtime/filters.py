@@ -6,7 +6,7 @@
 
 import math
 from collections.abc import Mapping
-from typing import Any, Optional, Type
+from typing import Any, ClassVar, Optional, Type
 
 import diffrax as dfx
 import equinox as eqx
@@ -16,23 +16,22 @@ import jax.tree as jt
 from equinox import field
 from equinox.nn import State, StateIndex
 from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as ConfigField
 
 from feedbax._ode import ode_init, ode_step
-from feedbax.component_registry import component
-from feedbax.component_registry.declarations import ComponentConstructorPlan, ParameterField
-from feedbax.component_registry.prototypes import (
-    migrate_stateful_v1,
-    stateful_passthrough_output_prototype,
-)
-from feedbax.contracts.component import PortType, PortTypeSpec
-from feedbax.contracts.migrations import ComponentMigration
+from feedbax.contracts.component import PortType
+from feedbax.contracts.portable import ComponentOptions, Ports
 from feedbax.runtime.components import (
-    _STATEFUL_VECTOR_CONSTRUCTOR,
-    _STATEFUL_VECTOR_PROTOTYPE_FIELDS,
     stateful_vector_output_prototype,
     stateful_vector_prototype,
 )
-from feedbax.runtime.graph import Component
+from feedbax.runtime.graph import Component, GraphNode
+from feedbax.runtime.prototypes import (
+    array_input_configuration,
+    materialize_array_input,
+    stateful_passthrough_output_prototype,
+)
 from feedbax.runtime.state import StateBounds
 
 
@@ -64,46 +63,26 @@ def first_order_filter_output_prototype(
     return outputs
 
 
-@component(
-    "FirstOrderFilter",
-    constructor=ComponentConstructorPlan(
-        context_adapters={"input_shape": ("input_proto", "array_prototype")}
-    ),
-    param_schema_version="2",
-    category="Channels",
-    description="First-order low-pass filter.",
-    parameter_fields=[
-        ParameterField(name="tau_rise", type="float", default=0.05, min=0.0, required=True),
-        ParameterField(name="tau_decay", type="float", default=0.05, min=0.0, required=True),
-        ParameterField(name="dt", type="float", default=0.001, min=0.0, required=True),
-        ParameterField(name="init_value", type="float", default=0.0, required=False),
-        ParameterField(name="input_shape", type="array", default=None, required=False),
-        ParameterField(name="input_dtype", type="str", default=None, required=False),
-    ],
-    icon="Filter",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=first_order_filter_output_prototype,
-    migrations=(
-        ComponentMigration(
-            source_type="FirstOrderFilter",
-            target_type="FirstOrderFilter",
-            owner="feedbax",
-            source_param_schema_version="1",
-            target_param_schema_version="2",
-            migration_id="feedbax.component.FirstOrderFilter.params.v1-to-v2",
-            migrate_params=migrate_stateful_v1,
-            description="Preserve stateful declarations with optional inferred input dtype.",
-        ),
-    ),
-)
-class FirstOrderFilter(Component):
+class _FirstOrderFilterConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    tau_rise: float = ConfigField(default=0.05, ge=0.0)
+    tau_decay: float = ConfigField(default=0.05, ge=0.0)
+    dt: float = ConfigField(default=0.001, ge=0.0)
+    init_value: float = ConfigField(default=0.0)
+    input_shape: Any = ConfigField(default=None, json_schema_extra={"feedbax": {"type": "array"}})
+    input_dtype: str | None = ConfigField(default=None)
+
+
+class LowPassFilter(GraphNode):
     """Continuous-time first-order low-pass filter."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+
+    input_ports: ClassVar = tuple(ports.inputs)
+    output_ports: ClassVar = tuple(ports.outputs)
 
     tau_rise: float = 0.050
     tau_decay: float = 0.050
@@ -115,12 +94,12 @@ class FirstOrderFilter(Component):
 
     def __init__(
         self,
-        tau_rise: float = 0.050,
-        tau_decay: float = 0.050,
-        dt: float = 0.001,
+        tau_rise: float = _FirstOrderFilterConfig.model_fields["tau_rise"].default,
+        tau_decay: float = _FirstOrderFilterConfig.model_fields["tau_decay"].default,
+        dt: float = _FirstOrderFilterConfig.model_fields["dt"].default,
         solver_type: Type[dfx.AbstractSolver] = dfx.Euler,
         input_proto: Optional[PyTree[Array]] = None,
-        init_value: float = 0.0,
+        init_value: float = _FirstOrderFilterConfig.model_fields["init_value"].default,
     ):
         self.tau_rise = tau_rise
         self.tau_decay = tau_decay
@@ -201,6 +180,29 @@ class FirstOrderFilter(Component):
         )
 
 
+class FirstOrderFilter(LowPassFilter, Component):
+    """Portable FirstOrderFilter with a reconstructible typed configuration."""
+
+    ports: ClassVar = LowPassFilter.ports
+
+    config: ClassVar[type[BaseModel]] = _FirstOrderFilterConfig
+
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=first_order_filter_output_prototype
+    )
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return materialize_array_input(cls, config, **context)
+
+    def configuration_values(self):
+        if type(self.solver) is not dfx.Euler:
+            raise ValueError(
+                "Portable FirstOrderFilter requires Euler; use LowPassFilter for a Python solver"
+            )
+        return array_input_configuration(self)
+
+
 def _nonnegative_time(value: float, name: str) -> float:
     value = float(value)
     if not math.isfinite(value) or value < 0:
@@ -231,24 +233,16 @@ class _HeldLowPass(eqx.Module):
         return lowpass, residual, state.set(self.state_index, FilterState(lowpass, None))
 
 
-@component(
-    "HighPassFilter",
-    constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
-    category="Signal Processing",
-    description="High-pass filter (input - lowpass).",
-    parameter_fields=[
-        ParameterField(name="tau", type="float", default=0.1, min=0.0, required=True),
-        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-        ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
-        *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
-    ],
-    icon="Filter",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=stateful_vector_output_prototype,
-)
+class _HighPassFilterConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    tau: float = ConfigField(default=0.1, ge=0.0)
+    dt: float = ConfigField(default=0.01, ge=0.0)
+    n_dims: int = ConfigField(default=1, ge=1)
+    input_shape: list[int] | None = None
+    input_dtype: str | None = None
+
+
 class HighPassFilter(Component):
     """High-pass filter: output = input - lowpass(input).
 
@@ -264,8 +258,14 @@ class HighPassFilter(Component):
         input_proto: Shape and dtype of the signal.
     """
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _HighPassFilterConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=stateful_vector_output_prototype
+    )
 
     tau: float = field(static=True)
     dt: float = field(static=True)
@@ -274,9 +274,9 @@ class HighPassFilter(Component):
 
     def __init__(
         self,
-        tau: float = 0.1,
-        dt: float = 0.01,
-        n_dims: int = 1,
+        tau: float = _HighPassFilterConfig.model_fields["tau"].default,
+        dt: float = _HighPassFilterConfig.model_fields["dt"].default,
+        n_dims: int = _HighPassFilterConfig.model_fields["n_dims"].default,
         *,
         input_proto: Array | None = None,
     ):
@@ -299,26 +299,25 @@ class HighPassFilter(Component):
         _, output, state = self._lowpass.advance(inputs["input"], state, tau=self.tau, dt=self.dt)
         return {"output": output}, state
 
+    @classmethod
+    def from_config(cls, config, **context):
+        return materialize_array_input(cls, config, **context)
 
-@component(
-    "BandPassFilter",
-    constructor=_STATEFUL_VECTOR_CONSTRUCTOR,
-    category="Signal Processing",
-    description="Band-pass: high-pass then low-pass.",
-    parameter_fields=[
-        ParameterField(name="tau_low", type="float", default=0.1, min=0.0, required=True),
-        ParameterField(name="tau_high", type="float", default=0.01, min=0.0, required=True),
-        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-        ParameterField(name="n_dims", type="int", default=1, min=1, required=False),
-        *_STATEFUL_VECTOR_PROTOTYPE_FIELDS,
-    ],
-    icon="Filter",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=stateful_vector_output_prototype,
-)
+    def configuration_values(self):
+        return array_input_configuration(self)
+
+
+class _BandPassFilterConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    tau_low: float = ConfigField(default=0.1, ge=0.0)
+    tau_high: float = ConfigField(default=0.01, ge=0.0)
+    dt: float = ConfigField(default=0.01, ge=0.0)
+    n_dims: int = ConfigField(default=1, ge=1)
+    input_shape: list[int] | None = None
+    input_dtype: str | None = None
+
+
 class BandPassFilter(Component):
     """Band-pass filter: cascade of high-pass and low-pass.
 
@@ -337,8 +336,14 @@ class BandPassFilter(Component):
         input_proto: Shape and dtype of the signal.
     """
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _BandPassFilterConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=stateful_vector_output_prototype
+    )
 
     tau_high: float = field(static=True)
     _highpass: HighPassFilter
@@ -346,10 +351,10 @@ class BandPassFilter(Component):
 
     def __init__(
         self,
-        tau_low: float = 0.1,
-        tau_high: float = 0.01,
-        dt: float = 0.01,
-        n_dims: int = 1,
+        tau_low: float = _BandPassFilterConfig.model_fields["tau_low"].default,
+        tau_high: float = _BandPassFilterConfig.model_fields["tau_high"].default,
+        dt: float = _BandPassFilterConfig.model_fields["dt"].default,
+        n_dims: int = _BandPassFilterConfig.model_fields["n_dims"].default,
         *,
         input_proto: Array | None = None,
     ):
@@ -385,3 +390,10 @@ class BandPassFilter(Component):
             hp_out["output"], state, tau=self.tau_high, dt=self.dt
         )
         return {"output": output}, state
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return materialize_array_input(cls, config, **context)
+
+    def configuration_values(self):
+        return array_input_configuration(self)

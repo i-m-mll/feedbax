@@ -10,19 +10,19 @@ functions that operate using Euler discretization per call.
 from __future__ import annotations
 
 from functools import partial
-from typing import Sequence
+from typing import Any, ClassVar, Sequence
 
 import jax.numpy as jnp
 from equinox import field
 from equinox.nn import State, StateIndex
 from jax.typing import DTypeLike
 from jaxtyping import Array, PRNGKeyArray, PyTree
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as ConfigField
 
-from feedbax.component_registry import component
-from feedbax.component_registry.declarations import ParameterField
-from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.component import PortType
+from feedbax.contracts.portable import ComponentOptions, Ports
 from feedbax.control._vector import (
-    _CONTROL_INPUT_DTYPE,
     _CONTROL_INPUT_PROTOTYPE,
     _control_output_prototype,
     initial_control_vector,
@@ -31,24 +31,17 @@ from feedbax.control._vector import (
 from feedbax.runtime.graph import Component
 
 
-@component(
-    "Integrator",
-    category="Control",
-    description="Continuous-time integrator (Euler).",
-    parameter_fields=[
-        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-        ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
-        ParameterField(name="initial_value", type="float", default=0.0, required=False),
-        _CONTROL_INPUT_DTYPE,
-    ],
-    icon="Integral",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=partial(_control_output_prototype, port="input"),
-    input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
-)
+class _IntegratorConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dt: float = ConfigField(default=0.01, ge=0.0)
+    n_dims: int = ConfigField(default=1, ge=1)
+    initial_value: float = ConfigField(
+        default=0.0
+    )
+    input_dtype: str | None = None
+
+
 class Integrator(Component):
     """Continuous-time integrator using Euler integration.
 
@@ -61,8 +54,15 @@ class Integrator(Component):
         input_dtype: Real floating dtype of the input and carry.
     """
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _IntegratorConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=partial(_control_output_prototype, port="input"),
+        input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
+    )
 
     dt: float
     n_dims: int = field(static=True)
@@ -72,11 +72,11 @@ class Integrator(Component):
 
     def __init__(
         self,
-        dt: float = 0.01,
-        n_dims: int = 1,
-        initial_value: float = 0.0,
+        dt: float = _IntegratorConfig.model_fields["dt"].default,
+        n_dims: int = _IntegratorConfig.model_fields["n_dims"].default,
+        initial_value: float = _IntegratorConfig.model_fields["initial_value"].default,
         *,
-        input_dtype: DTypeLike | None = None,
+        input_dtype: DTypeLike | None = _IntegratorConfig.model_fields["input_dtype"].default,
     ):
         self.dt = float(dt)
         self.initial_value = float(initial_value)
@@ -99,24 +99,17 @@ class Integrator(Component):
         return {"output": y_new}, state
 
 
-@component(
-    "Derivative",
-    category="Control",
-    description="Finite-difference derivative.",
-    parameter_fields=[
-        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-        ParameterField(name="n_dims", type="int", default=1, min=1, required=True),
-        ParameterField(name="initial_value", type="float", default=0.0, required=False),
-        _CONTROL_INPUT_DTYPE,
-    ],
-    icon="TrendingUp",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-    output_prototype_fn=partial(_control_output_prototype, port="input"),
-    input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
-)
+class _DerivativeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dt: float = ConfigField(default=0.01, ge=0.0)
+    n_dims: int = ConfigField(default=1, ge=1)
+    initial_value: float = ConfigField(
+        default=0.0
+    )
+    input_dtype: str | None = None
+
+
 class Derivative(Component):
     """Finite-difference derivative approximation.
 
@@ -129,8 +122,15 @@ class Derivative(Component):
         input_dtype: Real floating dtype of the input and carry.
     """
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _DerivativeConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=partial(_control_output_prototype, port="input"),
+        input_prototype_parameter=_CONTROL_INPUT_PROTOTYPE,
+    )
 
     dt: float
     n_dims: int = field(static=True)
@@ -140,11 +140,11 @@ class Derivative(Component):
 
     def __init__(
         self,
-        dt: float = 0.01,
-        n_dims: int = 1,
-        initial_value: float = 0.0,
+        dt: float = _DerivativeConfig.model_fields["dt"].default,
+        n_dims: int = _DerivativeConfig.model_fields["n_dims"].default,
+        initial_value: float = _DerivativeConfig.model_fields["initial_value"].default,
         *,
-        input_dtype: DTypeLike | None = None,
+        input_dtype: DTypeLike | None = _DerivativeConfig.model_fields["input_dtype"].default,
     ):
         self.dt = float(dt)
         self.initial_value = float(initial_value)
@@ -167,20 +167,16 @@ class Derivative(Component):
         return {"output": deriv}, state
 
 
-@component(
-    "StateSpace",
-    runtime_type=None,
-    category="Control",
-    description="Continuous LTI state-space (Euler).",
-    parameter_fields=[
-        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-    ],
-    icon="Grid3x3",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-)
+class _StateSpaceConfig(BaseModel):
+    A: Any
+    B: Any
+    C: Any
+    D: Any
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dt: float = ConfigField(default=0.01, ge=0.0)
+
+
 class StateSpace(Component):
     """Continuous-time linear state-space model with Euler discretization.
 
@@ -198,8 +194,11 @@ class StateSpace(Component):
         dt: Integration time step.
     """
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _StateSpaceConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
 
     A: Array  # [n, n]
     B: Array  # [n, m]
@@ -214,7 +213,7 @@ class StateSpace(Component):
         B: Array,
         C: Array,
         D: Array,
-        dt: float = 0.01,
+        dt: float = _StateSpaceConfig.model_fields["dt"].default,
     ):
         self.A = jnp.asarray(A, dtype=float)
         self.B = jnp.asarray(B, dtype=float)
@@ -242,20 +241,14 @@ class StateSpace(Component):
         return {"output": y}, state
 
 
-@component(
-    "TransferFunction",
-    runtime_type=None,
-    category="Control",
-    description="Transfer function H(s)=num/den.",
-    parameter_fields=[
-        ParameterField(name="dt", type="float", default=0.01, min=0.0, required=True),
-    ],
-    icon="FunctionSquare",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="vector")},
-        outputs={"output": PortType(dtype="vector")},
-    ),
-)
+class _TransferFunctionConfig(BaseModel):
+    num: list[float]
+    den: list[float]
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dt: float = ConfigField(default=0.01, ge=0.0)
+
+
 class TransferFunction(Component):
     """Transfer function H(s) = num(s) / den(s) in controllable canonical form.
 
@@ -272,17 +265,22 @@ class TransferFunction(Component):
         dt: Integration time step for the internal state-space model.
     """
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _TransferFunctionConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="vector")}, outputs={"output": PortType(dtype="vector")}
+    )
 
     _ss: StateSpace
+    _static_gain: bool = field(static=True)
 
     def __init__(
         self,
         num: Sequence[float],
         den: Sequence[float],
-        dt: float = 0.01,
+        dt: float = _TransferFunctionConfig.model_fields["dt"].default,
     ):
+        self._static_gain = len(den) == 1
         num = [float(c) for c in num]
         den = [float(c) for c in den]
 
@@ -339,3 +337,12 @@ class TransferFunction(Component):
         key: PRNGKeyArray,
     ) -> tuple[dict[str, PyTree], State]:
         return self._ss(inputs, state, key=key)
+
+    def configuration_values(self):
+        ss = self._ss
+        if self._static_gain:
+            return {"num": ss.D.reshape(-1), "den": jnp.ones(1), "dt": ss.dt}
+        den = jnp.concatenate((jnp.ones(1, dtype=ss.A.dtype), -ss.A[-1, ::-1]))
+        direct = ss.D[0, 0]
+        num = jnp.concatenate((jnp.reshape(direct, (1,)), ss.C[0, ::-1] + direct * den[1:]))
+        return {"num": num, "den": den, "dt": ss.dt}

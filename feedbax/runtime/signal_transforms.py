@@ -15,19 +15,20 @@ from equinox import field
 from equinox.nn import State, StateIndex
 from jaxtyping import Array, PRNGKeyArray, PyTree
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, model_validator
+from pydantic import Field as ConfigField
 
 import feedbax._vendor.jax_cookbook.tree as jtree
-from feedbax.component_registry import component
-from feedbax.component_registry.declarations import (
-    ComponentConstructorPlan,
-    MissingPrototypeInput,
-    ParameterField,
-)
-from feedbax.component_registry.prototypes import input_passthrough_output_prototype
 from feedbax.contracts.component import PortType, PortTypeSpec
-from feedbax.contracts.migrations import ComponentMigration
+from feedbax.contracts.portable import (
+    ComponentOptions,
+    ConfigBinding,
+    MissingPrototypeInput,
+    Ports,
+    default_configuration,
+)
 from feedbax.runtime.graph import Component
 from feedbax.runtime.noise import Normal
+from feedbax.runtime.prototypes import input_passthrough_output_prototype
 
 
 def _float_param(value):
@@ -98,28 +99,27 @@ class ConstantInputParams(TransformParams):
     arrays: Optional[PyTree] = None
 
 
-@component(
-    "AddNoise",
-    constructor=ComponentConstructorPlan(groups={"params": (AddNoiseParams, ("scale", "active"))}),
-    attribute_paths={"scale": "params_index.init.scale", "active": "params_index.init.active"},
-    category="Signal Processing",
-    description="Add noise to a signal.",
-    parameter_fields=[
-        ParameterField(name="scale", type="float", default=1.0, required=True),
-        ParameterField(name="active", type="bool", default=False, required=False),
-    ],
-    icon="Sparkles",
-    port_types=PortTypeSpec(
-        inputs={"input": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=input_passthrough_output_prototype,
-)
+class _AddNoiseConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    scale: float = ConfigField(default=1.0)
+    active: bool = ConfigField(default=False)
+
+
 class AddNoise(Component):
     """Adds noise to a signal."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _AddNoiseConfig
+    config_bindings: ClassVar = (
+        ConfigBinding("params_index.init", group=AddNoiseParams, argument="params"),
+    )
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=input_passthrough_output_prototype
+    )
 
     noise_func: Callable[[PRNGKeyArray, Array], Array] = field(default_factory=Normal)
     params_index: StateIndex
@@ -130,7 +130,7 @@ class AddNoise(Component):
         params: Optional[AddNoiseParams] = None,
     ):
         if params is None:
-            params = AddNoiseParams(active=False)
+            params = self.config_bindings[0].materialize(default_configuration(type(self)))
         if noise_func is None:
             noise_func = Normal()
         self.noise_func = noise_func
@@ -201,15 +201,6 @@ class _ConstantInputParams(_VectorTransformParams):
     )
 
 
-def _has_legacy_clamp_scale(params: Mapping[str, Any]) -> bool:
-    return "scale" in params
-
-
-def _without_legacy_clamp_scale(params: Mapping[str, Any]) -> dict[str, Any]:
-    """Remove the unused scale field from v1 and unversioned Studio clamp nodes."""
-    return {name: value for name, value in params.items() if name != "scale"}
-
-
 def _transform_payload_dtype(name: _PayloadDtype) -> jnp.dtype:
     dtype = jnp.dtype(name)
     if jax.dtypes.canonicalize_dtype(dtype) != dtype:
@@ -225,12 +216,7 @@ def _validate_transform_vector_range(values: list[float | None], dtype: Any) -> 
         raise ValueError(f"Intervention vector contains values outside the range of {dtype}")
 
 
-def _build_vector_intervention(
-    values: Mapping[str, Any],
-    *,
-    runtime_type: type[_VectorTransform],
-    payload_field: str,
-) -> _VectorTransform:
+def _vector_runtime_params(values: Mapping[str, Any], payload_field: str):
     params = dict(values)
     payload_dtype = params.pop("payload_dtype")
     payload = params[payload_field]
@@ -239,12 +225,21 @@ def _build_vector_intervention(
         params[payload_field] = jnp.asarray(
             [float("nan") if value is None else value for value in payload], dtype=dtype
         )
-    if issubclass(runtime_type, ConstantInput):
-        return runtime_type(params=ConstantInputParams(**params))
-    return runtime_type(params=NetworkValueParams(**params))
+    parameter_type = ConstantInputParams if payload_field == "arrays" else NetworkValueParams
+    return parameter_type(**params)
 
 
-def _extract_vector_intervention(
+def _default_vector_params(cls):
+    return _vector_runtime_params(
+        default_configuration(cls).model_dump(mode="python"), cls.config.payload_field
+    )
+
+
+def _materialize_vector_intervention(values, *, runtime_type, payload_field):
+    return runtime_type(params=_vector_runtime_params(values, payload_field))
+
+
+def _vector_intervention_configuration(
     component: Component,
     model: BaseModel,
     *,
@@ -255,9 +250,13 @@ def _extract_vector_intervention(
         cast(_VectorTransform, component).params_index.init,
     )
     payload = getattr(params, payload_field)
-    values: dict[str, Any] = {"active": params.active.tolist(), payload_field: None}
+    values: dict[str, Any] = {
+        "active": params.active,
+        payload_field: None,
+        "payload_dtype": type(model).model_fields["payload_dtype"].default,
+    }
     if "scale" in type(model).model_fields:
-        values["scale"] = params.scale.tolist()
+        values["scale"] = params.scale
     if payload is not None:
         if len(getattr(payload, "shape", ())) != 1:
             raise ValueError(f"{type(component).__name__} {payload_field} must be a single vector")
@@ -269,13 +268,13 @@ def _extract_vector_intervention(
             )
         _transform_payload_dtype(payload_dtype)
         values["payload_dtype"] = payload_dtype
-        vector = payload.tolist()
-        if payload_field == "unit_spec":
+        vector = payload if isinstance(payload, jax.core.Tracer) else payload.tolist()
+        if payload_field == "unit_spec" and not isinstance(payload, jax.core.Tracer):
             vector = [
                 None if isinstance(value, float) and isnan(value) else value for value in vector
             ]
         values[payload_field] = vector
-    return type(model).model_validate(values)
+    return values
 
 
 def _vector_transform_output_prototype(
@@ -311,49 +310,20 @@ _VECTOR_PORT_TYPES = PortTypeSpec(
 )
 
 
-@component(
-    "NetworkClamp",
-    param_model=_NetworkClampParams,
-    configure=lambda cls: {
-        "builder": partial(
-            _build_vector_intervention,
-            runtime_type=cls,
-            payload_field=_NetworkClampParams.payload_field,
-        ),
-    },
-    extractor=partial(
-        _extract_vector_intervention, payload_field=_NetworkClampParams.payload_field
-    ),
-    override_reason="Translate JSON vectors to and from transform state arrays.",
-    category="Signal Processing",
-    description="Clamp network unit activity.",
-    icon="Pin",
-    port_types=_VECTOR_PORT_TYPES,
-    output_prototype_fn=partial(
-        _vector_transform_output_prototype,
-        component="NetworkClamp",
-        payload_field=_NetworkClampParams.payload_field,
-    ),
-    param_schema_version="2",
-    migrations=(
-        ComponentMigration(
-            source_type="NetworkClamp",
-            target_type="NetworkClamp",
-            owner="feedbax",
-            source_param_schema_version="1",
-            target_param_schema_version="2",
-            migration_id="feedbax.component.NetworkClamp.params.v1-to-v2",
-            migrate_params=_without_legacy_clamp_scale,
-            matches_unversioned=_has_legacy_clamp_scale,
-            description="Preserve disabled transforms and require a payload when enabled.",
-        ),
-    ),
-)
 class NetworkClamp(Component):
     """Clamps units to specified values (NaN means unchanged)."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs=_VECTOR_PORT_TYPES.inputs, outputs=_VECTOR_PORT_TYPES.outputs
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=partial(
+            _vector_transform_output_prototype,
+            component="NetworkClamp",
+            payload_field=_NetworkClampParams.payload_field,
+        )
+    )
+    config: ClassVar[type[BaseModel]] = _NetworkClampParams
 
     params_index: StateIndex
 
@@ -362,7 +332,7 @@ class NetworkClamp(Component):
         params: Optional[NetworkValueParams] = None,
     ):
         if params is None:
-            params = NetworkValueParams(active=False)
+            params = _default_vector_params(type(self))
         self.params_index = StateIndex(_strong_typed(params))
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -381,49 +351,34 @@ class NetworkClamp(Component):
         output = jax.lax.cond(params.active, apply, lambda: signal)
         return {"output": output}, state
 
-
-@component(
-    "NetworkConstantInput",
-    param_model=_NetworkConstantInputParams,
-    configure=lambda cls: {
-        "builder": partial(
-            _build_vector_intervention,
+    @classmethod
+    def from_config(cls, config, **context):
+        return _materialize_vector_intervention(
+            config.model_dump(mode="python"),
             runtime_type=cls,
-            payload_field=_NetworkConstantInputParams.payload_field,
-        ),
-    },
-    extractor=partial(
-        _extract_vector_intervention, payload_field=_NetworkConstantInputParams.payload_field
-    ),
-    override_reason="Translate JSON vectors to and from transform state arrays.",
-    category="Signal Processing",
-    description="Add constant input to network units.",
-    icon="Asterisk",
-    port_types=_VECTOR_PORT_TYPES,
-    output_prototype_fn=partial(
-        _vector_transform_output_prototype,
-        component="NetworkConstantInput",
-        payload_field=_NetworkConstantInputParams.payload_field,
-    ),
-    param_schema_version="2",
-    migrations=(
-        ComponentMigration(
-            source_type="NetworkConstantInput",
-            target_type="NetworkConstantInput",
-            owner="feedbax",
-            source_param_schema_version="1",
-            target_param_schema_version="2",
-            migration_id="feedbax.component.NetworkConstantInput.params.v1-to-v2",
-            migrate_params=dict,
-            description="Preserve disabled transforms and require a payload when enabled.",
-        ),
-    ),
-)
+            payload_field=cls.config.payload_field,
+        )
+
+    def configuration_values(self):
+        return _vector_intervention_configuration(
+            self, self.config.model_construct(), payload_field=self.config.payload_field
+        )
+
+
 class NetworkConstantInput(Component):
     """Adds a constant input to a signal."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs=_VECTOR_PORT_TYPES.inputs, outputs=_VECTOR_PORT_TYPES.outputs
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=partial(
+            _vector_transform_output_prototype,
+            component="NetworkConstantInput",
+            payload_field=_NetworkConstantInputParams.payload_field,
+        )
+    )
+    config: ClassVar[type[BaseModel]] = _NetworkConstantInputParams
 
     params_index: StateIndex
 
@@ -432,7 +387,7 @@ class NetworkConstantInput(Component):
         params: Optional[NetworkValueParams] = None,
     ):
         if params is None:
-            params = NetworkValueParams(active=False)
+            params = _default_vector_params(type(self))
         self.params_index = StateIndex(_strong_typed(params))
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -451,49 +406,34 @@ class NetworkConstantInput(Component):
         output = jax.lax.cond(params.active, apply, lambda: signal)
         return {"output": output}, state
 
-
-@component(
-    "ConstantInput",
-    param_model=_ConstantInputParams,
-    configure=lambda cls: {
-        "builder": partial(
-            _build_vector_intervention,
+    @classmethod
+    def from_config(cls, config, **context):
+        return _materialize_vector_intervention(
+            config.model_dump(mode="python"),
             runtime_type=cls,
-            payload_field=_ConstantInputParams.payload_field,
-        ),
-    },
-    extractor=partial(
-        _extract_vector_intervention, payload_field=_ConstantInputParams.payload_field
-    ),
-    override_reason="Translate JSON vectors to and from transform state arrays.",
-    category="Signal Processing",
-    description="Add a constant input to a signal.",
-    icon="Minus",
-    port_types=_VECTOR_PORT_TYPES,
-    output_prototype_fn=partial(
-        _vector_transform_output_prototype,
-        component="ConstantInput",
-        payload_field=_ConstantInputParams.payload_field,
-    ),
-    param_schema_version="2",
-    migrations=(
-        ComponentMigration(
-            source_type="ConstantInput",
-            target_type="ConstantInput",
-            owner="feedbax",
-            source_param_schema_version="1",
-            target_param_schema_version="2",
-            migration_id="feedbax.component.ConstantInput.params.v1-to-v2",
-            migrate_params=dict,
-            description="Preserve disabled transforms and require a payload when enabled.",
-        ),
-    ),
-)
+            payload_field=cls.config.payload_field,
+        )
+
+    def configuration_values(self):
+        return _vector_intervention_configuration(
+            self, self.config.model_construct(), payload_field=self.config.payload_field
+        )
+
+
 class ConstantInput(Component):
     """Adds a constant array to a signal."""
 
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs=_VECTOR_PORT_TYPES.inputs, outputs=_VECTOR_PORT_TYPES.outputs
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=partial(
+            _vector_transform_output_prototype,
+            component="ConstantInput",
+            payload_field=_ConstantInputParams.payload_field,
+        )
+    )
+    config: ClassVar[type[BaseModel]] = _ConstantInputParams
 
     params_index: StateIndex
 
@@ -502,7 +442,7 @@ class ConstantInput(Component):
         params: Optional[ConstantInputParams] = None,
     ):
         if params is None:
-            params = ConstantInputParams(active=False)
+            params = _default_vector_params(type(self))
         self.params_index = StateIndex(_strong_typed(params))
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
@@ -521,6 +461,19 @@ class ConstantInput(Component):
             )
 
         return jax.lax.cond(params.active, apply, lambda: signal)
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return _materialize_vector_intervention(
+            config.model_dump(mode="python"),
+            runtime_type=cls,
+            payload_field=cls.config.payload_field,
+        )
+
+    def configuration_values(self):
+        return _vector_intervention_configuration(
+            self, self.config.model_construct(), payload_field=self.config.payload_field
+        )
 
 
 _VectorTransform = NetworkClamp | NetworkConstantInput | ConstantInput
