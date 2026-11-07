@@ -3126,6 +3126,7 @@ while True:
     )
     elapsed = time.monotonic() - started
     pid = int(pid_path.read_text(encoding="utf-8").strip())
+    checkpoint_completed = False
     try:
         assert result.returncode == 0, result.stderr
         assert elapsed < 2
@@ -3145,11 +3146,13 @@ while True:
         assert checkpoint_path.read_text(encoding="utf-8") == "durable"
         assert done_path.exists()
         assert not (sentinel_dir / "warm.failed").exists()
+        checkpoint_completed = True
     finally:
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        if not checkpoint_completed:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
 
 @pytest.mark.skipif(
