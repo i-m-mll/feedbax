@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from .discovery import ComponentPack, discover_modules
+from importlib import import_module
+from pathlib import Path
+
+from .discovery import ComponentPack
 
 
-_OWNER_MODULES = (
+_PORTABLE_MODULES = (
     "feedbax.runtime.components",
     "feedbax.runtime.channel",
     "feedbax.runtime.filters",
@@ -23,7 +26,10 @@ _OWNER_MODULES = (
     "feedbax.mechanics.muscles.relu_muscle",
     "feedbax.mechanics.muscles.thelen_muscle",
     "feedbax.mechanics.muscle_graph",
-    "feedbax.components.equinox",
+    "feedbax.mechanics.direct_force_components",
+    "feedbax.mechanics.analytical_component",
+    "feedbax.tasks.reach_components",
+    "feedbax.components.penzai",
 )
 
 
@@ -31,42 +37,33 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
     """Build the fixed set of packages shipped with Feedbax."""
 
     from feedbax.acausal.system import acausal_system_definition
-    from feedbax.mechanics.force_fields import CurlField, ThresholdLatchedForce
-    from feedbax.mechanics.force_fields_history import HISTORIES as FORCE_HISTORIES
-    from feedbax.components.penzai import penzai_adapter_definition
-    from feedbax.mechanics.analytical_component import analytical_musculoskeletal_plant_definition
-    from feedbax.mechanics.direct_force_components import (
-        point_mass_definition,
-        two_link_arm_definition,
-    )
+    from feedbax.components.equinox_history import HISTORIES as EQUINOX_HISTORIES
     from feedbax.runtime.graph import subgraph_definition
-    from feedbax.tasks.reach_components import (
-        delayed_reaches_definition,
-        simple_reaches_definition,
-        stabilization_definition,
-    )
 
     from .acausal_adapters import acausal_component_pack
     from .templates import builtin_graph_template_pack, builtin_muscle_template_pack
 
+    histories = {
+        owner: history
+        for module in _PORTABLE_MODULES
+        for owner, history in import_module(f"{module}_history").HISTORIES.items()
+    }
     return (
-        discover_modules(*_OWNER_MODULES),
         ComponentPack(
             namespace="feedbax",
-            components=(CurlField, ThresholdLatchedForce),
-            histories=FORCE_HISTORIES,
+            modules=_PORTABLE_MODULES,
+            histories=histories,
+        ),
+        ComponentPack(
+            namespace="feedbax.equinox",
+            modules=("feedbax.components.equinox",),
+            histories=EQUINOX_HISTORIES,
+            sources=(Path(__file__).resolve().parents[2] / "scripts/generate_eqx_components.py",),
         ),
         ComponentPack(
             components=(
                 subgraph_definition,
                 acausal_system_definition,
-                penzai_adapter_definition,
-                point_mass_definition,
-                two_link_arm_definition,
-                analytical_musculoskeletal_plant_definition,
-                simple_reaches_definition,
-                delayed_reaches_definition,
-                stabilization_definition,
             )
         ),
         acausal_component_pack(),

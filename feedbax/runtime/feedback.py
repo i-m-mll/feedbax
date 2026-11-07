@@ -5,17 +5,18 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from operator import attrgetter
-from typing import Any
+from typing import Any, ClassVar
 
 import equinox as eqx
 import jax.tree as jt
 from jaxtyping import PyTree
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as ConfigField
 
-from feedbax.component_registry import component
-from feedbax.component_registry.declarations import ParameterField
-from feedbax.component_registry.prototypes import _required_input
-from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
-from feedbax.runtime.graph import Component, Wire
+from feedbax.contracts.component import DynamicPortPolicy, PortType
+from feedbax.contracts.portable import ComponentOptions, ConfigBinding, Ports
+from feedbax.runtime.graph import Component, GraphNode, Wire
+from feedbax.runtime.prototypes import _required_input
 
 
 @dataclass(frozen=True)
@@ -56,13 +57,11 @@ def _extract_state_selector_params(component: SelectState, model: Any) -> Any:
         raise ValueError(
             "Portable SelectState requires a StateSelector with declared attribute paths"
         )
-    return type(model).model_validate({"paths": list(component.where.paths)})
+    return {"paths": list(component.where.paths)}
 
 
 def _extract_feedback_assembly_params(component: AssembleFeedback, model: Any) -> Any:
-    return type(model).model_validate(
-        {"layout": component.to_layout(), "n_inputs": len(component.input_ports)}
-    )
+    return {"layout": component.to_layout(), "n_inputs": component.structure.num_leaves}
 
 
 def _build_feedback_assembly(params: Mapping[str, Any]) -> AssembleFeedback:
@@ -94,69 +93,81 @@ def _build_select_state(params: Mapping[str, Any]) -> SelectState:
     return SelectState(StateSelector(tuple(params["paths"])))
 
 
-@component(
-    "SelectState",
-    builder=_build_select_state,
-    extractor=_extract_state_selector_params,
-    override_reason="Recover portable paths from the state selector",
-    category="Channels",
-    description="Select state subtrees by attribute path.",
-    parameter_fields=[
-        ParameterField(name="paths", type="array", default=["effector"], required=True),
-    ],
-    port_types=PortTypeSpec(
-        inputs={"state": PortType(dtype="state")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    output_prototype_fn=state_selector_output_prototype,
-)
-class SelectState(Component):
+class _SelectStateConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    paths: Any = ConfigField(default=["effector"], json_schema_extra={"feedbax": {"type": "array"}})
+
+
+class StateSelection(GraphNode):
     """Expose a state selector as a stateless graph node."""
 
-    input_ports = ("state",)
-    output_ports = ("output",)
+    ports: ClassVar[Ports] = Ports(
+        inputs={"state": PortType(dtype="state")}, outputs={"output": PortType(dtype="any")}
+    )
+
+    input_ports: ClassVar = tuple(ports.inputs)
+    output_ports: ClassVar = tuple(ports.outputs)
+
     where: Callable
 
     def __call__(self, inputs, state, *, key):
         return {"output": self.where(inputs["state"])}, state
 
 
-@component(
-    "AssembleFeedback",
-    builder=_build_feedback_assembly,
-    extractor=_extract_feedback_assembly_params,
-    override_reason="Recover a portable layout from the feedback tree",
-    category="Channels",
-    description="Assemble channel values into a feedback tree.",
-    parameter_fields=[
-        ParameterField(name="n_inputs", type="int", default=1, min=1, required=True),
-        ParameterField(name="layout", type="object", default=None, required=False),
-    ],
-    input_ports=["in_0"],
-    port_types=PortTypeSpec(
-        inputs={"in_0": PortType(dtype="any")},
-        outputs={"output": PortType(dtype="any")},
-    ),
-    dynamic_port_policy=DynamicPortPolicy(
-        count_param="n_inputs",
-        count_mode="integer",
-        direction="input",
-        fixed_output_ports=("output",),
-        generated_name_template="in_{index}",
-        dynamic_port_type=PortType(dtype="any"),
-    ),
-    output_prototype_fn=feedback_assembly_output_prototype,
-)
+class SelectState(StateSelection, Component):
+    """Portable SelectState with a reconstructible typed configuration."""
+
+    ports: ClassVar = StateSelection.ports
+
+    config: ClassVar[type[BaseModel]] = _SelectStateConfig
+
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=state_selector_output_prototype
+    )
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return cls(StateSelector(tuple(config.paths)))
+
+    def configuration_values(self):
+        return _extract_state_selector_params(self, self.config.model_construct())
+
+
+class _AssembleFeedbackConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    n_inputs: int = ConfigField(default=1, ge=1)
+    layout: Any = ConfigField(default=None, json_schema_extra={"feedbax": {"type": "object"}})
+
+
 class AssembleFeedback(Component):
     """Reassemble independent channel values in the controller's feedback tree."""
 
-    input_ports: tuple[str, ...]
-    output_ports = ("output",)
+    config: ClassVar[type[BaseModel]] = _AssembleFeedbackConfig
+
+    ports: ClassVar[Ports] = Ports(
+        inputs={},
+        outputs={"output": PortType(dtype="any")},
+        dynamic=DynamicPortPolicy(
+            count_param="n_inputs",
+            count_mode="integer",
+            direction="input",
+            fixed_output_ports=("output",),
+            generated_name_template="in_{index}",
+            dynamic_port_type=PortType(dtype="any"),
+        ),
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        output_prototype_fn=feedback_assembly_output_prototype
+    )
+
+    config_bindings: ClassVar = (ConfigBinding("structure.num_leaves", name="n_inputs"),)
+
     structure: Any = eqx.field(static=True)
 
     def __init__(self, structure):
         self.structure = structure
-        self.input_ports = tuple(f"in_{index}" for index in range(structure.num_leaves))
 
     def assemble(self, inputs: Mapping[str, PyTree]) -> PyTree:
         return self.structure.unflatten([inputs[port] for port in self.input_ports])
@@ -201,6 +212,13 @@ class AssembleFeedback(Component):
             raise ValueError("Portable feedback layouts support tuple, list, and string-keyed dict")
 
         return encode(self.structure.unflatten([0] * self.structure.num_leaves))
+
+    @classmethod
+    def from_config(cls, config, **context):
+        return _build_feedback_assembly(config.model_dump(mode="python"))
+
+    def configuration_values(self):
+        return _extract_feedback_assembly_params(self, self.config.model_construct())
 
 
 def feedback_node_names(count: int) -> tuple[tuple[str, str], ...]:
