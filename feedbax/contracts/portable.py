@@ -25,7 +25,10 @@ class Ports:
             if any(not isinstance(name, str) or not name for name in names):
                 raise ValueError("Port names must be nonempty strings")
         if self.dynamic is not None and self.dynamic.count_mode != "names":
-            if tuple(self.inputs) != self.dynamic.fixed_input_ports or tuple(self.outputs) != self.dynamic.fixed_output_ports:
+            if (
+                tuple(self.inputs) != self.dynamic.fixed_input_ports
+                or tuple(self.outputs) != self.dynamic.fixed_output_ports
+            ):
                 raise ValueError("Dynamic port fixed names must agree with the typed ports")
 
     @property
@@ -56,9 +59,12 @@ class ConfigBinding:
             return {self.name: self.path}
         import dataclasses
 
-        names = self.group.model_fields if issubclass(self.group, BaseModel) else (item.name for item in dataclasses.fields(self.group))
+        names = (
+            self.group.model_fields
+            if issubclass(self.group, BaseModel)
+            else (item.name for item in dataclasses.fields(self.group))
+        )
         return {name: f"{self.path}.{name}" for name in names}
-
 
     def materialize(self, config):
         if self.group is None:
@@ -68,7 +74,7 @@ class ConfigBinding:
 
 def default_configuration(cls, **values):
     """Apply the single host authoring contract to direct constructor settings."""
-    return configuration_model(cls).model_validate(values)
+    return validate_authoring(configuration_model(cls), values)
 
 
 def materialize_configuration(cls, config):
@@ -112,8 +118,13 @@ def configuration_model(cls):
         annotation = hints.get(name, parameter.annotation)
         if annotation is inspect.Parameter.empty:
             raise TypeError(f"{cls.__name__} configuration field {name!r} needs a type")
-        fields[name] = (annotation, ... if parameter.default is parameter.empty else parameter.default)
-    return create_model(f"{cls.__name__}Config", __config__=ConfigDict(extra="forbid", strict=True), **fields)
+        fields[name] = (
+            annotation,
+            ... if parameter.default is parameter.empty else parameter.default,
+        )
+    return create_model(
+        f"{cls.__name__}Config", __config__=ConfigDict(extra="forbid", strict=True), **fields
+    )
 
 
 def configuration_paths(cls):
@@ -142,7 +153,7 @@ def json_value(value):
     return value
 
 
-def extract_configuration(component):
+def configuration_values(component):
     cls = type(component)
     paths = configuration_paths(cls)
     values = {}
@@ -150,11 +161,28 @@ def extract_configuration(component):
         value = component
         path = paths.get(name, name)
         for part in path.split("."):
-            if part == "init" and not hasattr(value, part):
-                raise ValueError(f"{cls.__name__} reset payload at {path!r} was stripped by make_with_state; preserve initial payloads for export")
+            if not hasattr(value, part):
+                if ".init" in path:
+                    raise ValueError(
+                        f"{cls.__name__} reset payload at {path!r} was stripped by make_with_state; preserve initial payloads for export"
+                    )
+                raise AttributeError(f"{cls.__name__} has no configuration storage path {path!r}")
             value = getattr(value, part)
-        values[name] = json_value(value)
-    return configuration_model(cls).model_validate(values)
+        values[name] = value
+    return values
+
+
+def validate_authoring(model, values):
+    """Validate portable JSON structure, including JSON arrays for typed tuples."""
+    import json
+
+    return model.model_validate_json(json.dumps(json_value(values)))
+
+
+def extract_configuration(component):
+    return validate_authoring(
+        configuration_model(type(component)), component.configuration_values()
+    )
 
 
 class MissingPrototypeInput(ValueError):
@@ -198,17 +226,17 @@ def validate_configuration(component):
 
     cls = type(component)
     model = configuration_model(cls)
-    paths = configuration_paths(cls)
     values = {}
     traced = False
+    raw = component.configuration_values()
+    import json
+
     for name, field in model.model_fields.items():
-        value = component
-        for part in paths.get(name, name).split("."):
-            value = getattr(value, part)
+        value = raw[name]
         if any(isinstance(leaf, jax.core.Tracer) for leaf in jax.tree.leaves(value)):
             traced = True
             continue
         values[name] = json_value(value)
-        TypeAdapter(field.rebuild_annotation()).validate_python(values[name], strict=True)
+        TypeAdapter(field.rebuild_annotation()).validate_json(json.dumps(values[name]), strict=True)
     if not traced:
-        model.model_validate(values)
+        validate_authoring(model, values)

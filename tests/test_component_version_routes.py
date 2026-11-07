@@ -27,14 +27,19 @@ def test_component_migration_chain_validates_only_at_current_endpoint():
     history = History(
         Change(2, migrate=lambda params: {"intermediate_value": params["scale"] * 2}),
         Change(3, migrate=lambda params: {"gain": params["intermediate_value"] + 1}),
-        legacy=(LegacyEndpoint("ChainGain", "legacy", 1,
-                               matches_unversioned=lambda params: "scale" in params),),
+        legacy=(
+            LegacyEndpoint(
+                "ChainGain", "legacy", 1, matches_unversioned=lambda params: "scale" in params
+            ),
+        ),
     )
     module = ModuleType("test_chain_owners")
     ChainGain.__module__ = module.__name__
     module.ChainGain = ChainGain
     registry = ComponentRegistry()
-    registry.ingest(ComponentPack(namespace="example", modules=(module,), histories={ChainGain: history}))
+    registry.ingest(
+        ComponentPack(namespace="example", modules=(module,), histories={ChainGain: history})
+    )
     resolution = registry.resolve_component_spec(
         "ChainGain", {"scale": 4.0}, historical_unversioned=True
     )
@@ -118,3 +123,64 @@ def test_threshold_historical_selector_reaches_current_contract() -> None:
     assert resolved.revision == current.revision
     assert resolved.params["state_selector"] == {"kind": "fixed", "path": ["pos", 0]}
     assert resolved.params["lateral_force"] == 0.0
+
+
+def test_integer_history_rename_and_namespace_reservations():
+    class CurrentName(Component):
+        gain: float = 2.0
+        ports: ClassVar = Ports({"input": PortType()}, {"output": PortType()})
+
+        def __call__(self, inputs, state, *, key):
+            return {"output": inputs["input"] * self.gain}, state
+
+    registry = ComponentRegistry()
+    history = History(
+        Change(2, renamed_from="PreviousName"), legacy=(LegacyEndpoint("OldWire", "frozen.v1", 1),)
+    )
+    registry.ingest(
+        ComponentPack(
+            namespace="rename", components=(CurrentName,), histories={CurrentName: history}
+        )
+    )
+    old = registry.resolve_component_spec("OldWire", {}, param_schema_version="frozen.v1")
+    assert (old.type_id, old.revision, old.params) == ("rename.CurrentName", 2, {"gain": 2.0})
+    assert registry.serialize_component(CurrentName()) == ("rename.CurrentName", {"gain": 2.0}, 2)
+    for invalid in (True, "2", 0):
+        with pytest.raises(ValueError, match="strictly positive integer"):
+            registry.resolve_component_spec("rename.CurrentName", {}, revision=invalid)
+    unrelated = type("PreviousName", (CurrentName,), {})
+    with pytest.raises(ValueError, match="reserved"):
+        registry.ingest(ComponentPack(namespace="rename", components=(unrelated,)))
+
+
+@pytest.mark.parametrize(
+    "changes", [(Change(3, identity=True),), (Change(2, identity=True), Change(2, identity=True))]
+)
+def test_published_history_destinations_cannot_be_reindexed(changes):
+    with pytest.raises(ValueError, match="consecutive"):
+        History(*changes)
+
+
+def test_unversioned_evidence_requires_a_unique_endpoint():
+    from feedbax.mechanics.force_fields import CurlField
+
+    class EvidenceComponent(CurlField):
+        pass
+
+    history = History(
+        Change(2, identity=True),
+        legacy=(
+            LegacyEndpoint("Ambiguous", "one", 1, lambda params: True),
+            LegacyEndpoint("Ambiguous", "two", 2, lambda params: True),
+        ),
+    )
+    registry = ComponentRegistry()
+    registry.ingest(
+        ComponentPack(
+            namespace="evidence",
+            components=(EvidenceComponent,),
+            histories={EvidenceComponent: history},
+        )
+    )
+    with pytest.raises(UnsupportedComponentMigration, match="Ambiguous unversioned"):
+        registry.resolve_component_spec("Ambiguous", {}, historical_unversioned=True)
