@@ -304,7 +304,7 @@ class ComponentRegistry:
         }
         authored = {name: value for name, value in migrated.items() if name not in context}
         effective = (
-            meta.params.require(authored).model_dump(mode="python") if complete_params else authored
+            meta.params.require(authored).model_dump(mode="json") if complete_params else authored
         )
         return ComponentResolution(
             type_id=resolved_type,
