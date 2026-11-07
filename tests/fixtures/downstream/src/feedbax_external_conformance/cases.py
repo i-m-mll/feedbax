@@ -68,11 +68,12 @@ from feedbax.analysis.exact_parents import (
     migrate_staged_exact_parents,
 )
 from feedbax.component_registry import (
-    ComponentMigration,
     ComponentPack,
-    component,
     ComponentRegistry,
 )
+from feedbax.component_registry.history import Change, History, LegacyEndpoint
+from feedbax.contracts.portable import Ports
+from feedbax.contracts.component import PortType
 from feedbax.contracts.manifest import (
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_ID,
     EVALUATION_RUN_MATRIX_SPEC_SCHEMA_VERSION,
@@ -972,8 +973,8 @@ def check_dynamic_component_ports(*, entry_points: Iterable[object] | None = Non
     definition = next(
         item for item in registry.list_all() if item.name == EXTERNAL_DYNAMIC_COMPONENT
     )
-    if definition.schema_version != "feedbax.spec.component_definition.v3":
-        raise AssertionError("external component definition did not retain v3 identity")
+    if definition.schema_version != "feedbax.spec.component_definition.v4":
+        raise AssertionError("external component definition did not emit the current v4 format")
 
     graph_spec = GraphSpec(
         nodes={
@@ -1050,10 +1051,8 @@ def check_external_driver_plugin() -> bool:
     return True
 
 
-@component(_CUSTOM_COMPONENT, owner="feedbax-external-conformance")
 class CurrentScale(Component):
-    input_ports = ("input",)
-    output_ports = ("output",)
+    ports = Ports({"input": PortType(dtype="any")}, {"output": PortType(dtype="any")})
     scale: float
 
     def __init__(self, scale: float):
@@ -1063,66 +1062,49 @@ class CurrentScale(Component):
         return {"output": inputs["input"] * self.scale}, state
 
 
-def _component_registry(*, migration_first: bool) -> ComponentRegistry:
+def _component_registry() -> ComponentRegistry:
     registry = ComponentRegistry()
     if registry.get(_CUSTOM_COMPONENT) is not None:
         raise AssertionError("fixture component appeared through import-time discovery")
-    migration = ComponentMigration(
-        source_type=_LEGACY_COMPONENT,
-        target_type=_CUSTOM_COMPONENT,
-        owner="feedbax-external-conformance",
-        migration_id="feedbax-external-conformance.LegacyScale-to-CurrentScale.v1",
-        source_param_schema_version="legacy",
-        target_param_schema_version="1",
-        migrate_params=lambda params: {"scale": params["factor"]},
-    )
-    migrations = ComponentPack(migrations=(migration,))
-    if migration_first:
-        registry.ingest(migrations)
     registry.ingest(
-        ComponentPack(components=(CurrentScale,)),
+        ComponentPack(
+            namespace="fixture",
+            components=(CurrentScale,),
+            histories={
+                CurrentScale: History(
+                    Change(
+                        2,
+                        renamed_from="LegacyScale",
+                        migrate=lambda params: {"scale": params["factor"]},
+                    ),
+                    legacy=(LegacyEndpoint(_LEGACY_COMPONENT, "legacy", 1),),
+                )
+            },
+        ),
         provenance="package:feedbax-external-conformance",
     )
-    if not migration_first:
-        registry.ingest(migrations)
     return registry
 
 
 def check_component_registration_and_migration() -> bool:
-    """Prove explicit component registration and owner migration-pack behavior."""
-    for migration_first in (False, True):
-        registry = _component_registry(migration_first=migration_first)
-        resolved = registry.resolve_component_spec(
-            _LEGACY_COMPONENT,
-            {"factor": 3.0},
-            param_schema_version="legacy",
-        )
-        if (
-            resolved.type_id != _CUSTOM_COMPONENT
-            or resolved.params != {"scale": 3.0}
-            or resolved.param_schema_version != "1"
-        ):
-            raise AssertionError("component migration depends on registration order")
-        try:
-            registry.ingest(
-                ComponentPack(
-                    migrations=(
-                        ComponentMigration(
-                            source_type=_LEGACY_COMPONENT,
-                            target_type=_CUSTOM_COMPONENT,
-                            owner="conflicting-owner",
-                            migration_id="conflicting.edge.v1",
-                            source_param_schema_version="legacy",
-                            target_param_schema_version="1",
-                        ),
-                    )
-                )
-            )
-        except ValueError as exc:
-            if "already registered" not in str(exc):
-                raise
-        else:
-            raise AssertionError("conflicting component migration was accepted")
+    """Prove inferred current owners and exact external history routes."""
+    registry = _component_registry()
+    resolved = registry.resolve_component_spec(
+        _LEGACY_COMPONENT, {"factor": 3.0}, legacy_token="legacy"
+    )
+    if (
+        resolved.type_id != _CUSTOM_COMPONENT
+        or resolved.params != {"scale": 3.0}
+        or resolved.revision != 2
+    ):
+        raise AssertionError("external component history did not resolve to the current owner")
+    try:
+        registry.ingest(ComponentPack(namespace="fixture", components=(CurrentScale,)))
+    except ValueError as exc:
+        if "already registered" not in str(exc):
+            raise
+    else:
+        raise AssertionError("conflicting component owner was accepted")
     return True
 
 
@@ -1203,7 +1185,7 @@ def check_component_param_array_values() -> bool:
     graph_spec = GraphSpec(
         nodes={
             "plant": ComponentSpec(
-                type="StructuralLinearStateSpace",
+                type="feedbax.StructuralLinearStateSpace",
                 params={
                     "A": [[1.0, 0.0], [0.0, 1.0]],
                     "B": [[0.0], [0.0]],
@@ -1213,7 +1195,6 @@ def check_component_param_array_values() -> bool:
                     "pos_slice": [0, 1],
                     "vel_slice": [1, 2],
                 },
-                param_schema_version="feedbax.component.structural_linear_state_space.v1",
                 input_ports=["force", "epsilon"],
                 output_ports=["effector", "state"],
             )

@@ -12,7 +12,8 @@ from typing import Any, Callable, Literal, Mapping, NamedTuple
 from feedbax.contracts.worker import ProgressCoordinate
 
 from feedbax import Component
-from feedbax.component_registry import ComponentPack, component
+from feedbax.component_registry import ComponentPack
+from feedbax.contracts.portable import Ports
 from feedbax.contracts.component import DynamicPortPolicy, PortType
 from feedbax.analysis.analysis import AbstractAnalysis
 from feedbax.plugins import (
@@ -81,33 +82,27 @@ class FanInSettings(BaseModel):
     channels: list[str] = ["left", "right"]
 
 
-@component(
-    EXTERNAL_DYNAMIC_COMPONENT,
-    category="External conformance",
-    description="External dynamic fan-in bootstrap proof.",
-    param_model=FanInSettings,
-    input_ports=("source_0", "source_1"),
-    dynamic_port_policy=DynamicPortPolicy(
-        count_param="channels",
-        count_mode="sequence_length",
-        direction="input",
-        fixed_output_ports=("output",),
-        generated_name_template="source_{index}",
-        dynamic_port_type=PortType(dtype="vector"),
-    ),
-    owner="feedbax-external-conformance",
-)
 class VariableFanIn(Component):
     """Small external runtime component with policy-derived input ports."""
 
-    output_ports = ("output",)
+    config = FanInSettings
+    ports = Ports(
+        {},
+        {"output": PortType(dtype="vector")},
+        dynamic=DynamicPortPolicy(
+            count_param="channels",
+            count_mode="sequence_length",
+            direction="input",
+            fixed_output_ports=("output",),
+            generated_name_template="source_{index}",
+            dynamic_port_type=PortType(dtype="vector"),
+        ),
+    )
 
     channels: tuple[str, ...] = eqx.field(static=True)
-    input_ports: tuple[str, ...] = eqx.field(static=True)
 
     def __init__(self, channels: list[str]) -> None:
         self.channels = tuple(channels)
-        self.input_ports = tuple(f"source_{index}" for index in range(len(channels)))
 
     def __call__(self, inputs, state, *, key):
         del key
@@ -388,7 +383,7 @@ def _fixture_union(value):
 def _register_foundation(context: RegistrationContext) -> None:
     context.registry(FIXTURE_RECORDS).register("foundation")
     context.registry(COMPONENTS).ingest(
-        ComponentPack(components=(VariableFanIn,)),
+        ComponentPack(namespace="feedbax_external_conformance", components=(VariableFanIn,)),
         provenance="package:feedbax-external-conformance",
     )
     context.registry(DRIVERS).register(_fixture_driver_registration())

@@ -271,7 +271,7 @@ def test_ratified_rows_bind_v14_and_have_no_pending_coverage() -> None:
         in rows["orchestration-lifecycle"]["schemas"]["current"]
     )
     assert (
-        "feedbax.spec.component_definition.v3"
+        "feedbax.spec.component_definition.v4"
         in rows["component-registration"]["schemas"]["current"]
     )
     assert "pending-final-sync" not in json.dumps(manifest)
