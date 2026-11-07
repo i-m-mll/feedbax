@@ -4,7 +4,7 @@ from feedbax.contracts.representation import RepresentationSpec
 
 
 def _point_mass_representation() -> RepresentationSpec:
-    from feedbax.component_registry.representation import (
+    from feedbax.studio.representation import (
         _representation,
         _selector_binding,
     )
@@ -62,7 +62,7 @@ def _point_mass_representation() -> RepresentationSpec:
 
 
 def _two_link_arm_representation() -> RepresentationSpec:
-    from feedbax.component_registry.representation import (
+    from feedbax.studio.representation import (
         _literal_binding,
         _param_binding,
         _representation,

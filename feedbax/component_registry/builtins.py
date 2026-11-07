@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from importlib import import_module
 from pathlib import Path
 
@@ -44,13 +45,35 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
 
     from .acausal_adapters import acausal_component_pack
     from .templates import builtin_graph_template_pack, builtin_muscle_template_pack
+    from feedbax.studio import (
+        acausal_representation,
+        builtin_component_presentation,
+        component_presentation,
+        direct_force_presentation,
+        muscle_representation,
+        reach_presentation,
+        representation,
+    )
 
     histories = {
         owner: history
         for module in _PORTABLE_MODULES
         for owner, history in import_module(f"{module}_history").HISTORIES.items()
     }
-    return (
+    presentation = builtin_component_presentation.builtin_component_presentation()
+    presentation_sources = tuple(
+        Path(module.__file__).resolve()
+        for module in (
+            acausal_representation,
+            builtin_component_presentation,
+            component_presentation,
+            direct_force_presentation,
+            muscle_representation,
+            reach_presentation,
+            representation,
+        )
+    )
+    packs = (
         ComponentPack(
             namespace="feedbax",
             modules=_PORTABLE_MODULES,
@@ -70,4 +93,8 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
         acausal_component_pack(),
         builtin_graph_template_pack(),
         builtin_muscle_template_pack(),
+    )
+    return tuple(
+        replace(pack, presentation=presentation, sources=(*pack.sources, *presentation_sources))
+        for pack in packs
     )

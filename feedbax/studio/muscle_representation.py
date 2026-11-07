@@ -5,7 +5,7 @@ from typing import Any
 
 from feedbax.contracts.representation import RepresentationSpec
 from feedbax.mechanics.muscle_config import default_6muscle_2link_attachment_paths
-from feedbax.component_registry.representation import (
+from feedbax.studio.representation import (
     _representation,
     _selector_binding,
     _literal_binding,

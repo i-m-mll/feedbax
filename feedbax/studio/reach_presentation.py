@@ -4,7 +4,7 @@ from feedbax.contracts.representation import RepresentationSpec
 
 
 def _reach_task_representation(*, delayed: bool) -> RepresentationSpec:
-    from feedbax.component_registry.representation import (
+    from feedbax.studio.representation import (
         _param_binding,
         _representation,
         _trial_binding,

@@ -12,6 +12,7 @@ _LAZY_EXPORTS = {
     "cde_controller": ("feedbax.models.cde", "cde_controller"),
     "cde_controller_spec": ("feedbax.compiler.cde_templates", "cde_controller_spec"),
     "Component": ("feedbax.runtime.graph", "Component"),
+    "GraphNode": ("feedbax.runtime.graph", "GraphNode"),
     "Graph": ("feedbax.runtime.graph", "Graph"),
     "LoweredContribution": ("feedbax.lowering", "LoweredContribution"),
     "LowererExecutionError": ("feedbax.lowering", "LowererExecutionError"),
@@ -59,6 +60,7 @@ _LAZY_EXPORTS = {
 __all__ = [
     "AbstractTask",
     "Component",
+    "GraphNode",
     "DelayedReaches",
     "DelayedReachTaskInputs",
     "DELAYED_CENTER_OUT_PRESET",
