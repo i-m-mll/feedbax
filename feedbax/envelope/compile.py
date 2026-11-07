@@ -139,10 +139,12 @@ from feedbax.contracts.figure_roles import (
     per_row_binding_keys,
 )
 from feedbax.contracts.manifest import OverridePatch
+from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.matrix_core import load_content_pinned_json_document
 from feedbax.contracts.run_composition import (
     AuthoredIntentParent,
     CompiledTrainingRowParent,
+    CompositionDocument,
     ResolvedOutputParent,
     authored_envelope_hash,
     parse_composition_node,
@@ -162,6 +164,7 @@ from feedbax.contracts.project_experiment import (
 )
 from feedbax.contracts.run_matrix import (
     MatrixCompositionDelta,
+    TrainingRunMatrixSpec,
     apply_composition_deltas,
     apply_override_patches,
 )
@@ -178,6 +181,7 @@ from feedbax.envelope.resolution import (
     load_pinned,
 )
 from feedbax.training._governed_parent import (
+    _AuthenticatedGovernedParent,
     _GovernedParentAuthenticationError,
     _authenticate_governed_training_row_parent,
 )
@@ -826,6 +830,37 @@ def _resolved_output_parent(base: Mapping[str, Any]) -> ResolvedOutputParent:
     )
 
 
+def _authenticate_compile_parent(
+    authority: ExperimentEnvelopeParentAuthority,
+    *,
+    field: str,
+    expected_parent: AuthoredIntentParent | ResolvedOutputParent | None = None,
+) -> _AuthenticatedGovernedParent:
+    """Authenticate declared bytes before sharing runtime parent resolution."""
+    provenance = authority.provenance
+    try:
+        authenticated = _authenticate_governed_training_row_parent(
+            parent=authority.parent,
+            provenance=provenance,
+            payload_bytes=authority.payload_bytes,
+            expected_parent=expected_parent,
+        )
+    except _GovernedParentAuthenticationError as exc:
+        _reject(
+            ExperimentEnvelopeRejectionCategory.PARENT_BYTE_DRIFT
+            if exc.byte_drift
+            else ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT,
+            field,
+            str(exc),
+            correct_home=(
+                "supply the immutable bytes named by the artifact declaration"
+                if exc.byte_drift
+                else "supply authority for the exact parent identity the envelope compiled"
+            ),
+        )
+    return authenticated
+
+
 def _resolve_governed_matrix_parent(
     base: Mapping[str, Any],
     authorities: Sequence[ExperimentEnvelopeParentAuthority],
@@ -864,26 +899,9 @@ def _resolve_governed_matrix_parent(
     authority = matches[0]
     expected_parent = _resolved_output_parent(base)
     provenance = authority.provenance
-    try:
-        authenticated = _authenticate_governed_training_row_parent(
-            parent=authority.parent,
-            provenance=provenance,
-            payload_bytes=authority.payload_bytes,
-            expected_parent=expected_parent,
-        )
-    except _GovernedParentAuthenticationError as exc:
-        _reject(
-            ExperimentEnvelopeRejectionCategory.PARENT_BYTE_DRIFT
-            if exc.byte_drift
-            else ExperimentEnvelopeRejectionCategory.PARENT_SEMANTIC_DRIFT,
-            field,
-            str(exc),
-            correct_home=(
-                "supply the immutable bytes named by the artifact declaration"
-                if exc.byte_drift
-                else "supply authority for the exact parent identity the envelope compiled"
-            ),
-        )
+    authenticated = _authenticate_compile_parent(
+        authority, field=field, expected_parent=expected_parent
+    )
     return authenticated.payload, GovernedParentReference(
         parent=expected_parent,
         role=provenance.role,
@@ -895,19 +913,17 @@ def _resolve_governed_matrix_parent(
 
 
 def _resolve_matrix_base_payload(
-    base: Any,
+    matrix: Mapping[str, Any],
     repo_root: Path,
     authorities: Sequence[ExperimentEnvelopeParentAuthority],
     *,
     field: str,
-) -> tuple[dict[str, Any], ContentPinReference | GovernedParentReference | None]:
-    """Return the payload a matrix's ``base`` block names, and the bytes it read.
+) -> tuple[dict[str, Any], list[ContentPinReference | GovernedParentReference]]:
+    """Resolve the effective parent matrix through the runtime composition contract."""
+    from feedbax.training.row_lowering import GovernedTrainingRowParent, TrainingRowLoweringContext
+    from feedbax.training.run_matrix import RunMatrixError, resolve_base_payload_with_attribution
 
-    This is the document a row's patches actually apply to, which is why the row
-    delta's add/replace/remove legality can be decided at compile time at all. A
-    payload that lives in its own file is bytes this compile *read* and is
-    reported as a content pin: it is an input, and nothing runs because of it.
-    """
+    base = matrix.get("base")
     if not isinstance(base, Mapping):
         _reject(
             ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
@@ -922,10 +938,9 @@ def _resolve_matrix_base_payload(
                 field,
                 "an inline base states an object payload",
             )
-        payload: Any = deepcopy(dict(inline))
-        pin: ContentPinReference | None = None
+        pin: ContentPinReference | GovernedParentReference | None = None
     elif base.get("kind") == "resolved_output":
-        payload, pin = _resolve_governed_matrix_parent(base, authorities, field=field)
+        _, pin = _resolve_governed_matrix_parent(base, authorities, field=field)
     else:
         ref = base.get("ref")
         if not isinstance(ref, str):
@@ -949,45 +964,67 @@ def _resolve_matrix_base_payload(
                 f"{ref!r} has content hash {pinned.content_hash} but the base pins {declared}",
                 correct_home="repin the base against the bytes actually tracked",
             )
-        payload = deepcopy(dict(pinned.document))
         pin = ContentPinReference(ref=ref, content_hash=pinned.content_hash)
-    payload_path = base.get("payload_path")
-    if isinstance(payload_path, str) and payload_path:
-        for part in payload_path.split("."):
-            if not isinstance(payload, Mapping) or part not in payload:
-                _reject(
-                    ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE,
-                    field,
-                    f"the base payload path {payload_path!r} is not present",
+    parents = []
+    declared_parents: set[tuple[str, str]] = set()
+    for authority in authorities:
+        key = (authority.provenance.parent_kind, authority.provenance.ref)
+        if key in declared_parents:
+            _reject(
+                ExperimentEnvelopeRejectionCategory.AMBIGUOUS_PARENT_AUTHORITY,
+                field,
+                f"{key[0]}:{key[1]!r} has multiple governed declarations",
+            )
+        declared_parents.add(key)
+        authenticated = _authenticate_compile_parent(authority, field=field)
+        parents.append(
+            GovernedTrainingRowParent(
+                provenance=authenticated.provenance,
+                parent=authenticated.parent,
+                payload_bytes=authenticated.payload_bytes,
+            )
+        )
+    references: list[ContentPinReference | GovernedParentReference] = [] if pin is None else [pin]
+
+    class CompileParentContext(TrainingRowLoweringContext):
+        def resolve_parent(
+            self,
+            parent: AuthoredIntentParent | ResolvedOutputParent | CompiledTrainingRowParent,
+        ) -> CompositionDocument | dict[str, Any]:
+            payload = super().resolve_parent(parent)
+            if not isinstance(parent, CompiledTrainingRowParent):
+                governed = next(item for item in self.parents if item.parent == parent)
+                provenance = governed.provenance
+                reference = GovernedParentReference(
+                    parent=parent,
+                    role=provenance.role,
+                    artifact_id=provenance.artifact_id,
+                    artifact_sha256=provenance.artifact_sha256,
+                    schema_id=provenance.schema_id,
+                    schema_version=provenance.schema_version,
                 )
-            payload = payload[part]
-        payload = deepcopy(dict(payload))
-    return payload, pin
+                if reference not in references:
+                    references.append(reference)
+            return payload
 
-
-def _materialize_parent_matrix_base_payload(
-    base_payload: Mapping[str, Any],
-    deltas: Sequence[Any],
-    *,
-    field: str,
-) -> dict[str, Any]:
-    """Apply the parent matrix's ordered deltas to its authenticated base bytes."""
     try:
-        resolved, _attribution, _written = apply_composition_deltas(
-            dict(base_payload),
-            [MatrixCompositionDelta.model_validate(delta) for delta in deltas],
+        typed_matrix = TrainingRunMatrixSpec.model_validate(
+            default_spec_registry.migrate("TrainingRunMatrixSpec", matrix).payload
+        )
+        payload, _attribution = resolve_base_payload_with_attribution(
+            typed_matrix,
+            repo_root=repo_root,
+            row_lowering_context=CompileParentContext(tuple(parents)),
         )
     except (ValidationError, ValueError) as exc:
         _reject(
-            ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
+            ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
+            if isinstance(exc, RunMatrixError)
+            else ExperimentEnvelopeRejectionCategory.INVALID_VALUE,
             field,
-            f"the parent matrix deltas do not apply to its exact base payload: {exc}",
-            correct_home=(
-                "the parent matrix's ordered deltas state its complete semantics relative "
-                "to the exact base bytes it authenticates"
-            ),
+            f"the parent matrix base does not resolve: {exc}",
         )
-    return resolved
+    return payload, references
 
 
 def _prove_patches_apply(
@@ -1560,20 +1597,15 @@ def _lower_training(context: LayerCompileContext) -> LoweredLayer:
     # nothing, and its ancestry is the authored chain the lock already records
     # through that earlier row.
     inherited_row_keys = frozenset(by_id)
-    base_payload, base_pin = _resolve_matrix_base_payload(
-        parent.get("base"),
+    base_payload, base_references = _resolve_matrix_base_payload(
+        parent,
         context.repo_root,
         context.parent_authorities,
         field=f"{context.parent.ref}#base",
     )
-    base_payload = _materialize_parent_matrix_base_payload(
-        base_payload,
-        parent.get("deltas") or [],
-        field=f"{context.parent.ref}#deltas",
-    )
     appending = authored.rows_mode is TrainingRowsMode.APPEND
 
-    references: list[Any] = [] if base_pin is None else [base_pin]
+    references: list[Any] = list(base_references)
     patches: list[OverridePatch] = []
     if context.envelope.name != parent.get("name"):
         patches.append(OverridePatch(path="name", op="replace", value=context.envelope.name))

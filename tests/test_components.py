@@ -39,7 +39,7 @@ def test_generated_convolution_restores_checkpoint_from_exported_graph(tmp_path)
     repo_root = Path(__file__).resolve().parents[1]
     assert {
         "feedbax/components/equinox.py",
-        "feedbax/components/equinox_history.py",
+        "feedbax/component_migrations/equinox.py",
         "scripts/generate_eqx_components.py",
     } <= set(registry.component_source_paths(repo_root)[type_id])
     authored = GraphSpec(

@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from importlib import import_module
 from pathlib import Path
 
 from .discovery import ComponentPack
-
 
 _PORTABLE_MODULES = (
     "feedbax.runtime.components",
@@ -38,13 +36,10 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
     """Build the fixed set of packages shipped with Feedbax."""
 
     from feedbax.acausal.system import AcausalSystem
-    from feedbax.acausal.system_history import HISTORIES as SYSTEM_HISTORIES
-    from feedbax.components.equinox_history import HISTORIES as EQUINOX_HISTORIES
+    from feedbax.component_migrations import control, mechanics, networks, penzai, runtime, tasks
+    from feedbax.component_migrations.composites import HISTORIES as COMPOSITE_HISTORIES
+    from feedbax.component_migrations.equinox import HISTORIES as EQUINOX_HISTORIES
     from feedbax.runtime.graph import Subgraph
-    from feedbax.runtime.graph_history import HISTORIES as GRAPH_HISTORIES
-
-    from .acausal_adapters import acausal_component_pack
-    from .templates import builtin_graph_template_pack, builtin_muscle_template_pack
     from feedbax.studio import (
         acausal_representation,
         builtin_component_presentation,
@@ -55,10 +50,13 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
         representation,
     )
 
+    from .acausal_adapters import acausal_component_pack
+    from .templates import builtin_graph_template_pack, builtin_muscle_template_pack
+
     histories = {
         owner: history
-        for module in _PORTABLE_MODULES
-        for owner, history in import_module(f"{module}_history").HISTORIES.items()
+        for group in (runtime, control, mechanics, networks, tasks, penzai)
+        for owner, history in group.HISTORIES.items()
     }
     presentation = builtin_component_presentation.builtin_component_presentation()
     presentation_sources = tuple(
@@ -88,7 +86,7 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
         ComponentPack(
             namespace="feedbax",
             components=(Subgraph, AcausalSystem),
-            histories={**GRAPH_HISTORIES, **SYSTEM_HISTORIES},
+            histories=COMPOSITE_HISTORIES,
         ),
         acausal_component_pack(),
         builtin_graph_template_pack(),
