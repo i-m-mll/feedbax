@@ -302,7 +302,7 @@ describe('resolved scene projection', () => {
   it('reports unavailable directed frame sources in acausal interiors', () => {
     const interior: AcausalGraphSpec = {
       schema_id: 'feedbax.spec.acausal_graph',
-      schema_version: 'feedbax.spec.acausal_graph.v1',
+      schema_version: 'feedbax.spec.acausal_graph.v2',
       physical_domain: 'translational',
       nodes: graph.nodes,
       connections: [],

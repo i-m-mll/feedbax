@@ -100,7 +100,7 @@ def test_affine_composer_historical_parameters_reach_outer_v3(
     resolved = registry.resolve_component_spec(
         "AffineValueComposer",
         params,
-        param_schema_version=source,
+        legacy_token=source,
         historical_unversioned=historical_unversioned,
     )
     assert resolved.revision == 3
@@ -142,15 +142,58 @@ def test_integer_history_rename_and_namespace_reservations():
             namespace="rename", components=(CurrentName,), histories={CurrentName: history}
         )
     )
-    old = registry.resolve_component_spec("OldWire", {}, param_schema_version="frozen.v1")
+    old = registry.resolve_component_spec("OldWire", {}, legacy_token="frozen.v1")
     assert (old.type_id, old.revision, old.params) == ("rename.CurrentName", 2, {"gain": 2.0})
     assert registry.serialize_component(CurrentName()) == ("rename.CurrentName", {"gain": 2.0}, 2)
     for invalid in (True, "2", 0):
         with pytest.raises(ValueError, match="strictly positive integer"):
             registry.resolve_component_spec("rename.CurrentName", {}, revision=invalid)
+    for invalid in (True, 1, 1.0):
+        with pytest.raises(ValueError, match="token must be a string"):
+            registry.resolve_component_spec("rename.PreviousName", {}, legacy_token=invalid)
     unrelated = type("PreviousName", (CurrentName,), {})
     with pytest.raises(ValueError, match="reserved"):
         registry.ingest(ComponentPack(namespace="rename", components=(unrelated,)))
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("single_batch", [False, True])
+def test_legacy_identity_reservation_is_atomic_across_registration_order(reverse, single_batch):
+    class CurrentOwner(Component):
+        gain: float = 1.0
+        ports: ClassVar = Ports({}, {})
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
+    class ReusedAlias(CurrentOwner):
+        pass
+
+    history = History(legacy=(
+        LegacyEndpoint("reserved.ReusedAlias", "1", 1),
+        LegacyEndpoint("reserved.ReusedAlias", None, 1),
+    ))
+    owners = (ReusedAlias, CurrentOwner) if reverse else (CurrentOwner, ReusedAlias)
+    registry = ComponentRegistry()
+    if single_batch:
+        before = registry.names()
+        with pytest.raises(ValueError, match="reserved"):
+            registry.ingest(ComponentPack(
+                namespace="reserved", components=owners, histories={CurrentOwner: history}
+            ))
+    else:
+        first, second = owners
+        registry.ingest(ComponentPack(
+            namespace="reserved", components=(first,),
+            histories={CurrentOwner: history} if first is CurrentOwner else {},
+        ))
+        before = registry.names()
+        with pytest.raises(ValueError, match="reserved"):
+            registry.ingest(ComponentPack(
+                namespace="reserved", components=(second,),
+                histories={CurrentOwner: history} if second is CurrentOwner else {},
+            ))
+    assert registry.names() == before
 
 
 @pytest.mark.parametrize(

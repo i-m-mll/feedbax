@@ -74,7 +74,7 @@ export interface SolverConfigSpec {
 
 export interface AcausalGraphSpec {
   schema_id?: "feedbax.spec.acausal_graph";
-  schema_version?: "feedbax.spec.acausal_graph.v1";
+  schema_version?: "feedbax.spec.acausal_graph.v2";
   physical_domain: "translational" | "rotational" | "planar_multibody";
   nodes?: Record<string, ComponentSpec>;
   connections?: AcausalConnectionSpec[];
@@ -1989,7 +1989,7 @@ export interface InspectionStatusResponse {
 export const acausalReportDefaults = {
   "AcausalGraphSpec": {
     "schema_id": "feedbax.spec.acausal_graph",
-    "schema_version": "feedbax.spec.acausal_graph.v1",
+    "schema_version": "feedbax.spec.acausal_graph.v2",
     "nodes": {},
     "connections": [],
     "subgraphs": null,
@@ -2228,7 +2228,7 @@ export const AcausalGraphSpecSchema: z.ZodType<AcausalGraphSpec> = z.lazy(() =>
   z
     .object({
       "schema_id": z.literal("feedbax.spec.acausal_graph").optional(),
-      "schema_version": z.literal("feedbax.spec.acausal_graph.v1").optional(),
+      "schema_version": z.literal("feedbax.spec.acausal_graph.v2").optional(),
       "physical_domain": z.union([z.literal("translational"), z.literal("rotational"), z.literal("planar_multibody")]),
       "nodes": z.record(z.string(), ComponentSpecSchema).optional(),
       "connections": z.array(AcausalConnectionSpecSchema).optional(),

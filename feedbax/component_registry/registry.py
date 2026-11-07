@@ -29,9 +29,6 @@ from .discovery import ComponentPack, compile_owner, discover_modules, source_pa
 
 
 logger = logging.getLogger(__name__)
-_LEGACY_INTERIOR_DOMAINS = {
-    "Network": CAUSAL_DOMAIN_ID,
-}
 
 
 @dataclass(frozen=True)
@@ -107,9 +104,13 @@ class ComponentRegistry:
                 from .history import History
 
                 history = pack.histories.get(definition, History())
-                for identity, _revision in history.endpoints(
-                    pack.namespace, definition.__name__
-                ).values():
+                identities = {
+                    identity
+                    for identity, _revision in history.endpoints(
+                        pack.namespace, definition.__name__
+                    ).values()
+                } | {endpoint.type_id for endpoint in history.legacy}
+                for identity in sorted(identities):
                     if (
                         identity in reserved_names
                         and reserved_names[identity] is not definition
@@ -250,6 +251,8 @@ class ComponentRegistry:
         historical_unversioned: bool = False,
     ) -> ComponentResolution:
         """Resolve migration edges before optionally completing the current contract."""
+        if legacy_token is not None and not isinstance(legacy_token, str):
+            raise ValueError(f"Legacy component version token must be a string: {legacy_token!r}")
         if revision is not None:
             from .history import require_revision
 
@@ -710,7 +713,7 @@ def required_interior_domain(node_type: str, registry: Any) -> str | None:
                     meta = item
                     break
     if meta is None:
-        return _LEGACY_INTERIOR_DOMAINS.get(node_type)
+        return None
     is_composite = (
         bool(meta.get("is_composite", False))
         if isinstance(meta, Mapping)

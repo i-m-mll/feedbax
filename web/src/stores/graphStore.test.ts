@@ -558,7 +558,7 @@ describe('graphStore boundary aliases', () => {
   it('edits and persists acausal conserving connections with multi-edge ports', () => {
     const interior: AcausalGraphSpec = {
       schema_id: 'feedbax.spec.acausal_graph',
-      schema_version: 'feedbax.spec.acausal_graph.v1',
+      schema_version: 'feedbax.spec.acausal_graph.v2',
       physical_domain: 'translational',
       solver: { solver_type: 'implicit_euler', dt: 0.01 },
       nodes: {

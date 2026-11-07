@@ -81,7 +81,7 @@ def test_load_manifest_migrates_embedded_graph_spec_and_preserves_source_hash(
     assert payload.schema_version == GRAPH_SPEC_SCHEMA_VERSION
     assert payload.inline["schema_id"] == GRAPH_SPEC_SCHEMA_ID
     assert payload.inline["schema_version"] == GRAPH_SPEC_SCHEMA_VERSION
-    assert payload.inline["nodes"]["network"]["type"] == "Network"
+    assert payload.inline["nodes"]["network"]["type"] == "feedbax.Subgraph"
     assert payload.sha256 == sha256_bytes(canonical_json_bytes(payload.inline))
     assert payload.source_sha256 == source_sha256
     assert [record.migration_id for record in payload.migration_records] == [
@@ -89,6 +89,7 @@ def test_load_manifest_migrates_embedded_graph_spec_and_preserves_source_hash(
         "graph-spec-v2-to-v3-derived-dimensions",
         "graph-spec-v3-to-v4-discriminated-subgraphs",
         "graph-spec-v4-to-v5-component-param-array-values",
+        "graph-spec-v5-to-v6-component-revisions",
     ]
     assert payload.migration_records[0].metadata["graph_path"] == "graph_spec"
     assert payload.migration_records[0].metadata["spec_payload_path"] == "graph_spec"

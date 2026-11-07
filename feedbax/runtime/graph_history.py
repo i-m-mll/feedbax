@@ -5,6 +5,9 @@ from .graph import Subgraph
 
 HISTORIES = {
     Subgraph: History(
-        legacy=(LegacyEndpoint("Subgraph", "1", 1, matches_unversioned=lambda params: True),)
+        legacy=(
+            LegacyEndpoint("Subgraph", "1", 1, matches_unversioned=lambda params: True),
+            LegacyEndpoint("Network", None, 1),
+        )
     )
 }

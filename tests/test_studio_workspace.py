@@ -185,17 +185,17 @@ def test_studio_save_stamps_nested_mechanics_without_completing_params(tmp_path)
     interior = point_mass_template_graph()
     interior.nodes["mass"].params.clear()
     graph = GraphSpec(
-        nodes={"plant": ComponentSpec(type="AcausalSystem")},
+        nodes={"plant": ComponentSpec(type="feedbax.AcausalSystem")},
         subgraphs={"plant": interior},
     )
 
     record = service.create_graph(graph, component_registry=registry)
     saved = json.loads((tmp_path / f"{record.graph_id}.json").read_text())
     saved_nodes = saved["graph"]["subgraphs"]["plant"]["nodes"]
-    assert saved_nodes["mass"]["type"] == "MechanicsMass"
-    assert saved_nodes["mass"]["param_schema_version"] == "1"
+    assert saved_nodes["mass"]["type"] == "feedbax.MechanicsMass"
+    assert saved_nodes["mass"]["revision"] == 1
     assert saved_nodes["mass"]["params"] == {}
-    assert saved_nodes["force"]["param_schema_version"] == "1"
+    assert saved_nodes["force"]["revision"] == 1
     reloaded = service.get_graph(record.graph_id, component_registry=registry)
     assert reloaded.project.graph == record.project.graph
     assert reloaded.project.workspace_document.semantic_root == (
@@ -229,6 +229,7 @@ def test_studio_save_load_preserves_read_only_array_value_envelopes(tmp_path):
     reloaded = service.get_graph(record.graph_id)
 
     assert reloaded.project.graph.nodes["fixture"].params["nested"]["matrix"] == declaration
+    assert reloaded.project.graph.nodes["fixture"].revision is None
     assert "graph" not in reloaded.project.workspace.scenarios["scenario:train"].model_fields_set
 
 

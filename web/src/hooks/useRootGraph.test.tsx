@@ -29,7 +29,7 @@ it('keeps root identity across acausal navigation and updates it for an interior
     subgraphs: {
       system: {
         schema_id: 'feedbax.spec.acausal_graph',
-        schema_version: 'feedbax.spec.acausal_graph.v1',
+        schema_version: 'feedbax.spec.acausal_graph.v2',
         physical_domain: 'translational',
         nodes: {
           mass: { type: 'feedbax.Mass', params: { mass: 1 }, input_ports: [], output_ports: [] },
