@@ -62,7 +62,7 @@ class ComponentRegistry:
     def __init__(self) -> None:
         self._sealed = False
         self._components: Dict[str, DeclaredComponent] = {}
-        self._component_migrations: Dict[tuple[str, str | None], ComponentMigration] = {}
+        self._component_migrations: Dict[tuple[str, int | str | None], ComponentMigration] = {}
         self._migration_owners: Dict[str, set[str]] = {}
         self._history_names: dict[str, type] = {}
         self._register_builtins()

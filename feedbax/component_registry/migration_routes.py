@@ -5,13 +5,13 @@ from typing import Any
 
 from feedbax.contracts.migrations import ComponentMigration, UnsupportedComponentMigration
 
-Endpoint = tuple[str, str | None]
+Endpoint = tuple[str, int | str | None]
 Routes = Mapping[Endpoint, ComponentMigration]
 
 
 def migration_route(
     routes: Routes,
-    current_version: Callable[[str], str | None],
+    current_revision: Callable[[str], int | None],
     source: Endpoint,
 ) -> tuple[Endpoint, tuple[ComponentMigration, ...]]:
     chain: list[ComponentMigration] = []
@@ -22,9 +22,9 @@ def migration_route(
             raise UnsupportedComponentMigration(f"Component migration cycle at {endpoint!r}")
         visited.add(endpoint)
         type_id, version = endpoint
-        if version is not None and version == current_version(type_id):
+        if version is not None and version == current_revision(type_id):
             raise UnsupportedComponentMigration(
-                f"Component migration starts at the current version: {endpoint!r}"
+                f"Component migration starts at the current revision: {endpoint!r}"
             )
         edge = routes[endpoint]
         chain.append(edge)
@@ -34,7 +34,7 @@ def migration_route(
 
 def validate_migration_routes(
     routes: Routes,
-    current_versions: Mapping[str, str],
+    current_revisions: Mapping[str, int],
     *,
     require_current_terminal: bool = False,
 ) -> None:
@@ -45,9 +45,9 @@ def validate_migration_routes(
                 f"Duplicate component migration ID: {edge.migration_id!r}"
             )
         migration_ids.add(edge.migration_id)
-        (type_id, version), _ = migration_route(routes, current_versions.get, endpoint)
+        (type_id, version), _ = migration_route(routes, current_revisions.get, endpoint)
         if require_current_terminal and (
-            version is None or current_versions.get(type_id) != version
+            version is None or current_revisions.get(type_id) != version
         ):
             raise UnsupportedComponentMigration(
                 f"Component migration {edge.migration_id!r} terminates at "
@@ -57,17 +57,17 @@ def validate_migration_routes(
 
 def source_endpoint(
     routes: Routes,
-    current_version: Callable[[str], str | None],
+    current_revision: Callable[[str], int | None],
     type_id: str,
-    version: str | None,
+    version: int | str | None,
     params: Mapping[str, Any],
     *,
     historical_unversioned: bool,
 ) -> Endpoint:
     if version is not None:
         return type_id, version
-    if not historical_unversioned and current_version(type_id) is not None:
-        return type_id, current_version(type_id)
+    if not historical_unversioned and current_revision(type_id) is not None:
+        return type_id, current_revision(type_id)
     legacy = [
         endpoint
         for endpoint, edge in routes.items()
@@ -79,7 +79,7 @@ def source_endpoint(
     if (
         unversioned_rename is not None
         and unversioned_rename.matches_unversioned is None
-        and current_version(type_id) is None
+        and current_revision(type_id) is None
     ):
         legacy.append((type_id, None))
     if len(legacy) == 1:
@@ -93,4 +93,4 @@ def source_endpoint(
             f"Ambiguous unversioned component parameters for {type_id!r}; "
             "supply the original parameter schema version"
         )
-    return type_id, current_version(type_id)
+    return type_id, current_revision(type_id)
