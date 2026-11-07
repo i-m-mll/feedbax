@@ -68,6 +68,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import ContentPinnedJsonBase
 from feedbax.contracts.project_experiment import ProjectExperimentDeclaration
 from feedbax.contracts.run_composition import (
+    AuthoredIntentParent,
     CompositionNode,
     InlineIntentParent,
     ResolvedOutputParent,
@@ -76,6 +77,7 @@ from feedbax.contracts.run_composition import (
 from feedbax.contracts.run_matrix import (
     MatrixCompositionDelta,
     TrainingRowParentProvenance,
+    TrainingRowLowererRef,
     apply_composition_deltas,
     apply_override_patches,
 )
@@ -1146,15 +1148,116 @@ def test_an_authored_training_row_inherits_names_seeds_and_records_replacement(
     assert outcome.document["tags"] == ["widened"]
 
 
-def test_a_row_delta_lands_as_native_override_patches(repo: Path) -> None:
-    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+@pytest.mark.parametrize("composed", [False, True])
+def test_a_row_delta_lands_as_native_override_patches(repo: Path, composed: bool) -> None:
+    lowerer = TrainingRowLowererRef(
+        lowerer_id="quillon.training", lowerer_version="1", implementation_sha256="a" * 64
+    ).model_dump(mode="json")
+    if composed:
+        matrix = json.loads((repo / TRAINING_BASE).read_text())
+        parent = CompositionNode(
+            name="parent-intent",
+            parent=InlineIntentParent(
+                payload={**matrix["base"]["inline"], "feedbax_row_lowerer": lowerer},
+                schema_id="quillon.survey_payload",
+                schema_version="quillon.survey_payload.v1",
+            ),
+            deltas=[
+                MatrixCompositionDelta(
+                    layer_id="parent",
+                    patches=[OverridePatch(path="parent_effect", op="add", value=1)],
+                )
+            ],
+        )
+        parent_ref = "intent/parent.json"
+        write_json(repo / parent_ref, parent.model_dump(mode="json", exclude_none=True))
+        child = CompositionNode(
+            name="child-intent",
+            parent=AuthoredIntentParent(
+                ref=parent_ref, content_hash=authored_envelope_hash(parent)
+            ),
+        )
+        child_ref = "intent/child.json"
+        child_document = child.model_dump(mode="json", exclude_none=True)
+        write_json(repo / child_ref, child_document)
+        matrix["base"] = {
+            "kind": "authored_intent",
+            "ref": child_ref,
+            "content_hash": canonical_sha256(child_document),
+        }
+        matrix["deltas"] = [
+            {
+                "layer_id": "matrix",
+                "patches": [{"path": "matrix_effect", "op": "add", "value": 2}],
+            }
+        ]
+        matrix["rows"][0]["overrides"] = [{"path": "source_effect", "op": "add", "value": 3}]
+        write_json(repo / TRAINING_BASE, matrix)
+        authored = json.loads(envelope_path(repo, "widened").read_text())
+        authored.pop("assert")
+        authored["training"]["rows"][0]["delta"]["patches"].insert(
+            0,
+            {
+                "path": "feedbax_row_lowerer.implementation_sha256",
+                "op": "replace",
+                "value": "b" * 64,
+            },
+        )
+        write_envelope(envelope_path(repo, "widened"), authored)
 
+    outcome = kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
     widened = next(row for row in outcome.document["rows"] if row["row_id"] == "widened")
-    assert [(patch["path"], patch["op"]) for patch in widened["overrides"]] == [
-        ("span", "replace"),
-        ("probe.depth", "remove"),
-        ("cadence_profile", "add"),
-    ]
+    expected = [("span", "replace"), ("probe.depth", "remove"), ("cadence_profile", "add")]
+    if composed:
+        expected = [
+            ("source_effect", "add"),
+            ("feedbax_row_lowerer.implementation_sha256", "replace"),
+            *expected,
+        ]
+    assert [(patch["path"], patch["op"]) for patch in widened["overrides"]] == expected
+
+    materialized = materialize_adapted_run_matrix(
+        outcome.document, repo_root=repo, row_validator=lambda _payload, _row_id: None
+    )
+    payload = next(row.authored_payload for row in materialized.rows if row.row_id == "widened")
+    assert payload["span"] == 9
+    assert "depth" not in payload["probe"]
+    assert payload["cadence_profile"] == {"steps": [1, 2], "hold": 3}
+    if composed:
+        assert payload["feedbax_row_lowerer"] == {**lowerer, "implementation_sha256": "b" * 64}
+        assert (payload["parent_effect"], payload["matrix_effect"], payload["source_effect"]) == (
+            1,
+            2,
+            3,
+        )
+        assert authored_envelope_hash(parent) != canonical_sha256(
+            parent.model_dump(mode="json", exclude_none=True)
+        )
+        pin = next(
+            reference
+            for reference in outcome.compile_lock["references"]
+            if reference["kind"] == "content_pin" and reference["ref"] == child_ref
+        )
+        assert pin["content_hash"] == canonical_sha256(child_document)
+
+        patches = authored["training"]["rows"][0]["delta"]["patches"]
+        for invalid in (
+            {"path": "feedbax_row_lowerer", "op": "add", "value": lowerer},
+            {"path": "feedbax_row_lowerer.absent", "op": "replace", "value": "b" * 64},
+        ):
+            patches[0] = invalid
+            write_envelope(envelope_path(repo, "widened"), authored)
+            with pytest.raises(ExperimentEnvelopeRejection) as rejected:
+                kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+            assert rejected.value.category is ExperimentEnvelopeRejectionCategory.INVALID_VALUE
+        patches.pop(0)
+        write_envelope(envelope_path(repo, "widened"), authored)
+        parent_document = parent.model_dump(mode="json", exclude_none=True)
+        parent_document["parent"]["payload"]["span"] = 99
+        write_json(repo / parent_ref, parent_document)
+        with pytest.raises(ExperimentEnvelopeRejection) as drifted:
+            kernel().compile_envelope_file(envelope_path(repo, "widened"), repo_root=repo)
+        assert drifted.value.category is ExperimentEnvelopeRejectionCategory.UNRESOLVED_BASE
 
 
 def test_the_lock_records_the_native_delta_it_resolved(repo: Path) -> None:
@@ -2160,14 +2263,31 @@ def _write_resolved_parent_alias_chain(
     return child_path, parent, payload
 
 
+@pytest.mark.parametrize("nested", [False, True])
 def test_alias_child_authenticates_resolved_parent_bytes_before_applying_row_delta(
     repo: Path,
+    nested: bool,
 ) -> None:
     child_path, parent, payload = _write_resolved_parent_alias_chain(repo)
     authority = _resolved_parent_authority(payload, parent)
+    unused_parent = parent.model_copy(update={"ref": "artifact-blob:unused"})
+    unused = _resolved_parent_authority(payload, unused_parent)
+    if nested:
+        node = CompositionNode(name="nested-governed-parent", parent=parent)
+        ref = "intent/governed.json"
+        document = node.model_dump(mode="json", exclude_none=True)
+        write_json(repo / ref, document)
+        root_path = envelope_path(repo, "resolved-root")
+        authored = json.loads(root_path.read_text())
+        authored["training"]["root"]["parent"] = {
+            "kind": "authored_intent",
+            "ref": ref,
+            "content_hash": authored_envelope_hash(node),
+        }
+        write_envelope(root_path, authored)
 
     outcome = kernel_for(
-        PROJECT_DECLARATION, parent_authorities=(authority,)
+        PROJECT_DECLARATION, parent_authorities=(authority, unused)
     ).compile_envelope_file(child_path, repo_root=repo)
 
     assert [row["row_id"] for row in outcome.document["rows"]] == ["condition-b"]
@@ -2186,12 +2306,17 @@ def test_alias_child_authenticates_resolved_parent_bytes_before_applying_row_del
         "metric_payload_slot": "adaptive_method_trace",
         "replica_axis": "replica",
     }
-    assert outcome.document["base"] == parent.model_dump(mode="json", exclude_none=True)
-    governed = next(
+    if nested:
+        assert outcome.document["base"]["content_hash"] == canonical_sha256(document)
+    else:
+        assert outcome.document["base"] == parent.model_dump(mode="json", exclude_none=True)
+    governed_references = [
         reference
         for reference in outcome.compile_lock["references"]
         if reference["kind"] == "governed_parent"
-    )
+    ]
+    assert len(governed_references) == 1
+    governed = governed_references[0]
     assert governed == {
         "kind": "governed_parent",
         "parent": parent.model_dump(mode="json", exclude_none=True),
