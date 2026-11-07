@@ -114,7 +114,7 @@ class AcausalSystem(DAEComponent[AcausalSystemState], ComponentOwner):
         self,
         elements: dict[str, AcausalElement],
         connections: list[AcausalConnection],
-        dt: float = 0.01,
+        dt: float | None = None,
         solver_type: Type[dfx.AbstractSolver] | dfx.AbstractSolver = dfx.Euler,
         root_finder: Optional[optx.AbstractRootFinder] = None,
         *,
@@ -136,6 +136,10 @@ class AcausalSystem(DAEComponent[AcausalSystemState], ComponentOwner):
                 names to sensor element names in the assembled acausal graph.
             key: PRNG key (passed through to ``DAEComponent``).
         """
+
+        from feedbax.contracts.portable import default_configuration
+        config = default_configuration(type(self), **({} if dt is None else {"dt": dt}))
+        dt = config.dt
 
         # ---- Assembly ----------------------------------------------------
         layout, vf_fn, params_dict, sensor_fn = assemble_system(
