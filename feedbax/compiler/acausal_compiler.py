@@ -41,7 +41,7 @@ from feedbax.contracts.domain import (
 )
 from feedbax.contracts.graph import ComponentSpec
 from feedbax.compiler.builders import build_component
-from feedbax.compiler.solver_config import resolve_acausal_solver
+from feedbax.mechanics.solver_config import resolve_acausal_solver
 
 
 if TYPE_CHECKING:
