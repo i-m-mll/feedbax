@@ -2003,21 +2003,21 @@ def _migrate_studio_graph_project_unversioned_payload(
 
 
 def _decode_component_revisions(
-    payload: dict[str, Any], component_registry: Any | None
+    payload: dict[str, Any], component_registry: Any | None, *, historical: bool = False
 ) -> dict[str, Any]:
     nodes = payload.get("nodes")
     if not isinstance(nodes, Mapping):
         return payload
     decoded = {}
     for name, raw_node in nodes.items():
-        if not isinstance(raw_node, Mapping) or "param_schema_version" not in raw_node:
+        if not isinstance(raw_node, Mapping) or ("param_schema_version" not in raw_node and not historical):
             decoded[name] = raw_node
             continue
         node = dict(raw_node)
-        token = node.pop("param_schema_version")
-        if "revision" in node:
+        token = node.pop("param_schema_version", None)
+        if "revision" in node and "param_schema_version" in raw_node:
             raise ValueError(f"Component node {name!r} declares both revision and legacy param_schema_version")
-        if token is not None:
+        if token is not None or (historical and node.get("revision") is None):
             if component_registry is None:
                 from feedbax.component_registry import ComponentRegistry
 
@@ -2026,6 +2026,7 @@ def _decode_component_revisions(
                 node["type"],
                 node.get("params", {}),
                 legacy_token=token,
+                historical_unversioned=historical and token is None,
                 complete_params=False,
             )
             node.update(type=resolution.type_id, params=resolution.params, revision=resolution.revision)
@@ -2060,7 +2061,9 @@ def migrate_graph_spec(
         source_version=resolved_source,
         target_version=resolved_target,
     )
-    migrated_payload = _decode_component_revisions(dict(result.payload), component_registry)
+    migrated_payload = _decode_component_revisions(
+        dict(result.payload), component_registry, historical=resolved_source != GRAPH_SPEC_SCHEMA_VERSION
+    )
     migrated_payload.setdefault("schema_id", GRAPH_SPEC_SCHEMA_ID)
     migrated_payload.setdefault("schema_version", resolved_target)
     records = [_record_with_graph_path(record, path) for record in result.migration_records]

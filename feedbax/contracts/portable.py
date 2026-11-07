@@ -102,8 +102,8 @@ def install_ports(cls):
         from equinox import field
         cls.__annotations__ = {**vars(cls).get("__annotations__", {}),
                                "input_ports": tuple[str, ...], "output_ports": tuple[str, ...]}
-        cls.input_ports = field(default=tuple(ports.inputs), static=True)
-        cls.output_ports = field(default=tuple(ports.outputs), static=True)
+        cls.input_ports = field(default=tuple(ports.inputs), static=True, kw_only=True)
+        cls.output_ports = field(default=tuple(ports.outputs), static=True, kw_only=True)
 
 
 def configuration_model(cls):

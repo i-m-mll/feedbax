@@ -48,23 +48,6 @@ if TYPE_CHECKING:
 ComponentBuilder = Callable[[Mapping[str, Any]], "Component"]
 OutputPrototypeFn = Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]]
 ComponentParamModel = type[BaseModel]
-ComponentParamExtractor = Callable[["Component", BaseModel], BaseModel]
-ComponentParamProjection = Callable[[Mapping[str, Any]], Mapping[str, Any]]
-
-
-def _unsupported_declared_builder(component_type: str) -> ComponentBuilder:
-    message = (
-        f"Component type {component_type!r} has no runtime builder. "
-        "It is a display-only abstraction used in composite subgraph templates."
-    )
-
-    def _builder(params: Mapping[str, Any]) -> "Component":
-        del params
-        raise NotImplementedError(message)
-
-    _builder._feedbax_unsupported_builder = True  # type: ignore[attr-defined]
-    _builder._feedbax_unsupported_builder_message = message  # type: ignore[attr-defined]
-    return _builder
 
 
 class ComponentParamValidationError(DynamicPortPolicyError):
@@ -402,8 +385,6 @@ class DeclaredComponent:
 
     @property
     def builder(self) -> ComponentBuilder | None:
-        if self.params.classification == "unsupported":
-            return _unsupported_declared_builder(self.name)
         return self.params.build
 
     @property

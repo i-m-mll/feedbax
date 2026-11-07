@@ -533,7 +533,7 @@ class DynamicsMatrixPerturbConfig(BaseModel):
     @field_validator("delta_A")
     @classmethod
     def validate_delta_shape(cls, value):
-        if jnp.shape(value) != (2, 4):
+        if jnp.asarray(value).shape != (2, 4):
             raise ValueError("delta_A must have shape (2, 4)")
         return value
 
