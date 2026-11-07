@@ -2,23 +2,7 @@
 
 from __future__ import annotations
 
-from feedbax.acausal.system import acausal_system_definition
-from feedbax.components.penzai import penzai_adapter_definition
-from feedbax.mechanics.analytical_component import analytical_musculoskeletal_plant_definition
-from feedbax.mechanics.direct_force_components import (
-    point_mass_definition,
-    two_link_arm_definition,
-)
-from feedbax.runtime.graph import subgraph_definition
-from feedbax.tasks.reach_components import (
-    delayed_reaches_definition,
-    simple_reaches_definition,
-    stabilization_definition,
-)
-
-from .acausal_adapters import acausal_component_pack
 from .discovery import ComponentPack, discover_modules
-from .templates import builtin_graph_template_pack, builtin_muscle_template_pack
 
 
 _OWNER_MODULES = (
@@ -45,6 +29,24 @@ _OWNER_MODULES = (
 
 def builtin_component_packs() -> tuple[ComponentPack, ...]:
     """Build the fixed set of packages shipped with Feedbax."""
+
+    from feedbax.acausal.system import acausal_system_definition
+    from feedbax.components.penzai import penzai_adapter_definition
+    from feedbax.mechanics.analytical_component import analytical_musculoskeletal_plant_definition
+    from feedbax.mechanics.direct_force_components import (
+        point_mass_definition,
+        two_link_arm_definition,
+    )
+    from feedbax.runtime.graph import subgraph_definition
+    from feedbax.tasks.reach_components import (
+        delayed_reaches_definition,
+        simple_reaches_definition,
+        stabilization_definition,
+    )
+
+    from .acausal_adapters import acausal_component_pack
+    from .templates import builtin_graph_template_pack, builtin_muscle_template_pack
+
     return (
         discover_modules(*_OWNER_MODULES),
         ComponentPack(
