@@ -24,7 +24,7 @@ class Ports:
         for names in (self.inputs, self.outputs):
             if any(not isinstance(name, str) or not name for name in names):
                 raise ValueError("Port names must be nonempty strings")
-        if self.dynamic is not None:
+        if self.dynamic is not None and self.dynamic.count_mode != "names":
             if tuple(self.inputs) != self.dynamic.fixed_input_ports or tuple(self.outputs) != self.dynamic.fixed_output_ports:
                 raise ValueError("Dynamic port fixed names must agree with the typed ports")
 
@@ -189,3 +189,26 @@ class ComponentOptions:
         import dataclasses
 
         return {item.name: getattr(self, item.name) for item in dataclasses.fields(self)}
+
+
+def validate_configuration(component):
+    """Validate host-visible construction values without materializing traced arrays."""
+    import jax
+    from pydantic import TypeAdapter
+
+    cls = type(component)
+    model = configuration_model(cls)
+    paths = configuration_paths(cls)
+    values = {}
+    traced = False
+    for name, field in model.model_fields.items():
+        value = component
+        for part in paths.get(name, name).split("."):
+            value = getattr(value, part)
+        if any(isinstance(leaf, jax.core.Tracer) for leaf in jax.tree.leaves(value)):
+            traced = True
+            continue
+        values[name] = json_value(value)
+        TypeAdapter(field.rebuild_annotation()).validate_python(values[name], strict=True)
+    if not traced:
+        model.model_validate(values)

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from feedbax.component_registry import ComponentPack
-from feedbax.component_registry import ParameterField
-from feedbax.component_registry import declare_component
 
 import pytest
 import jax
@@ -18,8 +16,13 @@ from feedbax.compiler import (
     compile_graph,
 )
 from feedbax.compiler.serialization import graph_to_spec
-from feedbax.component_registry import ComponentMigration, ComponentRegistry
-from feedbax.runtime.components import Constant, Gain
+from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry.history import Change, History
+from feedbax.contracts.component import PortType
+from feedbax.contracts.portable import ComponentOptions, Ports
+from feedbax.runtime.graph import Component
+from types import ModuleType
+from typing import ClassVar
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphSpec,
@@ -34,6 +37,18 @@ from feedbax.contracts.graph import (
     AdditiveGraphChannelTargetSpec,
 )
 from feedbax.runtime.graph import init_state_from_component
+
+
+def _owner_registry(owner, history=None):
+    module = ModuleType("test_compiler_owners")
+    owner.__module__ = module.__name__
+    setattr(module, owner.__name__, owner)
+    registry = ComponentRegistry()
+    registry.ingest(ComponentPack(
+        namespace="example", modules=(module,),
+        histories={owner: history} if history is not None else {},
+    ))
+    return registry
 
 
 def test_replacing_a_removed_node_does_not_reuse_its_trainability() -> None:
@@ -251,7 +266,7 @@ def test_compiler_generated_adapter_has_truthful_source_map_origin() -> None:
     assert entry.authored_path == "/graph"
     adapter = compiled.resolved.graph.nodes[adapter_id]
     binding = compiled.graph.component_bindings[adapter_id]
-    assert adapter.param_schema_version == binding.param_schema_version == "1"
+    assert adapter.revision == binding.revision == 1
 
 
 def test_workspace_view_edits_cannot_change_semantic_or_runtime_identity() -> None:
@@ -299,28 +314,27 @@ def test_graph_document_and_compiler_reject_presentation_state() -> None:
 
 @pytest.mark.parametrize("nested", [False, True])
 def test_migrated_component_semantics_are_the_executed_graph(nested: bool) -> None:
-    registry = ComponentRegistry()
-    registry.ingest(
-        ComponentPack(
-            migrations=(
-                ComponentMigration(
-                    source_type="LegacyGain",
-                    target_type="Gain",
-                    owner="feedbax",
-                    source_param_schema_version="legacy-scale",
-                    target_param_schema_version="1",
-                    migration_id="tests.legacy-gain-to-current",
-                    migrate_params=lambda params: {"gain": params["scale"]},
-                ),
-            )
+    class ScaledGain(Component):
+        gain: float
+        ports: ClassVar = Ports(
+            {"input": PortType(dtype="any")}, {"output": PortType(dtype="any")}
         )
-    )
+        component_options: ClassVar = ComponentOptions(
+            output_prototype_fn=lambda params, inputs: {"output": inputs.get("input", jnp.zeros(()))}
+        )
+
+        def __call__(self, inputs, state, *, key):
+            return {"output": self.gain * inputs["input"]}, state
+
+    registry = _owner_registry(ScaledGain, History(Change(
+        2, renamed_from="LegacyGain", migrate=lambda params: {"gain": params["scale"]}
+    )))
     child = GraphSpec(
         nodes={
             "gain": ComponentSpec(
-                type="LegacyGain",
+                type="example.LegacyGain",
                 params={"scale": 8.0},
-                param_schema_version="legacy-scale",
+                revision=1,
                 input_ports=["input"],
                 output_ports=["output"],
             )
@@ -361,57 +375,35 @@ def test_migrated_component_semantics_are_the_executed_graph(nested: bool) -> No
         assert entry.origin == "authored"
     node = semantic.nodes["gain"]
     binding = runtime.component_bindings["gain"]
-    assert (node.type, node.param_schema_version, node.params) == ("Gain", "1", {"gain": 8.0})
-    assert (binding.type_id, binding.param_schema_version) == (node.type, node.param_schema_version)
+    assert (node.type, node.revision, node.params) == ("example.ScaledGain", 2, {"gain": 8.0})
+    assert (binding.type_id, binding.revision) == (node.type, node.revision)
     outputs, _ = compiled.graph(
         {"input": jnp.asarray(3.0)},
         init_state_from_component(compiled.graph),
         key=jax.random.PRNGKey(0),
     )
     assert float(outputs["output"]) == 24.0
-    assert child.nodes["gain"].type == "LegacyGain"
+    assert child.nodes["gain"].type == "example.LegacyGain"
 
 
 def test_migrations_precede_inference_and_defaults_follow_derived_dimensions() -> None:
-    registry = ComponentRegistry()
-    registry.ingest(
-        ComponentPack(
-            components=(
-                declare_component(
-                    name="VectorSource",
-                    builder=lambda params: Constant(jnp.ones(params["width"])),
-                    output_ports=["output"],
-                    output_prototype_fn=lambda params, inputs: {
-                        "output": jnp.ones(params["width"])
-                    },
-                    parameter_fields=[
-                        ParameterField(name='width', type='int', default=3)
-                    ],
-                    input_ports=(),
-                    category="Custom",
-                    override_reason="Synthetic fixture constructor",
-                ),
-            )
+    class VectorSource(Component):
+        width: int = 3
+        ports: ClassVar = Ports({}, {"output": PortType(dtype="vector")})
+        component_options: ClassVar = ComponentOptions(
+            output_prototype_fn=lambda params, inputs: {"output": jnp.ones(params["width"])}
         )
-    )
-    registry.ingest(
-        ComponentPack(
-            migrations=(
-                ComponentMigration(
-                    source_type="LegacyVectorSource",
-                    target_type="VectorSource",
-                    owner="feedbax",
-                    target_param_schema_version="1",
-                    migration_id="tests.legacy-vector-to-current",
-                    migrate_params=lambda params: {"width": params["n"]},
-                ),
-            )
-        )
-    )
+
+        def __call__(self, inputs, state, *, key):
+            return {"output": jnp.ones(self.width)}, state
+
+    registry = _owner_registry(VectorSource, History(Change(
+        2, renamed_from="LegacyVectorSource", migrate=lambda params: {"width": params["n"]}
+    )))
     graph = GraphSpec(
         nodes={
             "source": ComponentSpec(
-                type="LegacyVectorSource", params={"n": 5}, output_ports=["output"]
+                type="example.LegacyVectorSource", revision=1, params={"n": 5}, output_ports=["output"]
             ),
             "linear": ComponentSpec(
                 type="Linear",
@@ -450,7 +442,7 @@ def test_unknown_component_version_points_to_nested_authored_node() -> None:
         update={
             "nodes": {
                 **child.nodes,
-                "gain": child.nodes["gain"].model_copy(update={"param_schema_version": "unknown"}),
+                "gain": child.nodes["gain"].model_copy(update={"revision": 999}),
             }
         }
     )
@@ -464,7 +456,7 @@ def test_unknown_component_version_points_to_nested_authored_node() -> None:
         compile_graph(GraphDocument(graph=graph), ComponentRegistry())
     diagnostic = caught.value.record.diagnostics[0]
     assert diagnostic.source_anchor.authored_path == "/graph/subgraphs/nested/nodes/gain"
-    assert "source_param_schema_version='unknown'" in diagnostic.observed_condition
+    assert "999" in diagnostic.observed_condition
 
 
 def test_parameter_normalization_is_applied_once_before_runtime_construction() -> None:
@@ -476,26 +468,24 @@ def test_parameter_normalization_is_applied_once_before_runtime_construction() -
         def convert_percent(cls, value: float) -> float:
             return value / 100
 
-    registry = ComponentRegistry()
-    registry.ingest(
-        ComponentPack(
-            components=(
-                declare_component(
-                    name="PercentGain",
-                    builder=lambda params: Gain(gain=params["gain"]),
-                    param_model=GainParams,
-                    input_ports=["input"],
-                    output_ports=["output"],
-                    category="Custom",
-                    override_reason="Synthetic fixture constructor",
-                ),
-            )
+    class PercentGain(Component):
+        gain: float
+        config: ClassVar = GainParams
+        ports: ClassVar = Ports(
+            {"input": PortType(dtype="any")}, {"output": PortType(dtype="any")}
         )
-    )
+        component_options: ClassVar = ComponentOptions(
+            output_prototype_fn=lambda params, inputs: {"output": inputs.get("input", jnp.zeros(()))}
+        )
+
+        def __call__(self, inputs, state, *, key):
+            return {"output": self.gain * inputs["input"]}, state
+
+    registry = _owner_registry(PercentGain)
     graph = GraphSpec(
         nodes={
             "gain": ComponentSpec(
-                type="PercentGain",
+                type="example.PercentGain",
                 params={"gain": 50.0},
                 input_ports=["input"],
                 output_ports=["output"],

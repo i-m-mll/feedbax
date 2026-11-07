@@ -31,6 +31,8 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
     """Build the fixed set of packages shipped with Feedbax."""
 
     from feedbax.acausal.system import acausal_system_definition
+    from feedbax.mechanics.force_fields import CurlField, ThresholdLatchedForce
+    from feedbax.mechanics.force_fields_history import HISTORIES as FORCE_HISTORIES
     from feedbax.components.penzai import penzai_adapter_definition
     from feedbax.mechanics.analytical_component import analytical_musculoskeletal_plant_definition
     from feedbax.mechanics.direct_force_components import (
@@ -49,6 +51,11 @@ def builtin_component_packs() -> tuple[ComponentPack, ...]:
 
     return (
         discover_modules(*_OWNER_MODULES),
+        ComponentPack(
+            namespace="feedbax",
+            components=(CurlField, ThresholdLatchedForce),
+            histories=FORCE_HISTORIES,
+        ),
         ComponentPack(
             components=(
                 subgraph_definition,

@@ -69,11 +69,34 @@ def migrate_component_definition_v2_to_v3_payload(payload: Dict[str, Any]) -> Di
     return migrated
 
 
+def migrate_component_definition_v3_to_v4_payload(payload: Dict[str, Any], *, component_registry=None) -> Dict[str, Any]:
+    """Resolve exact historical component metadata through its owning registry."""
+    if payload.get("schema_version") != COMPONENT_DEFINITION_SCHEMA_VERSION_V3:
+        return dict(payload)
+    if component_registry is None:
+        from feedbax.component_registry import ComponentRegistry
+
+        component_registry = ComponentRegistry()
+    resolved = component_registry.resolve_component_spec(payload["name"], payload.get("default_params", {}),
+        param_schema_version=payload.get("param_schema_version"), complete_params=False,
+        historical_unversioned="param_schema_version" not in payload)
+    migrated = dict(payload)
+    migrated.pop("param_schema_version", None)
+    migrated.pop("supported_param_schema_versions", None)
+    migrated.update(schema_version=COMPONENT_DEFINITION_SCHEMA_VERSION,
+        name=resolved.type_id, revision=resolved.revision,
+        supported_revisions=resolved.meta.supported_revisions,
+        default_params=resolved.params,
+        migrations=[item.model_dump(mode="json") for item in resolved.meta.migrations])
+    return migrated
+
+
 def migrate_component_definition_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Migrate legacy component definitions to the current schema."""
 
     migrated = migrate_component_definition_v1_to_v2_payload(payload)
-    return migrate_component_definition_v2_to_v3_payload(migrated)
+    migrated = migrate_component_definition_v2_to_v3_payload(migrated)
+    return migrate_component_definition_v3_to_v4_payload(migrated)
 
 
 class PortType(BaseModel):
@@ -113,15 +136,17 @@ class DynamicPortPolicy(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    count_param: str = Field(min_length=1)
-    count_mode: Literal["integer", "sequence_length"]
-    direction: Literal["input", "output"]
+    count_param: str | None = Field(default=None, min_length=1)
+    count_mode: Literal["integer", "sequence_length", "names"]
+    direction: Literal["input", "output"] | None = None
+    input_name_params: tuple[str, ...] = ()
+    output_name_params: tuple[str, ...] = ()
     fixed_input_ports: tuple[str, ...] = ()
     fixed_output_ports: tuple[str, ...] = ()
-    generated_name_template: str = Field(min_length=1)
+    generated_name_template: str | None = Field(default=None, min_length=1)
     generated_index_origin: int = 0
     minimum_count: int = Field(default=1, ge=0)
-    dynamic_port_type: PortType
+    dynamic_port_type: PortType = Field(default_factory=PortType)
     auto_resize_minimum: int | None = Field(default=None, ge=0)
     concatenate_to_output: str | None = None
 
@@ -139,6 +164,16 @@ class DynamicPortPolicy(BaseModel):
             self.direction != "input" or self.concatenate_to_output not in self.fixed_output_ports
         ):
             raise ValueError("concatenation requires dynamic inputs and a fixed output port")
+        if self.count_mode == "names":
+            if self.count_param is not None or self.direction is not None or self.generated_name_template is not None or self.fixed_input_ports or self.fixed_output_ports:
+                raise ValueError("Named dynamic ports cannot also declare a count/generated layout")
+            if not self.input_name_params and not self.output_name_params:
+                raise ValueError("Named dynamic ports require input or output name parameters")
+            _validate_fixed_port_names(self.input_name_params, direction="input parameter")
+            _validate_fixed_port_names(self.output_name_params, direction="output parameter")
+            return self
+        if self.input_name_params or self.output_name_params or self.count_param is None or self.direction is None or self.generated_name_template is None:
+            raise ValueError("Count-based dynamic ports require count, direction and template only")
         template = self.generated_name_template
         non_tokens = template.replace("{index}", "")
         if "{" in non_tokens or "}" in non_tokens:
@@ -224,6 +259,14 @@ def derive_dynamic_port_layout(
 ) -> DynamicPortLayout:
     """Derive the complete port layout declared by ``policy``."""
 
+    if policy.count_mode == "names":
+        def names(fields, direction):
+            values = tuple(params.get(name) for name in fields)
+            if any(not isinstance(name, str) or not name for name in values):
+                raise DynamicPortPolicyError(f"Dynamic {direction} names must be nonempty strings")
+            _validate_fixed_port_names(values, direction=direction)
+            return values
+        return DynamicPortLayout(input_ports=names(policy.input_name_params, "input"), output_ports=names(policy.output_name_params, "output"))
     count = derive_dynamic_port_count(policy, params)
     generated = tuple(
         _format_generated_port_name(policy, policy.generated_index_origin + offset)

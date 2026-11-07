@@ -36,6 +36,10 @@ from feedbax.contracts.graph import (
     NodeUIState,
     ParamSchema,
 )
+from feedbax.contracts.portable import (
+    MissingPrototypeInput as MissingPrototypeInput,
+    InputPrototypeParameter,
+)
 from feedbax.contracts.representation import RepresentationSpec
 
 if TYPE_CHECKING:
@@ -79,7 +83,6 @@ def _unsupported_declared_builder(component_type: str) -> ComponentBuilder:
     return _builder
 
 
-from feedbax.contracts.portable import MissingPrototypeInput
 
 
 class ComponentParamValidationError(DynamicPortPolicyError):
@@ -487,7 +490,6 @@ class ComponentDeclaration:
             raise ValueError("component declaration identities and owner must be non-empty")
 
 
-from feedbax.contracts.portable import InputPrototypeParameter
 
 
 @dataclass(frozen=True)

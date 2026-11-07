@@ -156,15 +156,21 @@ class Component(GraphNode):
 
     def __check_init__(self):
         from feedbax.contracts.component import derive_dynamic_port_layout
-        from feedbax.contracts.portable import configuration_paths
+        from feedbax.contracts.portable import configuration_paths, validate_configuration
 
         ports = type(self).ports
+        if ports is not None:
+            validate_configuration(self)
         if ports is not None and ports.dynamic is not None:
-            name = ports.dynamic.count_param
-            value = self
-            for part in configuration_paths(type(self)).get(name, name).split("."):
-                value = getattr(value, part)
-            layout = derive_dynamic_port_layout(ports.dynamic, {name: value})
+            names = (*ports.dynamic.input_name_params, *ports.dynamic.output_name_params) if ports.dynamic.count_mode == "names" else (ports.dynamic.count_param,)
+            values = {}
+            paths = configuration_paths(type(self))
+            for name in names:
+                value = self
+                for part in paths.get(name, name).split("."):
+                    value = getattr(value, part)
+                values[name] = value
+            layout = derive_dynamic_port_layout(ports.dynamic, values)
             object.__setattr__(self, "input_ports", layout.input_ports)
             object.__setattr__(self, "output_ports", layout.output_ports)
 
@@ -300,7 +306,7 @@ class ComponentBinding:
     """Registry identity and explicit graph-owned controls for one node."""
 
     type_id: str
-    param_schema_version: str
+    revision: int
     # Checkpoint slot fingerprints include the binding's repr via the PyTree definition.
     trainable_override: bool | None = dataclasses.field(default=None, repr=False)
     authored_arrays: tuple[AuthoredArrayEncoding, ...] = dataclasses.field(default=(), repr=False)

@@ -1,22 +1,22 @@
 from __future__ import annotations
 
+from typing import ClassVar
+
 from feedbax.component_registry import ComponentPack
-from feedbax.component_registry import ParameterField
 from feedbax.contracts.component import DynamicPortPolicy
-from feedbax.component_registry import declare_component
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
 from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
 
 
-def test_normalization_preserves_param_schema_version() -> None:
+def test_normalization_preserves_revision() -> None:
     graph = GraphSpec(
         nodes={
             "channel": ComponentSpec(
                 type="FeedbackChannel",
                 params={"input_key": "feedback"},
-                param_schema_version="feedbax.component.feedback_channel.v1",
+                revision=1,
                 input_ports=["input"],
                 output_ports=["output"],
             )
@@ -27,16 +27,16 @@ def test_normalization_preserves_param_schema_version() -> None:
 
     channel = normalized.nodes["channel"]
     assert channel.type == "Channel"
-    assert channel.param_schema_version == "feedbax.component.feedback_channel.v1"
+    assert channel.revision == 1
 
 
-def test_normalization_preserves_nested_param_schema_version() -> None:
+def test_normalization_preserves_nested_revision() -> None:
     graph = GraphSpec(
         nodes={
             "outer": ComponentSpec(
                 type="PenzaiSubgraph",
                 params={},
-                param_schema_version="feedbax.component.penzai_subgraph.v1",
+                revision=1,
             )
         },
         subgraphs={
@@ -45,7 +45,7 @@ def test_normalization_preserves_nested_param_schema_version() -> None:
                     "channel": ComponentSpec(
                         type="FeedbackChannel",
                         params={"input_key": "feedback"},
-                        param_schema_version="feedbax.component.feedback_channel.v1",
+                        revision=1,
                     )
                 }
             )
@@ -55,41 +55,43 @@ def test_normalization_preserves_nested_param_schema_version() -> None:
     normalized = normalize_graph_for_studio_authoring(graph)
 
     assert normalized.nodes["outer"].type == "PenzaiAdapter"
-    assert normalized.nodes["outer"].param_schema_version == "feedbax.component.penzai_subgraph.v1"
+    assert normalized.nodes["outer"].revision == 1
     nested_channel = normalized.subgraphs["outer"].nodes["channel"]
     assert nested_channel.type == "Channel"
-    assert nested_channel.param_schema_version == "feedbax.component.feedback_channel.v1"
+    assert nested_channel.revision == 1
 
 
 def test_normalization_materializes_external_dynamic_ports_from_explicit_registry() -> None:
-    registry = ComponentRegistry()
-    registry.ingest(
-        ComponentPack(
-            components=(
-                declare_component(
-                    name="example.VariableOutputs",
-                    builder=lambda params: params,
-                    input_ports=["input"],
-                    output_ports=["result_0", "result_1"],
-                    dynamic_port_policy=DynamicPortPolicy.model_validate(
-                        {
-                            "count_param": "sizes",
-                            "count_mode": "sequence_length",
-                            "direction": "output",
-                            "fixed_input_ports": ["input"],
-                            "generated_name_template": "result_{index}",
-                            "dynamic_port_type": {"dtype": "vector"},
-                        }
-                    ),
-                    parameter_fields=[
-                        ParameterField(name='sizes', type='array', default=[1, 1])
-                    ],
-                    category="Custom",
-                    override_reason="Synthetic fixture constructor",
-                ),
-            )
+    from types import ModuleType
+
+    from feedbax.contracts.component import PortType
+    from feedbax.contracts.portable import Ports
+    from feedbax.runtime.graph import Component
+
+    module = ModuleType("test_normalization_owners")
+
+    class VariableOutputs(Component):
+        sizes: list[int]
+        ports: ClassVar = Ports(
+            inputs={"input": PortType(dtype="vector")},
+            outputs={},
+            dynamic=DynamicPortPolicy.model_validate({
+                "count_param": "sizes",
+                "count_mode": "sequence_length",
+                "direction": "output",
+                "fixed_input_ports": ["input"],
+                "generated_name_template": "result_{index}",
+                "dynamic_port_type": {"dtype": "vector"},
+            }),
         )
-    )
+
+        def __call__(self, inputs, state, *, key):
+            return {}, state
+
+    VariableOutputs.__module__ = module.__name__
+    module.VariableOutputs = VariableOutputs
+    registry = ComponentRegistry()
+    registry.ingest(ComponentPack(namespace="example", modules=(module,)))
     graph = GraphSpec(
         nodes={
             "external": ComponentSpec(
