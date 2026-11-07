@@ -141,7 +141,7 @@ def test_physical_owner_validation_and_domain_variants_share_scientific_storage(
 
     registry = ComponentRegistry()
     for cls, domain in ((Mass, ACAUSAL_DOMAIN_ID), (MechanicsMass, MECHANICS_DOMAIN_ID)):
-        owner = registry.resolve_component_spec(cls.__name__, {}, param_schema_version="1")
+        owner = registry.resolve_component_spec(cls.__name__, {}, legacy_token="1")
         assert owner.type_id == f"feedbax.{cls.__name__}"
         assert owner.revision == 1
         assert owner.meta.domain == domain

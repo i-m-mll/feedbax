@@ -1231,10 +1231,10 @@ def test_spec_to_graph_rejects_missing_required_registry_param() -> None:
     assert diagnostic.actionable_context["action"]
     cause = caught.value.__cause__
     assert isinstance(cause, ComponentParamValidationError)
-    assert [(failure.path, failure.code) for failure in cause.failures] == [
+    assert {(failure.path, failure.code) for failure in cause.failures} == {
         (("den",), "missing"),
         (("num",), "missing"),
-    ]
+    }
 
 
 def test_spec_to_graph_rejects_missing_network_subgraph_during_prototype_inference() -> None:
