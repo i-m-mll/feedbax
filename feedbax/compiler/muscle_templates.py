@@ -29,14 +29,14 @@ def arm_6muscle_rigid_tendon_graph(
         geometry = TwoLinkArmMuscleGeometry.default_six_muscle()
     return _muscle_force_graph(
         geometry=ComponentSpec(
-            type="JointMuscleGeometry",
+            type="feedbax.JointMuscleGeometry",
             params={"paths": muscle_path_parameters(geometry)},
             input_ports=list(JointMuscleGeometry.input_ports),
             output_ports=list(JointMuscleGeometry.output_ports),
         ),
         muscle_count=geometry.n_muscles,
         actuator=ComponentSpec(
-            type="RigidTendonHillMuscleThelen",
+            type="feedbax.RigidTendonHillMuscleThelen",
             params={
                 "dt": dt,
                 "max_isometric_force": max_isometric_force,
@@ -65,13 +65,13 @@ def point_mass_8muscle_relu_graph(
     """Build an excitation to muscle force and net Cartesian force graph."""
     return _muscle_force_graph(
         geometry=ComponentSpec(
-            type="RadialMuscleGeometry",
+            type="feedbax.RadialMuscleGeometry",
             params={"n_pairs": n_pairs},
             output_ports=list(RadialMuscleGeometry.output_ports),
         ),
         muscle_count=2 * n_pairs,
         actuator=ComponentSpec(
-            type="ReluMuscle",
+            type="feedbax.ReluMuscle",
             params={
                 "max_isometric_force": max_isometric_force,
                 "dt": dt,
@@ -102,7 +102,7 @@ def _muscle_force_graph(
     nodes = {
         "geometry": geometry,
         "reduction": ComponentSpec(
-            type="MatMul",
+            type="feedbax.MatMul",
             input_ports=list(MatMul.input_ports),
             output_ports=list(MatMul.output_ports),
         ),
@@ -123,7 +123,7 @@ def _muscle_force_graph(
     ]
     for channel in ("excitation", *kinematics):
         nodes[channel] = ComponentSpec(
-            type="VectorElements",
+            type="feedbax.VectorElements",
             params={"size": muscle_count},
             input_ports=["input"],
             output_ports=scalar_ports,
@@ -139,7 +139,7 @@ def _muscle_force_graph(
             )
     for channel in ("forces", "activations"):
         nodes[channel] = ComponentSpec(
-            type="Mux",
+            type="feedbax.Mux",
             params={"n_inputs": muscle_count},
             input_ports=mux_ports,
             output_ports=["output"],

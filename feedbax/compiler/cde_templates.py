@@ -19,7 +19,7 @@ from feedbax.contracts.graph import (
 
 
 def _node(type_: str, inputs: list[str], outputs: list[str], **params) -> ComponentSpec:
-    return ComponentSpec(type=type_, params=params, input_ports=inputs, output_ports=outputs)
+    return ComponentSpec(type=f"feedbax.{type_}", params=params, input_ports=inputs, output_ports=outputs)
 
 
 def _wire(src: str, output: str, dst: str, input_: str, **kwargs) -> WireSpec:
