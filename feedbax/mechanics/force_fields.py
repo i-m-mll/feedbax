@@ -36,7 +36,6 @@ from feedbax.runtime.signal_transforms import (
 )
 
 
-
 class CurlFieldParams(TransformParams):
     amplitude: Array = field(default_factory=lambda: _float_param(1.0), converter=_float_param)
 
@@ -285,9 +284,20 @@ class CurlField(Component):
     """Velocity-dependent curl field added to a force signal."""
 
     config: ClassVar = CurlFieldConfig
-    config_bindings: ClassVar = (ConfigBinding("params_index.init", group=CurlFieldParams, argument="params"),)
-    ports: ClassVar = Ports(inputs={"effector": PortType(dtype="state"), "force": PortType(dtype="vector"), "params_override": PortType(dtype="object")}, outputs={"force": PortType(dtype="vector")})
-    component_options: ClassVar = ComponentOptions(output_prototype_fn=force_passthrough_output_prototype)
+    config_bindings: ClassVar = (
+        ConfigBinding("params_index.init", group=CurlFieldParams, argument="params"),
+    )
+    ports: ClassVar = Ports(
+        inputs={
+            "effector": PortType(dtype="state"),
+            "force": PortType(dtype="vector"),
+            "params_override": PortType(dtype="object"),
+        },
+        outputs={"force": PortType(dtype="vector")},
+    )
+    component_options: ClassVar = ComponentOptions(
+        output_prototype_fn=force_passthrough_output_prototype
+    )
 
     params_index: StateIndex
 
@@ -407,9 +417,21 @@ class ThresholdLatchedForce(Component):
     """
 
     config: ClassVar = ThresholdLatchedForceConfig
-    config_bindings: ClassVar = (ConfigBinding("params_index.init", group=ThresholdLatchedForceParams, argument="params"),)
-    ports: ClassVar = Ports(inputs={"state": PortType(dtype="state"), "target": PortType(dtype="state"), "force": PortType(dtype="vector"), "params_override": PortType(dtype="object")}, outputs={"force": PortType(dtype="vector")})
-    component_options: ClassVar = ComponentOptions(output_prototype_fn=force_passthrough_output_prototype)
+    config_bindings: ClassVar = (
+        ConfigBinding("params_index.init", group=ThresholdLatchedForceParams, argument="params"),
+    )
+    ports: ClassVar = Ports(
+        inputs={
+            "state": PortType(dtype="state"),
+            "target": PortType(dtype="state"),
+            "force": PortType(dtype="vector"),
+            "params_override": PortType(dtype="object"),
+        },
+        outputs={"force": PortType(dtype="vector")},
+    )
+    component_options: ClassVar = ComponentOptions(
+        output_prototype_fn=force_passthrough_output_prototype
+    )
 
     params_index: StateIndex
     latch_index: StateIndex
@@ -436,8 +458,13 @@ class ThresholdLatchedForce(Component):
         state_selector, direction, dt = config.state_selector, config.direction, config.dt
         if params is None:
             params = self.config_bindings[0].materialize(config)
-        params = eqx.tree_at(lambda item: item.ramp_duration, params,
-            eqx.error_if(params.ramp_duration, params.ramp_duration < 0, "ramp_duration must be non-negative"))
+        params = eqx.tree_at(
+            lambda item: item.ramp_duration,
+            params,
+            eqx.error_if(
+                params.ramp_duration, params.ramp_duration < 0, "ramp_duration must be non-negative"
+            ),
+        )
         params = eqx.tree_at(lambda item: item.force, params, jnp.asarray(params.force))
         self.params_index = StateIndex(_strong_typed(params))
         self.latch_index = StateIndex(
@@ -536,7 +563,6 @@ class ThresholdLatchedForce(Component):
             ),
         )
         return {"force": new_force}, state
-
 
 
 @component(

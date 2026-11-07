@@ -66,6 +66,8 @@ def source_endpoint(
 ) -> Endpoint:
     if version is not None:
         return type_id, version
+    if not historical_unversioned and current_version(type_id) is not None:
+        return type_id, current_version(type_id)
     legacy = [
         endpoint
         for endpoint, edge in routes.items()

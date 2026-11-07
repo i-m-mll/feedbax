@@ -83,8 +83,6 @@ def _unsupported_declared_builder(component_type: str) -> ComponentBuilder:
     return _builder
 
 
-
-
 class ComponentParamValidationError(DynamicPortPolicyError):
     """A component parameter payload failed its declared closed contract."""
 
@@ -355,7 +353,14 @@ class ComponentParamContract:
                 )
             )
         try:
-            return ComponentParamValidation(value=self.model.model_validate(projected))
+            from feedbax.contracts.portable import validate_authoring
+
+            value = (
+                validate_authoring(self.model, projected)
+                if self.portable
+                else self.model.model_validate(projected)
+            )
+            return ComponentParamValidation(value=value)
         except ValidationError as exc:
             return ComponentParamValidation(
                 failures=tuple(
@@ -392,7 +397,11 @@ class ComponentParamContract:
         """Construct canonical compiler parameters without reapplying their schema."""
         values = dict(params)
         if self.portable:
-            context = {name: values.pop(name) for name in tuple(values) if name in self.build_context_fields}
+            context = {
+                name: values.pop(name)
+                for name in tuple(values)
+                if name in self.build_context_fields
+            }
             return self.runtime_type.from_config(self.model.model_construct(**values), **context)
         if self.builder is not None:
             return self.builder(values)
@@ -490,8 +499,6 @@ class ComponentDeclaration:
             raise ValueError("component declaration identities and owner must be non-empty")
 
 
-
-
 @dataclass(frozen=True)
 class ComponentCompilerFacet:
     parameter_contract: ComponentParamContract
@@ -532,6 +539,15 @@ class ComponentStudioFacet:
     icon: str = "box"
     template_ui_state: GraphUIState | None = None
     representation: RepresentationSpec | None = None
+    source: Path | None = field(default=None, compare=False)
+
+    def __post_init__(self):
+        import inspect
+
+        frame = inspect.currentframe().f_back.f_back
+        filename = frame.f_code.co_filename
+        if self.source is None and not filename.startswith("<"):
+            object.__setattr__(self, "source", Path(filename).resolve())
 
 
 @dataclass(frozen=True)
