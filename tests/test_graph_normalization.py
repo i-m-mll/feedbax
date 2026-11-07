@@ -20,14 +20,18 @@ def test_normalization_preserves_revision() -> None:
                 input_ports=["input"],
                 output_ports=["output"],
             )
-        }
+        },
+        input_ports=["target"],
+        input_bindings={"target": ("channel", "input")},
     )
 
     normalized = normalize_graph_for_studio_authoring(graph)
 
     channel = normalized.nodes["channel"]
-    assert channel.type == "Channel"
+    assert channel.type == "FeedbackChannel"
     assert channel.revision == 1
+    assert normalized.input_ports == ["target"]
+    assert normalized.input_bindings == {"target": ("channel", "input")}
 
 
 def test_normalization_preserves_nested_revision() -> None:
@@ -54,10 +58,10 @@ def test_normalization_preserves_nested_revision() -> None:
 
     normalized = normalize_graph_for_studio_authoring(graph)
 
-    assert normalized.nodes["outer"].type == "PenzaiAdapter"
+    assert normalized.nodes["outer"].type == "PenzaiSubgraph"
     assert normalized.nodes["outer"].revision == 1
     nested_channel = normalized.subgraphs["outer"].nodes["channel"]
-    assert nested_channel.type == "Channel"
+    assert nested_channel.type == "FeedbackChannel"
     assert nested_channel.revision == 1
 
 

@@ -20,7 +20,6 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.component_registry.cde_templates import cde_template_pack
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.compiler.templates import network_template_graph, recurrent_node_output_initializer
-from feedbax.compiler.normalization import normalize_task_binding_spec_for_studio_authoring
 from feedbax.compiler.serialization import graph_to_spec, prototypes_from_task_bindings
 from feedbax.contracts.base import ParentRef
 from feedbax.contracts.graph import (
@@ -1467,10 +1466,7 @@ def test_worker_infers_channel_prototype_from_task_binding_shape() -> None:
 
 def test_worker_materializes_task_binding_fed_mux_prototypes_after_normalization() -> None:
     graph_spec = GraphSpec.model_validate(_mux_graph_spec())
-    task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
-        StudioTaskBindingSpec.model_validate(_mux_task_binding_spec()),
-        graph_spec,
-    )
+    task_binding_spec = StudioTaskBindingSpec.model_validate(_mux_task_binding_spec())
 
     compiled = compile_training_run(
         component_registry=ComponentRegistry(),

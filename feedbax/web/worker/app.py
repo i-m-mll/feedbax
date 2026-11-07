@@ -28,7 +28,6 @@ from feedbax.studio.schema import validate_task_binding_schema
 from feedbax.studio.protocol import infer_task_n_steps
 from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
-    normalize_task_binding_spec_for_studio_authoring,
 )
 from feedbax.contracts.migrations import migrate_studio_task_binding_spec
 from feedbax.contracts.domain import DomainDiagnostic
@@ -327,7 +326,6 @@ def _require_worker_specs(job: _Job, bootstrap_state: BootstrapState) -> None:
                 )
             ],
         ) from exc
-    binding_spec = normalize_task_binding_spec_for_studio_authoring(binding_spec, graph_spec)
     job.task_binding_spec = binding_spec.model_dump(mode="json", exclude_none=True)
     issues = [
         issue

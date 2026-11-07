@@ -453,7 +453,8 @@ def test_legacy_project_load_does_not_generate_network_subgraph(tmp_path):
 
     assert record.project.graph.nodes["network"].type == "SimpleStagedNetwork"
     assert record.project.graph.nodes["network"].input_ports == ["target"]
-    assert record.project.graph.input_bindings == {"input": ("network", "target")}
+    assert record.project.graph.input_ports == ["target"]
+    assert record.project.graph.input_bindings == {"target": ("network", "target")}
     assert record.project.graph.subgraphs is None
     train_stage = next(stage for stage in record.project.workspace.stages if stage.kind == "train")
     assert (

@@ -27,7 +27,6 @@ from feedbax.studio.protocol import (
 )
 from feedbax.compiler.normalization import (
     normalize_graph_for_studio_authoring,
-    normalize_task_binding_spec_for_studio_authoring,
 )
 from feedbax.compiler.prototypes import (
     DerivedDimensionConflict,
@@ -309,10 +308,6 @@ def enumerate_studio_schema_registry(
 
     task_binding_spec = scenario.task_binding_spec
     authoring_graph = normalize_graph_for_studio_authoring(graph)
-    task_binding_spec = normalize_task_binding_spec_for_studio_authoring(
-        task_binding_spec,
-        authoring_graph,
-    )
     resolution = resolve_graph_parameters(
         authoring_graph,
         prototypes_from_task_bindings(task_binding_spec) if task_binding_spec else {},
