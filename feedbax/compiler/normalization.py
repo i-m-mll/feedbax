@@ -8,7 +8,6 @@ from feedbax.compiler.feedback_migration import lower_legacy_feedback
 from feedbax.compiler.resolution import resolve_component_node
 from feedbax.contracts.acausal import AcausalGraphSpec
 from feedbax.contracts.acausal_interface import normalize_acausal_interfaces_for_graph
-from feedbax.contracts.component import DynamicPortPolicyError
 from feedbax.contracts.graph import (
     ComponentSpec,
     GraphProject,
@@ -52,10 +51,7 @@ def normalize_graph_for_studio_authoring(
         if component_registry is not None:
             derive_layout = getattr(component_registry, "dynamic_port_layout", None)
             if callable(derive_layout):
-                try:
-                    layout = derive_layout(next_type, params)
-                except DynamicPortPolicyError:
-                    layout = None
+                layout = derive_layout(next_type, params)
                 if layout is not None:
                     if not input_ports:
                         input_ports = list(layout.input_ports)
@@ -72,7 +68,7 @@ def normalize_graph_for_studio_authoring(
 
     def rename_port(node_name: str, port: str) -> str:
         node = nodes.get(node_name)
-        if node and node.type == "Network" and port == "target":
+        if node and node.type in ("Network", "feedbax.Network") and port == "target":
             return "input"
         return port
 
@@ -162,7 +158,7 @@ def normalize_task_binding_spec_for_studio_authoring(
     bindings = []
     for binding in task_binding_spec.bindings:
         target = graph.nodes.get(binding.target_node_id)
-        if target is not None and target.type == "Network" and binding.target_port == "target":
+        if target is not None and target.type in ("Network", "feedbax.Network") and binding.target_port == "target":
             binding = binding.model_copy(
                 update={
                     "id": (f"task:{binding.source_data_id}->{binding.target_node_id}:input"),

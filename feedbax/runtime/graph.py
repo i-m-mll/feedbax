@@ -300,7 +300,7 @@ class ComponentBinding:
     """Registry identity and explicit graph-owned controls for one node."""
 
     type_id: str
-    param_schema_version: str
+    revision: int
     # Checkpoint slot fingerprints include the binding's repr via the PyTree definition.
     trainable_override: bool | None = dataclasses.field(default=None, repr=False)
     authored_arrays: tuple[AuthoredArrayEncoding, ...] = dataclasses.field(default=(), repr=False)

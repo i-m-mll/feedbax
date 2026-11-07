@@ -14,10 +14,9 @@ families must use one of these namespaces instead of inventing flat
 - ``feedbax.component.<component>.params`` for globally named component
   parameter payload schemas.
 
-Component parameter version strings such as ``"1"`` remain component-local and
-are migrated by ``ComponentRegistry``/``ComponentMigration``. They become global
-schema identities only when an owner intentionally exports a reusable parameter
-payload schema under ``feedbax.component.<component>.params``.
+Positive integer component revisions are resolved through owner-local histories
+by ``ComponentRegistry``. Reusable parameter payload schemas use the independent
+global schema identity ``feedbax.component.<component>.params``.
 """
 
 from __future__ import annotations
