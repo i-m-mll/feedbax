@@ -29,9 +29,19 @@ from feedbax.contracts.migrations import default_spec_registry
 
 
 def test_builtin_mux_and_demux_policies_preserve_dynamic_port_layouts() -> None:
+    from feedbax.runtime.components import Demux, Input, Mux
+
+    direct_mux = Mux(n_inputs=3)
+    direct_demux = Demux(sizes=(2, 1, 3))
+    direct_input = Input(output_port="renamed")
+    assert direct_mux.input_ports == ("in_0", "in_1", "in_2")
+    assert direct_demux.output_ports == ("out_0", "out_1", "out_2")
+    assert direct_input.input_ports == ("input",)
+    assert direct_input.output_ports == ("renamed",)
+
     registry = ComponentRegistry()
-    mux = registry.get("Mux")
-    demux = registry.get("Demux")
+    mux = registry.get("feedbax.Mux")
+    demux = registry.get("feedbax.Demux")
 
     assert mux is not None and mux.dynamic_port_policy is not None
     assert demux is not None and demux.dynamic_port_policy is not None

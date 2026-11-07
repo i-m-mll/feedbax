@@ -697,3 +697,34 @@ def test_simplefeedback_model_net_update_replaces_executable_graph_node():
         jnp.array_equal(updated_leaf, replacement_leaf)
         for updated_leaf, replacement_leaf in zip(updated_leaves, replacement_leaves)
     )
+
+
+def test_transform_export_reads_edited_reset_payload_and_rejects_stripped_defaults():
+    from feedbax.component_registry import ComponentRegistry
+    from feedbax.runtime.signal_transforms import NetworkConstantInput, NetworkValueParams
+
+    registry = ComponentRegistry()
+    original = NetworkConstantInput(
+        params=NetworkValueParams(active=True, scale=1.0, unit_spec=jnp.array([1.0, 2.0]))
+    )
+    edited = eqx.tree_at(
+        lambda node: (node.params_index.init.scale, node.params_index.init.unit_spec),
+        original,
+        (jnp.asarray(3.0), jnp.array([2.0, 4.0])),
+    )
+    type_id, values, revision = registry.serialize_component(edited)
+    assert type_id == "feedbax.NetworkConstantInput"
+    assert revision == 2
+    assert values["scale"] == 3.0
+    assert values["unit_spec"] == [2.0, 4.0]
+    restored = registry.get(type_id).params.build(values)
+    outputs, _ = restored(
+        {"input": jnp.array([1.0, -1.0])},
+        init_state_from_component(restored),
+        key=jax.random.PRNGKey(0),
+    )
+    assert jnp.array_equal(outputs["output"], jnp.array([7.0, 11.0]))
+
+    stripped, _ = eqx.nn.make_with_state(NetworkConstantInput)()
+    with pytest.raises(ValueError, match="reset payload was stripped by make_with_state"):
+        registry.serialize_component(stripped)
