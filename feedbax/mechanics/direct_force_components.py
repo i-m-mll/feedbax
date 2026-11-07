@@ -65,3 +65,20 @@ for _owner in (PointMass, TwoLinkArm):
     _owner.component_options = ComponentOptions(
         output_prototype_fn=partial(mechanics_state_output_prototype, _owner)
     )
+
+
+def _point_mass_template():
+    from feedbax.compiler.mechanics_templates import point_mass_template_graph
+    from feedbax.contracts.portable import configuration_model
+
+    return point_mass_template_graph(configuration_model(PointMass)().model_dump())
+
+
+from dataclasses import replace
+
+PointMass.component_options = replace(
+    PointMass.component_options,
+    template_graph=_point_mass_template,
+    template_id="feedbax.templates.mechanics.point_mass",
+    template_kind="executable",
+)
